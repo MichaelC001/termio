@@ -75,6 +75,41 @@ struct SidebarView: View {
         .environment(\.defaultMinListRowHeight, 1)
         .themedSidebarBackground(chrome)
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
+        // Drop SwiftUI's automatic sidebar toggle: on macOS 26 it carries a resting
+        // Liquid Glass capsule that reads as a permanent filled background. A flat
+        // replacement is supplied below that fires the same `toggleSidebar:` action,
+        // so the collapse animation is unchanged.
+        .toolbar(removing: .sidebarToggle)
+        .toolbar { sidebarToggleToolbar }
+    }
+
+    /// The sidebar toggle, pinned to the trailing edge of the sidebar's own title-bar
+    /// region (top-right of the column, just left of the divider) rather than over in
+    /// the terminal pane's title bar.
+    /// On macOS 26 `sharedBackgroundVisibility(.hidden)` drops the default Liquid
+    /// Glass capsule so it sits flat over the sidebar material, matching the title
+    /// beside it.
+    @ToolbarContentBuilder
+    private var sidebarToggleToolbar: some ToolbarContent {
+        if #available(macOS 26.0, *) {
+            ToolbarItem(placement: .primaryAction) { sidebarToggle }
+                .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .primaryAction) { sidebarToggle }
+        }
+    }
+
+    /// Replacement for SwiftUI's automatic sidebar toggle (removed above). It sends
+    /// the standard `toggleSidebar:` up the responder chain so the native
+    /// `NSSplitViewController` still drives the collapse — only the styling differs:
+    /// no resting Liquid Glass capsule, just the hover highlight.
+    private var sidebarToggle: some View {
+        Button {
+            NSApp.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil)
+        } label: {
+            Image(systemName: "sidebar.left")
+        }
+        .help("Toggle Sidebar")
     }
 
     private func toggleCollapsed(_ id: Project.ID) {
@@ -88,10 +123,11 @@ struct SidebarView: View {
     }
 }
 
-/// A project's section header. The agent quick-add buttons are always laid out
-/// but stay invisible until the row is hovered (revealed via opacity, not
-/// insertion, so the hover region never shifts) — like VSCode's explorer header
-/// actions. Each button immediately creates a session of that agent type.
+/// A project's section header. The agent quick-add buttons float in a trailing
+/// overlay rather than the row's flow, so at rest the label gets the full row width
+/// (no premature truncation) and the buttons only paint over the trailing edge on
+/// hover — like VSCode's explorer header actions. Each button immediately creates a
+/// session of that agent type.
 private struct ProjectHeader: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
@@ -124,6 +160,10 @@ private struct ProjectHeader: View {
                 .foregroundStyle(chrome.map { AnyShapeStyle($0.foreground.opacity(0.4)) } ?? AnyShapeStyle(.tertiary))
                 .rotationEffect(.degrees(isCollapsed ? -90 : 0))
             Spacer(minLength: 4)
+        }
+        // The quick-add buttons sit in an overlay, not the HStack above, so they
+        // reserve no width while hidden — the label keeps the whole row at rest.
+        .overlay(alignment: .trailing) {
             HStack(spacing: 3) {
                 ForEach(AgentPreset.allCases.filter(settings.isAgentEnabled)) { preset in
                     AgentQuickAddButton(preset: preset, chrome: chrome) {
@@ -169,6 +209,37 @@ private struct AgentQuickAddButton: View {
     }
 }
 
+/// An inline trailing action on a session row (split, close). Like
+/// `AgentQuickAddButton`, it owns its hover state so only the control under the
+/// cursor lifts a rounded background — the per-action highlight VSCode gives the
+/// split/kill buttons on a terminal tab.
+private struct SessionRowActionButton: View {
+    let systemImage: String
+    let help: String
+    let chrome: ChromeTheme?
+    var isEnabled: Bool = true
+    let action: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .imageScale(.small)
+                .frame(width: 20, height: 20)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill((chrome?.foreground ?? .primary).opacity(isHovering ? 0.12 : 0))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .onHover { isHovering = $0 }
+        .animation(.easeInOut(duration: 0.1), value: isHovering)
+        .help(help)
+        .disabled(!isEnabled)
+    }
+}
+
 /// A session row. Hovering reveals a close button on the trailing edge (same
 /// opacity-reveal pattern as the project header).
 private struct SessionRow: View {
@@ -178,7 +249,9 @@ private struct SessionRow: View {
     let chrome: ChromeTheme?
     @State private var isHovering = false
 
-    private var isSelected: Bool { store.selectedSessionID == session.id }
+    // Both panes of an active split read as selected, so a split's two sessions are
+    // both highlighted in the sidebar rather than just the focused one.
+    private var isSelected: Bool { store.isShown(session.id) }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -193,30 +266,52 @@ private struct SessionRow: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 4)
-            // The trailing slot shows the live status dot at rest and swaps to a
-            // close button on hover, so both share one fixed-width position.
-            ZStack {
-                StatusDot(status: store.status(for: session.id))
-                    .opacity(isHovering ? 0 : 1)
-                Button {
-                    store.closeSession(session.id)
-                } label: {
-                    Image(systemName: "xmark")
-                        .imageScale(.small)
-                        .frame(width: 18, height: 18)
-                        .contentShape(Rectangle())
+            // At rest only the small status dot trails the title, so the title keeps
+            // nearly the whole row width. The hover actions live in the overlay below
+            // and reserve no flow width of their own.
+            StatusDot(status: store.status(for: session.id))
+                .frame(width: 16)
+                .opacity(isHovering ? 0 : 1)
+        }
+        // VSCode-style trailing actions: hovering paints a split + close pair over
+        // the trailing edge (where the status dot was), reserving no resting width.
+        .overlay(alignment: .trailing) {
+            HStack(spacing: 2) {
+                // Only a plain terminal can be opened in a split — agents stay
+                // dedicated full views — so agent rows omit the split action.
+                if session.agent == .terminal {
+                    SessionRowActionButton(
+                        systemImage: "rectangle.split.2x1",
+                        help: "Open in split",
+                        chrome: chrome,
+                        isEnabled: store.projects.flatMap(\.sessions).count >= 2
+                    ) {
+                        store.openInSplit(session.id)
+                    }
                 }
-                .buttonStyle(.borderless)
-                .help("Close session")
-                .opacity(isHovering ? 1 : 0)
-                .allowsHitTesting(isHovering)
+                SessionRowActionButton(
+                    systemImage: "xmark",
+                    help: "Close session",
+                    chrome: chrome
+                ) {
+                    store.closeSession(session.id)
+                }
             }
-            .frame(width: 18, height: 18)
+            .opacity(isHovering ? 1 : 0)
+            .allowsHitTesting(isHovering)
         }
         .padding(.vertical, settings.interfaceRowPadding)
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .onTapGesture { store.selectedSessionID = session.id }
+        .contextMenu {
+            if session.agent == .terminal {
+                Button("Open in Split") { store.openInSplit(session.id) }
+                    .disabled(store.projects.flatMap(\.sessions).count < 2)
+                Divider()
+            }
+            Button("Close Session") { store.closeSession(session.id) }
+        }
         .listRowBackground(
             SidebarRowHighlight(isSelected: isSelected, isHovering: isHovering, chrome: chrome)
                 .animation(.easeInOut(duration: 0.12), value: isSelected)

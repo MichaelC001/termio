@@ -95,23 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let window else { return }
         let translucent = settings.backgroundOpacity < 1.0 || settings.backgroundBlur > 0
         window.isOpaque = !translucent
-        window.backgroundColor = translucent ? .clear : terminalBackgroundColor()
-    }
-
-    /// The terminal surface's background color, so the window chrome can match it.
-    /// With a theme selected this is the theme's background; with none, libghostty
-    /// renders `TerminalTheme.default` (Alabaster #F7F7F7 in light, Afterglow
-    /// #212121 in dark), so the fallback adapts to the system appearance exactly as
-    /// the terminal does.
-    private func terminalBackgroundColor() -> NSColor {
-        if let chrome = settings.chromeTheme {
-            return NSColor(chrome.background)
-        }
-        return NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x21 / 255.0, green: 0x21 / 255.0, blue: 0x21 / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0xF7 / 255.0, green: 0xF7 / 255.0, blue: 0xF7 / 255.0, alpha: 1)
-        }
+        window.backgroundColor = translucent ? .clear : settings.terminalBackgroundColor
     }
 
     /// Matches the window's light/dark appearance to the selected terminal theme so
@@ -152,6 +136,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
+
+    /// Splits the terminal pane in two (or collapses an existing split). Reached via
+    /// the View menu's ⌘D through the responder chain, the same nil-target routing
+    /// the Settings item uses.
+    @objc func toggleSplitView(_ sender: Any?) {
+        store.toggleSplit()
+    }
+
+    /// File ▸ Open Project… — presents the folder picker that opens a directory as a new
+    /// project. Reached via the responder chain (the menu item targets `nil`),
+    /// the same nil-target routing the Settings and Split items use.
+    @objc func openProject(_ sender: Any?) {
+        store.presentOpenProjectPanel()
+    }
 }
 
 @MainActor
@@ -174,6 +172,16 @@ private func buildMainMenu() -> NSMenu {
     )
     appItem.submenu = appMenu
 
+    let fileItem = NSMenuItem()
+    mainMenu.addItem(fileItem)
+    let fileMenu = NSMenu(title: "File")
+    fileMenu.addItem(
+        withTitle: "Open Project…",
+        action: #selector(AppDelegate.openProject(_:)),
+        keyEquivalent: "o"
+    )
+    fileItem.submenu = fileMenu
+
     // Standard Edit menu so copy/paste/select-all responder actions work.
     let editItem = NSMenuItem()
     mainMenu.addItem(editItem)
@@ -182,6 +190,16 @@ private func buildMainMenu() -> NSMenu {
     editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
     editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
     editItem.submenu = editMenu
+
+    let viewItem = NSMenuItem()
+    mainMenu.addItem(viewItem)
+    let viewMenu = NSMenu(title: "View")
+    viewMenu.addItem(
+        withTitle: "Split Right",
+        action: #selector(AppDelegate.toggleSplitView(_:)),
+        keyEquivalent: "d"
+    )
+    viewItem.submenu = viewMenu
 
     return mainMenu
 }

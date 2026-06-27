@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import GhosttyTerminal
@@ -21,8 +22,21 @@ final class TermioStore: ObservableObject {
             if let id = selectedSessionID {
                 statuses[id] = .idle
             }
+            // A split shows exactly its two sessions. Navigating to a session that
+            // isn't one of them means the user has left the split, so collapse it
+            // back to a single pane. Refocusing one of the two panes keeps it.
+            if let split = splitSessionIDs, let id = selectedSessionID, !split.contains(id) {
+                splitSessionIDs = nil
+            }
             persist()
         }
+    }
+
+    /// The two sessions shown side by side, left-to-right, or `nil` for the normal
+    /// single-pane view. `selectedSessionID` is always one of the two while a split
+    /// is active and marks the focused pane.
+    @Published var splitSessionIDs: [Session.ID]? {
+        didSet { persist() }
     }
 
     /// Per-session activity, driven by the surface signals monitored below. A
@@ -66,6 +80,14 @@ final class TermioStore: ObservableObject {
         if let id = snapshot.selectedSessionID, store.session(id) != nil {
             store.selectedSessionID = id
         }
+        // Restore a split only if both panes still resolve to live sessions and the
+        // focused session is one of them, so a stale snapshot can't leave the view
+        // pointing at a session that no longer exists.
+        if let split = snapshot.splitSessionIDs, split.count == 2,
+           split.allSatisfy({ store.session($0) != nil }),
+           let selected = store.selectedSessionID, split.contains(selected) {
+            store.splitSessionIDs = split
+        }
         return store
     }
 
@@ -95,20 +117,99 @@ final class TermioStore: ObservableObject {
     }
 
     private func persist() {
-        stateFile.save(.init(projects: projects, selectedSessionID: selectedSessionID))
+        stateFile.save(.init(
+            projects: projects,
+            selectedSessionID: selectedSessionID,
+            splitSessionIDs: splitSessionIDs
+        ))
+    }
+
+    /// Whether a split is currently shown (exactly two panes).
+    var isSplit: Bool { splitSessionIDs?.count == 2 }
+
+    /// Whether a session is currently on screen: either pane of an active split,
+    /// or the selected session in single-pane mode. Drives the sidebar highlight so
+    /// both panes of a split read as live.
+    func isShown(_ id: Session.ID) -> Bool {
+        if let split = splitSessionIDs { return split.contains(id) }
+        return selectedSessionID == id
+    }
+
+    /// Toggles the split: collapses it if active, otherwise pairs the focused
+    /// session with a companion. A no-op when there is no second session to show.
+    func toggleSplit() {
+        if splitSessionIDs != nil {
+            splitSessionIDs = nil
+            return
+        }
+        guard let primary = selectedSessionID,
+              let companion = defaultCompanion(for: primary) else { return }
+        splitSessionIDs = [primary, companion]
+    }
+
+    /// Shows `id` in a split beside the focused session and moves focus to it. Only
+    /// a plain terminal can be pulled into a split — agents stay dedicated full
+    /// views, so an agent is never a split pane. The focused session it pairs beside
+    /// may be anything, so a terminal can be split in even while an agent is on
+    /// screen. With no distinct focused session to pair against, it just selects.
+    func openInSplit(_ id: Session.ID) {
+        guard session(id)?.agent == .terminal else { return }
+        guard let primary = selectedSessionID, primary != id else {
+            selectedSessionID = id
+            return
+        }
+        splitSessionIDs = [primary, id]
+        selectedSessionID = id
+    }
+
+    /// The terminal to pair with `primary` when splitting: the next plain terminal
+    /// in the same project (then the previous), else any other open terminal. Agents
+    /// are skipped, since only terminals are shown as split panes.
+    private func defaultCompanion(for primary: Session.ID) -> Session.ID? {
+        if let project = project(for: primary),
+           let index = project.sessions.firstIndex(where: { $0.id == primary }) {
+            if let next = project.sessions[(index + 1)...].first(where: { $0.agent == .terminal })
+                ?? project.sessions[..<index].reversed().first(where: { $0.agent == .terminal }) {
+                return next.id
+            }
+        }
+        return projects.flatMap(\.sessions).first { $0.id != primary && $0.agent == .terminal }?.id
     }
 
     func status(for sessionID: Session.ID) -> SessionStatus {
         statuses[sessionID] ?? .idle
     }
 
-    /// The label to show for a session: the name the user gave it. The running
-    /// program's live terminal title (`OSC 0/2`) is deliberately ignored here so
-    /// the session keeps the label you assigned instead of being renamed to
-    /// whatever the program reports when it starts. Centralized so the sidebar
-    /// and the menu-bar tray always agree on what a session is called.
+    /// The label to show for a session. The running program's live terminal title
+    /// (`OSC 0/2`) is deliberately ignored here so the session keeps its assigned
+    /// label instead of being renamed to whatever the program reports on launch.
+    ///
+    /// Auto-named terminals (`Terminal N`) are re-indexed live by their position
+    /// among the terminals in their project, so the list always reads 1, 2, 3…
+    /// with no gaps or duplicates as sessions are added and removed. The stored
+    /// title is left untouched (it seeds the worktree branch slug, which must stay
+    /// stable); only the displayed number is recomputed. A title the user set to
+    /// anything other than the `Terminal N` form is shown verbatim. Centralized so
+    /// the sidebar and the menu-bar tray always agree on what a session is called.
     func displayTitle(for session: Session) -> String {
-        session.title
+        guard session.agent == .terminal,
+              Self.isAutoTerminalName(session.title),
+              let project = project(for: session.id) else {
+            return session.title
+        }
+        let terminals = project.sessions.filter { $0.agent == .terminal }
+        guard let index = terminals.firstIndex(where: { $0.id == session.id }) else {
+            return session.title
+        }
+        return "Terminal \(index + 1)"
+    }
+
+    /// Whether `title` is an auto-generated `Terminal N` label (as opposed to a
+    /// name the user chose), which is what makes it eligible for live re-indexing.
+    private static func isAutoTerminalName(_ title: String) -> Bool {
+        let suffix = title.dropFirst("Terminal ".count)
+        return title.hasPrefix("Terminal ") && !suffix.isEmpty
+            && suffix.allSatisfy(\.isNumber)
     }
 
     /// The single state the menu-bar pulse renders: any session waiting on the
@@ -248,13 +349,58 @@ final class TermioStore: ObservableObject {
     func addSession(to projectID: Project.ID, agent: AgentPreset = .terminal) {
         guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
         let project = projects[index]
+        let terminalCount = project.sessions.filter { $0.agent == .terminal }.count
         let title = agent == .terminal
-            ? "Terminal \(project.sessions.count + 1)"
+            ? "Terminal \(terminalCount + 1)"
             : agent.displayName
         var session = Session(title: title, agent: agent)
         session.worktreePath = makeWorktree(for: session, in: project)
         projects[index].sessions.append(session)
         selectedSessionID = session.id
+    }
+
+    /// Presents a folder picker and, on confirmation, opens the chosen directory
+    /// as a new project. Shared by the sidebar's open-project button and the
+    /// File ▸ Open… (⌘O) menu item so both routes run the same code. `runModal`
+    /// is fine on the main actor — a modal file picker is expected to block.
+    func presentOpenProjectPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Open"
+        panel.message = "Choose a project folder to open in termio."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        addProject(at: url)
+    }
+
+    /// Adds the directory at `url` as a new project section seeded with a single
+    /// terminal session, which becomes the selection. A folder already open as a
+    /// project is not duplicated — its first session is selected instead.
+    func addProject(at url: URL) {
+        let path = url.standardizedFileURL.path
+        if let existing = projects.first(where: { $0.path == path }) {
+            selectedSessionID = existing.sessions.first?.id
+            return
+        }
+        let session = Session(title: "Terminal 1")
+        var project = Project(
+            name: url.lastPathComponent,
+            path: path,
+            branch: currentBranch(in: path) ?? "—",
+            sessions: [session]
+        )
+        // Seed the first session exactly as addSession would, so a new project's
+        // session behaves identically to one added to an existing project.
+        project.sessions[0].worktreePath = makeWorktree(for: session, in: project)
+        projects.append(project)
+        selectedSessionID = project.sessions.first?.id
+    }
+
+    /// The checked-out branch of the git repository at `directory`, or `nil` when
+    /// it is not a repo (rendered as "—", matching the seed projects).
+    private func currentBranch(in directory: String) -> String? {
+        runGit(["rev-parse", "--abbrev-ref", "HEAD"], in: directory)
     }
 
     /// Creates an isolated git worktree for a new session, returning its absolute
@@ -360,6 +506,12 @@ final class TermioStore: ObservableObject {
         monitors[id] = nil
         statuses[id] = nil
 
+        // A closed session can't stay in a split; losing either pane collapses the
+        // split back to a single view of whatever remains.
+        if let split = splitSessionIDs, split.contains(id) {
+            splitSessionIDs = nil
+        }
+
         if selectedSessionID == id {
             let remaining = projects[projectIndex].sessions
             if remaining.isEmpty {
@@ -379,6 +531,7 @@ private struct StateFile {
     struct Snapshot: Codable {
         var projects: [Project]
         var selectedSessionID: Session.ID?
+        var splitSessionIDs: [Session.ID]?
     }
 
     let url = FileManager.default
