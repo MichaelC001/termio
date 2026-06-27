@@ -90,7 +90,7 @@ final class MenuBarController {
 
         menu.addItem(.separator())
         menu.addItem(
-            withTitle: "Quit termio",
+            withTitle: "Quit Termio",
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q"
         )

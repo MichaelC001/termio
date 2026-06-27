@@ -12,54 +12,24 @@ import GhosttyTerminal
 /// prompt. That resize-on-every-switch was the visible flicker. Keeping each
 /// surface mounted and only toggling visibility means the view is never
 /// reparented or resized, so the shell never repaints and switching is instant.
-///
-/// Split view preserves that invariant: it never moves surfaces between containers
-/// (which would reparent and resize them). Every surface is laid out by hand in one
-/// `ZStack` — the visible one or two get an explicit frame, the rest stay full-size
-/// behind them at zero opacity. So a plain session switch still changes no frame and
-/// stays flicker-free; only entering or leaving a split — an explicit action —
-/// intentionally resizes the two affected panes.
 struct TerminalPane: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
     @FocusState private var focusedSession: Session.ID?
     @State private var activated: [Session.ID] = []
-    /// Fraction of the pane width given to the left split pane, dragged via the
-    /// divider. Clamped so neither side can be squeezed to nothing.
-    @State private var splitFraction: CGFloat = 0.5
-
-    private let coordinateSpace = "termio.pane"
-    private static let dividerHitWidth: CGFloat = 8
-    private static let minFraction: CGFloat = 0.15
 
     var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .topLeading) {
-                if mounted.isEmpty {
-                    ContentUnavailableView("No session selected", systemImage: "terminal")
-                }
-                ForEach(mounted, id: \.session.id) { item in
-                    let layout = paneLayout(for: item.session.id, in: geometry.size)
-                    TerminalSurfaceView(context: store.surface(for: item.session, in: item.project))
-                        .terminalFocused($focusedSession, equals: item.session.id)
-                        .frame(width: layout.width, height: geometry.size.height)
-                        .offset(x: layout.xOffset)
-                        .opacity(layout.isVisible ? 1 : 0)
-                        .allowsHitTesting(layout.isVisible)
-                }
-                if store.isSplit {
-                    SplitDivider(hitWidth: Self.dividerHitWidth, height: geometry.size.height)
-                        .offset(x: (geometry.size.width * splitFraction).rounded() - Self.dividerHitWidth / 2)
-                        .gesture(
-                            DragGesture(coordinateSpace: .named(coordinateSpace))
-                                .onChanged { value in
-                                    let fraction = value.location.x / geometry.size.width
-                                    splitFraction = min(max(fraction, Self.minFraction), 1 - Self.minFraction)
-                                }
-                        )
-                }
+        ZStack {
+            if mounted.isEmpty {
+                ContentUnavailableView("No session selected", systemImage: "terminal")
             }
-            .coordinateSpace(name: coordinateSpace)
+            ForEach(mounted, id: \.session.id) { item in
+                let isSelected = store.selectedSessionID == item.session.id
+                TerminalSurfaceView(context: store.surface(for: item.session, in: item.project))
+                    .terminalFocused($focusedSession, equals: item.session.id)
+                    .opacity(isSelected ? 1 : 0)
+                    .allowsHitTesting(isSelected)
+            }
         }
         // Paint the terminal's own background behind the pane, extending up under the
         // transparent title bar. The title bar paints nothing of its own, so it
@@ -87,25 +57,10 @@ struct TerminalPane: View {
             }
             focusedSession = id
         }
-        // Both panes of a split must be mounted, even a companion the user never
-        // selected, so its surface exists to render beside the focused one.
-        .onChange(of: store.splitSessionIDs, initial: true) { _, split in
-            for id in split ?? [] where !activated.contains(id) {
-                activated.append(id)
-            }
-        }
-        // Clicking a pane makes its surface first responder; mirror that into the
-        // selection so the sidebar highlight and title follow the focused pane.
-        .onChange(of: focusedSession) { _, id in
-            guard let id, store.splitSessionIDs?.contains(id) == true,
-                  store.selectedSessionID != id else { return }
-            store.selectedSessionID = id
-        }
     }
 
-    /// The project title and branch at the leading edge of the title bar. The
-    /// sidebar toggle lives over the sidebar column (see `SidebarView`), and splitting
-    /// is driven per-session from the sidebar rows (VSCode-style), so the title bar
+    /// The project title and branch at the leading edge of the title bar. The sidebar
+    /// toggle lives over the sidebar column (see `SidebarView`), so the title bar
     /// carries no controls of its own.
     /// On macOS 26 a toolbar item is wrapped in a Liquid Glass capsule by default;
     /// `sharedBackgroundVisibility(.hidden)` drops that so the title sits flat on the
@@ -123,7 +78,7 @@ struct TerminalPane: View {
 
     private var titleLabel: some View {
         HStack(spacing: 6) {
-            Text(selectedProject?.name ?? "termio")
+            Text(selectedProject?.name ?? "Termio")
                 .fontWeight(.semibold)
             if let project = selectedProject {
                 HugeIconView(icon: .gitBranch, size: 13, color: .secondary)
@@ -137,31 +92,6 @@ struct TerminalPane: View {
     private struct MountedSession {
         let project: Project
         let session: Session
-    }
-
-    /// Where a surface sits in the pane: a full-width single view, one half of a
-    /// split, or a hidden full-size surface kept mounted behind the visible ones.
-    /// Hidden surfaces keep the full width on purpose — that way toggling a split
-    /// never resizes them, only the two panes that actually become visible.
-    private struct PaneLayout {
-        var width: CGFloat
-        var xOffset: CGFloat
-        var isVisible: Bool
-    }
-
-    private func paneLayout(for id: Session.ID, in size: CGSize) -> PaneLayout {
-        guard let split = store.splitSessionIDs, split.count == 2 else {
-            return PaneLayout(width: size.width, xOffset: 0, isVisible: store.selectedSessionID == id)
-        }
-        let gap: CGFloat = 1
-        let leftWidth = (size.width * splitFraction).rounded()
-        if id == split[0] {
-            return PaneLayout(width: max(0, leftWidth), xOffset: 0, isVisible: true)
-        }
-        if id == split[1] {
-            return PaneLayout(width: max(0, size.width - leftWidth - gap), xOffset: leftWidth + gap, isVisible: true)
-        }
-        return PaneLayout(width: size.width, xOffset: 0, isVisible: false)
     }
 
     /// The sessions to keep on screen: every activated id that still resolves to a
@@ -203,33 +133,5 @@ private struct TitleBarFill: ViewModifier {
         } else {
             content.toolbarBackground(fill, for: .windowToolbar)
         }
-    }
-}
-
-/// The draggable seam between two split panes: a hairline at rest, brightening and
-/// thickening under the cursor, with a resize cursor over its hit area.
-private struct SplitDivider: View {
-    let hitWidth: CGFloat
-    let height: CGFloat
-    @State private var isHovering = false
-
-    var body: some View {
-        Color.clear
-            .frame(width: hitWidth, height: height)
-            .overlay(
-                Rectangle()
-                    .fill(Color.primary.opacity(isHovering ? 0.25 : 0.1))
-                    .frame(width: isHovering ? 2 : 1)
-            )
-            .contentShape(Rectangle())
-            .onHover { hovering in
-                isHovering = hovering
-                if hovering {
-                    NSCursor.resizeLeftRight.push()
-                } else {
-                    NSCursor.pop()
-                }
-            }
-            .animation(.easeInOut(duration: 0.1), value: isHovering)
     }
 }

@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Sparkle
 import SwiftUI
 
 /// AppKit bootstrap. We drive `NSApplication` directly (rather than the SwiftUI
@@ -29,6 +30,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBar: MenuBarController?
     private var settingsWindow: NSWindow?
     private var settingsObserver: AnyCancellable?
+    // Drives in-app auto-update. Started only in release builds — a debug build has
+    // no Developer-ID signature for Sparkle to validate the appcast's EdDSA against,
+    // and we don't want dev runs phoning the update feed. The feed URL and public
+    // key live in packaging/Info.plist (SUFeedURL / SUPublicEDKey).
+    #if DEBUG
+    private let updaterController = SPUStandardUpdaterController(
+        startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
+    #else
+    private let updaterController = SPUStandardUpdaterController(
+        startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+    #endif
+    // Folders handed to us by the `termio` CLI (via `open -b com.termio.app <dir>`)
+    // before the window exists, replayed once it does. macOS may deliver the open
+    // event during a cold launch, ahead of `applicationDidFinishLaunching`.
+    private var pendingOpenURLs: [URL] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let root = RootView()
@@ -41,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "termio"
+        window.title = "Termio"
         window.titlebarAppearsTransparent = true
         // Default (`.automatic`) toolbar style — the same one NetNewsWire uses — so
         // the title bar splits at the sidebar divider and the sidebar's vibrant
@@ -79,10 +95,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
             self?.window.makeKeyAndOrderFront(nil)
         }
+
+        if !pendingOpenURLs.isEmpty {
+            let urls = pendingOpenURLs
+            pendingOpenURLs = []
+            openProjects(at: urls)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    /// Entry point for the `termio` CLI: macOS delivers the folder passed to
+    /// `open -b com.termio.app <dir>` here. Because termio is single-instance, an
+    /// already-running app receives this in place, so the project opens in the
+    /// existing window rather than spawning a second one.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        openProjects(at: urls)
+    }
+
+    /// Adds each directory as a project in the one shared store and brings the
+    /// window forward. Called before the window exists buffers into `pendingOpenURLs`.
+    private func openProjects(at urls: [URL]) {
+        guard window != nil else {
+            pendingOpenURLs.append(contentsOf: urls)
+            return
+        }
+        let directories = urls.filter {
+            (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        }
+        guard !directories.isEmpty else { return }
+        for url in directories {
+            store.addProject(at: url)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
     }
 
     /// Makes the window non-opaque (so a translucent terminal background reveals
@@ -137,18 +185,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// Splits the terminal pane in two (or collapses an existing split). Reached via
-    /// the View menu's ⌘D through the responder chain, the same nil-target routing
-    /// the Settings item uses.
-    @objc func toggleSplitView(_ sender: Any?) {
-        store.toggleSplit()
-    }
-
     /// File ▸ Open Project… — presents the folder picker that opens a directory as a new
     /// project. Reached via the responder chain (the menu item targets `nil`),
-    /// the same nil-target routing the Settings and Split items use.
+    /// the same nil-target routing the Settings item uses.
     @objc func openProject(_ sender: Any?) {
         store.presentOpenProjectPanel()
+    }
+
+    /// Termio ▸ Check for Updates… — hands off to Sparkle's standard update flow.
+    /// Reached via the responder chain (the menu item targets `nil`), the same
+    /// nil-target routing the other app-menu items use.
+    @objc func checkForUpdates(_ sender: Any?) {
+        updaterController.checkForUpdates(sender)
     }
 }
 
@@ -160,13 +208,19 @@ private func buildMainMenu() -> NSMenu {
     mainMenu.addItem(appItem)
     let appMenu = NSMenu()
     appMenu.addItem(
+        withTitle: "Check for Updates…",
+        action: #selector(AppDelegate.checkForUpdates(_:)),
+        keyEquivalent: ""
+    )
+    appMenu.addItem(.separator())
+    appMenu.addItem(
         withTitle: "Settings…",
         action: #selector(AppDelegate.showSettings(_:)),
         keyEquivalent: ","
     )
     appMenu.addItem(.separator())
     appMenu.addItem(
-        withTitle: "Quit termio",
+        withTitle: "Quit Termio",
         action: #selector(NSApplication.terminate(_:)),
         keyEquivalent: "q"
     )
@@ -190,16 +244,6 @@ private func buildMainMenu() -> NSMenu {
     editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
     editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
     editItem.submenu = editMenu
-
-    let viewItem = NSMenuItem()
-    mainMenu.addItem(viewItem)
-    let viewMenu = NSMenu(title: "View")
-    viewMenu.addItem(
-        withTitle: "Split Right",
-        action: #selector(AppDelegate.toggleSplitView(_:)),
-        keyEquivalent: "d"
-    )
-    viewItem.submenu = viewMenu
 
     return mainMenu
 }

@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>termio</string>
+    <string>Termio</string>
     <key>CFBundleDisplayName</key>
-    <string>termio</string>
+    <string>Termio</string>
     <key>CFBundleExecutable</key>
     <string>termio</string>
     <key>CFBundleIdentifier</key>
@@ -24,5 +24,16 @@
     <true/>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.developer-tools</string>
+    <!-- Sparkle auto-update. The feed is the appcast published as a GitHub release
+         asset; releases/latest always serves the newest one. SUPublicEDKey is the
+         (non-secret) EdDSA public key that pairs with the SPARKLE_ED_KEY signing
+         secret used by the release workflow — Sparkle rejects any update whose
+         signature doesn't verify against it. -->
+    <key>SUFeedURL</key>
+    <string>https://github.com/jiweiyuan/termio/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>zm3UpFrDf8tFcctK2vkEhrms6oFTp50AUb824lP9BAw=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
 </dict>
 </plist>
