@@ -49,30 +49,37 @@ struct ChromeTheme {
 }
 
 extension AppSettings {
-    /// Chrome colors derived from the selected terminal theme, or `nil` to keep the
-    /// system appearance when no theme is chosen. Recomputes when `themeName`
-    /// changes because `AppSettings` republishes on every appearance edit.
-    var chromeTheme: ChromeTheme? {
-        guard !themeName.isEmpty,
-              let definition = GhosttyThemeCatalog.theme(named: themeName)
+    /// Chrome colors derived from the terminal theme that applies in `colorScheme`,
+    /// or `nil` to keep the system appearance when that slot is left on the default.
+    /// The light and dark slots are independent — the chrome tracks whichever theme
+    /// libghostty is currently rendering. Recomputes when the theme names change
+    /// because `AppSettings` republishes on every appearance edit.
+    func chromeTheme(for colorScheme: ColorScheme) -> ChromeTheme? {
+        let name = colorScheme == .dark ? darkThemeName : lightThemeName
+        guard !name.isEmpty,
+              let definition = GhosttyThemeCatalog.theme(named: name)
         else { return nil }
         return ChromeTheme(definition)
     }
 
     /// The terminal surface's background color, so the window chrome and the
-    /// terminal pane can paint the exact fill the terminal renders. With a theme
-    /// selected this is the theme's background; with none, the fallback is pure
-    /// white in light mode (crisper than libghostty's Alabaster #F7F7F7 default,
-    /// which reads as an unstyled grey under termio's mostly-empty canvas) and
-    /// Afterglow #212121 in dark, so it still adapts to the system appearance.
+    /// terminal pane can paint the exact fill the terminal renders. Returned as a
+    /// dynamic color that resolves per appearance: each side uses its chosen theme's
+    /// background, or the default when that slot is empty — pure white in light mode
+    /// (crisper than libghostty's Alabaster #F7F7F7, which reads as an unstyled grey
+    /// under termio's mostly-empty canvas) and Afterglow #212121 in dark. Both sides
+    /// are resolved up front on the main actor so the dynamic closure captures only
+    /// plain colors.
     var terminalBackgroundColor: NSColor {
-        if let chrome = chromeTheme {
-            return NSColor(chrome.background)
-        }
+        let lightBackground = chromeTheme(for: .light)?.background
+        let darkBackground = chromeTheme(for: .dark)?.background
         return NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-                ? NSColor(srgbRed: 0x21 / 255.0, green: 0x21 / 255.0, blue: 0x21 / 255.0, alpha: 1)
-                : NSColor.white
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            if isDark {
+                return darkBackground.map(NSColor.init)
+                    ?? NSColor(srgbRed: 0x21 / 255.0, green: 0x21 / 255.0, blue: 0x21 / 255.0, alpha: 1)
+            }
+            return lightBackground.map(NSColor.init) ?? NSColor.white
         }
     }
 }

@@ -32,6 +32,9 @@ private extension View {
 struct SidebarView: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
+    // The terminal theme is split light/dark and libghostty tracks the system
+    // appearance; the chrome borrows whichever side is currently showing.
+    @Environment(\.colorScheme) private var colorScheme
     // Which projects are folded shut. Held here, not in ProjectHeader, because the
     // header and the session rows are sibling parts of the same Section — only the
     // parent can both toggle the chevron and omit the collapsed project's rows.
@@ -39,7 +42,7 @@ struct SidebarView: View {
 
     // Chrome colors borrowed from the selected terminal theme; `nil` keeps the
     // default system look untouched.
-    private var chrome: ChromeTheme? { settings.chromeTheme }
+    private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
 
     var body: some View {
         // Selection is driven by row taps rather than List's `selection:` binding

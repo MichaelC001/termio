@@ -20,6 +20,25 @@ enum CursorStyle: String, CaseIterable, Identifiable {
     }
 }
 
+/// How termio resolves its light/dark appearance: follow the system, or pin to
+/// one. Raw values persist; `App` maps these to an `NSAppearance`, and the
+/// terminal's light/dark theme pair follows the resulting effective appearance.
+enum AppearanceMode: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+}
+
 /// App-wide, persisted preferences. Plain values only — the translation into
 /// libghostty configuration lives in `TermioStore`, so this type stays free of
 /// terminal-core types and is trivial to read, test, and persist.
@@ -37,6 +56,11 @@ final class AppSettings: ObservableObject {
         static let fontFamily = "appearance.fontFamily"
         static let fontSize = "appearance.fontSize"
         static let fontThicken = "appearance.fontThicken"
+        static let appearanceMode = "appearance.mode"
+        static let lightThemeName = "appearance.lightThemeName"
+        static let darkThemeName = "appearance.darkThemeName"
+        /// Legacy single-theme key, read once to migrate older installs into the
+        /// split light/dark keys above.
         static let themeName = "appearance.themeName"
         static let cursorStyle = "appearance.cursorStyle"
         static let cursorBlink = "appearance.cursorBlink"
@@ -49,7 +73,6 @@ final class AppSettings: ObservableObject {
         static let interfaceFontSize = "interface.fontSize"
         static let interfaceRowPadding = "interface.rowPadding"
         static let agentCommands = "agents.commandOverrides"
-        static let bypassPermissionAgents = "agents.bypassPermissions"
         static let disabledAgents = "agents.disabled"
         static let agentHooksEnabled = "agents.hooksEnabled"
         static let sessionControlEnabled = "agents.sessionControlEnabled"
@@ -76,10 +99,25 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(fontThicken, forKey: Key.fontThicken) }
     }
 
-    /// Name of a Ghostty bundled theme, or empty for the terminal core's default
-    /// colors. Resolved against `GhosttyThemeCatalog` in `TermioStore`.
-    @Published var themeName: String {
-        didSet { defaults.set(themeName, forKey: Key.themeName) }
+    /// Whether termio follows the system appearance or pins itself to light or
+    /// dark. `App` applies this as an `NSAppearance`; the terminal's light/dark
+    /// theme pair then follows the resulting effective appearance.
+    @Published var appearanceMode: AppearanceMode {
+        didSet { defaults.set(appearanceMode.rawValue, forKey: Key.appearanceMode) }
+    }
+
+    /// Name of the Ghostty bundled theme used while macOS is in light mode, or
+    /// empty for termio's default light canvas. The terminal switches between this
+    /// and `darkThemeName` automatically as the system appearance changes. Resolved
+    /// against `GhosttyThemeCatalog` in `TermioStore`.
+    @Published var lightThemeName: String {
+        didSet { defaults.set(lightThemeName, forKey: Key.lightThemeName) }
+    }
+
+    /// Name of the Ghostty bundled theme used while macOS is in dark mode, or empty
+    /// for termio's default dark canvas. Counterpart to `lightThemeName`.
+    @Published var darkThemeName: String {
+        didSet { defaults.set(darkThemeName, forKey: Key.darkThemeName) }
     }
 
     /// Cursor shape. The app-side `CursorStyle` keeps this type free of
@@ -152,14 +190,6 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(agentCommandOverrides, forKey: Key.agentCommands) }
     }
 
-    /// Agents whose permission/approval prompts should be bypassed, by `rawValue`.
-    /// The per-agent switch appends `AgentPreset.permissionBypassFlag` to the
-    /// resolved command (see `command(for:)`). Opt-in and stored as the on-set so
-    /// the default (nothing stored) means every agent keeps its prompts.
-    @Published var bypassPermissionAgents: Set<String> {
-        didSet { defaults.set(Array(bypassPermissionAgents), forKey: Key.bypassPermissionAgents) }
-    }
-
     /// Agent presets hidden from the sidebar quick-add row, by `rawValue`. Stored
     /// as the disabled set so the default (nothing stored) means "all enabled".
     @Published var disabledAgents: Set<String> {
@@ -210,11 +240,25 @@ final class AppSettings: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+
+        // One-time migration: older installs persisted a single `themeName` that
+        // applied to both appearances. Seed the new split keys from it before the
+        // registered "" defaults below mask whether they were ever set. Done as a
+        // real write so the legacy value survives and later reads see it.
+        if defaults.object(forKey: Key.lightThemeName) == nil,
+           defaults.object(forKey: Key.darkThemeName) == nil,
+           let legacyTheme = defaults.string(forKey: Key.themeName), !legacyTheme.isEmpty {
+            defaults.set(legacyTheme, forKey: Key.lightThemeName)
+            defaults.set(legacyTheme, forKey: Key.darkThemeName)
+        }
+
         defaults.register(defaults: [
             Key.fontFamily: "",
             Key.fontSize: 13.0,
             Key.fontThicken: false,
-            Key.themeName: "",
+            Key.appearanceMode: "system",
+            Key.lightThemeName: "",
+            Key.darkThemeName: "",
             Key.cursorStyle: "block",
             Key.cursorBlink: true,
             Key.windowPadding: 8,
@@ -235,7 +279,9 @@ final class AppSettings: ObservableObject {
         fontFamily = defaults.string(forKey: Key.fontFamily) ?? ""
         fontSize = defaults.double(forKey: Key.fontSize)
         fontThicken = defaults.bool(forKey: Key.fontThicken)
-        themeName = defaults.string(forKey: Key.themeName) ?? ""
+        appearanceMode = defaults.string(forKey: Key.appearanceMode).flatMap(AppearanceMode.init) ?? .system
+        lightThemeName = defaults.string(forKey: Key.lightThemeName) ?? ""
+        darkThemeName = defaults.string(forKey: Key.darkThemeName) ?? ""
         cursorStyle = defaults.string(forKey: Key.cursorStyle).flatMap(CursorStyle.init) ?? .block
         cursorBlink = defaults.bool(forKey: Key.cursorBlink)
         windowPadding = defaults.integer(forKey: Key.windowPadding)
@@ -247,7 +293,6 @@ final class AppSettings: ObservableObject {
         interfaceFontSize = defaults.double(forKey: Key.interfaceFontSize)
         interfaceRowPadding = defaults.double(forKey: Key.interfaceRowPadding)
         agentCommandOverrides = defaults.dictionary(forKey: Key.agentCommands) as? [String: String] ?? [:]
-        bypassPermissionAgents = Set(defaults.stringArray(forKey: Key.bypassPermissionAgents) ?? [])
         disabledAgents = Set(defaults.stringArray(forKey: Key.disabledAgents) ?? [])
         agentHooksEnabled = defaults.bool(forKey: Key.agentHooksEnabled)
         sessionControlEnabled = defaults.bool(forKey: Key.sessionControlEnabled)
@@ -257,29 +302,11 @@ final class AppSettings: ObservableObject {
     }
 
     /// Effective command for an agent: the user's override if it's non-empty,
-    /// otherwise the preset's built-in default (`nil` for a plain login shell),
-    /// with the permission-bypass flag appended when that switch is on. The flag
-    /// is only added if it isn't already present, so a user who typed it into the
-    /// override by hand doesn't get it twice.
+    /// otherwise the preset's built-in default (`nil` for a plain login shell).
     func command(for agent: AgentPreset) -> String? {
         let override = agentCommandOverrides[agent.rawValue]?.trimmingCharacters(in: .whitespaces)
-        let base = (override?.isEmpty == false ? override : agent.command)
-        guard let base else { return nil }
-        guard bypassesPermissions(agent), let flag = agent.permissionBypassFlag,
-              !base.contains(flag) else { return base }
-        return "\(base) \(flag)"
-    }
-
-    func bypassesPermissions(_ agent: AgentPreset) -> Bool {
-        bypassPermissionAgents.contains(agent.rawValue)
-    }
-
-    func setBypassPermissions(_ agent: AgentPreset, enabled: Bool) {
-        if enabled {
-            bypassPermissionAgents.insert(agent.rawValue)
-        } else {
-            bypassPermissionAgents.remove(agent.rawValue)
-        }
+        if let override, !override.isEmpty { return override }
+        return agent.command
     }
 
     func isAgentEnabled(_ agent: AgentPreset) -> Bool {

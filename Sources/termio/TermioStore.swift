@@ -233,9 +233,7 @@ final class TermioStore: ObservableObject {
             applyAppearance(to: &builder)
         }
         let state = TerminalViewState(controller: controller)
-        if let theme = makeTheme() {
-            state.controller.setTheme(theme)
-        }
+        state.controller.setTheme(makeTheme())
         state.configuration = TerminalSurfaceOptions(
             backend: .exec,
             // An isolated worktree (if one was created for this session) wins over
@@ -322,17 +320,24 @@ final class TermioStore: ObservableObject {
         builder.withCustom("copy-on-select", settings.copyOnSelect ? "clipboard" : "false")
     }
 
-    /// The selected Ghostty theme, or termio's default when none is chosen (or the
-    /// name no longer resolves). libghostty's own default light theme is Alabaster
-    /// (#F7F7F7); termio prefers a pure-white light canvas — the agent UIs paint
-    /// their own grey panels over it, so an off-white background just reads as
-    /// unstyled — so we override only Alabaster's background and keep Afterglow for
-    /// dark mode. Mirrors `AppSettings.terminalBackgroundColor`.
-    private func makeTheme() -> TerminalTheme? {
-        guard !settings.themeName.isEmpty,
-              let definition = GhosttyThemeCatalog.theme(named: settings.themeName)
-        else { return TerminalTheme(light: .alabaster.background("FFFFFF"), dark: .afterglow) }
-        return definition.toTerminalTheme()
+    /// The light/dark theme pair libghostty switches between as the system
+    /// appearance changes. Each slot resolves its own chosen Ghostty theme, falling
+    /// back to termio's default when none is chosen (or the name no longer
+    /// resolves). The light default is a pure-white canvas rather than libghostty's
+    /// Alabaster (#F7F7F7): the agent UIs paint their own grey panels over it, so an
+    /// off-white background just reads as unstyled. The dark default is Afterglow.
+    private func makeTheme() -> TerminalTheme {
+        TerminalTheme(
+            light: themeConfiguration(named: settings.lightThemeName) ?? .alabaster.background("FFFFFF"),
+            dark: themeConfiguration(named: settings.darkThemeName) ?? .afterglow
+        )
+    }
+
+    /// Resolves a chosen theme name to its terminal configuration, or `nil` when the
+    /// slot is left on the default or the name no longer resolves.
+    private func themeConfiguration(named name: String) -> TerminalConfiguration? {
+        guard !name.isEmpty, let definition = GhosttyThemeCatalog.theme(named: name) else { return nil }
+        return definition.toTerminalConfiguration()
     }
 
     /// Pushes the current font and theme onto every live surface without tearing
@@ -342,9 +347,7 @@ final class TermioStore: ObservableObject {
         let theme = makeTheme()
         for state in surfaces.values {
             state.controller.setTerminalConfiguration(appearance)
-            if let theme {
-                state.controller.setTheme(theme)
-            }
+            state.controller.setTheme(theme)
         }
     }
 

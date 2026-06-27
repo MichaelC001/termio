@@ -149,16 +149,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.backgroundColor = translucent ? .clear : settings.terminalBackgroundColor
     }
 
-    /// Matches the window's light/dark appearance to the selected terminal theme so
-    /// the title bar, traffic lights, and scrollbars agree with the themed chrome.
-    /// With no theme chosen the window follows the system appearance again.
+    /// Applies the user's appearance mode. `.system` leaves every surface tracking
+    /// the OS (termio keeps a separate terminal theme per appearance, and libghostty
+    /// switches between them in step); `.light`/`.dark` pin a fixed `NSAppearance`
+    /// app-wide, which the title bar, traffic lights, scrollbars, and the terminal's
+    /// effective appearance (hence its light/dark theme) all follow together.
     private func applyChromeAppearance() {
-        guard let window else { return }
-        if let chrome = settings.chromeTheme {
-            window.appearance = NSAppearance(named: chrome.isDark ? .darkAqua : .aqua)
-        } else {
-            window.appearance = nil
+        let appearance: NSAppearance?
+        switch settings.appearanceMode {
+        case .system: appearance = nil
+        case .light: appearance = NSAppearance(named: .aqua)
+        case .dark: appearance = NSAppearance(named: .darkAqua)
         }
+        NSApp.appearance = appearance
+        window?.appearance = appearance
+        settingsWindow?.appearance = appearance
     }
 
     /// Opens (or refocuses) the preferences window. Reached via the responder
