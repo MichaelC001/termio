@@ -4,3 +4,4 @@
 DerivedData/
 .DS_Store
 termio.app/
+.claude/settings.local.json
