@@ -4,21 +4,17 @@ import SwiftUI
 /// session's terminal on the right.
 struct RootView: View {
     @EnvironmentObject var store: TermioStore
+    // Bound to local state purely to keep the split view's titlebar/toolbar wiring
+    // stable across sidebar collapse cycles; the native sidebar toggle drives it.
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView()
         } detail: {
-            if let id = store.selectedSessionID,
-               let session = store.session(id),
-               let project = store.project(for: id) {
-                TerminalPane(project: project, session: session)
-                    // Rebind per session; the cached surface keeps the shell alive.
-                    .id(session.id)
-            } else {
-                ContentUnavailableView("No session selected", systemImage: "terminal")
-            }
+            // One persistent pane that keeps every opened session mounted, so
+            // switching sessions never tears down or resizes a live surface.
+            TerminalPane()
         }
-        .navigationTitle("termio")
     }
 }

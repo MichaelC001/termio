@@ -14,8 +14,15 @@ let package = Package(
             name: "termio",
             dependencies: [
                 .product(name: "GhosttyTerminal", package: "libghostty-spm"),
+                // Bundled color-scheme catalog (Ghostty's built-in themes), used by
+                // the appearance settings to offer a theme picker.
+                .product(name: "GhosttyTheme", package: "libghostty-spm"),
             ],
             path: "Sources/termio",
+            resources: [
+                // Vendor favicons rendered as agent brand marks; see BrandImageAsset.
+                .process("Resources"),
+            ],
             swiftSettings: [
                 // Relax strict concurrency for the AppKit/SwiftUI glue; the app is
                 // single-window and main-actor bound in practice.
