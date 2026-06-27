@@ -11,6 +11,7 @@ struct RootView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView()
+                .navigationSplitViewColumnWidth(min: 170, ideal: 300, max: 400)
         } detail: {
             // One persistent pane that keeps every opened session mounted, so
             // switching sessions never tears down or resizes a live surface.

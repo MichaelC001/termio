@@ -1,9 +1,13 @@
 import AppKit
 import Combine
+import SwiftUI
 
-/// The menu-bar (tray) presence, modelled on unpeel's status item: a single
-/// glyph that stays calm when nothing needs you, pulses while an agent works,
-/// and rings (amber bell) when a session is waiting on you. Clicking it drops a
+/// The menu-bar (tray) presence, modelled on Tailscale's status item: termio's
+/// own 3×3 grid brand mark stays constant as a flat monochrome glyph that sits
+/// cleanly in the menu bar and adapts to light/dark and the click-highlight.
+/// Rather than swapping to unrelated symbols, state is conveyed *over* the mark —
+/// it breathes while an agent works, and wears a small coloured status badge when
+/// a session is done (green) or waiting on you (amber). Clicking it drops a
 /// roster of every session grouped by project, each with its own status dot;
 /// picking one focuses that session and brings the window forward.
 ///
@@ -12,26 +16,25 @@ import Combine
 @MainActor
 final class MenuBarController {
     private let store: TermioStore
+    private let usage: UsageMonitor
     private let onSelect: (Session.ID) -> Void
     private let statusItem: NSStatusItem
-    // SF Symbol effects don't reliably apply to a status button's own image, so
-    // we animate an embedded image view instead (a known AppKit gotcha).
-    private let iconView = NSImageView(frame: NSRect(x: 0, y: 0, width: 20, height: 20))
-    private var cancellable: AnyCancellable?
+    private var cancellables: Set<AnyCancellable> = []
 
-    init(store: TermioStore, onSelect: @escaping (Session.ID) -> Void) {
+    init(store: TermioStore, usage: UsageMonitor, onSelect: @escaping (Session.ID) -> Void) {
         self.store = store
+        self.usage = usage
         self.onSelect = onSelect
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // Drawing the mark as the button's own image lets `variableLength` size the
+        // item to fit it (a manually-added subview was getting clipped); the layer
+        // backs the working-state pulse animation.
+        statusItem.button?.wantsLayer = true
 
-        if let button = statusItem.button {
-            iconView.imageScaling = .scaleProportionallyUpOrDown
-            button.addSubview(iconView)
-        }
-
-        cancellable = store.objectWillChange
+        store.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] in self?.refresh() }
+            .store(in: &cancellables)
         refresh()
     }
 
@@ -41,23 +44,95 @@ final class MenuBarController {
     }
 
     private func applyIcon(for status: SessionStatus) {
-        iconView.removeAllSymbolEffects()
+        guard let button = statusItem.button else { return }
+        button.layer?.removeAnimation(forKey: workingPulseKey)
         switch status {
         case .idle:
-            setIcon("terminal", tint: nil, template: true)
+            button.image = Self.gridIcon(badge: nil)
         case .working:
-            setIcon("circle.dotted", tint: nil, template: true)
-            iconView.addSymbolEffect(.pulse, options: .repeating)
+            button.image = Self.gridIcon(badge: nil)
+            addWorkingPulse(to: button)
+        case .done:
+            button.image = Self.gridIcon(badge: .done)
         case .needsAttention:
-            setIcon("bell.badge.fill", tint: .systemOrange, template: false)
+            button.image = Self.gridIcon(badge: .attention)
         }
     }
 
-    private func setIcon(_ symbol: String, tint: NSColor?, template: Bool) {
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "termio agents")
-        image?.isTemplate = template
-        iconView.image = image
-        iconView.contentTintColor = tint
+    /// A status dot worn over the brand mark, like an app badge.
+    private enum Badge {
+        case done, attention
+        var color: NSColor {
+            switch self {
+            case .done: return .systemGreen
+            case .attention: return .systemOrange
+            }
+        }
+    }
+
+    /// Draws termio's 3×3 rounded-square brand mark — the same motif as the app
+    /// icon — as a flat menu-bar glyph. With no badge it is a template image, so
+    /// the system tints it for the current appearance and inverts it on highlight,
+    /// the way Tailscale's mark behaves. A status badge forces a coloured
+    /// composite (templates are single-colour), so the grid is then painted in the
+    /// adaptive label colour and the dot is tucked into the top-right with a thin
+    /// transparent moat so it reads as separate from the mark.
+    private static func gridIcon(badge: Badge?) -> NSImage {
+        let side: CGFloat = 18
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { _ in
+            let inset: CGFloat = 1
+            let usable = side - inset * 2
+            let gapRatio: CGFloat = 0.34
+            let cell = usable / (3 + 2 * gapRatio)
+            let gap = cell * gapRatio
+            let radius = cell * 0.3
+
+            let ink = badge == nil ? NSColor.black : NSColor.labelColor
+            ink.setFill()
+            for row in 0..<3 {
+                for column in 0..<3 {
+                    let origin = NSPoint(
+                        x: inset + CGFloat(column) * (cell + gap),
+                        y: inset + CGFloat(row) * (cell + gap)
+                    )
+                    let rect = NSRect(origin: origin, size: NSSize(width: cell, height: cell))
+                    NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+                }
+            }
+
+            if let badge {
+                let diameter: CGFloat = 8
+                let dot = NSRect(
+                    x: side - diameter - inset, y: side - diameter - inset,
+                    width: diameter, height: diameter
+                )
+                let context = NSGraphicsContext.current
+                context?.compositingOperation = .clear
+                NSBezierPath(ovalIn: dot.insetBy(dx: -1.5, dy: -1.5)).fill()
+                context?.compositingOperation = .sourceOver
+                badge.color.setFill()
+                NSBezierPath(ovalIn: dot).fill()
+            }
+            return true
+        }
+        image.isTemplate = badge == nil
+        return image
+    }
+
+    private let workingPulseKey = "working"
+
+    /// Breathes the mark's opacity while an agent works. The custom grid image is
+    /// not an SF Symbol, so symbol effects don't apply — a layer animation is the
+    /// reliable way to animate a status button's image (a known AppKit gotcha).
+    private func addWorkingPulse(to button: NSStatusBarButton) {
+        let pulse = CABasicAnimation(keyPath: "opacity")
+        pulse.fromValue = 1.0
+        pulse.toValue = 0.35
+        pulse.duration = 0.9
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        button.layer?.add(pulse, forKey: workingPulseKey)
     }
 
     private func buildMenu() -> NSMenu {
@@ -69,6 +144,7 @@ final class MenuBarController {
             menu.addItem(header)
 
             for session in project.sessions {
+                let status = store.status(for: session.id)
                 let item = NSMenuItem(
                     title: store.displayTitle(for: session),
                     action: #selector(didPickSession(_:)),
@@ -76,7 +152,11 @@ final class MenuBarController {
                 )
                 item.target = self
                 item.representedObject = session.id.uuidString
-                item.image = dot(for: store.status(for: session.id))
+                // The row leads with the agent's real brand mark so each session is
+                // recognisable at a glance; a busy/done/blocked session also carries
+                // a small trailing colour dot, while idle rows stay clean.
+                item.image = agentImage(for: session.agent)
+                item.attributedTitle = rowTitle(store.displayTitle(for: session), status: status)
                 item.indentationLevel = 1
                 menu.addItem(item)
             }
@@ -97,19 +177,51 @@ final class MenuBarController {
         return menu
     }
 
-    /// A coloured dot image for a roster row, matching the sidebar's `StatusDot`.
-    private func dot(for status: SessionStatus) -> NSImage? {
-        let color: NSColor
-        switch status {
-        case .idle: color = .tertiaryLabelColor
-        case .working: color = .systemBlue
-        case .needsAttention: color = .systemOrange
+    /// Renders an agent's brand mark for a roster row by reusing the sidebar's
+    /// `AgentIconView`, so the menu shows the exact same glyphs. Drawn under the
+    /// menu's current appearance so the monochrome marks (Codex, terminal, Pi)
+    /// resolve to the right ink for a light or dark menu.
+    private func agentImage(for agent: AgentPreset) -> NSImage? {
+        let side: CGFloat = 15
+        let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
+        let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        let content = AgentIconView(agent: agent, size: 13)
+            .frame(width: side, height: side)
+            .environment(\.colorScheme, isDark ? .dark : .light)
+
+        var image: NSImage?
+        appearance.performAsCurrentDrawingAppearance {
+            let renderer = ImageRenderer(content: content)
+            renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+            image = renderer.nsImage
         }
-        let configuration = NSImage.SymbolConfiguration(paletteColors: [color])
-        let image = NSImage(systemSymbolName: "circle.fill", accessibilityDescription: nil)?
-            .withSymbolConfiguration(configuration)
-        image?.isTemplate = false
+        image?.size = NSSize(width: side, height: side)
         return image
+    }
+
+    /// The row title with a trailing status dot for any session that is busy, done,
+    /// or blocked — idle sessions get a plain title so the roster stays calm.
+    private func rowTitle(_ title: String, status: SessionStatus) -> NSAttributedString {
+        let result = NSMutableAttributedString(
+            string: title,
+            attributes: [.font: NSFont.menuFont(ofSize: 0)]
+        )
+        guard let color = statusColor(for: status) else { return result }
+        result.append(NSAttributedString(
+            string: "  ●",
+            attributes: [.foregroundColor: color, .font: NSFont.systemFont(ofSize: 8)]
+        ))
+        return result
+    }
+
+    /// The accent colour for a non-idle status, or `nil` for idle (no dot).
+    private func statusColor(for status: SessionStatus) -> NSColor? {
+        switch status {
+        case .idle: return nil
+        case .working: return .systemBlue
+        case .done: return .systemGreen
+        case .needsAttention: return .systemOrange
+        }
     }
 
     @objc private func didPickSession(_ sender: NSMenuItem) {

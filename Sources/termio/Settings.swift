@@ -49,7 +49,10 @@ final class AppSettings: ObservableObject {
         static let interfaceFontSize = "interface.fontSize"
         static let interfaceRowPadding = "interface.rowPadding"
         static let agentCommands = "agents.commandOverrides"
+        static let bypassPermissionAgents = "agents.bypassPermissions"
         static let disabledAgents = "agents.disabled"
+        static let agentHooksEnabled = "agents.hooksEnabled"
+        static let sessionControlEnabled = "agents.sessionControlEnabled"
         static let worktreeEnabled = "worktree.enabled"
         static let worktreeBaseDirectory = "worktree.baseDirectory"
         static let worktreeBranchPrefix = "worktree.branchPrefix"
@@ -149,10 +152,38 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(agentCommandOverrides, forKey: Key.agentCommands) }
     }
 
+    /// Agents whose permission/approval prompts should be bypassed, by `rawValue`.
+    /// The per-agent switch appends `AgentPreset.permissionBypassFlag` to the
+    /// resolved command (see `command(for:)`). Opt-in and stored as the on-set so
+    /// the default (nothing stored) means every agent keeps its prompts.
+    @Published var bypassPermissionAgents: Set<String> {
+        didSet { defaults.set(Array(bypassPermissionAgents), forKey: Key.bypassPermissionAgents) }
+    }
+
     /// Agent presets hidden from the sidebar quick-add row, by `rawValue`. Stored
     /// as the disabled set so the default (nothing stored) means "all enabled".
     @Published var disabledAgents: Set<String> {
         didSet { defaults.set(Array(disabledAgents), forKey: Key.disabledAgents) }
+    }
+
+    /// When on, termio installs Claude Code hooks (into `~/.claude/settings.json`)
+    /// that report each turn's lifecycle, so a running agent reads as `.working`
+    /// and a tool-in-use can be named — precision the zero-config bell/OSC signals
+    /// can't give. Opt-in, since it edits a file termio does not own; turning it
+    /// off removes termio's entries again. The `TermioStore` watches this and
+    /// installs/uninstalls to match.
+    @Published var agentHooksEnabled: Bool {
+        didSet { defaults.set(agentHooksEnabled, forKey: Key.agentHooksEnabled) }
+    }
+
+    /// When on, termio runs a local control socket the `termio sessions` CLI talks
+    /// to, letting one agent see and drive its sibling sessions in the same project
+    /// (list / send a prompt / answer a menu / start / stop). Opt-in, since it lets
+    /// an agent act on other sessions and writes a small awareness note into the
+    /// user-level agent instruction files; turning it off removes that note. The
+    /// `TermioStore` watches this and installs/uninstalls to match.
+    @Published var sessionControlEnabled: Bool {
+        didSet { defaults.set(sessionControlEnabled, forKey: Key.sessionControlEnabled) }
     }
 
     // MARK: Worktree
@@ -193,10 +224,12 @@ final class AppSettings: ObservableObject {
             Key.copyOnSelect: false,
             Key.interfaceFontFamily: "",
             Key.interfaceFontSize: 13.0,
-            Key.interfaceRowPadding: 3.0,
+            Key.interfaceRowPadding: 2.0,
             Key.worktreeEnabled: false,
             Key.worktreeBaseDirectory: "../.termio-worktrees",
             Key.worktreeBranchPrefix: "termio/",
+            Key.agentHooksEnabled: false,
+            Key.sessionControlEnabled: false,
         ])
 
         fontFamily = defaults.string(forKey: Key.fontFamily) ?? ""
@@ -214,18 +247,39 @@ final class AppSettings: ObservableObject {
         interfaceFontSize = defaults.double(forKey: Key.interfaceFontSize)
         interfaceRowPadding = defaults.double(forKey: Key.interfaceRowPadding)
         agentCommandOverrides = defaults.dictionary(forKey: Key.agentCommands) as? [String: String] ?? [:]
+        bypassPermissionAgents = Set(defaults.stringArray(forKey: Key.bypassPermissionAgents) ?? [])
         disabledAgents = Set(defaults.stringArray(forKey: Key.disabledAgents) ?? [])
+        agentHooksEnabled = defaults.bool(forKey: Key.agentHooksEnabled)
+        sessionControlEnabled = defaults.bool(forKey: Key.sessionControlEnabled)
         worktreeEnabled = defaults.bool(forKey: Key.worktreeEnabled)
         worktreeBaseDirectory = defaults.string(forKey: Key.worktreeBaseDirectory) ?? "../.termio-worktrees"
         worktreeBranchPrefix = defaults.string(forKey: Key.worktreeBranchPrefix) ?? "termio/"
     }
 
     /// Effective command for an agent: the user's override if it's non-empty,
-    /// otherwise the preset's built-in default (`nil` for a plain login shell).
+    /// otherwise the preset's built-in default (`nil` for a plain login shell),
+    /// with the permission-bypass flag appended when that switch is on. The flag
+    /// is only added if it isn't already present, so a user who typed it into the
+    /// override by hand doesn't get it twice.
     func command(for agent: AgentPreset) -> String? {
         let override = agentCommandOverrides[agent.rawValue]?.trimmingCharacters(in: .whitespaces)
-        if let override, !override.isEmpty { return override }
-        return agent.command
+        let base = (override?.isEmpty == false ? override : agent.command)
+        guard let base else { return nil }
+        guard bypassesPermissions(agent), let flag = agent.permissionBypassFlag,
+              !base.contains(flag) else { return base }
+        return "\(base) \(flag)"
+    }
+
+    func bypassesPermissions(_ agent: AgentPreset) -> Bool {
+        bypassPermissionAgents.contains(agent.rawValue)
+    }
+
+    func setBypassPermissions(_ agent: AgentPreset, enabled: Bool) {
+        if enabled {
+            bypassPermissionAgents.insert(agent.rawValue)
+        } else {
+            bypassPermissionAgents.remove(agent.rawValue)
+        }
     }
 
     func isAgentEnabled(_ agent: AgentPreset) -> Bool {

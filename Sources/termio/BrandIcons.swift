@@ -19,9 +19,10 @@ struct AgentIconView: View {
                 .font(.system(size: size, weight: weight))
                 .foregroundStyle(.secondary)
         case .hugeIcon(let icon):
-            // Decorative chrome like the terminal symbol it replaces, so it keeps
-            // the same calm `.secondary` grey rather than a vendor color.
-            HugeIconView(icon: icon, size: size, color: .secondary)
+            // A thin stroke already reads lighter than the filled brand tiles, so
+            // paint it at full label strength (`.primary`) — anything less looks
+            // washed out next to the row text and the opaque vendor marks.
+            HugeIconView(icon: icon, size: size, color: .primary)
         case .brand(let logo):
             // A brand mark fills its whole box, where an SF Symbol's glyph sits
             // inside cap height with breathing room; shrinking the box a touch
@@ -79,6 +80,20 @@ extension BrandLogo {
         switch self {
         case .claude: return Color(red: 0.851, green: 0.467, blue: 0.341)   // #D97757
         case .codex: return .monochromeInk
+        }
+    }
+}
+
+extension AgentPreset {
+    /// The agent's representative color, used to tint the "working" spinner so a
+    /// busy session pulses in its own brand color rather than a neutral grey.
+    /// Marks without a single brand color (and the plain terminal) fall back to
+    /// adaptive ink — near-black on light, near-white on dark.
+    var tintColor: Color {
+        switch self {
+        case .claudeCode: return BrandLogo.claude.tint
+        case .codex: return BrandLogo.codex.tint
+        case .terminal, .opencode, .pi: return .monochromeInk
         }
     }
 }

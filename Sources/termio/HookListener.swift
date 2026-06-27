@@ -1,0 +1,469 @@
+import Darwin
+import Foundation
+
+/// A normalized status report sent by an agent's hook into termio's local socket.
+/// The agent-specific knowledge ("this lifecycle event means the agent is now
+/// working") is baked into the hook command installed per agent, so every agent
+/// speaks the same tiny vocabulary and termio needs no per-agent parsing:
+///
+/// - `termioSession` — the `TERMIO_SESSION` env value termio stamped into the PTY
+///   (see `TermioStore.surface`), echoed back so the event maps to the exact
+///   session even when several share one project directory.
+/// - `state` — one of `working` / `attention` / `done` / `idle`.
+/// - `cwd` — the agent's working directory, a correlation fallback for any agent
+///   whose environment didn't carry `TERMIO_SESSION` through to the hook.
+struct StatusReport: Decodable {
+    let termioSession: String?
+    let state: String
+    let tool: String?
+    let cwd: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case termioSession = "termio_session"
+        case state
+        case tool
+        case cwd
+    }
+}
+
+/// A local Unix-domain socket that agent hooks report into. This is what gives
+/// termio per-turn activity ("working", the rotating spinner): the zero-config
+/// bell/OSC signals fire on command *finish*, never *start*, so "is the agent
+/// thinking right now" can't be inferred from them alone. Each agent's hook
+/// command (installed by `AgentStatusHooks`) pipes a `StatusReport` straight here.
+///
+/// This type owns only the transport: it decodes one `StatusReport` per connection
+/// and hands it to `onReport` on the main actor. Correlating a report to a session
+/// and the resulting state transition live in `TermioStore`.
+final class HookListener {
+    /// The socket file, under termio's Application Support directory — the same
+    /// place the session tree is saved.
+    static var socketURL: URL {
+        let base = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            .map { $0.appendingPathComponent("termio", isDirectory: true) }
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".termio", isDirectory: true)
+        return base.appendingPathComponent("agent-status.sock")
+    }
+
+    private let onReport: @MainActor (StatusReport) -> Void
+    private let queue = DispatchQueue(label: "com.termio.hook-listener")
+    private var source: DispatchSourceRead?
+    private var listenDescriptor: Int32 = -1
+
+    init(onReport: @escaping @MainActor (StatusReport) -> Void) {
+        self.onReport = onReport
+    }
+
+    /// Binds the socket and begins accepting connections. All socket work happens
+    /// on a private serial queue; failures are logged and degrade to "no hook
+    /// signal" rather than trapping, per the project's no-crash rule.
+    func start() {
+        queue.async { [weak self] in self?.bindAndListen() }
+    }
+
+    func stop() {
+        queue.async { [weak self] in
+            self?.source?.cancel()
+            self?.source = nil
+        }
+    }
+
+    private func bindAndListen() {
+        let url = Self.socketURL
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let path = url.path
+        // A stale socket file from a previous run would make bind() fail with
+        // EADDRINUSE, so clear it first. (Errors here are fine — it may not exist.)
+        unlink(path)
+
+        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { Self.log("socket() failed: \(errno)"); return }
+
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let capacity = MemoryLayout.size(ofValue: address.sun_path)
+        let bytes = Array(path.utf8)
+        guard bytes.count < capacity else {
+            Self.log("socket path too long (\(bytes.count) ≥ \(capacity)): \(path)")
+            close(descriptor)
+            return
+        }
+        withUnsafeMutablePointer(to: &address.sun_path) {
+            $0.withMemoryRebound(to: UInt8.self, capacity: capacity) { destination in
+                for (index, byte) in bytes.enumerated() { destination[index] = byte }
+                destination[bytes.count] = 0
+            }
+        }
+        let size = socklen_t(MemoryLayout<sockaddr_un>.size)
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(descriptor, $0, size) }
+        }
+        guard bound == 0 else { Self.log("bind() failed: \(errno)"); close(descriptor); return }
+        guard listen(descriptor, 16) == 0 else {
+            Self.log("listen() failed: \(errno)"); close(descriptor); return
+        }
+        // Non-blocking listen socket so the accept loop drains every pending
+        // connection per readable event and then stops cleanly on EAGAIN.
+        _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL, 0) | O_NONBLOCK)
+
+        let source = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
+        source.setEventHandler { [weak self] in self?.acceptPending() }
+        source.setCancelHandler { close(descriptor) }
+        listenDescriptor = descriptor
+        self.source = source
+        source.resume()
+    }
+
+    private func acceptPending() {
+        while true {
+            let client = accept(listenDescriptor, nil, nil)
+            if client < 0 { break }
+            handle(client)
+        }
+    }
+
+    private func handle(_ descriptor: Int32) {
+        defer { close(descriptor) }
+        // A receive timeout is the backstop for a client that connects and then
+        // neither sends a full payload nor closes — it can't wedge the queue.
+        var timeout = timeval(tv_sec: 3, tv_usec: 0)
+        setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+                   socklen_t(MemoryLayout<timeval>.size))
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        // Decode after each chunk so we react the instant a complete JSON object
+        // has arrived, regardless of whether the sender (`nc`) keeps the
+        // connection open afterwards. The cap guards against a runaway stream.
+        while data.count < 64 * 1024 {
+            let count = read(descriptor, &buffer, buffer.count)
+            guard count > 0 else { break }
+            data.append(contentsOf: buffer[0..<count])
+            if let report = Self.decode(data) { Self.trace(data); dispatch(report); return }
+        }
+        Self.trace(data)
+        if let report = Self.decode(data) { dispatch(report) }
+    }
+
+    /// Temporary diagnostic: append every raw payload received on the socket to a
+    /// debug file, so we can see whether an agent (notably Codex's interactive TUI)
+    /// fires its hooks at all and whether `termio_session` survives into the hook's
+    /// environment. Enabled only when `TERMIO_HOOK_TRACE` is set, so it costs nothing
+    /// in normal runs. Remove once the Codex-TUI question is settled.
+    private static func trace(_ data: Data) {
+        guard ProcessInfo.processInfo.environment["TERMIO_HOOK_TRACE"] != nil else { return }
+        let text = String(data: data, encoding: .utf8) ?? "<\(data.count) non-utf8 bytes>"
+        let line = "[\(Date())] decoded=\(decode(data) != nil) raw=\(text)\n"
+        let url = URL(fileURLWithPath: "/tmp/termio-hooks.log")
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? Data(line.utf8).write(to: url)
+        }
+    }
+
+    private static func decode(_ data: Data) -> StatusReport? {
+        try? JSONDecoder().decode(StatusReport.self, from: data)
+    }
+
+    private func dispatch(_ report: StatusReport) {
+        let handler = onReport
+        Task { @MainActor in handler(report) }
+    }
+
+    private static func log(_ message: String) {
+        FileHandle.standardError.write(Data("termio: hook listener \(message)\n".utf8))
+    }
+}
+
+/// Installs (and removes) the per-agent integrations that report a session's
+/// activity into `HookListener`. Each agent has a different lifecycle mechanism —
+/// Claude Code and Codex run shell hooks, OpenCode and Pi load a small plugin — but
+/// they all speak one wire format: a normalized `{termio_session, state}` object
+/// piped into the socket, with the state ("working"/"attention"/"done") fixed per
+/// event. The session id rides in via the `TERMIO_SESSION` the PTY carries, so
+/// correlation is exact regardless of agent or shared directory.
+///
+/// Conservative by construction: each installer preserves the user's existing
+/// config, only ever adds/removes entries it recognizes as its own (their command
+/// contains the socket filename), and refuses to overwrite a file it can't parse.
+enum AgentStatusHooks {
+    /// The substring that identifies an entry as termio's, used to find and strip
+    /// our own without disturbing the user's.
+    static let marker = "agent-status.sock"
+
+    /// Re-applies every agent's integration (or removes them all) to match `enabled`.
+    static func sync(enabled: Bool) {
+        for installer in installers {
+            if enabled { installer.install() } else { installer.uninstall() }
+        }
+    }
+
+    private static var installers: [AgentStatusInstaller] {
+        [
+            JSONHookFile.claude,
+            JSONHookFile.codex,
+            PluginFile.openCode,
+            PluginFile.pi,
+        ]
+    }
+
+    /// The shell command a hook runs: emit the normalized report (stamped with the
+    /// session id the PTY carries and the agent's `$PWD` as a fallback) and pipe it
+    /// into the socket. `nc` and `printf` both ship with macOS. Used by the
+    /// shell-hook agents; the plugin agents emit the same JSON from JavaScript.
+    static func reportCommand(state: String) -> String {
+        let json = #"{"termio_session":"%s","state":"\#(state)","cwd":"%s"}"#
+        return "printf '\(json)' \"$TERMIO_SESSION\" \"$PWD\" | nc -U \"\(HookListener.socketURL.path)\""
+    }
+
+    static func log(_ message: String) {
+        FileHandle.standardError.write(Data("termio: agent hooks \(message)\n".utf8))
+    }
+}
+
+private protocol AgentStatusInstaller {
+    func install()
+    func uninstall()
+}
+
+/// Installs hooks for agents whose config is a JSON file with the Claude-Code
+/// shape — `{ "hooks": { "<Event>": [ { "matcher"?, "hooks": [ {type,command} ] } ] } }`.
+/// Claude Code (`~/.claude/settings.json`) and Codex (`~/.codex/hooks.json`) both
+/// use exactly this structure, differing only in path and event names.
+private struct JSONHookFile: AgentStatusInstaller {
+    let url: URL
+    /// `(event name, normalized state, matcher)`. `matcher` is `"*"` for Claude's
+    /// tool events (the shape it expects) and `nil` everywhere else — Codex treats
+    /// a missing matcher as "match every occurrence".
+    let events: [(name: String, state: String, matcher: String?)]
+    let label: String
+
+    static var claude: JSONHookFile {
+        JSONHookFile(
+            url: home(".claude", "settings.json"),
+            events: [
+                ("UserPromptSubmit", "working", nil),
+                ("PreToolUse", "working", "*"),
+                ("PostToolUse", "working", "*"),
+                // Only an explicit permission prompt is "attention"; Claude's
+                // generic `Notification` also fires for idle waiting, which would
+                // wrongly turn a just-finished (`done`) turn orange. The zero-config
+                // bell/OSC layer still catches any notification the agent raises, so
+                // dropping it here loses no real "needs you" signal.
+                ("PermissionRequest", "attention", "*"),
+                ("Stop", "done", nil),
+                ("SubagentStop", "done", nil),
+            ],
+            label: "claude")
+    }
+
+    static var codex: JSONHookFile {
+        JSONHookFile(
+            url: home(".codex", "hooks.json"),
+            events: [
+                ("UserPromptSubmit", "working", nil),
+                ("PreToolUse", "working", nil),
+                ("PostToolUse", "working", nil),
+                ("PermissionRequest", "attention", nil),
+                ("Stop", "done", nil),
+                ("SubagentStop", "done", nil),
+            ],
+            label: "codex")
+    }
+
+    private static func home(_ components: String...) -> URL {
+        components.reduce(FileManager.default.homeDirectoryForCurrentUser) {
+            $0.appendingPathComponent($1)
+        }
+    }
+
+    private enum FileState {
+        case missing
+        case unreadable
+        case ok([String: Any])
+    }
+
+    func install() {
+        let root: [String: Any]
+        switch readState() {
+        case .ok(let dictionary): root = dictionary
+        case .missing: root = [:]
+        case .unreadable:
+            AgentStatusHooks.log("refusing to modify unparseable \(url.path)")
+            return
+        }
+
+        var settings = root
+        var hooks = settings["hooks"] as? [String: Any] ?? [:]
+        // Strip every prior termio entry first — across all events, not just the
+        // ones we're about to re-add — so an event we no longer manage (e.g. a
+        // mapping we dropped between versions) doesn't leave an orphan behind.
+        stripTermioEntries(from: &hooks)
+        for event in events {
+            var groups = hooks[event.name] as? [[String: Any]] ?? []
+            let command = AgentStatusHooks.reportCommand(state: event.state)
+            var group: [String: Any] = ["hooks": [["type": "command", "command": command]]]
+            if let matcher = event.matcher { group["matcher"] = matcher }
+            groups.append(group)
+            hooks[event.name] = groups
+        }
+        settings["hooks"] = hooks
+        write(settings)
+    }
+
+    func uninstall() {
+        // Nothing to remove if the file is absent; never overwrite one we can't read.
+        guard case .ok(let root) = readState() else { return }
+        var settings = root
+        guard var hooks = settings["hooks"] as? [String: Any] else { return }
+        stripTermioEntries(from: &hooks)
+        if hooks.isEmpty {
+            settings.removeValue(forKey: "hooks")
+        } else {
+            settings["hooks"] = hooks
+        }
+        write(settings)
+    }
+
+    /// Removes termio's own groups from every hook event, dropping any event left
+    /// with no groups. Identifying our entries by the socket marker means user
+    /// hooks are never touched.
+    private func stripTermioEntries(from hooks: inout [String: Any]) {
+        for key in Array(hooks.keys) {
+            guard var groups = hooks[key] as? [[String: Any]] else { continue }
+            groups.removeAll { isTermioGroup($0) }
+            if groups.isEmpty {
+                hooks.removeValue(forKey: key)
+            } else {
+                hooks[key] = groups
+            }
+        }
+    }
+
+    private func isTermioGroup(_ group: [String: Any]) -> Bool {
+        guard let hooks = group["hooks"] as? [[String: Any]] else { return false }
+        return hooks.contains { ($0["command"] as? String)?.contains(AgentStatusHooks.marker) == true }
+    }
+
+    private func readState() -> FileState {
+        guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
+        guard let data = try? Data(contentsOf: url) else { return .unreadable }
+        if data.isEmpty { return .missing }
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              let dictionary = object as? [String: Any] else { return .unreadable }
+        return .ok(dictionary)
+    }
+
+    private func write(_ settings: [String: Any]) {
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let data = try JSONSerialization.data(
+                withJSONObject: settings,
+                options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+            try data.write(to: url, options: .atomic)
+        } catch {
+            AgentStatusHooks.log("could not write \(url.path): \(error)")
+        }
+    }
+}
+
+/// Installs agents whose integration is a single dropped-in plugin/extension file
+/// (no host config to merge): OpenCode loads a plugin from `~/.config/opencode/plugin/`,
+/// Pi an extension from `~/.pi/agent/extensions/`. Both run in-process in the PTY,
+/// so they read `TERMIO_SESSION` from the environment and emit the same normalized
+/// report into the socket — OpenCode via its session lifecycle events, Pi via
+/// `agent_start`/`agent_end`. Uninstall removes the file only if it's ours.
+private struct PluginFile: AgentStatusInstaller {
+    let url: URL
+    let contents: String
+
+    static var openCode: PluginFile {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/opencode/plugin/termio-status.js")
+        return PluginFile(url: url, contents: openCodeSource)
+    }
+
+    static var pi: PluginFile {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".pi/agent/extensions/termio-status.js")
+        return PluginFile(url: url, contents: piSource)
+    }
+
+    func install() {
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try contents.data(using: .utf8)?.write(to: url, options: .atomic)
+        } catch {
+            AgentStatusHooks.log("could not write \(url.path): \(error)")
+        }
+    }
+
+    func uninstall() {
+        // Only remove a file we recognize as ours, so a user file that happens to
+        // share the name is never deleted.
+        guard let existing = try? String(contentsOf: url, encoding: .utf8),
+              existing.contains(AgentStatusHooks.marker) else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    private static var socketPath: String { HookListener.socketURL.path }
+
+    /// OpenCode plugin: a session is `busy` while working and emits `session.idle`
+    /// when the turn ends; `permission.updated` means it's waiting on the user. Each
+    /// maps to a normalized report shelled out via Bun's `$` to the socket. The
+    /// session id comes from `TERMIO_SESSION`, which the PTY carries into the
+    /// in-process plugin.
+    private static var openCodeSource: String {
+        """
+        // termio agent status — reports OpenCode session lifecycle to termio.
+        // Socket marker: \(AgentStatusHooks.marker)
+        export const TermioStatus = async ({ $ }) => {
+          const socket = \(jsString(socketPath));
+          const report = (state) => {
+            const id = process.env.TERMIO_SESSION || "";
+            const payload = JSON.stringify({ termio_session: id, state });
+            return $`printf %s ${payload} | nc -U ${socket}`.quiet().nothrow();
+          };
+          return {
+            event: async ({ event }) => {
+              if (event.type === "session.status" && event.properties?.status?.type === "busy") {
+                return report("working");
+              }
+              if (event.type === "session.idle") return report("done");
+              if (event.type === "permission.updated") return report("attention");
+            },
+          };
+        };
+        """
+    }
+
+    /// Pi extension: `agent_start` fires when a turn begins, `agent_end` when it
+    /// returns to the user. Pi has no shell-hook config, so the extension itself
+    /// shells out via `pi.exec`; the session id rides in on `TERMIO_SESSION`.
+    private static var piSource: String {
+        let working = AgentStatusHooks.reportCommand(state: "working")
+        let done = AgentStatusHooks.reportCommand(state: "done")
+        return """
+        // termio agent status — reports Pi turn lifecycle to termio.
+        // Socket marker: \(AgentStatusHooks.marker)
+        export default (pi) => {
+          pi.on("agent_start", () => pi.exec("sh", ["-c", \(jsString(working))]));
+          pi.on("agent_end", () => pi.exec("sh", ["-c", \(jsString(done))]));
+        };
+        """
+    }
+
+    /// JSON-encodes a string for safe embedding as a JavaScript string literal.
+    private static func jsString(_ value: String) -> String {
+        let data = (try? JSONSerialization.data(withJSONObject: [value])) ?? Data("[\"\"]".utf8)
+        let array = String(data: data, encoding: .utf8) ?? "[\"\"]"
+        return String(array.dropFirst().dropLast())
+    }
+}

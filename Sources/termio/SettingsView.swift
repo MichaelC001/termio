@@ -169,17 +169,13 @@ private struct IconBadge: View {
 /// uppercased gray caption so each card reads as a labeled group (Dia style).
 private struct SectionHeaderLabel: View {
     let title: String
-    let symbol: String
 
     var body: some View {
-        HStack(spacing: 8) {
-            IconBadge(symbol: symbol)
-            Text(title)
-                .font(.headline)
-                .foregroundStyle(.primary)
-        }
-        .textCase(nil)
-        .padding(.bottom, 2)
+        Text(title)
+            .font(.headline)
+            .foregroundStyle(.primary)
+            .textCase(nil)
+            .padding(.bottom, 2)
     }
 }
 
@@ -207,32 +203,110 @@ enum InstalledFonts {
     }
 }
 
-/// A font-family editor: a free-text field paired with a menu of installed
-/// families. The text field stays the source of truth so any name libghostty
-/// accepts (including ones not enumerated here) can still be typed; the menu is
-/// purely for discovery and fills the field on selection.
+/// A font-family editor: a native editable combo box (a free-text field with an
+/// attached list of installed families) sitting above a live preview. The typed
+/// text stays the source of truth so any name libghostty accepts — including faces
+/// this list does not enumerate — can still be entered; the list is purely for
+/// discovery. The preview renders the typed family so a mistyped or unresolved
+/// name is visible rather than silently falling back to the default.
 private struct FontFamilyField: View {
     let title: String
     let prompt: String
     let families: [String]
+    /// Size to render the preview at, mirroring the live setting so the preview
+    /// reflects what the terminal or sidebar will actually show.
+    let previewSize: CGFloat
+    /// Whether the default (empty field) is the system *monospaced* font. Drives
+    /// which face the preview falls back to so it matches the real default.
+    let monospacedDefault: Bool
     @Binding var family: String
 
+    private static let sample = "The quick brown fox 0Oo1Il|·{}[]() => != <= ->"
+
+    /// Resolves the typed family to a concrete font for the preview. An empty
+    /// field is the valid "use the default" state, not a failure; a non-empty
+    /// name that the system cannot resolve flags `isFallback` so the caption can
+    /// tell the user it did not take.
+    private var preview: (font: NSFont, isFallback: Bool) {
+        let size = min(max(previewSize, 9), 22)
+        let fallback = monospacedDefault
+            ? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+            : NSFont.systemFont(ofSize: size)
+        let trimmed = family.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return (fallback, false) }
+        // libghostty accepts a comma-separated fallback chain; preview its head.
+        let primary = trimmed.split(separator: ",").first
+            .map { $0.trimmingCharacters(in: .whitespaces) } ?? trimmed
+        if let font = NSFont(name: primary, size: size) {
+            return (font, false)
+        }
+        return (fallback, true)
+    }
+
     var body: some View {
-        HStack(spacing: 8) {
-            TextField(title, text: $family, prompt: Text(prompt))
-            Menu {
-                if !family.isEmpty {
-                    Button("Use default") { family = "" }
-                    Divider()
-                }
-                ForEach(families, id: \.self) { name in
-                    Button(name) { family = name }
-                }
-            } label: {
-                Image(systemName: "chevron.up.chevron.down")
+        let preview = preview
+        VStack(alignment: .leading, spacing: 6) {
+            FontFamilyComboBox(families: families, placeholder: prompt, family: $family)
+            Text(Self.sample)
+                .font(Font(preview.font))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .foregroundStyle(preview.isFallback ? .tertiary : .secondary)
+            if preview.isFallback {
+                Text("“\(family)” isn’t installed — showing the system default.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
+        }
+    }
+}
+
+/// AppKit's editable combo box, bridged so the font field reads as one native
+/// control (the disclosure chevron sits inside the field, type-ahead completes
+/// against the list) while still accepting arbitrary typed names. SwiftUI has no
+/// equivalent — `Picker` is a closed list and would drop the free-text escape
+/// hatch libghostty needs.
+private struct FontFamilyComboBox: NSViewRepresentable {
+    let families: [String]
+    let placeholder: String
+    @Binding var family: String
+
+    func makeNSView(context: Context) -> NSComboBox {
+        let combo = NSComboBox()
+        combo.isEditable = true
+        combo.completes = true
+        combo.usesDataSource = false
+        combo.addItems(withObjectValues: families)
+        combo.placeholderString = placeholder
+        combo.delegate = context.coordinator
+        combo.stringValue = family
+        return combo
+    }
+
+    func updateNSView(_ combo: NSComboBox, context: Context) {
+        // Only push external changes back; rewriting mid-edit would fight the
+        // user's typing and cancel in-progress completion.
+        if combo.stringValue != family {
+            combo.stringValue = family
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, NSComboBoxDelegate {
+        private let parent: FontFamilyComboBox
+
+        init(_ parent: FontFamilyComboBox) { self.parent = parent }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let combo = notification.object as? NSComboBox else { return }
+            parent.family = combo.stringValue
+        }
+
+        func comboBoxSelectionDidChange(_ notification: Notification) {
+            guard let combo = notification.object as? NSComboBox,
+                  let value = combo.objectValueOfSelectedItem as? String else { return }
+            parent.family = value
         }
     }
 }
@@ -251,6 +325,8 @@ private struct AppearanceSettingsTab: View {
                     title: "Family",
                     prompt: "System monospace",
                     families: InstalledFonts.monospaced,
+                    previewSize: settings.fontSize,
+                    monospacedDefault: true,
                     family: $settings.fontFamily
                 )
                 Stepper(value: $settings.fontSize, in: 8...32, step: 1) {
@@ -258,7 +334,7 @@ private struct AppearanceSettingsTab: View {
                 }
                 Toggle("Thicken glyphs", isOn: $settings.fontThicken)
             } header: {
-                SectionHeaderLabel(title: "Font", symbol: "textformat")
+                SectionHeaderLabel(title: "Font")
             }
             Section {
                 Picker("Style", selection: $settings.cursorStyle) {
@@ -268,7 +344,7 @@ private struct AppearanceSettingsTab: View {
                 }
                 Toggle("Blink", isOn: $settings.cursorBlink)
             } header: {
-                SectionHeaderLabel(title: "Cursor", symbol: "cursorarrow")
+                SectionHeaderLabel(title: "Cursor")
             }
             Section {
                 Stepper(value: $settings.windowPadding, in: 0...40, step: 2) {
@@ -289,7 +365,7 @@ private struct AppearanceSettingsTab: View {
                 }
                 .disabled(settings.backgroundOpacity >= 1.0)
             } header: {
-                SectionHeaderLabel(title: "Window", symbol: "macwindow")
+                SectionHeaderLabel(title: "Window")
             } footer: {
                 Text("Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity.")
                     .font(.caption)
@@ -305,7 +381,7 @@ private struct AppearanceSettingsTab: View {
                 }
                 .labelsHidden()
             } header: {
-                SectionHeaderLabel(title: "Theme", symbol: "paintpalette")
+                SectionHeaderLabel(title: "Theme")
             }
         }
         .formStyle(.grouped)
@@ -325,13 +401,15 @@ private struct InterfaceSettingsTab: View {
                     title: "Family",
                     prompt: "System",
                     families: InstalledFonts.all,
+                    previewSize: settings.interfaceFontSize,
+                    monospacedDefault: false,
                     family: $settings.interfaceFontFamily
                 )
                 Stepper(value: $settings.interfaceFontSize, in: 9...20, step: 1) {
                     Text("Size: \(Int(settings.interfaceFontSize)) pt")
                 }
             } header: {
-                SectionHeaderLabel(title: "Sidebar font", symbol: "textformat")
+                SectionHeaderLabel(title: "Sidebar font")
             } footer: {
                 Text("Applies to the project and session list. Need not be monospaced.")
                     .font(.caption)
@@ -349,7 +427,7 @@ private struct InterfaceSettingsTab: View {
                     }
                 }
             } header: {
-                SectionHeaderLabel(title: "Density", symbol: "arrow.up.and.down")
+                SectionHeaderLabel(title: "Density")
             }
         }
         .formStyle(.grouped)
@@ -368,7 +446,7 @@ private struct TerminalSettingsTab: View {
                     Text("Scrollback: \(settings.scrollbackMegabytes) MB")
                 }
             } header: {
-                SectionHeaderLabel(title: "History", symbol: "clock.arrow.circlepath")
+                SectionHeaderLabel(title: "History")
             } footer: {
                 Text("How much output each session keeps for scrolling back. Agents are verbose, so the default is generous.")
                     .font(.caption)
@@ -377,7 +455,7 @@ private struct TerminalSettingsTab: View {
             Section {
                 Toggle("Copy on select", isOn: $settings.copyOnSelect)
             } header: {
-                SectionHeaderLabel(title: "Selection", symbol: "selection.pin.in.out")
+                SectionHeaderLabel(title: "Selection")
             } footer: {
                 Text("When on, selecting text copies it straight to the clipboard.")
                     .font(.caption)
@@ -393,6 +471,50 @@ private struct AgentSettingsTab: View {
 
     var body: some View {
         Form {
+            Section {
+                Toggle(isOn: $settings.agentHooksEnabled) {
+                    HStack(spacing: 10) {
+                        IconBadge(symbol: "dot.radiowaves.left.and.right")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Live agent status")
+                                .font(.headline)
+                            Text("Installs hooks for Claude Code, Codex, OpenCode, and Pi so termio can tell when an agent is working or waiting on you — shown as the spinning sidebar icon and the menu-bar pulse. Adds termio's own entries to each agent's config; turning this off removes them. (Codex needs a one-time /hooks trust.)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                .toggleStyle(.switch)
+                if settings.agentHooksEnabled {
+                    // For re-applying after the user (or another tool) has edited
+                    // ~/.claude/settings.json; install is idempotent.
+                    Button("Reinstall hooks") { AgentStatusHooks.sync(enabled: true) }
+                }
+            } header: {
+                SectionHeaderLabel(title: "Status")
+            }
+            Section {
+                Toggle(isOn: $settings.sessionControlEnabled) {
+                    HStack(spacing: 10) {
+                        IconBadge(symbol: "arrow.triangle.branch")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Session control")
+                                .font(.headline)
+                            Text("Lets an agent see and drive its sibling sessions in the same project with the `termio sessions` command (list, send a prompt, answer a menu, start, stop). Scoped to the current project. Adds a short awareness note to the agents' instruction files; turning this off removes it.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                .toggleStyle(.switch)
+                if settings.sessionControlEnabled {
+                    Button("Reinstall note") { SessionSkillInstaller.sync(enabled: true) }
+                }
+            } header: {
+                SectionHeaderLabel(title: "Orchestration")
+            }
             ForEach(AgentPreset.allCases) { preset in
                 Section {
                     // The Dia "Sync row": a badge + title + subtitle on the left,
@@ -427,16 +549,37 @@ private struct AgentSettingsTab: View {
                             prompt: Text(preset.command ?? "")
                         )
                     }
+
+                    // One-click bypass for the agent's permission/approval prompts,
+                    // for agents that have a stable flag for it. Appends the flag to
+                    // the command above rather than replacing it, so it composes with
+                    // a custom override.
+                    if let flag = preset.permissionBypassFlag {
+                        Toggle(isOn: Binding(
+                            get: { settings.bypassesPermissions(preset) },
+                            set: { settings.setBypassPermissions(preset, enabled: $0) }
+                        )) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("Skip permission prompts")
+                                Text("Runs with `\(flag)`. The agent won't ask before editing files or running commands.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .toggleStyle(.switch)
+                    }
                 }
             }
         }
         .formStyle(.grouped)
     }
 
-    /// Subtitle under each agent name: the command it runs, so the row is
-    /// self-describing even before the override field below it.
+    /// Subtitle under each agent name: the effective command it runs (override and
+    /// bypass flag included), so the row stays self-describing without reading the
+    /// fields below it.
     private func subtitle(for preset: AgentPreset) -> String {
-        preset.command ?? "Login shell"
+        settings.command(for: preset) ?? "Login shell"
     }
 }
 
@@ -465,7 +608,7 @@ private struct WorktreeSettingsTab: View {
                 TextField("Directory", text: $settings.worktreeBaseDirectory)
                 TextField("Branch prefix", text: $settings.worktreeBranchPrefix)
             } header: {
-                SectionHeaderLabel(title: "Location", symbol: "folder")
+                SectionHeaderLabel(title: "Location")
             }
             .disabled(!settings.worktreeEnabled)
         }

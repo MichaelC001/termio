@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow!
     private let settings = AppSettings()
     private lazy var store = TermioStore.restored(settings: settings)
+    private lazy var usageMonitor = UsageMonitor(settings: settings)
     private var menuBar: MenuBarController?
     private var settingsWindow: NSWindow?
     private var settingsObserver: AnyCancellable?
@@ -50,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let root = RootView()
             .environmentObject(store)
             .environmentObject(settings)
+            .environmentObject(usageMonitor)
 
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
@@ -90,11 +92,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.applyChromeAppearance()
             }
 
-        menuBar = MenuBarController(store: store) { [weak self] id in
+        menuBar = MenuBarController(store: store, usage: usageMonitor) { [weak self] id in
             self?.store.selectedSessionID = id
             NSApp.activate(ignoringOtherApps: true)
             self?.window.makeKeyAndOrderFront(nil)
         }
+        usageMonitor.start()
 
         if !pendingOpenURLs.isEmpty {
             let urls = pendingOpenURLs

@@ -141,31 +141,36 @@ private struct ProjectHeader: View {
         HStack(spacing: 6) {
             // Same 16-wide icon slot and spacing as SessionRow, so the folder mark
             // and the session icons below it share one vertical column (and the
-            // header label lines up with the session titles).
-            HugeIconView(icon: .folder, size: 13, color: chrome?.secondaryForeground ?? .secondary)
-                .frame(width: 16)
-            // VSCode's section headers are the quietest text on screen — small,
-            // uppercase, letter-spaced and muted — so the eye lands on the
-            // sessions, not the group labels.
+            // header label lines up with the session titles). The folder itself is
+            // the open/closed affordance — an open folder when the project's sessions
+            // are showing, a closed one when folded — so no separate chevron is
+            // needed (clicking the header still toggles it).
+            HugeIconView(
+                icon: isCollapsed ? .folder : .folderOpen,
+                size: 15,
+                color: chrome?.foreground ?? .primary
+            )
+            .frame(width: 16)
+            // A section header, but kept at the standard text color (not the muted
+            // grey VSCode uses) so the project name reads clearly; the smaller,
+            // uppercase, letter-spaced styling still sets it apart from session rows.
             Text(project.name)
                 .font(.system(size: 11, weight: .semibold))
                 .textCase(.uppercase)
                 .tracking(0.6)
-                .foregroundStyle(chrome.map { AnyShapeStyle($0.secondaryForeground) } ?? AnyShapeStyle(.secondary))
-            // Disclosure chevron, right after the name like Codex's project rows:
-            // points down when open, right when folded. The whole header toggles
-            // too, so this is the visible affordance rather than the only hit area.
-            Image(systemName: "chevron.down")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(chrome.map { AnyShapeStyle($0.foreground.opacity(0.4)) } ?? AnyShapeStyle(.tertiary))
-                .rotationEffect(.degrees(isCollapsed ? -90 : 0))
+                .foregroundStyle(chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.primary))
             Spacer(minLength: 4)
         }
-        // The quick-add buttons sit in an overlay, not the HStack above, so they
-        // reserve no width while hidden — the label keeps the whole row at rest.
+        // The hover actions sit in an overlay, not the HStack above, so they reserve
+        // no width while hidden — the label keeps the whole row at rest. One brand
+        // icon per enabled agent (a single click opens that agent, instantly
+        // recognizable — the agents are few and visually distinct, so direct icons
+        // beat a dropdown). The project's own rarer actions (Reveal in Finder, Remove
+        // Project) live in the right-click context menu below rather than an inline
+        // button, keeping the hover row to just the agent icons.
         .overlay(alignment: .trailing) {
             HStack(spacing: 3) {
-                ForEach(AgentPreset.allCases.filter(settings.isAgentEnabled)) { preset in
+                ForEach(enabledAgentPresets(settings)) { preset in
                     AgentQuickAddButton(preset: preset, chrome: chrome) {
                         store.addSession(to: project.id, agent: preset)
                     }
@@ -174,18 +179,66 @@ private struct ProjectHeader: View {
             .opacity(isHovering ? 1 : 0)
             .allowsHitTesting(isHovering)
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 3)
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .onTapGesture { toggleCollapsed() }
+        // Right-click mirrors the hover controls, so every action is reachable both
+        // ways (the menus' contents are factored out so the two never drift).
+        .contextMenu {
+            NewSessionMenuItems(project: project)
+            Divider()
+            ProjectActionMenuItems(project: project)
+        }
         .animation(.easeInOut(duration: 0.12), value: isHovering)
         .animation(.easeInOut(duration: 0.18), value: isCollapsed)
     }
 }
 
+/// The agents a project header offers as new sessions: every preset the user has
+/// left enabled, in preset order.
+@MainActor
+private func enabledAgentPresets(_ settings: AppSettings) -> [AgentPreset] {
+    AgentPreset.allCases.filter(settings.isAgentEnabled)
+}
+
+/// The "New … Session" buttons shared by the header's agent picker (the split
+/// button's chevron) and its right-click menu, so the two lists can never diverge.
+private struct NewSessionMenuItems: View {
+    @EnvironmentObject var store: TermioStore
+    @EnvironmentObject var settings: AppSettings
+    let project: Project
+
+    var body: some View {
+        ForEach(enabledAgentPresets(settings)) { preset in
+            Button("New \(preset.displayName) Session") {
+                store.addSession(to: project.id, agent: preset)
+            }
+        }
+    }
+}
+
+/// The project's own actions, shared by the header's overflow (⋯) menu and its
+/// right-click menu. "Remove Project" drops only the sidebar entry — the folder and
+/// any worktrees stay on disk (see `TermioStore.removeProject`), so it is safe to
+/// offer inline.
+private struct ProjectActionMenuItems: View {
+    @EnvironmentObject var store: TermioStore
+    let project: Project
+
+    var body: some View {
+        Button("Reveal in Finder") {
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: project.path)
+        }
+        Divider()
+        Button("Remove Project") { store.removeProject(project.id) }
+    }
+}
+
 /// One agent quick-add button in a project header. It carries its own hover state
 /// so only the button under the cursor lifts a rounded background — the same
-/// per-control feedback VSCode/Finder give their inline header actions.
+/// per-control feedback VSCode/Finder give their inline header actions. A single
+/// click immediately creates a session of that agent type.
 private struct AgentQuickAddButton: View {
     let preset: AgentPreset
     let chrome: ChromeTheme?
@@ -196,10 +249,7 @@ private struct AgentQuickAddButton: View {
         Button(action: action) {
             AgentIconView(agent: preset, size: 15)
                 .frame(width: 22, height: 20)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill((chrome?.foreground ?? .primary).opacity(isHovering ? 0.12 : 0))
-                )
+                .background(hoverBackground(chrome, isHovering: isHovering))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
@@ -209,12 +259,17 @@ private struct AgentQuickAddButton: View {
     }
 }
 
-/// An inline trailing action on a session row (split, close). Like
-/// `AgentQuickAddButton`, it owns its hover state so only the control under the
-/// cursor lifts a rounded background — the per-action highlight VSCode gives the
-/// split/kill buttons on a terminal tab.
+/// The rounded hover lift shared by the header's inline action controls: a faint
+/// fill of the theme foreground (or the system primary) under the cursor only.
+private func hoverBackground(_ chrome: ChromeTheme?, isHovering: Bool) -> some View {
+    RoundedRectangle(cornerRadius: 5, style: .continuous)
+        .fill((chrome?.foreground ?? .primary).opacity(isHovering ? 0.12 : 0))
+}
+
+/// The inline close action on a session row. Like `AgentQuickAddButton`, it owns
+/// its hover state so the control lifts a rounded background under the cursor — the
+/// per-action highlight VSCode gives the kill button on a terminal tab.
 private struct SessionRowActionButton: View {
-    let systemImage: String
     let help: String
     let chrome: ChromeTheme?
     var isEnabled: Bool = true
@@ -223,13 +278,15 @@ private struct SessionRowActionButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .imageScale(.small)
-                .frame(width: 20, height: 20)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill((chrome?.foreground ?? .primary).opacity(isHovering ? 0.12 : 0))
-                )
+            // A filled circular glyph reads unambiguously as "remove this session"
+            // (rather than the faint hairline x that disappeared into the row). At
+            // rest it borrows the row's foreground; on hover it turns red so the
+            // destructive action announces itself before the click.
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 17, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(isHovering ? AnyShapeStyle(.red) : (chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.secondary)))
+                .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
@@ -249,67 +306,62 @@ private struct SessionRow: View {
     let chrome: ChromeTheme?
     @State private var isHovering = false
 
-    // Both panes of an active split read as selected, so a split's two sessions are
-    // both highlighted in the sidebar rather than just the focused one.
-    private var isSelected: Bool { store.isShown(session.id) }
+    private var isSelected: Bool { store.selectedSessionID == session.id }
 
     var body: some View {
         HStack(spacing: 6) {
-            // No ambient tint here: a brand mark must keep its own vendor color
-            // (the same full-strength logo the settings page shows), and the plain
-            // terminal symbol carries its own muted grey from AgentIconView.
-            AgentIconView(agent: session.agent, size: 13)
-                .frame(width: 16)
+            // While the agent is working, the leading mark becomes a small rotating
+            // nine-dot grid — the row's own "thinking" spinner — and reverts to the
+            // brand mark when the turn ends. No ambient tint on the brand mark: it
+            // must keep its own vendor color (the same full-strength logo the
+            // settings page shows), and the plain terminal symbol carries its own
+            // muted grey from AgentIconView.
+            Group {
+                if store.status(for: session.id) == .working {
+                    WorkingIndicator(tint: session.agent.tintColor)
+                } else {
+                    AgentIconView(agent: session.agent, size: 13)
+                }
+            }
+            .frame(width: 16)
+            .help(store.statusDescription(for: session.id))
             Text(store.displayTitle(for: session))
                 .font(settings.interfaceFont)
                 .foregroundStyle(chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.primary))
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 4)
-            // At rest only the small status dot trails the title, so the title keeps
-            // nearly the whole row width. The hover actions live in the overlay below
-            // and reserve no flow width of their own.
+            // At rest a status dot trails the title only when the session needs the
+            // user (working is shown by the leading spinner instead), so the title
+            // keeps nearly the whole row width. The hover actions live in the overlay
+            // below and reserve no flow width of their own.
             StatusDot(status: store.status(for: session.id))
                 .frame(width: 16)
                 .opacity(isHovering ? 0 : 1)
+                .help(store.statusDescription(for: session.id))
         }
-        // VSCode-style trailing actions: hovering paints a split + close pair over
-        // the trailing edge (where the status dot was), reserving no resting width.
+        // VSCode-style trailing action: hovering paints a close button over the
+        // trailing edge (where the status dot was), reserving no resting width.
         .overlay(alignment: .trailing) {
-            HStack(spacing: 2) {
-                // Only a plain terminal can be opened in a split — agents stay
-                // dedicated full views — so agent rows omit the split action.
-                if session.agent == .terminal {
-                    SessionRowActionButton(
-                        systemImage: "rectangle.split.2x1",
-                        help: "Open in split",
-                        chrome: chrome,
-                        isEnabled: store.projects.flatMap(\.sessions).count >= 2
-                    ) {
-                        store.openInSplit(session.id)
-                    }
-                }
-                SessionRowActionButton(
-                    systemImage: "xmark",
-                    help: "Close session",
-                    chrome: chrome
-                ) {
-                    store.closeSession(session.id)
-                }
+            SessionRowActionButton(
+                help: "Close session",
+                chrome: chrome
+            ) {
+                store.closeSession(session.id)
             }
             .opacity(isHovering ? 1 : 0)
             .allowsHitTesting(isHovering)
         }
         .padding(.vertical, settings.interfaceRowPadding)
+        // Indent the session content under its project header so the rows read as
+        // a child group of the project rather than a flat sibling list. The
+        // selection highlight (listRowBackground) stays full-width — the standard
+        // macOS source-list look where children inset but the lift spans the row.
+        .padding(.leading, 16)
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .onTapGesture { store.selectedSessionID = session.id }
         .contextMenu {
-            if session.agent == .terminal {
-                Button("Open in Split") { store.openInSplit(session.id) }
-                    .disabled(store.projects.flatMap(\.sessions).count < 2)
-                Divider()
-            }
             Button("Close Session") { store.closeSession(session.id) }
         }
         .listRowBackground(
@@ -386,14 +438,65 @@ private struct StatusDot: View {
         Circle()
             .fill(color)
             .frame(width: 7, height: 7)
-            .opacity(status == .idle ? 0 : 1)
+            // Working is shown by the leading spinner and idle shows nothing, so
+            // only the two resting "your turn" states trail the title as a dot:
+            // green when the agent just finished, orange when it's blocked on you.
+            .opacity(status == .done || status == .needsAttention ? 1 : 0)
     }
 
     private var color: Color {
-        switch status {
-        case .idle: return .clear
-        case .working: return .blue
-        case .needsAttention: return .orange
+        status == .needsAttention ? .orange : .green
+    }
+}
+
+/// The "agent is working" mark: a 3×3 grid of dots with a bright comet that orbits
+/// the eight perimeter cells, so the small nine-square grid reads as rotating. Sits
+/// in place of the session's brand icon while a turn is in flight (see `SessionRow`).
+private struct WorkingIndicator: View {
+    var tint: Color = .secondary
+
+    /// The eight perimeter cells of the 3×3 grid in clockwise order, as
+    /// `(column, row)` with the center at `(1, 1)`. The comet travels this ring.
+    private static let ring: [(Int, Int)] = [
+        (0, 0), (1, 0), (2, 0), (2, 1), (2, 2), (1, 2), (0, 2), (0, 1),
+    ]
+    private let dotSize: CGFloat = 2.3
+    private let spacing: CGFloat = 3.6
+    private let period: Double = 1.1
+
+    var body: some View {
+        TimelineView(.animation) { context in
+            let phase = context.date.timeIntervalSinceReferenceDate
+                .truncatingRemainder(dividingBy: period) / period
+            ZStack {
+                // A faint steady center anchors the spinning ring.
+                dot(opacity: 0.3)
+                ForEach(Array(Self.ring.enumerated()), id: \.offset) { index, cell in
+                    dot(opacity: opacity(at: index, phase: phase))
+                        .offset(
+                            x: CGFloat(cell.0 - 1) * spacing,
+                            y: CGFloat(cell.1 - 1) * spacing
+                        )
+                }
+            }
+            .frame(width: 13, height: 13)
         }
+    }
+
+    private func dot(opacity: Double) -> some View {
+        Circle()
+            .fill(tint)
+            .frame(width: dotSize, height: dotSize)
+            .opacity(opacity)
+    }
+
+    /// Brightness of a perimeter cell: peaks at the comet's head and fades over the
+    /// next few cells, measured as the shorter way around the ring so the tail wraps.
+    private func opacity(at index: Int, phase: Double) -> Double {
+        let count = Double(Self.ring.count)
+        let head = phase * count
+        let raw = abs(Double(index) - head)
+        let distance = min(raw, count - raw)
+        return max(0.22, 1 - distance / 3)
     }
 }
