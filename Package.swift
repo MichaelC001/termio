@@ -8,6 +8,10 @@ let package = Package(
         // Prebuilt libghostty (Ghostty's terminal core) packaged for Apple platforms.
         // Ships a GhosttyKit.xcframework binary target, so no zig toolchain is needed.
         .package(url: "https://github.com/Lakr233/libghostty-spm.git", from: "1.2.0"),
+        // Sparkle powers in-app auto-update (the "Check for Updates…" menu item and
+        // background update checks). It reads the appcast published with each GitHub
+        // release; the matching EdDSA public key is embedded in packaging/Info.plist.
+        .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.6.0"),
     ],
     targets: [
         .executableTarget(
@@ -17,6 +21,7 @@ let package = Package(
                 // Bundled color-scheme catalog (Ghostty's built-in themes), used by
                 // the appearance settings to offer a theme picker.
                 .product(name: "GhosttyTheme", package: "libghostty-spm"),
+                .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/termio",
             resources: [

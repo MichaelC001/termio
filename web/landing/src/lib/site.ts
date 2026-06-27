@@ -23,9 +23,10 @@ export const navLinks = [
   { label: "Docs", href: "#faq" },
 ] as const;
 
-// The desktop build download. TODO: point at the real signed .dmg / release
-// asset once the macOS app ships through the backend's downloads.
-export const downloadUrl = `${apiBaseUrl}/api/download/latest`;
+// The desktop build download — the stable Cloudflare R2 URL (behind
+// downloads.termio.sh) that always serves the newest notarized DMG. The release
+// workflow (.github/workflows/release.yml) overwrites this object on every tag.
+export const downloadUrl = "https://downloads.termio.sh/termio.dmg";
 
 // Backend endpoint that mints a Stripe Checkout Session for a plan + quantity.
 // See web/server: POST /api/checkout/session (requires an authenticated
