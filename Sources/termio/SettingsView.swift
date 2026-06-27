@@ -665,16 +665,37 @@ private struct AgentSettingsTab: View {
                             prompt: Text(preset.command ?? "")
                         )
                     }
+
+                    // One-click bypass for the agent's permission/approval prompts,
+                    // for agents that have a stable flag for it. Appends the flag to
+                    // the command above rather than replacing it, so it composes with
+                    // a custom override.
+                    if let flag = preset.permissionBypassFlag {
+                        Toggle(isOn: Binding(
+                            get: { settings.bypassesPermissions(preset) },
+                            set: { settings.setBypassPermissions(preset, enabled: $0) }
+                        )) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("Skip permission prompts")
+                                Text("Runs with `\(flag)`. The agent won't ask before editing files or running commands.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .toggleStyle(.switch)
+                    }
                 }
             }
         }
         .formStyle(.grouped)
     }
 
-    /// Subtitle under each agent name: the command it runs, so the row is
-    /// self-describing even before the override field below it.
+    /// Subtitle under each agent name: the effective command it runs (override and
+    /// bypass flag included), so the row stays self-describing without reading the
+    /// fields below it.
     private func subtitle(for preset: AgentPreset) -> String {
-        preset.command ?? "Login shell"
+        settings.command(for: preset) ?? "Login shell"
     }
 }
 

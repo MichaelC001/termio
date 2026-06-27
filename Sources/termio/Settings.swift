@@ -73,6 +73,7 @@ final class AppSettings: ObservableObject {
         static let interfaceFontSize = "interface.fontSize"
         static let interfaceRowPadding = "interface.rowPadding"
         static let agentCommands = "agents.commandOverrides"
+        static let bypassPermissionAgents = "agents.bypassPermissions"
         static let disabledAgents = "agents.disabled"
         static let agentHooksEnabled = "agents.hooksEnabled"
         static let sessionControlEnabled = "agents.sessionControlEnabled"
@@ -190,6 +191,14 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(agentCommandOverrides, forKey: Key.agentCommands) }
     }
 
+    /// Agents whose permission/approval prompts should be bypassed, by `rawValue`.
+    /// The per-agent switch appends `AgentPreset.permissionBypassFlag` to the
+    /// resolved command (see `command(for:)`). Opt-in and stored as the on-set so
+    /// the default (nothing stored) means every agent keeps its prompts.
+    @Published var bypassPermissionAgents: Set<String> {
+        didSet { defaults.set(Array(bypassPermissionAgents), forKey: Key.bypassPermissionAgents) }
+    }
+
     /// Agent presets hidden from the sidebar quick-add row, by `rawValue`. Stored
     /// as the disabled set so the default (nothing stored) means "all enabled".
     @Published var disabledAgents: Set<String> {
@@ -293,6 +302,7 @@ final class AppSettings: ObservableObject {
         interfaceFontSize = defaults.double(forKey: Key.interfaceFontSize)
         interfaceRowPadding = defaults.double(forKey: Key.interfaceRowPadding)
         agentCommandOverrides = defaults.dictionary(forKey: Key.agentCommands) as? [String: String] ?? [:]
+        bypassPermissionAgents = Set(defaults.stringArray(forKey: Key.bypassPermissionAgents) ?? [])
         disabledAgents = Set(defaults.stringArray(forKey: Key.disabledAgents) ?? [])
         agentHooksEnabled = defaults.bool(forKey: Key.agentHooksEnabled)
         sessionControlEnabled = defaults.bool(forKey: Key.sessionControlEnabled)
@@ -302,11 +312,29 @@ final class AppSettings: ObservableObject {
     }
 
     /// Effective command for an agent: the user's override if it's non-empty,
-    /// otherwise the preset's built-in default (`nil` for a plain login shell).
+    /// otherwise the preset's built-in default (`nil` for a plain login shell),
+    /// with the permission-bypass flag appended when that switch is on. The flag
+    /// is only added if it isn't already present, so a user who typed it into the
+    /// override by hand doesn't get it twice.
     func command(for agent: AgentPreset) -> String? {
         let override = agentCommandOverrides[agent.rawValue]?.trimmingCharacters(in: .whitespaces)
-        if let override, !override.isEmpty { return override }
-        return agent.command
+        let base = (override?.isEmpty == false ? override : agent.command)
+        guard let base else { return nil }
+        guard bypassesPermissions(agent), let flag = agent.permissionBypassFlag,
+              !base.contains(flag) else { return base }
+        return "\(base) \(flag)"
+    }
+
+    func bypassesPermissions(_ agent: AgentPreset) -> Bool {
+        bypassPermissionAgents.contains(agent.rawValue)
+    }
+
+    func setBypassPermissions(_ agent: AgentPreset, enabled: Bool) {
+        if enabled {
+            bypassPermissionAgents.insert(agent.rawValue)
+        } else {
+            bypassPermissionAgents.remove(agent.rawValue)
+        }
     }
 
     func isAgentEnabled(_ agent: AgentPreset) -> Bool {
