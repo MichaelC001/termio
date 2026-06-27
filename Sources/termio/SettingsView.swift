@@ -124,8 +124,8 @@ private struct SettingsTabBar: View {
     }
 }
 
-/// The leading row icon on a soft, translucent grey "glass" square. Section and
-/// feature symbols stay neutral grey to keep the settings calm and scannable;
+/// The leading row icon, rendered as a bare glyph with no backing square. Section
+/// and feature symbols stay neutral grey to keep the settings calm and scannable;
 /// agent brand marks carry their vendor color so they read as real product logos.
 private struct IconBadge: View {
     let icon: AgentIcon
@@ -136,14 +136,6 @@ private struct IconBadge: View {
     var body: some View {
         glyph
             .frame(width: 22, height: 22)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(.quaternary)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(.quaternary, lineWidth: 0.5)
-            )
     }
 
     @ViewBuilder
@@ -203,12 +195,12 @@ enum InstalledFonts {
     }
 }
 
-/// A font-family editor: a native editable combo box (a free-text field with an
-/// attached list of installed families) sitting above a live preview. The typed
-/// text stays the source of truth so any name libghostty accepts — including faces
-/// this list does not enumerate — can still be entered; the list is purely for
-/// discovery. The preview renders the typed family so a mistyped or unresolved
-/// name is visible rather than silently falling back to the default.
+/// A font-family editor: a native pop-up menu of installed families above a live
+/// preview, matching the other grouped-form rows (Style, Theme). An empty value
+/// is the valid "system default" state. A trailing "Custom…" item reveals an
+/// inline text field so any name libghostty accepts — including faces this list
+/// does not enumerate — can still be entered; the preview flags a custom name the
+/// system cannot resolve rather than letting it fail silently.
 private struct FontFamilyField: View {
     let title: String
     let prompt: String
@@ -216,17 +208,52 @@ private struct FontFamilyField: View {
     /// Size to render the preview at, mirroring the live setting so the preview
     /// reflects what the terminal or sidebar will actually show.
     let previewSize: CGFloat
-    /// Whether the default (empty field) is the system *monospaced* font. Drives
+    /// Whether the default (empty value) is the system *monospaced* font. Drives
     /// which face the preview falls back to so it matches the real default.
     let monospacedDefault: Bool
     @Binding var family: String
 
+    /// Set when the user picks "Custom…" so the text field stays open even while
+    /// its value is still empty (which on its own would read as the default).
+    @State private var editingCustom = false
+    @FocusState private var customFieldFocused: Bool
+
     private static let sample = "The quick brown fox 0Oo1Il|·{}[]() => != <= ->"
 
-    /// Resolves the typed family to a concrete font for the preview. An empty
-    /// field is the valid "use the default" state, not a failure; a non-empty
-    /// name that the system cannot resolve flags `isFallback` so the caption can
-    /// tell the user it did not take.
+    /// A menu tag that cannot collide with a real font family name, used for the
+    /// "Custom…" item.
+    private static let customTag = "\u{1}termio.custom"
+
+    /// True when the current value is a custom name (non-empty and not one of the
+    /// installed families the pop-up lists).
+    private var hasCustomValue: Bool {
+        !family.isEmpty && !families.contains(family)
+    }
+
+    /// Whether the inline custom field should be shown.
+    private var showingCustomField: Bool { editingCustom || hasCustomValue }
+
+    /// Maps the pop-up selection to and from `family`, routing the "Custom…"
+    /// sentinel through `editingCustom` rather than the stored value.
+    private var selection: Binding<String> {
+        Binding(
+            get: { showingCustomField ? Self.customTag : family },
+            set: { newValue in
+                if newValue == Self.customTag {
+                    editingCustom = true
+                    customFieldFocused = true
+                } else {
+                    editingCustom = false
+                    family = newValue
+                }
+            }
+        )
+    }
+
+    /// Resolves the selected family to a concrete font for the preview. An empty
+    /// value is the valid "use the default" state, not a failure; a non-empty
+    /// name the system cannot resolve flags `isFallback` so the caption can tell
+    /// the user it did not take.
     private var preview: (font: NSFont, isFallback: Bool) {
         let size = min(max(previewSize, 9), 22)
         let fallback = monospacedDefault
@@ -234,10 +261,7 @@ private struct FontFamilyField: View {
             : NSFont.systemFont(ofSize: size)
         let trimmed = family.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return (fallback, false) }
-        // libghostty accepts a comma-separated fallback chain; preview its head.
-        let primary = trimmed.split(separator: ",").first
-            .map { $0.trimmingCharacters(in: .whitespaces) } ?? trimmed
-        if let font = NSFont(name: primary, size: size) {
+        if let font = NSFont(name: trimmed, size: size) {
             return (font, false)
         }
         return (fallback, true)
@@ -246,7 +270,20 @@ private struct FontFamilyField: View {
     var body: some View {
         let preview = preview
         VStack(alignment: .leading, spacing: 6) {
-            FontFamilyComboBox(families: families, placeholder: prompt, family: $family)
+            Picker(title, selection: selection) {
+                Text(prompt).tag("")
+                Divider()
+                ForEach(families, id: \.self) { name in
+                    Text(name).tag(name)
+                }
+                Divider()
+                Text("Custom…").tag(Self.customTag)
+            }
+            if showingCustomField {
+                TextField("Font name", text: $family, prompt: Text("e.g. JetBrains Mono"))
+                    .textFieldStyle(.roundedBorder)
+                    .focused($customFieldFocused)
+            }
             Text(Self.sample)
                 .font(Font(preview.font))
                 .lineLimit(1)
@@ -257,56 +294,6 @@ private struct FontFamilyField: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-        }
-    }
-}
-
-/// AppKit's editable combo box, bridged so the font field reads as one native
-/// control (the disclosure chevron sits inside the field, type-ahead completes
-/// against the list) while still accepting arbitrary typed names. SwiftUI has no
-/// equivalent — `Picker` is a closed list and would drop the free-text escape
-/// hatch libghostty needs.
-private struct FontFamilyComboBox: NSViewRepresentable {
-    let families: [String]
-    let placeholder: String
-    @Binding var family: String
-
-    func makeNSView(context: Context) -> NSComboBox {
-        let combo = NSComboBox()
-        combo.isEditable = true
-        combo.completes = true
-        combo.usesDataSource = false
-        combo.addItems(withObjectValues: families)
-        combo.placeholderString = placeholder
-        combo.delegate = context.coordinator
-        combo.stringValue = family
-        return combo
-    }
-
-    func updateNSView(_ combo: NSComboBox, context: Context) {
-        // Only push external changes back; rewriting mid-edit would fight the
-        // user's typing and cancel in-progress completion.
-        if combo.stringValue != family {
-            combo.stringValue = family
-        }
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-
-    final class Coordinator: NSObject, NSComboBoxDelegate {
-        private let parent: FontFamilyComboBox
-
-        init(_ parent: FontFamilyComboBox) { self.parent = parent }
-
-        func controlTextDidChange(_ notification: Notification) {
-            guard let combo = notification.object as? NSComboBox else { return }
-            parent.family = combo.stringValue
-        }
-
-        func comboBoxSelectionDidChange(_ notification: Notification) {
-            guard let combo = notification.object as? NSComboBox,
-                  let value = combo.objectValueOfSelectedItem as? String else { return }
-            parent.family = value
         }
     }
 }
@@ -372,19 +359,27 @@ private struct AppearanceSettingsTab: View {
                     .foregroundStyle(.secondary)
             }
             Section {
-                Picker("Theme", selection: $settings.themeName) {
-                    Text("Terminal default").tag("")
-                    Divider()
-                    ForEach(themeNames, id: \.self) { name in
-                        Text(name).tag(name)
-                    }
-                }
-                .labelsHidden()
+                themePicker(title: "Light", selection: $settings.lightThemeName)
+                themePicker(title: "Dark", selection: $settings.darkThemeName)
             } header: {
                 SectionHeaderLabel(title: "Theme")
+            } footer: {
+                Text("termio switches between these as macOS changes appearance. Leave a slot on the default for termio's own light or dark canvas.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func themePicker(title: String, selection: Binding<String>) -> some View {
+        Picker(title, selection: selection) {
+            Text("Terminal default").tag("")
+            Divider()
+            ForEach(themeNames, id: \.self) { name in
+                Text(name).tag(name)
+            }
+        }
     }
 }
 
