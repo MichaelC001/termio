@@ -308,12 +308,16 @@ final class TermioStore: ObservableObject {
         builder.withCustom("copy-on-select", settings.copyOnSelect ? "clipboard" : "false")
     }
 
-    /// The selected Ghostty theme, or `nil` to leave the terminal core's default
-    /// colors in place (when no theme is chosen or the name no longer resolves).
+    /// The selected Ghostty theme, or termio's default when none is chosen (or the
+    /// name no longer resolves). libghostty's own default light theme is Alabaster
+    /// (#F7F7F7); termio prefers a pure-white light canvas — the agent UIs paint
+    /// their own grey panels over it, so an off-white background just reads as
+    /// unstyled — so we override only Alabaster's background and keep Afterglow for
+    /// dark mode. Mirrors `AppSettings.terminalBackgroundColor`.
     private func makeTheme() -> TerminalTheme? {
         guard !settings.themeName.isEmpty,
               let definition = GhosttyThemeCatalog.theme(named: settings.themeName)
-        else { return nil }
+        else { return TerminalTheme(light: .alabaster.background("FFFFFF"), dark: .afterglow) }
         return definition.toTerminalTheme()
     }
 

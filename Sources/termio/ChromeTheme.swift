@@ -61,9 +61,10 @@ extension AppSettings {
 
     /// The terminal surface's background color, so the window chrome and the
     /// terminal pane can paint the exact fill the terminal renders. With a theme
-    /// selected this is the theme's background; with none, libghostty renders
-    /// `TerminalTheme.default` (Alabaster #F7F7F7 in light, Afterglow #212121 in
-    /// dark), so the fallback adapts to the system appearance just as it does.
+    /// selected this is the theme's background; with none, the fallback is pure
+    /// white in light mode (crisper than libghostty's Alabaster #F7F7F7 default,
+    /// which reads as an unstyled grey under termio's mostly-empty canvas) and
+    /// Afterglow #212121 in dark, so it still adapts to the system appearance.
     var terminalBackgroundColor: NSColor {
         if let chrome = chromeTheme {
             return NSColor(chrome.background)
@@ -71,7 +72,7 @@ extension AppSettings {
         return NSColor(name: nil) { appearance in
             appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
                 ? NSColor(srgbRed: 0x21 / 255.0, green: 0x21 / 255.0, blue: 0x21 / 255.0, alpha: 1)
-                : NSColor(srgbRed: 0xF7 / 255.0, green: 0xF7 / 255.0, blue: 0xF7 / 255.0, alpha: 1)
+                : NSColor.white
         }
     }
 }
