@@ -1,0 +1,83 @@
+{
+  "$comment": "SHARED PRICING CONTRACT — single source of truth for web/landing and web/server. termio uses a one-time LIFETIME license (NO subscription): pay once, own it forever including all future updates, with a 30-day money-back guarantee and a 7-day no-account free trial. Personal licenses come in two tiers by device count: Solo (1 Mac) and Pro (up to 3 Macs). A volume Team option exists for 5+ seats. Do not change this shape without updating BOTH consumers (web/landing/src/data/pricing.ts and web/server/src/pricing.ts).",
+  "model": "one-time-lifetime",
+  "currency": "USD",
+  "trial": {
+    "id": "trial",
+    "name": "Free Trial",
+    "priceCents": 0,
+    "durationDays": 7,
+    "requiresAccount": false,
+    "blurb": "Full app, every feature, 7 days. No account, no card."
+  },
+  "refund": {
+    "days": 30,
+    "blurb": "30-day money-back guarantee. No questions asked."
+  },
+  "plans": [
+    {
+      "id": "solo",
+      "name": "Solo",
+      "priceCents": 1990,
+      "anchorPriceCents": 2900,
+      "billing": "one-time",
+      "unit": "per person",
+      "maxDevices": 1,
+      "recommended": false,
+      "audience": "For one Mac",
+      "features": [
+        "Pay once — yours forever, no subscription",
+        "All future updates included",
+        "Use on 1 Mac",
+        "Every agent CLI (Claude Code, Codex, Gemini, Amp, more)",
+        "Hosted-PTY sessions that survive restarts",
+        "Git worktree per agent",
+        "Local-only — no telemetry, no cloud",
+        "30-day money-back guarantee"
+      ]
+    },
+    {
+      "id": "pro",
+      "name": "Pro",
+      "priceCents": 3990,
+      "anchorPriceCents": 5900,
+      "billing": "one-time",
+      "unit": "per person",
+      "maxDevices": 3,
+      "recommended": true,
+      "audience": "For up to 3 Macs",
+      "features": [
+        "Everything in Solo",
+        "Use on up to 3 of your Macs",
+        "Pay once — yours forever, no subscription",
+        "All future updates included",
+        "Every agent CLI (Claude Code, Codex, Gemini, Amp, more)",
+        "Hosted-PTY sessions that survive restarts",
+        "Git worktree per agent",
+        "Local-only — no telemetry, no cloud",
+        "30-day money-back guarantee"
+      ]
+    },
+    {
+      "id": "team",
+      "name": "Team",
+      "priceCents": 3990,
+      "billing": "one-time",
+      "unit": "per seat",
+      "minSeats": 5,
+      "maxDevices": 3,
+      "recommended": false,
+      "audience": "For teams of 5+",
+      "features": [
+        "Everything in Pro, on up to 3 Macs per seat",
+        "For teams of 5 or more",
+        "Centralized license + seat management",
+        "Priority support",
+        "Single invoice / PO billing",
+        "Custom volume pricing for 50+ — talk to us"
+      ]
+    }
+  ],
+  "lifetimeNote": "One-time purchase. Yours forever, all updates included. No subscription, ever.",
+  "platformNote": "macOS, Apple Silicon."
+}

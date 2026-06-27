@@ -1,0 +1,5 @@
+# Config-only file (no `packages:` list) so this stays a single self-contained
+# project. esbuild ships a native binary via its install script, which tsx and
+# drizzle-kit need; allow it to run that script.
+allowBuilds:
+  esbuild: true

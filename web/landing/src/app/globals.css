@@ -1,0 +1,130 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-mono-stack);
+  --font-heading: var(--font-inter);
+
+  /* termio brand accents — the terminal traffic-light trio plus gradient blues/purples. */
+  --color-brand-red: #ff5252;
+  --color-brand-amber: #ffb764;
+  --color-brand-amber-deep: #fd9426;
+  --color-brand-green: #27c93f;
+  --color-brand-green-deep: #16c253;
+  --color-brand-blue: #0088ff;
+  --color-brand-blue-deep: #0072fb;
+  --color-brand-cyan: #0fb7fa;
+  --color-brand-purple: #b855e7;
+
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* Light theme only — modeled on superwhisper.com. */
+:root {
+  --background: #fafafa;
+  --foreground: #1a1a1a;
+  --card: #ffffff;
+  --card-foreground: #1a1a1a;
+  --popover: #ffffff;
+  --popover-foreground: #1a1a1a;
+  --primary: #1a1a1a;
+  --primary-foreground: #fafafa;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #1a1a1a;
+  --muted: #f4f4f5;
+  --muted-foreground: #888b91;
+  --accent: #f4f4f5;
+  --accent-foreground: #1a1a1a;
+  --destructive: #ff5252;
+  --border: #e4e8ef;
+  --input: #e4e8ef;
+  --ring: #0088ff;
+  --radius: 0.85rem;
+  --font-mono-stack: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  html {
+    @apply font-sans;
+    scroll-behavior: smooth;
+  }
+}
+
+@layer utilities {
+  /* Soft multi-color wash used behind the hero and feature visuals. */
+  .brand-wash {
+    background-image:
+      radial-gradient(40rem 40rem at 18% 12%, rgba(0, 136, 255, 0.16), transparent 60%),
+      radial-gradient(34rem 34rem at 82% 8%, rgba(184, 85, 231, 0.14), transparent 60%),
+      radial-gradient(30rem 30rem at 50% 100%, rgba(22, 194, 83, 0.12), transparent 60%);
+  }
+
+  .brand-text-gradient {
+    background-image: linear-gradient(110deg, #0072fb 0%, #0fb7fa 38%, #b855e7 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .hairline {
+    border-color: var(--border);
+  }
+
+  /* Lightweight scroll-entrance: elements fade/slide in when revealed via IntersectionObserver. */
+  .reveal {
+    opacity: 0;
+    transform: translateY(16px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+    will-change: opacity, transform;
+  }
+  .reveal[data-revealed="true"] {
+    opacity: 1;
+    transform: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .reveal {
+      opacity: 1;
+      transform: none;
+      transition: none;
+    }
+    html {
+      scroll-behavior: auto;
+    }
+  }
+}
