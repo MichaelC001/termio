@@ -19,6 +19,7 @@ export const supportedAgents = [
 export const navLinks = [
   { label: "Features", href: "#features" },
   { label: "Pricing", href: "#pricing" },
+  { label: "Refer", href: "/refer" },
   { label: "Docs", href: "#faq" },
 ] as const;
 

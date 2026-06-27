@@ -8,6 +8,13 @@
       "when": 1782567618818,
       "tag": "0000_silly_firebrand",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1782568389029,
+      "tag": "0001_tranquil_cloak",
+      "breakpoints": true
     }
   ]
 }

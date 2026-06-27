@@ -41,6 +41,38 @@ export function isWellFormedLicenseKey(key: string): boolean {
   return LICENSE_KEY_PATTERN.test(key);
 }
 
+/**
+ * Mint one license row against an already-recorded purchase. Factored out of the
+ * checkout webhook so the referral ladder's free-license grant issues licenses the
+ * exact same way (same key format, same shape) rather than re-implementing it.
+ */
+export async function issueLicense(params: {
+  purchaseId: string;
+  ownerUserId: string;
+  productId: string;
+  maxDevices: number;
+}): Promise<typeof license.$inferSelect> {
+  const inserted = await database
+    .insert(license)
+    .values({
+      id: randomUUID(),
+      purchaseId: params.purchaseId,
+      ownerUserId: params.ownerUserId,
+      productId: params.productId,
+      licenseKey: generateLicenseKey(),
+      maxDevices: params.maxDevices,
+    })
+    .returning();
+
+  const issued = inserted[0];
+  if (!issued) {
+    // returning() should always yield the inserted row; treat absence as a hard
+    // failure rather than pretending a license exists.
+    throw new Error("License issuance insert returned no row");
+  }
+  return issued;
+}
+
 export type LicenseValidation =
   | { valid: false; reason: "malformed" | "not-found" | "revoked" }
   | {

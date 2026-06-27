@@ -92,6 +92,14 @@ export const purchaseStatus = pgEnum("purchase_status", [
   "failed",
 ]);
 
+/**
+ * How a purchase came to exist. `purchase` is the normal paid Checkout path;
+ * `referral` is a zero-cost purchase synthesized to back a free license earned on
+ * the referral ladder (so the license's required `purchaseId` always resolves and
+ * referral-granted licenses stay distinguishable from paid ones in reporting).
+ */
+export const purchaseSource = pgEnum("purchase_source", ["purchase", "referral"]);
+
 export const licenseStatus = pgEnum("license_status", ["active", "revoked"]);
 
 export const teamRole = pgEnum("team_role", ["owner", "admin", "member"]);
@@ -180,6 +188,7 @@ export const purchase = pgTable("purchase", {
   amountCents: integer("amount_cents").notNull(),
   currency: text("currency").notNull(),
   status: purchaseStatus("status").notNull().default("pending"),
+  source: purchaseSource("source").notNull().default("purchase"),
   refundableUntil: timestamp("refundable_until", { withTimezone: true }),
   stripeCheckoutSessionId: text("stripe_checkout_session_id").unique(),
   stripePaymentIntentId: text("stripe_payment_intent_id"),

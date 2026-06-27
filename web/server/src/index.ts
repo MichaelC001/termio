@@ -8,6 +8,7 @@ import type { AppEnv } from "./middleware.js";
 import { accountRoutes } from "./routes/account.js";
 import { checkoutRoutes } from "./routes/checkout.js";
 import { licenseRoutes } from "./routes/license.js";
+import { referralRoutes } from "./routes/referral.js";
 
 const app = new Hono<AppEnv>();
 
@@ -33,7 +34,7 @@ app.on(["GET", "POST"], "/api/auth/*", (context) =>
 app.route("/api/account", accountRoutes);
 app.route("/api/license", licenseRoutes);
 app.route("/api/checkout", checkoutRoutes);
-// TODO(1.x): referral routes + activation event ingestion
+app.route("/api/referral", referralRoutes);
 
 // Centralized JSON error handling so handlers can throw and clients always get a
 // structured body. We log the real error server-side and never leak its message.

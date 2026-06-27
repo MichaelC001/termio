@@ -5,11 +5,12 @@ import { Hono } from "hono";
 import type Stripe from "stripe";
 
 import { database } from "../db/index.js";
-import { license, price, product, purchase } from "../db/schema.js";
+import { price, product, purchase } from "../db/schema.js";
 import { environment } from "../env.js";
-import { generateLicenseKey } from "../licenses.js";
+import { issueLicense } from "../licenses.js";
 import { type AppEnv, currentUser, requireAuth } from "../middleware.js";
 import { loadPricing } from "../pricing.js";
+import { markReferralConverted } from "./referral.js";
 import { stripe } from "../stripe.js";
 
 export const checkoutRoutes = new Hono<AppEnv>();
@@ -228,12 +229,15 @@ async function fulfillCheckout(
     })
     .where(eq(purchase.id, purchaseId));
 
-  await database.insert(license).values({
-    id: randomUUID(),
+  await issueLicense({
     purchaseId,
     ownerUserId: record.ownerUserId,
     productId: record.productId,
-    licenseKey: generateLicenseKey(),
     maxDevices: plan.maxDevices,
   });
+
+  // Referral conversion: if this buyer was invited by someone, the paid purchase
+  // converts their referral and may push the referrer up the reward ladder. Kept
+  // here (not in /activate) because conversion is defined as the friend buying.
+  await markReferralConverted(record.ownerUserId);
 }
