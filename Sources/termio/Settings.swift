@@ -186,7 +186,7 @@ final class AppSettings: ObservableObject {
             Key.themeName: "",
             Key.cursorStyle: "block",
             Key.cursorBlink: true,
-            Key.windowPadding: 2,
+            Key.windowPadding: 8,
             Key.backgroundOpacity: 1.0,
             Key.backgroundBlur: 0,
             Key.scrollbackMegabytes: 10,

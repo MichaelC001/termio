@@ -190,8 +190,12 @@ final class TermioStore: ObservableObject {
         }
         builder.withCursorStyleBlink(settings.cursorBlink)
 
+        // Horizontal padding is the terminal's left/right margin (the tunable
+        // Padding setting). Vertical is kept tight on purpose: the title bar sits
+        // directly above the surface, so matching the setting there would open a
+        // visible gap between the title and the first prompt line.
         builder.withWindowPaddingX(settings.windowPadding)
-        builder.withWindowPaddingY(settings.windowPadding)
+        builder.withWindowPaddingY(2)
         builder.withBackgroundOpacity(settings.backgroundOpacity)
         builder.withBackgroundBlur(settings.backgroundBlur)
 
