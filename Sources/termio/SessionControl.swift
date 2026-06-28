@@ -275,6 +275,102 @@ enum SessionSkillInstaller {
     }
 }
 
+/// Installs and audits the `termio` command-line tool — the bundled script the
+/// app symlinks onto the user's PATH so any shell (and any agent's shell tool)
+/// can run `termio sessions …` and `termio .`. Modeled on VS Code's `code` tool:
+/// the binary lives inside the app bundle, so the symlink keeps pointing at the
+/// current version across updates, and the audit surfaces a moved/old install.
+enum CommandLineTool {
+    /// Where the tool is linked onto PATH. `/usr/local/bin` is on the default PATH
+    /// and is user-writable on Homebrew Macs; otherwise install falls back to a
+    /// one-time admin prompt.
+    static let installURL = URL(fileURLWithPath: "/usr/local/bin/termio")
+
+    enum Status: Equatable {
+        /// Linked to this build's bundled tool — nothing to do.
+        case installed
+        /// Linked to a `termio` tool at a different bundle path (the app moved or
+        /// this is an older install); offer to update the link.
+        case stale(String)
+        /// Nothing occupies the PATH location yet.
+        case notInstalled
+        /// A file that termio did not create sits at the location; never clobber it.
+        case conflict
+        /// Running as a bare dev binary with no bundle, so there is nothing to link.
+        case unavailable
+    }
+
+    /// The bundled tool inside the running `.app`, or `nil` when running as a bare
+    /// SwiftPM binary (`swift run`) where there is no Resources directory.
+    static var bundledURL: URL? {
+        Bundle.main.url(forResource: "termio", withExtension: nil)
+    }
+
+    static func audit() -> Status {
+        guard let bundled = bundledURL else { return .unavailable }
+        let fileManager = FileManager.default
+        let path = installURL.path
+        guard let attributes = try? fileManager.attributesOfItem(atPath: path) else {
+            return fileManager.fileExists(atPath: path) ? .conflict : .notInstalled
+        }
+        // A real file (not our symlink) means someone else's `termio` — leave it.
+        guard attributes[.type] as? FileAttributeType == .typeSymbolicLink,
+              let destination = try? fileManager.destinationOfSymbolicLink(atPath: path) else {
+            return .conflict
+        }
+        let resolved = URL(fileURLWithPath: destination).standardizedFileURL.path
+        if resolved == bundled.standardizedFileURL.path { return .installed }
+        if resolved.hasSuffix("/termio.app/Contents/Resources/termio") { return .stale(resolved) }
+        return .conflict
+    }
+
+    /// Links the bundled tool onto PATH and returns the fresh audit. Replaces our
+    /// own stale link; refuses to overwrite a file we did not create.
+    @discardableResult
+    static func install() -> Status {
+        guard let bundled = bundledURL else { return .unavailable }
+        if case .conflict = audit() { return .conflict }
+        let target = installURL.path
+        if linkWithoutPrivileges(from: bundled.path, to: target) { return audit() }
+        linkWithAdminPrompt(from: bundled.path, to: target)
+        return audit()
+    }
+
+    private static func linkWithoutPrivileges(from source: String, to target: String) -> Bool {
+        let fileManager = FileManager.default
+        let directory = (target as NSString).deletingLastPathComponent
+        try? fileManager.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        guard fileManager.isWritableFile(atPath: directory) else { return false }
+        // Replace our own previous link (createSymbolicLink fails if a file exists).
+        try? fileManager.removeItem(atPath: target)
+        do {
+            try fileManager.createSymbolicLink(atPath: target, withDestinationPath: source)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// One authorization prompt does `mkdir -p` + `ln -sf` as admin, for the case
+    /// where `/usr/local/bin` is root-owned. The user can cancel, in which case the
+    /// follow-up audit simply reports it still isn't installed.
+    private static func linkWithAdminPrompt(from source: String, to target: String) {
+        let directory = (target as NSString).deletingLastPathComponent
+        let command = "mkdir -p \(shellQuote(directory)) && ln -sf \(shellQuote(source)) \(shellQuote(target))"
+        let script = "do shell script \"\(command)\" with administrator privileges"
+        var error: NSDictionary?
+        NSAppleScript(source: script)?.executeAndReturnError(&error)
+        if let error {
+            FileHandle.standardError.write(
+                Data("termio: command-line tool install declined or failed: \(error)\n".utf8))
+        }
+    }
+
+    private static func shellQuote(_ path: String) -> String {
+        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
+
 extension AgentPreset {
     /// Resolves a free-text agent name from the CLI (`termio sessions start claude`)
     /// to a preset, accepting the raw case, the display name, and common aliases.

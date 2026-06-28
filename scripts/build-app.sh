@@ -58,6 +58,12 @@ mkdir -p "$macos_dir" "$resources_dir" "$frameworks_dir"
 cp "$binary_path" "$macos_dir/$app_name"
 cp "$repo_root/packaging/Info.plist" "$contents_dir/Info.plist"
 
+# Ship the `termio` command-line tool inside the bundle. The app installs it onto
+# the user's PATH by symlinking to this copy, so it version-updates with the app.
+echo "==> Bundling termio command-line tool"
+cp "$repo_root/scripts/termio" "$resources_dir/termio"
+chmod +x "$resources_dir/termio"
+
 # Stamp version / build number when the release workflow supplies them. The
 # binary's rpath already resolves @rpath/Sparkle.framework via @executable_path
 # below, so embedding is purely a copy + one rpath entry.
