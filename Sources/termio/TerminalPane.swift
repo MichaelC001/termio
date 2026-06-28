@@ -89,13 +89,14 @@ struct TerminalPane: View {
                         .truncationMode(.head)
                 }
                 .help(displayPath(for: project))
-                // No branch chip for a non-git directory — its `branch` is the "—"
-                // placeholder, which would read as a meaningless empty git token.
-                if hasBranch(project) {
+                // The branch of the folder the session actually runs in (worktree
+                // or project), read live from HEAD so a `git checkout` updates it.
+                // No chip for a non-git directory — there is no branch to show.
+                if let branch = liveBranch(for: project) {
                     chip {
                         HStack(spacing: 4) {
                             HugeIconView(icon: .gitBranch, size: 13, color: .secondary)
-                            Text(project.branch)
+                            Text(branch)
                         }
                     }
                 }
@@ -120,12 +121,11 @@ struct TerminalPane: View {
             )
     }
 
-    /// Whether the project is a git repo with a branch worth showing. A plain
-    /// (non-git) directory carries the `"—"` placeholder, which we hide rather than
-    /// render as an empty git token.
-    private func hasBranch(_ project: Project) -> Bool {
-        let branch = project.branch.trimmingCharacters(in: .whitespaces)
-        return !branch.isEmpty && branch != "—"
+    /// The live branch of the folder the selected session runs in — its worktree
+    /// when isolated, otherwise the project directory. `nil` for a non-git folder,
+    /// so the title bar hides the branch chip rather than showing an empty token.
+    private func liveBranch(for project: Project) -> String? {
+        store.branch(forFolder: selectedSession?.worktreePath ?? project.path)
     }
 
     /// The selected session's working directory, home-abbreviated to `~`. Prefers

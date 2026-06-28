@@ -12,8 +12,12 @@ import GhosttyTheme
 final class TermioStore: ObservableObject {
     @Published var projects: [Project] {
         // Any structural change to the tree (sessions added/closed, projects
-        // edited) is written back to disk so the sidebar survives app restarts.
-        didSet { persist() }
+        // edited) is written back to disk so the sidebar survives app restarts,
+        // and the set of folders whose branch we track live is re-synced.
+        didSet {
+            persist()
+            syncWatchedFolders()
+        }
     }
     @Published var selectedSessionID: Session.ID? {
         // Selecting a session means the user is now looking at it, so any pending
@@ -51,9 +55,15 @@ final class TermioStore: ObservableObject {
     /// change; also handed to the settings UI and sidebar.
     let settings: AppSettings
 
+    /// Live current-branch per folder (project checkouts and session worktrees). The
+    /// sidebar's worktree nodes and the terminal title bar read their branch label
+    /// from here, so a `git checkout` inside a session updates the UI on its own.
+    let branchModel = BranchModel()
+
     private var surfaces: [Session.ID: TerminalViewState] = [:]
     private var monitors: [Session.ID: [AnyCancellable]] = [:]
     private var settingsObserver: AnyCancellable?
+    private var branchObserver: AnyCancellable?
     private let stateFile = StateFile()
 
     /// The socket Claude Code's hooks report into. Runs for the app's lifetime; the
@@ -97,8 +107,37 @@ final class TermioStore: ObservableObject {
                 self?.syncSessionControlInstallationIfNeeded()
             }
 
+        // A branch label changing is not a change to the persisted tree, so the
+        // BranchModel owns its own published state; forward its updates into ours so
+        // views observing the store (sidebar, terminal title bar) re-render.
+        branchObserver = branchModel.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in self?.objectWillChange.send() }
+        syncWatchedFolders()
+
         startHookMonitoring()
         startSessionControl()
+    }
+
+    /// The live branch label for a folder (a project checkout or a session
+    /// worktree), or `nil` when it is not a git repo — in which case the UI hides
+    /// the branch chip rather than showing an empty token.
+    func branch(forFolder folder: String) -> String? {
+        branchModel.branch(for: folder)
+    }
+
+    /// Tells the BranchModel which folders to keep a live branch for: every project's
+    /// own directory plus every session worktree. Called once at init and after any
+    /// change to the project tree.
+    private func syncWatchedFolders() {
+        var folders = Set<String>()
+        for project in projects {
+            folders.insert(project.path)
+            for session in project.sessions {
+                if let worktree = session.worktreePath { folders.insert(worktree) }
+            }
+        }
+        branchModel.setWatched(folders)
     }
 
     /// Builds a store from the persisted session tree, falling back to the seed

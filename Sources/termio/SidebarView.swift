@@ -62,8 +62,22 @@ struct SidebarView: View {
                     chrome: chrome
                 )
                 if !collapsedProjects.contains(project.id) {
-                    ForEach(project.sessions) { session in
-                        SessionRow(session: session, chrome: chrome)
+                    // Progressive disclosure: with no worktrees a project shows its
+                    // sessions flat (one level). Once any session runs in a worktree,
+                    // a folder layer appears — each distinct folder (the main checkout
+                    // plus every worktree) becomes a node labelled with its live branch,
+                    // and its sessions indent under it.
+                    if hasWorktrees(project) {
+                        ForEach(worktreeGroups(for: project)) { group in
+                            WorktreeHeader(folderPath: group.folderPath, chrome: chrome)
+                            ForEach(group.sessions) { session in
+                                SessionRow(session: session, chrome: chrome, leadingIndent: 32)
+                            }
+                        }
+                    } else {
+                        ForEach(project.sessions) { session in
+                            SessionRow(session: session, chrome: chrome)
+                        }
                     }
                 }
             }
@@ -123,6 +137,68 @@ struct SidebarView: View {
                 collapsedProjects.insert(id)
             }
         }
+    }
+}
+
+/// A project's sessions grouped by the folder they run in. The folder is the
+/// stable identity; its branch is a live label read from `HEAD` (see `BranchModel`).
+private struct WorktreeGroup: Identifiable {
+    let folderPath: String
+    let isPrimary: Bool
+    let sessions: [Session]
+    var id: String { folderPath }
+}
+
+/// Whether any of a project's sessions runs in its own worktree. When none do, the
+/// sidebar stays flat (no folder layer) — the common, single-checkout case.
+private func hasWorktrees(_ project: Project) -> Bool {
+    project.sessions.contains { $0.worktreePath != nil }
+}
+
+/// Groups a project's sessions by working folder for the three-level layout: the
+/// primary checkout (the project's own directory) first, then each worktree in the
+/// order its first session appeared. Session order within a group is preserved.
+private func worktreeGroups(for project: Project) -> [WorktreeGroup] {
+    let primary = project.path
+    var order: [String] = []
+    var byFolder: [String: [Session]] = [:]
+    for session in project.sessions {
+        let folder = session.worktreePath ?? primary
+        if byFolder[folder] == nil { order.append(folder) }
+        byFolder[folder, default: []].append(session)
+    }
+    let folders = (order.contains(primary) ? [primary] : []) + order.filter { $0 != primary }
+    return folders.map { folder in
+        WorktreeGroup(folderPath: folder, isPrimary: folder == primary, sessions: byFolder[folder] ?? [])
+    }
+}
+
+/// A folder node: the branch the folder is currently on, read live from `HEAD`. Sits
+/// between the project header and the session rows, indented one step. Falls back to
+/// the folder's own name only if the branch can't be resolved (e.g. not a git repo).
+private struct WorktreeHeader: View {
+    @EnvironmentObject var store: TermioStore
+    let folderPath: String
+    let chrome: ChromeTheme?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            HugeIconView(icon: .gitBranch, size: 13, color: chrome?.foreground ?? .secondary)
+                .frame(width: 16)
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle((chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.secondary)).opacity(0.85))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 4)
+        }
+        .padding(.vertical, 2)
+        .padding(.leading, 16)
+        .help(folderPath)
+    }
+
+    private var label: String {
+        store.branch(forFolder: folderPath) ?? (folderPath as NSString).lastPathComponent
     }
 }
 
@@ -307,6 +383,9 @@ private struct SessionRow: View {
     @EnvironmentObject var settings: AppSettings
     let session: Session
     let chrome: ChromeTheme?
+    /// Leading inset for the row's content. Sessions sit at 16 under a project, or a
+    /// step deeper (32) when nested under a worktree folder node.
+    var leadingIndent: CGFloat = 16
     @State private var isHovering = false
 
     private var isSelected: Bool { store.selectedSessionID == session.id }
@@ -356,11 +435,12 @@ private struct SessionRow: View {
             .allowsHitTesting(isHovering)
         }
         .padding(.vertical, settings.interfaceRowPadding)
-        // Indent the session content under its project header so the rows read as
-        // a child group of the project rather than a flat sibling list. The
-        // selection highlight (listRowBackground) stays full-width — the standard
-        // macOS source-list look where children inset but the lift spans the row.
-        .padding(.leading, 16)
+        // Indent the session content under its project header (or its worktree
+        // folder node) so the rows read as a child group rather than a flat sibling
+        // list. The selection highlight (listRowBackground) stays full-width — the
+        // standard macOS source-list look where children inset but the lift spans
+        // the row.
+        .padding(.leading, leadingIndent)
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .onTapGesture { store.selectedSessionID = session.id }
