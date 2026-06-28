@@ -5,3 +5,6 @@ DerivedData/
 .DS_Store
 termio.app/
 .claude/settings.local.json
+
+# Local state from the omo agent tool (run-continuation cache); not project source.
+.omo/
