@@ -104,22 +104,32 @@ private struct SettingsTabBar: View {
                 }
                 .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                 .frame(width: 84, height: 48)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(backgroundFill)
-                )
+                .background { selectionBackground }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .onHover { isHovering = $0 }
         }
 
-        /// Selected tab keeps its accent wash; an unselected tab picks up Dia's
-        /// faint gray hover fill so the whole hit area lights up under the cursor.
-        private var backgroundFill: Color {
-            if isSelected { return Color.accentColor.opacity(0.12) }
-            if isHovering { return Color.primary.opacity(0.06) }
-            return .clear
+        /// The selected tab floats on a pure-white glass chip (Tahoe's Liquid Glass
+        /// segmented look) with the icon and label tinted accent; an unselected tab
+        /// stays flat, picking up a faint gray fill only under the cursor. On macOS
+        /// before 26 the glass degrades to the closest translucent material.
+        @ViewBuilder
+        private var selectionBackground: some View {
+            let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+            if isSelected {
+                if #available(macOS 26.0, *) {
+                    Color.clear.glassEffect(.regular, in: shape)
+                } else {
+                    shape
+                        .fill(.regularMaterial)
+                        .overlay(shape.strokeBorder(.white.opacity(0.6), lineWidth: 0.5))
+                        .shadow(color: .black.opacity(0.12), radius: 2.5, y: 1)
+                }
+            } else if isHovering {
+                shape.fill(Color.primary.opacity(0.06))
+            }
         }
     }
 }
@@ -283,6 +293,8 @@ private struct FontFamilyField: View {
                 TextField("Font name", text: $family, prompt: Text("e.g. JetBrains Mono"))
                     .textFieldStyle(.roundedBorder)
                     .focused($customFieldFocused)
+                    .padding(.top, 4)
+                    .padding(.bottom, 2)
             }
             Text(Self.sample)
                 .font(Font(preview.font))
