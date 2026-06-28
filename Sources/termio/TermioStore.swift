@@ -342,13 +342,39 @@ final class TermioStore: ObservableObject {
 
     /// Pushes the current font and theme onto every live surface without tearing
     /// down its shell — libghostty reconfigures the running terminal in place.
+    ///
+    /// Reconfiguring updates the core's config but does not itself repaint: this
+    /// embedding has no continuous tick (see `warmUpRendering`), so a surface only
+    /// redraws on its next PTY-output wakeup. Without a nudge a theme or font change
+    /// would not show until the user typed or the agent printed. So when a setter
+    /// reports an actual change, pump the core briefly to flush the redraw now.
     private func applyAppearanceToOpenSurfaces() {
         let appearance = appearanceConfiguration()
         let theme = makeTheme()
         for state in surfaces.values {
-            state.controller.setTerminalConfiguration(appearance)
-            state.controller.setTheme(theme)
+            let configChanged = state.controller.setTerminalConfiguration(appearance)
+            let themeChanged = state.controller.setTheme(theme)
+            if configChanged || themeChanged {
+                pumpRendering(state, duration: 0.5)
+            }
         }
+    }
+
+    /// Drives `ghostty_app_tick` at display rate for a short window so a config
+    /// change (theme, font, padding) repaints the live surface immediately, rather
+    /// than waiting for the next PTY-output wakeup. A fixed short pump is enough: a
+    /// color/font reconfigure needs no reply-gated handshake the way a cold spawn
+    /// does, so a handful of frames flush the new look.
+    private func pumpRendering(_ state: TerminalViewState, duration: TimeInterval) {
+        let started = Date()
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak state] timer in
+            guard let state else { timer.invalidate(); return }
+            state.controller.tick()
+            if Date().timeIntervalSince(started) > duration {
+                timer.invalidate()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     /// Watches the surface's already-published activity signals and flags the
