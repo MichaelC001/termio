@@ -641,8 +641,7 @@ final class TermioStore: ObservableObject {
         }
     }
 
-    /// Adds a session to a project, running in the project's directory (or its own
-    /// worktree when the global auto-isolate toggle is on).
+    /// Adds a session to a project, running in the project's directory.
     func addSession(to projectID: Project.ID, agent: AgentPreset = .terminal) {
         guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
         let project = projects[index]
@@ -650,8 +649,7 @@ final class TermioStore: ObservableObject {
         let title = agent == .terminal
             ? "Terminal \(terminalCount + 1)"
             : agent.displayName
-        var session = Session(title: title, agent: agent)
-        session.worktreePath = makeWorktree(for: session, in: project)
+        let session = Session(title: title, agent: agent)
         projects[index].sessions.append(session)
         selectedSessionID = session.id
     }
@@ -693,9 +691,6 @@ final class TermioStore: ObservableObject {
             branch: currentBranch(in: path) ?? "—",
             sessions: [session]
         )
-        // Seed the first session exactly as addSession would, so a new project's
-        // session behaves identically to one added to an existing project.
-        project.sessions[0].worktreePath = makeWorktree(for: session, in: project)
         projects.append(project)
         selectedSessionID = project.sessions.first?.id
     }
@@ -704,65 +699,6 @@ final class TermioStore: ObservableObject {
     /// it is not a repo (rendered as "—", matching the seed projects).
     private func currentBranch(in directory: String) -> String? {
         runGit(["rev-parse", "--abbrev-ref", "HEAD"], in: directory)
-    }
-
-    /// Creates an isolated git worktree for a new session, returning its absolute
-    /// path, or `nil` to run the session directly in the project directory.
-    /// Worktrees are a best-effort convenience: anything that prevents creation
-    /// (worktrees disabled, not a git repo, a git failure) is logged and degrades
-    /// gracefully — never a crash, per the project's no-trap rule.
-    private func makeWorktree(for session: Session, in project: Project) -> String? {
-        guard settings.worktreeEnabled else { return nil }
-        return createWorktree(for: session, in: project)
-    }
-
-    /// The worktree-creation core, used both by the auto-on-create path (which gates
-    /// on the global toggle) and by an explicit "isolate this session" action (which
-    /// does not — the user asked for it directly). Returns the worktree's path, or
-    /// `nil` (logged) if the project is not a git repo or git fails.
-    private func createWorktree(for session: Session, in project: Project) -> String? {
-        guard runGit(["rev-parse", "--is-inside-work-tree"], in: project.path) != nil else {
-            logWorktree("skipped: \(project.path) is not a git repository")
-            return nil
-        }
-
-        let slug = Self.slug(session.title)
-        let base = resolvedWorktreeBase(for: project)
-        var directory = base.appendingPathComponent(slug).path
-        var branch = settings.worktreeBranchPrefix + slug
-        // Avoid clobbering an existing branch or directory (e.g. two sessions with
-        // the same title) by disambiguating with a short slice of the session id.
-        if branchExists(branch, in: project.path) || FileManager.default.fileExists(atPath: directory) {
-            let suffix = String(session.id.uuidString.prefix(6)).lowercased()
-            directory += "-" + suffix
-            branch += "-" + suffix
-        }
-
-        do {
-            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        } catch {
-            logWorktree("could not create base directory \(base.path): \(error)")
-            return nil
-        }
-        guard runGit(["worktree", "add", directory, "-b", branch], in: project.path) != nil else {
-            logWorktree("git worktree add failed for \(directory)")
-            return nil
-        }
-        return directory
-    }
-
-    private func resolvedWorktreeBase(for project: Project) -> URL {
-        let raw = settings.worktreeBaseDirectory
-        if raw.hasPrefix("/") {
-            return URL(fileURLWithPath: raw, isDirectory: true)
-        }
-        return URL(fileURLWithPath: project.path, isDirectory: true)
-            .appendingPathComponent(raw, isDirectory: true)
-            .standardizedFileURL
-    }
-
-    private func branchExists(_ branch: String, in directory: String) -> Bool {
-        runGit(["show-ref", "--verify", "--quiet", "refs/heads/\(branch)"], in: directory) != nil
     }
 
     /// Runs `git -C <directory> <arguments…>` synchronously, returning trimmed
@@ -779,7 +715,7 @@ final class TermioStore: ObservableObject {
         do {
             try process.run()
         } catch {
-            logWorktree("git could not be launched: \(error)")
+            FileHandle.standardError.write(Data("termio: git could not be launched: \(error)\n".utf8))
             return nil
         }
         process.waitUntilExit()
@@ -787,20 +723,6 @@ final class TermioStore: ObservableObject {
         let data = output.fileHandleForReading.readDataToEndOfFile()
         return String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    }
-
-    private func logWorktree(_ message: String) {
-        FileHandle.standardError.write(Data("termio: worktree \(message)\n".utf8))
-    }
-
-    /// Lowercased, hyphen-joined slug of a session title, safe for a branch name
-    /// and a directory name.
-    private static func slug(_ title: String) -> String {
-        let mapped = title.lowercased().map { character -> Character in
-            character.isLetter || character.isNumber ? character : "-"
-        }
-        let collapsed = String(mapped).split(separator: "-").joined(separator: "-")
-        return collapsed.isEmpty ? "session" : collapsed
     }
 
     /// Removes a project from the sidebar: tears down every session's live surface

@@ -230,10 +230,11 @@ struct Session: Identifiable, Hashable, Codable {
     var agent: AgentPreset
     var createdAt: Date
 
-    /// Absolute path of the git worktree created for this session when worktree
-    /// isolation is enabled (see `AppSettings.worktreeEnabled`); `nil` runs the
-    /// session directly in the project's directory. Set before the surface is
-    /// first created, so it determines the surface's working directory.
+    /// Absolute path of a git worktree this session runs in, or `nil` (the common
+    /// case) to run directly in the project's directory. termio no longer creates
+    /// worktrees itself — a worktree is just a folder the user opens as a project —
+    /// but the field is honored so any session persisted from an older build still
+    /// launches in its recorded directory.
     var worktreePath: String?
 
     /// Program passed to libghostty's `command` config; derived from `agent`.

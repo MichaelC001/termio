@@ -77,9 +77,6 @@ final class AppSettings: ObservableObject {
         static let disabledAgents = "agents.disabled"
         static let agentHooksEnabled = "agents.hooksEnabled"
         static let sessionControlEnabled = "agents.sessionControlEnabled"
-        static let worktreeEnabled = "worktree.enabled"
-        static let worktreeBaseDirectory = "worktree.baseDirectory"
-        static let worktreeBranchPrefix = "worktree.branchPrefix"
     }
 
     // MARK: Appearance
@@ -225,27 +222,6 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(sessionControlEnabled, forKey: Key.sessionControlEnabled) }
     }
 
-    // MARK: Worktree
-
-    /// When enabled, a new session in a git project runs in its own `git worktree`
-    /// so an agent's edits stay isolated on a branch instead of mutating the
-    /// project's checked-out tree.
-    @Published var worktreeEnabled: Bool {
-        didSet { defaults.set(worktreeEnabled, forKey: Key.worktreeEnabled) }
-    }
-
-    /// Where worktrees are created. An absolute path is used as-is; a relative one
-    /// is resolved against each project's directory (so the default keeps worktrees
-    /// next to, but outside, the repo).
-    @Published var worktreeBaseDirectory: String {
-        didSet { defaults.set(worktreeBaseDirectory, forKey: Key.worktreeBaseDirectory) }
-    }
-
-    /// Prefix for the branch each worktree is created on (branch name is the prefix
-    /// plus a slug of the session title).
-    @Published var worktreeBranchPrefix: String {
-        didSet { defaults.set(worktreeBranchPrefix, forKey: Key.worktreeBranchPrefix) }
-    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -278,9 +254,6 @@ final class AppSettings: ObservableObject {
             Key.interfaceFontFamily: "",
             Key.interfaceFontSize: 13.0,
             Key.interfaceRowPadding: 2.0,
-            Key.worktreeEnabled: false,
-            Key.worktreeBaseDirectory: "../.termio-worktrees",
-            Key.worktreeBranchPrefix: "termio/",
             Key.agentHooksEnabled: false,
             Key.sessionControlEnabled: false,
         ])
@@ -306,9 +279,6 @@ final class AppSettings: ObservableObject {
         disabledAgents = Set(defaults.stringArray(forKey: Key.disabledAgents) ?? [])
         agentHooksEnabled = defaults.bool(forKey: Key.agentHooksEnabled)
         sessionControlEnabled = defaults.bool(forKey: Key.sessionControlEnabled)
-        worktreeEnabled = defaults.bool(forKey: Key.worktreeEnabled)
-        worktreeBaseDirectory = defaults.string(forKey: Key.worktreeBaseDirectory) ?? "../.termio-worktrees"
-        worktreeBranchPrefix = defaults.string(forKey: Key.worktreeBranchPrefix) ?? "termio/"
     }
 
     /// Effective command for an agent: the user's override if it's non-empty,
