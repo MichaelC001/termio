@@ -57,7 +57,7 @@ extension AppSettings {
     func chromeTheme(for colorScheme: ColorScheme) -> ChromeTheme? {
         let name = colorScheme == .dark ? darkThemeName : lightThemeName
         guard !name.isEmpty,
-              let definition = GhosttyThemeCatalog.theme(named: name)
+              let definition = ThemeLibrary.theme(named: name)
         else { return nil }
         return ChromeTheme(definition)
     }

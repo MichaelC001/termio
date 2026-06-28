@@ -336,7 +336,7 @@ final class TermioStore: ObservableObject {
     /// Resolves a chosen theme name to its terminal configuration, or `nil` when the
     /// slot is left on the default or the name no longer resolves.
     private func themeConfiguration(named name: String) -> TerminalConfiguration? {
-        guard !name.isEmpty, let definition = GhosttyThemeCatalog.theme(named: name) else { return nil }
+        guard !name.isEmpty, let definition = ThemeLibrary.theme(named: name) else { return nil }
         return definition.toTerminalConfiguration()
     }
 

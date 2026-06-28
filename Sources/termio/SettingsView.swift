@@ -425,9 +425,10 @@ private struct DiagonalSplit: Shape {
 private struct AppearanceSettingsTab: View {
     @ObservedObject var settings: AppSettings
 
-    /// Ghostty's bundled theme names. `search("")` matches everything, giving the
-    /// full catalog; sorted for a stable, scannable picker.
-    private let themeNames = GhosttyThemeCatalog.search("").map(\.name).sorted()
+    /// Names of the user's own theme files, loaded from termio's `Themes` folder.
+    /// Held in state so dropping in (or editing) a file and hitting Reload — or just
+    /// reopening this tab — refreshes the pickers without a relaunch.
+    @State private var userThemeNames: [String] = ThemeLibrary.userThemeNames
 
     var body: some View {
         Form {
@@ -494,25 +495,64 @@ private struct AppearanceSettingsTab: View {
             Section {
                 themePicker(title: "Light", selection: $settings.lightThemeName)
                 themePicker(title: "Dark", selection: $settings.darkThemeName)
+                HStack {
+                    Button("Open Themes Folder…", action: openThemesFolder)
+                    Spacer()
+                    if !userThemeNames.isEmpty {
+                        Text("\(userThemeNames.count) custom")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("Reload", action: reloadUserThemes)
+                }
             } header: {
                 SectionHeaderLabel(title: "Theme")
             } footer: {
-                Text("termio switches between these as macOS changes appearance. Leave a slot on the default for termio's own light or dark canvas.")
+                Text("termio switches between these as macOS changes appearance; leave a slot on the default for termio's own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under \u{201C}Custom.\u{201D}")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+        .onAppear(perform: reloadUserThemes)
     }
 
+    /// A theme picker grouped for quick scanning: the user's own themes first (when
+    /// any), then a curated "Popular" shortlist, then the full bundled catalog —
+    /// with "Terminal default" on top.
     private func themePicker(title: String, selection: Binding<String>) -> some View {
         Picker(title, selection: selection) {
             Text("Terminal default").tag("")
-            Divider()
-            ForEach(themeNames, id: \.self) { name in
-                Text(name).tag(name)
+            if !userThemeNames.isEmpty {
+                Section("Custom") {
+                    ForEach(userThemeNames, id: \.self) { name in
+                        Text(name).tag(name)
+                    }
+                }
+            }
+            Section("Popular") {
+                ForEach(ThemeLibrary.popularThemeNames, id: \.self) { name in
+                    Text(name).tag(name)
+                }
+            }
+            Section("All Themes") {
+                ForEach(ThemeLibrary.bundledThemeNames, id: \.self) { name in
+                    Text(name).tag(name)
+                }
             }
         }
+    }
+
+    private func openThemesFolder() {
+        NSWorkspace.shared.open(ThemeLibrary.ensureDirectoryExists())
+    }
+
+    /// Re-reads the Themes folder and republishes settings so any newly loaded or
+    /// edited theme also re-styles the already-open terminals (the store and window
+    /// both re-apply appearance on `objectWillChange`).
+    private func reloadUserThemes() {
+        userThemeNames = ThemeLibrary.reload().map(\.name).sorted { $0.lowercased() < $1.lowercased() }
+        settings.objectWillChange.send()
     }
 }
 
