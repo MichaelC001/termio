@@ -13,6 +13,7 @@ import GhosttyTheme
 /// row a distinct identity.
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
+    @ObservedObject var usage: UsageMonitor
     @State private var selection: SettingsTab = .appearance
 
     var body: some View {
@@ -25,12 +26,13 @@ struct SettingsView: View {
                 case .interface: InterfaceSettingsTab(settings: settings)
                 case .terminal: TerminalSettingsTab(settings: settings)
                 case .agents: AgentSettingsTab(settings: settings)
+                case .usage: UsageSettingsTab(settings: settings, usage: usage)
                 case .worktrees: WorktreeSettingsTab(settings: settings)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 540, height: 520)
+        .frame(width: 580, height: 520)
     }
 }
 
@@ -41,6 +43,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
     case interface
     case terminal
     case agents
+    case usage
     case worktrees
 
     var id: String { rawValue }
@@ -51,6 +54,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .interface: return "Interface"
         case .terminal: return "Terminal"
         case .agents: return "Agents"
+        case .usage: return "Usage"
         case .worktrees: return "Worktrees"
         }
     }
@@ -61,6 +65,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .interface: return "sidebar.left"
         case .terminal: return "terminal"
         case .agents: return "sparkles"
+        case .usage: return "gauge.medium"
         case .worktrees: return "arrow.triangle.branch"
         }
     }
@@ -748,6 +753,108 @@ private struct AgentSettingsTab: View {
     /// fields below it.
     private func subtitle(for preset: AgentPreset) -> String {
         settings.command(for: preset) ?? "Login shell"
+    }
+}
+
+/// The coding-plan usage limits for the agents termio runs, reusing the OAuth
+/// credentials the `claude` and `codex` CLIs already leave on disk — the same
+/// approach as steipete's CodexBar, scoped to the two agents with a clean
+/// local-cred endpoint. A reference view, not an ambient one: it pulls fresh on
+/// open and on Refresh, so a glance here tells you whether to start that long run.
+private struct UsageSettingsTab: View {
+    @ObservedObject var settings: AppSettings
+    @ObservedObject var usage: UsageMonitor
+
+    /// The supported agents the user has left enabled — the only ones the monitor
+    /// fetches, so the only ones worth a section here.
+    private var agents: [AgentPreset] {
+        UsageMonitor.supportedAgents.filter(settings.isAgentEnabled)
+    }
+
+    var body: some View {
+        Form {
+            if agents.isEmpty {
+                Section {
+                    Text("Enable Claude Code or Codex in the Agents tab to see their plan limits here.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    SectionHeaderLabel(title: "Usage")
+                }
+            }
+            ForEach(agents) { agent in
+                Section {
+                    if let reading = usage.usage[agent], !reading.windows.isEmpty {
+                        ForEach(reading.windows) { window in
+                            UsageWindowRow(window: window)
+                        }
+                    } else {
+                        Text("No reading — sign in with `\(agent.command ?? agent.rawValue)` once, then Refresh.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    HStack(spacing: 8) {
+                        IconBadge(agent.icon)
+                        SectionHeaderLabel(title: agent.displayName)
+                    }
+                }
+            }
+            if !agents.isEmpty {
+                Section {
+                    Button("Refresh", action: usage.refresh)
+                } footer: {
+                    Text("Limits are read from each agent's own OAuth login (no passwords stored) and refresh on their own every few minutes. Reading Claude's may prompt once for Keychain access.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear(perform: usage.refresh)
+    }
+}
+
+/// One quota lane: its period and a filled bar with the percent and reset time.
+/// The bar tints amber past 75% and red past 90%, so a near-exhausted window
+/// reads at a glance without a number-by-number scan.
+private struct UsageWindowRow: View {
+    let window: UsageWindow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(window.label)
+                    .font(.callout)
+                Spacer()
+                Text("\(window.usedPercent)%")
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                if !window.resetSummary.isEmpty {
+                    Text("· resets \(window.resetSummary)")
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.08))
+                    Capsule()
+                        .fill(fill)
+                        .frame(width: max(0, min(1, Double(window.usedPercent) / 100)) * geometry.size.width)
+                }
+            }
+            .frame(height: 6)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var fill: Color {
+        switch window.usedPercent {
+        case 90...: return .red
+        case 75...: return .orange
+        default: return .accentColor
+        }
     }
 }
 

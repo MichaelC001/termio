@@ -16,14 +16,12 @@ import SwiftUI
 @MainActor
 final class MenuBarController {
     private let store: TermioStore
-    private let usage: UsageMonitor
     private let onSelect: (Session.ID) -> Void
     private let statusItem: NSStatusItem
     private var cancellables: Set<AnyCancellable> = []
 
-    init(store: TermioStore, usage: UsageMonitor, onSelect: @escaping (Session.ID) -> Void) {
+    init(store: TermioStore, onSelect: @escaping (Session.ID) -> Void) {
         self.store = store
-        self.usage = usage
         self.onSelect = onSelect
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         // Drawing the mark as the button's own image lets `variableLength` size the

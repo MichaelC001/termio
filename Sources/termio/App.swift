@@ -51,7 +51,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let root = RootView()
             .environmentObject(store)
             .environmentObject(settings)
-            .environmentObject(usageMonitor)
 
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
@@ -92,7 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.applyChromeAppearance()
             }
 
-        menuBar = MenuBarController(store: store, usage: usageMonitor) { [weak self] id in
+        menuBar = MenuBarController(store: store) { [weak self] id in
             self?.store.selectedSessionID = id
             NSApp.activate(ignoringOtherApps: true)
             self?.window.makeKeyAndOrderFront(nil)
@@ -184,7 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // toolbar; `.none` alone leaves a faint line.
             window.titlebarSeparatorStyle = .none
             window.titlebarAppearsTransparent = true
-            window.contentView = NSHostingView(rootView: SettingsView(settings: settings))
+            window.contentView = NSHostingView(rootView: SettingsView(settings: settings, usage: usageMonitor))
             window.isReleasedWhenClosed = false
             window.center()
             settingsWindow = window
