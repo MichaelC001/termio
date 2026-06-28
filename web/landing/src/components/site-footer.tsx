@@ -8,7 +8,6 @@ const footerGroups: { heading: string; links: { label: string; href: string }[] 
       { label: "Features", href: "#features" },
       { label: "How it works", href: "#how-it-works-heading" },
       { label: "Pricing", href: "#pricing" },
-      { label: "Refer & earn", href: "/refer" },
       { label: "Download", href: downloadUrl },
     ],
   },
