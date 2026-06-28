@@ -13,17 +13,49 @@ extension AppSettings {
 }
 
 private extension View {
-    /// Paints the themed sidebar panel color, hiding the native list background so
-    /// the theme color reads instead of the vibrant material. With no theme the view
-    /// is returned untouched so the native `.sidebar` material shows through.
-    @ViewBuilder
-    func themedSidebarBackground(_ chrome: ChromeTheme?) -> some View {
-        if let chrome {
-            scrollContentBackground(.hidden)
-                .background(chrome.panelBackground.ignoresSafeArea())
-        } else {
-            self
-        }
+    /// Paints the sidebar's glass panel and hides the native list background so the
+    /// glass reads instead of the system's raw `.sidebar` vibrancy. The bare vibrancy
+    /// let a colorful desktop wallpaper bleed through behind the window and read as a
+    /// messy blue gradient in dark mode; this keeps the live-blur "glass" feel but
+    /// pins the color so the desktop can't drive it.
+    func glassSidebarBackground(_ chrome: ChromeTheme?, isDark: Bool) -> some View {
+        scrollContentBackground(.hidden)
+            .background(SidebarGlass(chrome: chrome, isDark: isDark).ignoresSafeArea())
+    }
+}
+
+/// The sidebar's "better glass": a thin live material carries the blur and
+/// luminosity that read as glass, then a near-opaque tint sits over it so the
+/// desktop behind a translucent window can't dictate the sidebar's color (the
+/// failure mode of raw vibrancy in dark mode). The tint borrows the theme's panel
+/// color when a terminal theme is set, else a neutral dark/light. Two hairlines —
+/// a bright top edge and a quiet trailing seam — define the panel the way light
+/// catches a real pane of glass, in place of a hard divider.
+private struct SidebarGlass: View {
+    let chrome: ChromeTheme?
+    let isDark: Bool
+
+    var body: some View {
+        Rectangle()
+            .fill(.ultraThinMaterial)
+            .overlay(tint)
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(Color.white.opacity(isDark ? 0.08 : 0.45))
+                    .frame(height: 1)
+            }
+            .overlay(alignment: .trailing) {
+                Rectangle()
+                    .fill(Color.white.opacity(isDark ? 0.06 : 0.0))
+                    .frame(width: 1)
+            }
+    }
+
+    /// Near-opaque so only a hint of the material's blur survives — enough to feel
+    /// like glass, not enough for the wallpaper to tint it.
+    private var tint: Color {
+        let base = chrome?.panelBackground ?? (isDark ? Color(white: 0.13) : Color(white: 0.95))
+        return base.opacity(isDark ? 0.78 : 0.72)
     }
 }
 
@@ -90,7 +122,7 @@ struct SidebarView: View {
         // safe-area juggling: the toolbar row is simply the top of the window.
         .listStyle(.sidebar)
         .environment(\.defaultMinListRowHeight, 1)
-        .themedSidebarBackground(chrome)
+        .glassSidebarBackground(chrome, isDark: colorScheme == .dark)
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
         // Drop SwiftUI's automatic sidebar toggle: on macOS 26 it carries a resting
         // Liquid Glass capsule that reads as a permanent filled background. A flat
