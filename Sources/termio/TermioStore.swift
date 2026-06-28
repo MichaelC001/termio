@@ -641,11 +641,9 @@ final class TermioStore: ObservableObject {
         }
     }
 
-    /// Adds a session to a project. When `worktreePath` is given, the session joins
-    /// that existing worktree folder (the "new session in this worktree" action from
-    /// a promoted worktree's header); otherwise it runs in the project's primary
-    /// checkout, auto-isolating only if the global worktree toggle is on.
-    func addSession(to projectID: Project.ID, agent: AgentPreset = .terminal, worktreePath: String? = nil) {
+    /// Adds a session to a project, running in the project's directory (or its own
+    /// worktree when the global auto-isolate toggle is on).
+    func addSession(to projectID: Project.ID, agent: AgentPreset = .terminal) {
         guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
         let project = projects[index]
         let terminalCount = project.sessions.filter { $0.agent == .terminal }.count
@@ -653,27 +651,15 @@ final class TermioStore: ObservableObject {
             ? "Terminal \(terminalCount + 1)"
             : agent.displayName
         var session = Session(title: title, agent: agent)
-        session.worktreePath = worktreePath ?? makeWorktree(for: session, in: project)
+        session.worktreePath = makeWorktree(for: session, in: project)
         projects[index].sessions.append(session)
         selectedSessionID = session.id
     }
 
-    /// Creates a session in a brand-new git worktree, regardless of the global
-    /// auto-isolate toggle — the project header's explicit "New worktree" action.
-    /// The new worktree surfaces as its own top-level folder. Degrades to a
-    /// primary-checkout session (logged) if the worktree can't be created — e.g. the
-    /// project is not a git repository.
-    func addWorktreeSession(to projectID: Project.ID, agent: AgentPreset = .terminal) {
-        guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
-        let project = projects[index]
-        let terminalCount = project.sessions.filter { $0.agent == .terminal }.count
-        let title = agent == .terminal
-            ? "Terminal \(terminalCount + 1)"
-            : agent.displayName
-        var session = Session(title: title, agent: agent)
-        session.worktreePath = createWorktree(for: session, in: project)
-        projects[index].sessions.append(session)
-        selectedSessionID = session.id
+    /// Reorders the project list for the sidebar's drag-to-reorder. The new order
+    /// persists through `projects`' `didSet`, so it survives a relaunch.
+    func moveProject(fromOffsets source: IndexSet, toOffset destination: Int) {
+        projects.move(fromOffsets: source, toOffset: destination)
     }
 
     /// Presents a folder picker and, on confirmation, opens the chosen directory

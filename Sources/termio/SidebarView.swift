@@ -20,11 +20,10 @@ struct SidebarView: View {
     // The terminal theme is split light/dark and libghostty tracks the system
     // appearance; the chrome borrows whichever side is currently showing.
     @Environment(\.colorScheme) private var colorScheme
-    // Which top-level folders (projects and promoted worktrees) are folded shut,
-    // keyed by `SidebarEntry.id`. Held here, not in the headers, because a header
-    // and its session rows are siblings — only the parent can both toggle the fold
-    // and omit the collapsed folder's rows.
-    @State private var collapsedFolders: Set<String> = []
+    // Which projects are folded shut. Held here, not in ProjectHeader, because the
+    // header and the session rows are siblings — only the parent can both toggle the
+    // fold and omit the collapsed project's rows.
+    @State private var collapsedProjects: Set<Project.ID> = []
 
     // Chrome colors borrowed from the selected terminal theme; `nil` keeps the
     // default system look untouched.
@@ -40,14 +39,24 @@ struct SidebarView: View {
         // macOS has no `listSectionSpacing`. The header carries its own grouping
         // weight (small-caps label + folder mark), so folded projects stack tight.
         List {
-            // Every working directory is its own top-level folder: a project's main
-            // checkout, and each git worktree promoted to a sibling (sorted right
-            // after its origin project, labelled "repo · branch"). No nested worktree
-            // layer — a worktree reads as a peer folder, the way Codex's app treats a
-            // permanent worktree as its own project.
-            ForEach(sidebarEntries) { entry in
-                sidebarRows(for: entry)
+            // A flat list of projects (each opened folder, including any git worktree
+            // the user opened, is just a project). Each project is one draggable unit
+            // — its header plus its session rows — so dragging reorders whole
+            // projects; the new order persists through the store.
+            ForEach(store.projects) { project in
+                ProjectHeader(
+                    project: project,
+                    isCollapsed: collapsedProjects.contains(project.id),
+                    toggleCollapsed: { toggleCollapsed(project.id) },
+                    chrome: chrome
+                )
+                if !collapsedProjects.contains(project.id) {
+                    ForEach(project.sessions) { session in
+                        SessionRow(session: session, chrome: chrome)
+                    }
+                }
             }
+            .onMove(perform: store.moveProject)
         }
         // Hosted via NSHostingController (see App.swift), so this is a standard
         // macOS source list — exactly NetNewsWire's layout: the window's toolbar row
@@ -100,158 +109,14 @@ struct SidebarView: View {
         .help("Toggle Sidebar")
     }
 
-    private func toggleCollapsed(_ id: String) {
+    private func toggleCollapsed(_ id: Project.ID) {
         withAnimation(.easeInOut(duration: 0.18)) {
-            if collapsedFolders.contains(id) {
-                collapsedFolders.remove(id)
+            if collapsedProjects.contains(id) {
+                collapsedProjects.remove(id)
             } else {
-                collapsedFolders.insert(id)
+                collapsedProjects.insert(id)
             }
         }
-    }
-
-    /// The flat, ordered list of top-level folders: each project (its primary
-    /// checkout) immediately followed by that project's worktrees, in the order the
-    /// worktrees first appeared. Keeping a worktree adjacent to its origin project is
-    /// what preserves the repo association now that the nesting is gone.
-    private var sidebarEntries: [SidebarEntry] {
-        var entries: [SidebarEntry] = []
-        for project in store.projects {
-            entries.append(.project(project, sessions: project.sessions.filter { $0.worktreePath == nil }))
-            var order: [String] = []
-            var byFolder: [String: [Session]] = [:]
-            for session in project.sessions {
-                guard let folder = session.worktreePath else { continue }
-                if byFolder[folder] == nil { order.append(folder) }
-                byFolder[folder, default: []].append(session)
-            }
-            for folder in order {
-                entries.append(.worktree(project: project, folderPath: folder, sessions: byFolder[folder] ?? []))
-            }
-        }
-        return entries
-    }
-
-    /// One folder's rows: its header followed by its sessions when expanded. A
-    /// project and a promoted worktree render the same shape — both are peer
-    /// top-level folders — differing only in their header.
-    @ViewBuilder
-    private func sidebarRows(for entry: SidebarEntry) -> some View {
-        let isCollapsed = collapsedFolders.contains(entry.id)
-        switch entry {
-        case .project(let project, let sessions):
-            ProjectHeader(
-                project: project,
-                isCollapsed: isCollapsed,
-                toggleCollapsed: { toggleCollapsed(entry.id) },
-                chrome: chrome
-            )
-            if !isCollapsed {
-                ForEach(sessions) { session in
-                    SessionRow(session: session, chrome: chrome)
-                }
-            }
-        case .worktree(let project, let folderPath, let sessions):
-            WorktreeFolderHeader(
-                project: project,
-                folderPath: folderPath,
-                isCollapsed: isCollapsed,
-                toggleCollapsed: { toggleCollapsed(entry.id) },
-                chrome: chrome
-            )
-            if !isCollapsed {
-                ForEach(sessions) { session in
-                    SessionRow(session: session, chrome: chrome)
-                }
-            }
-        }
-    }
-}
-
-/// A top-level sidebar folder: either a project's primary checkout or one of its
-/// git worktrees, promoted to a peer rather than nested beneath the project.
-private enum SidebarEntry: Identifiable {
-    case project(Project, sessions: [Session])
-    case worktree(project: Project, folderPath: String, sessions: [Session])
-
-    var id: String {
-        switch self {
-        case .project(let project, _): return "project:\(project.id)"
-        case .worktree(_, let folderPath, _): return "worktree:\(folderPath)"
-        }
-    }
-}
-
-/// A git worktree promoted to a top-level folder — a sibling of its origin project
-/// rather than a node nested inside it. A branch glyph and a "REPO · branch" label
-/// keep it reading as a peer working directory while still naming where it came
-/// from. Mirrors `ProjectHeader`'s hover agent-add and fold behaviour, but its new
-/// sessions run in this worktree.
-private struct WorktreeFolderHeader: View {
-    @EnvironmentObject var store: TermioStore
-    @EnvironmentObject var settings: AppSettings
-    let project: Project
-    let folderPath: String
-    let isCollapsed: Bool
-    let toggleCollapsed: () -> Void
-    let chrome: ChromeTheme?
-    @State private var isHovering = false
-
-    var body: some View {
-        HStack(spacing: 6) {
-            HugeIconView(icon: .gitBranch, size: 14, color: chrome?.foreground ?? .primary)
-                .frame(width: 16)
-            HStack(spacing: 5) {
-                // The repo name carries the same small-caps weight as a project
-                // header so the worktree reads as a peer folder; the live branch
-                // trails in a quieter, normal-case run so it stays legible.
-                Text(project.name)
-                    .textCase(.uppercase)
-                    .tracking(0.5)
-                    .foregroundStyle(chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.primary))
-                Text("· \(branch)")
-                    .foregroundStyle((chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.secondary)).opacity(0.7))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            .font(.system(size: 11, weight: .medium))
-            Spacer(minLength: 4)
-        }
-        .overlay(alignment: .trailing) {
-            HStack(spacing: 3) {
-                ForEach(enabledAgentPresets(settings)) { preset in
-                    AgentQuickAddButton(preset: preset, chrome: chrome) {
-                        store.addSession(to: project.id, agent: preset, worktreePath: folderPath)
-                    }
-                }
-            }
-            .opacity(isHovering ? 1 : 0)
-            .allowsHitTesting(isHovering)
-        }
-        .padding(.vertical, 3)
-        .contentShape(Rectangle())
-        .onHover { isHovering = $0 }
-        .onTapGesture { toggleCollapsed() }
-        .contextMenu {
-            ForEach(enabledAgentPresets(settings)) { preset in
-                Button("New \(preset.displayName) Session") {
-                    store.addSession(to: project.id, agent: preset, worktreePath: folderPath)
-                }
-            }
-            Divider()
-            Button("Reveal in Finder") {
-                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: folderPath)])
-            }
-        }
-        .animation(.easeInOut(duration: 0.12), value: isHovering)
-        .animation(.easeInOut(duration: 0.18), value: isCollapsed)
-        .help(folderPath)
-    }
-
-    /// The folder's live branch, read from `HEAD`; falls back to the folder's own
-    /// name when it can't be resolved.
-    private var branch: String {
-        store.branch(forFolder: folderPath) ?? (folderPath as NSString).lastPathComponent
     }
 }
 
@@ -302,11 +167,6 @@ private struct ProjectHeader: View {
         // button, keeping the hover row to just the agent icons.
         .overlay(alignment: .trailing) {
             HStack(spacing: 3) {
-                // A worktree needs a git repo; a plain directory carries the "—"
-                // branch placeholder, so the worktree action is hidden for it.
-                if project.branch != "—" {
-                    NewWorktreeButton(project: project, chrome: chrome)
-                }
                 ForEach(enabledAgentPresets(settings)) { preset in
                     AgentQuickAddButton(preset: preset, chrome: chrome) {
                         store.addSession(to: project.id, agent: preset)
@@ -352,18 +212,6 @@ private struct NewSessionMenuItems: View {
                 store.addSession(to: project.id, agent: preset)
             }
         }
-        // Right-click parity for the header's "New worktree" button — only a git
-        // repo can hold a worktree.
-        if project.branch != "—" {
-            Divider()
-            Menu("New Session in Worktree") {
-                ForEach(enabledAgentPresets(settings)) { preset in
-                    Button(preset.displayName) {
-                        store.addWorktreeSession(to: project.id, agent: preset)
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -405,39 +253,6 @@ private struct AgentQuickAddButton: View {
         .onHover { isHovering = $0 }
         .animation(.easeInOut(duration: 0.1), value: isHovering)
         .help("New \(preset.displayName) session")
-    }
-}
-
-/// The project header's "new worktree" control: a branch button that opens an
-/// agent menu, each item spawning that agent in a brand-new git worktree — which
-/// surfaces as its own top-level folder. This is the single, folder-level entry
-/// point for creating a worktree, replacing the old per-session isolate button.
-private struct NewWorktreeButton: View {
-    @EnvironmentObject var store: TermioStore
-    @EnvironmentObject var settings: AppSettings
-    let project: Project
-    let chrome: ChromeTheme?
-    @State private var isHovering = false
-
-    var body: some View {
-        Menu {
-            ForEach(enabledAgentPresets(settings)) { preset in
-                Button("New \(preset.displayName) Session") {
-                    store.addWorktreeSession(to: project.id, agent: preset)
-                }
-            }
-        } label: {
-            HugeIconView(icon: .gitBranch, size: 14, color: chrome?.foreground ?? .primary)
-                .frame(width: 22, height: 20)
-                .background(hoverBackground(chrome, isHovering: isHovering))
-                .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .onHover { isHovering = $0 }
-        .animation(.easeInOut(duration: 0.1), value: isHovering)
-        .help("New session in a worktree")
     }
 }
 
