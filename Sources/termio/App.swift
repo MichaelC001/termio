@@ -31,6 +31,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBar: MenuBarController?
     private var settingsWindow: NSWindow?
     private var settingsObserver: AnyCancellable?
+    // Re-applies the fullscreen title-bar fill whenever AppKit rebuilds that bar.
+    // See `observeTitlebarFill` for why this is needed only in native full screen.
+    private var titlebarFillObserver: AnyCancellable?
     // Drives in-app auto-update. Started only in release builds — a debug build has
     // no Developer-ID signature for Sparkle to validate the appcast's EdDSA against,
     // and we don't want dev runs phoning the update feed. The feed URL and public
@@ -79,6 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         applyWindowTransparency()
         applyChromeAppearance()
+        observeTitlebarFill()
 
         // Background opacity/blur only show through a non-opaque window, and the
         // window's light/dark appearance follows the selected theme, so both track
@@ -89,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] in
                 self?.applyWindowTransparency()
                 self?.applyChromeAppearance()
+                self?.scheduleTitlebarFillSync()
             }
 
         menuBar = MenuBarController(store: store) { [weak self] id in
@@ -146,6 +151,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let translucent = settings.backgroundOpacity < 1.0 || settings.backgroundBlur > 0
         window.isOpaque = !translucent
         window.backgroundColor = translucent ? .clear : settings.terminalBackgroundColor
+    }
+
+    /// Subscribes to the events that rebuild the native-fullscreen title bar so the
+    /// fill can be re-applied each time. In native full screen AppKit moves the title
+    /// bar out of our window into a transient, system-owned `NSToolbarFullScreenWindow`
+    /// that it silently tears down and recreates on wake, Space switches, and occlusion
+    /// changes — each time dropping our color. Re-syncing on these notifications (the
+    /// approach Ghostty's terminal window uses) keeps the bar painted through every
+    /// rebuild. Windowed mode is untouched: there the SwiftUI toolbar already paints
+    /// flush, and recoloring would cover the sidebar's vibrant title-bar region.
+    private func observeTitlebarFill() {
+        guard let window else { return }
+        let windowEvents = Publishers.MergeMany(
+            [NSWindow.didEnterFullScreenNotification,
+             NSWindow.didExitFullScreenNotification,
+             NSWindow.didChangeOcclusionStateNotification,
+             NSWindow.didBecomeMainNotification]
+                .map { NotificationCenter.default.publisher(for: $0, object: window) }
+        )
+        titlebarFillObserver = windowEvents
+            .merge(with: NSWorkspace.shared.notificationCenter
+                .publisher(for: NSWorkspace.didWakeNotification))
+            .sink { [weak self] _ in self?.scheduleTitlebarFillSync() }
+    }
+
+    /// Re-applies the title-bar fill on the next run-loop turn. The fullscreen toolbar
+    /// window and its views are not yet constructed when `didEnterFullScreen` fires, so
+    /// resolving them synchronously finds nothing; the hop lets AppKit finish first.
+    private func scheduleTitlebarFillSync() {
+        DispatchQueue.main.async { [weak self] in self?.syncTitlebarFill() }
+    }
+
+    /// Paints the native-fullscreen title bar the exact terminal background. On macOS 26
+    /// the fullscreen title bar's Liquid Glass material resolves to system white and
+    /// leaves a white seam over the dark terminal; SwiftUI's `toolbarBackground` and the
+    /// content background can't reach it because it lives in a separate system window.
+    /// Following Ghostty, we recolor the real `NSTitlebarView` layer and hide the
+    /// `NSTitlebarBackgroundView` — the subview that forces the glass fill — so our color
+    /// reads. No-op outside full screen, where the windowed title bar already works.
+    private func syncTitlebarFill() {
+        guard let window, window.styleMask.contains(.fullScreen),
+              let container = fullScreenTitlebarContainer(for: window),
+              let titlebarView = container.firstDescendant(className: "NSTitlebarView")
+        else { return }
+        let translucent = settings.backgroundOpacity < 1.0 || settings.backgroundBlur > 0
+        titlebarView.wantsLayer = true
+        if translucent {
+            // Keep the bar see-through so a low-opacity background and blur still read.
+            titlebarView.layer?.backgroundColor = NSColor.clear.cgColor
+        } else {
+            // Resolve the dynamic terminal color under the window's own appearance, not
+            // the (possibly mismatched) system one, so a Dark-pinned app reads dark here.
+            window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                titlebarView.layer?.backgroundColor = settings.terminalBackgroundColor.cgColor
+            }
+        }
+        container.firstDescendant(className: "NSTitlebarBackgroundView")?.isHidden = !translucent
+    }
+
+    /// The title-bar container view inside the system's fullscreen toolbar window. In
+    /// native full screen AppKit hosts the title bar in a private `NSToolbarFullScreenWindow`
+    /// parented to our window (the parent check disambiguates if more than one exists).
+    private func fullScreenTitlebarContainer(for window: NSWindow) -> NSView? {
+        let fullScreenWindows = NSApplication.shared.windows.filter {
+            String(describing: type(of: $0)) == "NSToolbarFullScreenWindow"
+        }
+        let target = fullScreenWindows.first { $0.parent == window } ?? fullScreenWindows.first
+        return target?.contentView?.firstDescendant(className: "NSTitlebarContainerView")
     }
 
     /// Applies the user's appearance mode. `.system` leaves every surface tracking
@@ -253,4 +326,17 @@ private func buildMainMenu() -> NSMenu {
     editItem.submenu = editMenu
 
     return mainMenu
+}
+
+private extension NSView {
+    /// The first view in this subtree whose runtime class has the given name. Used to
+    /// reach AppKit's private title-bar views (`NSTitlebarView`, `NSTitlebarBackgroundView`)
+    /// by name, since they have no public type — the same lookup Ghostty uses.
+    func firstDescendant(className name: String) -> NSView? {
+        if String(describing: type(of: self)) == name { return self }
+        for subview in subviews {
+            if let match = subview.firstDescendant(className: name) { return match }
+        }
+        return nil
+    }
 }
