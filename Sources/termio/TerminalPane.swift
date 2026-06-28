@@ -79,30 +79,53 @@ struct TerminalPane: View {
     private var titleLabel: some View {
         HStack(spacing: 6) {
             if let project = selectedProject {
-                // The session's real working directory, not just the project name —
-                // so a worktree session shows where it actually is. One uniform
-                // colour, head-truncated so the meaningful tail stays visible.
-                Text(displayPath(for: project))
-                    .lineLimit(1)
-                    .truncationMode(.head)
-                HugeIconView(icon: .gitBranch, size: 13, color: .secondary)
-                Text(project.branch)
-                    .foregroundStyle(.secondary)
+                // Two separate chips: location and git state are distinct facts, so
+                // a long (head-truncated) path never crowds or truncates the branch.
+                // The path is the session's real working directory — so a worktree
+                // session shows where it actually runs, not just the project name.
+                chip {
+                    Text(displayPath(for: project))
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
+                .help(displayPath(for: project))
+                // No branch chip for a non-git directory — its `branch` is the "—"
+                // placeholder, which would read as a meaningless empty git token.
+                if hasBranch(project) {
+                    chip {
+                        HStack(spacing: 4) {
+                            HugeIconView(icon: .gitBranch, size: 13, color: .secondary)
+                            Text(project.branch)
+                        }
+                    }
+                }
             } else {
-                Text("Termio")
+                chip { Text("Termio") }
             }
         }
         .font(.system(size: 13))
         .foregroundStyle(.secondary)
-        // A soft translucent chip behind the location, matching the settings
-        // `IconBadge` material so the title reads as one calm, contained label.
-        .padding(.horizontal, 9)
-        .padding(.vertical, 3)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(.quaternary)
-        )
-        .help(selectedProject.map { displayPath(for: $0) } ?? "")
+    }
+
+    /// A soft translucent pill, matching the settings `IconBadge` material, so each
+    /// part of the title reads as its own calm, contained token.
+    @ViewBuilder
+    private func chip<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .padding(.horizontal, 9)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(.quaternary)
+            )
+    }
+
+    /// Whether the project is a git repo with a branch worth showing. A plain
+    /// (non-git) directory carries the `"—"` placeholder, which we hide rather than
+    /// render as an empty git token.
+    private func hasBranch(_ project: Project) -> Bool {
+        let branch = project.branch.trimmingCharacters(in: .whitespaces)
+        return !branch.isEmpty && branch != "—"
     }
 
     /// The selected session's working directory, home-abbreviated to `~`. Prefers
