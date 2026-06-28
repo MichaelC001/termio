@@ -784,14 +784,20 @@ private struct UsageSettingsTab: View {
             }
             ForEach(agents) { agent in
                 Section {
+                    if let tokens = usage.tokenUsage[agent] {
+                        TokenUsageRow(label: "Today", stats: tokens.today, hasCost: tokens.hasCost)
+                        TokenUsageRow(label: "This week", stats: tokens.week, hasCost: tokens.hasCost)
+                        TokenUsageRow(label: "This month", stats: tokens.month, hasCost: tokens.hasCost)
+                    } else {
+                        Text("No local usage yet — run `\(agent.command ?? agent.rawValue)` once, then Refresh.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     if let reading = usage.usage[agent], !reading.windows.isEmpty {
+                        Divider()
                         ForEach(reading.windows) { window in
                             UsageWindowRow(window: window)
                         }
-                    } else {
-                        Text("No reading — sign in with `\(agent.command ?? agent.rawValue)` once, then Refresh.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     }
                 } header: {
                     HStack(spacing: 8) {
@@ -804,7 +810,7 @@ private struct UsageSettingsTab: View {
                 Section {
                     Button("Refresh", action: usage.refresh)
                 } footer: {
-                    Text("Limits are read from each agent's own OAuth login (no passwords stored) and refresh on their own every few minutes. Reading Claude's may prompt once for Keychain access.")
+                    Text("Token counts are tallied from each agent's own local session logs — your actual usage, regardless of how the plan bills. Costs are estimated at API rates (Claude only). Plan limits below come from each agent's OAuth login; reading Claude's may prompt once for Keychain access.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -812,6 +818,32 @@ private struct UsageSettingsTab: View {
         }
         .formStyle(.grouped)
         .onAppear(perform: usage.refresh)
+    }
+}
+
+/// One token-usage window: the period, the token throughput, and (for agents
+/// termio can price) the API-rate dollar estimate. This is the "what did I
+/// actually burn" line — independent of plan billing.
+private struct TokenUsageRow: View {
+    let label: String
+    let stats: TokenWindowStats
+    let hasCost: Bool
+
+    var body: some View {
+        HStack {
+            Text(label)
+                .font(.callout)
+            Spacer()
+            Text("\(stats.tokenSummary) tokens")
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(.secondary)
+            if hasCost, !stats.costSummary.isEmpty {
+                Text("· \(stats.costSummary)")
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.vertical, 1)
     }
 }
 

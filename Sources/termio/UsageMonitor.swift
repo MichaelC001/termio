@@ -44,6 +44,11 @@ struct AgentUsage: Hashable, Sendable {
 final class UsageMonitor: ObservableObject {
     @Published private(set) var usage: [AgentPreset: AgentUsage] = [:]
 
+    /// Today / this-week / this-month token totals per agent, scanned from each
+    /// agent's own local session logs. This is the "what have I actually burned"
+    /// view — independent of how the plan bills — the same thing ccusage computes.
+    @Published private(set) var tokenUsage: [AgentPreset: AgentTokenUsage] = [:]
+
     /// The agents with a usable local-credential usage endpoint. Kept here so the
     /// UI can ask "is this agent monitorable?" without duplicating the list.
     static let supportedAgents: [AgentPreset] = [.claudeCode, .codex]
@@ -51,6 +56,7 @@ final class UsageMonitor: ObservableObject {
     private let settings: AppSettings
     private var timer: Timer?
     private var refreshTask: Task<Void, Never>?
+    private var scanTask: Task<Void, Never>?
 
     /// Slow on purpose: these are session/weekly/monthly windows that move over
     /// minutes to days, and the endpoints are private — polling hard would be
@@ -88,6 +94,27 @@ final class UsageMonitor: ObservableObject {
             }
             guard !Task.isCancelled else { return }
             await MainActor.run { self?.usage = fetched }
+        }
+
+        // The local-log scan is plain synchronous file I/O over potentially
+        // thousands of session files, so it runs detached (off the main actor)
+        // and publishes back when done. Kept separate from the network fetch so a
+        // slow scan never delays the plan-limit lanes, and vice versa.
+        let claudeEnabled = settings.isAgentEnabled(.claudeCode)
+        let codexEnabled = settings.isAgentEnabled(.codex)
+        scanTask?.cancel()
+        scanTask = Task.detached(priority: .utility) { [weak self] in
+            let windows = DateWindows()
+            var scanned: [AgentPreset: AgentTokenUsage] = [:]
+            if claudeEnabled, let claude = Self.scanClaude(windows) {
+                scanned[.claudeCode] = claude
+            }
+            if codexEnabled, let codex = Self.scanCodex(windows) {
+                scanned[.codex] = codex
+            }
+            guard !Task.isCancelled else { return }
+            let result = scanned
+            await MainActor.run { self?.tokenUsage = result }
         }
     }
 
@@ -290,5 +317,235 @@ extension UsageWindow {
         if seconds < 3600 { return "\(Int((seconds / 60).rounded()))m" }
         if seconds < 86_400 { return "\(Int((seconds / 3600).rounded()))h" }
         return "\(Int((seconds / 86_400).rounded()))d"
+    }
+}
+
+// MARK: - Local token usage (today / this week / this month)
+
+/// The token totals for one time window, broken out by kind so the dollar
+/// estimate can weight each correctly (cache reads are ~10× cheaper than fresh
+/// input). `total` is the literal throughput — every token the agent processed.
+struct TokenWindowStats: Sendable, Hashable {
+    var input = 0
+    var output = 0
+    var cacheWrite = 0
+    var cacheRead = 0
+    /// Accumulated dollar estimate, priced per token as each line is scanned.
+    /// Zero for agents whose provider pricing termio doesn't carry (Codex).
+    var costUSD = 0.0
+
+    var total: Int { input + output + cacheWrite + cacheRead }
+    var isEmpty: Bool { total == 0 }
+
+    mutating func add(_ other: TokenWindowStats) {
+        input += other.input
+        output += other.output
+        cacheWrite += other.cacheWrite
+        cacheRead += other.cacheRead
+        costUSD += other.costUSD
+    }
+}
+
+/// One agent's token usage across the three windows the user asked for. `hasCost`
+/// is false for agents shown as token counts only (no priced model table).
+struct AgentTokenUsage: Sendable, Hashable {
+    var today = TokenWindowStats()
+    var week = TokenWindowStats()
+    var month = TokenWindowStats()
+    var hasCost = false
+}
+
+/// The local-calendar boundaries the scan buckets into. Today is since local
+/// midnight; week and month follow the user's calendar (locale-aware first
+/// weekday, real month length). Today ⊂ this week ⊂ this month always holds, so a
+/// line is simply added to each window whose start it is at or after.
+struct DateWindows: Sendable {
+    let todayStart: Date
+    let weekStart: Date
+    let monthStart: Date
+
+    init(now: Date = Date(), calendar: Calendar = .current) {
+        todayStart = calendar.startOfDay(for: now)
+        weekStart = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? todayStart
+        monthStart = calendar.dateInterval(of: .month, for: now)?.start ?? todayStart
+    }
+}
+
+/// Per-token prices for the models termio can price, in dollars. Cache-write is
+/// the 5-minute ephemeral rate (1.25× input); cache-read is 0.1× input — the
+/// economics the prompt-caching docs specify. Source: the claude-api skill's
+/// current pricing table (Opus 4.8 $5/$25, Sonnet 4.6 $3/$15, Haiku 4.5 $1/$5
+/// per million). Kept in one place so a price change is a one-line edit.
+private struct ModelPrice {
+    let input: Double
+    let output: Double
+    let cacheWrite: Double
+    let cacheRead: Double
+
+    static func perMillion(input: Double, output: Double) -> ModelPrice {
+        ModelPrice(
+            input: input / 1_000_000,
+            output: output / 1_000_000,
+            cacheWrite: input * 1.25 / 1_000_000,
+            cacheRead: input * 0.1 / 1_000_000
+        )
+    }
+
+    /// Matches a Claude model id (e.g. `claude-opus-4-8`) to its tier by family
+    /// name, so a new dated snapshot still prices correctly. Falls back to Opus —
+    /// the costliest, so an unknown model never silently under-counts spend.
+    static func forClaudeModel(_ model: String) -> ModelPrice {
+        let lowered = model.lowercased()
+        if lowered.contains("haiku") { return .perMillion(input: 1, output: 5) }
+        if lowered.contains("sonnet") { return .perMillion(input: 3, output: 15) }
+        return .perMillion(input: 5, output: 25)
+    }
+}
+
+extension UsageMonitor {
+    private nonisolated static func bucket(
+        _ usage: inout AgentTokenUsage, at timestamp: Date, in windows: DateWindows,
+        _ delta: TokenWindowStats
+    ) {
+        if timestamp >= windows.monthStart { usage.month.add(delta) }
+        if timestamp >= windows.weekStart { usage.week.add(delta) }
+        if timestamp >= windows.todayStart { usage.today.add(delta) }
+    }
+
+    /// Scans Claude Code's per-session JSONL logs (`~/.claude/projects/**/*.jsonl`)
+    /// and totals tokens + estimated cost into the three windows. Each line is one
+    /// API turn carrying `message.usage` and `message.model`. Files untouched since
+    /// before the month started can't hold an in-window line (logs are append-only),
+    /// so they're skipped by modification date — the one cheap prefilter available.
+    /// Duplicate turns (re-emitted on resume) are de-duplicated by request id.
+    nonisolated static func scanClaude(_ windows: DateWindows) -> AgentTokenUsage? {
+        let root = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects")
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey]
+        guard let walker = FileManager.default.enumerator(
+            at: root, includingPropertiesForKeys: keys) else { return nil }
+
+        var usage = AgentTokenUsage(hasCost: true)
+        var seen = Set<String>()
+        for case let url as URL in walker where url.pathExtension == "jsonl" {
+            if let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate, modified < windows.monthStart {
+                continue
+            }
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            for line in text.split(separator: "\n") {
+                guard line.contains("\"usage\"") else { continue }
+                guard let object = try? JSONSerialization.jsonObject(
+                    with: Data(line.utf8)) as? [String: Any],
+                    let timestampString = object["timestamp"] as? String,
+                    let timestamp = UsageWindow.parseISO8601(timestampString),
+                    timestamp >= windows.monthStart,
+                    let message = object["message"] as? [String: Any],
+                    let usageObject = message["usage"] as? [String: Any] else { continue }
+
+                let key = (object["requestId"] as? String) ?? (message["id"] as? String) ?? ""
+                if !key.isEmpty {
+                    if seen.contains(key) { continue }
+                    seen.insert(key)
+                }
+
+                let price = ModelPrice.forClaudeModel(message["model"] as? String ?? "")
+                let input = usageObject["input_tokens"] as? Int ?? 0
+                let output = usageObject["output_tokens"] as? Int ?? 0
+                let cacheWrite = usageObject["cache_creation_input_tokens"] as? Int ?? 0
+                let cacheRead = usageObject["cache_read_input_tokens"] as? Int ?? 0
+                let cost = Double(input) * price.input + Double(output) * price.output
+                    + Double(cacheWrite) * price.cacheWrite + Double(cacheRead) * price.cacheRead
+                bucket(&usage, at: timestamp, in: windows, TokenWindowStats(
+                    input: input, output: output, cacheWrite: cacheWrite,
+                    cacheRead: cacheRead, costUSD: cost))
+            }
+        }
+        return usage.month.isEmpty ? nil : usage
+    }
+
+    /// Scans Codex's rollout logs (`~/.codex/sessions/YYYY/MM/DD/*.jsonl`) for
+    /// `token_count` events and totals tokens into the three windows. The date is
+    /// in the directory path, so whole days before the month start are skipped
+    /// without opening a file. Codex's `last_token_usage` is the per-turn delta
+    /// (its `total_token_usage` is cumulative — summing that would double-count).
+    /// No dollar estimate: termio doesn't carry OpenAI model pricing.
+    nonisolated static func scanCodex(_ windows: DateWindows) -> AgentTokenUsage? {
+        let home = ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
+        let sessions = home.appendingPathComponent("sessions")
+        let calendar = Calendar.current
+        let monthDay = calendar.startOfDay(for: windows.monthStart)
+
+        var usage = AgentTokenUsage(hasCost: false)
+        let dayDirectories = Self.codexDayDirectories(under: sessions, onOrAfter: monthDay)
+        for directory in dayDirectories {
+            guard let files = try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: nil) else { continue }
+            for url in files where url.pathExtension == "jsonl" {
+                guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+                for line in text.split(separator: "\n") {
+                    guard line.contains("token_count") else { continue }
+                    guard let object = try? JSONSerialization.jsonObject(
+                        with: Data(line.utf8)) as? [String: Any],
+                        let timestampString = object["timestamp"] as? String,
+                        let timestamp = UsageWindow.parseISO8601(timestampString),
+                        timestamp >= windows.monthStart,
+                        let payload = object["payload"] as? [String: Any],
+                        payload["type"] as? String == "token_count",
+                        let info = payload["info"] as? [String: Any],
+                        let last = info["last_token_usage"] as? [String: Any] else { continue }
+
+                    let inputTotal = last["input_tokens"] as? Int ?? 0
+                    let cached = last["cached_input_tokens"] as? Int ?? 0
+                    let output = last["output_tokens"] as? Int ?? 0
+                    bucket(&usage, at: timestamp, in: windows, TokenWindowStats(
+                        input: max(0, inputTotal - cached), output: output,
+                        cacheWrite: 0, cacheRead: cached, costUSD: 0))
+                }
+            }
+        }
+        return usage.month.isEmpty ? nil : usage
+    }
+
+    /// Codex day-directories at or after `start`, read from the `YYYY/MM/DD` path
+    /// layout so old sessions are never opened. A malformed path component just
+    /// skips that branch rather than failing the scan.
+    private nonisolated static func codexDayDirectories(under root: URL, onOrAfter start: Date) -> [URL] {
+        let manager = FileManager.default
+        let calendar = Calendar.current
+        var result: [URL] = []
+        let years = (try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        for year in years {
+            guard let yearValue = Int(year.lastPathComponent) else { continue }
+            let months = (try? manager.contentsOfDirectory(at: year, includingPropertiesForKeys: nil)) ?? []
+            for month in months {
+                guard let monthValue = Int(month.lastPathComponent) else { continue }
+                let days = (try? manager.contentsOfDirectory(at: month, includingPropertiesForKeys: nil)) ?? []
+                for day in days {
+                    guard let dayValue = Int(day.lastPathComponent),
+                          let date = calendar.date(from: DateComponents(
+                            year: yearValue, month: monthValue, day: dayValue)),
+                          date >= calendar.startOfDay(for: start) else { continue }
+                    result.append(day)
+                }
+            }
+        }
+        return result
+    }
+}
+
+extension TokenWindowStats {
+    /// Compact token count for the UI: `1.2M`, `980K`, `420`.
+    var tokenSummary: String {
+        let value = total
+        if value >= 1_000_000 { return String(format: "%.1fM", Double(value) / 1_000_000) }
+        if value >= 1_000 { return String(format: "%.0fK", Double(value) / 1_000) }
+        return "\(value)"
+    }
+
+    /// Dollar estimate as `$3.40`, or empty when this window carries no priced cost.
+    var costSummary: String {
+        costUSD > 0 ? String(format: "$%.2f", costUSD) : ""
     }
 }
