@@ -432,12 +432,16 @@ final class TermioStore: ObservableObject {
             let firstToken = command.split(separator: " ").first.map(String.init) ?? command
             if lowered == (firstToken as NSString).lastPathComponent.lowercased() { return false }
         }
-        // Shells set the OSC title to the working-directory basename (e.g. "termio");
-        // that names the folder, not the agent's activity, so it is not meaningful.
+        // Shells set the OSC title to the working-directory basename (e.g. "termio"),
+        // and some agents prefix it with a brand glyph that survives sanitizing
+        // because the glyph is a Unicode letter (Pi reports "π - termio"); either way
+        // it names the folder, not the agent's activity, so it is not meaningful. Test
+        // both the whole title and the segment after a " - " separator.
         let workingDirectory = session.worktreePath ?? project(for: session.id)?.path
-        if let workingDirectory,
-           lowered == (workingDirectory as NSString).lastPathComponent.lowercased() {
-            return false
+        if let workingDirectory {
+            let folder = (workingDirectory as NSString).lastPathComponent.lowercased()
+            let tail = lowered.components(separatedBy: " - ").last ?? lowered
+            if lowered == folder || tail == folder { return false }
         }
         return true
     }
