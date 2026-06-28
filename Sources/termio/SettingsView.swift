@@ -27,7 +27,6 @@ struct SettingsView: View {
                 case .terminal: TerminalSettingsTab(settings: settings)
                 case .agents: AgentSettingsTab(settings: settings)
                 case .usage: UsageSettingsTab(settings: settings, usage: usage)
-                case .worktrees: WorktreeSettingsTab(settings: settings)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -44,7 +43,6 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
     case terminal
     case agents
     case usage
-    case worktrees
 
     var id: String { rawValue }
 
@@ -55,7 +53,6 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .terminal: return "Terminal"
         case .agents: return "Agents"
         case .usage: return "Usage"
-        case .worktrees: return "Worktrees"
         }
     }
 
@@ -66,7 +63,6 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .terminal: return "terminal"
         case .agents: return "sparkles"
         case .usage: return "gauge.medium"
-        case .worktrees: return "arrow.triangle.branch"
         }
     }
 }
@@ -1021,35 +1017,3 @@ private struct UsageWindowRow: View {
     }
 }
 
-private struct WorktreeSettingsTab: View {
-    @ObservedObject var settings: AppSettings
-
-    var body: some View {
-        Form {
-            Section {
-                Toggle(isOn: $settings.worktreeEnabled) {
-                    HStack(spacing: 10) {
-                        IconBadge(symbol: "arrow.triangle.branch")
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Git worktree per session")
-                                .font(.headline)
-                            Text("Isolates an agent's edits on a branch instead of mutating the project's working tree. Non-git projects fall back to running in place.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                }
-                .toggleStyle(.switch)
-            }
-            Section {
-                TextField("Directory", text: $settings.worktreeBaseDirectory)
-                TextField("Branch prefix", text: $settings.worktreeBranchPrefix)
-            } header: {
-                SectionHeaderLabel(title: "Location")
-            }
-            .disabled(!settings.worktreeEnabled)
-        }
-        .formStyle(.grouped)
-    }
-}
