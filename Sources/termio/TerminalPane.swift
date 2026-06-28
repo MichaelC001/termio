@@ -78,15 +78,41 @@ struct TerminalPane: View {
 
     private var titleLabel: some View {
         HStack(spacing: 6) {
-            Text(selectedProject?.name ?? "Termio")
-                .fontWeight(.semibold)
             if let project = selectedProject {
+                // The session's real working directory, not just the project name —
+                // so a worktree session shows where it actually is. One uniform
+                // colour, head-truncated so the meaningful tail stays visible.
+                Text(displayPath(for: project))
+                    .lineLimit(1)
+                    .truncationMode(.head)
                 HugeIconView(icon: .gitBranch, size: 13, color: .secondary)
                 Text(project.branch)
                     .foregroundStyle(.secondary)
+            } else {
+                Text("Termio")
             }
         }
         .font(.system(size: 13))
+        .foregroundStyle(.secondary)
+        // A soft translucent chip behind the location, matching the settings
+        // `IconBadge` material so the title reads as one calm, contained label.
+        .padding(.horizontal, 9)
+        .padding(.vertical, 3)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(.quaternary)
+        )
+        .help(selectedProject.map { displayPath(for: $0) } ?? "")
+    }
+
+    /// The selected session's working directory, home-abbreviated to `~`. Prefers
+    /// the session's worktree (where it actually runs) over the project folder.
+    private func displayPath(for project: Project) -> String {
+        let raw = selectedSession?.worktreePath ?? project.path
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if raw == home { return "~" }
+        if raw.hasPrefix(home + "/") { return "~" + raw.dropFirst(home.count) }
+        return raw
     }
 
     private struct MountedSession {
@@ -105,6 +131,10 @@ struct TerminalPane: View {
 
     private var selectedProject: Project? {
         store.selectedSessionID.flatMap { store.project(for: $0) }
+    }
+
+    private var selectedSession: Session? {
+        store.selectedSessionID.flatMap { store.session($0) }
     }
 
     /// True when the user has dialed the background below full opacity or enabled
