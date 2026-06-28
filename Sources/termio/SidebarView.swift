@@ -158,9 +158,9 @@ private struct ProjectHeader: View {
             // grey VSCode uses) so the project name reads clearly; the smaller,
             // uppercase, letter-spaced styling still sets it apart from session rows.
             Text(project.name)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 11, weight: .medium))
                 .textCase(.uppercase)
-                .tracking(0.6)
+                .tracking(0.5)
                 .foregroundStyle(chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.primary))
             Spacer(minLength: 4)
         }
