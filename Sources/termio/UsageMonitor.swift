@@ -57,6 +57,9 @@ final class UsageMonitor: ObservableObject {
     private var timer: Timer?
     private var refreshTask: Task<Void, Never>?
     private var scanTask: Task<Void, Never>?
+    /// Whether a local-log scan is currently running, so overlapping `refresh()`
+    /// calls let it finish instead of cancelling and restarting it forever.
+    private var isScanning = false
 
     /// Slow on purpose: these are session/weekly/monthly windows that move over
     /// minutes to days, and the endpoints are private — polling hard would be
@@ -67,22 +70,49 @@ final class UsageMonitor: ObservableObject {
         self.settings = settings
     }
 
+    /// When the heavy local-log scan last published, so routine refreshes can skip
+    /// re-reading gigabytes of logs that have barely changed.
+    private var lastTokenScan: Date?
+    /// How stale token totals may get before an automatic refresh re-scans. The
+    /// plan-limit lanes refresh on the faster `interval`; the log scan is far
+    /// heavier (it reads every session file), so it runs much less often.
+    private let tokenScanMaxAge: TimeInterval = 1800
+
     /// Begins periodic refreshes and fetches once immediately. Safe to call once
     /// at launch; repeated calls just restart the cadence.
     func start() {
-        refresh()
+        refreshPlanLimits()
+        scanTokens(force: true)
         timer?.invalidate()
+        // The recurring tick refreshes only the cheap plan-limit lanes. The log
+        // scan is deliberately *not* on this cadence — re-reading every session
+        // file every few minutes would churn the disk and the battery for almost
+        // no change; it refreshes on launch, on demand, and when it goes stale.
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refresh() }
+            MainActor.assumeIsolated { self?.refreshPlanLimits() }
         }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
 
-    /// Fetches every supported, enabled agent's usage off the main actor and
-    /// publishes the results. An agent that errors is dropped from the map (its
-    /// row disappears) rather than left showing a stale number.
+    /// Refreshes both surfaces, re-scanning the logs only if the totals have gone
+    /// stale. The cheap path for the Usage tab appearing.
     func refresh() {
+        refreshPlanLimits()
+        scanTokens(force: false)
+    }
+
+    /// Refreshes both and forces a fresh log scan regardless of age — the Refresh
+    /// button's "I want it now".
+    func forceRefresh() {
+        refreshPlanLimits()
+        scanTokens(force: true)
+    }
+
+    /// Fetches every supported, enabled agent's plan limits off the main actor and
+    /// publishes them. An agent that errors is dropped from the map (its row
+    /// disappears) rather than left showing a stale number.
+    private func refreshPlanLimits() {
         let agents = Self.supportedAgents.filter(settings.isAgentEnabled)
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
@@ -95,14 +125,23 @@ final class UsageMonitor: ObservableObject {
             guard !Task.isCancelled else { return }
             await MainActor.run { self?.usage = fetched }
         }
+    }
 
-        // The local-log scan is plain synchronous file I/O over potentially
-        // thousands of session files, so it runs detached (off the main actor)
-        // and publishes back when done. Kept separate from the network fetch so a
-        // slow scan never delays the plan-limit lanes, and vice versa.
+    /// Scans the local session logs for token totals, off the main actor.
+    ///
+    /// Skipped entirely when a scan is already running (the multi-second walk must
+    /// run to completion — restarting it on every `refresh()` would mean it never
+    /// finishes) or, unless `force`d, when the last scan is still fresh. The
+    /// published `tokenUsage` is never cleared between scans, so the Usage tab
+    /// shows the last totals instantly while a fresh scan runs underneath.
+    private func scanTokens(force: Bool) {
+        guard !isScanning else { return }
+        if !force, let last = lastTokenScan, Date().timeIntervalSince(last) < tokenScanMaxAge {
+            return
+        }
         let claudeEnabled = settings.isAgentEnabled(.claudeCode)
         let codexEnabled = settings.isAgentEnabled(.codex)
-        scanTask?.cancel()
+        isScanning = true
         scanTask = Task.detached(priority: .utility) { [weak self] in
             let windows = DateWindows()
             var scanned: [AgentPreset: AgentTokenUsage] = [:]
@@ -112,9 +151,12 @@ final class UsageMonitor: ObservableObject {
             if codexEnabled, let codex = Self.scanCodex(windows) {
                 scanned[.codex] = codex
             }
-            guard !Task.isCancelled else { return }
             let result = scanned
-            await MainActor.run { self?.tokenUsage = result }
+            await MainActor.run {
+                self?.tokenUsage = result
+                self?.lastTokenScan = Date()
+                self?.isScanning = false
+            }
         }
     }
 
@@ -298,7 +340,7 @@ private struct CodexWindow: Decodable {
 extension UsageWindow {
     /// Parses the fractional-second ISO 8601 timestamps the usage endpoints emit
     /// (e.g. `2026-06-27T18:30:00.206589+00:00`), tolerating the missing-fraction
-    /// form too.
+    /// form too. Used off the hot path (a handful of plan-limit reset times).
     static func parseISO8601(_ string: String) -> Date? {
         let withFraction = ISO8601DateFormatter()
         withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -307,6 +349,42 @@ extension UsageWindow {
         plain.formatOptions = [.withInternetDateTime]
         return plain.date(from: string)
     }
+
+    /// A fast path for the rigid UTC log timestamps (`2026-06-27T11:22:05.555Z`),
+    /// called once per turn across ~150k lines. `ISO8601DateFormatter` is ~100×
+    /// slower and allocates per call, so the scan extracts the fixed fields by
+    /// byte position and builds the instant against a cached UTC calendar; only a
+    /// shape that doesn't match falls back to the formatter.
+    static func fastLogTimestamp(_ string: String) -> Date? {
+        let utf8 = string.utf8
+        guard utf8.count >= 19 else { return parseISO8601(string) }
+        let bytes = Array(utf8)
+        func number(_ start: Int, _ length: Int) -> Int? {
+            var value = 0
+            for index in start..<(start + length) {
+                let digit = Int(bytes[index]) - 48
+                guard (0...9).contains(digit) else { return nil }
+                value = value * 10 + digit
+            }
+            return value
+        }
+        guard bytes[4] == 0x2D, bytes[7] == 0x2D, bytes[10] == 0x54,  // '-','-','T'
+              let year = number(0, 4), let month = number(5, 2), let day = number(8, 2),
+              let hour = number(11, 2), let minute = number(14, 2), let second = number(17, 2)
+        else { return parseISO8601(string) }
+        var components = DateComponents()
+        components.year = year; components.month = month; components.day = day
+        components.hour = hour; components.minute = minute; components.second = second
+        return utcCalendar.date(from: components)
+    }
+
+    /// A Gregorian calendar pinned to UTC, reused across the whole scan so the
+    /// fast timestamp parser doesn't reallocate one per line.
+    private static let utcCalendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC") ?? .gmt
+        return calendar
+    }()
 
     /// A short "resets in" phrase for the reset time (e.g. "2h", "3d", "now"), or
     /// an empty string when the window has no known reset.
@@ -421,10 +499,15 @@ extension UsageMonitor {
     nonisolated static func scanClaude(_ windows: DateWindows) -> AgentTokenUsage? {
         let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
-        let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey]
+        let keys: [URLResourceKey] = [.contentModificationDateKey]
         guard let walker = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: keys) else { return nil }
 
+        // Match on raw UTF-8 bytes, never Swift `String`: a `Substring.contains`
+        // over 1.5 GB of logs does Unicode-grapheme work on every byte and is ~20×
+        // slower than byte scanning. The cheap byte probe gates the (rare) JSON
+        // parse, so only genuine turn lines are decoded.
+        let usageProbe = Data("\"usage\"".utf8)
         var usage = AgentTokenUsage(hasCost: true)
         var seen = Set<String>()
         for case let url as URL in walker where url.pathExtension == "jsonl" {
@@ -432,13 +515,13 @@ extension UsageMonitor {
                 .contentModificationDate, modified < windows.monthStart {
                 continue
             }
-            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
-            for line in text.split(separator: "\n") {
-                guard line.contains("\"usage\"") else { continue }
-                guard let object = try? JSONSerialization.jsonObject(
-                    with: Data(line.utf8)) as? [String: Any],
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { continue }
+            for line in data.split(separator: 0x0A) {
+                guard line.range(of: usageProbe) != nil,
+                    let object = try? JSONSerialization.jsonObject(
+                        with: Data(line)) as? [String: Any],
                     let timestampString = object["timestamp"] as? String,
-                    let timestamp = UsageWindow.parseISO8601(timestampString),
+                    let timestamp = UsageWindow.fastLogTimestamp(timestampString),
                     timestamp >= windows.monthStart,
                     let message = object["message"] as? [String: Any],
                     let usageObject = message["usage"] as? [String: Any] else { continue }
@@ -477,19 +560,20 @@ extension UsageMonitor {
         let calendar = Calendar.current
         let monthDay = calendar.startOfDay(for: windows.monthStart)
 
+        let tokenProbe = Data("token_count".utf8)
         var usage = AgentTokenUsage(hasCost: false)
         let dayDirectories = Self.codexDayDirectories(under: sessions, onOrAfter: monthDay)
         for directory in dayDirectories {
             guard let files = try? FileManager.default.contentsOfDirectory(
                 at: directory, includingPropertiesForKeys: nil) else { continue }
             for url in files where url.pathExtension == "jsonl" {
-                guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
-                for line in text.split(separator: "\n") {
-                    guard line.contains("token_count") else { continue }
-                    guard let object = try? JSONSerialization.jsonObject(
-                        with: Data(line.utf8)) as? [String: Any],
+                guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { continue }
+                for line in data.split(separator: 0x0A) {
+                    guard line.range(of: tokenProbe) != nil,
+                        let object = try? JSONSerialization.jsonObject(
+                            with: Data(line)) as? [String: Any],
                         let timestampString = object["timestamp"] as? String,
-                        let timestamp = UsageWindow.parseISO8601(timestampString),
+                        let timestamp = UsageWindow.fastLogTimestamp(timestampString),
                         timestamp >= windows.monthStart,
                         let payload = object["payload"] as? [String: Any],
                         payload["type"] as? String == "token_count",
