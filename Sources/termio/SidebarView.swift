@@ -12,57 +12,6 @@ extension AppSettings {
     }
 }
 
-private extension View {
-    /// Paints the sidebar's glass panel and hides the native list background so the
-    /// glass reads instead of the system's raw `.sidebar` vibrancy. The bare vibrancy
-    /// let a colorful desktop wallpaper bleed through behind the window and read as a
-    /// messy blue gradient in dark mode; this keeps the live-blur "glass" feel but
-    /// pins the color so the desktop can't drive it.
-    ///
-    /// The glass is a full-bleed sibling layer in a `ZStack`, not a `.background` of the
-    /// list. A list inside a `NavigationSplitView` column is inset below the title bar,
-    /// so a background anchored to it stops at that inset and the band behind the traffic
-    /// lights falls back to the window color — a visible seam. As its own `ignoresSafeArea`
-    /// layer the glass fills the whole column, running full-height up behind the traffic
-    /// lights the way NetNewsWire's sidebar material does (the pattern `TerminalPane` uses).
-    func glassSidebarBackground(_ chrome: ChromeTheme?, isDark: Bool) -> some View {
-        ZStack {
-            SidebarGlass(chrome: chrome, isDark: isDark).ignoresSafeArea()
-            scrollContentBackground(.hidden)
-        }
-    }
-}
-
-/// The sidebar's "better glass": a thin live material carries the blur and
-/// luminosity that read as glass, then a near-opaque tint sits over it so the
-/// desktop behind a translucent window can't dictate the sidebar's color (the
-/// failure mode of raw vibrancy in dark mode). The tint borrows the theme's panel
-/// color when a terminal theme is set, else a neutral dark/light. A single quiet
-/// trailing seam stands in for a hard divider; the top runs clean up behind the
-/// traffic lights with no edge line, so nothing reads as a cropped border there.
-private struct SidebarGlass: View {
-    let chrome: ChromeTheme?
-    let isDark: Bool
-
-    var body: some View {
-        Rectangle()
-            .fill(.ultraThinMaterial)
-            .overlay(tint)
-            .overlay(alignment: .trailing) {
-                Rectangle()
-                    .fill(Color.white.opacity(isDark ? 0.06 : 0.0))
-                    .frame(width: 1)
-            }
-    }
-
-    /// Near-opaque so only a hint of the material's blur survives — enough to feel
-    /// like glass, not enough for the wallpaper to tint it.
-    private var tint: Color {
-        let base = chrome?.panelBackground ?? (isDark ? Color(white: 0.13) : Color(white: 0.95))
-        return base.opacity(isDark ? 0.78 : 0.72)
-    }
-}
-
 /// Left column: projects, each a section containing its sessions. Hovering a
 /// project header reveals VSCode-style quick-add buttons (one per agent preset).
 struct SidebarView: View {
@@ -71,10 +20,11 @@ struct SidebarView: View {
     // The terminal theme is split light/dark and libghostty tracks the system
     // appearance; the chrome borrows whichever side is currently showing.
     @Environment(\.colorScheme) private var colorScheme
-    // Which projects are folded shut. Held here, not in ProjectHeader, because the
-    // header and the session rows are sibling parts of the same Section — only the
-    // parent can both toggle the chevron and omit the collapsed project's rows.
-    @State private var collapsedProjects: Set<Project.ID> = []
+    // Which top-level folders (projects and promoted worktrees) are folded shut,
+    // keyed by `SidebarEntry.id`. Held here, not in the headers, because a header
+    // and its session rows are siblings — only the parent can both toggle the fold
+    // and omit the collapsed folder's rows.
+    @State private var collapsedFolders: Set<String> = []
 
     // Chrome colors borrowed from the selected terminal theme; `nil` keeps the
     // default system look untouched.
@@ -90,43 +40,28 @@ struct SidebarView: View {
         // macOS has no `listSectionSpacing`. The header carries its own grouping
         // weight (small-caps label + folder mark), so folded projects stack tight.
         List {
-            ForEach(store.projects) { project in
-                ProjectHeader(
-                    project: project,
-                    isCollapsed: collapsedProjects.contains(project.id),
-                    toggleCollapsed: { toggleCollapsed(project.id) },
-                    chrome: chrome
-                )
-                if !collapsedProjects.contains(project.id) {
-                    // Progressive disclosure: with no worktrees a project shows its
-                    // sessions flat (one level). Once any session runs in a worktree,
-                    // a folder layer appears — each distinct folder (the main checkout
-                    // plus every worktree) becomes a node labelled with its live branch,
-                    // and its sessions indent under it.
-                    if hasWorktrees(project) {
-                        ForEach(worktreeGroups(for: project)) { group in
-                            WorktreeHeader(folderPath: group.folderPath, chrome: chrome)
-                            ForEach(group.sessions) { session in
-                                SessionRow(session: session, chrome: chrome, leadingIndent: 32)
-                            }
-                        }
-                    } else {
-                        ForEach(project.sessions) { session in
-                            SessionRow(session: session, chrome: chrome)
-                        }
-                    }
-                }
+            // Every working directory is its own top-level folder: a project's main
+            // checkout, and each git worktree promoted to a sibling (sorted right
+            // after its origin project, labelled "repo · branch"). No nested worktree
+            // layer — a worktree reads as a peer folder, the way Codex's app treats a
+            // permanent worktree as its own project.
+            ForEach(sidebarEntries) { entry in
+                sidebarRows(for: entry)
             }
         }
         // Hosted via NSHostingController (see App.swift), so this is a standard
         // macOS source list — exactly NetNewsWire's layout: the window's toolbar row
         // holds the traffic lights and the system sidebar toggle, and the list sits
-        // naturally below it. The sidebar material (native vibrancy, or a theme's
-        // panel color) runs full-height and bleeds behind the traffic lights. No
-        // safe-area juggling: the toolbar row is simply the top of the window.
+        // naturally below it. We deliberately keep the native `.sidebar` vibrant
+        // material — exactly like NetNewsWire — rather than overriding it with a custom
+        // background. With the `.automatic` split toolbar, the title bar's leading region
+        // (behind the traffic lights) belongs to the window title bar and composites above
+        // all SwiftUI list content, so no list `.background` — Color, ShapeStyle, or view —
+        // can reach it; only the system material spans the full column height, making the
+        // sidebar read as one continuous panel. No safe-area juggling: the toolbar row is
+        // simply the top of the window.
         .listStyle(.sidebar)
         .environment(\.defaultMinListRowHeight, 1)
-        .glassSidebarBackground(chrome, isDark: colorScheme == .dark)
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
         // Drop SwiftUI's automatic sidebar toggle: on macOS 26 it carries a resting
         // Liquid Glass capsule that reads as a permanent filled background. A flat
@@ -165,75 +100,157 @@ struct SidebarView: View {
         .help("Toggle Sidebar")
     }
 
-    private func toggleCollapsed(_ id: Project.ID) {
+    private func toggleCollapsed(_ id: String) {
         withAnimation(.easeInOut(duration: 0.18)) {
-            if collapsedProjects.contains(id) {
-                collapsedProjects.remove(id)
+            if collapsedFolders.contains(id) {
+                collapsedFolders.remove(id)
             } else {
-                collapsedProjects.insert(id)
+                collapsedFolders.insert(id)
+            }
+        }
+    }
+
+    /// The flat, ordered list of top-level folders: each project (its primary
+    /// checkout) immediately followed by that project's worktrees, in the order the
+    /// worktrees first appeared. Keeping a worktree adjacent to its origin project is
+    /// what preserves the repo association now that the nesting is gone.
+    private var sidebarEntries: [SidebarEntry] {
+        var entries: [SidebarEntry] = []
+        for project in store.projects {
+            entries.append(.project(project, sessions: project.sessions.filter { $0.worktreePath == nil }))
+            var order: [String] = []
+            var byFolder: [String: [Session]] = [:]
+            for session in project.sessions {
+                guard let folder = session.worktreePath else { continue }
+                if byFolder[folder] == nil { order.append(folder) }
+                byFolder[folder, default: []].append(session)
+            }
+            for folder in order {
+                entries.append(.worktree(project: project, folderPath: folder, sessions: byFolder[folder] ?? []))
+            }
+        }
+        return entries
+    }
+
+    /// One folder's rows: its header followed by its sessions when expanded. A
+    /// project and a promoted worktree render the same shape — both are peer
+    /// top-level folders — differing only in their header.
+    @ViewBuilder
+    private func sidebarRows(for entry: SidebarEntry) -> some View {
+        let isCollapsed = collapsedFolders.contains(entry.id)
+        switch entry {
+        case .project(let project, let sessions):
+            ProjectHeader(
+                project: project,
+                isCollapsed: isCollapsed,
+                toggleCollapsed: { toggleCollapsed(entry.id) },
+                chrome: chrome
+            )
+            if !isCollapsed {
+                ForEach(sessions) { session in
+                    SessionRow(session: session, chrome: chrome)
+                }
+            }
+        case .worktree(let project, let folderPath, let sessions):
+            WorktreeFolderHeader(
+                project: project,
+                folderPath: folderPath,
+                isCollapsed: isCollapsed,
+                toggleCollapsed: { toggleCollapsed(entry.id) },
+                chrome: chrome
+            )
+            if !isCollapsed {
+                ForEach(sessions) { session in
+                    SessionRow(session: session, chrome: chrome)
+                }
             }
         }
     }
 }
 
-/// A project's sessions grouped by the folder they run in. The folder is the
-/// stable identity; its branch is a live label read from `HEAD` (see `BranchModel`).
-private struct WorktreeGroup: Identifiable {
-    let folderPath: String
-    let isPrimary: Bool
-    let sessions: [Session]
-    var id: String { folderPath }
-}
+/// A top-level sidebar folder: either a project's primary checkout or one of its
+/// git worktrees, promoted to a peer rather than nested beneath the project.
+private enum SidebarEntry: Identifiable {
+    case project(Project, sessions: [Session])
+    case worktree(project: Project, folderPath: String, sessions: [Session])
 
-/// Whether any of a project's sessions runs in its own worktree. When none do, the
-/// sidebar stays flat (no folder layer) — the common, single-checkout case.
-private func hasWorktrees(_ project: Project) -> Bool {
-    project.sessions.contains { $0.worktreePath != nil }
-}
-
-/// Groups a project's sessions by working folder for the three-level layout: the
-/// primary checkout (the project's own directory) first, then each worktree in the
-/// order its first session appeared. Session order within a group is preserved.
-private func worktreeGroups(for project: Project) -> [WorktreeGroup] {
-    let primary = project.path
-    var order: [String] = []
-    var byFolder: [String: [Session]] = [:]
-    for session in project.sessions {
-        let folder = session.worktreePath ?? primary
-        if byFolder[folder] == nil { order.append(folder) }
-        byFolder[folder, default: []].append(session)
-    }
-    let folders = (order.contains(primary) ? [primary] : []) + order.filter { $0 != primary }
-    return folders.map { folder in
-        WorktreeGroup(folderPath: folder, isPrimary: folder == primary, sessions: byFolder[folder] ?? [])
+    var id: String {
+        switch self {
+        case .project(let project, _): return "project:\(project.id)"
+        case .worktree(_, let folderPath, _): return "worktree:\(folderPath)"
+        }
     }
 }
 
-/// A folder node: the branch the folder is currently on, read live from `HEAD`. Sits
-/// between the project header and the session rows, indented one step. Falls back to
-/// the folder's own name only if the branch can't be resolved (e.g. not a git repo).
-private struct WorktreeHeader: View {
+/// A git worktree promoted to a top-level folder — a sibling of its origin project
+/// rather than a node nested inside it. A branch glyph and a "REPO · branch" label
+/// keep it reading as a peer working directory while still naming where it came
+/// from. Mirrors `ProjectHeader`'s hover agent-add and fold behaviour, but its new
+/// sessions run in this worktree.
+private struct WorktreeFolderHeader: View {
     @EnvironmentObject var store: TermioStore
+    @EnvironmentObject var settings: AppSettings
+    let project: Project
     let folderPath: String
+    let isCollapsed: Bool
+    let toggleCollapsed: () -> Void
     let chrome: ChromeTheme?
+    @State private var isHovering = false
 
     var body: some View {
         HStack(spacing: 6) {
-            HugeIconView(icon: .gitBranch, size: 13, color: chrome?.foreground ?? .secondary)
+            HugeIconView(icon: .gitBranch, size: 14, color: chrome?.foreground ?? .primary)
                 .frame(width: 16)
-            Text(label)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle((chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.secondary)).opacity(0.85))
-                .lineLimit(1)
-                .truncationMode(.middle)
+            HStack(spacing: 5) {
+                // The repo name carries the same small-caps weight as a project
+                // header so the worktree reads as a peer folder; the live branch
+                // trails in a quieter, normal-case run so it stays legible.
+                Text(project.name)
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+                    .foregroundStyle(chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.primary))
+                Text("· \(branch)")
+                    .foregroundStyle((chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.secondary)).opacity(0.7))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .font(.system(size: 11, weight: .medium))
             Spacer(minLength: 4)
         }
-        .padding(.vertical, 2)
-        .padding(.leading, 16)
+        .overlay(alignment: .trailing) {
+            HStack(spacing: 3) {
+                ForEach(enabledAgentPresets(settings)) { preset in
+                    AgentQuickAddButton(preset: preset, chrome: chrome) {
+                        store.addSession(to: project.id, agent: preset, worktreePath: folderPath)
+                    }
+                }
+            }
+            .opacity(isHovering ? 1 : 0)
+            .allowsHitTesting(isHovering)
+        }
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
+        .onHover { isHovering = $0 }
+        .onTapGesture { toggleCollapsed() }
+        .contextMenu {
+            ForEach(enabledAgentPresets(settings)) { preset in
+                Button("New \(preset.displayName) Session") {
+                    store.addSession(to: project.id, agent: preset, worktreePath: folderPath)
+                }
+            }
+            Divider()
+            Button("Reveal in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: folderPath)])
+            }
+        }
+        .animation(.easeInOut(duration: 0.12), value: isHovering)
+        .animation(.easeInOut(duration: 0.18), value: isCollapsed)
         .help(folderPath)
     }
 
-    private var label: String {
+    /// The folder's live branch, read from `HEAD`; falls back to the folder's own
+    /// name when it can't be resolved.
+    private var branch: String {
         store.branch(forFolder: folderPath) ?? (folderPath as NSString).lastPathComponent
     }
 }
@@ -285,6 +302,11 @@ private struct ProjectHeader: View {
         // button, keeping the hover row to just the agent icons.
         .overlay(alignment: .trailing) {
             HStack(spacing: 3) {
+                // A worktree needs a git repo; a plain directory carries the "—"
+                // branch placeholder, so the worktree action is hidden for it.
+                if project.branch != "—" {
+                    NewWorktreeButton(project: project, chrome: chrome)
+                }
                 ForEach(enabledAgentPresets(settings)) { preset in
                     AgentQuickAddButton(preset: preset, chrome: chrome) {
                         store.addSession(to: project.id, agent: preset)
@@ -330,6 +352,18 @@ private struct NewSessionMenuItems: View {
                 store.addSession(to: project.id, agent: preset)
             }
         }
+        // Right-click parity for the header's "New worktree" button — only a git
+        // repo can hold a worktree.
+        if project.branch != "—" {
+            Divider()
+            Menu("New Session in Worktree") {
+                ForEach(enabledAgentPresets(settings)) { preset in
+                    Button(preset.displayName) {
+                        store.addWorktreeSession(to: project.id, agent: preset)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -371,6 +405,39 @@ private struct AgentQuickAddButton: View {
         .onHover { isHovering = $0 }
         .animation(.easeInOut(duration: 0.1), value: isHovering)
         .help("New \(preset.displayName) session")
+    }
+}
+
+/// The project header's "new worktree" control: a branch button that opens an
+/// agent menu, each item spawning that agent in a brand-new git worktree — which
+/// surfaces as its own top-level folder. This is the single, folder-level entry
+/// point for creating a worktree, replacing the old per-session isolate button.
+private struct NewWorktreeButton: View {
+    @EnvironmentObject var store: TermioStore
+    @EnvironmentObject var settings: AppSettings
+    let project: Project
+    let chrome: ChromeTheme?
+    @State private var isHovering = false
+
+    var body: some View {
+        Menu {
+            ForEach(enabledAgentPresets(settings)) { preset in
+                Button("New \(preset.displayName) Session") {
+                    store.addWorktreeSession(to: project.id, agent: preset)
+                }
+            }
+        } label: {
+            HugeIconView(icon: .gitBranch, size: 14, color: chrome?.foreground ?? .primary)
+                .frame(width: 22, height: 20)
+                .background(hoverBackground(chrome, isHovering: isHovering))
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .onHover { isHovering = $0 }
+        .animation(.easeInOut(duration: 0.1), value: isHovering)
+        .help("New session in a worktree")
     }
 }
 
@@ -463,30 +530,16 @@ private struct SessionRow: View {
                 .help(store.statusDescription(for: session.id))
         }
         // VSCode-style trailing actions: hovering paints them over the trailing edge
-        // (where the status dot was), reserving no resting width. A session not yet
-        // in its own worktree also gets an "isolate" branch button — isolation is a
-        // property of the session, so the affordance lives here per-row rather than
-        // in the project header's new-session strip.
+        // (where the status dot was), reserving no resting width. Creating a worktree
+        // is a folder-level action now (the project header's "New worktree" button),
+        // so a session row carries only its close button.
         .overlay(alignment: .trailing) {
-            HStack(spacing: 2) {
-                if session.worktreePath == nil {
-                    SessionRowActionButton(
-                        systemImage: "arrow.triangle.branch",
-                        help: "Isolate in a git worktree",
-                        hoverTint: .accentColor,
-                        pointSize: 14,
-                        chrome: chrome
-                    ) {
-                        store.isolateSession(session.id)
-                    }
-                }
-                SessionRowActionButton(
-                    systemImage: "xmark.circle.fill",
-                    help: "Close session",
-                    chrome: chrome
-                ) {
-                    store.closeSession(session.id)
-                }
+            SessionRowActionButton(
+                systemImage: "xmark.circle.fill",
+                help: "Close session",
+                chrome: chrome
+            ) {
+                store.closeSession(session.id)
             }
             .opacity(isHovering ? 1 : 0)
             .allowsHitTesting(isHovering)
@@ -502,10 +555,6 @@ private struct SessionRow: View {
         .onHover { isHovering = $0 }
         .onTapGesture { store.selectedSessionID = session.id }
         .contextMenu {
-            if session.worktreePath == nil {
-                Button("Isolate in Worktree") { store.isolateSession(session.id) }
-                Divider()
-            }
             Button("Close Session") { store.closeSession(session.id) }
         }
         .listRowBackground(

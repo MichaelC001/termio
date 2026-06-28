@@ -641,7 +641,11 @@ final class TermioStore: ObservableObject {
         }
     }
 
-    func addSession(to projectID: Project.ID, agent: AgentPreset = .terminal) {
+    /// Adds a session to a project. When `worktreePath` is given, the session joins
+    /// that existing worktree folder (the "new session in this worktree" action from
+    /// a promoted worktree's header); otherwise it runs in the project's primary
+    /// checkout, auto-isolating only if the global worktree toggle is on.
+    func addSession(to projectID: Project.ID, agent: AgentPreset = .terminal, worktreePath: String? = nil) {
         guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
         let project = projects[index]
         let terminalCount = project.sessions.filter { $0.agent == .terminal }.count
@@ -649,7 +653,25 @@ final class TermioStore: ObservableObject {
             ? "Terminal \(terminalCount + 1)"
             : agent.displayName
         var session = Session(title: title, agent: agent)
-        session.worktreePath = makeWorktree(for: session, in: project)
+        session.worktreePath = worktreePath ?? makeWorktree(for: session, in: project)
+        projects[index].sessions.append(session)
+        selectedSessionID = session.id
+    }
+
+    /// Creates a session in a brand-new git worktree, regardless of the global
+    /// auto-isolate toggle — the project header's explicit "New worktree" action.
+    /// The new worktree surfaces as its own top-level folder. Degrades to a
+    /// primary-checkout session (logged) if the worktree can't be created — e.g. the
+    /// project is not a git repository.
+    func addWorktreeSession(to projectID: Project.ID, agent: AgentPreset = .terminal) {
+        guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
+        let project = projects[index]
+        let terminalCount = project.sessions.filter { $0.agent == .terminal }.count
+        let title = agent == .terminal
+            ? "Terminal \(terminalCount + 1)"
+            : agent.displayName
+        var session = Session(title: title, agent: agent)
+        session.worktreePath = createWorktree(for: session, in: project)
         projects[index].sessions.append(session)
         selectedSessionID = session.id
     }
@@ -819,27 +841,6 @@ final class TermioStore: ObservableObject {
         if let selected = selectedSessionID, removedSessionIDs.contains(selected) {
             selectedSessionID = projects.first(where: { !$0.sessions.isEmpty })?.sessions.first?.id
         }
-    }
-
-    /// Moves an existing session into its own git worktree on demand (the sidebar's
-    /// per-row "isolate" action). No-op if it is already isolated. Because a running
-    /// PTY's working directory can't be changed in place, the session's live surface
-    /// is dropped so it relaunches in the new worktree on next open — seamless for a
-    /// session that hasn't started working yet, a restart for one that has. The
-    /// branch the sidebar shows updates as soon as the new folder is watched.
-    func isolateSession(_ id: Session.ID) {
-        guard let projectIndex = projects.firstIndex(where: { $0.sessions.contains { $0.id == id } }),
-              let sessionIndex = projects[projectIndex].sessions.firstIndex(where: { $0.id == id })
-        else { return }
-        let project = projects[projectIndex]
-        let session = projects[projectIndex].sessions[sessionIndex]
-        guard session.worktreePath == nil else { return }
-        guard let path = createWorktree(for: session, in: project) else { return }
-
-        projects[projectIndex].sessions[sessionIndex].worktreePath = path
-        // Relaunch in the worktree: the cached surface still points at the old cwd.
-        surfaces[id] = nil
-        monitors[id] = nil
     }
 
     /// Closes a session: drops its cached surface (which tears down the PTY) and
