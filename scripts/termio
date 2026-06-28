@@ -1,0 +1,89 @@
+#!/bin/sh
+# termio — drive the running termio app from the command line.
+#
+# Usage:
+#   termio [DIR]                       # open DIR (default: cwd) as a project
+#   termio sessions list               # sibling sessions in this project + status
+#   termio sessions read  <id>         # read a sibling's recent output
+#   termio sessions send  <id> <text>  # send a prompt to a sibling
+#   termio sessions answer <id> <text> # answer a sibling's menu/prompt
+#   termio sessions start <agent>      # start a new session (claude/codex/…)
+#   termio sessions stop  <id>         # stop a session
+#
+# Add --json to any `sessions` command for machine-readable output.
+#
+# `sessions` talks to the running app over its local control socket, scoped to the
+# project the calling shell is in (via $TERMIO_SESSION, or the current directory).
+# The plain `termio [DIR]` form routes a folder to the app via LaunchServices.
+set -eu
+
+SOCKET="$HOME/Library/Application Support/termio/session-control.sock"
+
+# JSON-escape a string for embedding in a request: backslashes, double quotes, and
+# newlines (which would otherwise break the single-line JSON object).
+json_escape() {
+    printf '%s' "$1" \
+        | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' \
+        | awk 'BEGIN { ORS = "" } { if (NR > 1) printf "\\n"; printf "%s", $0 }'
+}
+
+sessions() {
+    if [ ! -S "$SOCKET" ]; then
+        echo "termio: app is not running (no control socket at $SOCKET)" >&2
+        exit 1
+    fi
+
+    op="${1:-list}"
+    [ $# -gt 0 ] && shift || true
+
+    format=text
+    target=""
+    agent=""
+    text=""
+    # Collect positional args, pulling out --json wherever it appears. The first
+    # non-flag is the target (or, for `start`, the agent); the rest is the text.
+    for arg in "$@"; do
+        case "$arg" in
+            --json) format=json ;;
+            *)
+                if [ -z "$target" ] && { [ "$op" = read ] || [ "$op" = send ] \
+                    || [ "$op" = answer ] || [ "$op" = stop ]; }; then
+                    target="$arg"
+                elif [ -z "$agent" ] && [ "$op" = start ]; then
+                    agent="$arg"
+                else
+                    text="${text:+$text }$arg"
+                fi
+                ;;
+        esac
+    done
+
+    request=$(printf '{"op":"%s","format":"%s","caller_session":"%s","caller_cwd":"%s","target":"%s","agent":"%s","text":"%s"}' \
+        "$op" "$format" \
+        "$(json_escape "${TERMIO_SESSION:-}")" \
+        "$(json_escape "$PWD")" \
+        "$(json_escape "$target")" \
+        "$(json_escape "$agent")" \
+        "$(json_escape "$text")")
+
+    printf '%s' "$request" | nc -U "$SOCKET"
+}
+
+if [ "${1:-}" = "sessions" ]; then
+    shift
+    sessions "$@"
+    exit 0
+fi
+
+target="${1:-.}"
+
+if [ ! -d "$target" ]; then
+    echo "termio: not a directory: $target" >&2
+    exit 1
+fi
+
+# Resolve to an absolute, symlink-free path so termio keys the project by the
+# same canonical path it stores, avoiding duplicate sidebar entries.
+abs=$(cd "$target" && pwd -P)
+
+exec open -b com.termio.app "$abs"
