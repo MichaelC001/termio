@@ -668,6 +668,7 @@ private struct AgentSettingsTab: View {
                 SectionHeaderLabel(title: "Status")
             }
             Section {
+                CommandLineToolRow()
                 Toggle(isOn: $settings.sessionControlEnabled) {
                     HStack(spacing: 10) {
                         IconBadge(symbol: "arrow.triangle.branch")
@@ -753,6 +754,56 @@ private struct AgentSettingsTab: View {
     /// fields below it.
     private func subtitle(for preset: AgentPreset) -> String {
         settings.command(for: preset) ?? "Login shell"
+    }
+}
+
+/// Installs and reports the `termio` command-line tool. It audits on appear so the
+/// row always reflects reality (a moved app shows "Update"), and re-audits after
+/// the install action so the button and caption update in place.
+private struct CommandLineToolRow: View {
+    @State private var status: CommandLineTool.Status = .notInstalled
+
+    var body: some View {
+        HStack(spacing: 10) {
+            IconBadge(symbol: "terminal")
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Command-line tool")
+                    .font(.headline)
+                Text(description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            if let title = buttonTitle {
+                Button(title) { status = CommandLineTool.install() }
+            }
+        }
+        .onAppear { status = CommandLineTool.audit() }
+    }
+
+    private var description: String {
+        switch status {
+        case .installed:
+            return "`termio` is on your PATH. Run `termio sessions …` to drive sibling sessions, or `termio .` to open a folder."
+        case .stale(let path):
+            return "An older install points at \(path). Update it to this version of termio."
+        case .notInstalled:
+            return "Install `termio` so you (and agents) can run `termio sessions …` from any shell. Links to /usr/local/bin."
+        case .conflict:
+            return "A different `termio` already exists at \(CommandLineTool.installURL.path). Remove it first — termio won't overwrite a file it didn't create."
+        case .unavailable:
+            return "Available when termio runs from the built app bundle."
+        }
+    }
+
+    private var buttonTitle: String? {
+        switch status {
+        case .installed: return "Reinstall"
+        case .stale: return "Update"
+        case .notInstalled: return "Install"
+        case .conflict, .unavailable: return nil
+        }
     }
 }
 
