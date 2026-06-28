@@ -1,6 +1,6 @@
 ---
 name: doc
-description: "Create a project doc with standardized YAML front matter (title/status/type), or answer questions about doc status by scanning that front matter. Invoke when the user says 'new doc', 'create a doc/design/RFC', 'start a design doc', or asks 'which docs are done/draft', 'what am I still working on', 'list my docs by status', '新建文档', '建一个设计文档/RFC', '哪些文档写完了', '我还有哪些没做完的文档', '按状态列出文档'."
+description: "Use for ANY operation on a doc under docs/ — creating, updating/editing, changing its status, or querying. Keeps the YAML front matter (title/status/type/updated) correct and regenerates the docs/README.md wiki index. Invoke when the user says 'new doc', 'create a doc/design/RFC', 'start a design doc', 'update the doc', 'edit this doc', 'mark this doc done/in-review', 'change the doc status', or asks 'which docs are done/draft', 'what am I still working on', 'list my docs by status', '新建文档', '建一个设计文档/RFC', '更新文档', '改一下这个文档', '把这个文档标记成完成/评审中', '哪些文档写完了', '我还有哪些没做完的文档', '按状态列出文档'."
 ---
 
 # Project docs — create & query
@@ -64,6 +64,22 @@ the path, carry the category.
 
 Also regenerate the index whenever a doc's `status`/`title`/`type` changes, not
 only on create — the table is otherwise stale.
+
+## Update a doc
+
+Use this skill for **any** edit to an existing doc, not just creation — editing
+its body, advancing its status, renaming it, or changing its type. The point is
+to keep the front matter honest and the wiki in sync after every change.
+
+1. Make the requested edit to the doc body and/or front matter.
+2. **Bump `updated`** to today on any meaningful change (the whole point of the
+   field). Leave `created` alone.
+3. If the user is advancing the doc's lifecycle, move `status` along the line
+   `draft → in-review → approved → active → done → archived` — don't skip to a
+   value that doesn't match reality.
+4. If you changed `status`/`title`/`type`, **regenerate the wiki index** (see
+   *Maintain the wiki index*) so `docs/README.md` matches.
+5. Report what changed (path, old → new status if it moved).
 
 Note: markdownlint's MD025 may warn "multiple top-level headings" because it
 treats the front matter `title:` as an H1. It's a false positive for
