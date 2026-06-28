@@ -136,12 +136,17 @@ final class MenuBarController {
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
 
-        for project in store.projects where !project.sessions.isEmpty {
+        // The roster is a launchpad for AI agents, so plain terminal sessions are
+        // omitted — they're managed in the window, not summoned from the menu bar.
+        for project in store.projects {
+            let agentSessions = project.sessions.filter { $0.agent != .terminal }
+            guard !agentSessions.isEmpty else { continue }
+
             let header = NSMenuItem(title: project.name, action: nil, keyEquivalent: "")
             header.isEnabled = false
             menu.addItem(header)
 
-            for session in project.sessions {
+            for session in agentSessions {
                 let status = store.status(for: session.id)
                 let item = NSMenuItem(
                     title: store.displayTitle(for: session),
