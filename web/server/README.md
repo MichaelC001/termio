@@ -43,6 +43,7 @@ no-account free trial is offered before purchase.
 | `pnpm db:generate` | Generate SQL migrations from the Drizzle schema    |
 | `pnpm db:migrate`  | Apply migrations to `DATABASE_URL`                 |
 | `pnpm db:seed`     | Upsert products/prices from `pricing.json`         |
+| `pnpm stripe:setup`| Provision Stripe Products/Prices, store ids in DB  |
 
 ## Routes
 
@@ -53,7 +54,7 @@ no-account free trial is offered before purchase.
 | GET    | `/api/account/me`               | session     | Current signed-in user                                      |
 | GET    | `/api/account/licenses`         | session     | Caller's licenses with per-seat activations                 |
 | POST   | `/api/checkout/session`         | session     | Create a Stripe Checkout Session for a plan + quantity      |
-| POST   | `/api/checkout/webhook`         | Stripe sig  | On `checkout.session.completed`: complete purchase, mint license |
+| POST   | `/api/checkout/webhook`         | Stripe sig  | `checkout.session.completed`→fulfill, `charge.refunded`→revoke, `checkout.session.expired`→mark expired |
 | POST   | `/api/license/validate`         | license key | Validate a key, report device usage vs. `maxDevices`        |
 | POST   | `/api/license/activate-seat`    | license key | Activate a device (enforces device cap; idempotent per device)|
 | POST   | `/api/license/deactivate-seat`  | license key | Release a device's seat                                     |
@@ -80,16 +81,21 @@ license — lives as a pure function (`rewardForActiveReferralCount`) alongside
 and nothing in checkout, auth, or the desktop app reads these tables; activation
 event ingestion and reward granting land in 1.x.
 
+## Stripe (go-live)
+
+Checkout is production-shaped: it uses real Stripe Price ids when present (run
+`pnpm stripe:setup`), enables **Stripe Tax** (`automatic_tax`, required billing
+address, always-create Customer), and the webhook fulfills, refunds+revokes, and
+expires purchases. termio is sold as **Merchant of Record** — Stripe Tax
+calculates/collects tax but **you** register and remit. The full runbook (account
+setup → test mode → `stripe:setup` → webhook events → enable Tax → CLI testing →
+live keys) is in [`docs/STRIPE.md`](docs/STRIPE.md).
+
 ## TODO before production
 
-1. **Stripe**: set real `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET`, replace the
-   inline `price_data` in `src/routes/checkout.ts` with real Stripe Price ids
-   stored on `price.stripePriceId`, and register the `/api/checkout/webhook`
-   endpoint in the Stripe dashboard. The checkout `session` route currently
-   returns the Checkout params as a stub when no key is set.
-2. **OAuth apps**: create GitHub and Google OAuth apps and set their client
+1. **OAuth apps**: create GitHub and Google OAuth apps and set their client
    id/secret; callback URL is `<BETTER_AUTH_URL>/api/auth/callback/{github,google}`.
-3. **Email provider**: wire an email sender (Resend/Postmark/SES) into
+2. **Email provider**: wire an email sender (Resend/Postmark/SES) into
    better-auth and set `emailAndPassword.requireEmailVerification = true` in
    `src/auth.ts` so sign-ups verify their address.
 

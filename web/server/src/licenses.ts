@@ -73,6 +73,52 @@ export async function issueLicense(params: {
   return issued;
 }
 
+/**
+ * Revoke every license issued by a purchase and release all its live seats.
+ * Called when a charge is refunded (the 30-day money-back guarantee): once the
+ * money is returned the license must stop working and free its devices.
+ *
+ * Idempotent — a license already `revoked` is skipped, so a retried
+ * `charge.refunded` webhook does no further work. Returns the number of licenses
+ * newly revoked so the caller can log a precise, non-misleading result.
+ */
+export async function revokeLicenseForPurchase(
+  purchaseId: string,
+): Promise<number> {
+  const licenses = await database
+    .select()
+    .from(license)
+    .where(eq(license.purchaseId, purchaseId));
+
+  let revokedCount = 0;
+  for (const issued of licenses) {
+    if (issued.status === "revoked") {
+      continue;
+    }
+
+    await database
+      .update(license)
+      .set({ status: "revoked", updatedAt: new Date() })
+      .where(eq(license.id, issued.id));
+
+    // Deactivate only seats that are still live so the device cap is freed and the
+    // desktop app's seat checks fail closed.
+    await database
+      .update(licenseSeat)
+      .set({ deactivatedAt: new Date() })
+      .where(
+        and(
+          eq(licenseSeat.licenseId, issued.id),
+          isNull(licenseSeat.deactivatedAt),
+        ),
+      );
+
+    revokedCount += 1;
+  }
+
+  return revokedCount;
+}
+
 export type LicenseValidation =
   | { valid: false; reason: "malformed" | "not-found" | "revoked" }
   | {

@@ -90,6 +90,10 @@ export const purchaseStatus = pgEnum("purchase_status", [
   "completed",
   "refunded",
   "failed",
+  // The Checkout Session expired before payment (Stripe's checkout.session.expired).
+  // Distinct from `failed` (a declined/errored payment) so abandoned carts are
+  // separable in reporting.
+  "expired",
 ]);
 
 /**
@@ -145,6 +149,10 @@ export const product = pgTable("product", {
   maxDevices: integer("max_devices").notNull(),
   recommended: boolean("recommended").notNull().default(false),
   audience: text("audience"),
+  // The Stripe Product this plan maps to, written by `pnpm stripe:setup`. Null
+  // until provisioned; kept so re-running setup updates the same Stripe Product
+  // rather than creating duplicates.
+  stripeProductId: text("stripe_product_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -192,6 +200,10 @@ export const purchase = pgTable("purchase", {
   refundableUntil: timestamp("refundable_until", { withTimezone: true }),
   stripeCheckoutSessionId: text("stripe_checkout_session_id").unique(),
   stripePaymentIntentId: text("stripe_payment_intent_id"),
+  // The Stripe Customer created for this purchase (customer_creation: "always").
+  // Persisted so receipts, refunds, and tax records resolve to a real Customer;
+  // we keep it on OUR purchase row rather than better-auth's user table.
+  stripeCustomerId: text("stripe_customer_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
