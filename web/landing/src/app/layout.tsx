@@ -34,19 +34,27 @@ export const metadata: Metadata = {
     description: siteDescription,
     type: "website",
     siteName: "termio",
+    url: "/",
+    images: [
+      {
+        url: "/og.webp",
+        type: "image/webp",
+        width: 2400,
+        height: 1260,
+        alt: "termio — every AI coding agent in one native Mac app, shown beside a live Claude Code session.",
+      },
+    ],
   },
   twitter: {
     card: "summary_large_image",
     title: "termio — the terminal home for your AI coding agents",
     description: siteDescription,
-  },
-  icons: {
-    icon: "/favicon.svg",
+    images: ["/og.webp"],
   },
 };
 
 export const viewport: Viewport = {
-  themeColor: "#fafafa",
+  themeColor: "#050507",
 };
 
 export default function RootLayout({

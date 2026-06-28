@@ -1,4 +1,5 @@
 import { Reveal } from "@/components/reveal";
+import { SectionLabel } from "@/components/section-label";
 
 const steps = [
   {
@@ -25,18 +26,16 @@ export function HowItWorks() {
   return (
     <section
       aria-labelledby="how-it-works-heading"
-      className="border-y border-border bg-[#f9f9f9]"
+      className=""
     >
-      <div className="mx-auto w-full max-w-6xl px-5 py-24 sm:px-8">
-        <Reveal>
-          <p className="text-center text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-            How it works
-          </p>
+      <div className="mx-auto w-full max-w-6xl px-5 py-32 sm:py-40 sm:px-8">
+        <Reveal className="flex justify-center">
+          <SectionLabel accent="blue">How it works</SectionLabel>
         </Reveal>
         <Reveal delayMs={60}>
           <h2
             id="how-it-works-heading"
-            className="mx-auto mt-4 max-w-2xl text-balance text-center text-3xl font-semibold tracking-tight text-foreground sm:text-4xl"
+            className="mx-auto mt-5 max-w-2xl text-balance text-center text-4xl font-bold tracking-[-0.045em] text-foreground sm:text-5xl"
           >
             From clone to running agents in three steps
           </h2>
@@ -52,7 +51,7 @@ export function HowItWorks() {
                 <h3 className="mt-4 text-lg font-semibold tracking-tight text-foreground">
                   {step.title}
                 </h3>
-                <p className="mt-2 text-sm leading-relaxed text-[#333333]">
+                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
                   {step.description}
                 </p>
               </div>

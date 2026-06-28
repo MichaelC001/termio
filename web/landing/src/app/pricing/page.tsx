@@ -8,7 +8,7 @@ import { SiteFooter } from "@/components/site-footer";
 export const metadata: Metadata = {
   title: "Pricing",
   description:
-    "termio is a one-time lifetime license — no subscription: Solo $19.90 for 1 Mac, Pro $39.90 for up to 3 Macs, plus a Team tier for 5+ seats. All future updates included, a 30-day money-back guarantee, and a 7-day no-account free trial.",
+    "termio is free during early access — every feature unlocked, no account, no card, with automatic updates built in. Paid lifetime licenses arrive in a later release.",
 };
 
 export default function PricingPage() {

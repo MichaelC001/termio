@@ -5,54 +5,37 @@ import {
   AccordionContent,
 } from "@/components/ui/accordion";
 import { Reveal } from "@/components/reveal";
+import { SectionLabel } from "@/components/section-label";
 import { supportedAgents } from "@/lib/site";
-import { pricing, formatPrice } from "@/data/pricing";
-
-const solo = pricing.plans.find((plan) => plan.id === "solo");
-const pro = pricing.plans.find((plan) => plan.id === "pro");
+import { pricing } from "@/data/pricing";
 
 const faqs: { question: string; answer: React.ReactNode }[] = [
   {
-    question: "Is termio a subscription?",
+    question: "What does termio cost?",
     answer: (
       <p>
-        No. termio is a one-time purchase —{" "}
-        {solo ? formatPrice(solo.priceCents) : "$19.90"} for Solo,{" "}
-        {pro ? formatPrice(pro.priceCents) : "$39.90"} for Pro. You pay once and
-        own it forever, including every future update. There is no yearly
-        renewal and no recurring charge, ever.
+        Nothing right now. termio is free during early access — every feature is
+        unlocked, with no account and no card. Paid lifetime licenses arrive in a
+        later release, and early adopters keep the app.
       </p>
     ),
   },
   {
-    question: "Solo vs Pro — how many Macs can I use it on?",
+    question: "How do I get updates?",
     answer: (
       <p>
-        Solo ({solo ? formatPrice(solo.priceCents) : "$19.90"}) licenses one Mac.
-        Pro ({pro ? formatPrice(pro.priceCents) : "$39.90"}) covers up to three
-        of your own Macs — pick Pro if you switch between, say, a desktop and a
-        laptop. Both are one-time purchases with all updates included.
+        Automatically. termio ships with built-in auto-updates, so once you
+        download it the app keeps itself current — no reinstalling, no checking a
+        website.
       </p>
     ),
   },
   {
-    question: "What is the refund policy?",
+    question: "Do I need an account?",
     answer: (
       <p>
-        Every purchase comes with a {pricing.refund.days}-day money-back
-        guarantee. If termio is not for you, email us within {pricing.refund.days}{" "}
-        days and we refund you in full — no questions asked.
-      </p>
-    ),
-  },
-  {
-    question: "How does the free trial work?",
-    answer: (
-      <p>
-        Download termio and use every feature for {pricing.trial.durationDays}{" "}
-        days. No account and no card — the trial runs entirely on your Mac. When
-        you buy a license, the same install unlocks; you don&apos;t reinstall
-        anything.
+        No. Download termio and use every feature — the app runs entirely on your
+        Mac, with no sign-in and no card.
       </p>
     ),
   },
@@ -89,27 +72,34 @@ const faqs: { question: string; answer: React.ReactNode }[] = [
 
 export function Faq() {
   return (
-    <section id="faq" className="scroll-mt-20 border-t border-border bg-[#f9f9f9]">
-      <div className="mx-auto w-full max-w-3xl px-5 py-24 sm:px-8">
+    <section id="faq" className="scroll-mt-24 border-t border-border">
+      <div className="mx-auto grid w-full max-w-6xl gap-10 px-5 py-32 sm:py-40 sm:px-8 md:grid-cols-[0.85fr_1.15fr] md:gap-16">
         <Reveal>
-          <p className="text-center text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-            FAQ
-          </p>
-        </Reveal>
-        <Reveal delayMs={60}>
-          <h2 className="mt-4 text-balance text-center text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
-            Questions, answered
+          <SectionLabel accent="muted">Support</SectionLabel>
+          <h2 className="mt-3 text-balance text-4xl font-bold tracking-[-0.045em] text-foreground sm:text-5xl">
+            Frequently asked questions
           </h2>
+          <p className="mt-5 max-w-sm text-base leading-relaxed text-muted-foreground">
+            Can&apos;t find the answer you&apos;re looking for? The docs go deeper,
+            or reach out and a human will help.
+          </p>
+          <a
+            href="#top"
+            className="mt-6 inline-flex items-center gap-2 rounded-full border border-border bg-card px-5 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-white/5"
+          >
+            Documentation
+            <span aria-hidden="true">→</span>
+          </a>
         </Reveal>
 
-        <Reveal delayMs={100} className="mt-12">
-          <Accordion className="rounded-2xl border border-border bg-card px-6">
+        <Reveal delayMs={80}>
+          <Accordion className="border-t border-border">
             {faqs.map((faq) => (
               <AccordionItem key={faq.question} value={faq.question}>
                 <AccordionTrigger className="py-5 text-base">
                   {faq.question}
                 </AccordionTrigger>
-                <AccordionContent className="text-[#333333]">
+                <AccordionContent className="text-muted-foreground">
                   {faq.answer}
                 </AccordionContent>
               </AccordionItem>

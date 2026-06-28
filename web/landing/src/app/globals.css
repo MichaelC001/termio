@@ -47,27 +47,28 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* Light theme only — modeled on superwhisper.com. */
+/* Dark, cinematic — modeled on the real superwhisper.com: near-black canvas,
+   white ink, a white primary pill, cool blue→purple accent. */
 :root {
-  --background: #fafafa;
-  --foreground: #1a1a1a;
-  --card: #ffffff;
-  --card-foreground: #1a1a1a;
-  --popover: #ffffff;
-  --popover-foreground: #1a1a1a;
-  --primary: #1a1a1a;
-  --primary-foreground: #fafafa;
-  --secondary: #f4f4f5;
-  --secondary-foreground: #1a1a1a;
-  --muted: #f4f4f5;
-  --muted-foreground: #888b91;
-  --accent: #f4f4f5;
-  --accent-foreground: #1a1a1a;
+  --background: #000000;
+  --foreground: #f4f4f6;
+  --card: #0c0c0f;
+  --card-foreground: #f4f4f6;
+  --popover: #0e0e12;
+  --popover-foreground: #f4f4f6;
+  --primary: #ffffff;
+  --primary-foreground: #08080a;
+  --secondary: #161619;
+  --secondary-foreground: #f4f4f6;
+  --muted: #161619;
+  --muted-foreground: #8e8e98;
+  --accent: #161619;
+  --accent-foreground: #f4f4f6;
   --destructive: #ff5252;
-  --border: #e4e8ef;
-  --input: #e4e8ef;
-  --ring: #0088ff;
-  --radius: 0.85rem;
+  --border: rgba(255, 255, 255, 0.08);
+  --input: rgba(255, 255, 255, 0.14);
+  --ring: #7a8bff;
+  --radius: 1rem;
   --font-mono-stack: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
@@ -79,27 +80,97 @@
     @apply bg-background text-foreground;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+    /* Superwhisper's refined Inter: single-storey a + tabular-ish punch. */
+    font-feature-settings: "cv11", "ss01";
   }
   html {
     @apply font-sans;
     scroll-behavior: smooth;
   }
+  /* Headlines carry the signature tight optical tracking. */
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.035em;
+    font-feature-settings: "cv11", "ss01";
+  }
 }
 
 @layer utilities {
-  /* Soft multi-color wash used behind the hero and feature visuals. */
-  .brand-wash {
+  /* The full-bleed bright dusk gradient behind the hero — Superwhisper's airy
+     sky-blue → periwinkle → soft-lavender, with a darker top corner standing in
+     for their photographic shadow, easing back to black at the very bottom so it
+     meets the black page below. */
+  .hero-cinematic {
     background-image:
-      radial-gradient(40rem 40rem at 18% 12%, rgba(0, 136, 255, 0.16), transparent 60%),
-      radial-gradient(34rem 34rem at 82% 8%, rgba(184, 85, 231, 0.14), transparent 60%),
-      radial-gradient(30rem 30rem at 50% 100%, rgba(22, 194, 83, 0.12), transparent 60%);
+      radial-gradient(55% 45% at 12% -5%, rgba(7, 12, 36, 0.5), transparent 45%),
+      linear-gradient(
+        168deg,
+        #3568d6 0%,
+        #4574de 20%,
+        #5f82e0 38%,
+        #8493e0 54%,
+        #ab9ed7 68%,
+        #cbb4d3 80%,
+        #9a89a6 90%,
+        #0c0b12 100%
+      );
   }
 
+  /* Subtler glow wash reused behind the CTA band. */
+  .brand-wash {
+    background-image:
+      radial-gradient(40rem 30rem at 50% 0%, rgba(122, 139, 255, 0.22), transparent 60%),
+      radial-gradient(34rem 28rem at 85% 110%, rgba(211, 108, 255, 0.18), transparent 60%);
+  }
+
+  /* Cool accent for keywords: blue → violet → magenta. */
   .brand-text-gradient {
-    background-image: linear-gradient(110deg, #0072fb 0%, #0fb7fa 38%, #b855e7 100%);
+    background-image: linear-gradient(105deg, #6f9bff 0%, #9b7bff 48%, #d878ff 100%);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
+  }
+
+  /* Glow shadow that lifts the hero window and cards off the dark canvas. */
+  .shadow-soft {
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.06),
+      0 30px 90px -40px rgba(122, 100, 255, 0.45),
+      0 20px 60px -30px rgba(0, 0, 0, 0.7);
+  }
+
+  /* Frosted pill used for section eyebrow labels. */
+  .glass-pill {
+    background-color: rgba(255, 255, 255, 0.06);
+    box-shadow:
+      inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+      0 1px 2px rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(8px);
+  }
+
+  /* Faint character-grid texture behind statement sections, like Superwhisper's
+     letter matrix. */
+  .dot-grid {
+    background-image: radial-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+    background-size: 24px 24px;
+    -webkit-mask-image: radial-gradient(70% 60% at 50% 40%, #000 0%, transparent 75%);
+    mask-image: radial-gradient(70% 60% at 50% 40%, #000 0%, transparent 75%);
+  }
+
+  /* Gentle 3D perspective for the showcase app mockups so they read as real
+     product shots rather than flat panels. */
+  .tilt-left {
+    transform: perspective(2400px) rotateY(9deg) rotateX(3deg) scale(1.02);
+  }
+  .tilt-right {
+    transform: perspective(2400px) rotateY(-9deg) rotateX(3deg) scale(1.02);
+  }
+  @media (max-width: 767px) {
+    .tilt-left,
+    .tilt-right {
+      transform: none;
+    }
   }
 
   .hairline {

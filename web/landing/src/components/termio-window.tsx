@@ -29,14 +29,14 @@ export function TermioWindow({ className }: { className?: string }) {
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-2xl border border-border bg-card shadow-[0_30px_80px_-30px_rgba(20,30,60,0.35)] ring-1 ring-black/5",
+        "shadow-soft overflow-hidden rounded-2xl border border-white/10 bg-card",
         className,
       )}
       role="img"
       aria-label="The termio app showing a sidebar of AI coding-agent sessions and a live terminal pane"
     >
       {/* Title bar */}
-      <div className="flex items-center gap-2 border-b border-border bg-[#f9f9f9] px-4 py-3">
+      <div className="flex items-center gap-2 border-b border-border bg-white/[0.03] px-4 py-3">
         <span className="h-3 w-3 rounded-full bg-brand-red" />
         <span className="h-3 w-3 rounded-full bg-brand-amber" />
         <span className="h-3 w-3 rounded-full bg-brand-green" />
@@ -47,7 +47,7 @@ export function TermioWindow({ className }: { className?: string }) {
 
       <div className="grid grid-cols-[150px_1fr] sm:grid-cols-[190px_1fr]">
         {/* Sidebar */}
-        <aside className="border-r border-border bg-[#fbfbfc] p-3">
+        <aside className="border-r border-border bg-white/[0.02] p-3">
           <p className="px-1 pb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
             Project
           </p>
@@ -65,7 +65,7 @@ export function TermioWindow({ className }: { className?: string }) {
                 className={cn(
                   "flex items-center gap-2 rounded-md px-1.5 py-1.5 text-[11px] leading-tight",
                   session.active
-                    ? "bg-white text-foreground shadow-sm ring-1 ring-border"
+                    ? "bg-white/10 text-foreground ring-1 ring-white/10"
                     : "text-muted-foreground",
                 )}
               >

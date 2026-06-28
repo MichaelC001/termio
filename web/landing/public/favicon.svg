@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="termio">
-  <rect x="4" y="8" width="56" height="48" rx="12" fill="#1a1a1a"/>
-  <circle cx="17" cy="20" r="3.2" fill="#ff5252"/>
-  <circle cx="28" cy="20" r="3.2" fill="#ffb764"/>
-  <circle cx="39" cy="20" r="3.2" fill="#27c93f"/>
-  <path d="M16 34 L24 40 L16 46" fill="none" stroke="#0fb7fa" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
-  <line x1="30" y1="46" x2="46" y2="46" stroke="#b855e7" stroke-width="3.5" stroke-linecap="round"/>
-</svg>

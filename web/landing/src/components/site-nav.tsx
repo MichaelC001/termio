@@ -1,52 +1,47 @@
 import Link from "next/link";
-import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/logo";
+import { AppleMark } from "@/components/section-label";
 import { navLinks, downloadUrl } from "@/lib/site";
 
+// Superwhisper's nav: a single centered floating pill holding the links + a white
+// Download button, with the wordmark parked on the far left.
 export function SiteNav() {
   return (
-    <header className="sticky top-0 z-50 border-b border-border bg-background/80 backdrop-blur-md">
-      <nav
-        aria-label="Primary"
-        className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-5 sm:px-8"
-      >
+    <header className="fixed inset-x-0 top-0 z-50 pt-4">
+      <div className="relative mx-auto flex w-full max-w-6xl items-center justify-center px-5 sm:px-8">
         <Link
           href="#top"
-          className="rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
+          className="absolute left-5 hidden rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring sm:left-8 sm:block"
           aria-label="termio home"
         >
           <Logo />
         </Link>
 
-        <ul className="hidden items-center gap-8 md:flex">
+        <nav
+          aria-label="Primary"
+          className="flex items-center gap-1 rounded-full border border-border bg-card/70 p-1.5 backdrop-blur-xl"
+        >
           {navLinks.map((link) => (
-            <li key={link.href}>
-              <a
-                href={link.href}
-                className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-              >
-                {link.label}
-              </a>
-            </li>
+            <a
+              key={link.href}
+              href={link.href}
+              className="rounded-full px-4 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+            >
+              {link.label}
+            </a>
           ))}
-        </ul>
-
-        <div className="flex items-center gap-3">
-          <a
-            href="#pricing"
-            className="hidden text-sm font-medium text-muted-foreground transition-colors hover:text-foreground sm:inline"
-          >
-            Pricing
-          </a>
           <a
             href={downloadUrl}
-            className={cn(buttonVariants(), "h-8 rounded-full px-4")}
+            className={cn(
+              "ml-1 inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-1.5 text-sm font-semibold text-black transition-colors hover:bg-white/90",
+            )}
           >
+            <AppleMark className="h-3.5 w-3.5" />
             Download
           </a>
-        </div>
-      </nav>
+        </nav>
+      </div>
     </header>
   );
 }

@@ -1,9 +1,6 @@
-// Shared site constants and the bridge to the web/server licensing backend.
-
-// The licensing backend (web/server, a Hono app) defaults to port 8787 in local
-// dev. Override with NEXT_PUBLIC_API_URL for staging/production.
-export const apiBaseUrl =
-  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "http://localhost:8787";
+// Shared site constants. v1 ships the app free with Sparkle auto-updates; there
+// is no licensing backend wired in yet (accounts/checkout land in a later
+// version), so this file stays a small set of static constants.
 
 export const supportedAgents = [
   "Claude Code",
@@ -26,10 +23,3 @@ export const navLinks = [
 // downloads.termio.sh) that always serves the newest notarized DMG. The release
 // workflow (.github/workflows/release.yml) overwrites this object on every tag.
 export const downloadUrl = "https://downloads.termio.sh/termio.dmg";
-
-// Backend endpoint that mints a Stripe Checkout Session for a plan + quantity.
-// See web/server: POST /api/checkout/session (requires an authenticated
-// session). TODO: this currently links to the in-page #pricing anchor / backend
-// route; wire it to the real authenticated checkout flow (sign-in, then POST
-// with { planId, quantity }) when accounts go live.
-export const checkoutSessionUrl = `${apiBaseUrl}/api/checkout/session`;
