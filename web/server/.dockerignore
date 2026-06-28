@@ -1,0 +1,6 @@
+node_modules
+dist
+.env
+.env.*
+*.log
+drizzle/meta/_journal.json.bak
