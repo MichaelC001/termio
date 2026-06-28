@@ -705,6 +705,14 @@ final class TermioStore: ObservableObject {
     /// gracefully — never a crash, per the project's no-trap rule.
     private func makeWorktree(for session: Session, in project: Project) -> String? {
         guard settings.worktreeEnabled else { return nil }
+        return createWorktree(for: session, in: project)
+    }
+
+    /// The worktree-creation core, used both by the auto-on-create path (which gates
+    /// on the global toggle) and by an explicit "isolate this session" action (which
+    /// does not — the user asked for it directly). Returns the worktree's path, or
+    /// `nil` (logged) if the project is not a git repo or git fails.
+    private func createWorktree(for session: Session, in project: Project) -> String? {
         guard runGit(["rev-parse", "--is-inside-work-tree"], in: project.path) != nil else {
             logWorktree("skipped: \(project.path) is not a git repository")
             return nil
@@ -811,6 +819,27 @@ final class TermioStore: ObservableObject {
         if let selected = selectedSessionID, removedSessionIDs.contains(selected) {
             selectedSessionID = projects.first(where: { !$0.sessions.isEmpty })?.sessions.first?.id
         }
+    }
+
+    /// Moves an existing session into its own git worktree on demand (the sidebar's
+    /// per-row "isolate" action). No-op if it is already isolated. Because a running
+    /// PTY's working directory can't be changed in place, the session's live surface
+    /// is dropped so it relaunches in the new worktree on next open — seamless for a
+    /// session that hasn't started working yet, a restart for one that has. The
+    /// branch the sidebar shows updates as soon as the new folder is watched.
+    func isolateSession(_ id: Session.ID) {
+        guard let projectIndex = projects.firstIndex(where: { $0.sessions.contains { $0.id == id } }),
+              let sessionIndex = projects[projectIndex].sessions.firstIndex(where: { $0.id == id })
+        else { return }
+        let project = projects[projectIndex]
+        let session = projects[projectIndex].sessions[sessionIndex]
+        guard session.worktreePath == nil else { return }
+        guard let path = createWorktree(for: session, in: project) else { return }
+
+        projects[projectIndex].sessions[sessionIndex].worktreePath = path
+        // Relaunch in the worktree: the cached surface still points at the old cwd.
+        surfaces[id] = nil
+        monitors[id] = nil
     }
 
     /// Closes a session: drops its cached surface (which tears down the PTY) and

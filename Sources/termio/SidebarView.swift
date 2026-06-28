@@ -18,9 +18,18 @@ private extension View {
     /// let a colorful desktop wallpaper bleed through behind the window and read as a
     /// messy blue gradient in dark mode; this keeps the live-blur "glass" feel but
     /// pins the color so the desktop can't drive it.
+    ///
+    /// The glass is a full-bleed sibling layer in a `ZStack`, not a `.background` of the
+    /// list. A list inside a `NavigationSplitView` column is inset below the title bar,
+    /// so a background anchored to it stops at that inset and the band behind the traffic
+    /// lights falls back to the window color — a visible seam. As its own `ignoresSafeArea`
+    /// layer the glass fills the whole column, running full-height up behind the traffic
+    /// lights the way NetNewsWire's sidebar material does (the pattern `TerminalPane` uses).
     func glassSidebarBackground(_ chrome: ChromeTheme?, isDark: Bool) -> some View {
-        scrollContentBackground(.hidden)
-            .background(SidebarGlass(chrome: chrome, isDark: isDark).ignoresSafeArea())
+        ZStack {
+            SidebarGlass(chrome: chrome, isDark: isDark).ignoresSafeArea()
+            scrollContentBackground(.hidden)
+        }
     }
 }
 
@@ -28,9 +37,9 @@ private extension View {
 /// luminosity that read as glass, then a near-opaque tint sits over it so the
 /// desktop behind a translucent window can't dictate the sidebar's color (the
 /// failure mode of raw vibrancy in dark mode). The tint borrows the theme's panel
-/// color when a terminal theme is set, else a neutral dark/light. Two hairlines —
-/// a bright top edge and a quiet trailing seam — define the panel the way light
-/// catches a real pane of glass, in place of a hard divider.
+/// color when a terminal theme is set, else a neutral dark/light. A single quiet
+/// trailing seam stands in for a hard divider; the top runs clean up behind the
+/// traffic lights with no edge line, so nothing reads as a cropped border there.
 private struct SidebarGlass: View {
     let chrome: ChromeTheme?
     let isDark: Bool
@@ -39,11 +48,6 @@ private struct SidebarGlass: View {
         Rectangle()
             .fill(.ultraThinMaterial)
             .overlay(tint)
-            .overlay(alignment: .top) {
-                Rectangle()
-                    .fill(Color.white.opacity(isDark ? 0.08 : 0.45))
-                    .frame(height: 1)
-            }
             .overlay(alignment: .trailing) {
                 Rectangle()
                     .fill(Color.white.opacity(isDark ? 0.06 : 0.0))
@@ -381,7 +385,12 @@ private func hoverBackground(_ chrome: ChromeTheme?, isHovering: Bool) -> some V
 /// its hover state so the control lifts a rounded background under the cursor — the
 /// per-action highlight VSCode gives the kill button on a terminal tab.
 private struct SessionRowActionButton: View {
+    let systemImage: String
     let help: String
+    /// The colour the glyph turns under the cursor. Destructive actions announce
+    /// themselves in red; benign ones (isolate) lift to the accent.
+    var hoverTint: Color = .red
+    var pointSize: CGFloat = 17
     let chrome: ChromeTheme?
     var isEnabled: Bool = true
     let action: () -> Void
@@ -389,14 +398,13 @@ private struct SessionRowActionButton: View {
 
     var body: some View {
         Button(action: action) {
-            // A filled circular glyph reads unambiguously as "remove this session"
-            // (rather than the faint hairline x that disappeared into the row). At
-            // rest it borrows the row's foreground; on hover it turns red so the
-            // destructive action announces itself before the click.
-            Image(systemName: "xmark.circle.fill")
-                .font(.system(size: 17, weight: .semibold))
+            // At rest the glyph borrows the row's foreground; on hover it lifts to its
+            // tint so the action announces itself before the click (red for the
+            // destructive close, accent for the benign isolate).
+            Image(systemName: systemImage)
+                .font(.system(size: pointSize, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(isHovering ? AnyShapeStyle(.red) : (chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.secondary)))
+                .foregroundStyle(isHovering ? AnyShapeStyle(hoverTint) : (chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.secondary)))
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
         }
@@ -454,14 +462,31 @@ private struct SessionRow: View {
                 .opacity(isHovering ? 0 : 1)
                 .help(store.statusDescription(for: session.id))
         }
-        // VSCode-style trailing action: hovering paints a close button over the
-        // trailing edge (where the status dot was), reserving no resting width.
+        // VSCode-style trailing actions: hovering paints them over the trailing edge
+        // (where the status dot was), reserving no resting width. A session not yet
+        // in its own worktree also gets an "isolate" branch button — isolation is a
+        // property of the session, so the affordance lives here per-row rather than
+        // in the project header's new-session strip.
         .overlay(alignment: .trailing) {
-            SessionRowActionButton(
-                help: "Close session",
-                chrome: chrome
-            ) {
-                store.closeSession(session.id)
+            HStack(spacing: 2) {
+                if session.worktreePath == nil {
+                    SessionRowActionButton(
+                        systemImage: "arrow.triangle.branch",
+                        help: "Isolate in a git worktree",
+                        hoverTint: .accentColor,
+                        pointSize: 14,
+                        chrome: chrome
+                    ) {
+                        store.isolateSession(session.id)
+                    }
+                }
+                SessionRowActionButton(
+                    systemImage: "xmark.circle.fill",
+                    help: "Close session",
+                    chrome: chrome
+                ) {
+                    store.closeSession(session.id)
+                }
             }
             .opacity(isHovering ? 1 : 0)
             .allowsHitTesting(isHovering)
@@ -477,6 +502,10 @@ private struct SessionRow: View {
         .onHover { isHovering = $0 }
         .onTapGesture { store.selectedSessionID = session.id }
         .contextMenu {
+            if session.worktreePath == nil {
+                Button("Isolate in Worktree") { store.isolateSession(session.id) }
+                Divider()
+            }
             Button("Close Session") { store.closeSession(session.id) }
         }
         .listRowBackground(
