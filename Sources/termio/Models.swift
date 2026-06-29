@@ -10,6 +10,11 @@ struct Project: Identifiable, Hashable, Codable {
     /// Current git branch, shown in each session's top bar (display only for now).
     var branch: String
     var sessions: [Session]
+
+    /// Optional sandbox configuration. `nil` (the default) runs this project's
+    /// sessions directly on the host as before; a value runs them inside a per-project
+    /// Apple Container VM (see `ContainerManager`).
+    var container: ContainerConfig?
 }
 
 /// What a new session launches: a plain login shell, or a coding agent CLI.

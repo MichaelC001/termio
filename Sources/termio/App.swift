@@ -112,6 +112,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        // Stop any per-project sandbox containers so no helper VM outlives the app.
+        store.containerManager.teardownAll()
+    }
+
     /// Builds the window's content: an `NSSplitViewController` with a native sidebar item
     /// and a detail item, each hosting its SwiftUI view. `sidebarWithViewController` is what
     /// gives the leading column the full-height vibrant `.sidebar` material behind the traffic
@@ -283,6 +288,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.presentOpenProjectPanel()
     }
 
+    /// File ▸ Open Project in VM… — same picker, but the opened project runs its
+    /// sessions inside an isolated sandbox VM. The sandbox is chosen here, at open
+    /// time, rather than toggled afterward.
+    @objc func openProjectInVM(_ sender: Any?) {
+        store.presentOpenProjectPanel(sandboxed: true)
+    }
+
     /// Termio ▸ Check for Updates… — hands off to Sparkle's standard update flow.
     /// Reached via the responder chain (the menu item targets `nil`), the same
     /// nil-target routing the other app-menu items use.
@@ -325,6 +337,14 @@ private func buildMainMenu() -> NSMenu {
         action: #selector(AppDelegate.openProject(_:)),
         keyEquivalent: "o"
     )
+    // Open the project straight into an isolated sandbox VM. Shift-⌘O sits right
+    // beside the plain Open Project (⌘O), so the two open modes read as a pair.
+    let openInVM = fileMenu.addItem(
+        withTitle: "Open Project in VM…",
+        action: #selector(AppDelegate.openProjectInVM(_:)),
+        keyEquivalent: "O"
+    )
+    openInVM.keyEquivalentModifierMask = [.command, .shift]
     fileItem.submenu = fileMenu
 
     // Standard Edit menu so copy/paste/select-all responder actions work.

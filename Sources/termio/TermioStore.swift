@@ -60,6 +60,11 @@ final class TermioStore: ObservableObject {
     /// from here, so a `git checkout` inside a session updates the UI on its own.
     let branchModel = BranchModel()
 
+    /// Owns the per-project Apple Container VMs. Only consulted for projects whose
+    /// `container` config is set and only when the runtime is installed; otherwise
+    /// sessions launch on the host exactly as before.
+    let containerManager = ContainerManager()
+
     private var surfaces: [Session.ID: TerminalViewState] = [:]
     private var monitors: [Session.ID: [AnyCancellable]] = [:]
     private var settingsObserver: AnyCancellable?
@@ -259,16 +264,34 @@ final class TermioStore: ObservableObject {
             return existing
         }
 
-        let command = settings.command(for: session.agent)
+        let agentCommand = settings.command(for: session.agent)
+
+        // When the project opts into a sandbox and the runtime is present, the session
+        // joins the project's shared Linux container: `ensureDaemon` boots it once (the
+        // project directory shared at /workspace, agents installed once), and the PTY
+        // runs `attach`, which the daemon execs the agent inside. libghostty is none the
+        // wiser. When the sandbox is unavailable (no helper bundled, not macOS 26, etc.)
+        // this is nil and the session runs on the host exactly as before.
+        let containerCommand: String? = {
+            guard project.container != nil, containerManager.isAvailable(),
+                  let socketPath = containerManager.ensureDaemon(for: project) else { return nil }
+            return containerManager.attachCommand(socketPath: socketPath, agentCommand: agentCommand)
+        }()
+
         let controller = TerminalController { [self] builder in
-            if let command {
-                builder.withCustom("command", command)
+            if let containerCommand {
+                builder.withCustom("command", containerCommand)
+            } else if let agentCommand {
+                builder.withCustom("command", agentCommand)
             }
             // Stamp the session's id into the shell environment so any agent hook
             // (Claude/Codex/Pi/OpenCode) running inside it can echo it back, letting
             // `HookListener` correlate events to this exact session even when several
             // share one project directory. Ghostty's `env` key adds it to the PTY.
-            builder.withCustom("env", "TERMIO_SESSION=\(session.id.uuidString)")
+            // (Crossing this into the VM for sandboxed sessions is Phase 2 work.)
+            if containerCommand == nil {
+                builder.withCustom("env", "TERMIO_SESSION=\(session.id.uuidString)")
+            }
             applyAppearance(to: &builder)
         }
         let state = TerminalViewState(controller: controller)
@@ -549,6 +572,10 @@ final class TermioStore: ObservableObject {
         guard let id = sessionID(for: report) else { return }
         switch report.state {
         case "working":
+            // A plain terminal session has no agent turn to spin for: if an agent
+            // run inside one (or a cwd-matched report from a sibling session) reports
+            // working, leave it calm so only real agent rows show the thinking spinner.
+            guard session(id)?.agent != .terminal else { break }
             statuses[id] = .working
             currentTool[id] = report.tool
             // Remember when work was last seen, so a turn that ends abnormally
@@ -664,32 +691,40 @@ final class TermioStore: ObservableObject {
     /// as a new project. Shared by the sidebar's open-project button and the
     /// File ▸ Open… (⌘O) menu item so both routes run the same code. `runModal`
     /// is fine on the main actor — a modal file picker is expected to block.
-    func presentOpenProjectPanel() {
+    /// Presents the folder picker. `sandboxed` decides whether the opened project runs
+    /// its sessions inside an isolated VM (File ▸ Open Project in VM…) or on the host
+    /// (File ▸ Open Project…) — the sandbox is decided when the project is brought in,
+    /// not flipped later.
+    func presentOpenProjectPanel(sandboxed: Bool = false) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.prompt = "Open"
-        panel.message = "Choose a project folder to open in termio."
+        panel.prompt = sandboxed ? "Open in VM" : "Open"
+        panel.message = sandboxed
+            ? "Choose a project folder to open in an isolated sandbox VM."
+            : "Choose a project folder to open in termio."
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        addProject(at: url)
+        addProject(at: url, sandboxed: sandboxed)
     }
 
     /// Adds the directory at `url` as a new project section seeded with a single
     /// terminal session, which becomes the selection. A folder already open as a
-    /// project is not duplicated — its first session is selected instead.
-    func addProject(at url: URL) {
+    /// project is not duplicated — its first session is selected instead. `sandboxed`
+    /// seeds the project's container config so its sessions run inside a VM.
+    func addProject(at url: URL, sandboxed: Bool = false) {
         let path = url.standardizedFileURL.path
         if let existing = projects.first(where: { $0.path == path }) {
             selectedSessionID = existing.sessions.first?.id
             return
         }
         let session = Session(title: "Terminal 1")
-        var project = Project(
+        let project = Project(
             name: url.lastPathComponent,
             path: path,
             branch: currentBranch(in: path) ?? "—",
-            sessions: [session]
+            sessions: [session],
+            container: sandboxed ? ContainerConfig() : nil
         )
         projects.append(project)
         selectedSessionID = project.sessions.first?.id
@@ -727,11 +762,24 @@ final class TermioStore: ObservableObject {
 
     /// Removes a project from the sidebar: tears down every session's live surface
     /// (and its PTY) and drops the project from the tree. Only the sidebar entry is
+    /// Turns the per-project sandbox on or off. On flips `container` to a default
+    /// `ContainerConfig`; off clears it. Only sessions opened *after* the change pick
+    /// it up — an already-running session keeps its cached surface — so the user opens
+    /// a fresh session to enter (or leave) the sandbox. The change persists via the
+    /// `projects` `didSet`.
+    func setSandbox(_ enabled: Bool, for id: Project.ID) {
+        guard let index = projects.firstIndex(where: { $0.id == id }) else { return }
+        projects[index].container = enabled ? ContainerConfig() : nil
+    }
+
     /// removed — the folder on disk, and any git worktrees the sessions created, are
     /// deliberately left untouched, the same hands-off stance `closeSession` takes
     /// (they may hold uncommitted agent work, so deletion is the user's call).
     func removeProject(_ id: Project.ID) {
         guard let projectIndex = projects.firstIndex(where: { $0.id == id }) else { return }
+
+        // Stop the project's sandbox container (and its VM) if one was running.
+        containerManager.teardown(projectID: id)
 
         let removedSessionIDs = Set(projects[projectIndex].sessions.map(\.id))
         for sessionID in removedSessionIDs {

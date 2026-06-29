@@ -8,3 +8,6 @@ termio.app/
 
 # Local state from the omo agent tool (run-continuation cache); not project source.
 .omo/
+packaging/.cache/
+/termio.app/
+sandbox-helper/.build/
