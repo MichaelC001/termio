@@ -5,8 +5,8 @@
        rect keeps the mark self-contained for README / web use. -->
   <rect x="0" y="0" width="512" height="512" rx="114" fill="#000000"/>
 
-  <!-- 九宫格: 3x3 of 80px rounded cells on a 20px gutter, centered.
-       Columns/rows at 116 / 216 / 316.
+  <!-- 九宫格: 3x3 of 72px rounded cells on a 32px gutter, centered.
+       Columns/rows at 116 / 220 / 324.
 
        The 8 perimeter cells form a clockwise comet trail (terminal spinner):
        the leader is full white, ~3 cells fade behind it, the rest sit dim.
@@ -15,47 +15,47 @@
   <g fill="#FFFFFF" shape-rendering="geometricPrecision">
 
     <!-- center "core": the cursor that stays lit while the agent streams -->
-    <rect x="216" y="216" width="80" height="80" rx="16" opacity="0.92">
+    <rect x="220" y="220" width="72" height="72" rx="14" opacity="0.92">
       <animate attributeName="opacity" values="0.92;0.7;0.92" dur="1.6s" repeatCount="indefinite"/>
     </rect>
 
     <!-- ring, clockwise from top-left. begin offsets stagger the trail. -->
-    <rect x="116" y="116" width="80" height="80" rx="16">
+    <rect x="116" y="116" width="72" height="72" rx="14">
       <animate attributeName="opacity" begin="0s"
         keyTimes="0;0.125;0.25;0.375;0.5;0.625;0.75;0.875;1"
         values="1;0.55;0.3;0.18;0.12;0.12;0.12;0.12;1" dur="1.6s" repeatCount="indefinite"/>
     </rect>
-    <rect x="216" y="116" width="80" height="80" rx="16">
+    <rect x="220" y="116" width="72" height="72" rx="14">
       <animate attributeName="opacity" begin="0.2s"
         keyTimes="0;0.125;0.25;0.375;0.5;0.625;0.75;0.875;1"
         values="1;0.55;0.3;0.18;0.12;0.12;0.12;0.12;1" dur="1.6s" repeatCount="indefinite"/>
     </rect>
-    <rect x="316" y="116" width="80" height="80" rx="16">
+    <rect x="324" y="116" width="72" height="72" rx="14">
       <animate attributeName="opacity" begin="0.4s"
         keyTimes="0;0.125;0.25;0.375;0.5;0.625;0.75;0.875;1"
         values="1;0.55;0.3;0.18;0.12;0.12;0.12;0.12;1" dur="1.6s" repeatCount="indefinite"/>
     </rect>
-    <rect x="316" y="216" width="80" height="80" rx="16">
+    <rect x="324" y="220" width="72" height="72" rx="14">
       <animate attributeName="opacity" begin="0.6s"
         keyTimes="0;0.125;0.25;0.375;0.5;0.625;0.75;0.875;1"
         values="1;0.55;0.3;0.18;0.12;0.12;0.12;0.12;1" dur="1.6s" repeatCount="indefinite"/>
     </rect>
-    <rect x="316" y="316" width="80" height="80" rx="16">
+    <rect x="324" y="324" width="72" height="72" rx="14">
       <animate attributeName="opacity" begin="0.8s"
         keyTimes="0;0.125;0.25;0.375;0.5;0.625;0.75;0.875;1"
         values="1;0.55;0.3;0.18;0.12;0.12;0.12;0.12;1" dur="1.6s" repeatCount="indefinite"/>
     </rect>
-    <rect x="216" y="316" width="80" height="80" rx="16">
+    <rect x="220" y="324" width="72" height="72" rx="14">
       <animate attributeName="opacity" begin="1.0s"
         keyTimes="0;0.125;0.25;0.375;0.5;0.625;0.75;0.875;1"
         values="1;0.55;0.3;0.18;0.12;0.12;0.12;0.12;1" dur="1.6s" repeatCount="indefinite"/>
     </rect>
-    <rect x="116" y="316" width="80" height="80" rx="16">
+    <rect x="116" y="324" width="72" height="72" rx="14">
       <animate attributeName="opacity" begin="1.2s"
         keyTimes="0;0.125;0.25;0.375;0.5;0.625;0.75;0.875;1"
         values="1;0.55;0.3;0.18;0.12;0.12;0.12;0.12;1" dur="1.6s" repeatCount="indefinite"/>
     </rect>
-    <rect x="116" y="216" width="80" height="80" rx="16">
+    <rect x="116" y="220" width="72" height="72" rx="14">
       <animate attributeName="opacity" begin="1.4s"
         keyTimes="0;0.125;0.25;0.375;0.5;0.625;0.75;0.875;1"
         values="1;0.55;0.3;0.18;0.12;0.12;0.12;0.12;1" dur="1.6s" repeatCount="indefinite"/>

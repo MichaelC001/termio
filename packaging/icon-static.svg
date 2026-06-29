@@ -45,8 +45,9 @@
       <feGaussianBlur stdDeviation="1.1"/>
     </filter>
 
-    <!-- one frosted-glass tile, 80x80, reused for every cell -->
-    <g id="tile">
+    <!-- one frosted-glass tile, drawn at 80x80 then scaled to 72 so the dots
+         read a touch smaller with more air in the gutters; reused for every cell -->
+    <g id="tile" transform="scale(0.9)">
       <rect width="80" height="80" rx="19" fill="url(#glassFill)" filter="url(#cast)"/>
       <rect width="80" height="80" rx="19" fill="url(#innerShade)"/>
       <rect x="3" y="3" width="74" height="74" rx="16" fill="url(#sheen)" filter="url(#soften)"/>
@@ -62,15 +63,15 @@
        at top-left fades clockwise, so even a still icon reads as streaming.
        Dim tiles simply look like glass catching less light. -->
   <g transform="translate(256 256) scale(0.9) translate(-256 -256)">
-    <use href="#tile" x="216" y="216" opacity="0.95"/>
+    <use href="#tile" x="220" y="220" opacity="0.95"/>
 
     <use href="#tile" x="116" y="116" opacity="1.00"/>
-    <use href="#tile" x="216" y="116" opacity="0.82"/>
-    <use href="#tile" x="316" y="116" opacity="0.66"/>
-    <use href="#tile" x="316" y="216" opacity="0.53"/>
-    <use href="#tile" x="316" y="316" opacity="0.44"/>
-    <use href="#tile" x="216" y="316" opacity="0.37"/>
-    <use href="#tile" x="116" y="316" opacity="0.32"/>
-    <use href="#tile" x="116" y="216" opacity="0.29"/>
+    <use href="#tile" x="220" y="116" opacity="0.82"/>
+    <use href="#tile" x="324" y="116" opacity="0.66"/>
+    <use href="#tile" x="324" y="220" opacity="0.53"/>
+    <use href="#tile" x="324" y="324" opacity="0.44"/>
+    <use href="#tile" x="220" y="324" opacity="0.37"/>
+    <use href="#tile" x="116" y="324" opacity="0.32"/>
+    <use href="#tile" x="116" y="220" opacity="0.29"/>
   </g>
 </svg>
