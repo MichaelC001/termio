@@ -370,6 +370,11 @@ private struct JSONHookFile: AgentStatusInstaller {
             let data = try JSONSerialization.data(
                 withJSONObject: settings,
                 options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+            // Skip the write when the result is byte-identical to what's already
+            // there (the common case on every launch): avoids needless churn on a
+            // user-owned file and shrinks the window where this atomic write could
+            // clobber a concurrent hand-edit. `.sortedKeys` makes the bytes stable.
+            if (try? Data(contentsOf: url)) == data { return }
             try data.write(to: url, options: .atomic)
         } catch {
             AgentStatusHooks.log("could not write \(url.path): \(error)")
@@ -400,10 +405,13 @@ private struct PluginFile: AgentStatusInstaller {
     }
 
     func install() {
+        let data = Data(contents.utf8)
+        // Same launch is a no-op: don't rewrite an unchanged plugin file.
+        if (try? Data(contentsOf: url)) == data { return }
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try contents.data(using: .utf8)?.write(to: url, options: .atomic)
+            try data.write(to: url, options: .atomic)
         } catch {
             AgentStatusHooks.log("could not write \(url.path): \(error)")
         }
@@ -433,7 +441,7 @@ private struct PluginFile: AgentStatusInstaller {
           const report = (state) => {
             const id = process.env.TERMIO_SESSION || "";
             const payload = JSON.stringify({ termio_session: id, state });
-            return $`printf %s ${payload} | nc -U ${socket}`.quiet().nothrow();
+            return $`printf %s ${payload} | nc -w 1 -U ${socket}`.quiet().nothrow();
           };
           return {
             event: async ({ event }) => {

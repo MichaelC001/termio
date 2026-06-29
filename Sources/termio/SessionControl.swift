@@ -264,10 +264,14 @@ enum SessionSkillInstaller {
     }
 
     private static func write(_ contents: String, to url: URL) {
+        let data = Data(contents.utf8)
+        // Don't rewrite an unchanged note on every launch: avoids churning a
+        // user-owned instruction file and the race of clobbering a concurrent edit.
+        if (try? Data(contentsOf: url)) == data { return }
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try contents.data(using: .utf8)?.write(to: url, options: .atomic)
+            try data.write(to: url, options: .atomic)
         } catch {
             FileHandle.standardError.write(
                 Data("termio: session skill could not write \(url.path): \(error)\n".utf8))
