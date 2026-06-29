@@ -218,7 +218,11 @@ enum AgentStatusHooks {
     /// shell-hook agents; the plugin agents emit the same JSON from JavaScript.
     static func reportCommand(state: String) -> String {
         let json = #"{"termio_session":"%s","state":"\#(state)","cwd":"%s"}"#
-        return "printf '\(json)' \"$TERMIO_SESSION\" \"$PWD\" | nc -U \"\(HookListener.socketURL.path)\""
+        // `|| true` and `2>/dev/null` keep the hook a silent no-op when termio
+        // isn't running to accept the connection — otherwise `nc`'s exit 1 surfaces
+        // in the agent as a "hook failed (non-blocking)" error on every tool call.
+        // `-w 1` bounds the connect so a wedged socket can't stall the agent.
+        return "printf '\(json)' \"$TERMIO_SESSION\" \"$PWD\" | nc -w 1 -U \"\(HookListener.socketURL.path)\" 2>/dev/null || true"
     }
 
     static func log(_ message: String) {

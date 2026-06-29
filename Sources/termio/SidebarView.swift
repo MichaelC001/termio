@@ -58,55 +58,12 @@ struct SidebarView: View {
             }
             .onMove(perform: store.moveProject)
         }
-        // Hosted via NSHostingController (see App.swift), so this is a standard
-        // macOS source list — exactly NetNewsWire's layout: the window's toolbar row
-        // holds the traffic lights and the system sidebar toggle, and the list sits
-        // naturally below it. We deliberately keep the native `.sidebar` vibrant
-        // material — exactly like NetNewsWire — rather than overriding it with a custom
-        // background. With the `.automatic` split toolbar, the title bar's leading region
-        // (behind the traffic lights) belongs to the window title bar and composites above
-        // all SwiftUI list content, so no list `.background` — Color, ShapeStyle, or view —
-        // can reach it; only the system material spans the full column height, making the
-        // sidebar read as one continuous panel. No safe-area juggling: the toolbar row is
-        // simply the top of the window.
+        // The native macOS `.sidebar` source list — its own Liquid Glass material, full-height
+        // behind the traffic lights. (We previously painted the column ourselves to dodge a macOS 26
+        // full-screen round-trip bug, but per the design call we're back to the stock sidebar.)
         .listStyle(.sidebar)
         .environment(\.defaultMinListRowHeight, 1)
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
-        // Drop SwiftUI's automatic sidebar toggle: on macOS 26 it carries a resting
-        // Liquid Glass capsule that reads as a permanent filled background. A flat
-        // replacement is supplied below that fires the same `toggleSidebar:` action,
-        // so the collapse animation is unchanged.
-        .toolbar(removing: .sidebarToggle)
-        .toolbar { sidebarToggleToolbar }
-    }
-
-    /// The sidebar toggle, pinned to the trailing edge of the sidebar's own title-bar
-    /// region (top-right of the column, just left of the divider) rather than over in
-    /// the terminal pane's title bar.
-    /// On macOS 26 `sharedBackgroundVisibility(.hidden)` drops the default Liquid
-    /// Glass capsule so it sits flat over the sidebar material, matching the title
-    /// beside it.
-    @ToolbarContentBuilder
-    private var sidebarToggleToolbar: some ToolbarContent {
-        if #available(macOS 26.0, *) {
-            ToolbarItem(placement: .primaryAction) { sidebarToggle }
-                .sharedBackgroundVisibility(.hidden)
-        } else {
-            ToolbarItem(placement: .primaryAction) { sidebarToggle }
-        }
-    }
-
-    /// Replacement for SwiftUI's automatic sidebar toggle (removed above). It sends
-    /// the standard `toggleSidebar:` up the responder chain so the native
-    /// `NSSplitViewController` still drives the collapse — only the styling differs:
-    /// no resting Liquid Glass capsule, just the hover highlight.
-    private var sidebarToggle: some View {
-        Button {
-            NSApp.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil)
-        } label: {
-            Image(systemName: "sidebar.left")
-        }
-        .help("Toggle Sidebar")
     }
 
     private func toggleCollapsed(_ id: Project.ID) {
@@ -119,6 +76,7 @@ struct SidebarView: View {
         }
     }
 }
+
 
 /// A project's section header. The agent quick-add buttons float in a trailing
 /// overlay rather than the row's flow, so at rest the label gets the full row width
@@ -156,6 +114,18 @@ private struct ProjectHeader: View {
                 .textCase(.uppercase)
                 .tracking(0.5)
                 .foregroundStyle(chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.primary))
+            // A quiet "VM" tag when this project runs in a sandbox container — borrows
+            // the same soft quaternary capsule as the title-bar chips so it reads as a
+            // calm label, not a button. Shown once on the header, never on the rows.
+            if project.container != nil {
+                Text("VM")
+                    .font(.system(size: 9, weight: .semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Capsule(style: .continuous).fill(.quaternary))
+            }
             Spacer(minLength: 4)
         }
         // The hover actions sit in an overlay, not the HStack above, so they reserve

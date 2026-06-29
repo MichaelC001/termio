@@ -23,7 +23,7 @@ enum Termio {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow!
     private let settings = AppSettings()
     private lazy var store = TermioStore.restored(settings: settings)
@@ -47,6 +47,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // before the window exists, replayed once it does. macOS may deliver the open
     // event during a cold launch, ahead of `applicationDidFinishLaunching`.
     private var pendingOpenURLs: [URL] = []
+    // The split controller, retained so `installToolbar` can bind the native sidebar
+    // toggle and the sidebar tracking separator to its split view.
+    private weak var splitViewController: NSSplitViewController?
+    // The window's real toolbar delegate (must be retained); it carries the native
+    // sidebar toggle (see `installToolbar`).
+    private var toolbarDelegate: MainToolbarDelegate?
+    // Keeps the native window title (path) and subtitle (git branch) in step with the
+    // selected session — NetNewsWire's approach, no custom title-bar views.
+    private var titleObserver: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         window = NSWindow(
@@ -59,14 +68,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Floor the window size so it can't be dragged down to an unusable sliver: the
         // sidebar alone wants ~220pt, leaving room for a workable terminal beside it.
         window.contentMinSize = NSSize(width: 640, height: 420)
-        window.titlebarAppearsTransparent = true
-        // Default (`.automatic`) toolbar style — the same one NetNewsWire uses — so
-        // the title bar splits at the sidebar divider and the sidebar's vibrant
-        // material runs up behind the traffic lights, instead of a unified style
-        // painting one flat full-width band across the top. The window title is
-        // hidden so a visible title doesn't force a tall second toolbar row.
+        // Stock window chrome, NetNewsWire-style: a normal system toolbar with the native
+        // title + subtitle (showing the session's path and git branch), the native sidebar
+        // toggle, and `.fullSizeContentView` letting the sidebar's vibrant material run up
+        // behind the traffic lights. No custom title-bar painting. `.automatic` toolbar style
+        // splits the bar at the sidebar divider rather than painting one flat unified band.
         window.toolbarStyle = .automatic
-        window.titleVisibility = .hidden
         // Drive the split with a real AppKit `NSSplitViewController` whose first item
         // has `.sidebar` behavior — NetNewsWire's architecture. This is the *only* way to
         // get the native full-height sidebar (vibrant material running up behind the
@@ -76,11 +83,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // representable with no connection to the title bar, so the sidebar can never
         // reach behind the traffic lights. SwiftUI still renders each pane's contents.
         window.contentViewController = makeContentSplitViewController()
+        window.delegate = self
         window.center()
         window.setFrameAutosaveName("TermioMainWindow")
         window.makeKeyAndOrderFront(nil)
         applyWindowTransparency()
         applyChromeAppearance()
+        installToolbar()
+        updateWindowTitle()
+        // Keep the native title/subtitle in step with the selected session and its live branch.
+        titleObserver = store.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in
+                MainActor.assumeIsolated { self?.updateWindowTitle() }
+            }
 
         // Background opacity/blur only show through a non-opaque window, and the
         // window's light/dark appearance follows the selected theme, so both track
@@ -120,31 +136,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Builds the window's content: an `NSSplitViewController` with a native sidebar item
     /// and a detail item, each hosting its SwiftUI view. `sidebarWithViewController` is what
     /// gives the leading column the full-height vibrant `.sidebar` material behind the traffic
-    /// lights and the title-bar tracking separator. `sceneBridgingOptions = .toolbars` lets each
-    /// pane's SwiftUI `.toolbar` (the path/branch chips, the sidebar toggle) reach the window's
-    /// toolbar even though the panes are children of the split controller, not the window's own
-    /// hosting controller. The standard `toggleSidebar(_:)` responder action collapses the item.
+    /// lights and the title-bar tracking separator. The panes no longer bridge their toolbars —
+    /// the window owns a real `NSToolbar` (see `installToolbar`) so it can carry the native
+    /// `.toggleSidebar` item. The standard `toggleSidebar(_:)` responder action collapses the item.
     private func makeContentSplitViewController() -> NSSplitViewController {
         let sidebar = NSHostingController(rootView: SidebarView()
             .environmentObject(store)
             .environmentObject(settings))
-        sidebar.sceneBridgingOptions = [.toolbars]
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
         sidebarItem.minimumThickness = 220
         sidebarItem.maximumThickness = 400
         sidebarItem.canCollapse = true
+        sidebarItem.allowsFullHeightLayout = true
 
         let detail = NSHostingController(rootView: TerminalPane()
             .environmentObject(store)
             .environmentObject(settings))
-        detail.sceneBridgingOptions = [.toolbars]
         let detailItem = NSSplitViewItem(viewController: detail)
 
         let splitViewController = NSSplitViewController()
         splitViewController.addSplitViewItem(sidebarItem)
         splitViewController.addSplitViewItem(detailItem)
         splitViewController.splitView.autosaveName = "TermioContentSplit"
+        self.splitViewController = splitViewController
         return splitViewController
+    }
+
+    /// Mirrors the selected session's working directory into the native window title and its
+    /// live git branch into the subtitle — NetNewsWire's pattern (the system draws them in the
+    /// toolbar; no custom views). The path is the session's real working directory, so a
+    /// worktree session shows where it actually runs; a non-git folder leaves the subtitle empty.
+    private func updateWindowTitle() {
+        guard let window else { return }
+        guard let id = store.selectedSessionID, let project = store.project(for: id) else {
+            window.title = "Termio"
+            window.subtitle = ""
+            return
+        }
+        let folder = store.session(id)?.worktreePath ?? project.path
+        window.title = abbreviatingHome(folder)
+        window.subtitle = store.branch(forFolder: folder) ?? ""
+    }
+
+    /// Home-abbreviates an absolute path to `~`, matching how a shell prompt shows it.
+    private func abbreviatingHome(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
+        return path
     }
 
     /// Entry point for the `termio` CLI: macOS delivers the folder passed to
@@ -201,6 +240,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.appearance = appearance
         window?.appearance = appearance
         settingsWindow?.appearance = appearance
+    }
+
+    /// Installs a real `NSToolbar`, the way NetNewsWire does, so the window gets the
+    /// genuine system sidebar toggle. The native `.toggleSidebar` item — provided and
+    /// styled by AppKit, with the proper macOS 26 Liquid Glass on hover — can only live in
+    /// a real toolbar, not SwiftUI's bridged one, so the panes no longer bridge their
+    /// toolbars (`sceneBridgingOptions` dropped). `.sidebarTrackingSeparator` keeps the
+    /// toolbar's split aligned with the sidebar divider, and the toggle stays put (after
+    /// the traffic lights) when the sidebar collapses.
+    private func installToolbar() {
+        guard let window, let splitViewController else { return }
+        let delegate = MainToolbarDelegate(splitView: splitViewController.splitView)
+        toolbarDelegate = delegate
+        let toolbar = NSToolbar(identifier: "TermioMainToolbar")
+        toolbar.delegate = delegate
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        window.toolbar = toolbar
     }
 
     /// Opens (or refocuses) the preferences window. Reached via the responder
@@ -300,6 +357,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// nil-target routing the other app-menu items use.
     @objc func checkForUpdates(_ sender: Any?) {
         updaterController.checkForUpdates(sender)
+    }
+}
+
+/// Delegate for the window's real toolbar. It declares the native sidebar toggle and the
+/// sidebar tracking separator — both system-provided — so the delegate only supplies the
+/// tracking separator binding (to the sidebar divider) and lets AppKit provide the toggle.
+@MainActor
+private final class MainToolbarDelegate: NSObject, NSToolbarDelegate {
+    private weak var splitView: NSSplitView?
+
+    init(splitView: NSSplitView) {
+        self.splitView = splitView
+    }
+
+    private let identifiers: [NSToolbarItem.Identifier] = [
+        .toggleSidebar, .sidebarTrackingSeparator,
+    ]
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        identifiers
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        identifiers
+    }
+
+    func toolbar(
+        _ toolbar: NSToolbar,
+        itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+        willBeInsertedIntoToolbar flag: Bool
+    ) -> NSToolbarItem? {
+        switch itemIdentifier {
+        case .sidebarTrackingSeparator:
+            guard let splitView else { return nil }
+            return NSTrackingSeparatorToolbarItem(
+                identifier: .sidebarTrackingSeparator, splitView: splitView, dividerIndex: 0)
+        default:
+            // `.toggleSidebar` is provided and styled by AppKit.
+            return nil
+        }
     }
 }
 
