@@ -128,11 +128,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         true
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        // Stop any per-project sandbox containers so no helper VM outlives the app.
-        store.containerManager.teardownAll()
-    }
-
     /// Builds the window's content: an `NSSplitViewController` with a native sidebar item
     /// and a detail item, each hosting its SwiftUI view. `sidebarWithViewController` is what
     /// gives the leading column the full-height vibrant `.sidebar` material behind the traffic

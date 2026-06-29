@@ -64,52 +64,6 @@ echo "==> Bundling termio command-line tool"
 cp "$repo_root/scripts/termio" "$resources_dir/termio"
 chmod +x "$resources_dir/termio"
 
-# Build, sign, and bundle the sandbox helper — the entitled binary that boots a
-# Linux micro-VM per session (see sandbox-helper/). It is a separate SwiftPM package
-# so it can require macOS 26 (what Apple's Containerization needs) without raising
-# the app's own minimum. The app runs it via a PTY; only this binary carries the
-# com.apple.security.virtualization entitlement. The Linux kernel it boots is fetched
-# once (Kata static build) and cached under packaging/.cache.
-helper_pkg="$repo_root/sandbox-helper"
-helper_entitlements="$repo_root/packaging/termio-sandbox.entitlements"
-kernel_cache="$repo_root/packaging/.cache/vmlinux-arm64"
-
-echo "==> Building termio-sandbox helper ($configuration)"
-( cd "$helper_pkg" && swift build -c "$configuration" )
-helper_bin_dir="$(cd "$helper_pkg" && swift build -c "$configuration" --show-bin-path)"
-helper_bin="$helper_bin_dir/termio-sandbox"
-if [[ ! -x "$helper_bin" ]]; then
-    echo "error: helper binary not found at $helper_bin" >&2
-    exit 1
-fi
-cp "$helper_bin" "$resources_dir/termio-sandbox"
-
-if [[ ! -f "$kernel_cache" ]]; then
-    echo "==> Fetching Linux kernel (kata-static)"
-    mkdir -p "$(dirname "$kernel_cache")"
-    kernel_tmp="$(mktemp -d)"
-    curl -SsL -o "$kernel_tmp/kata.tar.xz" \
-        "https://github.com/kata-containers/kata-containers/releases/download/3.17.0/kata-static-3.17.0-arm64.tar.xz"
-    tar -xf "$kernel_tmp/kata.tar.xz" -C "$kernel_tmp"
-    found_kernel="$(find "$kernel_tmp" -name 'vmlinux.container' | head -1)"
-    if [[ -z "$found_kernel" ]]; then
-        echo "error: vmlinux.container not found in kata package" >&2
-        exit 1
-    fi
-    cp -L "$found_kernel" "$kernel_cache"
-    rm -rf "$kernel_tmp"
-fi
-cp "$kernel_cache" "$resources_dir/vmlinux-arm64"
-
-# Sign the helper now (with its own entitlements) so the outer-app seal below covers
-# the already-signed binary. A Developer ID build also gets the hardened runtime.
-helper_sign_args=(--force --sign "$sign_identity" --entitlements "$helper_entitlements")
-if [[ "$sign_identity" != "-" ]]; then
-    helper_sign_args+=(--options runtime --timestamp)
-fi
-echo "==> Signing termio-sandbox helper"
-codesign "${helper_sign_args[@]}" "$resources_dir/termio-sandbox"
-
 # Stamp version / build number when the release workflow supplies them. The
 # binary's rpath already resolves @rpath/Sparkle.framework via @executable_path
 # below, so embedding is purely a copy + one rpath entry.

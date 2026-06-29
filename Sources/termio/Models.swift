@@ -12,9 +12,9 @@ struct Project: Identifiable, Hashable, Codable {
     var sessions: [Session]
 
     /// Optional sandbox configuration. `nil` (the default) runs this project's
-    /// sessions directly on the host as before; a value runs them inside a per-project
-    /// Apple Container VM (see `ContainerManager`).
-    var container: ContainerConfig?
+    /// sessions directly on the host; a value runs them under an Apple Seatbelt profile
+    /// (see `SeatbeltProfile`), which confines the agent's whole process tree.
+    var sandbox: SandboxProfile?
 }
 
 /// What a new session launches: a plain login shell, or a coding agent CLI.
@@ -63,6 +63,20 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         switch self {
         case .claudeCode: return "--dangerously-skip-permissions"
         case .codex: return "--dangerously-bypass-approvals-and-sandbox"
+        case .terminal, .opencode, .pi: return nil
+        }
+    }
+
+    /// Arguments (a shell-ready fragment) that tell this agent to NOT run its own
+    /// Seatbelt sandbox, because termio's per-project profile is the single enforcement
+    /// layer wrapping the whole session. This is *required*, not an optimization: macOS
+    /// forbids applying a second sandbox inside an existing one, so an agent's inner
+    /// `sandbox-exec` would fail to initialize once termio has already sandboxed the
+    /// session. `nil` for agents with no internal sandbox. Appended by `SandboxLauncher`.
+    var sandboxStandDownArguments: String? {
+        switch self {
+        case .claudeCode: return "--settings '{\"sandbox\":{\"enabled\":false}}'"
+        case .codex: return "--sandbox danger-full-access"
         case .terminal, .opencode, .pi: return nil
         }
     }

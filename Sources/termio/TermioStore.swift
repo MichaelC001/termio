@@ -32,6 +32,10 @@ final class TermioStore: ObservableObject {
         }
     }
 
+    /// The project whose Security panel is open, or `nil` when none is. Transient UI
+    /// state (not persisted) driving the sandbox-configuration sheet.
+    @Published var editingSecurityProjectID: Project.ID?
+
     /// Per-session activity, driven by the surface signals monitored below and, when
     /// enabled, the Claude Code hooks reported into `HookListener`. A session with no
     /// entry (never opened, so no surface yet) reads as `.idle`.
@@ -60,10 +64,6 @@ final class TermioStore: ObservableObject {
     /// from here, so a `git checkout` inside a session updates the UI on its own.
     let branchModel = BranchModel()
 
-    /// Owns the per-project Apple Container VMs. Only consulted for projects whose
-    /// `container` config is set and only when the runtime is installed; otherwise
-    /// sessions launch on the host exactly as before.
-    let containerManager = ContainerManager()
 
     private var surfaces: [Session.ID: TerminalViewState] = [:]
     private var monitors: [Session.ID: [AnyCancellable]] = [:]
@@ -265,22 +265,26 @@ final class TermioStore: ObservableObject {
         }
 
         let agentCommand = settings.command(for: session.agent)
+        // An isolated worktree (if one was created for this session) wins over the
+        // project's own directory, so the agent edits the branch in place — and so the
+        // sandbox's writable workspace is exactly where the session actually works.
+        let workspacePath = session.worktreePath ?? project.path
 
-        // When the project opts into a sandbox and the runtime is present, the session
-        // joins the project's shared Linux container: `ensureDaemon` boots it once (the
-        // project directory shared at /workspace, agents installed once), and the PTY
-        // runs `attach`, which the daemon execs the agent inside. libghostty is none the
-        // wiser. When the sandbox is unavailable (no helper bundled, not macOS 26, etc.)
-        // this is nil and the session runs on the host exactly as before.
-        let containerCommand: String? = {
-            guard project.container != nil, containerManager.isAvailable(),
-                  let socketPath = containerManager.ensureDaemon(for: project) else { return nil }
-            return containerManager.attachCommand(socketPath: socketPath, agentCommand: agentCommand)
-        }()
+        // When the project is sandboxed, the session's whole process tree runs under a
+        // Seatbelt profile compiled from `project.sandbox`: `sandbox-exec` wraps the same
+        // command that would otherwise run on the host, the agent is told to stand down
+        // its own (now redundant, and un-nestable) sandbox, and everything outside the
+        // workspace and the baseline allows is invisible. `nil` (no sandbox, or the
+        // profile file couldn't be written) falls back to running on the host as before.
+        let sandboxedCommand: String? = project.sandbox.flatMap { profile in
+            SandboxLauncher.command(agentCommand: agentCommand, agent: session.agent,
+                                    profile: profile, workspacePath: workspacePath,
+                                    sessionID: session.id)
+        }
 
         let controller = TerminalController { [self] builder in
-            if let containerCommand {
-                builder.withCustom("command", containerCommand)
+            if let sandboxedCommand {
+                builder.withCustom("command", sandboxedCommand)
             } else if let agentCommand {
                 builder.withCustom("command", agentCommand)
             }
@@ -288,19 +292,14 @@ final class TermioStore: ObservableObject {
             // (Claude/Codex/Pi/OpenCode) running inside it can echo it back, letting
             // `HookListener` correlate events to this exact session even when several
             // share one project directory. Ghostty's `env` key adds it to the PTY.
-            // (Crossing this into the VM for sandboxed sessions is Phase 2 work.)
-            if containerCommand == nil {
-                builder.withCustom("env", "TERMIO_SESSION=\(session.id.uuidString)")
-            }
+            builder.withCustom("env", "TERMIO_SESSION=\(session.id.uuidString)")
             applyAppearance(to: &builder)
         }
         let state = TerminalViewState(controller: controller)
         state.controller.setTheme(makeTheme())
         state.configuration = TerminalSurfaceOptions(
             backend: .exec,
-            // An isolated worktree (if one was created for this session) wins over
-            // the project's own directory, so the agent edits the branch in place.
-            workingDirectory: session.worktreePath ?? project.path
+            workingDirectory: workspacePath
         )
         surfaces[session.id] = state
         monitor(state, for: session.id)
@@ -692,17 +691,17 @@ final class TermioStore: ObservableObject {
     /// File ▸ Open… (⌘O) menu item so both routes run the same code. `runModal`
     /// is fine on the main actor — a modal file picker is expected to block.
     /// Presents the folder picker. `sandboxed` decides whether the opened project runs
-    /// its sessions inside an isolated VM (File ▸ Open Project in VM…) or on the host
-    /// (File ▸ Open Project…) — the sandbox is decided when the project is brought in,
-    /// not flipped later.
+    /// its sessions under a Seatbelt sandbox (File ▸ Open Project Sandboxed…) or on the
+    /// host (File ▸ Open Project…) — the sandbox is decided when the project is brought
+    /// in, and can be adjusted later from the project's Security panel.
     func presentOpenProjectPanel(sandboxed: Bool = false) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.prompt = sandboxed ? "Open in VM" : "Open"
+        panel.prompt = sandboxed ? "Open Sandboxed" : "Open"
         panel.message = sandboxed
-            ? "Choose a project folder to open in an isolated sandbox VM."
+            ? "Choose a project folder to open under a Seatbelt sandbox."
             : "Choose a project folder to open in termio."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         addProject(at: url, sandboxed: sandboxed)
@@ -711,7 +710,7 @@ final class TermioStore: ObservableObject {
     /// Adds the directory at `url` as a new project section seeded with a single
     /// terminal session, which becomes the selection. A folder already open as a
     /// project is not duplicated — its first session is selected instead. `sandboxed`
-    /// seeds the project's container config so its sessions run inside a VM.
+    /// seeds the project's sandbox profile so its sessions run under a Seatbelt profile.
     func addProject(at url: URL, sandboxed: Bool = false) {
         let path = url.standardizedFileURL.path
         if let existing = projects.first(where: { $0.path == path }) {
@@ -724,7 +723,7 @@ final class TermioStore: ObservableObject {
             path: path,
             branch: currentBranch(in: path) ?? "—",
             sessions: [session],
-            container: sandboxed ? ContainerConfig() : nil
+            sandbox: sandboxed ? SandboxProfile() : nil
         )
         projects.append(project)
         selectedSessionID = project.sessions.first?.id
@@ -762,14 +761,29 @@ final class TermioStore: ObservableObject {
 
     /// Removes a project from the sidebar: tears down every session's live surface
     /// (and its PTY) and drops the project from the tree. Only the sidebar entry is
-    /// Turns the per-project sandbox on or off. On flips `container` to a default
-    /// `ContainerConfig`; off clears it. Only sessions opened *after* the change pick
+    /// Turns the per-project sandbox on or off. On flips `sandbox` to a default
+    /// `SandboxProfile`; off clears it. Only sessions opened *after* the change pick
     /// it up — an already-running session keeps its cached surface — so the user opens
     /// a fresh session to enter (or leave) the sandbox. The change persists via the
     /// `projects` `didSet`.
     func setSandbox(_ enabled: Bool, for id: Project.ID) {
         guard let index = projects.firstIndex(where: { $0.id == id }) else { return }
-        projects[index].container = enabled ? ContainerConfig() : nil
+        projects[index].sandbox = enabled ? SandboxProfile() : nil
+    }
+
+    /// The sandbox profile of a project, or `nil` when the project runs on the host.
+    func sandboxProfile(for id: Project.ID) -> SandboxProfile? {
+        projects.first(where: { $0.id == id })?.sandbox
+    }
+
+    /// Edits a sandboxed project's profile in place (a no-op when the project isn't
+    /// sandboxed). The mutation persists via the `projects` `didSet`, and is picked up by
+    /// sessions opened after the change — the Security panel edits through here.
+    func updateSandbox(for id: Project.ID, _ mutate: (inout SandboxProfile) -> Void) {
+        guard let index = projects.firstIndex(where: { $0.id == id }),
+              var profile = projects[index].sandbox else { return }
+        mutate(&profile)
+        projects[index].sandbox = profile
     }
 
     /// removed — the folder on disk, and any git worktrees the sessions created, are
@@ -778,11 +792,9 @@ final class TermioStore: ObservableObject {
     func removeProject(_ id: Project.ID) {
         guard let projectIndex = projects.firstIndex(where: { $0.id == id }) else { return }
 
-        // Stop the project's sandbox container (and its VM) if one was running.
-        containerManager.teardown(projectID: id)
-
         let removedSessionIDs = Set(projects[projectIndex].sessions.map(\.id))
         for sessionID in removedSessionIDs {
+            SandboxLauncher.cleanUp(sessionID: sessionID)
             surfaces[sessionID] = nil
             monitors[sessionID] = nil
             statuses[sessionID] = nil
@@ -809,6 +821,7 @@ final class TermioStore: ObservableObject {
         else { return }
 
         projects[projectIndex].sessions.remove(at: sessionIndex)
+        SandboxLauncher.cleanUp(sessionID: id)
         surfaces[id] = nil
         monitors[id] = nil
         statuses[id] = nil
