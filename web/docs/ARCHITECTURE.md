@@ -1,96 +1,85 @@
 # termio Web — Architecture
 
-This describes the `web/` project: the marketing site and the licensing backend
-that together sell and validate termio licenses. The desktop app itself lives in
+This describes the `web/` project: the marketing site, and how termio is sold and
+licensed. Selling, tax, and license keys are handled by **Lemon Squeezy**
+(Merchant of Record) — there is no self-hosted backend. The desktop app lives in
 the repository root (`Sources/termio`) and is out of scope here, except where it
-validates a license.
+activates a license.
 
-> Some sub-projects are being built concurrently by other agents. This document
-> describes them **by intent**; paths it references may not all exist yet.
-
-## Two sub-projects
+## One sub-project
 
 ### `web/landing` — marketing site
 
-The public website. A developer evaluates termio, reads pricing, and starts
-checkout here.
+The public website. A developer evaluates termio, reads pricing, and clicks
+through to Lemon Squeezy checkout.
 
 - **Stack:** Next.js + TypeScript, styled with Tailwind CSS and
   [shadcn/ui](https://ui.shadcn.com/) components.
 - **Design:** modeled on [superwhisper.com](https://superwhisper.com/) — clean,
   dark, product-forward. (We borrow superwhisper's *visual* language, not its
   subscription pricing model.)
-- **Pricing source:** reads [`web/docs/pricing.json`](./pricing.json) so the
-  pricing UI never drifts from the contract.
-- **Responsibility:** present the product, render the pricing tiers and trial,
-  and hand off to checkout on the backend.
+- **Pricing source:** `src/data/pricing.ts`, mirroring
+  [`web/docs/pricing.json`](./pricing.json), so the pricing UI never drifts from
+  the contract.
+- **Responsibility:** present the product, render the two tiers + trial, and link
+  out to the Lemon Squeezy checkout URLs in `src/lib/site.ts`.
 
-### `web/server` — accounts & licensing backend
+## Selling & licensing: Lemon Squeezy (Merchant of Record)
 
-The API that turns a purchase into a license and answers "is this license
-valid?".
+We do not run an accounts/licensing backend. [Lemon Squeezy](https://www.lemonsqueezy.com/)
+is the Merchant of Record, which means it:
 
-- **Stack:** [Hono.js](https://hono.dev/) (HTTP), [better-auth](https://www.better-auth.com/)
-  (accounts/sessions), [Drizzle ORM](https://orm.drizzle.team/) over a
-  **Supabase Postgres** database.
-- **Payments:** Stripe for a **one-time** payment. No subscriptions, no recurring
-  billing, no renewal webhooks.
-- **Responsibility:** user accounts, Stripe checkout, issuing **lifetime,
-  device-capped licenses** (a device cap of 1 for Solo or 3 for Pro), recording
-  the 30-day refund window, seat/org management for Team plans, and a
-  license-validation endpoint the desktop app calls.
+- **Hosts checkout** — the landing "Buy" buttons link to a Lemon Squeezy checkout
+  (or open the Lemon.js overlay).
+- **Remits global tax** — it calculates and pays sales tax / VAT worldwide; we are
+  not the tax-liable party and need no per-jurisdiction registrations.
+- **Issues license keys** — each product has license keys enabled, so a purchase
+  auto-generates a key and emails it to the buyer (and shows it on the success
+  page + customer portal). A key's **activation limit** is the per-tier device cap
+  (Solo = 1, Pro = 3).
+- **Validates activations** — its [License API](https://docs.lemonsqueezy.com/api/license-api)
+  (`activate` / `validate` / `deactivate`) is what the desktop app calls; the
+  license key itself is the credential, so no server-side secret is involved in
+  those calls.
+
+Free / giveaway keys are issued as **100%-off discount codes** from the dashboard
+(single-use or capped) — they run through normal checkout at $0 and produce a real,
+fully-tracked key. Refunds disable the key automatically, so the next `validate`
+fails closed.
 
 ## Request flow
 
 ```
- ┌──────────┐    visit/read     ┌──────────────────┐
- │ Browser  │ ────────────────▶ │  web/landing     │
- │ (dev)    │                   │  Next.js + shadcn │
- └──────────┘                   └─────────┬─────────┘
-      │                                   │ "Buy" → checkout
-      │                                   ▼
-      │                         ┌───────────────────┐
-      │      better-auth        │   web/server      │
-      │ ◀────── session ──────▶ │   Hono.js + Drizzle│
-      │                         └─────────┬─────────┘
-      │                                   │ create checkout session
-      │                                   ▼
-      │                         ┌───────────────────┐
-      │   redirect to pay  ────▶│      Stripe       │
-      │                         └─────────┬─────────┘
-      │                                   │ webhook: payment succeeded
-      │                                   ▼
-      │                         ┌───────────────────┐
-      │                         │  License issuance │
-      │                         │  (web/server →    │
-      │                         │   Supabase PG)    │
-      │                         └─────────┬─────────┘
-      │        license key                │
-      │ ◀─────────────────────────────────┘
+ ┌──────────┐    visit / read pricing    ┌──────────────────┐
+ │ Browser  │ ─────────────────────────▶ │  web/landing     │
+ │ (dev)    │                            │  Next.js + shadcn │
+ └──────────┘                            └─────────┬─────────┘
+      │                                            │ "Buy" link
+      │                                            ▼
+      │                                  ┌───────────────────┐
+      │            redirect to pay  ────▶│   Lemon Squeezy   │
+      │                                  │   hosted checkout  │
+      │                                  └─────────┬─────────┘
+      │   license key (email + success page)       │ payment + tax handled by LS
+      │ ◀──────────────────────────────────────────┘
       ▼
- ┌──────────────────────┐   validate license   ┌───────────────────┐
- │  termio desktop app  │ ───────────────────▶ │  web/server       │
- │  (macOS, local-only) │ ◀─── valid / seat ── │  /license/verify  │
- └──────────────────────┘                      └───────────────────┘
+ ┌──────────────────────┐  activate / validate   ┌────────────────────────┐
+ │  termio desktop app  │ ─────────────────────▶ │  Lemon Squeezy         │
+ │  (macOS, local-only) │ ◀─── status / seat ─── │  License API           │
+ └──────────────────────┘                        └────────────────────────┘
 ```
 
 Plain-language version:
 
 1. The developer lands on `web/landing` and reads the pricing.
-2. They start checkout; `web/server` (Hono) authenticates them via better-auth
-   and creates a **Stripe** checkout session for a **one-time payment** (Solo,
-   Pro, or N Team seats).
-3. Stripe collects the payment and fires a single `payment succeeded` webhook
-   back to `web/server`. There is no subscription, so there are no recurring or
-   renewal webhooks to handle.
-4. `web/server` **mints a lifetime license** with the right **device cap** (1 for
-   Solo, 3 for Pro) and stamps a **30-day refund window** on it (and, for Team,
-   allocates seats in an org), persists it to Supabase Postgres via Drizzle, and
-   returns the license to the buyer.
-5. The **termio desktop app** validates that license against `web/server` to
-   unlock past the 7-day trial. Validation checks the license is active and the
-   requesting Mac fits under the device cap. Because the app is local-only, this
-   is a lightweight check, not a per-use gate.
+2. They click Buy and pay on **Lemon Squeezy** (one-time payment; LS handles the
+   card, the receipt, and the tax).
+3. Lemon Squeezy **generates a lifetime license key** with the right **activation
+   limit** (1 for Solo, 3 for Pro) and emails it to the buyer.
+4. The **termio desktop app** activates that key against the Lemon Squeezy License
+   API (binding this Mac as one activation "instance") to clear past the 7-day
+   trial, and re-validates on launch. Because the app is local-only, this is a
+   lightweight check, not a per-use gate.
 
 ## Tech stack — role of each piece
 
@@ -98,42 +87,29 @@ Plain-language version:
 |-------|-------|------|
 | Next.js + TypeScript | landing | Marketing site, SSR/SSG pages, checkout entry |
 | Tailwind + shadcn/ui | landing | Styling and component primitives |
-| `pricing.json` | docs | Single source of truth for tiers, device caps, trial, refund |
-| Hono.js | server | HTTP API framework |
-| better-auth | server | Accounts, sessions, auth flows |
-| Drizzle ORM | server | Type-safe DB schema and queries (`web/server/drizzle`) |
-| Supabase Postgres | server | Persistent store for users, orgs, seats, licenses |
-| Stripe | server | One-time license payment + `payment succeeded` webhook (no subscriptions) |
-| termio desktop | repo root | Consumes the license-validation endpoint |
+| `pricing.ts` / `pricing.json` | landing / docs | Tiers, device caps, trial, refund |
+| Lemon Squeezy | external | MoR: checkout, global tax, license key issuance + validation |
+| termio desktop | repo root | Activates/validates the license key via the License API |
 
 ## Local dev quickstart
 
-Each sub-project owns its own setup; start from its README:
-
 - **Landing:** see [`web/landing/README.md`](../landing/README.md) — typically
   `npm install` then `npm run dev` (Next.js dev server).
-- **Server:** see [`web/server/README.md`](../server/README.md) — typically
-  install deps, set env vars, run Drizzle migrations, then start the Hono server.
 
-(Those READMEs are authored by the agents building each sub-project and may not
-exist yet at the time you read this.)
+There is no server to run.
 
 ## Deployment
 
 | Component | Target | Notes |
 |-----------|--------|-------|
 | `web/landing` | **Vercel** | Native Next.js host; preview deploys per PR. |
-| `web/server` | A **Node host** | Any Node-capable runtime (Render, Fly, Railway, a VM). Hono runs on Node. |
-| Database | **Supabase** | Managed Postgres; Drizzle migrations applied on deploy. |
+| Selling / licensing | **Lemon Squeezy** | Hosted; configured in the LS dashboard, not deployed from this repo. |
 
-### Environment variables (high level)
+### Configuration (high level)
 
-Exact names live in each sub-project's README/`.env.example`. At a high level:
-
-- **Landing:** the public API base URL for `web/server`, and any Stripe
-  *publishable* key needed client-side.
-- **Server:** `DATABASE_URL` (Supabase Postgres), better-auth secret(s), Stripe
-  **secret** key and **webhook signing secret**, and the allowed origin(s) for
-  the landing site.
-
-Keep all secrets out of the repo; use the host's env/secret manager.
+- **Landing:** the Lemon Squeezy checkout URLs (per tier) in `src/lib/site.ts`.
+- **Lemon Squeezy dashboard:** the store, the two products (Solo / Pro) with
+  license keys enabled and the right activation limits, and any discount codes.
+- **Desktop app:** the Lemon Squeezy purchase URL and License API base (see
+  `Sources/termio/License.swift`). The License API needs no secret key — the
+  license key is the credential.

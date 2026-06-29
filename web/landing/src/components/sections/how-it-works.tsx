@@ -35,7 +35,7 @@ export function HowItWorks() {
         <Reveal delayMs={60}>
           <h2
             id="how-it-works-heading"
-            className="mx-auto mt-5 max-w-2xl text-balance text-center text-4xl font-bold tracking-[-0.045em] text-foreground sm:text-5xl"
+            className="mx-auto mt-4 max-w-2xl text-balance text-center text-4xl font-bold tracking-[-0.045em] text-foreground sm:text-5xl"
           >
             From clone to running agents in three steps
           </h2>
@@ -44,7 +44,7 @@ export function HowItWorks() {
         <ol className="mt-14 grid gap-6 md:grid-cols-3">
           {steps.map((step, index) => (
             <Reveal as="li" key={step.number} delayMs={index * 90}>
-              <div className="h-full rounded-2xl border border-border bg-card p-7 shadow-sm">
+              <div className="h-full rounded-2xl border border-border bg-card p-8 shadow-sm">
                 <span className="brand-text-gradient font-mono text-3xl font-semibold">
                   {step.number}
                 </span>

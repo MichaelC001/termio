@@ -119,7 +119,7 @@ type Showcase = {
 const showcases: Showcase[] = [
   {
     accent: "pink",
-    eyebrow: "What's inside",
+    eyebrow: "Multi-agent",
     heading: "Every agent, first-class",
     intro:
       "Claude Code, Codex, Gemini, Amp, Pi, OpenCode, Copilot and Cursor each get a real native terminal — launch any of them with one tap.",
@@ -212,7 +212,7 @@ function ShowcaseBlock({ block, reverse }: { block: Showcase; reverse: boolean }
     <div className="grid items-center gap-12 md:grid-cols-2 md:gap-20">
       <Reveal className={cn(reverse && "md:order-2")}>
         <SectionLabel accent={block.accent}>{block.eyebrow}</SectionLabel>
-        <h3 className="mt-3 text-balance text-4xl font-bold tracking-[-0.045em] text-foreground sm:text-5xl">
+        <h3 className="mt-4 text-balance text-4xl font-bold tracking-[-0.045em] text-foreground sm:text-5xl">
           {block.heading}
         </h3>
         <p className="mt-5 max-w-md text-lg leading-relaxed text-muted-foreground">
@@ -261,7 +261,7 @@ export function Features() {
       <div className="mx-auto w-full max-w-6xl px-5 py-32 sm:py-40 sm:px-8">
         <Reveal>
           <SectionLabel accent="violet">What&apos;s inside</SectionLabel>
-          <h2 className="mt-3 max-w-2xl text-balance text-4xl font-bold tracking-[-0.05em] text-foreground sm:text-6xl">
+          <h2 className="mt-4 max-w-2xl text-balance text-4xl font-bold tracking-[-0.045em] text-foreground sm:text-6xl">
             Everything your agents need.
             <br className="hidden sm:block" /> Nothing they don&apos;t.
           </h2>

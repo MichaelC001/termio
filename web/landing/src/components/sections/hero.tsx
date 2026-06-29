@@ -27,9 +27,10 @@ export function Hero() {
         </Reveal>
         <Reveal delayMs={120}>
           <p className="mx-auto mt-8 max-w-xl text-pretty text-lg leading-relaxed text-white/75 sm:text-xl">
-            Claude Code, Codex, Gemini, Amp and more — every coding agent in one
-            native Mac app. Sessions survive restarts, each agent works in its own
-            git worktree, and nothing ever leaves your machine.
+            A native Mac workspace for running multiple AI coding agents — Claude
+            Code, Codex, Gemini, Amp and more — side by side. Sessions survive
+            restarts, each agent works in its own git worktree, and nothing ever
+            leaves your machine.
           </p>
         </Reveal>
         <Reveal delayMs={200}>
@@ -57,7 +58,7 @@ export function Hero() {
         </Reveal>
         <Reveal delayMs={260}>
           <p className="mt-6 text-sm text-white/50">
-            Free during early access · No account needed · Local-only, no telemetry
+            7-day free trial · No account needed · Local-only, no telemetry
           </p>
         </Reveal>
 

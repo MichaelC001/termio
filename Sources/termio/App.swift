@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = AppSettings()
     private lazy var store = TermioStore.restored(settings: settings)
     private lazy var usageMonitor = UsageMonitor(settings: settings)
+    private let licenseManager = LicenseManager()
     private var menuBar: MenuBarController?
     private var settingsWindow: NSWindow?
     private var settingsObserver: AnyCancellable?
@@ -98,6 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.window.makeKeyAndOrderFront(nil)
         }
         usageMonitor.start()
+        checkLicenseAtLaunch()
 
         if !pendingOpenURLs.isEmpty {
             let urls = pendingOpenURLs
@@ -200,6 +202,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// chain from the menu item, which targets `nil`. The window is kept alive
     /// (not released on close) so reopening preserves nothing-to-rebuild state.
     @objc func showSettings(_ sender: Any?) {
+        openSettings(initialTab: .appearance)
+    }
+
+    /// Opens (or refocuses) the preferences window on a specific tab. The content
+    /// view is rebuilt each call so the requested tab takes effect even when the
+    /// window is reused — harmless because every control binds straight to
+    /// `AppSettings`, so there is no transient UI state to preserve.
+    func openSettings(initialTab: SettingsTab) {
         if settingsWindow == nil {
             let window = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 500, height: 460),
@@ -214,13 +224,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // toolbar; `.none` alone leaves a faint line.
             window.titlebarSeparatorStyle = .none
             window.titlebarAppearsTransparent = true
-            window.contentView = NSHostingView(rootView: SettingsView(settings: settings, usage: usageMonitor))
             window.isReleasedWhenClosed = false
             window.center()
             settingsWindow = window
         }
+        settingsWindow?.contentView = NSHostingView(rootView: SettingsView(
+            settings: settings,
+            usage: usageMonitor,
+            license: licenseManager,
+            initialTab: initialTab
+        ))
         settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Re-validate any stored license against Lemon Squeezy, then — if the trial has
+    /// lapsed with no valid license — show the once-a-day purchase reminder. Order
+    /// matters: validating first means a refunded key flips to "expired" and a still
+    /// -valid key suppresses the reminder.
+    private func checkLicenseAtLaunch() {
+        Task { [weak self] in
+            await self?.licenseManager.refreshOnLaunch()
+            self?.presentLicenseReminderIfNeeded()
+        }
+    }
+
+    /// The gentle nudge: termio never locks after the trial, it just reminds — at
+    /// most once per day — that a one-time license unlocks it for good. Shown as a
+    /// sheet on the main window so it doesn't steal focus as a free-floating dialog.
+    private func presentLicenseReminderIfNeeded() {
+        guard licenseManager.shouldNagOnLaunch(), let window else { return }
+        licenseManager.recordNagShown()
+
+        let alert = NSAlert()
+        alert.messageText = "Your termio trial has ended"
+        alert.informativeText = "termio keeps working exactly as before. If it has earned a place in your workflow, a one-time license unlocks it for good and supports development."
+        alert.addButton(withTitle: "Buy termio…")
+        alert.addButton(withTitle: "Enter License Key…")
+        alert.addButton(withTitle: "Later")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            switch response {
+            case .alertFirstButtonReturn:
+                if let url = LicenseConfiguration.purchaseURL {
+                    NSWorkspace.shared.open(url)
+                }
+            case .alertSecondButtonReturn:
+                self?.openSettings(initialTab: .license)
+            default:
+                break
+            }
+        }
     }
 
     /// File ▸ Open Project… — presents the folder picker that opens a directory as a new

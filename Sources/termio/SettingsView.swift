@@ -14,7 +14,20 @@ import GhosttyTheme
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var usage: UsageMonitor
-    @State private var selection: SettingsTab = .appearance
+    @ObservedObject var license: LicenseManager
+    @State private var selection: SettingsTab
+
+    init(
+        settings: AppSettings,
+        usage: UsageMonitor,
+        license: LicenseManager,
+        initialTab: SettingsTab = .appearance
+    ) {
+        self.settings = settings
+        self.usage = usage
+        self.license = license
+        _selection = State(initialValue: initialTab)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,6 +40,7 @@ struct SettingsView: View {
                 case .terminal: TerminalSettingsTab(settings: settings)
                 case .agents: AgentSettingsTab(settings: settings)
                 case .usage: UsageSettingsTab(settings: settings, usage: usage)
+                case .license: LicenseSettingsTab(license: license)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -35,14 +49,154 @@ struct SettingsView: View {
     }
 }
 
+/// The License tab: shows the trial/license state, takes a license key to activate
+/// this Mac, and links out to buy. termio never locks — past the trial it only
+/// reminds — so this tab is purely "support the app / unlock for good", not a gate.
+private struct LicenseSettingsTab: View {
+    @ObservedObject var license: LicenseManager
+    @State private var keyInput = ""
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        Form {
+            Section {
+                statusRow
+            } header: {
+                SectionHeaderLabel(title: "License")
+            } footer: {
+                Text("termio is free to try for 7 days. After that it keeps working — a one-time license just unlocks it for good and supports development.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if case .licensed = license.entitlement {
+                Section {
+                    LabeledContent("Key", value: maskedKey)
+                    if let devices = devicesSummary {
+                        LabeledContent("Devices", value: devices)
+                    }
+                    Button("Deactivate on this Mac", role: .destructive) {
+                        Task { await license.deactivate() }
+                    }
+                } header: {
+                    SectionHeaderLabel(title: "This Mac")
+                } footer: {
+                    Text("Deactivating frees this Mac's seat so you can use the license on another machine.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Section {
+                    TextField(
+                        "License key",
+                        text: $keyInput,
+                        prompt: Text("Paste the key from your purchase email")
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .disableAutocorrection(true)
+
+                    if case .failed(let message) = license.activationState {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+
+                    HStack {
+                        Button(action: activate) {
+                            if license.activationState == .working {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Text("Activate")
+                            }
+                        }
+                        .disabled(
+                            keyInput.trimmingCharacters(in: .whitespaces).isEmpty
+                                || license.activationState == .working
+                        )
+                        Spacer()
+                        if let url = LicenseConfiguration.purchaseURL {
+                            Button("Buy termio…") { openURL(url) }
+                                .buttonStyle(.borderedProminent)
+                        }
+                    }
+                } header: {
+                    SectionHeaderLabel(title: "Activate")
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func activate() {
+        let key = keyInput
+        Task { await license.activate(key: key) }
+    }
+
+    @ViewBuilder
+    private var statusRow: some View {
+        switch license.entitlement {
+        case .licensed:
+            statusLabel(
+                symbol: "checkmark.seal.fill",
+                tint: .green,
+                title: "Licensed",
+                detail: "Your one-time license is active on this Mac."
+            )
+        case .trial(let daysRemaining):
+            statusLabel(
+                symbol: "clock.badge.checkmark",
+                tint: .accentColor,
+                title: "Free trial — \(daysRemaining) day\(daysRemaining == 1 ? "" : "s") left",
+                detail: "Every feature is unlocked during the trial."
+            )
+        case .expired:
+            statusLabel(
+                symbol: "clock.badge.exclamationmark",
+                tint: .orange,
+                title: "Trial ended",
+                detail: "termio still works — buy a license to unlock it for good and support the app."
+            )
+        }
+    }
+
+    private func statusLabel(symbol: String, tint: Color, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol)
+                .font(.system(size: 22))
+                .foregroundStyle(tint)
+                .frame(width: 26)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.headline)
+                Text(detail).font(.callout).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var maskedKey: String {
+        guard let key = license.licenseKey, key.count > 4 else { return "—" }
+        return "••••–\(key.suffix(4))"
+    }
+
+    private var devicesSummary: String? {
+        guard let used = license.activationUsage, let limit = license.activationLimit else {
+            return nil
+        }
+        return "\(used) of \(limit)"
+    }
+}
+
 /// The top-level settings groups. Each is one icon-over-label button in the
-/// `SettingsTabBar`.
-private enum SettingsTab: String, CaseIterable, Identifiable {
+/// `SettingsTabBar`. Not private so the launch reminder can open settings straight
+/// to `.license` (see `AppDelegate.openSettings`).
+enum SettingsTab: String, CaseIterable, Identifiable {
     case appearance
     case interface
     case terminal
     case agents
     case usage
+    case license
 
     var id: String { rawValue }
 
@@ -53,6 +207,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .terminal: return "Terminal"
         case .agents: return "Agents"
         case .usage: return "Usage"
+        case .license: return "License"
         }
     }
 
@@ -63,6 +218,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .terminal: return "terminal"
         case .agents: return "sparkles"
         case .usage: return "gauge.medium"
+        case .license: return "key.fill"
         }
     }
 }

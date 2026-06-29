@@ -7,16 +7,19 @@ import {
 import { Reveal } from "@/components/reveal";
 import { SectionLabel } from "@/components/section-label";
 import { supportedAgents } from "@/lib/site";
-import { pricing } from "@/data/pricing";
+import { pricing, formatPrice } from "@/data/pricing";
 
 const faqs: { question: string; answer: React.ReactNode }[] = [
   {
     question: "What does termio cost?",
     answer: (
       <p>
-        Nothing right now. termio is free during early access — every feature is
-        unlocked, with no account and no card. Paid lifetime licenses arrive in a
-        later release, and early adopters keep the app.
+        A one-time lifetime license — {formatPrice(pricing.plans[0].priceCents)}{" "}
+        for one Mac, {formatPrice(pricing.plans[1].priceCents)} for up to three.
+        Pay once, own it forever with all future updates included; no
+        subscription, no renewal. Try it free for {pricing.trial.durationDays}{" "}
+        days (no account, no card), backed by a {pricing.refund.days}-day
+        money-back guarantee.
       </p>
     ),
   },
@@ -73,33 +76,26 @@ const faqs: { question: string; answer: React.ReactNode }[] = [
 export function Faq() {
   return (
     <section id="faq" className="scroll-mt-24 border-t border-border">
-      <div className="mx-auto grid w-full max-w-6xl gap-10 px-5 py-32 sm:py-40 sm:px-8 md:grid-cols-[0.85fr_1.15fr] md:gap-16">
-        <Reveal>
+      <div className="mx-auto w-full max-w-2xl px-5 py-32 sm:py-40 sm:px-8">
+        <Reveal className="flex flex-col items-center text-center">
           <SectionLabel accent="muted">Support</SectionLabel>
-          <h2 className="mt-3 text-balance text-4xl font-bold tracking-[-0.045em] text-foreground sm:text-5xl">
+          <h2 className="mt-4 text-balance text-4xl font-bold tracking-[-0.045em] text-foreground sm:text-5xl">
             Frequently asked questions
           </h2>
-          <p className="mt-5 max-w-sm text-base leading-relaxed text-muted-foreground">
+          <p className="mt-5 max-w-md text-balance text-base leading-relaxed text-muted-foreground">
             Can&apos;t find the answer you&apos;re looking for? The docs go deeper,
             or reach out and a human will help.
           </p>
-          <a
-            href="#top"
-            className="mt-6 inline-flex items-center gap-2 rounded-full border border-border bg-card px-5 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-white/5"
-          >
-            Documentation
-            <span aria-hidden="true">→</span>
-          </a>
         </Reveal>
 
-        <Reveal delayMs={80}>
+        <Reveal delayMs={80} className="mt-14">
           <Accordion className="border-t border-border">
             {faqs.map((faq) => (
               <AccordionItem key={faq.question} value={faq.question}>
-                <AccordionTrigger className="py-5 text-base">
+                <AccordionTrigger className="items-center py-5 text-base font-medium">
                   {faq.question}
                 </AccordionTrigger>
-                <AccordionContent className="text-muted-foreground">
+                <AccordionContent className="pr-8 text-muted-foreground">
                   {faq.answer}
                 </AccordionContent>
               </AccordionItem>

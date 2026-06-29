@@ -7,9 +7,9 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-inter);
+  --font-sans: var(--font-system-sans);
   --font-mono: var(--font-mono-stack);
-  --font-heading: var(--font-inter);
+  --font-heading: var(--font-system-sans);
 
   /* termio brand accents — the terminal traffic-light trio plus gradient blues/purples. */
   --color-brand-red: #ff5252;
@@ -69,6 +69,11 @@
   --input: rgba(255, 255, 255, 0.14);
   --ring: #7a8bff;
   --radius: 1rem;
+  /* Apple's San Francisco via the system stack — termio's users are on macOS, so
+     Safari/Chrome render native SF (Display/Text optical sizing chosen by size).
+     SF Pro can't be self-hosted (Apple license), so we ride the OS font; non-Apple
+     visitors fall back to their own system UI font. */
+  --font-system-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --font-mono-stack: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
@@ -80,19 +85,17 @@
     @apply bg-background text-foreground;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
-    /* Superwhisper's refined Inter: single-storey a + tabular-ish punch. */
-    font-feature-settings: "cv11", "ss01";
   }
   html {
     @apply font-sans;
     scroll-behavior: smooth;
   }
-  /* Headlines carry the signature tight optical tracking. */
+  /* Headlines carry a touch of tight optical tracking, matching how Apple sets
+     San Francisco at display sizes. */
   h1,
   h2,
   h3 {
     letter-spacing: -0.035em;
-    font-feature-settings: "cv11", "ss01";
   }
 }
 

@@ -10,25 +10,26 @@ future updates included**. There is **no subscription, no yearly renewal, and no
 "updates expire" cliff** — the version you buy keeps working, and you keep
 getting new versions for free.
 
-Two personal tiers split by **how many Macs** the license covers, plus a volume
-Team tier:
+Two tiers split by **how many Macs** the license covers:
 
 | Plan | Price | Covers | Recommended |
 |------|-------|--------|-------------|
 | Solo | **$19.90** one-time | 1 Mac | |
 | Pro | **$39.90** one-time | up to 3 Macs | ✅ |
-| Team | **$39.90 / seat** one-time | 5+ seats, centrally managed + invoiced | |
 
 Backed by a **30-day money-back guarantee** and a **7-day no-account free
-trial**.
+trial**. Sold through **Lemon Squeezy** (Merchant of Record): it hosts checkout,
+remits global tax, and issues + validates the license keys — no self-hosted
+backend, no accounts.
 
 ### Why one-time, and not a subscription
 
 - **Near-zero marginal cost.** termio is a local-only developer tool. Sessions,
   PTYs, and git worktrees all run on the user's own machine. There is no
   per-user cloud compute to amortize, so a recurring charge would be renting out
-  a cost we don't actually incur. The only hosted surface is a small
-  accounts/licensing backend that scales with *purchases*, not daily use.
+  a cost we don't actually incur. There isn't even a hosted backend to amortize:
+  selling and licensing run on Lemon Squeezy, which we pay per *purchase*, not per
+  daily use.
 - **Developers prefer to own their tools.** The buyer runs agent CLIs from a
   terminal and is allergic to renting a local app by the month. A license they
   own outright removes that friction at the point of sale.
@@ -91,23 +92,14 @@ covering three Macs for $39.90 beats buying Solo twice over (which you can't
 anyway — Solo is one machine). The gap is wide enough to price multi-Mac value
 honestly, small enough that it reads as a deal, not a penalty.
 
-### Team — $39.90/seat (same as Pro), managed tier at 5+
+### Teams, for now: just buy multiple licenses
 
-Team is priced at **$39.90/seat — the same as Pro, deliberately not discounted.**
-Volume discounts at this scale are backwards: a company buying ten seats is a
-*higher*-value customer than a solo dev, not a lower-value one, and it has more
-budget, not less. Per-seat price is never what a company optimizes — salaries
-dwarf it. What a company actually needs is *manageability*, and that is what the
-Team tier sells: centralized license + seat management (assign, reclaim,
-reassign), priority support, and a single invoice / PO. A 10-developer shop buys
-Team for the admin console and one invoice, not ten individual Pro receipts — at
-the same per-seat price. The **5-seat floor** is the qualifying minimum for that
-managed tier, not a discount trigger.
-
-Real volume discounting belongs at **genuine scale and negotiated** — 50+ seats
-go through "talk to us," where a large commitment can justify a custom price. That
-keeps small teams paying list (they have the budget) and reserves concessions for
-deals big enough to earn them.
+There is no separate Team tier. A small team that wants several copies buys
+several Pro licenses (or we hand out keys via Lemon Squeezy). A managed/seat tier
+is a future lever, not a v1 feature — adding seat management, an admin console,
+and PO billing is exactly the per-seat complexity we deliberately cut. If real
+demand for a managed tier shows up, Lemon Squeezy can model it later (or a 50+
+deal goes through "talk to us"); we don't build it speculatively.
 
 ## The 30-day money-back guarantee
 
@@ -134,7 +126,6 @@ still change your mind.
 | Model | **One-time lifetime** | One-time per-seat license | Subscription (+ lifetime option) |
 | Entry price | **$19.90** (Solo, 1 Mac) | ~$59 / seat | ~$8.49/mo or $84.99/yr |
 | Recommended / next tier | $39.90 (Pro, 3 Macs) | per-seat | $249.99 lifetime |
-| Volume / team | $39.90 / seat (5+, managed; 50+ negotiated) | per-seat | per-account |
 | Updates | **All included, forever** | First year, then 50%/yr (~$29.50) to keep updating | Bundled while subscribed |
 | Free trial | **7 days, no account, no card** | 7 days, no account | Free tier (limited) |
 | Refund | **30-day money-back** | — | 30-day refund |
@@ -188,9 +179,11 @@ fully local-only with zero reporting. The product and copy must state plainly th
 can't honor that, the referral program fights termio's core positioning — so this
 constraint is not optional.
 
-A minimal `referral` schema scaffold exists in `web/server` (codes, referrer,
-invitee, activation/conversion status, reward granted), marked for 1.x; it is not
-wired into checkout or the desktop app yet.
+There is no referral system today (the earlier self-hosted scaffold was removed
+with `web/server`). When we build it for 1.x, the reward — a free license — is just
+a **100%-off Lemon Squeezy discount code** created via the LS API, so this needs no
+licensing backend of our own; the only thing we'd host is the minimal opt-in
+"activated" signal the guardrail below depends on.
 
 ## Future levers — NOT in v1
 
@@ -216,6 +209,6 @@ Documented so we don't relitigate them; none ship in the first release.
 ---
 
 **In one sentence:** termio is a one-time, lifetime-license Mac developer tool —
-Solo at $19.90 for one Mac, Pro at $29.90 for three, Team at $23.90/seat for 5+ —
-that you own forever with all updates included, no subscription and no renewal,
-sold behind a 7-day no-account trial and a 30-day money-back guarantee.
+Solo at $19.90 for one Mac, Pro at $39.90 for three — that you own forever with
+all updates included, no subscription and no renewal, sold through Lemon Squeezy
+behind a 7-day no-account trial and a 30-day money-back guarantee.

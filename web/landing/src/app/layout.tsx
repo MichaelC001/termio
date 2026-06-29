@@ -1,15 +1,8 @@
 import type { Metadata, Viewport } from "next";
-import { Inter } from "next/font/google";
 import "./globals.css";
 
-const inter = Inter({
-  variable: "--font-inter",
-  subsets: ["latin"],
-  display: "swap",
-});
-
 const siteDescription =
-  "termio is a native macOS terminal that gives every AI coding agent — Claude Code, Codex, Gemini, Amp and more — a first-class home. Sessions survive restarts, each agent gets its own git worktree, and everything stays local.";
+  "termio is a native Mac workspace for running multiple AI coding agents — Claude Code, Codex, Gemini, Amp and more — side by side. Sessions survive restarts, each agent gets its own git worktree, and everything stays local.";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://termio.app"),
@@ -41,7 +34,7 @@ export const metadata: Metadata = {
         type: "image/webp",
         width: 2400,
         height: 1260,
-        alt: "termio — every AI coding agent in one native Mac app, shown beside a live Claude Code session.",
+        alt: "termio — a native Mac workspace for running multiple AI coding agents, shown beside a live Claude Code session.",
       },
     ],
   },
@@ -63,7 +56,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} h-full antialiased`}>
+    <html lang="en" className="h-full antialiased">
       <body className="min-h-full flex flex-col bg-background text-foreground">
         {children}
       </body>
