@@ -92,6 +92,14 @@ private struct ProjectHeader: View {
     let chrome: ChromeTheme?
     @State private var isHovering = false
 
+    /// Width the trailing agent icons occupy (button frame 22 + 3 spacing each), so
+    /// the hovered label can fade out exactly under them rather than guessing.
+    private var agentIconClusterWidth: CGFloat {
+        let count = enabledAgentPresets(settings).count
+        guard count > 0 else { return 0 }
+        return CGFloat(count) * 22 + CGFloat(count - 1) * 3
+    }
+
     var body: some View {
         HStack(spacing: 6) {
             // Same 16-wide icon slot and spacing as SessionRow, so the folder mark
@@ -128,6 +136,24 @@ private struct ProjectHeader: View {
             }
             Spacer(minLength: 4)
         }
+        // On hover the trailing icons would otherwise sit on top of a long project
+        // name (the label takes the whole row at rest), so the name's tail reads as a
+        // muddle behind the half-transparent glyphs. Fade the label out exactly under
+        // the icon cluster instead — a short gradient dissolves the text into the
+        // buttons, with no collision and no seam. The sidebar is a translucent Liquid
+        // Glass material, so masking the label (not painting an opaque plate) is the
+        // only scrim that matches the background. Mask sits on the HStack only; the
+        // icon overlay below is added afterwards, so the icons stay fully opaque. The
+        // clear/gradient widths collapse to zero off-hover, so the row is untouched at
+        // rest and the reveal animates with the same 0.12s hover easing.
+        .mask(
+            HStack(spacing: 0) {
+                Rectangle().fill(.black)
+                LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: isHovering ? 18 : 0)
+                Color.clear.frame(width: isHovering ? agentIconClusterWidth + 6 : 0)
+            }
+        )
         // The hover actions sit in an overlay, not the HStack above, so they reserve
         // no width while hidden — the label keeps the whole row at rest. One brand
         // icon per enabled agent (a single click opens that agent, instantly
