@@ -47,10 +47,46 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* Dark, cinematic — modeled on the real superwhisper.com: near-black canvas,
-   white ink, a white primary pill, cool blue→purple accent. */
+/* Light, Apple-style — a white canvas with near-black ink (#1d1d1f), Apple's
+   warm gray for secondary text, soft #f5f5f7 fills, and an Apple-blue focus ring.
+   The page is light by default; `.dark` below re-darkens a scoped subtree (the
+   terminal product shot) so it reads as a real dark terminal on the light page. */
 :root {
-  --background: #000000;
+  --background: #ffffff;
+  --foreground: #1d1d1f;
+  --card: #ffffff;
+  --card-foreground: #1d1d1f;
+  --popover: #ffffff;
+  --popover-foreground: #1d1d1f;
+  --primary: #0071e3;
+  --primary-foreground: #ffffff;
+  --secondary: #f2f2f7;
+  --secondary-foreground: #1d1d1f;
+  --muted: #f2f2f7;
+  --muted-foreground: #6e6e73;
+  --accent: #e8e8ed;
+  --accent-foreground: #1d1d1f;
+  --destructive: #ff3b30;
+  --border: rgba(0, 0, 0, 0.1);
+  --input: rgba(0, 0, 0, 0.16);
+  --ring: #007aff;
+  --radius: 1rem;
+  /* Apple's standard easing curve and the spring used for press feedback. */
+  --ease-apple: cubic-bezier(0.25, 0.1, 0.25, 1);
+  /* Apple's San Francisco via the system stack — termio's users are on macOS, so
+     Safari/Chrome render native SF (Display/Text optical sizing chosen by size).
+     SF Pro can't be self-hosted (Apple license), so we ride the OS font; non-Apple
+     visitors fall back to their own system UI font. */
+  --font-system-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono-stack: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* Scoped dark surface for the terminal product shot — a near-black terminal that
+   floats on the light page (the classic Apple "dark device on white" treatment).
+   Anything inside a `.dark` element resolves these tokens instead of the light
+   ones above. */
+.dark {
+  --background: #08080a;
   --foreground: #f4f4f6;
   --card: #0c0c0f;
   --card-foreground: #f4f4f6;
@@ -64,17 +100,8 @@
   --muted-foreground: #8e8e98;
   --accent: #161619;
   --accent-foreground: #f4f4f6;
-  --destructive: #ff5252;
-  --border: rgba(255, 255, 255, 0.08);
+  --border: rgba(255, 255, 255, 0.1);
   --input: rgba(255, 255, 255, 0.14);
-  --ring: #7a8bff;
-  --radius: 1rem;
-  /* Apple's San Francisco via the system stack — termio's users are on macOS, so
-     Safari/Chrome render native SF (Display/Text optical sizing chosen by size).
-     SF Pro can't be self-hosted (Apple license), so we ride the OS font; non-Apple
-     visitors fall back to their own system UI font. */
-  --font-system-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
-  --font-mono-stack: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
 @layer base {
@@ -106,56 +133,66 @@
      meets the black page below. */
   .hero-cinematic {
     background-image:
-      radial-gradient(55% 45% at 12% -5%, rgba(7, 12, 36, 0.5), transparent 45%),
+      radial-gradient(60% 50% at 50% -8%, rgba(0, 113, 227, 0.1), transparent 60%),
       linear-gradient(
-        168deg,
-        #3568d6 0%,
-        #4574de 20%,
-        #5f82e0 38%,
-        #8493e0 54%,
-        #ab9ed7 68%,
-        #cbb4d3 80%,
-        #9a89a6 90%,
-        #0c0b12 100%
+        180deg,
+        #f3f6ff 0%,
+        #eef1fb 28%,
+        #f4f1fb 58%,
+        #fbfaff 82%,
+        #ffffff 100%
       );
   }
 
-  /* Subtler glow wash reused behind the CTA band. */
+  /* Subtler glow wash reused behind the CTA band, tuned for the light canvas. */
   .brand-wash {
     background-image:
-      radial-gradient(40rem 30rem at 50% 0%, rgba(122, 139, 255, 0.22), transparent 60%),
-      radial-gradient(34rem 28rem at 85% 110%, rgba(211, 108, 255, 0.18), transparent 60%);
+      radial-gradient(40rem 30rem at 50% 0%, rgba(0, 113, 227, 0.1), transparent 60%),
+      radial-gradient(34rem 28rem at 85% 110%, rgba(174, 108, 255, 0.12), transparent 60%);
   }
 
-  /* Cool accent for keywords: blue → violet → magenta. */
+  /* Cool accent for keywords: blue → violet → magenta, deepened for white. */
   .brand-text-gradient {
-    background-image: linear-gradient(105deg, #6f9bff 0%, #9b7bff 48%, #d878ff 100%);
+    background-image: linear-gradient(105deg, #2f6bff 0%, #7c3aed 50%, #c026a8 100%);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
   }
 
-  /* Glow shadow that lifts the hero window and cards off the dark canvas. */
+  /* Soft Apple-style elevation that lifts cards and the product shot off the
+     white canvas. */
   .shadow-soft {
     box-shadow:
-      0 0 0 1px rgba(255, 255, 255, 0.06),
-      0 30px 90px -40px rgba(122, 100, 255, 0.45),
-      0 20px 60px -30px rgba(0, 0, 0, 0.7);
+      0 1px 2px rgba(0, 0, 0, 0.04),
+      0 12px 32px -12px rgba(0, 0, 0, 0.18),
+      0 2px 8px -4px rgba(0, 0, 0, 0.08);
+  }
+
+  /* Apple "Liquid Glass" (2026): a translucent, blurred, saturated surface with
+     a top sheen and soft drop shadow — used for floating chrome (the nav). */
+  .liquid-glass {
+    background-color: rgba(255, 255, 255, 0.6);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.6),
+      inset 0 0 0 1px rgba(0, 0, 0, 0.04),
+      0 1px 1px rgba(0, 0, 0, 0.04),
+      0 8px 24px -12px rgba(0, 0, 0, 0.18);
   }
 
   /* Frosted pill used for section eyebrow labels. */
   .glass-pill {
-    background-color: rgba(255, 255, 255, 0.06);
+    background-color: rgba(255, 255, 255, 0.7);
     box-shadow:
-      inset 0 0 0 1px rgba(255, 255, 255, 0.12),
-      0 1px 2px rgba(0, 0, 0, 0.3);
+      inset 0 0 0 1px rgba(0, 0, 0, 0.06),
+      0 1px 2px rgba(0, 0, 0, 0.06);
     backdrop-filter: blur(8px);
   }
 
-  /* Faint character-grid texture behind statement sections, like Superwhisper's
-     letter matrix. */
+  /* Faint character-grid texture behind statement sections. */
   .dot-grid {
-    background-image: radial-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+    background-image: radial-gradient(rgba(0, 0, 0, 0.05) 1px, transparent 1px);
     background-size: 24px 24px;
     -webkit-mask-image: radial-gradient(70% 60% at 50% 40%, #000 0%, transparent 75%);
     mask-image: radial-gradient(70% 60% at 50% 40%, #000 0%, transparent 75%);
@@ -180,11 +217,42 @@
     border-color: var(--border);
   }
 
+  /* Seamless logo carousel: the agent lane is duplicated, so translating the
+     track by -50% loops continuously. Edges fade so logos enter/leave softly. */
+  @keyframes marquee {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(-50%);
+    }
+  }
+  .animate-marquee {
+    animation: marquee 32s linear infinite;
+  }
+  .marquee-mask {
+    -webkit-mask-image: linear-gradient(
+      90deg,
+      transparent,
+      #000 10%,
+      #000 90%,
+      transparent
+    );
+    mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .animate-marquee {
+      animation: none;
+    }
+  }
+
   /* Lightweight scroll-entrance: elements fade/slide in when revealed via IntersectionObserver. */
   .reveal {
     opacity: 0;
     transform: translateY(16px);
-    transition: opacity 0.6s ease, transform 0.6s ease;
+    transition:
+      opacity 0.6s var(--ease-apple),
+      transform 0.6s var(--ease-apple);
     will-change: opacity, transform;
   }
   .reveal[data-revealed="true"] {

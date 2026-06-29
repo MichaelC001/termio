@@ -1,0 +1,178 @@
+<!doctype html>
+<!--
+  Open Graph card source (1200×630, the 1.91:1 standard). This is the regenerable
+  origin for public/og.webp: edit here, then re-render with headless Chrome on a
+  Mac so the headline is set in real San Francisco (SF Pro can't be self-hosted,
+  so we render the raster on a machine that has the OS font).
+
+  Regenerate (run from web/landing):
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless \
+      --disable-gpu --hide-scrollbars --force-device-scale-factor=2 \
+      --window-size=1200,630 --screenshot=/tmp/og.png \
+      "file://$PWD/og-template.html"
+    cwebp -q 82 /tmp/og.png -o public/og.webp
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root {
+        --ink: #ffffff;
+        --green: #27c93f;
+        --amber: #ffb764;
+        --red: #ff5252;
+        --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+          "Helvetica Neue", Helvetica, Arial, sans-serif;
+        --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1200px; height: 630px; }
+      body {
+        font-family: var(--font);
+        color: var(--ink);
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+        overflow: hidden;
+        position: relative;
+        /* Mirrors .hero-cinematic — the bright dusk gradient, darkened top-left for
+           text contrast, easing to black at the bottom to meet the page. */
+        background-image:
+          radial-gradient(60% 70% at 8% -10%, rgba(6, 11, 34, 0.78), transparent 50%),
+          linear-gradient(
+            150deg,
+            #2f63d4 0%, #3f6fdb 18%, #5a7fe0 34%, #8090df 50%,
+            #ab9ed7 64%, #c9b4d4 76%, #6f6486 88%, #0b0a10 100%
+          );
+      }
+      .card {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: stretch;
+        padding: 64px;
+        gap: 48px;
+      }
+      .left {
+        flex: 1 1 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+      .brand { display: flex; align-items: center; gap: 14px; }
+      .brand img { width: 46px; height: 46px; border-radius: 11px; }
+      .brand span {
+        font-size: 30px; font-weight: 600; letter-spacing: -0.02em;
+        color: #fff;
+      }
+      .headline {
+        font-size: 62px;
+        line-height: 0.92;
+        font-weight: 700;
+        letter-spacing: -0.045em;
+        text-shadow: 0 2px 40px rgba(0, 0, 0, 0.4);
+      }
+      .sub {
+        margin-top: 26px;
+        font-size: 26px;
+        line-height: 1.4;
+        font-weight: 400;
+        color: rgba(255, 255, 255, 0.82);
+        max-width: 560px;
+        letter-spacing: -0.01em;
+      }
+      .trust {
+        font-size: 19px;
+        font-weight: 500;
+        color: rgba(255, 255, 255, 0.62);
+        letter-spacing: 0.01em;
+      }
+      .trust b { color: var(--green); font-weight: 600; }
+
+      /* Faux termio terminal window — the product, in the brand's own language. */
+      .window {
+        flex: 0 0 450px;
+        align-self: center;
+        background: #0c0c0f;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 20px;
+        box-shadow: 0 40px 90px -30px rgba(0, 0, 0, 0.6),
+          0 0 0 1px rgba(255, 255, 255, 0.04);
+        overflow: hidden;
+      }
+      .titlebar {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 16px 18px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+      }
+      .dots { display: flex; gap: 8px; }
+      .dot { width: 12px; height: 12px; border-radius: 50%; }
+      .title {
+        font-family: var(--mono);
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .body {
+        padding: 20px 22px 26px;
+        font-family: var(--mono);
+        font-size: 15px;
+        line-height: 1.85;
+      }
+      .row { display: flex; gap: 10px; white-space: nowrap; }
+      .green { color: var(--green); }
+      .dim { color: rgba(255, 255, 255, 0.45); }
+      .ink { color: rgba(255, 255, 255, 0.92); }
+      .agent { color: #8fb6ff; }
+      .pill {
+        display: inline-block;
+        margin-top: 14px;
+        padding: 3px 10px;
+        border-radius: 999px;
+        background: rgba(39, 201, 63, 0.14);
+        color: var(--green);
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="left">
+        <div class="brand">
+          <img src="public/logo.png" alt="" />
+          <span>termio</span>
+        </div>
+        <div>
+          <div class="headline">Run every agent.<br />Lose nothing.</div>
+          <div class="sub">
+            A native Mac workspace for running multiple AI coding agents — side by
+            side.
+          </div>
+        </div>
+        <div class="trust">
+          <b>7-day free trial</b> · No account · Local-only, no telemetry
+        </div>
+      </div>
+
+      <div class="window">
+        <div class="titlebar">
+          <div class="dots">
+            <span class="dot" style="background:#ff5252"></span>
+            <span class="dot" style="background:#ffb764"></span>
+            <span class="dot" style="background:#27c93f"></span>
+          </div>
+          <span class="title">Claude Code — ~/termio</span>
+        </div>
+        <div class="body">
+          <div class="row"><span class="green">➜</span><span class="ink">claude</span></div>
+          <div class="row"><span class="agent">●</span><span class="ink">Understand termio terminal I/O</span></div>
+          <div class="row"><span class="dim">⎿</span><span class="dim">Read TermioStore.swift (420 lines)</span></div>
+          <div class="row"><span class="dim">⎿</span><span class="dim">Edited 3 files · ran tests</span></div>
+          <div class="row"><span class="green">✓</span><span class="ink">12 passed</span><span class="dim">· 0 failed</span></div>
+          <span class="pill">session survives restarts</span>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

@@ -5,19 +5,17 @@ const footerGroups: { heading: string; links: { label: string; href: string }[] 
   {
     heading: "Product",
     links: [
-      { label: "Features", href: "#features" },
-      { label: "How it works", href: "#how-it-works-heading" },
-      { label: "Pricing", href: "#pricing" },
+      { label: "Features", href: "/#features" },
       { label: "Download", href: downloadUrl },
     ],
   },
   {
     heading: "Resources",
     links: [
-      { label: "Docs", href: "#faq" },
-      { label: "FAQ", href: "#faq" },
-      { label: "Supported agents", href: "#features" },
-      { label: "Changelog", href: "#" },
+      { label: "Docs", href: "/#faq" },
+      { label: "FAQ", href: "/#faq" },
+      { label: "Supported agents", href: "/#features" },
+      { label: "Changelog", href: "/changelog" },
     ],
   },
   {
@@ -25,7 +23,6 @@ const footerGroups: { heading: string; links: { label: string; href: string }[] 
     links: [
       { label: "Privacy", href: "#" },
       { label: "Terms", href: "#" },
-      { label: "License", href: "#pricing" },
     ],
   },
 ];
@@ -40,7 +37,7 @@ export function SiteFooter() {
             <p className="mt-4 max-w-xs text-sm text-muted-foreground">
               The native macOS terminal home for your AI coding agents.
             </p>
-            <p className="mt-4 inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground">
+            <p className="mt-4 inline-flex items-center gap-2 rounded-full bg-secondary px-3 py-1.5 text-xs font-medium text-muted-foreground">
               <span className="h-1.5 w-1.5 rounded-full bg-brand-green" />
               Local-only · No telemetry
             </p>

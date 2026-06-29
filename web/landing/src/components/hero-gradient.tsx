@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 // section's `.hero-cinematic` CSS gradient sits underneath as the SSR / no-WebGL
 // fallback, so this only needs to fade in once mounted. Motion is paused for
 // users who prefer reduced motion.
-const PALETTE = ["#0c1538", "#2a5bc4", "#5f82e0", "#9b8fd4", "#cbb4d3"];
+const PALETTE = ["#dbe7ff", "#bcd2ff", "#cdbcff", "#ecdfff", "#ffffff"];
 
 export function HeroGradient({ className }: { className?: string }) {
   const [mounted, setMounted] = useState(false);

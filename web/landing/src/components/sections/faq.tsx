@@ -7,22 +7,8 @@ import {
 import { Reveal } from "@/components/reveal";
 import { SectionLabel } from "@/components/section-label";
 import { supportedAgents } from "@/lib/site";
-import { pricing, formatPrice } from "@/data/pricing";
 
 const faqs: { question: string; answer: React.ReactNode }[] = [
-  {
-    question: "What does termio cost?",
-    answer: (
-      <p>
-        A one-time lifetime license — {formatPrice(pricing.plans[0].priceCents)}{" "}
-        for one Mac, {formatPrice(pricing.plans[1].priceCents)} for up to three.
-        Pay once, own it forever with all future updates included; no
-        subscription, no renewal. Try it free for {pricing.trial.durationDays}{" "}
-        days (no account, no card), backed by a {pricing.refund.days}-day
-        money-back guarantee.
-      </p>
-    ),
-  },
   {
     question: "How do I get updates?",
     answer: (
@@ -66,7 +52,7 @@ const faqs: { question: string; answer: React.ReactNode }[] = [
     question: "What are the requirements?",
     answer: (
       <p>
-        {pricing.platformNote} termio is a native app built for Apple Silicon
+        macOS, Apple Silicon. termio is a native app built for Apple Silicon
         Macs. You bring your own agent CLIs and their API keys.
       </p>
     ),
@@ -79,7 +65,7 @@ export function Faq() {
       <div className="mx-auto w-full max-w-2xl px-5 py-32 sm:py-40 sm:px-8">
         <Reveal className="flex flex-col items-center text-center">
           <SectionLabel accent="muted">Support</SectionLabel>
-          <h2 className="mt-4 text-balance text-4xl font-bold tracking-[-0.045em] text-foreground sm:text-5xl">
+          <h2 className="mt-4 text-balance text-4xl font-semibold tracking-[-0.045em] text-foreground sm:text-5xl">
             Frequently asked questions
           </h2>
           <p className="mt-5 max-w-md text-balance text-base leading-relaxed text-muted-foreground">

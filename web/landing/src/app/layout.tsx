@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 const siteDescription =
-  "termio is a native Mac workspace for running multiple AI coding agents — Claude Code, Codex, Gemini, Amp and more — side by side. Sessions survive restarts, each agent gets its own git worktree, and everything stays local.";
+  "termio is a native Mac workspace for your AI coding agents — Claude Code, Codex, Gemini, Amp and more. Run them side by side, each in a real terminal, switch between them instantly, and nothing ever leaves your machine.";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://termio.app"),
@@ -47,7 +47,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#050507",
+  themeColor: "#ffffff",
 };
 
 export default function RootLayout({

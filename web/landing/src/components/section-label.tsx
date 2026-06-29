@@ -7,11 +7,11 @@ import { cn } from "@/lib/utils";
 export type Accent = "pink" | "blue" | "green" | "yellow" | "violet" | "muted";
 
 const accentText: Record<Accent, string> = {
-  pink: "text-[#e879c6]",
-  blue: "text-[#5b9bff]",
-  green: "text-[#36d07a]",
-  yellow: "text-[#e7b84b]",
-  violet: "text-[#9b7bff]",
+  pink: "text-[#c2268f]",
+  blue: "text-[#0071e3]",
+  green: "text-[#1a8f4c]",
+  yellow: "text-[#b8740a]",
+  violet: "text-[#7c3aed]",
   muted: "text-muted-foreground",
 };
 

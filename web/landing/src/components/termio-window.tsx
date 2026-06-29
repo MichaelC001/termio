@@ -29,7 +29,7 @@ export function TermioWindow({ className }: { className?: string }) {
   return (
     <div
       className={cn(
-        "shadow-soft overflow-hidden rounded-2xl border border-white/10 bg-card",
+        "dark shadow-soft overflow-hidden rounded-2xl border border-white/10 bg-card",
         className,
       )}
       role="img"

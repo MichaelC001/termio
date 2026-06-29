@@ -1,39 +1,22 @@
-import {
-  Terminal,
-  Power,
-  GitBranch,
-  Lock,
-  Sparkles,
-  RefreshCw,
-  Layers,
-  EyeOff,
-} from "lucide-react";
+import { GitBranch, EyeOff } from "lucide-react";
 import { Reveal } from "@/components/reveal";
 import { SectionLabel, type Accent } from "@/components/section-label";
+import { AgentIcon } from "@/components/agent-icons";
+import { supportedAgents } from "@/lib/site";
 import { cn } from "@/lib/utils";
 
-// Dark device mockups that pair with each showcase block — pure JSX so they stay
-// crisp at any size, no screenshots.
+// Compact mockups that pair with each bento card — pure JSX so they stay crisp
+// at any size, no screenshots.
 
 function MultiAgentVisual() {
-  const agents = [
-    "Claude Code",
-    "Codex",
-    "Gemini",
-    "Amp",
-    "Pi",
-    "OpenCode",
-    "Copilot",
-    "Cursor",
-  ];
   return (
     <div className="grid grid-cols-2 gap-2.5">
-      {agents.map((agent) => (
+      {supportedAgents.map((agent) => (
         <div
           key={agent}
-          className="flex items-center gap-2.5 rounded-xl border border-border bg-white/[0.02] px-3.5 py-3"
+          className="flex items-center gap-2.5 rounded-xl bg-background px-3.5 py-3"
         >
-          <Terminal className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+          <AgentIcon name={agent} size={16} className="text-foreground" />
           <span className="font-mono text-xs text-foreground">{agent}</span>
         </div>
       ))}
@@ -42,20 +25,25 @@ function MultiAgentVisual() {
 }
 
 function SessionsVisual() {
+  const live = [
+    "claude · refactor auth",
+    "codex · migrate to Drizzle",
+    "gemini · write e2e tests",
+  ];
   return (
     <div className="space-y-3 font-mono text-xs">
-      <div className="flex items-center justify-between rounded-xl border border-border bg-white/[0.02] px-4 py-3 text-foreground">
-        <span>agent running…</span>
-        <span className="h-2 w-2 animate-pulse rounded-full bg-[#36d07a]" />
-      </div>
-      <div className="flex items-center gap-2 px-1 text-muted-foreground">
-        <Power className="h-3.5 w-3.5" aria-hidden="true" />
-        <span>app quit &amp; reopened</span>
-      </div>
-      <div className="flex items-center justify-between rounded-xl border border-border bg-white/[0.02] px-4 py-3 text-foreground">
-        <span>reconnected · output replayed</span>
-        <span className="h-2 w-2 rounded-full bg-[#36d07a]" />
-      </div>
+      {live.map((session) => (
+        <div
+          key={session}
+          className="flex items-center justify-between rounded-xl bg-background px-4 py-3 text-foreground"
+        >
+          <span>{session}</span>
+          <span className="h-2 w-2 animate-pulse rounded-full bg-[#36d07a]" />
+        </div>
+      ))}
+      <p className="px-1 text-muted-foreground">
+        switch ⌘1–3 — every session stays live
+      </p>
     </div>
   );
 }
@@ -92,7 +80,7 @@ function LocalOnlyVisual() {
       {rows.map((row) => (
         <div
           key={row}
-          className="flex items-center justify-between rounded-xl border border-border bg-white/[0.02] px-4 py-3 text-sm"
+          className="flex items-center justify-between rounded-xl bg-background px-4 py-3 text-sm"
         >
           <span className="text-foreground">{row}</span>
           <span className="inline-flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
@@ -105,153 +93,92 @@ function LocalOnlyVisual() {
   );
 }
 
-type Row = { icon: typeof Terminal; title: string; description: string };
-
-type Showcase = {
+type Bento = {
   accent: Accent;
   eyebrow: string;
   heading: string;
   intro: string;
-  rows: Row[];
   visual: React.ReactNode;
+  wide: boolean;
 };
 
-const showcases: Showcase[] = [
+const cards: Bento[] = [
   {
     accent: "pink",
     eyebrow: "Multi-agent",
     heading: "Every agent, first-class",
     intro:
-      "Claude Code, Codex, Gemini, Amp, Pi, OpenCode, Copilot and Cursor each get a real native terminal — launch any of them with one tap.",
-    rows: [
-      {
-        icon: Terminal,
-        title: "A real PTY, every time",
-        description:
-          "Each session is a genuine login shell, so any CLI-based agent just works — no shims, no emulation.",
-      },
-      {
-        icon: Sparkles,
-        title: "Auto-titled sessions",
-        description:
-          "Sessions name themselves from what the agent is doing, so a long list stays scannable instead of a wall of “Untitled”.",
-      },
-    ],
+      "Claude Code, Codex, Gemini and five more — each in a real native terminal, one tap to launch.",
     visual: <MultiAgentVisual />,
+    wide: true,
   },
   {
     accent: "green",
-    eyebrow: "Always running",
-    heading: "Sessions that survive anything",
+    eyebrow: "Always live",
+    heading: "Switch without tearing down",
     intro:
-      "Each terminal runs in its own session-host process, independent of the window. Quit termio, restart your Mac — your agents keep working.",
-    rows: [
-      {
-        icon: Power,
-        title: "Hosted, not tied to the window",
-        description:
-          "The shell lives in a separate process. Close the app and nothing is killed.",
-      },
-      {
-        icon: RefreshCw,
-        title: "Reconnect & replay",
-        description:
-          "Reopen termio and every session reattaches with its full scrollback replayed.",
-      },
-    ],
+      "Open as many agents as you like — every session stays mounted and keeps running as you move between them, and your sidebar layout is remembered next launch.",
     visual: <SessionsVisual />,
+    wide: false,
   },
   {
     accent: "blue",
-    eyebrow: "Isolation",
-    heading: "A git worktree per agent",
+    eyebrow: "Git-aware",
+    heading: "Organized by branch",
     intro:
-      "Run several agents on the same repo at once without stepping on each other. Each gets its own branch and checkout, grouped under the project.",
-    rows: [
-      {
-        icon: Layers,
-        title: "Parallel without collisions",
-        description:
-          "Every agent works in a separate worktree, so simultaneous edits never clash.",
-      },
-      {
-        icon: GitBranch,
-        title: "Grouped under the project",
-        description:
-          "Branches stay organized in the sidebar so you always know who changed what.",
-      },
-    ],
+      "Run each agent in its own git worktree — termio groups them under the project and shows every branch live in the sidebar, so parallel work never gets confusing.",
     visual: <WorktreeVisual />,
+    wide: false,
   },
   {
     accent: "yellow",
     eyebrow: "Private by default",
     heading: "Local-only, by design",
     intro:
-      "No telemetry, no cloud sync, no account to get started. Your code and your agents stay on your Mac — full stop.",
-    rows: [
-      {
-        icon: Lock,
-        title: "Nothing leaves your machine",
-        description:
-          "termio is not sandboxed and not phoning home. The only network traffic is the agents you run.",
-      },
-      {
-        icon: EyeOff,
-        title: "No account to start",
-        description:
-          "termio runs entirely offline — download it and go, with no sign-in and no card.",
-      },
-    ],
+      "No telemetry, no cloud sync, no account. Your code and your agents never leave your Mac.",
     visual: <LocalOnlyVisual />,
+    wide: true,
   },
 ];
 
-function ShowcaseBlock({ block, reverse }: { block: Showcase; reverse: boolean }) {
-  return (
-    <div className="grid items-center gap-12 md:grid-cols-2 md:gap-20">
-      <Reveal className={cn(reverse && "md:order-2")}>
-        <SectionLabel accent={block.accent}>{block.eyebrow}</SectionLabel>
-        <h3 className="mt-4 text-balance text-4xl font-bold tracking-[-0.045em] text-foreground sm:text-5xl">
-          {block.heading}
-        </h3>
-        <p className="mt-5 max-w-md text-lg leading-relaxed text-muted-foreground">
-          {block.intro}
-        </p>
-        <div className="mt-9 space-y-6">
-          {block.rows.map((row) => {
-            const Icon = row.icon;
-            return (
-              <div key={row.title} className="flex gap-4">
-                <Icon
-                  className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground"
-                  aria-hidden="true"
-                />
-                <div>
-                  <h4 className="text-base font-semibold text-foreground">
-                    {row.title}
-                  </h4>
-                  <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                    {row.description}
-                  </p>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </Reveal>
-
-      <Reveal delayMs={80} className={cn("[perspective:2400px]", reverse && "md:order-1")}>
-        <div
-          className={cn(
-            "rounded-2xl border border-border bg-card p-7 shadow-soft sm:p-9",
-            reverse ? "md:tilt-left" : "md:tilt-right",
-          )}
-        >
-          {block.visual}
-        </div>
-      </Reveal>
+function BentoCard({ card, index }: { card: Bento; index: number }) {
+  const header = (
+    <div className={cn(card.wide && "md:max-w-sm")}>
+      <SectionLabel accent={card.accent}>{card.eyebrow}</SectionLabel>
+      <h3 className="mt-3 text-balance text-2xl font-semibold tracking-[-0.04em] text-foreground">
+        {card.heading}
+      </h3>
+      <p className="mt-3 text-base leading-relaxed text-muted-foreground">
+        {card.intro}
+      </p>
     </div>
+  );
+
+  return (
+    <Reveal
+      as="article"
+      delayMs={(index % 2) * 80}
+      className={cn(
+        "shadow-soft flex flex-col rounded-3xl bg-card p-8 sm:p-10",
+        card.wide && "md:col-span-2",
+      )}
+    >
+      {card.wide ? (
+        <div className="grid items-center gap-8 md:grid-cols-2 md:gap-12">
+          {header}
+          <div className="rounded-2xl bg-secondary p-6">
+            {card.visual}
+          </div>
+        </div>
+      ) : (
+        <>
+          {header}
+          <div className="mt-8 rounded-2xl bg-secondary p-6">
+            {card.visual}
+          </div>
+        </>
+      )}
+    </Reveal>
   );
 }
 
@@ -261,15 +188,15 @@ export function Features() {
       <div className="mx-auto w-full max-w-6xl px-5 py-32 sm:py-40 sm:px-8">
         <Reveal>
           <SectionLabel accent="violet">What&apos;s inside</SectionLabel>
-          <h2 className="mt-4 max-w-2xl text-balance text-4xl font-bold tracking-[-0.045em] text-foreground sm:text-6xl">
+          <h2 className="mt-4 max-w-2xl text-balance text-4xl font-semibold tracking-[-0.045em] text-foreground sm:text-6xl">
             Everything your agents need.
             <br className="hidden sm:block" /> Nothing they don&apos;t.
           </h2>
         </Reveal>
 
-        <div className="mt-20 space-y-32 sm:space-y-48">
-          {showcases.map((block, index) => (
-            <ShowcaseBlock key={block.heading} block={block} reverse={index % 2 === 1} />
+        <div className="mt-16 grid gap-5 md:grid-cols-2">
+          {cards.map((card, index) => (
+            <BentoCard key={card.heading} card={card} index={index} />
           ))}
         </div>
       </div>
