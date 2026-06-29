@@ -47,9 +47,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // before the window exists, replayed once it does. macOS may deliver the open
     // event during a cold launch, ahead of `applicationDidFinishLaunching`.
     private var pendingOpenURLs: [URL] = []
-    // The split controller, retained so `installToolbar` can bind the native sidebar
-    // toggle and the sidebar tracking separator to its split view.
+    // The split controller (sidebar + terminal + inspector). The navigator toggle reaches its
+    // `toggleSidebar(_:)` through the responder chain, so this is just a weak handle on the
+    // window's content view controller.
     private weak var splitViewController: NSSplitViewController?
+    // The trailing file-browser inspector item, retained so the toolbar button and the
+    // View menu can collapse/expand it. Starts collapsed (see `makeContentSplitViewController`).
+    private var filesInspectorItem: NSSplitViewItem?
     // The window's real toolbar delegate (must be retained); it carries the native
     // sidebar toggle (see `installToolbar`).
     private var toolbarDelegate: MainToolbarDelegate?
@@ -73,7 +77,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // toggle, and `.fullSizeContentView` letting the sidebar's vibrant material run up
         // behind the traffic lights. No custom title-bar painting. `.automatic` toolbar style
         // splits the bar at the sidebar divider rather than painting one flat unified band.
-        window.toolbarStyle = .automatic
+        // Hide the native title. CodeEdit's recipe renders the folder name + git branch as a
+        // custom borderless toolbar item (the branch picker, see `MainToolbarDelegate`) rather
+        // than the system title/subtitle, so the toolbar band takes the terminal background
+        // cleanly with no mismatched grey title strip. `window.title` is still kept current (for
+        // the Window menu and Mission Control) but is not drawn while a toolbar is shown.
+        window.titleVisibility = .hidden
+        // Let the per-split-item separator styles decide where a hairline shows (CodeEdit's
+        // approach: sidebar defers to the system default, terminal `.line`). The window-level
+        // `.automatic` defers to those, so the sidebar stays seamless while the terminal gets a
+        // clean bounding line — and the tracking separator no longer glares as a black bar in
+        // fullscreen. The toolbar style itself is set in `installToolbar` (version-branched).
+        window.titlebarSeparatorStyle = .automatic
         // Drive the split with a real AppKit `NSSplitViewController` whose first item
         // has `.sidebar` behavior — NetNewsWire's architecture. This is the *only* way to
         // get the native full-height sidebar (vibrant material running up behind the
@@ -143,24 +158,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         sidebarItem.maximumThickness = 400
         sidebarItem.canCollapse = true
         sidebarItem.allowsFullHeightLayout = true
+        // CodeEdit's recipe: the divider hairline under the toolbar is owned per split item,
+        // not by the window. Pre-macOS 26, the sidebar needs `.none` to stop the sidebar
+        // tracking separator from rendering its line as a black bar in fullscreen; on macOS 26
+        // the system default already draws seamlessly, so (like CodeEdit's `makeNavigator`) we
+        // leave it untouched there.
+        if #unavailable(macOS 26) {
+            sidebarItem.titlebarSeparatorStyle = .none
+        }
 
         let detail = NSHostingController(rootView: TerminalPane()
             .environmentObject(store)
             .environmentObject(settings))
         let detailItem = NSSplitViewItem(viewController: detail)
+        // `.line` only over the terminal: a clean hairline that starts at the sidebar divider
+        // and bounds the title strip like Xcode, without bleeding across the sidebar.
+        detailItem.titlebarSeparatorStyle = .line
+
+        // A trailing panel hosting the project file tree. Deliberately a *plain* split item,
+        // not `inspectorWithViewController`: the inspector behavior extends the title bar with a
+        // trailing full-height region, and in fullscreen + light mode that region renders as a
+        // grey/black band that corrupts the title chrome (it was the block that resized while the
+        // file-tree divider was dragged). A plain item has no title-bar integration, so its
+        // content sits cleanly below the toolbar and can never touch the chrome. It still
+        // collapses/expands via the toolbar toggle and starts collapsed (the tree is summoned).
+        let inspector = FileBrowserHostingController(store: store, settings: settings)
+        let inspectorItem = NSSplitViewItem(viewController: inspector)
+        inspectorItem.minimumThickness = 220
+        inspectorItem.maximumThickness = 420
+        inspectorItem.canCollapse = true
+        inspectorItem.isCollapsed = true
+        self.filesInspectorItem = inspectorItem
 
         let splitViewController = NSSplitViewController()
         splitViewController.addSplitViewItem(sidebarItem)
         splitViewController.addSplitViewItem(detailItem)
+        splitViewController.addSplitViewItem(inspectorItem)
         splitViewController.splitView.autosaveName = "TermioContentSplit"
         self.splitViewController = splitViewController
         return splitViewController
     }
 
-    /// Mirrors the selected session's working directory into the native window title and its
-    /// live git branch into the subtitle — NetNewsWire's pattern (the system draws them in the
-    /// toolbar; no custom views). The path is the session's real working directory, so a
-    /// worktree session shows where it actually runs; a non-git folder leaves the subtitle empty.
+    /// Keeps the native window title in step with the selected session's working directory.
+    /// The title is hidden in the toolbar (`titleVisibility = .hidden`) — the folder name and
+    /// git branch are drawn by the custom branch-picker toolbar item instead (CodeEdit's
+    /// pattern) — so this only feeds the Window menu and Mission Control. The path is the
+    /// session's real working directory, so a worktree session shows where it actually runs.
     private func updateWindowTitle() {
         guard let window else { return }
         guard let id = store.selectedSessionID, let project = store.project(for: id) else {
@@ -170,7 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         let folder = store.session(id)?.worktreePath ?? project.path
         window.title = abbreviatingHome(folder)
-        window.subtitle = store.branch(forFolder: folder) ?? ""
+        window.subtitle = ""
     }
 
     /// Home-abbreviates an absolute path to `~`, matching how a shell prompt shows it.
@@ -217,7 +260,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let window else { return }
         let translucent = settings.backgroundOpacity < 1.0 || settings.backgroundBlur > 0
         window.isOpaque = !translucent
-        window.backgroundColor = translucent ? .clear : settings.terminalBackgroundColor
+        // Resolve the terminal background to a *static* color for the window's current
+        // appearance, rather than handing the window the dynamic (appearance-resolving) color.
+        // In fullscreen the title-bar overlay draws in a light appearance context that does not
+        // inherit the window's dark appearance, so the dynamic color resolved to white there —
+        // the white title band over the terminal. A statically-resolved color can't flip, so the
+        // fullscreen title band matches the terminal. Re-run on every appearance change below.
+        window.backgroundColor = translucent ? .clear : resolvedTerminalBackground()
+        // Make the titlebar transparent so the window background (the terminal color, set
+        // just above) shows straight through the title-bar band instead of AppKit's stock
+        // grey chrome material — the seam that otherwise leaves the title/subtitle sitting
+        // on a mismatched lighter band. The sidebar's vibrant material still wins on the
+        // leading column; this only affects the detail (terminal) side.
+        //
+        // EXCEPT in fullscreen: on macOS 26 the fullscreen title-bar host doesn't honor a
+        // transparent titlebar — it composites a light Liquid Glass material, which read as a
+        // white band over a dark terminal. Turning transparency off in fullscreen lets the
+        // toolbar fall back to the window's own (dark) titlebar material, which tracks the
+        // appearance and matches the terminal far better. Windowed keeps the seamless look.
+        window.titlebarAppearsTransparent = !window.styleMask.contains(.fullScreen)
+    }
+
+    /// The terminal background color flattened to a static color for the window's current
+    /// effective appearance. `AppSettings.terminalBackgroundColor` is a dynamic color that picks
+    /// light/dark per drawing context; the window (and especially its fullscreen title-bar
+    /// overlay) needs a fixed color so it can't resolve to the wrong side.
+    private func resolvedTerminalBackground() -> NSColor {
+        let dynamic = settings.terminalBackgroundColor
+        // Resolve against the appearance the window is pinned to (not its current
+        // `effectiveAppearance`, which can lag `applyChromeAppearance` depending on call order).
+        let appearance: NSAppearance
+        switch settings.appearanceMode {
+        case .light: appearance = NSAppearance(named: .aqua) ?? NSAppearance.currentDrawing()
+        case .dark: appearance = NSAppearance(named: .darkAqua) ?? NSAppearance.currentDrawing()
+        case .system: appearance = window?.effectiveAppearance ?? NSApp.effectiveAppearance
+        }
+        var resolved = dynamic
+        appearance.performAsCurrentDrawingAppearance {
+            resolved = NSColor(cgColor: dynamic.cgColor) ?? dynamic
+        }
+        return resolved
+    }
+
+    /// Re-assert the terminal-colored chrome when crossing the fullscreen boundary. macOS rebuilds
+    /// the title-bar host on each transition, so the window background/appearance are re-applied to
+    /// keep the fullscreen title band matching the terminal.
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        applyChromeAppearance()
+        applyWindowTransparency()
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        applyChromeAppearance()
+        applyWindowTransparency()
     }
 
     /// Applies the user's appearance mode. `.system` leaves every surface tracking
@@ -237,21 +332,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         settingsWindow?.appearance = appearance
     }
 
-    /// Installs a real `NSToolbar`, the way NetNewsWire does, so the window gets the
-    /// genuine system sidebar toggle. The native `.toggleSidebar` item — provided and
-    /// styled by AppKit, with the proper macOS 26 Liquid Glass on hover — can only live in
-    /// a real toolbar, not SwiftUI's bridged one, so the panes no longer bridge their
-    /// toolbars (`sceneBridgingOptions` dropped). `.sidebarTrackingSeparator` keeps the
-    /// toolbar's split aligned with the sidebar divider, and the toggle stays put (after
-    /// the traffic lights) when the sidebar collapses.
+    /// Installs a real `NSToolbar` carrying CodeEdit's chrome: a leading navigator toggle, the
+    /// system sidebar tracking separator, the custom branch-picker title, an inner tracking
+    /// separator aligned to the inspector divider, and a trailing inspector toggle. The delegate
+    /// holds the split controller (to bind the inner separator to divider 1) and the store +
+    /// settings (to host the branch picker). Toolbar style is version-branched the way CodeEdit
+    /// does it: `.automatic` on macOS 26, `.unifiedCompact` before. The baseline separator is
+    /// dropped so only the per-split-item separators decide where a hairline shows.
     private func installToolbar() {
-        guard let window, let splitViewController else { return }
-        let delegate = MainToolbarDelegate(splitView: splitViewController.splitView)
+        guard let window else { return }
+        let delegate = MainToolbarDelegate(store: store, settings: settings)
         toolbarDelegate = delegate
         let toolbar = NSToolbar(identifier: "TermioMainToolbar")
         toolbar.delegate = delegate
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
+        toolbar.showsBaselineSeparator = false
+        if #available(macOS 26, *) {
+            window.toolbarStyle = .automatic
+        } else {
+            window.toolbarStyle = .unifiedCompact
+        }
         window.toolbar = toolbar
     }
 
@@ -340,11 +441,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.presentOpenProjectPanel()
     }
 
-    /// File ▸ Open Project in VM… — same picker, but the opened project runs its
-    /// sessions inside an isolated sandbox VM. The sandbox is chosen here, at open
+    /// File ▸ Open Project Sandboxed… — same picker, but the opened project runs its
+    /// sessions under a Seatbelt sandbox profile. The sandbox is chosen here, at open
     /// time, rather than toggled afterward.
-    @objc func openProjectInVM(_ sender: Any?) {
+    @objc func openProjectSandboxed(_ sender: Any?) {
         store.presentOpenProjectPanel(sandboxed: true)
+    }
+
+    /// View ▸ Show Project Files (and the toolbar's trailing inspector button) —
+    /// collapses or expands the file-tree inspector. Reached via the responder chain
+    /// (the menu item and toolbar item both target `nil`), like the other app actions.
+    @objc func toggleFilesInspector(_ sender: Any?) {
+        guard let filesInspectorItem else { return }
+        filesInspectorItem.animator().isCollapsed.toggle()
     }
 
     /// Termio ▸ Check for Updates… — hands off to Sparkle's standard update flow.
@@ -355,19 +464,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 }
 
-/// Delegate for the window's real toolbar. It declares the native sidebar toggle and the
-/// sidebar tracking separator — both system-provided — so the delegate only supplies the
-/// tracking separator binding (to the sidebar divider) and lets AppKit provide the toggle.
+/// Delegate for the window's real toolbar, mirroring CodeEdit's chrome. It declares a leading
+/// navigator toggle, the AppKit-provided sidebar tracking separator (bound to the sidebar
+/// divider), the custom branch-picker title item, and a trailing inspector toggle. The store and
+/// settings drive the branch picker.
 @MainActor
 private final class MainToolbarDelegate: NSObject, NSToolbarDelegate {
-    private weak var splitView: NSSplitView?
+    private let store: TermioStore
+    private let settings: AppSettings
 
-    init(splitView: NSSplitView) {
-        self.splitView = splitView
+    init(store: TermioStore, settings: AppSettings) {
+        self.store = store
+        self.settings = settings
     }
 
+    // `.sidebarTrackingSeparator` is AppKit-provided simply by naming the system identifier;
+    // AppKit builds it and binds it to the sidebar divider. The navigator/inspector toggles use
+    // CodeEdit's symmetric `sidebar.leading`/`sidebar.trailing` glyphs, and the branch picker
+    // sits in the content region right after the sidebar separator, so the title reads over the
+    // terminal background. (CodeEdit also adds a second hand-built tracking separator over the
+    // inspector divider; termio's inspector is a simple summoned file tree, and that item renders
+    // as a filled block in this window setup, so it's left out — the toggle alone is enough.)
     private let identifiers: [NSToolbarItem.Identifier] = [
-        .toggleSidebar, .sidebarTrackingSeparator,
+        .toggleNavigator, .flexibleSpace, .sidebarTrackingSeparator, .branchPicker,
+        .flexibleSpace, .toggleInspector,
     ]
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -384,14 +504,102 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate {
         willBeInsertedIntoToolbar flag: Bool
     ) -> NSToolbarItem? {
         switch itemIdentifier {
-        case .sidebarTrackingSeparator:
-            guard let splitView else { return nil }
-            return NSTrackingSeparatorToolbarItem(
-                identifier: .sidebarTrackingSeparator, splitView: splitView, dividerIndex: 0)
+        case .toggleNavigator:
+            let item = NSToolbarItem(itemIdentifier: .toggleNavigator)
+            item.label = "Navigator"
+            item.toolTip = "Hide or show the navigator"
+            item.image = NSImage(systemSymbolName: "sidebar.leading", accessibilityDescription: "Navigator")
+            item.isBordered = true
+            // `NSSplitViewController.toggleSidebar(_:)` collapses the first (sidebar) item with
+            // the system animation. `nil` target routes up the responder chain to the split
+            // controller (the window's content view controller), so no custom action is needed.
+            item.action = #selector(NSSplitViewController.toggleSidebar(_:))
+            return item
+        case .toggleInspector:
+            let item = NSToolbarItem(itemIdentifier: .toggleInspector)
+            item.label = "Inspector"
+            item.toolTip = "Show or hide the project files"
+            item.image = NSImage(systemSymbolName: "sidebar.trailing", accessibilityDescription: "Project Files")
+            item.isBordered = true
+            // `nil` target routes up the responder chain to the app delegate, the same nil-target
+            // routing the menu items use.
+            item.action = #selector(AppDelegate.toggleFilesInspector(_:))
+            return item
+        case .branchPicker:
+            let item = NSToolbarItem(itemIdentifier: .branchPicker)
+            item.view = NSHostingView(rootView: BranchPickerToolbarView()
+                .environmentObject(store)
+                .environmentObject(settings))
+            item.isBordered = false
+            return item
         default:
-            // `.toggleSidebar` is provided and styled by AppKit.
+            // `.sidebarTrackingSeparator` and the spaces are provided and styled by AppKit.
             return nil
         }
+    }
+}
+
+private extension NSToolbarItem.Identifier {
+    static let toggleNavigator = NSToolbarItem.Identifier("TermioToggleNavigator")
+    static let toggleInspector = NSToolbarItem.Identifier("TermioToggleInspector")
+    static let branchPicker = NSToolbarItem.Identifier("TermioBranchPicker")
+}
+
+/// The custom title item: the selected session's folder name over its live git branch, drawn as
+/// a borderless toolbar view in place of the native title (CodeEdit's `ToolbarBranchPicker`). It
+/// observes the store directly, so it tracks the selection and branch without a separate
+/// observer. A non-git folder shows just the folder name with a settings-folder glyph.
+private struct BranchPickerToolbarView: View {
+    @EnvironmentObject var store: TermioStore
+    @Environment(\.controlActiveState) private var controlActive
+
+    /// The selected session's working directory: its worktree if it has one, else its project
+    /// folder. `nil` when nothing is selected.
+    private var folder: String? {
+        guard let id = store.selectedSessionID, let project = store.project(for: id) else { return nil }
+        return store.session(id)?.worktreePath ?? project.path
+    }
+
+    private var title: String {
+        guard let folder else { return "Termio" }
+        return URL(fileURLWithPath: folder).lastPathComponent
+    }
+
+    private var branch: String? {
+        guard let folder, let branch = store.branch(forFolder: folder), !branch.isEmpty else { return nil }
+        return branch
+    }
+
+    private var primaryColor: Color {
+        controlActive == .inactive ? Color(nsColor: .disabledControlTextColor) : .primary
+    }
+
+    private var secondaryColor: Color {
+        controlActive == .inactive ? Color(nsColor: .disabledControlTextColor) : .secondary
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 7) {
+            Image(systemName: branch != nil ? "arrow.triangle.branch" : "folder.fill.badge.gearshape")
+                .foregroundStyle(secondaryColor)
+                .font(.system(size: 13))
+                .frame(width: 16, height: 16)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(primaryColor)
+                    .lineLimit(1)
+                    .help(title)
+                if let branch {
+                    Text(branch)
+                        .font(.subheadline)
+                        .foregroundStyle(secondaryColor)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.leading, 4)
+        .frame(minWidth: 80)
     }
 }
 
@@ -429,14 +637,14 @@ private func buildMainMenu() -> NSMenu {
         action: #selector(AppDelegate.openProject(_:)),
         keyEquivalent: "o"
     )
-    // Open the project straight into an isolated sandbox VM. Shift-⌘O sits right
-    // beside the plain Open Project (⌘O), so the two open modes read as a pair.
-    let openInVM = fileMenu.addItem(
-        withTitle: "Open Project in VM…",
-        action: #selector(AppDelegate.openProjectInVM(_:)),
+    // Open the project straight into a Seatbelt sandbox. Shift-⌘O sits right beside
+    // the plain Open Project (⌘O), so the two open modes read as a pair.
+    let openSandboxed = fileMenu.addItem(
+        withTitle: "Open Project Sandboxed…",
+        action: #selector(AppDelegate.openProjectSandboxed(_:)),
         keyEquivalent: "O"
     )
-    openInVM.keyEquivalentModifierMask = [.command, .shift]
+    openSandboxed.keyEquivalentModifierMask = [.command, .shift]
     fileItem.submenu = fileMenu
 
     // Standard Edit menu so copy/paste/select-all responder actions work.
@@ -447,6 +655,18 @@ private func buildMainMenu() -> NSMenu {
     editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
     editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
     editItem.submenu = editMenu
+
+    let viewItem = NSMenuItem()
+    mainMenu.addItem(viewItem)
+    let viewMenu = NSMenu(title: "View")
+    // Mirrors Xcode's inspector shortcut (⌥⌘0) for the trailing file-tree panel.
+    let toggleFiles = viewMenu.addItem(
+        withTitle: "Show Project Files",
+        action: #selector(AppDelegate.toggleFilesInspector(_:)),
+        keyEquivalent: "0"
+    )
+    toggleFiles.keyEquivalentModifierMask = [.command, .option]
+    viewItem.submenu = viewMenu
 
     return mainMenu
 }

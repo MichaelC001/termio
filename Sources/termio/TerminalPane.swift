@@ -17,6 +17,7 @@ struct TerminalPane: View {
     @EnvironmentObject var settings: AppSettings
     @FocusState private var focusedSession: Session.ID?
     @State private var activated: [Session.ID] = []
+    @State private var isDropTargeted = false
 
     var body: some View {
         ZStack {
@@ -34,12 +35,63 @@ struct TerminalPane: View {
         // Paint the terminal's own background behind the pane, extending up under the toolbar so
         // the system toolbar material picks up a terminal tint instead of a flat grey band.
         .background(paneBackground.ignoresSafeArea(.container, edges: .top))
+        // A VSCode-style drop overlay: just a translucent accent wash over the whole
+        // terminal while a file is dragged over it (their `terminal-dropBackground`) —
+        // no border, only the background tint, fading in and out.
+        .overlay {
+            if isDropTargeted {
+                Color.accentColor.opacity(0.18)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: isDropTargeted)
+        // Dropping a file (dragged from the file-tree inspector or the Finder) inserts
+        // its shell-quoted path at the prompt — the prebuilt libghostty surface does not
+        // register for file drops itself, so the pane catches them and feeds the path to
+        // the selected session's surface. No trailing return, so the path is inserted for
+        // the user (or the agent) to act on rather than run.
+        .dropDestination(for: URL.self) { urls, _ in
+            sendPaths(urls)
+        } isTargeted: { isDropTargeted = $0 }
         .onChange(of: store.selectedSessionID, initial: true) { _, id in
             if let id, !activated.contains(id) {
                 activated.append(id)
             }
             focusedSession = id
         }
+    }
+
+    /// Inserts the dropped files' paths into the selected session's terminal,
+    /// space-separated and each shell-quoted so spaces and other special characters
+    /// survive. Focuses the session first (VSCode's focus-on-drop), and if its shell
+    /// isn't attached yet, activates the session so its surface mounts and retries
+    /// once it has come up. Returns whether a drop was accepted at all.
+    private func sendPaths(_ urls: [URL]) -> Bool {
+        guard !urls.isEmpty,
+              let id = store.selectedSessionID,
+              let session = store.session(id),
+              let project = store.project(for: id) else { return false }
+        focusedSession = id
+        let text = urls.map { Self.shellQuoted($0.path) }.joined(separator: " ") + " "
+        if store.surface(for: session, in: project).send(text) { return true }
+
+        // The shell may not be attached yet (a freshly opened session whose surface
+        // hasn't mounted). Activating it mounts the surface; retry a moment later, once.
+        store.selectedSessionID = id
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            if !store.surface(for: session, in: project).send(text) {
+                NSLog("termio: dropped path could not be sent — %@ has no live terminal", session.title)
+            }
+        }
+        return true
+    }
+
+    /// Single-quotes a path for the shell, escaping any embedded single quote the
+    /// POSIX way (`'\''`), so a dropped path is always one safe token.
+    private static func shellQuoted(_ path: String) -> String {
+        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private struct MountedSession {
