@@ -78,7 +78,7 @@ final class MenuBarController {
     private static func gridIcon(badge: Badge?) -> NSImage {
         let side: CGFloat = 18
         let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { _ in
-            let inset: CGFloat = 1
+            let inset: CGFloat = 3
             let usable = side - inset * 2
             let gapRatio: CGFloat = 0.34
             let cell = usable / (3 + 2 * gapRatio)
@@ -99,7 +99,7 @@ final class MenuBarController {
             }
 
             if let badge {
-                let diameter: CGFloat = 8
+                let diameter: CGFloat = 7
                 let dot = NSRect(
                     x: side - diameter - inset, y: side - diameter - inset,
                     width: diameter, height: diameter
