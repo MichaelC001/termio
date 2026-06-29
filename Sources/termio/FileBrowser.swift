@@ -99,7 +99,6 @@ struct FileBrowserView: View {
     let onQuickLook: () -> Void
 
     @State private var root: FileNode?
-    @State private var isDropTargeted = false
 
     /// The directory the tree is rooted at: the selected session's worktree if it
     /// has one, otherwise its project folder. `nil` when nothing is selected.
@@ -110,20 +109,31 @@ struct FileBrowserView: View {
 
     var body: some View {
         content
-        .overlay {
-            if isDropTargeted {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color.accentColor, lineWidth: 2)
-                    .padding(4)
-                    .allowsHitTesting(false)
-            }
+        // The file column lives on the terminal side, so it takes the terminal's own background
+        // (rather than a sidebar material) — it reads as an extension of the content area. Fills
+        // the whole column behind the transparent list, ignoring the safe area so it runs
+        // full-height. Tracks the terminal theme live via `settings`.
+        .background(Color(nsColor: settings.terminalBackgroundColor).ignoresSafeArea())
+        // A single full-height hairline on the leading edge as the border with the terminal. A
+        // slightly-bright line (rather than the dim system separator) reads as a clean luminous
+        // edge on its own, echoing the leading sidebar's glowing border — no soft bloom gradient.
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(Color.white.opacity(0.15))
+                .frame(width: 1)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
         }
-        // Dragging files from the Finder onto the panel copies them into the project
-        // root — the "drop files into the project" gesture. termio is not sandboxed,
-        // so the dragged URLs are readable without a security-scope dance.
+        // A drop on empty space targets the project root: a file already in the tree
+        // is *moved* there, a file dragged in from the Finder is *copied* in. Folder
+        // rows install their own, more specific drop targets (see `FileTreeList`), so
+        // this only catches drops that miss every row. No panel-wide target ring —
+        // dragging a row out is itself a `URL` drag, so a whole-panel highlight would
+        // be a false positive; the folder rows light up individually instead.
         .dropDestination(for: URL.self) { urls, _ in
-            copyIntoProject(urls)
-        } isTargeted: { isDropTargeted = $0 }
+            guard let projectPath else { return false }
+            return receive(urls, into: URL(fileURLWithPath: projectPath))
+        }
         .onAppear { refresh() }
         .onChange(of: projectPath) { refresh() }
         // Keep an open Quick Look panel in step as the selection moves.
@@ -140,7 +150,8 @@ struct FileBrowserView: View {
             FileTreeList(
                 nodes: root.children ?? [],
                 selection: $browserState.selection,
-                font: settings.interfaceFont
+                font: settings.interfaceFont,
+                onDrop: { sources, destination in receive(sources, into: destination) }
             )
             .onKeyPress(.space) {
                 guard browserState.selection != nil else { return .ignored }
@@ -166,25 +177,40 @@ struct FileBrowserView: View {
         root = FileNode(url: URL(fileURLWithPath: projectPath), isDirectory: true)
     }
 
-    /// Copies each dropped file into the project root, never overwriting an existing
-    /// name (a clash gets a numbered suffix), then refreshes the tree. Returns
-    /// whether anything was copied.
-    private func copyIntoProject(_ urls: [URL]) -> Bool {
+    /// Places each dropped file into `destination` (a folder inside the tree, or the
+    /// project root). A file that already lives in the project is *moved* — the VS
+    /// Code tree gesture; a file dragged in from the Finder is *copied*. A clash with
+    /// an existing name gets a numbered suffix rather than clobbering it. No-op drops
+    /// (a file onto its own folder) and incoherent ones (a folder onto itself or its
+    /// own descendant) are skipped. Refreshes the tree and reports whether anything
+    /// changed.
+    private func receive(_ sources: [URL], into destination: URL) -> Bool {
         guard let projectPath else { return false }
-        let destination = URL(fileURLWithPath: projectPath)
+        let rootPath = URL(fileURLWithPath: projectPath).standardizedFileURL.path
+        let destinationDir = destination.standardizedFileURL
         let manager = FileManager.default
-        var copiedAny = false
-        for source in urls {
-            let target = uniqueDestination(for: source.lastPathComponent, in: destination, manager: manager)
+        var changedAny = false
+        for source in sources {
+            let src = source.standardizedFileURL
+            // Already in this folder, or a folder dropped onto itself / a descendant.
+            if src.deletingLastPathComponent() == destinationDir { continue }
+            if destinationDir.path == src.path || destinationDir.path.hasPrefix(src.path + "/") { continue }
+
+            let isInProject = src.path == rootPath || src.path.hasPrefix(rootPath + "/")
+            let target = uniqueDestination(for: src.lastPathComponent, in: destinationDir, manager: manager)
             do {
-                try manager.copyItem(at: source, to: target)
-                copiedAny = true
+                if isInProject {
+                    try manager.moveItem(at: src, to: target)
+                } else {
+                    try manager.copyItem(at: src, to: target)
+                }
+                changedAny = true
             } catch {
-                NSLog("termio: failed to copy %@ into project: %@", source.path, String(describing: error))
+                NSLog("termio: failed to place %@ into %@: %@", src.path, destinationDir.path, String(describing: error))
             }
         }
-        if copiedAny { refresh() }
-        return copiedAny
+        if changedAny { refresh() }
+        return changedAny
     }
 
     /// A non-colliding URL for `name` in `directory`: the plain name if free, else
@@ -213,27 +239,107 @@ private struct FileTreeList: View {
     let nodes: [FileNode]
     @Binding var selection: URL?
     let font: Font
+    /// Moves/copies `sources` into a folder `destination`; returns whether the tree
+    /// changed. Supplied by `FileBrowserView`, which owns the project path.
+    let onDrop: (_ sources: [URL], _ destination: URL) -> Bool
 
     var body: some View {
-        List(nodes, children: \.children, selection: $selection) { node in
-            Label {
-                Text(node.name)
-                    .font(font)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            } icon: {
-                Image(systemName: node.symbolName)
-                    .foregroundStyle(node.isDirectory ? Color.accentColor : Color.secondary)
-            }
-            // Tighten the generous default sidebar-row height into a denser tree, the
-            // way the project sidebar floors its own rows.
-            .padding(.vertical, 1)
-            // Drag a row out as its file URL. The terminal pane catches the drop and
-            // inserts the shell-quoted path at the prompt (see `TerminalPane.sendPaths`).
-            .draggable(node.url)
+        // No `selection:` binding: the system source-list selection paints an
+        // edge-to-edge blue accent fill that can't be restyled. Instead each row
+        // tracks selection by tap and paints the same `SidebarRowHighlight` the left
+        // sidebar uses, so both panels' selected rows read identically (inset, frosted
+        // — not a flush blue band).
+        List(nodes, children: \.children) { node in
+            FileRow(node: node, font: font, selection: $selection, onDrop: onDrop)
         }
         .listStyle(.sidebar)
+        // Drop the list's own backing so the terminal-colored background behind it (see
+        // `FileBrowserView.body`) shows through — the file column lives in a plain split item, not
+        // a panel item, so it carries no system vibrant background of its own.
+        .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 1)
+    }
+}
+
+/// A single tree row. A view of its own (rather than an inline builder) so each
+/// row can hold the `isHovering`/`isTargeted` state that drives its highlight, and
+/// so selection is a tap rather than the system source-list accent fill.
+private struct FileRow: View {
+    @EnvironmentObject var settings: AppSettings
+    @Environment(\.colorScheme) private var colorScheme
+
+    let node: FileNode
+    let font: Font
+    @Binding var selection: URL?
+    let onDrop: (_ sources: [URL], _ destination: URL) -> Bool
+
+    @State private var isHovering = false
+    /// True while a drag hovers this folder, lighting its background the way the VS
+    /// Code explorer marks the folder a drop would land in.
+    @State private var isTargeted = false
+
+    private var isSelected: Bool { selection == node.url }
+    private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
+
+    /// Folder icons take the same color as the left sidebar's folder mark — the
+    /// theme's foreground (or `.primary`), not the blue accent — so the two panels'
+    /// folders match. Files stay a muted `.secondary` below them.
+    private var iconStyle: AnyShapeStyle {
+        if node.isDirectory {
+            return chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.primary)
+        }
+        return AnyShapeStyle(.secondary)
+    }
+
+    var body: some View {
+        let row = Label {
+            Text(node.name)
+                .font(font)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        } icon: {
+            Image(systemName: node.symbolName)
+                .foregroundStyle(iconStyle)
+        }
+        // Tighten the generous default sidebar-row height into a denser tree, the
+        // way the project sidebar floors its own rows.
+        .padding(.vertical, 1)
+        // Fill the row so the tap target — and any folder drop target — spans its
+        // full width, not just the label's footprint.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        // Drag a row out as its file URL. The terminal pane catches the drop and
+        // inserts the shell-quoted path at the prompt (see `TerminalPane.sendPaths`);
+        // a folder row catches it to move the file into that folder. `.draggable`
+        // sits *before* the tap so the drag gesture wins the pointer-down; selecting
+        // is a `simultaneousGesture` (not `.onTapGesture`, which would compete with
+        // the drag and make it start only after a deliberate, sticky pull).
+        .draggable(node.url)
+        .simultaneousGesture(TapGesture().onEnded { selection = node.url })
+        .onHover { isHovering = $0 }
+        // The same lift the left sidebar paints for its rows: selection (or a drag
+        // hovering a folder) reads as the frosted/accent selected look, hover a
+        // fainter step below — so both side panels' rows highlight identically.
+        .listRowBackground(
+            SidebarRowHighlight(
+                isSelected: isSelected || isTargeted,
+                isHovering: isHovering,
+                chrome: chrome
+            )
+            .animation(.easeInOut(duration: 0.12), value: isSelected)
+            .animation(.easeInOut(duration: 0.12), value: isTargeted)
+            .animation(.easeInOut(duration: 0.12), value: isHovering)
+        )
+
+        // Only folders are drop targets — dropping a file onto a folder moves it in,
+        // the VS Code tree gesture. Files are not targets (no "drop onto a file").
+        if node.isDirectory {
+            row.dropDestination(for: URL.self) { urls, _ in
+                onDrop(urls, node.url)
+            } isTargeted: { isTargeted = $0 }
+        } else {
+            row
+        }
     }
 }
 

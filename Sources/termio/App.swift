@@ -175,13 +175,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // and bounds the title strip like Xcode, without bleeding across the sidebar.
         detailItem.titlebarSeparatorStyle = .line
 
-        // A trailing panel hosting the project file tree. Deliberately a *plain* split item,
-        // not `inspectorWithViewController`: the inspector behavior extends the title bar with a
-        // trailing full-height region, and in fullscreen + light mode that region renders as a
-        // grey/black band that corrupts the title chrome (it was the block that resized while the
-        // file-tree divider was dragged). A plain item has no title-bar integration, so its
-        // content sits cleanly below the toolbar and can never touch the chrome. It still
-        // collapses/expands via the toolbar toggle and starts collapsed (the tree is summoned).
+        // The trailing file-tree column is a PLAIN content item (like the terminal), not a
+        // `.sidebar`/`.inspector` panel item. macOS 26 gives panel items a Liquid Glass inset in
+        // fullscreen (a border/margin on the top, right and bottom); a plain item sits fully flush
+        // to the window edges, with only the split divider on its leading edge as a border. The
+        // panel items' vibrant material is reproduced by hand inside `FileBrowserHostingController`
+        // (a `.sidebar` effect view behind a transparent list), so it still matches the leading
+        // sidebar. It starts collapsed — the tree is summoned via the toolbar toggle.
         let inspector = FileBrowserHostingController(store: store, settings: settings)
         let inspectorItem = NSSplitViewItem(viewController: inspector)
         inspectorItem.minimumThickness = 220
@@ -302,9 +302,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return resolved
     }
 
+    /// Drop titlebar transparency *before* the enter-fullscreen animation begins. `applyWindow-
+    /// Transparency` keys off `styleMask.contains(.fullScreen)`, which isn't set yet at this point,
+    /// so it's set directly here. Without this, the still-transparent titlebar flashes the macOS 26
+    /// light fullscreen material (a white band) for the duration of the animation until
+    /// `windowDidEnterFullScreen` corrects it.
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        window?.titlebarAppearsTransparent = false
+    }
+
     /// Re-assert the terminal-colored chrome when crossing the fullscreen boundary. macOS rebuilds
     /// the title-bar host on each transition, so the window background/appearance are re-applied to
-    /// keep the fullscreen title band matching the terminal.
+    /// keep the fullscreen title band matching the terminal. (On enter, transparency was already
+    /// dropped in `windowWillEnterFullScreen`; this confirms the rest of the chrome.)
     func windowDidEnterFullScreen(_ notification: Notification) {
         applyChromeAppearance()
         applyWindowTransparency()

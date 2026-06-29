@@ -401,8 +401,10 @@ private struct SessionRow: View {
 /// The frosted-grey lift behind a session row. Selection reads as a translucent
 /// "liquid glass" material (frosted, not a saturated accent fill) so the row text
 /// stays primary and the eye lands on content; hover is a fainter grey, clearly
-/// lighter than selection so the two states never blur together.
-private struct SidebarRowHighlight: View {
+/// lighter than selection so the two states never blur together. Shared with the
+/// file browser's folder drag highlight (see `FileRow`) so both side panels lift
+/// rows identically.
+struct SidebarRowHighlight: View {
     let isSelected: Bool
     let isHovering: Bool
     let chrome: ChromeTheme?
