@@ -12,6 +12,12 @@ let package = Package(
         // background update checks). It reads the appcast published with each GitHub
         // release; the matching EdDSA public key is embedded in packaging/Info.plist.
         .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.6.0"),
+        // Highlightr — a small highlight.js wrapper that syntax-highlights an
+        // `NSTextStorage` (`CodeAttributedString`). It powers the file editor that covers
+        // the terminal: a plain native `NSTextView` with 180+ languages and built-in
+        // themes, and it builds with plain `swift build` (its resources are declared, so
+        // no vendoring or Xcode-only steps).
+        .package(url: "https://github.com/raspu/Highlightr.git", from: "2.3.0"),
     ],
     targets: [
         .executableTarget(
@@ -22,6 +28,7 @@ let package = Package(
                 // the appearance settings to offer a theme picker.
                 .product(name: "GhosttyTheme", package: "libghostty-spm"),
                 .product(name: "Sparkle", package: "Sparkle"),
+                .product(name: "Highlightr", package: "Highlightr"),
             ],
             path: "Sources/termio",
             resources: [

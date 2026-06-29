@@ -97,6 +97,9 @@ struct FileBrowserView: View {
     /// Toggles the shared Quick Look panel — supplied by the hosting controller,
     /// which is the responder that drives `QLPreviewPanel`.
     let onQuickLook: () -> Void
+    /// Double-clicking a file activates it: the hosting controller routes a previewable
+    /// file (image, PDF, HTML) to Quick Look and everything else to the code editor.
+    let onActivate: (URL) -> Void
 
     @State private var root: FileNode?
 
@@ -151,7 +154,8 @@ struct FileBrowserView: View {
                 nodes: root.children ?? [],
                 selection: $browserState.selection,
                 font: settings.interfaceFont,
-                onDrop: { sources, destination in receive(sources, into: destination) }
+                onDrop: { sources, destination in receive(sources, into: destination) },
+                onActivate: onActivate
             )
             .onKeyPress(.space) {
                 guard browserState.selection != nil else { return .ignored }
@@ -242,15 +246,18 @@ private struct FileTreeList: View {
     /// Moves/copies `sources` into a folder `destination`; returns whether the tree
     /// changed. Supplied by `FileBrowserView`, which owns the project path.
     let onDrop: (_ sources: [URL], _ destination: URL) -> Bool
+    /// Double-click activation, forwarded to each file row.
+    let onActivate: (URL) -> Void
 
     var body: some View {
-        // No `selection:` binding: the system source-list selection paints an
-        // edge-to-edge blue accent fill that can't be restyled. Instead each row
-        // tracks selection by tap and paints the same `SidebarRowHighlight` the left
-        // sidebar uses, so both panels' selected rows read identically (inset, frosted
-        // — not a flush blue band).
-        List(nodes, children: \.children) { node in
-            FileRow(node: node, font: font, selection: $selection, onDrop: onDrop)
+        // Keep List's native `selection:` binding — it drives selection at the AppKit
+        // layer, which coexists cleanly with `.draggable` (a SwiftUI tap gesture does
+        // not, and makes the drag sticky/unreliable). The only downside of the native
+        // selection — its edge-to-edge blue accent fill — is removed by setting the
+        // outline view's `selectionHighlightStyle = .none` (see `FileRow`), leaving our
+        // own `SidebarRowHighlight` as the sole, left-sidebar-matching selection cue.
+        List(nodes, children: \.children, selection: $selection) { node in
+            FileRow(node: node, font: font, isSelected: selection == node.url, onDrop: onDrop, onActivate: onActivate)
         }
         .listStyle(.sidebar)
         // Drop the list's own backing so the terminal-colored background behind it (see
@@ -270,15 +277,17 @@ private struct FileRow: View {
 
     let node: FileNode
     let font: Font
-    @Binding var selection: URL?
+    let isSelected: Bool
     let onDrop: (_ sources: [URL], _ destination: URL) -> Bool
+    /// Double-click handler — opens the file in the editor (or Quick Look, for a
+    /// previewable file). Files only; a folder double-click stays a tree expand.
+    let onActivate: (URL) -> Void
 
     @State private var isHovering = false
     /// True while a drag hovers this folder, lighting its background the way the VS
     /// Code explorer marks the folder a drop would land in.
     @State private var isTargeted = false
 
-    private var isSelected: Bool { selection == node.url }
     private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
 
     /// Folder icons take the same color as the left sidebar's folder mark — the
@@ -308,15 +317,17 @@ private struct FileRow: View {
         // full width, not just the label's footprint.
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+        .onHover { isHovering = $0 }
+        // Strip the source list's blue selection fill at the AppKit layer, so the only
+        // selection cue is our `SidebarRowHighlight` below. Lives in a row so it can
+        // walk up to the enclosing outline view.
+        .background(OutlineSelectionStyleStripper())
         // Drag a row out as its file URL. The terminal pane catches the drop and
         // inserts the shell-quoted path at the prompt (see `TerminalPane.sendPaths`);
-        // a folder row catches it to move the file into that folder. `.draggable`
-        // sits *before* the tap so the drag gesture wins the pointer-down; selecting
-        // is a `simultaneousGesture` (not `.onTapGesture`, which would compete with
-        // the drag and make it start only after a deliberate, sticky pull).
+        // a folder row catches it to move the file into that folder. Selection is the
+        // List's own `selection:` binding (set up in `FileTreeList`), which coexists
+        // with `.draggable` — so the drag stays immediate.
         .draggable(node.url)
-        .simultaneousGesture(TapGesture().onEnded { selection = node.url })
-        .onHover { isHovering = $0 }
         // The same lift the left sidebar paints for its rows: selection (or a drag
         // hovering a folder) reads as the frosted/accent selected look, hover a
         // fainter step below — so both side panels' rows highlight identically.
@@ -338,7 +349,43 @@ private struct FileRow: View {
                 onDrop(urls, node.url)
             } isTargeted: { isTargeted = $0 }
         } else {
-            row
+            // Double-click opens the file. A count-2 tap doesn't claim the initial
+            // press, so it coexists with `.draggable` without making the drag sticky
+            // (unlike a count-1 tap — see the selection note in `FileTreeList`).
+            row.simultaneousGesture(TapGesture(count: 2).onEnded { onActivate(node.url) })
+        }
+    }
+}
+
+/// A zero-size helper that finds the `NSOutlineView` hosting the file tree (by
+/// walking up from its own placement inside a row) and sets its
+/// `selectionHighlightStyle` to `.none`. That strips the source list's blue accent
+/// fill while leaving selection itself intact — so the List keeps native, drag-
+/// friendly selection and `SidebarRowHighlight` is the only thing that paints it.
+/// Re-applied on every update because each row mounts one, so any list rebuild
+/// reasserts the style.
+private struct OutlineSelectionStyleStripper: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async { Self.strip(from: view) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { Self.strip(from: nsView) }
+    }
+
+    private static func strip(from view: NSView) {
+        var ancestor = view.superview
+        while let current = ancestor {
+            // NSOutlineView is an NSTableView subclass, so this catches the tree.
+            if let table = current as? NSTableView {
+                if table.selectionHighlightStyle != .none {
+                    table.selectionHighlightStyle = .none
+                }
+                return
+            }
+            ancestor = current.superview
         }
     }
 }
@@ -356,10 +403,24 @@ final class FileBrowserHostingController: NSHostingController<AnyView>, @MainAct
         let state = FileBrowserState()
         self.state = state
         super.init(rootView: AnyView(
-            FileBrowserView(onQuickLook: { FileBrowserHostingController.toggleQuickLook() })
-                .environmentObject(store)
-                .environmentObject(settings)
-                .environmentObject(state)
+            FileBrowserView(
+                onQuickLook: { FileBrowserHostingController.toggleQuickLook() },
+                // Double-click routing: a previewable file (image, PDF, HTML) shows in
+                // Quick Look, everything else opens in the editor that covers the terminal
+                // (driven by `store.openFileURL`). Selecting the URL first feeds the Quick
+                // Look data source the right item.
+                onActivate: { url in
+                    if FileActivation.isPreviewable(url) {
+                        state.selection = url
+                        FileBrowserHostingController.showQuickLook()
+                    } else {
+                        store.openFileURL = url
+                    }
+                }
+            )
+            .environmentObject(store)
+            .environmentObject(settings)
+            .environmentObject(state)
         ))
     }
 
@@ -375,6 +436,12 @@ final class FileBrowserHostingController: NSHostingController<AnyView>, @MainAct
         } else {
             panel.makeKeyAndOrderFront(nil)
         }
+    }
+
+    /// Shows (never hides) the Quick Look panel — the double-click preview gesture,
+    /// where toggling off on a second activation would be surprising.
+    private static func showQuickLook() {
+        QLPreviewPanel.shared()?.makeKeyAndOrderFront(nil)
     }
 
     override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }

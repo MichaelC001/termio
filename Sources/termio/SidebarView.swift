@@ -385,7 +385,12 @@ private struct SessionRow: View {
         .padding(.leading, leadingIndent)
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
-        .onTapGesture { store.selectedSessionID = session.id }
+        .onTapGesture {
+            // Tapping a session in the sidebar always returns to its terminal — close the file
+            // editor even when this row is already selected (no selection change to react to).
+            store.openFileURL = nil
+            store.selectedSessionID = session.id
+        }
         .contextMenu {
             Button("Close Session") { store.closeSession(session.id) }
         }

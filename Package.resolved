@@ -1,6 +1,15 @@
 {
-  "originHash" : "32dcb4f76fe2ec6a218cf1b5a0e4fd660a1a01df3efbef035175973be2233793",
+  "originHash" : "55293fc5196cdd737519738c6c02b9e2e784d4686e06b9a4c0997c1470da1911",
   "pins" : [
+    {
+      "identity" : "highlightr",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/raspu/Highlightr.git",
+      "state" : {
+        "revision" : "05e7fcc63b33925cd0c1faaa205cdd5681e7bbef",
+        "version" : "2.3.0"
+      }
+    },
     {
       "identity" : "libghostty-spm",
       "kind" : "remoteSourceControl",

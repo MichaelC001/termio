@@ -11,3 +11,5 @@ termio.app/
 packaging/.cache/
 /termio.app/
 sandbox-helper/.build/
+
+# Build artifacts inside vendored packages

@@ -46,6 +46,24 @@ struct TerminalPane: View {
             }
         }
         .animation(.easeOut(duration: 0.15), value: isDropTargeted)
+        // Double-clicking a text file in the inspector covers the terminal pane with its editor
+        // (the surface keeps running underneath). Escape or the close button clears it and hands
+        // focus back to the selected session.
+        .overlay {
+            if let url = store.openFileURL {
+                FileEditorView(
+                    url: url,
+                    settings: settings,
+                    onClose: {
+                        store.openFileURL = nil
+                        focusedSession = store.selectedSessionID
+                    }
+                )
+                .id(url)
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: store.openFileURL)
         // Dropping a file (dragged from the file-tree inspector or the Finder) inserts
         // its shell-quoted path at the prompt — the prebuilt libghostty surface does not
         // register for file drops itself, so the pane catches them and feeds the path to
@@ -58,6 +76,10 @@ struct TerminalPane: View {
             if let id, !activated.contains(id) {
                 activated.append(id)
             }
+            // Switching sessions returns to the terminal: dismiss any open file editor so the
+            // newly selected session's surface is what's shown (the overlay's `.onDisappear`
+            // flushes any pending auto-save first).
+            store.openFileURL = nil
             focusedSession = id
         }
     }
