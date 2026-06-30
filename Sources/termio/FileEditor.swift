@@ -47,6 +47,9 @@ struct FileEditorView: View {
     /// The highlight.js language id, sniffed once from the file extension (`nil` lets highlight.js
     /// auto-detect). Stable for the lifetime of the open file.
     private let language: String?
+    /// The file's path relative to its git root — shown next to the name like the diff header
+    /// (`GitDiffView`), so the two overlays read the same. `nil` outside a repo.
+    private let relativePath: String?
 
     init(url: URL, settings: AppSettings, onClose: @escaping () -> Void) {
         self.url = url
@@ -57,6 +60,22 @@ struct FileEditorView: View {
         _savedText = State(initialValue: contents ?? "")
         _loadFailed = State(initialValue: contents == nil)
         self.language = Self.highlightLanguage(for: url)
+        self.relativePath = Self.repoRelativePath(for: url)
+    }
+
+    /// Walks up from the file to its git root and returns the path relative to it (the form the diff
+    /// header shows, e.g. `core 2/lib/fs.ts`). `nil` when the file isn't inside a git work tree.
+    private static func repoRelativePath(for url: URL) -> String? {
+        let file = url.standardizedFileURL
+        let manager = FileManager.default
+        var dir = file.deletingLastPathComponent()
+        while dir.path != "/" {
+            if manager.fileExists(atPath: dir.appendingPathComponent(".git").path) {
+                return String(file.path.dropFirst(dir.path.count + 1))
+            }
+            dir = dir.deletingLastPathComponent()
+        }
+        return nil
     }
 
     private var isDirty: Bool { text != savedText }
@@ -75,8 +94,17 @@ struct FileEditorView: View {
     /// truth) so plain text and the insertion point sit on the terminal background cleanly.
     private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
     private var caretColor: NSColor { chrome.map { NSColor($0.accent) } ?? .textColor }
+    /// Muted line-number ink — the theme foreground dimmed, so the gutter recedes against the
+    /// code the way Xcode's does (and always contrasts the terminal background, whatever it is).
+    private var lineNumberColor: NSColor {
+        (chrome.map { NSColor($0.foreground) } ?? .textColor).withAlphaComponent(0.4)
+    }
 
     var body: some View {
+        // The editor's chrome (header, gutter) already sits in the safe content area below the
+        // toolbar — only the *background* bleeds up under the transparent titlebar, for a seamless
+        // fill with the terminal. (No manual titlebar inset: the overlay's content top is already at
+        // the safe-area top; padding it again just opened a dead band above the header.)
         Group {
             if loadFailed {
                 ContentUnavailableView(
@@ -95,15 +123,17 @@ struct FileEditorView: View {
                         theme: colorScheme == .dark ? "xcode-dark" : "xcode",
                         font: editorFont,
                         backgroundColor: settings.terminalBackgroundColor,
-                        caretColor: caretColor
+                        caretColor: caretColor,
+                        lineNumberColor: lineNumberColor
                     )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     Divider()
                     statusBar
                 }
             }
         }
-        // Opaque terminal-colored fill so the overlay fully covers the terminal, running up under
-        // the toolbar like the terminal itself.
+        // Match the diff overlay (`GitDiffView`): a plain VStack whose background bleeds under the
+        // titlebar — no outer `.frame`, which was reserving an empty band above the header.
         .background(Color(nsColor: settings.terminalBackgroundColor).ignoresSafeArea())
         // Auto-save: debounce a write after each edit; Escape closes (flushing first).
         .onChange(of: text) { scheduleSave() }
@@ -114,15 +144,25 @@ struct FileEditorView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            // A file-type glyph, tinted by kind — a quick visual anchor for what's open.
-            Image(systemName: fileIcon.symbol)
+            // A file-type glyph, tinted by kind — sized to match the diff header's leading status
+            // badge (12–13pt in a 16-wide slot) so the editor and diff headers are the same height.
+            let icon = FileTypeIcon.icon(for: url)
+            Image(systemName: icon.symbol)
                 .font(.system(size: 13))
-                .foregroundStyle(fileIcon.color)
+                .foregroundStyle(icon.color)
                 .frame(width: 16)
             Text(url.lastPathComponent)
                 .font(.system(size: 12.5, weight: .medium))
                 .lineLimit(1)
                 .truncationMode(.middle)
+            // The repo-relative path next to the name, exactly like the diff header.
+            if let relativePath {
+                Text(relativePath)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+            }
             // A faint dot while an auto-save is pending — quieter than a word, no button to click.
             if isDirty {
                 Circle()
@@ -180,26 +220,6 @@ struct FileEditorView: View {
         return language.prefix(1).uppercased() + language.dropFirst()
     }
 
-    /// An SF Symbol + tint for the open file's kind — purely cosmetic, falls back to a plain doc.
-    private var fileIcon: (symbol: String, color: Color) {
-        switch url.pathExtension.lowercased() {
-        case "swift": return ("swift", .orange)
-        case "js", "jsx", "mjs", "cjs", "ts", "tsx": return ("curlybraces", .yellow)
-        case "py": return ("chevron.left.forwardslash.chevron.right", .blue)
-        case "rb": return ("diamond", .red)
-        case "go": return ("g.circle", .cyan)
-        case "rs": return ("gearshape.2", .orange)
-        case "c", "h", "cpp", "cc", "hpp", "m", "mm": return ("c.circle", .indigo)
-        case "json": return ("curlybraces.square", .green)
-        case "yml", "yaml", "toml", "ini", "conf", "cfg": return ("slider.horizontal.3", .gray)
-        case "md", "markdown", "txt", "rst": return ("text.alignleft", .secondary)
-        case "sh", "bash", "zsh", "fish": return ("apple.terminal", .green)
-        case "html", "htm", "xml": return ("chevron.left.slash.chevron.right", .orange)
-        case "css", "scss", "sass", "less": return ("paintbrush", .pink)
-        default: return ("doc.text", .secondary)
-        }
-    }
-
     /// (Re)arms the debounced write — the previous pending save is cancelled so only a quiet pause
     /// after the last keystroke actually hits the disk.
     private func scheduleSave() {
@@ -231,43 +251,69 @@ struct FileEditorView: View {
         }
     }
 
-    /// Maps a file extension to a highlight.js language id. Unknown extensions return `nil`, which
-    /// lets highlight.js auto-detect (or render plainly if it can't tell).
+    /// Maps a file to a highlight.js language id, matched against grammars the bundled highlight.js
+    /// actually ships (e.g. it has no `toml`/`jsonc` — those fold into `ini`/`json`). The whole file
+    /// name is checked first (so `Dockerfile`, `Cargo.lock`, `yarn.lock`, … resolve by name, not
+    /// extension), then the extension. Unknown files return `nil` to let highlight.js auto-detect.
     private static func highlightLanguage(for url: URL) -> String? {
+        // Extension-less or specially-named files, keyed by the whole (lowercased) name.
+        switch url.lastPathComponent.lowercased() {
+        case "dockerfile", "containerfile": return "dockerfile"
+        case "makefile", "gnumakefile": return "makefile"
+        case "cmakelists.txt": return "cmake"
+        case "gemfile", "podfile", "rakefile", "gemfile.lock": return "ruby"
+        case "cargo.lock", "poetry.lock", "pipfile": return "ini" // TOML-ish (no toml grammar)
+        case "yarn.lock": return "yaml"
+        case ".gitignore", ".dockerignore", ".npmignore": return "bash"
+        case ".env", ".editorconfig", ".npmrc": return "ini"
+        case "nginx.conf": return "nginx"
+        default: break
+        }
+
         switch url.pathExtension.lowercased() {
         case "swift": return "swift"
         case "js", "mjs", "cjs", "jsx": return "javascript"
-        case "ts", "tsx": return "typescript"
-        case "py": return "python"
+        case "ts", "tsx", "mts", "cts": return "typescript"
+        case "py", "pyw", "pyi": return "python"
         case "rb": return "ruby"
         case "go": return "go"
         case "rs": return "rust"
         case "c", "h": return "c"
-        case "cpp", "cc", "cxx", "hpp", "hh": return "cpp"
+        case "cpp", "cc", "cxx", "hpp", "hh", "hxx": return "cpp"
         case "m", "mm": return "objectivec"
         case "cs": return "csharp"
         case "java": return "java"
         case "kt", "kts": return "kotlin"
         case "php": return "php"
-        case "json": return "json"
+        case "dart": return "dart"
+        case "lua": return "lua"
+        case "r": return "r"
+        case "scala", "sc": return "scala"
+        case "hs": return "haskell"
+        case "ex", "exs": return "elixir"
+        case "erl", "hrl": return "erlang"
+        case "clj", "cljs", "edn": return "clojure"
+        case "pl", "pm": return "perl"
+        // JSON family — highlight.js has no jsonc/json5 grammar, so they fold into json. Most
+        // `.lock` files (deno.lock, flake.lock, composer.lock, Pipfile.lock) are JSON too.
+        case "json", "jsonc", "json5", "lock": return "json"
         case "yml", "yaml": return "yaml"
-        case "toml", "ini", "conf", "cfg": return "ini"
-        case "md", "markdown": return "markdown"
-        case "sh", "bash", "zsh", "fish": return "bash"
-        case "html", "htm", "xml", "plist": return "xml"
+        case "toml", "ini", "conf", "cfg", "properties": return "ini"
+        case "md", "markdown", "mdx": return "markdown"
+        case "sh", "bash", "zsh", "fish", "ksh": return "bash"
+        case "ps1", "psm1": return "powershell"
+        case "bat", "cmd": return "dos"
+        case "html", "htm", "xml", "plist", "svg", "xhtml": return "xml"
         case "css": return "css"
         case "scss", "sass": return "scss"
         case "less": return "less"
         case "sql": return "sql"
-        case "lua": return "lua"
-        case "r": return "r"
-        case "scala": return "scala"
-        case "hs": return "haskell"
-        case "ex", "exs": return "elixir"
+        case "graphql", "gql": return "graphql"
+        case "proto": return "protobuf"
+        case "cmake": return "cmake"
+        case "mk", "mak": return "makefile"
         case "diff", "patch": return "diff"
-        case "dockerfile": return "dockerfile"
-        default:
-            return url.lastPathComponent.lowercased() == "dockerfile" ? "dockerfile" : nil
+        default: return nil
         }
     }
 }
@@ -284,14 +330,18 @@ private struct HighlightedTextView: NSViewRepresentable {
     let font: NSFont
     let backgroundColor: NSColor
     let caretColor: NSColor
+    let lineNumberColor: NSColor
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text, cursor: $cursor) }
 
     func makeNSView(context: Context) -> NSScrollView {
         let storage = context.coordinator.textStorage
-        storage.language = language
         _ = storage.highlightr.setTheme(to: theme)
         storage.highlightr.theme.setCodeFont(font)
+        storage.language = language
+        context.coordinator.appliedTheme = theme
+        context.coordinator.appliedFont = font
+        context.coordinator.appliedLanguage = language
 
         let layoutManager = NSLayoutManager()
         storage.addLayoutManager(layoutManager)
@@ -326,25 +376,66 @@ private struct HighlightedTextView: NSViewRepresentable {
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = true
         scrollView.backgroundColor = backgroundColor
+        // Paint the clip view the same color so the ruler/text seam can never show as a hairline.
+        scrollView.contentView.drawsBackground = true
+        scrollView.contentView.backgroundColor = backgroundColor
+
+        // Xcode-style line-number gutter down the leading edge.
+        let ruler = LineNumberRulerView(
+            scrollView: scrollView, editorFont: font,
+            numberColor: lineNumberColor, gutterColor: backgroundColor
+        )
+        scrollView.verticalRulerView = ruler
+        scrollView.hasVerticalRuler = true
+        scrollView.rulersVisible = true
+        context.coordinator.ruler = ruler
+
+        // The ruler must fully redraw on three events: lines added/removed, the view re-wrapping on
+        // resize (both via the text view's frame changes), and — crucially — *scrolling*. AppKit's
+        // copy-on-scroll only repaints the newly-exposed strip, so without a full invalidation the
+        // gutter's absolutely-positioned numbers desync into a garbled smear. Observing the clip
+        // view's bounds change and forcing `needsDisplay` repaints every number at its true position.
+        textView.postsFrameChangedNotifications = true
+        context.coordinator.observeFrame(of: textView)
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        context.coordinator.observeScroll(of: scrollView)
+
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
-        let storage = context.coordinator.textStorage
-        // Re-theme/refont live (e.g. the user switches appearance) — setting the language re-runs
-        // the highlight so the new theme colors take effect on the existing text.
-        if storage.highlightr.theme.codeFont != font {
-            storage.highlightr.theme.setCodeFont(font)
+        let coordinator = context.coordinator
+        let storage = coordinator.textStorage
+
+        // Re-theme / re-font only when they actually change (an appearance or font-setting switch) —
+        // not on every keystroke. Each is a whole-document recolor, so doing it per edit would jank
+        // large files; the text storage already re-highlights edited ranges incrementally on its own.
+        var needsRehighlight = false
+        if coordinator.appliedTheme != theme {
+            _ = storage.highlightr.setTheme(to: theme)
+            coordinator.appliedTheme = theme
+            needsRehighlight = true
         }
-        _ = storage.highlightr.setTheme(to: theme)
-        storage.highlightr.theme.setCodeFont(font)
-        storage.language = language
+        if coordinator.appliedFont != font {
+            storage.highlightr.theme.setCodeFont(font)
+            coordinator.appliedFont = font
+            needsRehighlight = true
+        }
+        if coordinator.appliedLanguage != language {
+            coordinator.appliedLanguage = language
+            needsRehighlight = true
+        }
+        // Setting the language re-runs the highlight over the whole document, applying any new theme
+        // colors — so it doubles as the "re-color everything" trigger after a theme/font change.
+        if needsRehighlight { storage.language = language }
+
         // Only overwrite on a genuine external change — writing on every keystroke would stomp the
         // insertion point. In practice text only changes from inside this view.
         if textView.string != text { textView.string = text }
         apply(to: textView)
         scrollView.backgroundColor = backgroundColor
+        coordinator.ruler?.restyle(editorFont: font, numberColor: lineNumberColor, gutterColor: backgroundColor)
     }
 
     private func apply(to textView: NSTextView) {
@@ -356,6 +447,12 @@ private struct HighlightedTextView: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         let textStorage = CodeAttributedString()
+        /// What's currently applied to the text storage, so `updateNSView` only re-themes / re-fonts
+        /// / re-highlights when something genuinely changed (not on every keystroke).
+        var appliedTheme: String?
+        var appliedFont: NSFont?
+        var appliedLanguage: String?
+        weak var ruler: LineNumberRulerView?
         private let text: Binding<String>
         private let cursor: Binding<EditorCursor?>
 
@@ -364,9 +461,30 @@ private struct HighlightedTextView: NSViewRepresentable {
             self.cursor = cursor
         }
 
+        /// Redraw the gutter whenever the text view's frame changes — new lines grow it, a window
+        /// resize re-wraps it; both shift where each line sits.
+        func observeFrame(of textView: NSTextView) {
+            NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification, object: textView, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.ruler?.needsDisplay = true }
+            }
+        }
+
+        /// Fully redraw the gutter on every scroll tick — AppKit's copy-on-scroll otherwise leaves
+        /// stale, smeared numbers (and numbers stranded in the titlebar strip) behind.
+        func observeScroll(of scrollView: NSScrollView) {
+            NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification, object: scrollView.contentView, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.ruler?.needsDisplay = true }
+            }
+        }
+
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             text.wrappedValue = textView.string
+            ruler?.needsDisplay = true
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
@@ -377,6 +495,93 @@ private struct HighlightedTextView: NSViewRepresentable {
             // Line = lines up to the caret; column = characters past the last newline + 1.
             let lines = full.substring(to: location).components(separatedBy: "\n")
             cursor.wrappedValue = EditorCursor(line: lines.count, column: (lines.last?.count ?? 0) + 1)
+        }
+    }
+}
+
+/// An Xcode-style line-number gutter for the editor's text view: right-aligned numbers, one per
+/// logical line. A soft-wrapped line keeps a single number on its first visual row (drawn at the
+/// first line fragment of each paragraph), and a trailing empty line is numbered like Xcode's.
+private final class LineNumberRulerView: NSRulerView {
+    private var numberFont: NSFont
+    private var numberColor: NSColor
+    private var gutterColor: NSColor
+
+    init(scrollView: NSScrollView, editorFont: NSFont, numberColor: NSColor, gutterColor: NSColor) {
+        self.numberFont = Self.gutterFont(for: editorFont)
+        self.numberColor = numberColor
+        self.gutterColor = gutterColor
+        super.init(scrollView: scrollView, orientation: .verticalRuler)
+        clientView = scrollView.documentView
+        ruleThickness = 42
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    func restyle(editorFont: NSFont, numberColor: NSColor, gutterColor: NSColor) {
+        numberFont = Self.gutterFont(for: editorFont)
+        self.numberColor = numberColor
+        self.gutterColor = gutterColor
+        needsDisplay = true
+    }
+
+    /// Slightly smaller than the editor's font, with monospaced digits so the numbers stay aligned.
+    private static func gutterFont(for editorFont: NSFont) -> NSFont {
+        NSFont.monospacedDigitSystemFont(ofSize: max(9, editorFont.pointSize - 1.5), weight: .regular)
+    }
+
+    override func drawHashMarksAndLabels(in rect: NSRect) {
+        guard let textView = clientView as? NSTextView,
+              let layoutManager = textView.layoutManager,
+              let container = textView.textContainer else { return }
+
+        gutterColor.setFill()
+        bounds.fill()
+
+        let content = textView.string as NSString
+        let inset = textView.textContainerInset.height
+        // Maps the text view's y-coordinates into the ruler's (carries the scroll offset).
+        let yOffset = convert(NSPoint.zero, from: textView).y
+        let attributes: [NSAttributedString.Key: Any] = [.font: numberFont, .foregroundColor: numberColor]
+
+        let drawNumber: (Int, CGFloat) -> Void = { number, fragMinY in
+            let string = "\(number)" as NSString
+            let size = string.size(withAttributes: attributes)
+            let x = self.ruleThickness - size.width - 6
+            string.draw(at: NSPoint(x: x, y: fragMinY + inset + yOffset), withAttributes: attributes)
+        }
+
+        let visibleGlyphRange = layoutManager.glyphRange(forBoundingRect: textView.visibleRect, in: container)
+        let visibleCharRange = layoutManager.characterRange(forGlyphRange: visibleGlyphRange, actualGlyphRange: nil)
+
+        // Line number of the first visible character: 1 + the newlines before it.
+        var lineNumber = 1
+        var index = 0
+        while index < visibleCharRange.location {
+            if content.character(at: index) == 10 { lineNumber += 1 }
+            index += 1
+        }
+
+        // One number per logical line (paragraph), at its first line fragment.
+        content.enumerateSubstrings(
+            in: visibleCharRange,
+            options: [.byParagraphs, .substringNotRequired]
+        ) { _, lineRange, _, _ in
+            let glyph = layoutManager.glyphRange(
+                forCharacterRange: NSRange(location: lineRange.location, length: 0),
+                actualCharacterRange: nil
+            )
+            let fragRect = layoutManager.lineFragmentRect(forGlyphAt: glyph.location, effectiveRange: nil)
+            drawNumber(lineNumber, fragRect.minY)
+            lineNumber += 1
+        }
+
+        // The trailing empty line (empty document, or one ending in a newline) gets a number too —
+        // only drawn when the document's end is actually in view.
+        if NSMaxRange(visibleCharRange) >= content.length,
+           layoutManager.extraLineFragmentTextContainer != nil {
+            drawNumber(lineNumber, layoutManager.extraLineFragmentRect.minY)
         }
     }
 }

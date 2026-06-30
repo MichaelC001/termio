@@ -46,24 +46,41 @@ struct TerminalPane: View {
             }
         }
         .animation(.easeOut(duration: 0.15), value: isDropTargeted)
-        // Double-clicking a text file in the inspector covers the terminal pane with its editor
-        // (the surface keeps running underneath). Escape or the close button clears it and hands
-        // focus back to the selected session.
+        // Double-clicking a file in the inspector covers the terminal pane with it (the surface
+        // keeps running underneath): an image/PDF/HTML in a read-only preview, anything else in the
+        // editor. Escape or the close button clears it and hands focus back to the selected session.
         .overlay {
             if let url = store.openFileURL {
-                FileEditorView(
-                    url: url,
-                    settings: settings,
-                    onClose: {
-                        store.openFileURL = nil
-                        focusedSession = store.selectedSessionID
+                let onClose = {
+                    store.openFileURL = nil
+                    focusedSession = store.selectedSessionID
+                }
+                Group {
+                    if FileActivation.isPreviewable(url) {
+                        FilePreviewView(url: url, settings: settings, onClose: onClose)
+                    } else {
+                        FileEditorView(url: url, settings: settings, onClose: onClose)
                     }
-                )
+                }
                 .id(url)
                 .transition(.opacity)
             }
         }
         .animation(.easeOut(duration: 0.12), value: store.openFileURL)
+        // Clicking a row in the inspector's Changes pane covers the terminal with that file's
+        // unified diff (the surface keeps running underneath), the git counterpart of the editor
+        // overlay above. Escape or the close button clears it.
+        .overlay {
+            if let request = store.openDiff {
+                GitDiffView(request: request, settings: settings, onClose: {
+                    store.openDiff = nil
+                    focusedSession = store.selectedSessionID
+                })
+                .id(request)
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: store.openDiff)
         // Dropping a file (dragged from the file-tree inspector or the Finder) inserts
         // its shell-quoted path at the prompt — the prebuilt libghostty surface does not
         // register for file drops itself, so the pane catches them and feeds the path to
@@ -78,8 +95,9 @@ struct TerminalPane: View {
             }
             // Switching sessions returns to the terminal: dismiss any open file editor so the
             // newly selected session's surface is what's shown (the overlay's `.onDisappear`
-            // flushes any pending auto-save first).
+            // flushes any pending auto-save first). The diff overlay is dismissed for the same reason.
             store.openFileURL = nil
+            store.openDiff = nil
             focusedSession = id
         }
     }

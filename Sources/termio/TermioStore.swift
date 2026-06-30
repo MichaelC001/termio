@@ -39,7 +39,27 @@ final class TermioStore: ObservableObject {
     /// The file currently open in the editor overlay, or `nil` when the terminal is showing.
     /// Transient UI state: double-clicking a text file in the inspector sets it, and the terminal
     /// pane covers itself with the editor while it is non-nil (see `TerminalPane` / `FileEditorView`).
-    @Published var openFileURL: URL?
+    /// Opening a file dismisses any open diff — the two overlays are mutually exclusive.
+    @Published var openFileURL: URL? {
+        didSet { if openFileURL != nil { openDiff = nil } }
+    }
+
+    /// The changed file currently shown in the diff overlay, or `nil` when none is. The git
+    /// counterpart of `openFileURL`: clicking a row in the Changes pane sets it, and the terminal
+    /// pane covers itself with `GitDiffView` while it is non-nil. Opening a diff dismisses any open
+    /// file editor.
+    @Published var openDiff: GitDiffRequest? {
+        didSet { if openDiff != nil { openFileURL = nil } }
+    }
+
+    /// Which pane the trailing inspector shows — the file tree or git changes. Set by the toolbar's
+    /// segmented switch and read by `FileBrowserView`. (The inspector's open/closed state is owned by
+    /// the app delegate's `NSSplitViewItem`, not mirrored here, so the two cannot desync.)
+    @Published var inspectorTab: InspectorTab = .files
+
+    /// The repo's dirty-file count, surfaced from the Changes pane so callers can reflect "has
+    /// changes" without the inspector being open.
+    @Published var gitChangeCount = 0
 
     /// Per-session activity, driven by the surface signals monitored below and, when
     /// enabled, the Claude Code hooks reported into `HookListener`. A session with no

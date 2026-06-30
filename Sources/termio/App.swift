@@ -105,6 +105,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         applyWindowTransparency()
         applyChromeAppearance()
         installToolbar()
+        // After the split view has restored its autosaved collapse state, match the toolbar pane
+        // switch to whether the inspector actually came up open or closed.
+        DispatchQueue.main.async { [weak self] in self?.syncInspectorSwitch() }
         updateWindowTitle()
         // Keep the native title/subtitle in step with the selected session and its live branch.
         titleObserver = store.objectWillChange
@@ -351,7 +354,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// dropped so only the per-split-item separators decide where a hairline shows.
     private func installToolbar() {
         guard let window else { return }
-        let delegate = MainToolbarDelegate(store: store, settings: settings)
+        let delegate = MainToolbarDelegate(store: store, settings: settings, splitViewController: splitViewController)
         toolbarDelegate = delegate
         let toolbar = NSToolbar(identifier: "TermioMainToolbar")
         toolbar.delegate = delegate
@@ -462,8 +465,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// collapses or expands the file-tree inspector. Reached via the responder chain
     /// (the menu item and toolbar item both target `nil`), like the other app actions.
     @objc func toggleFilesInspector(_ sender: Any?) {
-        guard let filesInspectorItem else { return }
-        filesInspectorItem.animator().isCollapsed.toggle()
+        guard let item = filesInspectorItem else { return }
+        let willOpen = item.isCollapsed
+        item.animator().isCollapsed = !willOpen
+        setInspectorSwitchVisible(willOpen)
+    }
+
+    /// Matches the toolbar's pane switch to the inspector's *actual* collapse state — called once at
+    /// launch, after the split view has restored from its autosave, so a restored-open inspector
+    /// shows the switch and a restored-closed one does not (no stale mirror state to desync).
+    func syncInspectorSwitch() {
+        guard let item = filesInspectorItem else { return }
+        setInspectorSwitchVisible(!item.isCollapsed)
+    }
+
+    /// Inserts or removes the inspector pane switch as the panel opens/closes, so it is shown only
+    /// while there is something to switch between. The tracking separator (which pins the switch to
+    /// the inspector's left edge) is inserted and removed *with* the switch — otherwise it draws a
+    /// stray vertical divider line in the toolbar while the inspector is collapsed. When open the
+    /// order is `… branchPicker, flex, [separator, switch, flex], toggle`.
+    private func setInspectorSwitchVisible(_ visible: Bool) {
+        guard let toolbar = window?.toolbar else { return }
+        func index(of id: NSToolbarItem.Identifier) -> Int? {
+            toolbar.items.firstIndex { $0.itemIdentifier == id }
+        }
+        if visible {
+            guard index(of: .inspectorTabs) == nil, let toggle = index(of: .toggleInspector) else { return }
+            // Insert in reverse at the toggle's index so the final order is separator, switch, flex.
+            toolbar.insertItem(withItemIdentifier: .flexibleSpace, at: toggle)
+            toolbar.insertItem(withItemIdentifier: .inspectorTabs, at: toggle)
+            toolbar.insertItem(withItemIdentifier: .inspectorTrackingSeparator, at: toggle)
+        } else {
+            // Only clean up when the switch is actually present — otherwise (e.g. at launch with the
+            // inspector already collapsed) there is nothing paired to remove, and stripping the
+            // default trailing flexible space would yank the collapse button off the right edge.
+            guard let tabsIdx = index(of: .inspectorTabs) else { return }
+            toolbar.removeItem(at: tabsIdx)
+            if let i = index(of: .inspectorTrackingSeparator) { toolbar.removeItem(at: i) }
+            // Drop the flexible space that was paired with the switch (the one just before the toggle).
+            if let toggle = index(of: .toggleInspector), toggle > 0,
+               toolbar.items[toggle - 1].itemIdentifier == .flexibleSpace {
+                toolbar.removeItem(at: toggle - 1)
+            }
+        }
     }
 
     /// Termio ▸ Check for Updates… — hands off to Sparkle's standard update flow.
@@ -482,10 +526,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 private final class MainToolbarDelegate: NSObject, NSToolbarDelegate {
     private let store: TermioStore
     private let settings: AppSettings
+    /// Used to build the inspector tracking separator, which pins the pane switch to the
+    /// inspector's left edge (divider 1, between the terminal and the file column).
+    private weak var splitViewController: NSSplitViewController?
 
-    init(store: TermioStore, settings: AppSettings) {
+    init(store: TermioStore, settings: AppSettings, splitViewController: NSSplitViewController?) {
         self.store = store
         self.settings = settings
+        self.splitViewController = splitViewController
     }
 
     // `.sidebarTrackingSeparator` is AppKit-provided simply by naming the system identifier;
@@ -495,17 +543,21 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate {
     // terminal background. (CodeEdit also adds a second hand-built tracking separator over the
     // inspector divider; termio's inspector is a simple summoned file tree, and that item renders
     // as a filled block in this window setup, so it's left out — the toggle alone is enough.)
-    private let identifiers: [NSToolbarItem.Identifier] = [
+    // Collapsed default: just the navigator toggle, branch title, and inspector toggle. The pane
+    // switch AND its tracking separator are inserted by the app delegate only while the inspector is
+    // open (see `setInspectorSwitchVisible`) — keeping the separator in the default set would draw a
+    // stray divider line in the toolbar while the panel is collapsed.
+    private let defaultIdentifiers: [NSToolbarItem.Identifier] = [
         .toggleNavigator, .flexibleSpace, .sidebarTrackingSeparator, .branchPicker,
         .flexibleSpace, .toggleInspector,
     ]
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        identifiers
+        defaultIdentifiers
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        identifiers
+        defaultIdentifiers + [.inspectorTrackingSeparator, .inspectorTabs]
     }
 
     func toolbar(
@@ -525,14 +577,35 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate {
             // controller (the window's content view controller), so no custom action is needed.
             item.action = #selector(NSSplitViewController.toggleSidebar(_:))
             return item
+        case .inspectorTabs:
+            // The native segmented switch (Files / Changes), pinned to the inspector's left edge by
+            // the tracking separator that precedes it in the item order.
+            let item = NSToolbarItem(itemIdentifier: .inspectorTabs)
+            item.label = "Inspector"
+            item.toolTip = "Switch between project files and changes"
+            let host = NSHostingView(rootView: InspectorTabsToolbar().environmentObject(store))
+            host.sizingOptions = [.intrinsicContentSize]
+            item.view = host
+            item.isBordered = false
+            item.visibilityPriority = .high
+            return item
+        case .inspectorTrackingSeparator:
+            // Align a tracking separator to divider 1 (terminal | inspector) so the items after it
+            // ride the inspector's left edge. AppKit needs the live split view to bind it.
+            guard let splitView = splitViewController?.splitView else { return nil }
+            return NSTrackingSeparatorToolbarItem(
+                identifier: .inspectorTrackingSeparator,
+                splitView: splitView,
+                dividerIndex: 1
+            )
         case .toggleInspector:
+            // Native bordered button, built exactly like the navigator toggle so the two are the
+            // same size; the trailing-sidebar glyph mirrors the leading one.
             let item = NSToolbarItem(itemIdentifier: .toggleInspector)
             item.label = "Inspector"
-            item.toolTip = "Show or hide the project files"
-            item.image = NSImage(systemSymbolName: "sidebar.trailing", accessibilityDescription: "Project Files")
+            item.toolTip = "Hide or show the inspector"
+            item.image = NSImage(systemSymbolName: "sidebar.trailing", accessibilityDescription: "Inspector")
             item.isBordered = true
-            // `nil` target routes up the responder chain to the app delegate, the same nil-target
-            // routing the menu items use.
             item.action = #selector(AppDelegate.toggleFilesInspector(_:))
             return item
         case .branchPicker:
@@ -551,7 +624,9 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate {
 
 private extension NSToolbarItem.Identifier {
     static let toggleNavigator = NSToolbarItem.Identifier("TermioToggleNavigator")
+    static let inspectorTabs = NSToolbarItem.Identifier("TermioInspectorTabs")
     static let toggleInspector = NSToolbarItem.Identifier("TermioToggleInspector")
+    static let inspectorTrackingSeparator = NSToolbarItem.Identifier("TermioInspectorTrackingSeparator")
     static let branchPicker = NSToolbarItem.Identifier("TermioBranchPicker")
 }
 

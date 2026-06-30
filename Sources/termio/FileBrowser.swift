@@ -102,6 +102,9 @@ struct FileBrowserView: View {
     let onActivate: (URL) -> Void
 
     @State private var root: FileNode?
+    /// Bumped to collapse the whole tree: it is the file list's `.id`, so changing it
+    /// rebuilds the list fresh — and a fresh `List(children:)` starts fully collapsed.
+    @State private var treeGeneration = 0
 
     /// The directory the tree is rooted at: the selected session's worktree if it
     /// has one, otherwise its project folder. `nil` when nothing is selected.
@@ -111,7 +114,19 @@ struct FileBrowserView: View {
     }
 
     var body: some View {
-        content
+        VStack(spacing: 0) {
+            switch store.inspectorTab {
+            case .files:
+                if let root { header(root: root) }
+                content
+            case .changes:
+                if let repoRoot = projectPath {
+                    GitChangesView(repoRoot: repoRoot, changeCount: $store.gitChangeCount)
+                } else {
+                    content
+                }
+            }
+        }
         // The file column lives on the terminal side, so it takes the terminal's own background
         // (rather than a sidebar material) — it reads as an extension of the content area. Fills
         // the whole column behind the transparent list, ignoring the safe area so it runs
@@ -137,14 +152,30 @@ struct FileBrowserView: View {
             guard let projectPath else { return false }
             return receive(urls, into: URL(fileURLWithPath: projectPath))
         }
-        .onAppear { refresh() }
-        .onChange(of: projectPath) { refresh() }
-        // Keep an open Quick Look panel in step as the selection moves.
+        .onAppear { refresh(); seedChangeCount() }
+        .onChange(of: projectPath) {
+            refresh()
+            seedChangeCount()
+        }
         .onChange(of: browserState.selection) {
+            // Single-click open (VS Code): the table fires native selection on a clean
+            // click — reliably, unlike a click recognizer, which `NSOutlineView`'s own
+            // primary-button tracking swallows. So opening on selection IS the click
+            // handler. Files only; selecting a folder just expands it.
+            if let url = browserState.selection, !isDirectory(url) {
+                onActivate(url)
+            }
+            // Keep an open Quick Look panel in step as the selection moves.
             if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible {
                 QLPreviewPanel.shared().reloadData()
             }
         }
+    }
+
+    /// Whether `url` points at a directory — used to open only files on selection.
+    private func isDirectory(_ url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
     }
 
     @ViewBuilder
@@ -155,13 +186,16 @@ struct FileBrowserView: View {
                 selection: $browserState.selection,
                 font: settings.interfaceFont,
                 onDrop: { sources, destination in receive(sources, into: destination) },
-                onActivate: onActivate
+                rootURL: root.url,
+                actions: treeActions
             )
             .onKeyPress(.space) {
                 guard browserState.selection != nil else { return .ignored }
                 onQuickLook()
                 return .handled
             }
+            // Collapse All rebuilds the list by changing its identity (see `treeGeneration`).
+            .id(treeGeneration)
         } else {
             ContentUnavailableView(
                 "No Project",
@@ -169,6 +203,47 @@ struct FileBrowserView: View {
                 description: Text("Select a session to browse its files.")
             )
         }
+    }
+
+    /// The VS Code-style explorer header: the root folder's name, and trailing action
+    /// buttons — New File / New Folder (created at the project root), Refresh (re-read
+    /// from disk), and Collapse All.
+    private func header(root: FileNode) -> some View {
+        HStack(spacing: 2) {
+            Text(root.name)
+                .font(.system(size: 11, weight: .semibold))
+                .textCase(.uppercase)
+                .tracking(0.5)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 8)
+            TreeHeaderButton(codicon: .newFile, help: "New File") {
+                createFile(in: root.url)
+            }
+            TreeHeaderButton(codicon: .newFolder, help: "New Folder") {
+                createFolder(in: root.url)
+            }
+            TreeHeaderButton(codicon: .refresh, help: "Refresh") {
+                refresh()
+            }
+            TreeHeaderButton(codicon: .collapseAll, help: "Collapse All") {
+                treeGeneration += 1
+            }
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 8)
+        .padding(.vertical, 6)
+    }
+
+    /// Seeds the switcher's Changes badge with the repo's dirty-file count, so it is
+    /// right before the user ever opens the Changes pane (which then keeps it fresh).
+    private func seedChangeCount() {
+        guard let repoRoot = projectPath else {
+            store.gitChangeCount = 0
+            return
+        }
+        Task { store.gitChangeCount = await GitService.changes(in: repoRoot).count }
     }
 
     /// Rebuilds the tree from the current project path. Called on appear, whenever
@@ -234,6 +309,145 @@ struct FileBrowserView: View {
         }
     }
 
+    /// The create/delete actions the row context menu invokes, plus single-click open
+    /// (`onActivate`). Bundled so a row carries one value instead of four closures.
+    private var treeActions: FileTreeActions {
+        FileTreeActions(
+            newFile: { createFile(in: $0) },
+            newFolder: { createFolder(in: $0) },
+            delete: { delete($0) }
+        )
+    }
+
+    /// Prompts for a name, creates an empty file in `directory`, then selects and
+    /// opens it — VS Code's "New File". A name clash gets a numbered suffix.
+    private func createFile(in directory: URL) {
+        guard let name = promptForName(title: "New File", defaultName: "untitled.txt") else { return }
+        let target = uniqueDestination(for: name, in: directory, manager: .default)
+        guard FileManager.default.createFile(atPath: target.path, contents: nil) else {
+            NSLog("termio: failed to create file at %@", target.path)
+            return
+        }
+        refresh()
+        browserState.selection = target
+        onActivate(target)
+    }
+
+    /// Prompts for a name and creates a folder in `directory`, then selects it.
+    private func createFolder(in directory: URL) {
+        guard let name = promptForName(title: "New Folder", defaultName: "untitled folder") else { return }
+        let target = uniqueDestination(for: name, in: directory, manager: .default)
+        do {
+            try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
+            refresh()
+            browserState.selection = target
+        } catch {
+            NSLog("termio: failed to create folder at %@: %@", target.path, String(describing: error))
+        }
+    }
+
+    /// Moves `url` to the Trash after a confirm — recoverable, not an unlink — clears
+    /// it from the selection, and refreshes.
+    private func delete(_ url: URL) {
+        let alert = NSAlert()
+        alert.messageText = "Move “\(url.lastPathComponent)” to the Trash?"
+        alert.informativeText = "You can restore it from the Trash."
+        alert.addButton(withTitle: "Move to Trash")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            if browserState.selection == url { browserState.selection = nil }
+            refresh()
+        } catch {
+            NSLog("termio: failed to trash %@: %@", url.path, String(describing: error))
+        }
+    }
+
+    /// A modal name prompt — one text field in an `NSAlert`, pre-filled with
+    /// `defaultName`. Returns the trimmed entry, or `nil` if cancelled or emptied.
+    private func promptForName(title: String, defaultName: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = defaultName
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+
+}
+
+/// A quiet icon button for the explorer / Changes pane headers. The explorer's file
+/// actions draw VS Code's own codicon glyphs (see `Codicon`) so the toolbar matches
+/// VS Code; the Changes pane uses SF Symbols. Both render quiet `.secondary` at rest,
+/// brightening to primary on hover over a faint rounded fill.
+struct TreeHeaderButton: View {
+    /// Either an SF Symbol name or a VS Code codicon — the two icon sources the two
+    /// header toolbars draw from.
+    enum Source {
+        case symbol(String)
+        case codicon(Codicon)
+    }
+
+    let source: Source
+    let help: String
+    let action: () -> Void
+    @State private var isHovering = false
+
+    init(systemName: String, help: String, action: @escaping () -> Void) {
+        self.source = .symbol(systemName)
+        self.help = help
+        self.action = action
+    }
+
+    init(codicon: Codicon, help: String, action: @escaping () -> Void) {
+        self.source = .codicon(codicon)
+        self.help = help
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            icon
+                .frame(width: 22, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.primary.opacity(isHovering ? 0.08 : 0))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .help(help)
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        switch source {
+        case .symbol(let name):
+            Image(systemName: name)
+                .symbolRenderingMode(.hierarchical)
+                .font(.system(size: 14))
+                .foregroundStyle(isHovering ? Color.primary : Color.secondary)
+        case .codicon(let codicon):
+            CodiconView(icon: codicon, size: 15, color: isHovering ? .primary : .secondary)
+        }
+    }
+}
+
+/// The right-click menu actions the tree's rows invoke: `newFile`/`newFolder`
+/// (created inside the given directory) and `delete`. Bundled so `FileRow` carries
+/// one value rather than three closures. (Single-click open is driven by the List's
+/// native selection, not a row action — see `FileBrowserView`.)
+struct FileTreeActions {
+    let newFile: (_ directory: URL) -> Void
+    let newFolder: (_ directory: URL) -> Void
+    let delete: (URL) -> Void
 }
 
 /// The disclosure tree itself, split out of `FileBrowserView` so the generic
@@ -246,8 +460,10 @@ private struct FileTreeList: View {
     /// Moves/copies `sources` into a folder `destination`; returns whether the tree
     /// changed. Supplied by `FileBrowserView`, which owns the project path.
     let onDrop: (_ sources: [URL], _ destination: URL) -> Bool
-    /// Double-click activation, forwarded to each file row.
-    let onActivate: (URL) -> Void
+    /// The project (or worktree) root — the directory the empty-area menu creates in.
+    let rootURL: URL
+    /// Open / create / delete actions, forwarded to each row.
+    let actions: FileTreeActions
 
     var body: some View {
         // Keep List's native `selection:` binding — it drives selection at the AppKit
@@ -257,7 +473,7 @@ private struct FileTreeList: View {
         // outline view's `selectionHighlightStyle = .none` (see `FileRow`), leaving our
         // own `SidebarRowHighlight` as the sole, left-sidebar-matching selection cue.
         List(nodes, children: \.children, selection: $selection) { node in
-            FileRow(node: node, font: font, isSelected: selection == node.url, onDrop: onDrop, onActivate: onActivate)
+            FileRow(node: node, font: font, isSelected: selection == node.url, onDrop: onDrop, actions: actions)
         }
         .listStyle(.sidebar)
         // Drop the list's own backing so the terminal-colored background behind it (see
@@ -265,12 +481,14 @@ private struct FileTreeList: View {
         // a panel item, so it carries no system vibrant background of its own.
         .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 1)
+        // A right-click in the empty area below the rows offers New File / New Folder
+        // at the project root — the rows' own menus take the clicks that land on them.
+        .background(EmptyAreaContextMenu(rootDirectory: rootURL, actions: actions))
     }
 }
 
 /// A single tree row. A view of its own (rather than an inline builder) so each
-/// row can hold the `isHovering`/`isTargeted` state that drives its highlight, and
-/// so selection is a tap rather than the system source-list accent fill.
+/// row can hold the `isHovering`/`isTargeted` state that drives its highlight.
 private struct FileRow: View {
     @EnvironmentObject var settings: AppSettings
     @Environment(\.colorScheme) private var colorScheme
@@ -279,9 +497,7 @@ private struct FileRow: View {
     let font: Font
     let isSelected: Bool
     let onDrop: (_ sources: [URL], _ destination: URL) -> Bool
-    /// Double-click handler — opens the file in the editor (or Quick Look, for a
-    /// previewable file). Files only; a folder double-click stays a tree expand.
-    let onActivate: (URL) -> Void
+    let actions: FileTreeActions
 
     @State private var isHovering = false
     /// True while a drag hovers this folder, lighting its background the way the VS
@@ -290,29 +506,30 @@ private struct FileRow: View {
 
     private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
 
-    /// Folder icons take the same color as the left sidebar's folder mark — the
-    /// theme's foreground (or `.primary`), not the blue accent — so the two panels'
-    /// folders match. Files stay a muted `.secondary` below them.
-    private var iconStyle: AnyShapeStyle {
-        if node.isDirectory {
-            return chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.primary)
-        }
-        return AnyShapeStyle(.secondary)
-    }
-
     var body: some View {
-        let row = Label {
+        // One explicit HStack for both kinds (not `Label`, whose internal insets shift
+        // the title): a folder is just its name pulled flush to the disclosure chevron
+        // (VS Code, no glyph); a file leads with its type icon. Because both start at
+        // the HStack's leading edge, a folder's name lines up exactly under the file
+        // icons below it.
+        let row = HStack(spacing: 5) {
+            if !node.isDirectory {
+                Image(systemName: node.symbolName)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16, alignment: .leading)
+            }
             Text(node.name)
                 .font(font)
                 .lineLimit(1)
                 .truncationMode(.middle)
-        } icon: {
-            Image(systemName: node.symbolName)
-                .foregroundStyle(iconStyle)
         }
         // Tighten the generous default sidebar-row height into a denser tree, the
         // way the project sidebar floors its own rows.
         .padding(.vertical, 1)
+        // Nudge the whole row off the disclosure chevron so a folder name isn't
+        // crowded against the arrow. Applied to both kinds, so folder names and file
+        // icons stay in the same column.
+        .padding(.leading, 6)
         // Fill the row so the tap target — and any folder drop target — spans its
         // full width, not just the label's footprint.
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -341,18 +558,225 @@ private struct FileRow: View {
             .animation(.easeInOut(duration: 0.12), value: isTargeted)
             .animation(.easeInOut(duration: 0.12), value: isHovering)
         )
+        // Right-click menu via an AppKit `NSMenu`, NOT SwiftUI's `.contextMenu` —
+        // the latter paints an accent highlight ring around the targeted row that
+        // can't be styled off. New File / New Folder appear only for a folder (they
+        // create inside it); a file gets just Delete. The empty area below the rows
+        // has its own root menu (see `EmptyAreaContextMenu`).
+        .background(RowContextMenu(
+            isDirectory: node.isDirectory,
+            target: node.url,
+            actions: actions
+        ))
 
         // Only folders are drop targets — dropping a file onto a folder moves it in,
         // the VS Code tree gesture. Files are not targets (no "drop onto a file").
+        // A single click opens a file via the List's native selection (see
+        // `FileBrowserView.onChange(of: selection)`), so no per-row open handler here.
         if node.isDirectory {
             row.dropDestination(for: URL.self) { urls, _ in
                 onDrop(urls, node.url)
             } isTargeted: { isTargeted = $0 }
         } else {
-            // Double-click opens the file. A count-2 tap doesn't claim the initial
-            // press, so it coexists with `.draggable` without making the drag sticky
-            // (unlike a count-1 tap — see the selection note in `FileTreeList`).
-            row.simultaneousGesture(TapGesture(count: 2).onEnded { onActivate(node.url) })
+            row
+        }
+    }
+}
+
+/// The per-row right-click menu, via AppKit `NSMenu` rather than SwiftUI's
+/// `.contextMenu` — the latter rings the targeted row with an un-styleable accent
+/// highlight. A secondary-click recognizer on the row's own view pops the menu up,
+/// so nothing emphasizes the row. New File / New Folder appear only for a folder
+/// (created inside it); a file gets just Delete.
+private struct RowContextMenu: NSViewRepresentable {
+    let isDirectory: Bool
+    let target: URL
+    let actions: FileTreeActions
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.owner = view
+        context.coordinator.configure(isDirectory: isDirectory, target: target, actions: actions)
+        context.coordinator.attach()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.configure(isDirectory: isDirectory, target: target, actions: actions)
+        context.coordinator.attach()
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        weak var owner: NSView?
+        private var isDirectory = false
+        private var target = URL(fileURLWithPath: "/")
+        private var actions: FileTreeActions?
+        private weak var hostView: NSView?
+        private var recognizer: NSClickGestureRecognizer?
+
+        func configure(isDirectory: Bool, target: URL, actions: FileTreeActions) {
+            self.isDirectory = isDirectory
+            self.target = target
+            self.actions = actions
+        }
+
+        func attach() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let owner = self.owner else { return }
+                guard let host = Self.rowView(above: owner) else { return }
+                if hostView === host, recognizer != nil { return }
+                detach()
+                let recognizer = NSClickGestureRecognizer(target: self, action: #selector(self.showMenu(_:)))
+                recognizer.buttonMask = 0x2 // secondary (right) mouse button
+                host.addGestureRecognizer(recognizer)
+                self.recognizer = recognizer
+                self.hostView = host
+            }
+        }
+
+        func detach() {
+            if let recognizer, let hostView { hostView.removeGestureRecognizer(recognizer) }
+            recognizer = nil
+            hostView = nil
+        }
+
+        @objc private func showMenu(_ recognizer: NSClickGestureRecognizer) {
+            guard let hostView else { return }
+            let menu = NSMenu()
+            if isDirectory {
+                menu.addItem(menuItem("New File", #selector(newFile)))
+                menu.addItem(menuItem("New Folder", #selector(newFolder)))
+                menu.addItem(.separator())
+            }
+            menu.addItem(menuItem("Delete", #selector(deleteItem)))
+            menu.popUp(positioning: nil, at: recognizer.location(in: hostView), in: hostView)
+        }
+
+        private func menuItem(_ title: String, _ action: Selector) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            return item
+        }
+
+        @objc private func newFile() { actions?.newFile(target) }
+        @objc private func newFolder() { actions?.newFolder(target) }
+        @objc private func deleteItem() { actions?.delete(target) }
+
+        private static func rowView(above view: NSView) -> NSView? {
+            var ancestor = view.superview
+            while let current = ancestor {
+                if current is NSTableRowView { return current }
+                ancestor = current.superview
+            }
+            return nil
+        }
+    }
+}
+
+/// The right-click menu for the empty area below the rows: New File / New Folder at
+/// the project root. One recognizer on the outline view, guarded to fire only where
+/// no row sits (a row's own `RowContextMenu` handles clicks that land on it).
+private struct EmptyAreaContextMenu: NSViewRepresentable {
+    let rootDirectory: URL
+    let actions: FileTreeActions
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.owner = view
+        context.coordinator.configure(rootDirectory: rootDirectory, actions: actions)
+        context.coordinator.attach()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.configure(rootDirectory: rootDirectory, actions: actions)
+        context.coordinator.attach()
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        weak var owner: NSView?
+        private var rootDirectory = URL(fileURLWithPath: "/")
+        private var actions: FileTreeActions?
+        private weak var table: NSTableView?
+        private var recognizer: NSClickGestureRecognizer?
+
+        func configure(rootDirectory: URL, actions: FileTreeActions) {
+            self.rootDirectory = rootDirectory
+            self.actions = actions
+        }
+
+        func attach() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let owner = self.owner else { return }
+                guard let table = Self.outlineView(near: owner) else { return }
+                if self.table === table, recognizer != nil { return }
+                detach()
+                let recognizer = NSClickGestureRecognizer(target: self, action: #selector(self.showMenu(_:)))
+                recognizer.buttonMask = 0x2 // secondary (right) mouse button
+                table.addGestureRecognizer(recognizer)
+                self.recognizer = recognizer
+                self.table = table
+            }
+        }
+
+        func detach() {
+            if let recognizer, let table { table.removeGestureRecognizer(recognizer) }
+            recognizer = nil
+            table = nil
+        }
+
+        @objc private func showMenu(_ recognizer: NSClickGestureRecognizer) {
+            guard let table else { return }
+            let point = recognizer.location(in: table)
+            // Only the empty area — a click on a real row is handled by its own menu.
+            guard table.row(at: point) == -1 else { return }
+            let menu = NSMenu()
+            menu.addItem(menuItem("New File", #selector(newFile)))
+            menu.addItem(menuItem("New Folder", #selector(newFolder)))
+            menu.popUp(positioning: nil, at: point, in: table)
+        }
+
+        private func menuItem(_ title: String, _ action: Selector) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            return item
+        }
+
+        @objc private func newFile() { actions?.newFile(rootDirectory) }
+        @objc private func newFolder() { actions?.newFolder(rootDirectory) }
+
+        /// Walk up to the enclosing scroll view, then find the outline/table view in it.
+        private static func outlineView(near view: NSView) -> NSTableView? {
+            var ancestor: NSView? = view
+            while let current = ancestor {
+                if let scroll = current as? NSScrollView, let table = findTable(in: scroll) {
+                    return table
+                }
+                ancestor = current.superview
+            }
+            return nil
+        }
+
+        private static func findTable(in view: NSView) -> NSTableView? {
+            if let table = view as? NSTableView { return table }
+            for subview in view.subviews {
+                if let table = findTable(in: subview) { return table }
+            }
+            return nil
         }
     }
 }
@@ -405,17 +829,12 @@ final class FileBrowserHostingController: NSHostingController<AnyView>, @MainAct
         super.init(rootView: AnyView(
             FileBrowserView(
                 onQuickLook: { FileBrowserHostingController.toggleQuickLook() },
-                // Double-click routing: a previewable file (image, PDF, HTML) shows in
-                // Quick Look, everything else opens in the editor that covers the terminal
-                // (driven by `store.openFileURL`). Selecting the URL first feeds the Quick
-                // Look data source the right item.
+                // A single click opens the file over the terminal (driven by `store.openFileURL`):
+                // a previewable file (image, PDF, HTML) in the read-only preview, everything else
+                // in the editor. The terminal pane picks which based on the file kind. (Spacebar
+                // still pops Quick Look for a quick peek without leaving the tree.)
                 onActivate: { url in
-                    if FileActivation.isPreviewable(url) {
-                        state.selection = url
-                        FileBrowserHostingController.showQuickLook()
-                    } else {
-                        store.openFileURL = url
-                    }
+                    store.openFileURL = url
                 }
             )
             .environmentObject(store)
@@ -436,12 +855,6 @@ final class FileBrowserHostingController: NSHostingController<AnyView>, @MainAct
         } else {
             panel.makeKeyAndOrderFront(nil)
         }
-    }
-
-    /// Shows (never hides) the Quick Look panel — the double-click preview gesture,
-    /// where toggling off on a second activation would be surprising.
-    private static func showQuickLook() {
-        QLPreviewPanel.shared()?.makeKeyAndOrderFront(nil)
     }
 
     override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
