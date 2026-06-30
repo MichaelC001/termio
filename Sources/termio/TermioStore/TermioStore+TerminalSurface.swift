@@ -77,10 +77,16 @@ extension TermioStore {
         monitor(state, for: session.id)
         warmUpRendering(state)
         // Record that this session has now launched (and its pinned resume id) so the
-        // next app run resumes it. Done *after* the surface is cached above: persisting
-        // mutates `projects`, and doing it first could re-enter `surface(for:)` before
-        // the cache entry exists and spawn a second shell.
-        recordLaunch(session.id, resumeID: launch.resumeID)
+        // next app run resumes it — but on the *next* runloop turn, not inline. This
+        // method is called from `TerminalPane`'s `body`, and `recordLaunch` writes the
+        // `@Published projects` tree; mutating published state mid-render re-enters
+        // SwiftUI's view-graph transaction and aborts the app (an AttributeGraph
+        // `precondition_failure` during `NSHostingView.layout`). The surface is already
+        // cached above, so the re-render this schedules just looks it up and returns
+        // (no second shell), and `recordLaunch` is idempotent — running it a turn later
+        // is harmless. (`surfaces`/`monitors` are plain, non-`@Published` caches, so
+        // writing them here is fine; only the `projects` write must be deferred.)
+        DispatchQueue.main.async { [self] in recordLaunch(session.id, resumeID: launch.resumeID) }
         return state
     }
 
