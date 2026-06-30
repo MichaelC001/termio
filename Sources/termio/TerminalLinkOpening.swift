@@ -24,7 +24,10 @@ enum TerminalLinkKey {
 // instance, whose published `workingDirectory` resolves any relative path).
 extension TerminalViewState: @retroactive TerminalSurfaceOpenURLDelegate {
     public func terminalDidRequestOpenURL(_ url: String, kind _: TerminalOpenURLKind) {
-        NSLog("termio.link: openURL fired url=%@", url)
+        // Fallback path: ghostty fires this on cmd-click of a link it handles itself. In practice
+        // it rarely (never, in testing) reaches us — a plain shell's click is consumed by the
+        // app-wide interceptor first, and a mouse-capturing TUI never lets ghostty handle the click
+        // at all. Kept so any context where ghostty *does* open a URL still routes through us.
         NotificationCenter.default.post(
             name: .termioTerminalOpenURL,
             object: self,
@@ -36,26 +39,29 @@ extension TerminalViewState: @retroactive TerminalSurfaceOpenURLDelegate {
 // Same retroactive-conformance trick for hover feedback: the prebuilt library never touches
 // `NSCursor` (its tracking area doesn't even request `.cursorUpdate`, so the terminal shows the
 // plain arrow everywhere and ghostty's MOUSE_SHAPE action is dropped). ghostty does fire
-// MouseOverLink as the hovered link changes, so we adopt that to swap in the pointing-hand cursor —
-// the VS Code terminal feel — and restore the arrow when the link is left.
+// MouseOverLink as the hovered link changes — even inside a mouse-capturing TUI, where it declines
+// to draw its own underline but still tells us the URL. We use that both to swap in the pointing-hand
+// cursor (the VS Code feel) and to remember the hovered URL so the cmd-click interceptor can open it.
 extension TerminalViewState: @retroactive TerminalSurfaceHoverLinkDelegate {
     public func terminalDidUpdateHoverLink(_ url: String?) {
-        // ghostty fires this on every mouse-move (mostly nil); only log an actual link hit so the
-        // signal isn't drowned in nil spam.
-        if let url { NSLog("termio.link: hoverLink url=%@", url) }
-        TerminalLinkCursor.setHoveringLink(url != nil)
+        TerminalLinkState.update(hoveredURL: url)
     }
 }
 
-/// Drives the pointing-hand cursor while a terminal hyperlink is hovered. There is only one mouse
-/// cursor, so the on/off state is a single main-actor flag: MouseOverLink fires only when the hovered
-/// link *changes* (enter / leave / different link), so we push the cursor on the first non-nil and
-/// pop it on the next nil — a guarded transition, never an unbalanced push/pop stack.
+/// Tracks the hyperlink currently under the mouse (from ghostty's hover detection) and drives the
+/// pointing-hand cursor. `hoveredURL` is read by `TermioStore`'s cmd-click interceptor so a click
+/// opens whatever link is hovered — which is what makes link-clicking work even inside a TUI, where
+/// ghostty won't fire its own `open_url`. There is only one mouse, so this is a single main-actor
+/// state. MouseOverLink fires only when the hovered link *changes*, so the cursor is pushed on the
+/// first non-nil and popped on the next nil — a guarded transition, never an unbalanced push/pop.
 @MainActor
-enum TerminalLinkCursor {
+enum TerminalLinkState {
+    private(set) static var hoveredURL: String?
     private static var showingPointer = false
 
-    static func setHoveringLink(_ hovering: Bool) {
+    static func update(hoveredURL url: String?) {
+        hoveredURL = url
+        let hovering = url != nil
         if hovering, !showingPointer {
             NSCursor.pointingHand.push()
             showingPointer = true
