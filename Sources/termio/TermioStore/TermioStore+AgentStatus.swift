@@ -63,6 +63,11 @@ extension TermioStore {
     /// installed, the zero-config signals remain the fallback when they are not.
     private func applyStatusReport(_ report: StatusReport) {
         guard let id = sessionID(for: report) else { return }
+        // Remember the session's transcript address whenever a hook carries it, so
+        // `sessions send` can hand it back as the place to read the response.
+        if let path = report.transcriptPath, !path.isEmpty {
+            transcriptPaths[id] = path
+        }
         switch report.state {
         case "working":
             // A plain terminal session has no agent turn to spin for: if an agent

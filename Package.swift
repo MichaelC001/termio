@@ -24,6 +24,10 @@ let package = Package(
             name: "termio",
             dependencies: [
                 .product(name: "GhosttyTerminal", package: "libghostty-spm"),
+                // The raw libghostty C API. Used by session control to deliver a real
+                // Return key event (`ghostty_surface_key`) when driving a sibling — the
+                // Swift wrapper for it is `internal`, but the C symbol is public.
+                .product(name: "GhosttyKit", package: "libghostty-spm"),
                 // Bundled color-scheme catalog (Ghostty's built-in themes), used by
                 // the appearance settings to offer a theme picker.
                 .product(name: "GhosttyTheme", package: "libghostty-spm"),

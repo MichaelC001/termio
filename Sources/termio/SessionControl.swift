@@ -202,25 +202,43 @@ enum SessionSkillInstaller {
         ]
     }
 
-    /// The injected guidance. Kept short on purpose — the CLI is self-documenting
-    /// via `termio sessions --help`, so this only needs to make the agent aware it
-    /// exists and that scope is the current project.
+    /// The injected guidance — a compact "skill" teaching the agent the `termio
+    /// sessions` CLI: the commands, and the key idea that a sibling's *response* is
+    /// read from its own transcript (the address `send` returns), not by scraping the
+    /// terminal. Scoped to the current project automatically.
     private static var block: String {
         """
         \(beginMarker)
-        ## Sibling sessions (termio)
+        ## Driving sibling sessions (termio)
 
         You are running inside termio alongside other agent sessions in this same
-        project. To coordinate with them, use the `termio sessions` command:
+        project. Coordinate with them through the `termio sessions` CLI. Every command
+        is scoped to this project automatically; add `--json` for machine-readable
+        output. `<id>` is the 8-char id from `list` (a title also works).
 
-        - `termio sessions list` — sibling sessions in this project and their status
-        - `termio sessions read <id>` — read a sibling's recent output
-        - `termio sessions send <id> "<prompt>"` — send a prompt to a sibling
-        - `termio sessions answer <id> "<choice>"` — answer a sibling's menu/prompt
-        - `termio sessions start <agent>` / `termio sessions stop <id>`
+        - `termio sessions list` — siblings in this project, with status (working / idle
+          / attention / done)
+        - `termio sessions send <id> "<prompt>"` — type a prompt into a sibling and
+          submit it (a real Return keypress, so the agent actually runs it)
+        - `termio sessions answer <id> "<choice>"` — answer a sibling's menu/permission
+          prompt (e.g. `"1"`, `"yes"`)
+        - `termio sessions start <agent>` — start a new session (`claude` / `codex` /
+          `shell`), `termio sessions stop <id>` — close one
 
-        Scope is this project only. Prefer reading a sibling's output before you
-        send it a prompt. Add `--json` for machine-readable output.
+        ### Reading a sibling's response
+
+        Don't scrape the terminal. `send` returns the sibling's **transcript** — the
+        agent's own structured Q&A log (Claude Code: a JSONL file) — plus a **cursor**
+        (its line count at send time). To read the reply:
+
+        1. `send` and note `transcript` + `cursor` from the output.
+        2. Poll `termio sessions list` until that session's status is `done` (or
+           `attention` if it's blocked waiting on input — then `answer` it).
+        3. Read the transcript file from line `cursor` onward; the `assistant` entries
+           after it are the reply. (Each line is a JSON object with a `type`/`role`.)
+
+        Workflow: send → wait for `done` via `list` → read the transcript tail. Prefer
+        this over assuming a sibling is finished.
         \(endMarker)
         """
     }

@@ -1,4 +1,5 @@
 import Foundation
+import GhosttyKit
 import GhosttyTerminal
 
 /// Handles `termio sessions …` requests from `SessionControlListener`. Every
@@ -59,24 +60,30 @@ extension TermioStore {
         }
         switch resolveTarget(request.target, in: project) {
         case .found(let session):
-            // Get-or-create the surface so a prompt can be sent to a session that
-            // hasn't been opened yet (this starts its shell, which is what we want).
-            let surface = surface(for: session, in: project)
-            if await deliver(payload, to: surface) {
-                return sentReply(request, session)
-            }
+            let state = surface(for: session, in: project)
 
-            // Delivery fails only when the libghostty surface isn't attached yet — a
-            // session whose pane has never been shown, so its view never mounted.
-            // Mounting requires it to be the selected pane: select it, give the
-            // SwiftUI render + surface attach one cycle, then retry once. This is
-            // the same recovery `TerminalPane.sendPaths` uses for dropped files.
-            selectedSessionID = session.id
-            try? await Task.sleep(for: .milliseconds(350))
-            guard await deliver(payload, to: surface) else {
+            // The libghostty surface attaches lazily on the pane's first render, so a
+            // session never shown in the UI has no surface yet. Selecting it adds it to
+            // the mounted set; give the render one cycle. (A session shown even once
+            // stays mounted, so this only foregrounds on the very first drive.)
+            if state.surface == nil {
+                selectedSessionID = session.id
+                try? await Task.sleep(for: .milliseconds(400))
+            }
+            guard let surfaceHandle = Self.rawSurface(from: state) else {
                 return controlError(request, "not_live",
                     "\(displayTitle(for: session)) has no live terminal yet — open it once in termio.")
             }
+
+            // Type the prompt through the text path (fine for the body), then submit
+            // with a real Return *key event*. A trailing "\r" in the text is delivered
+            // as a bracketed paste, which an agent TUI (Claude Code) reads as a newline
+            // — never a submit. `ghostty_surface_key` drives the surface directly, with
+            // no focus or first-responder needed; this is exactly how Ghostty's own
+            // AppleScript `send key` submits Enter.
+            _ = state.send(payload)
+            try? await Task.sleep(for: .milliseconds(40))
+            Self.pressReturn(on: surfaceHandle)
             return sentReply(request, session)
         case .notFound:
             return controlError(request, "not_found", targetNotFoundMessage(request.target))
@@ -86,25 +93,61 @@ extension TermioStore {
         }
     }
 
-    /// Types `text` into the surface, then sends Return as a *separate* write a
-    /// beat later. The split matters: `TerminalViewState.send` routes through
-    /// libghostty's text path (`ghostty_surface_text`), and an agent TUI like
-    /// Claude Code treats a single burst that ends in `\r` as a pasted newline —
-    /// it inserts a line break instead of submitting. Delivering the `\r` on its
-    /// own, after a gap, makes it read as a discrete Enter keypress, which submits.
-    /// Returns false when the surface has no live terminal attached yet (caller
-    /// then mounts and retries).
-    private func deliver(_ text: String, to surface: TerminalViewState) async -> Bool {
-        guard surface.send(text) else { return false }
-        try? await Task.sleep(for: .milliseconds(120))
-        return surface.send("\r")
+    /// The raw `ghostty_surface_t` behind a session's surface. `TerminalSurface`
+    /// exposes only `sendText` publicly and keeps the C handle in a private stored
+    /// property, so reach it by reflection — the only way to call `ghostty_surface_key`
+    /// (the key-event C entry point, whose Swift wrapper the package marks `internal`).
+    private static func rawSurface(from state: TerminalViewState) -> ghostty_surface_t? {
+        guard let terminalSurface = state.surface else { return nil }
+        for child in Mirror(reflecting: terminalSurface).children where child.label == "surface" {
+            if let handle = child.value as? ghostty_surface_t { return handle }
+        }
+        return nil
     }
 
-    /// The success reply shared by the first-try and post-mount-retry send paths.
+    /// Sends a Return key press (and release) to the surface — the submit a user makes
+    /// by pressing Enter. `keycode` is the native macOS virtual key for Return
+    /// (`kVK_Return`, 0x24) and `text` is left nil so Ghostty's own key encoder emits
+    /// the correct bytes for whatever keyboard mode the program negotiated.
+    private static func pressReturn(on surface: ghostty_surface_t) {
+        var event = ghostty_input_key_s()
+        event.action = GHOSTTY_ACTION_PRESS
+        event.mods = GHOSTTY_MODS_NONE
+        event.consumed_mods = GHOSTTY_MODS_NONE
+        event.keycode = 0x24
+        event.text = nil
+        event.unshifted_codepoint = 0
+        event.composing = false
+        _ = ghostty_surface_key(surface, event)
+        event.action = GHOSTTY_ACTION_RELEASE
+        _ = ghostty_surface_key(surface, event)
+    }
+
+    /// The success reply for a send/answer. Beyond confirming delivery, it hands back
+    /// the session's transcript address and a cursor (its line count at send time), so
+    /// the caller can read the agent's response straight from its own structured log —
+    /// `read`, or the caller's own file tools, resume from `cursor`. The transcript is
+    /// known only once a hook has reported it (Claude Code), so it's omitted otherwise.
     private func sentReply(_ request: ControlRequest, _ session: Session) -> Data {
-        control(request, ok: true,
-            text: "sent to \(displayTitle(for: session))",
-            json: ["target": Self.shortID(session.id), "title": displayTitle(for: session)])
+        var json: [String: Any] = [
+            "target": Self.shortID(session.id),
+            "title": displayTitle(for: session),
+        ]
+        var text = "sent to \(displayTitle(for: session))"
+        if let transcript = transcriptPaths[session.id] {
+            let cursor = Self.lineCount(of: transcript)
+            json["transcript"] = transcript
+            json["cursor"] = cursor
+            text += "\n  transcript: \(transcript)\n  cursor: \(cursor)  (read the response from here on)"
+        }
+        return control(request, ok: true, text: text, json: json)
+    }
+
+    /// Lines currently in a file, counted cheaply by newline bytes — the cursor a
+    /// caller resumes a transcript read from.
+    private static func lineCount(of path: String) -> Int {
+        guard let data = FileManager.default.contents(atPath: path) else { return 0 }
+        return data.reduce(into: 0) { count, byte in if byte == 0x0A { count += 1 } }
     }
 
     private func startSession(_ request: ControlRequest, in project: Project) -> Data {

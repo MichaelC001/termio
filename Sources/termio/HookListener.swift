@@ -17,12 +17,18 @@ struct StatusReport: Decodable {
     let state: String
     let tool: String?
     let cwd: String?
+    /// The agent's own conversation log for this session (Claude Code's
+    /// `transcript_path`), forwarded by the hook so termio can hand a caller the
+    /// address of the raw Q&A instead of scraping the terminal. Absent for agents
+    /// whose hook doesn't carry it.
+    let transcriptPath: String?
 
     private enum CodingKeys: String, CodingKey {
         case termioSession = "termio_session"
         case state
         case tool
         case cwd
+        case transcriptPath = "transcript_path"
     }
 }
 
@@ -216,13 +222,26 @@ enum AgentStatusHooks {
     /// session id the PTY carries and the agent's `$PWD` as a fallback) and pipe it
     /// into the socket. `nc` and `printf` both ship with macOS. Used by the
     /// shell-hook agents; the plugin agents emit the same JSON from JavaScript.
-    static func reportCommand(state: String) -> String {
-        let json = #"{"termio_session":"%s","state":"\#(state)","cwd":"%s"}"#
+    static func reportCommand(state: String, withTranscript: Bool = false) -> String {
+        let socket = HookListener.socketURL.path
         // `|| true` and `2>/dev/null` keep the hook a silent no-op when termio
         // isn't running to accept the connection — otherwise `nc`'s exit 1 surfaces
         // in the agent as a "hook failed (non-blocking)" error on every tool call.
         // `-w 1` bounds the connect so a wedged socket can't stall the agent.
-        return "printf '\(json)' \"$TERMIO_SESSION\" \"$PWD\" | nc -w 1 -U \"\(HookListener.socketURL.path)\" 2>/dev/null || true"
+        guard withTranscript else {
+            let json = #"{"termio_session":"%s","state":"\#(state)","cwd":"%s"}"#
+            return "printf '\(json)' \"$TERMIO_SESSION\" \"$PWD\" | nc -w 1 -U \"\(socket)\" 2>/dev/null || true"
+        }
+        // Claude Code feeds each hook a JSON object on stdin that includes
+        // `transcript_path` — the session's full Q&A log. Capture it and forward it so
+        // termio can map this session to its transcript (the address a caller records
+        // and reads, instead of scraping the terminal). `grep -o`/`sed` keep this
+        // jq-free; an absent field just yields an empty path. Only enabled for agents
+        // whose hook reliably provides stdin, so the `cat` can't block.
+        let json = #"{"termio_session":"%s","state":"\#(state)","cwd":"%s","transcript_path":"%s"}"#
+        let extract = #"grep -o '"transcript_path":"[^"]*"' | head -1 | sed 's/.*:"//;s/"$//'"#
+        return "input=$(cat); tp=$(printf '%s' \"$input\" | \(extract)); "
+            + "printf '\(json)' \"$TERMIO_SESSION\" \"$PWD\" \"$tp\" | nc -w 1 -U \"\(socket)\" 2>/dev/null || true"
     }
 
     static func log(_ message: String) {
@@ -246,6 +265,10 @@ private struct JSONHookFile: AgentStatusInstaller {
     /// a missing matcher as "match every occurrence".
     let events: [(name: String, state: String, matcher: String?)]
     let label: String
+    /// Whether this agent's hooks pass a JSON payload on stdin we can mine for the
+    /// session's `transcript_path`. Only Claude Code is known to (and to always
+    /// supply stdin, so the capturing `cat` can't block); others stay off.
+    var capturesTranscript: Bool = false
 
     static var claude: JSONHookFile {
         JSONHookFile(
@@ -263,7 +286,8 @@ private struct JSONHookFile: AgentStatusInstaller {
                 ("Stop", "done", nil),
                 ("SubagentStop", "done", nil),
             ],
-            label: "claude")
+            label: "claude",
+            capturesTranscript: true)
     }
 
     static var codex: JSONHookFile {
@@ -310,7 +334,8 @@ private struct JSONHookFile: AgentStatusInstaller {
         stripTermioEntries(from: &hooks)
         for event in events {
             var groups = hooks[event.name] as? [[String: Any]] ?? []
-            let command = AgentStatusHooks.reportCommand(state: event.state)
+            let command = AgentStatusHooks.reportCommand(
+                state: event.state, withTranscript: capturesTranscript)
             var group: [String: Any] = ["hooks": [["type": "command", "command": command]]]
             if let matcher = event.matcher { group["matcher"] = matcher }
             groups.append(group)
