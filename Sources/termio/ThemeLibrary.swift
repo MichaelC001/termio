@@ -57,32 +57,44 @@ enum ThemeLibrary {
     /// Enumerating the catalog is not free, so it is computed once for the process.
     static let bundledThemeNames: [String] = GhosttyThemeCatalog.search("").map(\.name).sorted()
 
-    /// A curated shortlist of widely-used themes, surfaced at the top of the pickers
-    /// so the common picks are one glance away instead of buried in the 400+ bundled
-    /// catalog. Kept in popularity order (not alphabetized) since that is what a
-    /// quick-pick list is for. Filtered to names the catalog actually resolves, so a
+    /// A curated shortlist of widely-used DARK themes, surfaced at the top of the
+    /// pickers so the common picks are one glance away instead of buried in the 400+
+    /// bundled catalog. Kept in popularity order (not alphabetized) since that is what
+    /// a quick-pick list is for. Filtered to names the catalog actually resolves, so a
     /// future package rename drops the stale entry instead of showing a dead row.
-    static let popularThemeNames: [String] = [
+    /// Split from the light list because the catalog mixes both, and a "Dark" theme
+    /// slot wants dark options first (see the appearance-mismatch hint in the picker).
+    static let popularDarkThemeNames: [String] = [
         "Dracula",
-        "Nord",
-        "TokyoNight Storm",
         "Catppuccin Mocha",
-        "Catppuccin Latte",
+        "TokyoNight Storm",
+        "Nord",
         "Gruvbox Dark",
-        "Gruvbox Light",
         "Atom One Dark",
         "Monokai Pro",
         "Rose Pine",
-        "Rose Pine Dawn",
-        "Night Owl",
         "Ayu Mirage",
-        "Snazzy",
-        "Cobalt2",
-        "GitHub Dark Default",
-        "Tomorrow Night",
-        "Nightfox",
+        "Night Owl",
+        "Kanagawa Wave",
         "Everforest Dark Hard",
+        "GitHub Dark Default",
         "iTerm2 Solarized Dark",
+    ].filter { GhosttyThemeCatalog.theme(named: $0) != nil }
+
+    /// The light-theme counterpart to `popularDarkThemeNames`: a curated shortlist of
+    /// the well-regarded, eye-friendly light schemes (each the light sibling of a
+    /// popular family — Latte/Dawn/Light variants), so the Light slot has good picks
+    /// up front too.
+    static let popularLightThemeNames: [String] = [
+        "Catppuccin Latte",
+        "Rose Pine Dawn",
+        "Gruvbox Light",
+        "Ayu Light",
+        "Atom One Light",
+        "GitHub Light Default",
+        "TokyoNight Day",
+        "Everforest Light Med",
+        "iTerm2 Solarized Light",
     ].filter { GhosttyThemeCatalog.theme(named: $0) != nil }
 
     /// Custom theme names, sorted — the picker's "Custom" group.

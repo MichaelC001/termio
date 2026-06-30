@@ -84,9 +84,10 @@ extension AppSettings {
     }
 }
 
-private extension Color {
+extension Color {
     /// Parses a six-digit RGB hex string (with or without a leading `#`) — the form
-    /// `GhosttyThemeDefinition` stores its colors in.
+    /// `GhosttyThemeDefinition` stores its colors in. Used by the chrome theme and the
+    /// theme picker's swatches.
     init?(hex: String) {
         let raw = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
         guard raw.count == 6, let value = UInt32(raw, radix: 16) else { return nil }

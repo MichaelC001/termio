@@ -72,8 +72,8 @@ struct AppearanceSettingsTab: View {
                     .foregroundStyle(.secondary)
             }
             Section {
-                themePicker(title: "Light", selection: $settings.lightThemeName)
-                themePicker(title: "Dark", selection: $settings.darkThemeName)
+                ThemePickerField(title: "Light", selection: $settings.lightThemeName, userThemeNames: userThemeNames)
+                ThemePickerField(title: "Dark", selection: $settings.darkThemeName, userThemeNames: userThemeNames)
                 HStack {
                     Button("Open Themes Folder…", action: openThemesFolder)
                     Spacer()
@@ -94,32 +94,6 @@ struct AppearanceSettingsTab: View {
         }
         .formStyle(.grouped)
         .onAppear(perform: reloadUserThemes)
-    }
-
-    /// A theme picker grouped for quick scanning: the user's own themes first (when
-    /// any), then a curated "Popular" shortlist, then the full bundled catalog —
-    /// with "Terminal default" on top.
-    private func themePicker(title: String, selection: Binding<String>) -> some View {
-        Picker(title, selection: selection) {
-            Text("Terminal default").tag("")
-            if !userThemeNames.isEmpty {
-                Section("Custom") {
-                    ForEach(userThemeNames, id: \.self) { name in
-                        Text(name).tag(name)
-                    }
-                }
-            }
-            Section("Popular") {
-                ForEach(ThemeLibrary.popularThemeNames, id: \.self) { name in
-                    Text(name).tag(name)
-                }
-            }
-            Section("All Themes") {
-                ForEach(ThemeLibrary.bundledThemeNames, id: \.self) { name in
-                    Text(name).tag(name)
-                }
-            }
-        }
     }
 
     private func openThemesFolder() {
