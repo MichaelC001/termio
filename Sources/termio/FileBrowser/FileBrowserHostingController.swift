@@ -29,6 +29,15 @@ final class FileBrowserHostingController: NSHostingController<AnyView>, @MainAct
             .environmentObject(settings)
             .environmentObject(state)
         ))
+        // This controller is meant to *fill* the trailing split pane, not to size itself to its
+        // content. `NSHostingController` defaults `sizingOptions` to `.preferredContentSize`, which
+        // makes it publish the SwiftUI tree's *ideal* size as `preferredContentSize`; the enclosing
+        // `NSSplitViewController` propagates that up to the window. So when the inspector shows a
+        // compact view — the "No Changes" empty state when the working tree is clean — the window
+        // collapsed its height to fit (observed shrinking to ~260pt, below `contentMinSize`).
+        // Clearing the options lets the pane stretch to the split view's bounds and never drive the
+        // window frame.
+        self.sizingOptions = []
     }
 
     @available(*, unavailable)
