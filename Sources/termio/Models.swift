@@ -81,6 +81,63 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         }
     }
 
+    /// Whether this agent lets termio pin its conversation id *up front*, so a relaunch
+    /// resumes the exact prior session: Claude Code via `--session-id` (create) /
+    /// `--resume` (resume), Pi via its idempotent `--session-id`.
+    var usesPinnedResumeID: Bool { self == .claudeCode || self == .pi }
+
+    /// Whether this agent's id can't be set up front but *can* be discovered afterward
+    /// from its own session store and then resumed by id (Codex `resume <id>`, OpenCode
+    /// `--session <id>`). See `AgentSessionStore.discover`. Until the id is discovered,
+    /// `resumeArguments` falls back to "continue the most recent session in the dir".
+    var usesDiscoveredResumeID: Bool { self == .codex || self == .opencode }
+
+    /// Inputs the resume decision needs that only `TermioStore` can supply.
+    struct ResumeContext {
+        /// The stable id termio pinned for this session (meaningful only when
+        /// `usesPinnedResumeID`).
+        var resumeID: String
+        /// Whether this session's agent has been launched in a prior app run.
+        var launchedBefore: Bool
+        /// Whether Claude Code already has a saved conversation under `resumeID`.
+        /// Resuming one that doesn't exist errors ("No conversation found"), so a
+        /// pinned-but-never-used session is (re)created with `--session-id` instead.
+        var pinnedConversationExists: Bool
+    }
+
+    /// The argument fragment to append to the resolved base command so this session
+    /// continues its prior conversation on relaunch, or `nil` to launch fresh. Two
+    /// families (see `usesPinnedResumeID`): id-pinning agents resume an exact session,
+    /// the others continue the most recent session in the working directory.
+    func resumeArguments(_ context: ResumeContext) -> String? {
+        switch self {
+        case .terminal:
+            return nil
+        case .claudeCode:
+            // `--session-id` creates a session with our id (and errors if it already
+            // exists); `--resume` resumes it (and errors if it doesn't). So create on
+            // the first launch / while no conversation has been saved, and resume once
+            // one exists — handling a session that was opened but never used.
+            return context.pinnedConversationExists
+                ? "--resume \(context.resumeID)"
+                : "--session-id \(context.resumeID)"
+        case .pi:
+            // Pi's `--session-id` creates the session when missing and resumes it
+            // otherwise, so the same flag is correct on every launch.
+            return "--session-id \(context.resumeID)"
+        case .codex:
+            // Resume the exact session once its id has been discovered (see
+            // `usesDiscoveredResumeID`); until then continue the most recent recorded
+            // session in this directory (`--last` filters by cwd by default).
+            if !context.resumeID.isEmpty { return "resume \(context.resumeID)" }
+            return context.launchedBefore ? "resume --last" : nil
+        case .opencode:
+            // As Codex: resume by id when known, else continue this directory's last session.
+            if !context.resumeID.isEmpty { return "--session \(context.resumeID)" }
+            return context.launchedBefore ? "--continue" : nil
+        }
+    }
+
     /// The glyph for this preset. The plain terminal uses a Hugeicons stroke mark
     /// (more refined than SF Symbols' terminal glyph); the coding agents use their
     /// vendor's real brand mark, which SF Symbols has no equivalent for — see
@@ -256,14 +313,55 @@ struct Session: Identifiable, Hashable, Codable {
     /// launches in its recorded directory.
     var worktreePath: String?
 
+    /// The stable id termio hands the agent so a relaunch resumes *this exact*
+    /// conversation rather than starting a new one. Assigned on first launch for
+    /// agents that can pin their session id (Claude Code, Pi — see
+    /// `AgentPreset.usesPinnedResumeID`) and `nil` otherwise; Codex/OpenCode resume the
+    /// most recent session in the directory and never need one. Persisted, so it
+    /// survives the app quitting.
+    var resumeID: String?
+
+    /// Whether this session's agent has been launched at least once (in this or a
+    /// prior run). Persisted so that on the next launch the agent is resumed instead of
+    /// started fresh.
+    var launched = false
+
+    /// When the agent was first launched, used to correlate Codex/OpenCode's own
+    /// session record (matched by working directory) back to *this* session — their
+    /// CLIs won't accept an id up front, so the id is discovered afterward from the
+    /// record created at this moment (see `AgentSessionStore.discover`). `nil` until
+    /// first launch, and unused by the pinned-id agents (Claude Code, Pi).
+    var launchedAt: Date?
+
     /// Program passed to libghostty's `command` config; derived from `agent`.
-    /// User overrides are resolved in `TermioStore` via `AppSettings.command(for:)`.
+    /// User overrides and the resume arguments are resolved in `TermioStore` via
+    /// `AppSettings.command(for:)` and `AgentPreset.resumeArguments(_:)`.
     var command: String? { agent.command }
 
     init(title: String, agent: AgentPreset = .terminal, createdAt: Date = Date()) {
         self.title = title
         self.agent = agent
         self.createdAt = createdAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, agent, createdAt, worktreePath, resumeID, launched, launchedAt
+    }
+
+    /// Custom decoding so state files written before the resume fields existed still
+    /// load: the new keys default to "no id, never launched", which makes an upgraded
+    /// session start fresh once and then be resumable from then on. (Encoding stays
+    /// synthesized.)
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        agent = try container.decode(AgentPreset.self, forKey: .agent)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        worktreePath = try container.decodeIfPresent(String.self, forKey: .worktreePath)
+        resumeID = try container.decodeIfPresent(String.self, forKey: .resumeID)
+        launched = try container.decodeIfPresent(Bool.self, forKey: .launched) ?? false
+        launchedAt = try container.decodeIfPresent(Date.self, forKey: .launchedAt)
     }
 }
 

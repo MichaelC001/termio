@@ -3,6 +3,24 @@ import Foundation
 import GhosttyTerminal
 import GhosttyTheme
 
+/// Looks up whether Claude Code has a saved conversation for a given session id.
+/// Claude stores each conversation at `~/.claude/projects/<encoded-cwd>/<id>.jsonl`;
+/// we glob across the project folders by id rather than reconstruct Claude's cwd
+/// encoding (which is its private detail). Used to decide between `--session-id`
+/// (create) and `--resume` (resume) — resuming an id with no saved conversation errors.
+enum ClaudeConversation {
+    static func exists(id: String) -> Bool {
+        let projects = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects", isDirectory: true)
+        guard let folders = try? FileManager.default.contentsOfDirectory(
+            at: projects, includingPropertiesForKeys: nil) else { return false }
+        let transcript = "\(id).jsonl"
+        return folders.contains {
+            FileManager.default.fileExists(atPath: $0.appendingPathComponent(transcript).path)
+        }
+    }
+}
+
 extension TermioStore {
     /// Returns the cached terminal surface for a session, creating and starting
     /// it on first access. The surface launches `session.command` (or the login
@@ -12,11 +30,17 @@ extension TermioStore {
             return existing
         }
 
-        let agentCommand = settings.command(for: session.agent)
         // An isolated worktree (if one was created for this session) wins over the
         // project's own directory, so the agent edits the branch in place — and so the
         // sandbox's writable workspace is exactly where the session actually works.
         let workspacePath = session.worktreePath ?? project.path
+
+        // Resolve the launch command *with* any resume arguments, so a session that was
+        // running when the app last quit picks its conversation back up instead of
+        // starting over. `resumeID` is the id we persist for it (nil for the plain shell
+        // and the directory-resume agents); it's written back below.
+        let launch = resolveLaunch(for: session, workspacePath: workspacePath)
+        let agentCommand = launch.command
 
         // When the project is sandboxed, the session's whole process tree runs under a
         // Seatbelt profile compiled from `project.sandbox`: `sandbox-exec` wraps the same
@@ -52,7 +76,76 @@ extension TermioStore {
         surfaces[session.id] = state
         monitor(state, for: session.id)
         warmUpRendering(state)
+        // Record that this session has now launched (and its pinned resume id) so the
+        // next app run resumes it. Done *after* the surface is cached above: persisting
+        // mutates `projects`, and doing it first could re-enter `surface(for:)` before
+        // the cache entry exists and spawn a second shell.
+        recordLaunch(session.id, resumeID: launch.resumeID)
         return state
+    }
+
+    /// The launch command for a session, with resume arguments folded in, plus the
+    /// resume id that should be persisted for it (nil when the agent doesn't pin one).
+    /// Pure — it reads session state but mutates nothing; `recordLaunch` does the write.
+    private func resolveLaunch(for session: Session, workspacePath: String)
+        -> (command: String?, resumeID: String?) {
+        guard let base = settings.command(for: session.agent) else {
+            return (nil, nil) // plain login shell — nothing to resume
+        }
+        let agent = session.agent
+        let resumeID: String?
+        if agent.usesPinnedResumeID {
+            // We mint and pin the id up front; reuse the persisted one across launches.
+            resumeID = session.resumeID ?? UUID().uuidString
+        } else if agent.usesDiscoveredResumeID, session.launched {
+            // The id couldn't be set up front, so once the agent has run we learn it from
+            // the agent's own session store — cached after the first successful discovery
+            // so the scan happens at most once per session.
+            resumeID = session.resumeID
+                ?? AgentSessionStore.discover(agent: agent, directory: workspacePath,
+                                              after: session.launchedAt)
+        } else {
+            resumeID = nil
+        }
+        let context = AgentPreset.ResumeContext(
+            resumeID: resumeID ?? "",
+            launchedBefore: session.launched,
+            pinnedConversationExists: agent == .claudeCode
+                && resumeID.map(ClaudeConversation.exists) == true
+        )
+        guard let arguments = agent.resumeArguments(context) else {
+            return (base, resumeID)
+        }
+        return ("\(base) \(arguments)", resumeID)
+    }
+
+    /// Persists that a session has launched and, for the id-pinning agents, the id it
+    /// was pinned to. Writes only when something actually changed, so re-opening an
+    /// already-launched session doesn't churn the state file or re-sync watched folders.
+    private func recordLaunch(_ id: Session.ID, resumeID: String?) {
+        guard let location = locate(id) else { return }
+        var session = projects[location.project].sessions[location.session]
+        let firstLaunch = !session.launched
+        let needsResumeID = resumeID != nil && session.resumeID == nil
+        guard firstLaunch || needsResumeID else { return }
+        if needsResumeID { session.resumeID = resumeID }
+        if firstLaunch {
+            session.launched = true
+            // Stamp the launch moment so a later run can correlate Codex/OpenCode's own
+            // session record back to this session by creation time (see `resolveLaunch`).
+            session.launchedAt = Date()
+        }
+        projects[location.project].sessions[location.session] = session
+    }
+
+    /// The position of a session in the project tree, for an in-place edit.
+    private func locate(_ id: Session.ID) -> (project: Int, session: Int)? {
+        for (p, project) in projects.enumerated() {
+            if let s = project.sessions.firstIndex(where: { $0.id == id }) {
+                return (p, s)
+            }
+        }
+        return nil
     }
 
     /// Pushes the current font and theme onto every live surface without tearing
