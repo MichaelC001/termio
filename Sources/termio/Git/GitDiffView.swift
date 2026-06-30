@@ -38,11 +38,14 @@ struct GitDiffView: View {
                 .font(.system(size: 12.5, weight: .medium))
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Text(request.change.path)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.head)
+            let directory = (request.change.path as NSString).deletingLastPathComponent
+            if !directory.isEmpty {
+                Text(directory)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+            }
             Spacer(minLength: 8)
             if request.change.additions > 0 {
                 Text("+\(request.change.additions)")
