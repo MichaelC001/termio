@@ -28,11 +28,16 @@ struct GitChangesView: View {
                     .controlSize(.small)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if changes.isEmpty {
+                // Fill the pane (like the loading state) rather than sizing to the compact empty
+                // view — otherwise the enclosing `VStack` shrinks to content height and the host
+                // centers the whole pane, dropping the "CHANGES" header into the middle of the
+                // inspector instead of pinning it to the top.
                 ContentUnavailableView(
                     "No Changes",
                     systemImage: "checkmark.circle",
                     description: Text("The working tree is clean.")
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
