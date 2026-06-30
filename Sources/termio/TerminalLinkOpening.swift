@@ -24,6 +24,7 @@ enum TerminalLinkKey {
 // instance, whose published `workingDirectory` resolves any relative path).
 extension TerminalViewState: @retroactive TerminalSurfaceOpenURLDelegate {
     public func terminalDidRequestOpenURL(_ url: String, kind _: TerminalOpenURLKind) {
+        NSLog("termio.link: openURL fired url=%@", url)
         NotificationCenter.default.post(
             name: .termioTerminalOpenURL,
             object: self,
@@ -39,6 +40,9 @@ extension TerminalViewState: @retroactive TerminalSurfaceOpenURLDelegate {
 // the VS Code terminal feel — and restore the arrow when the link is left.
 extension TerminalViewState: @retroactive TerminalSurfaceHoverLinkDelegate {
     public func terminalDidUpdateHoverLink(_ url: String?) {
+        // ghostty fires this on every mouse-move (mostly nil); only log an actual link hit so the
+        // signal isn't drowned in nil spam.
+        if let url { NSLog("termio.link: hoverLink url=%@", url) }
         TerminalLinkCursor.setHoveringLink(url != nil)
     }
 }
