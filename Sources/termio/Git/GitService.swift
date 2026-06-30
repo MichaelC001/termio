@@ -1,0 +1,199 @@
+import Foundation
+
+// MARK: - Git
+
+/// Thin wrapper over the `git` CLI for the changes list and diff overlay. Every call
+/// runs off the main thread (via `offMain`) and degrades to empty on any failure —
+/// the same no-trap stance as `BranchModel`.
+enum GitService {
+    /// Changed files for a repo root, with their `+`/`−` counts filled in. Empty when
+    /// the folder is not a git work tree.
+    static func changes(in repoRoot: String) async -> [GitChange] {
+        await offMain { loadChanges(repoRoot) }
+    }
+
+    /// The unified-diff rows for one changed file (staged + unstaged vs `HEAD`, or the
+    /// whole file for an untracked one).
+    static func diffRows(for change: GitChange, in repoRoot: String) async -> [DiffRow] {
+        await offMain { parseDiff(loadDiffText(change, repoRoot)) }
+    }
+
+    // MARK: Loading
+
+    private static func loadChanges(_ repoRoot: String) -> [GitChange] {
+        guard run(["rev-parse", "--is-inside-work-tree"], in: repoRoot)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) == "true",
+            let raw = run(["status", "--porcelain=v2", "-z", "--untracked-files=all"], in: repoRoot)
+        else { return [] }
+
+        var changes = parseStatus(raw)
+        applyCounts(&changes, repoRoot: repoRoot)
+        return changes
+    }
+
+    /// Parses `git status --porcelain=v2 -z`. Records are NUL-separated; the path is
+    /// always the *current* path, so renames (type `2`) carry the original path in the
+    /// following NUL field, which is consumed and ignored.
+    private static func parseStatus(_ raw: String) -> [GitChange] {
+        let tokens = raw.components(separatedBy: "\0").filter { !$0.isEmpty }
+        var result: [GitChange] = []
+        var i = 0
+        while i < tokens.count {
+            let rec = tokens[i]
+            i += 1
+            guard let kind = rec.first else { continue }
+            switch kind {
+            case "1":
+                let f = rec.split(separator: " ", maxSplits: 8, omittingEmptySubsequences: false)
+                guard f.count == 9 else { continue }
+                result.append(make(xy: Array(f[1]), path: String(f[8]), untracked: false))
+            case "2":
+                let f = rec.split(separator: " ", maxSplits: 9, omittingEmptySubsequences: false)
+                guard f.count == 10 else { continue }
+                if i < tokens.count { i += 1 } // skip the original path
+                result.append(make(xy: Array(f[1]), path: String(f[9]), untracked: false))
+            case "u":
+                let f = rec.split(separator: " ", maxSplits: 10, omittingEmptySubsequences: false)
+                guard f.count == 11 else { continue }
+                result.append(GitChange(path: String(f[10]), status: .conflicted, isUntracked: false))
+            case "?":
+                result.append(GitChange(path: String(rec.dropFirst(2)), status: .untracked, isUntracked: true))
+            default:
+                continue // "!" ignored entries
+            }
+        }
+        return result
+    }
+
+    /// Builds a change from a porcelain-v2 `XY` field, where `.` means unmodified — the
+    /// worktree side (`Y`) wins, falling back to the index side (`X`).
+    private static func make(xy: [Character], path: String, untracked: Bool) -> GitChange {
+        let x = xy.first ?? "."
+        let y = xy.count > 1 ? xy[1] : "."
+        let primary: Character = (y != ".") ? y : x
+        return GitChange(path: path, status: GitFileStatus(code: primary), isUntracked: untracked)
+    }
+
+    /// Fills each change's add/delete counts: `git diff --numstat` (unstaged) merged
+    /// with `--cached` (staged) for tracked files, and a line count for untracked ones.
+    private static func applyCounts(_ changes: inout [GitChange], repoRoot: String) {
+        var counts: [String: (Int, Int)] = [:]
+        for args in [["diff", "--numstat"], ["diff", "--numstat", "--cached"]] {
+            guard let out = run(args, in: repoRoot) else { continue }
+            for line in out.split(separator: "\n") {
+                let parts = line.split(separator: "\t", maxSplits: 2)
+                guard parts.count == 3 else { continue }
+                let adds = Int(parts[0]) ?? 0   // "-" for binary → 0
+                let dels = Int(parts[1]) ?? 0
+                let path = String(parts[2])
+                let existing = counts[path] ?? (0, 0)
+                counts[path] = (existing.0 + adds, existing.1 + dels)
+            }
+        }
+        for idx in changes.indices {
+            if changes[idx].isUntracked {
+                let abs = (repoRoot as NSString).appendingPathComponent(changes[idx].path)
+                if let content = try? String(contentsOfFile: abs, encoding: .utf8), !content.isEmpty {
+                    changes[idx].additions = content.split(separator: "\n", omittingEmptySubsequences: false).count
+                }
+            } else if let c = counts[changes[idx].path] {
+                changes[idx].additions = c.0
+                changes[idx].deletions = c.1
+            }
+        }
+    }
+
+    private static func loadDiffText(_ change: GitChange, _ repoRoot: String) -> String {
+        if change.isUntracked {
+            // `--no-index` exits non-zero when the files differ, which is the normal
+            // case here, so the status is ignored.
+            return run(["diff", "--no-index", "--", "/dev/null", change.path],
+                       in: repoRoot, ignoreStatus: true) ?? ""
+        }
+        // `diff HEAD` shows staged and unstaged together. Fall back to the split views
+        // for a repo with no commit yet, or a fully-staged change.
+        if let d = run(["diff", "HEAD", "--", change.path], in: repoRoot), !d.isEmpty { return d }
+        let unstaged = run(["diff", "--", change.path], in: repoRoot) ?? ""
+        if !unstaged.isEmpty { return unstaged }
+        return run(["diff", "--cached", "--", change.path], in: repoRoot) ?? ""
+    }
+
+    /// Parses unified-diff text into rows, tracking old/new line numbers from each
+    /// hunk header and dropping the file-header lines (`diff --git`, `+++`, …).
+    private static func parseDiff(_ text: String) -> [DiffRow] {
+        var rows: [DiffRow] = []
+        var id = 0
+        var oldNo = 0
+        var newNo = 0
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(raw)
+            if line.hasPrefix("@@") {
+                if let (o, n) = parseHunkHeader(line) { oldNo = o; newNo = n }
+                rows.append(DiffRow(id: id, kind: .hunk, text: line, oldLine: nil, newLine: nil)); id += 1
+                continue
+            }
+            if isFileHeader(line) { continue }
+            guard let first = line.first else { continue }
+            let body = String(line.dropFirst())
+            switch first {
+            case "+":
+                rows.append(DiffRow(id: id, kind: .addition, text: body, oldLine: nil, newLine: newNo)); id += 1; newNo += 1
+            case "-":
+                rows.append(DiffRow(id: id, kind: .deletion, text: body, oldLine: oldNo, newLine: nil)); id += 1; oldNo += 1
+            case " ":
+                rows.append(DiffRow(id: id, kind: .context, text: body, oldLine: oldNo, newLine: newNo)); id += 1; oldNo += 1; newNo += 1
+            default:
+                continue
+            }
+        }
+        return rows
+    }
+
+    private static func isFileHeader(_ line: String) -> Bool {
+        for prefix in ["diff ", "index ", "--- ", "+++ ", "new file", "deleted file",
+                       "old mode", "new mode", "similarity ", "dissimilarity ",
+                       "rename ", "copy ", "\\ "] where line.hasPrefix(prefix) {
+            return true
+        }
+        return false
+    }
+
+    /// Pulls the starting old and new line numbers out of `@@ -a,b +c,d @@`.
+    private static func parseHunkHeader(_ line: String) -> (Int, Int)? {
+        let parts = line.split(separator: " ")
+        guard parts.count >= 3 else { return nil }
+        func start(_ s: Substring) -> Int? {
+            Int(s.dropFirst().split(separator: ",").first ?? s.dropFirst())
+        }
+        guard let o = start(parts[1]), let n = start(parts[2]) else { return nil }
+        return (o, n)
+    }
+
+    // MARK: Process
+
+    private static func offMain<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: work())
+            }
+        }
+    }
+
+    /// Runs `git -C <dir> <args>` and returns stdout, or `nil` on launch failure (or a
+    /// non-zero exit unless `ignoreStatus`). stdout is drained *before* `waitUntilExit`
+    /// because a diff can exceed the 64 KB pipe buffer and otherwise deadlock the child;
+    /// stderr is sent to the null device so it can never fill either.
+    private static func run(_ args: [String], in dir: String, ignoreStatus: Bool = false) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", dir] + args
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        if !ignoreStatus, process.terminationStatus != 0 { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+}
