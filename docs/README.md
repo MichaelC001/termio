@@ -37,6 +37,7 @@ from the real front matter).
 | draft | design | [Vibe Island 式 Agent 状态层（Claude Code hooks）](design/vibe-island-status.md) |
 | draft | design | [分享 Agent 会话（带密码的实时分享链接）](design/session-share.md) |
 | draft | marketing | [OG image & landing copy](maketing/og-image-and-messaging.md) |
+| draft | rfc | [Onboarding —— 首次启动体验设计](design/onboarding.md) |
 | draft | rfc | [可扩展 Agent —— 配置化定义 + 配置化 Hook](design/agent-extensibility.md) |
 | implemented (phase 1) | design | [Worktree information architecture](design/worktree-information-architecture.md) |
 <!-- END docs-index -->
