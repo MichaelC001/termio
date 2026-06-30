@@ -25,7 +25,8 @@ struct EditorCursor: Equatable { var line: Int; var column: Int }
 /// syntax-highlighted by Highlightr (highlight.js), with a slim header (file name + close) and a VS
 /// Code-style footer (language · caret · encoding). The file is read once on open and **auto-saved**
 /// — a short idle after the last keystroke flushes it to disk, and closing flushes any pending
-/// write — so there is no Save button. Escape (or the close button) dismisses back to the terminal.
+/// write — so there is no Save button (⌘S still forces an immediate flush for muscle memory).
+/// Escape (or the close button) dismisses back to the terminal.
 /// Non-text files that can't be decoded as UTF-8 show a short notice rather than a wall of mojibake.
 struct FileEditorView: View {
     let url: URL
@@ -124,7 +125,8 @@ struct FileEditorView: View {
                         font: editorFont,
                         backgroundColor: settings.terminalBackgroundColor,
                         caretColor: caretColor,
-                        lineNumberColor: lineNumberColor
+                        lineNumberColor: lineNumberColor,
+                        onSave: saveNow
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     Divider()
@@ -218,6 +220,14 @@ struct FileEditorView: View {
     private var languageName: String {
         guard let language else { return "Plain Text" }
         return language.prefix(1).uppercased() + language.dropFirst()
+    }
+
+    /// An explicit save (⌘S): cancels the pending debounce and flushes the buffer to disk right
+    /// now, rather than waiting out the idle delay. The auto-save still runs on its own; this just
+    /// lets the muscle-memory ⌘S commit immediately (and the unsaved dot clears at once).
+    private func saveNow() {
+        saveTask?.cancel()
+        writeIfNeeded()
     }
 
     /// (Re)arms the debounced write — the previous pending save is cancelled so only a quiet pause
@@ -331,6 +341,8 @@ private struct HighlightedTextView: NSViewRepresentable {
     let backgroundColor: NSColor
     let caretColor: NSColor
     let lineNumberColor: NSColor
+    /// Invoked when the user presses ⌘S — flushes the buffer to disk immediately.
+    let onSave: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text, cursor: $cursor) }
 
@@ -349,7 +361,8 @@ private struct HighlightedTextView: NSViewRepresentable {
         container.widthTracksTextView = true          // wrap to the view width
         layoutManager.addTextContainer(container)
 
-        let textView = NSTextView(frame: .zero, textContainer: container)
+        let textView = SavingTextView(frame: .zero, textContainer: container)
+        textView.onSave = onSave
         textView.delegate = context.coordinator
         textView.isEditable = true
         textView.isRichText = false
@@ -404,7 +417,10 @@ private struct HighlightedTextView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let textView = scrollView.documentView as? NSTextView else { return }
+        guard let textView = scrollView.documentView as? SavingTextView else { return }
+        // Refresh the save closure each update so ⌘S always flushes the latest buffer (the closure
+        // captures the view's current state, which SwiftUI re-creates on every change).
+        textView.onSave = onSave
         let coordinator = context.coordinator
         let storage = coordinator.textStorage
 
@@ -497,6 +513,22 @@ private struct HighlightedTextView: NSViewRepresentable {
             let lines = full.substring(to: location).components(separatedBy: "\n")
             cursor.wrappedValue = EditorCursor(line: lines.count, column: (lines.last?.count ?? 0) + 1)
         }
+    }
+}
+
+/// An `NSTextView` that intercepts ⌘S to flush a manual save before AppKit routes it anywhere else,
+/// then lets every other key equivalent fall through unchanged. The editor auto-saves on idle, so
+/// this only serves the reflex of pressing ⌘S — there is still no Save button.
+private final class SavingTextView: NSTextView {
+    var onSave: (() -> Void)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           event.charactersIgnoringModifiers == "s" {
+            onSave?()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 }
 
