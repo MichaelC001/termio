@@ -435,6 +435,7 @@ private struct HighlightedTextView: NSViewRepresentable {
         if textView.string != text { textView.string = text }
         apply(to: textView)
         scrollView.backgroundColor = backgroundColor
+        scrollView.contentView.backgroundColor = backgroundColor
         coordinator.ruler?.restyle(editorFont: font, numberColor: lineNumberColor, gutterColor: backgroundColor)
     }
 
@@ -507,6 +508,8 @@ private final class LineNumberRulerView: NSRulerView {
     private var numberColor: NSColor
     private var gutterColor: NSColor
 
+    override var isOpaque: Bool { true }
+
     init(scrollView: NSScrollView, editorFont: NSFont, numberColor: NSColor, gutterColor: NSColor) {
         self.numberFont = Self.gutterFont(for: editorFont)
         self.numberColor = numberColor
@@ -531,13 +534,20 @@ private final class LineNumberRulerView: NSRulerView {
         NSFont.monospacedDigitSystemFont(ofSize: max(9, editorFont.pointSize - 1.5), weight: .regular)
     }
 
+    override func draw(_ dirtyRect: NSRect) {
+        gutterColor.setFill()
+        bounds.fill()
+        drawLineNumbers()
+    }
+
     override func drawHashMarksAndLabels(in rect: NSRect) {
+        // The full ruler is drawn in `draw(_:)` so AppKit never paints its default ruler chrome.
+    }
+
+    private func drawLineNumbers() {
         guard let textView = clientView as? NSTextView,
               let layoutManager = textView.layoutManager,
               let container = textView.textContainer else { return }
-
-        gutterColor.setFill()
-        bounds.fill()
 
         let content = textView.string as NSString
         let inset = textView.textContainerInset.height
@@ -549,7 +559,10 @@ private final class LineNumberRulerView: NSRulerView {
             let string = "\(number)" as NSString
             let size = string.size(withAttributes: attributes)
             let x = self.ruleThickness - size.width - 6
-            string.draw(at: NSPoint(x: x, y: fragMinY + inset + yOffset), withAttributes: attributes)
+            let y = fragMinY + inset + yOffset
+            let topClipInset = self.window.map { 1 / $0.backingScaleFactor } ?? 0
+            guard y > self.bounds.minY + topClipInset else { return }
+            string.draw(at: NSPoint(x: x, y: y), withAttributes: attributes)
         }
 
         let visibleGlyphRange = layoutManager.glyphRange(forBoundingRect: textView.visibleRect, in: container)
