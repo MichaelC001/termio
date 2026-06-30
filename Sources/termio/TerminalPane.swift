@@ -2,6 +2,14 @@ import AppKit
 import SwiftUI
 import GhosttyTerminal
 
+extension Notification.Name {
+    /// Posted by the toolbar's close button to dismiss whichever content overlay (file editor,
+    /// diff, or preview) covers the terminal. `TerminalPane` handles it, running the same teardown
+    /// — clear the store, hand focus back to the terminal — the overlays' own Esc / close use, so
+    /// the toolbar and in-overlay close paths stay identical.
+    static let termioCloseContentOverlay = Notification.Name("termio.closeContentOverlay")
+}
+
 /// Right column. Every session that has been opened stays *mounted* here for the
 /// app's lifetime; switching sessions only flips opacity and keyboard focus.
 ///
@@ -100,6 +108,13 @@ struct TerminalPane: View {
             store.openFileURL = nil
             store.openDiff = nil
             focusedSession = id
+        }
+        // The toolbar's close button posts this; tear the overlay down the same way the overlay's
+        // own Esc / close does (clear the store, return focus to the selected session's terminal).
+        .onReceive(NotificationCenter.default.publisher(for: .termioCloseContentOverlay)) { _ in
+            store.openFileURL = nil
+            store.openDiff = nil
+            focusedSession = store.selectedSessionID
         }
     }
 

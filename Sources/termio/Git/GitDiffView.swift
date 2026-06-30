@@ -57,12 +57,8 @@ struct GitDiffView: View {
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundStyle(.red)
             }
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .semibold))
-            }
-            .buttonStyle(.borderless)
-            .help("Close (Esc)")
+            // Close lives in the toolbar now (a bordered, Liquid Glass button hugging the
+            // terminal|inspector divider) — see `setCloseOverlayVisible` in App.swift.
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

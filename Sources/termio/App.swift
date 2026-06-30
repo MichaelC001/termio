@@ -59,6 +59,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // Keeps the native window title (path) and subtitle (git branch) in step with the
     // selected session — NetNewsWire's approach, no custom title-bar views.
     private var titleObserver: AnyCancellable?
+    // Shows/hides the toolbar's overlay-close button as a file editor / diff / preview opens and
+    // closes (see `setCloseOverlayVisible`).
+    private var overlayObserver: AnyCancellable?
+    // Whether the close button is currently in the toolbar, so the observer only mutates the
+    // toolbar on an actual open↔closed transition rather than on every store change.
+    private var closeOverlayShown = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         window = NSWindow(
@@ -113,6 +119,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] in
                 MainActor.assumeIsolated { self?.updateWindowTitle() }
+            }
+
+        // Surface the overlay-close button in the toolbar while a file editor, diff, or preview
+        // covers the terminal. `objectWillChange` fires before the value lands, so read the settled
+        // state on the next runloop tick (the title observer's pattern).
+        overlayObserver = store.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.setCloseOverlayVisible(self.store.openFileURL != nil || self.store.openDiff != nil)
+                }
             }
 
         // Background opacity/blur only show through a non-opaque window, and the
@@ -450,6 +468,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.presentOpenProjectPanel(sandboxed: true)
     }
 
+    /// The toolbar's `+` button — opens a fresh scratch terminal at the user's home
+    /// directory (like a new iTerm2 window), grouped under a home-rooted section in the
+    /// sidebar. Reached via the responder chain (the toolbar item targets `nil`), like
+    /// the other app actions.
+    @objc func newScratchTerminal(_ sender: Any?) {
+        store.addScratchTerminal()
+    }
+
     /// View ▸ Show Project Files (and the toolbar's trailing inspector button) —
     /// collapses or expands the file-tree inspector. Reached via the responder chain
     /// (the menu item and toolbar item both target `nil`), like the other app actions.
@@ -508,6 +534,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    /// The toolbar's overlay-close button — dismisses whichever content overlay (file editor, diff,
+    /// or preview) covers the terminal. Routed through a notification so `TerminalPane` runs the
+    /// same teardown (clear the store, return focus to the terminal) the overlays' own Esc / close
+    /// buttons use, keeping the two close paths identical. Reached via the responder chain (the
+    /// toolbar item targets `nil`), like the other app actions.
+    @objc func closeContentOverlay(_ sender: Any?) {
+        NotificationCenter.default.post(name: .termioCloseContentOverlay, object: nil)
+    }
+
+    /// Inserts or removes the overlay-close button as a file editor / diff / preview opens and
+    /// closes, so it is shown only while there is an overlay to close. It rides the terminal
+    /// column's trailing edge: anchored just before the inspector switch's tracking separator when
+    /// the inspector is open (hugging the terminal|inspector divider, directly above the overlay's
+    /// own close edge), else before the inspector toggle at the window's trailing edge. The flexible
+    /// space already ahead of the toggle pushes the button right against that anchor. The button is
+    /// built bordered, so it inherits the same Liquid Glass treatment and size as the navigator and
+    /// inspector toggles for free.
+    private func setCloseOverlayVisible(_ visible: Bool) {
+        guard let toolbar = window?.toolbar, visible != closeOverlayShown else { return }
+        closeOverlayShown = visible
+        func index(of id: NSToolbarItem.Identifier) -> Int? {
+            toolbar.items.firstIndex { $0.itemIdentifier == id }
+        }
+        // Mutate with animation off, matching the inspector switch: the button simply presents for
+        // the overlay's fade rather than running NSToolbar's own pop on an independent clock.
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        defer { NSAnimationContext.endGrouping() }
+        if visible {
+            guard index(of: .closeOverlay) == nil,
+                  let anchor = index(of: .inspectorTrackingSeparator) ?? index(of: .toggleInspector)
+            else { return }
+            toolbar.insertItem(withItemIdentifier: .closeOverlay, at: anchor)
+        } else if let i = index(of: .closeOverlay) {
+            toolbar.removeItem(at: i)
+        }
+    }
+
     /// Termio ▸ Check for Updates… — hands off to Sparkle's standard update flow.
     /// Reached via the responder chain (the menu item targets `nil`), the same
     /// nil-target routing the other app-menu items use.
@@ -546,7 +610,7 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate {
     // open (see `setInspectorSwitchVisible`) — keeping the separator in the default set would draw a
     // stray divider line in the toolbar while the panel is collapsed.
     private let defaultIdentifiers: [NSToolbarItem.Identifier] = [
-        .toggleNavigator, .flexibleSpace, .sidebarTrackingSeparator, .branchPicker,
+        .toggleNavigator, .flexibleSpace, .newTerminal, .sidebarTrackingSeparator, .branchPicker,
         .flexibleSpace, .toggleInspector,
     ]
 
@@ -555,7 +619,7 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate {
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        defaultIdentifiers + [.inspectorTrackingSeparator, .inspectorTabs]
+        defaultIdentifiers + [.inspectorTrackingSeparator, .inspectorTabs, .closeOverlay]
     }
 
     func toolbar(
@@ -574,6 +638,19 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate {
             // the system animation. `nil` target routes up the responder chain to the split
             // controller (the window's content view controller), so no custom action is needed.
             item.action = #selector(NSSplitViewController.toggleSidebar(_:))
+            return item
+        case .newTerminal:
+            // Pinned to the trailing edge of the sidebar's toolbar region (just before the
+            // tracking separator), so it reads as the navigator's own "new" action — like the
+            // `+` at the foot of Finder's sidebar. Built exactly like the navigator/inspector
+            // toggles (bordered, system glyph) so the three match. A single click opens a fresh
+            // scratch terminal at the home directory via the responder chain (`nil` target).
+            let item = NSToolbarItem(itemIdentifier: .newTerminal)
+            item.label = "New Terminal"
+            item.toolTip = "Open a new terminal in your home folder"
+            item.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New Terminal")
+            item.isBordered = true
+            item.action = #selector(AppDelegate.newScratchTerminal(_:))
             return item
         case .inspectorTabs:
             // The native segmented switch (Files / Changes), pinned to the inspector's left edge by
@@ -606,6 +683,17 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate {
             item.isBordered = true
             item.action = #selector(AppDelegate.toggleFilesInspector(_:))
             return item
+        case .closeOverlay:
+            // Native bordered button (free Liquid Glass on macOS 26, same size as the toggles),
+            // shown only while a file editor / diff / preview covers the terminal — inserted and
+            // removed by `setCloseOverlayVisible`, so it is never in the default set.
+            let item = NSToolbarItem(itemIdentifier: .closeOverlay)
+            item.label = "Close"
+            item.toolTip = "Close (Esc)"
+            item.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")
+            item.isBordered = true
+            item.action = #selector(AppDelegate.closeContentOverlay(_:))
+            return item
         case .branchPicker:
             let item = NSToolbarItem(itemIdentifier: .branchPicker)
             item.view = NSHostingView(rootView: BranchPickerToolbarView()
@@ -622,10 +710,12 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate {
 
 private extension NSToolbarItem.Identifier {
     static let toggleNavigator = NSToolbarItem.Identifier("TermioToggleNavigator")
+    static let newTerminal = NSToolbarItem.Identifier("TermioNewTerminal")
     static let inspectorTabs = NSToolbarItem.Identifier("TermioInspectorTabs")
     static let toggleInspector = NSToolbarItem.Identifier("TermioToggleInspector")
     static let inspectorTrackingSeparator = NSToolbarItem.Identifier("TermioInspectorTrackingSeparator")
     static let branchPicker = NSToolbarItem.Identifier("TermioBranchPicker")
+    static let closeOverlay = NSToolbarItem.Identifier("TermioCloseOverlay")
 }
 
 /// The custom title item: the selected session's folder name over its live git branch, drawn as

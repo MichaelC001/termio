@@ -46,13 +46,9 @@ struct FilePreviewView: View {
                 .font(.system(size: 12.5, weight: .medium))
                 .lineLimit(1)
                 .truncationMode(.middle)
+            // Close moved to the toolbar (a bordered, Liquid Glass button on the terminal
+            // column's trailing edge); this trailing spacer keeps the file name left-aligned.
             Spacer()
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .semibold))
-            }
-            .buttonStyle(.borderless)
-            .help("Close (Esc)")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

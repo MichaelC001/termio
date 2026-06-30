@@ -166,13 +166,9 @@ struct FileEditorView: View {
                     .foregroundStyle(.orange)
                     .lineLimit(1)
             }
+            // The close control lives in the toolbar (a bordered, Liquid Glass button on the
+            // terminal column's trailing edge); this trailing spacer keeps the label left-aligned.
             Spacer()
-            Button(action: close) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .semibold))
-            }
-            .buttonStyle(.borderless)
-            .help("Close (Esc)")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
