@@ -49,8 +49,8 @@ enum GitFileStatus: Hashable, Sendable {
         case .deleted: return "D"
         case .renamed: return "R"
         case .copied: return "C"
-        case .conflicted: return "U"
-        case .untracked: return "?"
+        case .conflicted: return "!"
+        case .untracked: return "U"
         }
     }
 
@@ -60,7 +60,10 @@ enum GitFileStatus: Hashable, Sendable {
         case .deleted: return .red
         case .renamed, .copied: return .orange
         case .conflicted: return .yellow
-        case .untracked: return .gray
+        // An untracked file is a brand-new file, so it reads as additive — green,
+        // like its `+` line count and the way VS Code marks a `U` in the explorer —
+        // rather than a noisy grey `?` that looks like an error down the whole list.
+        case .untracked: return .green
         case .modified: return .blue
         }
     }
