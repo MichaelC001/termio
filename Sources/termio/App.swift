@@ -478,6 +478,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         func index(of id: NSToolbarItem.Identifier) -> Int? {
             toolbar.items.firstIndex { $0.itemIdentifier == id }
         }
+        // Mutate the toolbar with animation OFF. `insertItem`/`removeItem` otherwise run NSToolbar's
+        // own fade/scale "pop" on a clock that is independent of the split view's `animator()` slide
+        // — so the Files/Changes pills popped in on a different curve and speed than the inspector
+        // pane (and its File/Diff list) slid. Suppressing the toolbar animation makes the switch
+        // simply *present* for the whole slide (Xcode's inspector-control behaviour), leaving the
+        // pane slide as the single, coherent motion.
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        defer { NSAnimationContext.endGrouping() }
         if visible {
             guard index(of: .inspectorTabs) == nil, let toggle = index(of: .toggleInspector) else { return }
             // Insert in reverse at the toggle's index so the final order is separator, switch, flex.
