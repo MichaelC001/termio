@@ -56,12 +56,12 @@ final class SessionControlListener {
         return base.appendingPathComponent("session-control.sock")
     }
 
-    private let onRequest: @MainActor (ControlRequest) -> Data
+    private let onRequest: @MainActor (ControlRequest) async -> Data
     private let queue = DispatchQueue(label: "com.termio.session-control")
     private var source: DispatchSourceRead?
     private var listenDescriptor: Int32 = -1
 
-    init(onRequest: @escaping @MainActor (ControlRequest) -> Data) {
+    init(onRequest: @escaping @MainActor (ControlRequest) async -> Data) {
         self.onRequest = onRequest
     }
 
@@ -152,7 +152,7 @@ final class SessionControlListener {
         // the main thread.
         let handler = onRequest
         Task { @MainActor in
-            let response = handler(decoded)
+            let response = await handler(decoded)
             self.queue.async {
                 Self.writeAll(descriptor, response)
                 close(descriptor)

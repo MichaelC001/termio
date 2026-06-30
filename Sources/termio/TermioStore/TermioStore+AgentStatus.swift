@@ -38,7 +38,7 @@ extension TermioStore {
     /// note written into the agent instruction files is toggled.
     func startSessionControl() {
         let control = SessionControlListener { [weak self] request in
-            self?.handleSessionControl(request) ?? Data()
+            await self?.handleSessionControl(request) ?? Data()
         }
         control.start()
         sessionControl = control

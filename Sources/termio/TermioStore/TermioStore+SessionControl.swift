@@ -1,4 +1,5 @@
 import Foundation
+import GhosttyTerminal
 
 /// Handles `termio sessions …` requests from `SessionControlListener`. Every
 /// operation is scoped to the caller's own project (resolved from the caller's
@@ -6,7 +7,7 @@ import Foundation
 /// see and drive its siblings, never sessions in unrelated projects — unpeel's
 /// "project-scoped by default" rule.
 extension TermioStore {
-    func handleSessionControl(_ request: ControlRequest) -> Data {
+    func handleSessionControl(_ request: ControlRequest) async -> Data {
         guard settings.sessionControlEnabled else {
             return controlError(request, "disabled",
                 "Session control is off. Enable it in termio ▸ Settings ▸ Agents.")
@@ -18,7 +19,7 @@ extension TermioStore {
 
         switch request.op {
         case "list": return listSessions(in: project, request: request)
-        case "send", "answer": return sendText(request, in: project)
+        case "send", "answer": return await sendText(request, in: project)
         case "start": return startSession(request, in: project)
         case "stop": return stopSession(request, in: project)
         case "read":
@@ -52,7 +53,7 @@ extension TermioStore {
         return control(request, ok: true, text: text, json: ["project": project.name, "sessions": entries])
     }
 
-    private func sendText(_ request: ControlRequest, in project: Project) -> Data {
+    private func sendText(_ request: ControlRequest, in project: Project) async -> Data {
         guard let payload = request.text, !payload.isEmpty else {
             return controlError(request, "no_text", "\(request.op) needs text to send.")
         }
@@ -61,22 +62,49 @@ extension TermioStore {
             // Get-or-create the surface so a prompt can be sent to a session that
             // hasn't been opened yet (this starts its shell, which is what we want).
             let surface = surface(for: session, in: project)
-            // The carriage return submits the line, matching pressing Return.
-            // `send` returns false when no live terminal is attached yet, so report
-            // that honestly rather than claiming a prompt that went nowhere.
-            guard surface.send(payload + "\r") else {
+            if await deliver(payload, to: surface) {
+                return sentReply(request, session)
+            }
+
+            // Delivery fails only when the libghostty surface isn't attached yet — a
+            // session whose pane has never been shown, so its view never mounted.
+            // Mounting requires it to be the selected pane: select it, give the
+            // SwiftUI render + surface attach one cycle, then retry once. This is
+            // the same recovery `TerminalPane.sendPaths` uses for dropped files.
+            selectedSessionID = session.id
+            try? await Task.sleep(for: .milliseconds(350))
+            guard await deliver(payload, to: surface) else {
                 return controlError(request, "not_live",
                     "\(displayTitle(for: session)) has no live terminal yet — open it once in termio.")
             }
-            return control(request, ok: true,
-                text: "sent to \(displayTitle(for: session))",
-                json: ["target": Self.shortID(session.id), "title": displayTitle(for: session)])
+            return sentReply(request, session)
         case .notFound:
             return controlError(request, "not_found", targetNotFoundMessage(request.target))
         case .ambiguous:
             return controlError(request, "ambiguous",
                 "'\(request.target ?? "")' matches more than one session; use a longer id.")
         }
+    }
+
+    /// Types `text` into the surface, then sends Return as a *separate* write a
+    /// beat later. The split matters: `TerminalViewState.send` routes through
+    /// libghostty's text path (`ghostty_surface_text`), and an agent TUI like
+    /// Claude Code treats a single burst that ends in `\r` as a pasted newline —
+    /// it inserts a line break instead of submitting. Delivering the `\r` on its
+    /// own, after a gap, makes it read as a discrete Enter keypress, which submits.
+    /// Returns false when the surface has no live terminal attached yet (caller
+    /// then mounts and retries).
+    private func deliver(_ text: String, to surface: TerminalViewState) async -> Bool {
+        guard surface.send(text) else { return false }
+        try? await Task.sleep(for: .milliseconds(120))
+        return surface.send("\r")
+    }
+
+    /// The success reply shared by the first-try and post-mount-retry send paths.
+    private func sentReply(_ request: ControlRequest, _ session: Session) -> Data {
+        control(request, ok: true,
+            text: "sent to \(displayTitle(for: session))",
+            json: ["target": Self.shortID(session.id), "title": displayTitle(for: session)])
     }
 
     private func startSession(_ request: ControlRequest, in project: Project) -> Data {
