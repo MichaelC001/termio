@@ -96,16 +96,11 @@ struct ThemePickerField: View {
                         Section("Custom") { themeRows(filteredCustom) }
                     }
                     if query.isEmpty {
-                        // Dark and light picks split out so each slot's natural choice
-                        // is obvious; the slot this picker fills leads.
-                        if slotPrefersDark {
-                            Section("Popular Dark") { themeRows(ThemeLibrary.popularDarkThemeNames) }
-                            Section("Popular Light") { themeRows(ThemeLibrary.popularLightThemeNames) }
-                        } else {
-                            Section("Popular Light") { themeRows(ThemeLibrary.popularLightThemeNames) }
-                            Section("Popular Dark") { themeRows(ThemeLibrary.popularDarkThemeNames) }
-                        }
-                        Section("All Themes") { themeRows(ThemeLibrary.bundledThemeNames) }
+                        // Only the slot's own brightness: the Dark slot lists dark
+                        // themes, the Light slot lists light ones, so a slot can never
+                        // offer a theme that would render the wrong way.
+                        Section("Popular") { themeRows(slotPopularNames) }
+                        Section(allLabel) { themeRows(slotBundledNames) }
                     } else {
                         Section(resultsLabel) { themeRows(filteredBundled) }
                     }
@@ -178,17 +173,6 @@ struct ThemePickerField: View {
     @ViewBuilder
     private func themeRow(name: String, display: String? = nil, definition: GhosttyThemeDefinition?) -> some View {
         HStack(spacing: 8) {
-            // A sun/moon glyph spells out whether the theme is itself light or dark —
-            // the catalog mixes both (Catppuccin Latte vs Mocha), and the slot only
-            // picks *which* theme renders in a given appearance, it doesn't recolor it.
-            Group {
-                if let definition {
-                    Image(systemName: definition.isDark ? "moon.fill" : "sun.max.fill")
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .font(.caption)
-            .frame(width: 14)
             Text(display ?? name)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -205,8 +189,23 @@ struct ThemePickerField: View {
         query.isEmpty || name.localizedCaseInsensitiveContains(query)
     }
 
-    private var filteredCustom: [String] { userThemeNames.filter(matches) }
-    private var filteredBundled: [String] { ThemeLibrary.bundledThemeNames.filter(matches) }
+    /// The catalog half this slot draws from — dark themes for the Dark slot, light
+    /// for the Light slot.
+    private var slotBundledNames: [String] {
+        slotPrefersDark ? ThemeLibrary.darkBundledThemeNames : ThemeLibrary.lightBundledThemeNames
+    }
+    private var slotPopularNames: [String] {
+        slotPrefersDark ? ThemeLibrary.popularDarkThemeNames : ThemeLibrary.popularLightThemeNames
+    }
+    /// Custom themes are kept too, but only those matching the slot's brightness, so
+    /// the same "wrong way" rule holds for user-dropped files.
+    private var slotCustomNames: [String] {
+        userThemeNames.filter { ThemeLibrary.theme(named: $0)?.isDark == slotPrefersDark }
+    }
+    private var allLabel: String { slotPrefersDark ? "All Dark Themes" : "All Light Themes" }
+
+    private var filteredCustom: [String] { slotCustomNames.filter(matches) }
+    private var filteredBundled: [String] { slotBundledNames.filter(matches) }
     private var hasResults: Bool {
         query.isEmpty || !filteredCustom.isEmpty || !filteredBundled.isEmpty
     }

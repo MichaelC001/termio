@@ -57,6 +57,16 @@ enum ThemeLibrary {
     /// Enumerating the catalog is not free, so it is computed once for the process.
     static let bundledThemeNames: [String] = GhosttyThemeCatalog.search("").map(\.name).sorted()
 
+    /// The bundled catalog partitioned by brightness, computed once. The picker shows
+    /// only the slot-appropriate half — dark themes in the Dark slot, light in the
+    /// Light slot — so a slot can never offer a theme that renders the wrong way.
+    /// Brightness is the theme's own `isDark` (background luminance), the same signal
+    /// the row glyph and mismatch hint use.
+    static let darkBundledThemeNames: [String] = GhosttyThemeCatalog.search("")
+        .filter { $0.isDark }.map(\.name).sorted()
+    static let lightBundledThemeNames: [String] = GhosttyThemeCatalog.search("")
+        .filter { !$0.isDark }.map(\.name).sorted()
+
     /// A curated shortlist of widely-used DARK themes, surfaced at the top of the
     /// pickers so the common picks are one glance away instead of buried in the 400+
     /// bundled catalog. Kept in popularity order (not alphabetized) since that is what
