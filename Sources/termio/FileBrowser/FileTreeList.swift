@@ -65,8 +65,9 @@ private struct FileRow: View {
         // icons below it.
         let row = HStack(spacing: 5) {
             if !node.isDirectory {
-                Image(systemName: node.symbolName)
-                    .foregroundStyle(.secondary)
+                // The file's real language/tool logo (a Devicon mark) when bundled,
+                // else a tinted SF Symbol — see `FileIconView`.
+                FileIconView(url: node.url, size: 15, symbolSize: 13)
                     .frame(width: 16, alignment: .leading)
             }
             Text(node.name)

@@ -56,21 +56,4 @@ final class FileNode: Identifiable {
     /// Non-hidden directories that are noise in a project tree (the hidden ones —
     /// `.git`, `.DS_Store` — are already excluded by `.skipsHiddenFiles`).
     private static let ignoredNames: Set<String> = ["node_modules", ".build", "DerivedData"]
-
-    /// SF Symbol drawn beside the node: an open-ended folder, or a glyph hinting at
-    /// the file's kind (image, document, code, or a plain page).
-    var symbolName: String {
-        if isDirectory { return "folder" }
-        switch url.pathExtension.lowercased() {
-        case "png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "svg":
-            return "photo"
-        case "pdf":
-            return "doc.richtext"
-        case "swift", "js", "ts", "tsx", "jsx", "py", "rs", "go", "c", "h", "cpp",
-             "m", "json", "yml", "yaml", "toml", "sh", "md", "txt", "css", "html":
-            return "doc.text"
-        default:
-            return "doc"
-        }
-    }
 }
