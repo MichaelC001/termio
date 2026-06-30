@@ -104,6 +104,9 @@ private struct ProjectHeader: View {
     let toggleCollapsed: () -> Void
     let chrome: ChromeTheme?
     @State private var isHovering = false
+    /// True while this header's right-click menu is open, so the row paints a light
+    /// lift marking it as the menu's target.
+    @State private var isMenuOpen = false
 
     /// Width the trailing agent icons occupy (button frame 22 + 3 spacing each), so
     /// the hovered label can fade out exactly under them rather than guessing.
@@ -111,6 +114,24 @@ private struct ProjectHeader: View {
         let count = enabledAgentPresets(settings).count
         guard count > 0 else { return 0 }
         return CGFloat(count) * 22 + CGFloat(count - 1) * 3
+    }
+
+    /// The right-click menu: a "New … Session" entry per enabled agent, then the
+    /// project's own actions. Mirrors the hover controls so both routes stay in sync.
+    private var projectMenuItems: [SidebarMenuItem] {
+        var items: [SidebarMenuItem] = enabledAgentPresets(settings).map { preset in
+            .action("New \(preset.displayName) Session") {
+                store.addSession(to: project.id, agent: preset)
+            }
+        }
+        items.append(.separator)
+        items.append(.action("Security…") { store.editingSecurityProjectID = project.id })
+        items.append(.action("Reveal in Finder") {
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: project.path)
+        })
+        items.append(.separator)
+        items.append(.action("Remove Project") { store.removeProject(project.id) })
+        return items
     }
 
     var body: some View {
@@ -197,12 +218,19 @@ private struct ProjectHeader: View {
         .onHover { isHovering = $0 }
         .onTapGesture { toggleCollapsed() }
         // Right-click mirrors the hover controls, so every action is reachable both
-        // ways (the menus' contents are factored out so the two never drift).
-        .contextMenu {
-            NewSessionMenuItems(project: project)
-            Divider()
-            ProjectActionMenuItems(project: project)
-        }
+        // ways. Built as an `NSMenu` (see `SidebarRowContextMenu`) rather than
+        // SwiftUI's `.contextMenu`, which paints an un-styleable blue accent ring
+        // around the targeted row. While the menu is up the row lifts to the hover
+        // level (a step below session selection) so the target reads clearly.
+        .background(SidebarRowContextMenu(items: projectMenuItems) { isMenuOpen = $0 })
+        // Strip the source list's native blue accent (the ring/fill AppKit paints on a
+        // right-clicked or selected row) at the NSOutlineView layer, so our own
+        // highlights are the only selection cue — same treatment the file tree uses.
+        .background(OutlineSelectionStyleStripper())
+        .listRowBackground(
+            SidebarRowHighlight(isSelected: false, isHovering: isMenuOpen, chrome: chrome)
+                .animation(.easeInOut(duration: 0.12), value: isMenuOpen)
+        )
         .animation(.easeInOut(duration: 0.12), value: isHovering)
         .animation(.easeInOut(duration: 0.18), value: isCollapsed)
     }
@@ -215,37 +243,113 @@ private func enabledAgentPresets(_ settings: AppSettings) -> [AgentPreset] {
     AgentPreset.allCases.filter(settings.isAgentEnabled)
 }
 
-/// The "New … Session" buttons shared by the header's agent picker (the split
-/// button's chevron) and its right-click menu, so the two lists can never diverge.
-private struct NewSessionMenuItems: View {
-    @EnvironmentObject var store: TermioStore
-    @EnvironmentObject var settings: AppSettings
-    let project: Project
-
-    var body: some View {
-        ForEach(enabledAgentPresets(settings)) { preset in
-            Button("New \(preset.displayName) Session") {
-                store.addSession(to: project.id, agent: preset)
-            }
-        }
-    }
+/// One entry in a sidebar row's right-click menu — a titled action or a separator.
+enum SidebarMenuItem {
+    case action(String, () -> Void)
+    case separator
 }
 
-/// The project's own actions, shared by the header's overflow (⋯) menu and its
-/// right-click menu. "Remove Project" drops only the sidebar entry — the folder and
-/// any worktrees stay on disk (see `TermioStore.removeProject`), so it is safe to
-/// offer inline.
-private struct ProjectActionMenuItems: View {
-    @EnvironmentObject var store: TermioStore
-    let project: Project
+/// A sidebar row's right-click menu, built as an AppKit `NSMenu` rather than
+/// SwiftUI's `.contextMenu` — the latter rings the targeted row with an
+/// un-styleable accent highlight (the blue border). A secondary-click recognizer on
+/// the row's own view pops the menu, so nothing emphasizes the row. Mirrors the file
+/// browser's `RowContextMenu`.
+private struct SidebarRowContextMenu: NSViewRepresentable {
+    let items: [SidebarMenuItem]
+    /// Reports the menu opening (`true`) and closing (`false`) so the row can paint a
+    /// light lift while its menu is up — the feedback the blue ring used to give,
+    /// minus the ring.
+    var onMenuState: (Bool) -> Void = { _ in }
 
-    var body: some View {
-        Button("Security…") { store.editingSecurityProjectID = project.id }
-        Button("Reveal in Finder") {
-            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: project.path)
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.owner = view
+        context.coordinator.items = items
+        context.coordinator.onMenuState = onMenuState
+        context.coordinator.attach()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.items = items
+        context.coordinator.onMenuState = onMenuState
+        context.coordinator.attach()
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSMenuDelegate {
+        weak var owner: NSView?
+        var items: [SidebarMenuItem] = []
+        var onMenuState: (Bool) -> Void = { _ in }
+        private weak var hostView: NSView?
+        private var recognizer: NSClickGestureRecognizer?
+
+        func attach() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let owner = self.owner else { return }
+                guard let host = Self.rowView(above: owner) else { return }
+                if hostView === host, recognizer != nil { return }
+                detach()
+                let recognizer = NSClickGestureRecognizer(target: self, action: #selector(self.showMenu(_:)))
+                recognizer.buttonMask = 0x2 // secondary (right) mouse button
+                host.addGestureRecognizer(recognizer)
+                self.recognizer = recognizer
+                self.hostView = host
+            }
         }
-        Divider()
-        Button("Remove Project") { store.removeProject(project.id) }
+
+        func detach() {
+            if let recognizer, let hostView { hostView.removeGestureRecognizer(recognizer) }
+            recognizer = nil
+            hostView = nil
+        }
+
+        @objc private func showMenu(_ recognizer: NSClickGestureRecognizer) {
+            guard let hostView else { return }
+            let menu = NSMenu()
+            menu.delegate = self
+            for item in items {
+                switch item {
+                case .separator:
+                    menu.addItem(.separator())
+                case let .action(title, handler):
+                    let menuItem = NSMenuItem(title: title, action: #selector(invoke(_:)), keyEquivalent: "")
+                    menuItem.target = self
+                    menuItem.representedObject = Handler(handler)
+                    menu.addItem(menuItem)
+                }
+            }
+            menu.popUp(positioning: nil, at: recognizer.location(in: hostView), in: hostView)
+        }
+
+        @objc private func invoke(_ sender: NSMenuItem) {
+            (sender.representedObject as? Handler)?.run()
+        }
+
+        // NSMenuDelegate — surface the open/close so the row lifts while its menu is up.
+        func menuWillOpen(_ menu: NSMenu) { onMenuState(true) }
+        func menuDidClose(_ menu: NSMenu) { onMenuState(false) }
+
+        /// Boxes a menu-item closure so it can ride along on `NSMenuItem.representedObject`.
+        private final class Handler {
+            let run: () -> Void
+            init(_ run: @escaping () -> Void) { self.run = run }
+        }
+
+        private static func rowView(above view: NSView) -> NSView? {
+            var ancestor = view.superview
+            while let current = ancestor {
+                if current is NSTableRowView { return current }
+                ancestor = current.superview
+            }
+            return nil
+        }
     }
 }
 
@@ -391,9 +495,11 @@ private struct SessionRow: View {
             store.openFileURL = nil
             store.selectedSessionID = session.id
         }
-        .contextMenu {
-            Button("Close Session") { store.closeSession(session.id) }
-        }
+        // NSMenu rather than SwiftUI's `.contextMenu` so right-click leaves no blue
+        // accent ring on the row (see `SidebarRowContextMenu`).
+        .background(SidebarRowContextMenu(items: [
+            .action("Close Session") { store.closeSession(session.id) }
+        ]))
         .listRowBackground(
             SidebarRowHighlight(isSelected: isSelected, isHovering: isHovering, chrome: chrome)
                 .animation(.easeInOut(duration: 0.12), value: isSelected)

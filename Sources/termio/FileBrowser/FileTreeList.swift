@@ -339,8 +339,9 @@ private struct EmptyAreaContextMenu: NSViewRepresentable {
 /// fill while leaving selection itself intact — so the List keeps native, drag-
 /// friendly selection and `SidebarRowHighlight` is the only thing that paints it.
 /// Re-applied on every update because each row mounts one, so any list rebuild
-/// reasserts the style.
-private struct OutlineSelectionStyleStripper: NSViewRepresentable {
+/// reasserts the style. Shared with the left sidebar (`SidebarView`), which is the
+/// same `.sidebar`-style source list and needs the identical strip.
+struct OutlineSelectionStyleStripper: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
         DispatchQueue.main.async { Self.strip(from: view) }
