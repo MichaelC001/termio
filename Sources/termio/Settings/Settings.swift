@@ -77,6 +77,7 @@ final class AppSettings: ObservableObject {
         static let disabledAgents = "agents.disabled"
         static let agentHooksEnabled = "agents.hooksEnabled"
         static let sessionControlEnabled = "agents.sessionControlEnabled"
+        static let sessionControlPrompted = "agents.sessionControlPrompted"
     }
 
     // MARK: Appearance
@@ -220,6 +221,14 @@ final class AppSettings: ObservableObject {
     /// `TermioStore` watches this and installs/uninstalls to match.
     @Published var sessionControlEnabled: Bool {
         didSet { defaults.set(sessionControlEnabled, forKey: Key.sessionControlEnabled) }
+    }
+
+    /// Whether the one-time "let your agents coordinate?" prompt has been shown, so
+    /// it's offered exactly once per install and never nags. Not `@Published` — it's
+    /// only read and set at launch, never bound to UI.
+    var sessionControlPrompted: Bool {
+        get { defaults.bool(forKey: Key.sessionControlPrompted) }
+        set { defaults.set(newValue, forKey: Key.sessionControlPrompted) }
     }
 
 

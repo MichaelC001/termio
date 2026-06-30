@@ -138,6 +138,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             pendingOpenURLs = []
             openProjects(at: urls)
         }
+
+        maybePromptForSessionControl()
+    }
+
+    /// A one-time, first-run offer to let agents coordinate. Enabling session control
+    /// edits the user's global agent config (a `CLAUDE.md` note + status hooks), so we
+    /// ask once rather than turn it on silently. Deferred a beat so it sheets onto a
+    /// settled window. Shown only when never asked and not already on; either choice
+    /// records that we've asked, so it never nags again.
+    private func maybePromptForSessionControl() {
+        guard !settings.sessionControlPrompted, !settings.sessionControlEnabled else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self else { return }
+            let alert = NSAlert()
+            alert.messageText = "Let your agents coordinate?"
+            alert.informativeText = """
+                termio can teach the agents you run (Claude Code, Codex, …) a `termio \
+                sessions` command so they can see, drive, and read each other's sessions \
+                in a project.
+
+                Enabling adds a short note to your ~/.claude/CLAUDE.md and installs \
+                status hooks. You can turn it off anytime in Settings ▸ Agents.
+                """
+            alert.addButton(withTitle: "Enable")
+            alert.addButton(withTitle: "Not Now")
+            settings.sessionControlPrompted = true
+            if alert.runModal() == .alertFirstButtonReturn {
+                settings.sessionControlEnabled = true
+            }
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
