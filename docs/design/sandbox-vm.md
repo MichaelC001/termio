@@ -1,14 +1,19 @@
 ---
 title: Sandbox VM —— 原生 per-project 容器（Apple Containerization）
-status: draft
+status: archived
 type: design
 created: 2026-06-29
-updated: 2026-06-29
+updated: 2026-06-30
 related:
+  - sandbox-seatbelt.md
   - agent-extensibility.md
 ---
 
 # Sandbox VM —— 原生 per-project 容器
+
+> **ARCHIVED (2026-06-30).** 这个 micro-VM 方案已被废弃并删除代码，由 Apple Seatbelt
+> 方案取代——见 [[sandbox-seatbelt.md]]。原因：VM 对一个终端 app 是错误的轴线，几乎所有
+> 复杂度都只是因为 agent 跨在 VM 边界之外。以下保留作历史参考。
 
 > 让一个项目的 agent 会话跑在隔离的 Linux micro-VM 里，用户零安装，一个项目共享一个容器。
 
