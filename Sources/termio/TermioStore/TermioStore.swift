@@ -98,6 +98,7 @@ final class TermioStore: ObservableObject {
     private var settingsObserver: AnyCancellable?
     private var branchObserver: AnyCancellable?
     private var linkObserver: AnyCancellable?
+    private var linkClickMonitor: Any?
     private let stateFile = StateFile()
 
     /// The socket Claude Code's hooks report into. Runs for the app's lifetime; the
@@ -164,6 +165,20 @@ final class TermioStore: ObservableObject {
                 let cwd = (note.object as? TerminalViewState)?.workingDirectory
                 self.openTerminalLink(url, surfaceWorkingDirectory: cwd)
             }
+
+        // Open the hovered hyperlink on cmd-click ourselves. ghostty's own `open_url` doesn't reach
+        // us in practice — a mouse-capturing TUI (Claude Code) never lets ghostty handle the click,
+        // and even a plain shell's click is consumed here first — but the hover delegate always
+        // reports the URL under the mouse (`TerminalLinkState.hoveredURL`), so a cmd+left-click opens
+        // that link in *both* shells and agent TUIs. Returning nil consumes the event so the click
+        // isn't also delivered to the terminal/app underneath.
+        linkClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
+            guard let self,
+                  event.modifierFlags.contains(.command),
+                  let url = TerminalLinkState.hoveredURL else { return event }
+            self.openTerminalLink(url, surfaceWorkingDirectory: nil)
+            return nil
+        }
         syncWatchedFolders()
 
         startHookMonitoring()
