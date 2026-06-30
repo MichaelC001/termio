@@ -15,6 +15,30 @@ extension TermioStore {
         selectedSessionID = session.id
     }
 
+    /// Opens a fresh scratch terminal — a plain login shell in the user's home
+    /// directory, the way launching a new iTerm2 window drops you at `~`. Loose
+    /// terminals aren't tied to a real project, so they're gathered under a single
+    /// home-rooted section that's created on first use; each later click just adds
+    /// another `Terminal N` row there and selects it (the same grow-in-place a
+    /// project's own header buttons do). The section persists like any project, so
+    /// it reappears on relaunch (the shells themselves restart fresh).
+    func addScratchTerminal() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        if let existing = projects.first(where: { $0.path == home }) {
+            addSession(to: existing.id, agent: .terminal)
+            return
+        }
+        let session = Session(title: "Terminal 1")
+        let project = Project(
+            name: (home as NSString).lastPathComponent,
+            path: home,
+            branch: currentBranch(in: home) ?? "—",
+            sessions: [session]
+        )
+        projects.append(project)
+        selectedSessionID = session.id
+    }
+
     /// Reorders the project list for the sidebar's drag-to-reorder. The new order
     /// persists through `projects`' `didSet`, so it survives a relaunch.
     func moveProject(fromOffsets source: IndexSet, toOffset destination: Int) {
