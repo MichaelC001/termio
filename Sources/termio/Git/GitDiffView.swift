@@ -78,6 +78,7 @@ struct GitDiffView: View {
                 systemImage: "doc",
                 description: Text("No textual changes to show.")
             )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: 0) {
