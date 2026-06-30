@@ -59,7 +59,8 @@ struct TerminalPane: View {
                     if FileActivation.isPreviewable(url) {
                         FilePreviewView(url: url, settings: settings, onClose: onClose)
                     } else {
-                        FileEditorView(url: url, settings: settings, onClose: onClose)
+                        FileEditorView(url: url, settings: settings,
+                                       readOnly: store.openFileReadOnly, onClose: onClose)
                     }
                 }
                 .id(url)

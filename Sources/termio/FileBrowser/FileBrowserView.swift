@@ -1,0 +1,298 @@
+import AppKit
+import Quartz
+import SwiftUI
+
+/// The trailing inspector's content: a native disclosure tree of the selected
+/// session's project, rooted at the project (or worktree) directory. Selecting a
+/// file and pressing space opens it in Quick Look (Finder's gesture); dragging
+/// files from the Finder onto the panel copies them into the project root.
+struct FileBrowserView: View {
+    @EnvironmentObject var store: TermioStore
+    @EnvironmentObject var settings: AppSettings
+    @EnvironmentObject var browserState: FileBrowserState
+    /// Toggles the shared Quick Look panel — supplied by the hosting controller,
+    /// which is the responder that drives `QLPreviewPanel`.
+    let onQuickLook: () -> Void
+    /// Double-clicking a file activates it: the hosting controller routes a previewable
+    /// file (image, PDF, HTML) to Quick Look and everything else to the code editor.
+    let onActivate: (URL) -> Void
+
+    @State private var root: FileNode?
+    /// Bumped to collapse the whole tree: it is the file list's `.id`, so changing it
+    /// rebuilds the list fresh — and a fresh `List(children:)` starts fully collapsed.
+    @State private var treeGeneration = 0
+
+    /// The directory the tree is rooted at: the selected session's worktree if it
+    /// has one, otherwise its project folder. `nil` when nothing is selected.
+    private var projectPath: String? {
+        guard let id = store.selectedSessionID, let project = store.project(for: id) else { return nil }
+        return store.session(id)?.worktreePath ?? project.path
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            switch store.inspectorTab {
+            case .files:
+                if let root { header(root: root) }
+                content
+            case .changes:
+                if let repoRoot = projectPath {
+                    GitChangesView(repoRoot: repoRoot, changeCount: $store.gitChangeCount)
+                } else {
+                    content
+                }
+            }
+        }
+        // The file column lives on the terminal side, so it takes the terminal's own background
+        // (rather than a sidebar material) — it reads as an extension of the content area. Fills
+        // the whole column behind the transparent list, ignoring the safe area so it runs
+        // full-height. Tracks the terminal theme live via `settings`.
+        .background(Color(nsColor: settings.terminalBackgroundColor).ignoresSafeArea())
+        // A single full-height hairline on the leading edge as the border with the terminal. A
+        // slightly-bright line (rather than the dim system separator) reads as a clean luminous
+        // edge on its own, echoing the leading sidebar's glowing border — no soft bloom gradient.
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(Color.white.opacity(0.15))
+                .frame(width: 1)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+        }
+        // A drop on empty space targets the project root: a file already in the tree
+        // is *moved* there, a file dragged in from the Finder is *copied* in. Folder
+        // rows install their own, more specific drop targets (see `FileTreeList`), so
+        // this only catches drops that miss every row. No panel-wide target ring —
+        // dragging a row out is itself a `URL` drag, so a whole-panel highlight would
+        // be a false positive; the folder rows light up individually instead.
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let projectPath else { return false }
+            return receive(urls, into: URL(fileURLWithPath: projectPath))
+        }
+        .onAppear { refresh(); seedChangeCount() }
+        .onChange(of: projectPath) {
+            refresh()
+            seedChangeCount()
+        }
+        .onChange(of: browserState.selection) {
+            // Single-click open (VS Code): the table fires native selection on a clean
+            // click — reliably, unlike a click recognizer, which `NSOutlineView`'s own
+            // primary-button tracking swallows. So opening on selection IS the click
+            // handler. Files only; selecting a folder just expands it.
+            if let url = browserState.selection, !isDirectory(url) {
+                onActivate(url)
+            }
+            // Keep an open Quick Look panel in step as the selection moves.
+            if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible {
+                QLPreviewPanel.shared().reloadData()
+            }
+        }
+    }
+
+    /// Whether `url` points at a directory — used to open only files on selection.
+    private func isDirectory(_ url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let root {
+            FileTreeList(
+                nodes: root.children ?? [],
+                selection: $browserState.selection,
+                font: settings.interfaceFont,
+                onDrop: { sources, destination in receive(sources, into: destination) },
+                rootURL: root.url,
+                actions: treeActions
+            )
+            .onKeyPress(.space) {
+                guard browserState.selection != nil else { return .ignored }
+                onQuickLook()
+                return .handled
+            }
+            // Collapse All rebuilds the list by changing its identity (see `treeGeneration`).
+            .id(treeGeneration)
+        } else {
+            ContentUnavailableView(
+                "No Project",
+                systemImage: "folder",
+                description: Text("Select a session to browse its files.")
+            )
+        }
+    }
+
+    /// The VS Code-style explorer header: the root folder's name, and trailing action
+    /// buttons — New File / New Folder (created at the project root), Refresh (re-read
+    /// from disk), and Collapse All.
+    private func header(root: FileNode) -> some View {
+        HStack(spacing: 2) {
+            Text(root.name)
+                .font(.system(size: 11, weight: .semibold))
+                .textCase(.uppercase)
+                .tracking(0.5)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 8)
+            TreeHeaderButton(codicon: .newFile, help: "New File") {
+                createFile(in: root.url)
+            }
+            TreeHeaderButton(codicon: .newFolder, help: "New Folder") {
+                createFolder(in: root.url)
+            }
+            TreeHeaderButton(codicon: .refresh, help: "Refresh") {
+                refresh()
+            }
+            TreeHeaderButton(codicon: .collapseAll, help: "Collapse All") {
+                treeGeneration += 1
+            }
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 8)
+        .padding(.vertical, 6)
+    }
+
+    /// Seeds the switcher's Changes badge with the repo's dirty-file count, so it is
+    /// right before the user ever opens the Changes pane (which then keeps it fresh).
+    private func seedChangeCount() {
+        guard let repoRoot = projectPath else {
+            store.gitChangeCount = 0
+            return
+        }
+        Task { store.gitChangeCount = await GitService.changes(in: repoRoot).count }
+    }
+
+    /// Rebuilds the tree from the current project path. Called on appear, whenever
+    /// the selected session moves to a different project, and after a drop.
+    private func refresh() {
+        guard let projectPath else {
+            root = nil
+            return
+        }
+        root = FileNode(url: URL(fileURLWithPath: projectPath), isDirectory: true)
+    }
+
+    /// Places each dropped file into `destination` (a folder inside the tree, or the
+    /// project root). A file that already lives in the project is *moved* — the VS
+    /// Code tree gesture; a file dragged in from the Finder is *copied*. A clash with
+    /// an existing name gets a numbered suffix rather than clobbering it. No-op drops
+    /// (a file onto its own folder) and incoherent ones (a folder onto itself or its
+    /// own descendant) are skipped. Refreshes the tree and reports whether anything
+    /// changed.
+    private func receive(_ sources: [URL], into destination: URL) -> Bool {
+        guard let projectPath else { return false }
+        let rootPath = URL(fileURLWithPath: projectPath).standardizedFileURL.path
+        let destinationDir = destination.standardizedFileURL
+        let manager = FileManager.default
+        var changedAny = false
+        for source in sources {
+            let src = source.standardizedFileURL
+            // Already in this folder, or a folder dropped onto itself / a descendant.
+            if src.deletingLastPathComponent() == destinationDir { continue }
+            if destinationDir.path == src.path || destinationDir.path.hasPrefix(src.path + "/") { continue }
+
+            let isInProject = src.path == rootPath || src.path.hasPrefix(rootPath + "/")
+            let target = uniqueDestination(for: src.lastPathComponent, in: destinationDir, manager: manager)
+            do {
+                if isInProject {
+                    try manager.moveItem(at: src, to: target)
+                } else {
+                    try manager.copyItem(at: src, to: target)
+                }
+                changedAny = true
+            } catch {
+                NSLog("termio: failed to place %@ into %@: %@", src.path, destinationDir.path, String(describing: error))
+            }
+        }
+        if changedAny { refresh() }
+        return changedAny
+    }
+
+    /// A non-colliding URL for `name` in `directory`: the plain name if free, else
+    /// `name 2.ext`, `name 3.ext`, … so a drop never clobbers an existing file.
+    private func uniqueDestination(for name: String, in directory: URL, manager: FileManager) -> URL {
+        let candidate = directory.appendingPathComponent(name)
+        guard manager.fileExists(atPath: candidate.path) else { return candidate }
+
+        let base = (name as NSString).deletingPathExtension
+        let ext = (name as NSString).pathExtension
+        var index = 2
+        while true {
+            let suffixed = ext.isEmpty ? "\(base) \(index)" : "\(base) \(index).\(ext)"
+            let url = directory.appendingPathComponent(suffixed)
+            if !manager.fileExists(atPath: url.path) { return url }
+            index += 1
+        }
+    }
+
+    /// The create/delete actions the row context menu invokes, plus single-click open
+    /// (`onActivate`). Bundled so a row carries one value instead of four closures.
+    private var treeActions: FileTreeActions {
+        FileTreeActions(
+            newFile: { createFile(in: $0) },
+            newFolder: { createFolder(in: $0) },
+            delete: { delete($0) }
+        )
+    }
+
+    /// Prompts for a name, creates an empty file in `directory`, then selects and
+    /// opens it — VS Code's "New File". A name clash gets a numbered suffix.
+    private func createFile(in directory: URL) {
+        guard let name = promptForName(title: "New File", defaultName: "untitled.txt") else { return }
+        let target = uniqueDestination(for: name, in: directory, manager: .default)
+        guard FileManager.default.createFile(atPath: target.path, contents: nil) else {
+            NSLog("termio: failed to create file at %@", target.path)
+            return
+        }
+        refresh()
+        browserState.selection = target
+        onActivate(target)
+    }
+
+    /// Prompts for a name and creates a folder in `directory`, then selects it.
+    private func createFolder(in directory: URL) {
+        guard let name = promptForName(title: "New Folder", defaultName: "untitled folder") else { return }
+        let target = uniqueDestination(for: name, in: directory, manager: .default)
+        do {
+            try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
+            refresh()
+            browserState.selection = target
+        } catch {
+            NSLog("termio: failed to create folder at %@: %@", target.path, String(describing: error))
+        }
+    }
+
+    /// Moves `url` to the Trash after a confirm — recoverable, not an unlink — clears
+    /// it from the selection, and refreshes.
+    private func delete(_ url: URL) {
+        let alert = NSAlert()
+        alert.messageText = "Move “\(url.lastPathComponent)” to the Trash?"
+        alert.informativeText = "You can restore it from the Trash."
+        alert.addButton(withTitle: "Move to Trash")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            if browserState.selection == url { browserState.selection = nil }
+            refresh()
+        } catch {
+            NSLog("termio: failed to trash %@: %@", url.path, String(describing: error))
+        }
+    }
+
+    /// A modal name prompt — one text field in an `NSAlert`, pre-filled with
+    /// `defaultName`. Returns the trimmed entry, or `nil` if cancelled or emptied.
+    private func promptForName(title: String, defaultName: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = defaultName
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+}

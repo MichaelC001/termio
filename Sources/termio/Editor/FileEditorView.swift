@@ -1,0 +1,322 @@
+import AppKit
+import SwiftUI
+
+/// The editor that covers the terminal pane: a soft-wrapped, monospaced `NSTextView` whose text is
+/// syntax-highlighted by Highlightr (highlight.js), with a slim header (file name + close) and a VS
+/// Code-style footer (language · caret · encoding). The file is read once on open and **auto-saved**
+/// — a short idle after the last keystroke flushes it to disk, and closing flushes any pending
+/// write — so there is no Save button (⌘S still forces an immediate flush for muscle memory).
+/// Escape (or the close button) dismisses back to the terminal.
+/// Non-text files that can't be decoded as UTF-8 show a short notice rather than a wall of mojibake.
+struct FileEditorView: View {
+    let url: URL
+    @ObservedObject var settings: AppSettings
+    /// When true the buffer is shown but cannot be edited or saved — the cmd-click-from-terminal
+    /// "peek at the source" path, so a stray click on a file link can't change it. The inspector's
+    /// own opens leave this false (fully editable).
+    let readOnly: Bool
+    /// Dismisses the overlay (clears `store.openFileURL`) and hands focus back to the terminal.
+    let onClose: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    @State private var text: String
+    /// The text last written to disk, so auto-save only writes on a genuine change.
+    @State private var savedText: String
+    @State private var loadFailed: Bool
+    @State private var saveError: String?
+    @State private var cursor: EditorCursor?
+    /// The pending debounced write, cancelled and rescheduled on each keystroke.
+    @State private var saveTask: Task<Void, Never>?
+
+    /// The highlight.js language id, sniffed once from the file extension (`nil` lets highlight.js
+    /// auto-detect). Stable for the lifetime of the open file.
+    private let language: String?
+    /// The file's path relative to its git root — shown next to the name like the diff header
+    /// (`GitDiffView`), so the two overlays read the same. `nil` outside a repo.
+    private let relativePath: String?
+
+    init(url: URL, settings: AppSettings, readOnly: Bool = false, onClose: @escaping () -> Void) {
+        self.url = url
+        self.settings = settings
+        self.readOnly = readOnly
+        self.onClose = onClose
+        let contents = try? String(contentsOf: url, encoding: .utf8)
+        _text = State(initialValue: contents ?? "")
+        _savedText = State(initialValue: contents ?? "")
+        _loadFailed = State(initialValue: contents == nil)
+        self.language = Self.highlightLanguage(for: url)
+        self.relativePath = Self.repoRelativePath(for: url)
+    }
+
+    /// Walks up from the file to its git root and returns the path relative to it (the form the diff
+    /// header shows, e.g. `core 2/lib/fs.ts`). `nil` when the file isn't inside a git work tree.
+    private static func repoRelativePath(for url: URL) -> String? {
+        let file = url.standardizedFileURL
+        let manager = FileManager.default
+        var dir = file.deletingLastPathComponent()
+        while dir.path != "/" {
+            if manager.fileExists(atPath: dir.appendingPathComponent(".git").path) {
+                return String(file.path.dropFirst(dir.path.count + 1))
+            }
+            dir = dir.deletingLastPathComponent()
+        }
+        return nil
+    }
+
+    private var isDirty: Bool { text != savedText }
+
+    /// The editor font, borrowed from the terminal so an opened file reads in the same face the
+    /// agent's output does. Falls back to the system monospace when no family is pinned.
+    private var editorFont: NSFont {
+        let size = max(11, settings.fontSize)
+        if !settings.fontFamily.isEmpty, let font = NSFont(name: settings.fontFamily, size: size) {
+            return font
+        }
+        return .monospacedSystemFont(ofSize: size, weight: .regular)
+    }
+
+    /// Foreground/caret fall back to the terminal theme's colors (the rest of the chrome's source of
+    /// truth) so plain text and the insertion point sit on the terminal background cleanly.
+    private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
+    private var caretColor: NSColor { chrome.map { NSColor($0.accent) } ?? .textColor }
+    /// Muted line-number ink — the theme foreground dimmed, so the gutter recedes against the
+    /// code the way Xcode's does (and always contrasts the terminal background, whatever it is).
+    private var lineNumberColor: NSColor {
+        (chrome.map { NSColor($0.foreground) } ?? .textColor).withAlphaComponent(0.4)
+    }
+
+    var body: some View {
+        // The editor's chrome (header, gutter) already sits in the safe content area below the
+        // toolbar — only the *background* bleeds up under the transparent titlebar, for a seamless
+        // fill with the terminal. (No manual titlebar inset: the overlay's content top is already at
+        // the safe-area top; padding it again just opened a dead band above the header.)
+        Group {
+            if loadFailed {
+                ContentUnavailableView(
+                    "Can't Open as Text",
+                    systemImage: "doc.questionmark",
+                    description: Text("\(url.lastPathComponent) isn't a UTF-8 text file.")
+                )
+            } else {
+                VStack(spacing: 0) {
+                    header
+                    Divider()
+                    HighlightedTextView(
+                        text: $text,
+                        cursor: $cursor,
+                        language: language,
+                        theme: colorScheme == .dark ? "xcode-dark" : "xcode",
+                        font: editorFont,
+                        backgroundColor: settings.terminalBackgroundColor,
+                        caretColor: caretColor,
+                        lineNumberColor: lineNumberColor,
+                        isEditable: !readOnly,
+                        onSave: saveNow
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Divider()
+                    statusBar
+                }
+            }
+        }
+        // Match the diff overlay (`GitDiffView`): a plain VStack whose background bleeds under the
+        // titlebar — no outer `.frame`, which was reserving an empty band above the header.
+        .background(Color(nsColor: settings.terminalBackgroundColor).ignoresSafeArea())
+        // Auto-save: debounce a write after each edit; Escape closes (flushing first). A read-only
+        // peek never writes, so neither the debounce nor the exit flush is armed.
+        .onChange(of: text) { if !readOnly { scheduleSave() } }
+        .onExitCommand { close() }
+        // A safety flush if the overlay goes away without the close button (file switch, app quit).
+        .onDisappear { if !readOnly { saveTask?.cancel(); writeIfNeeded() } }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            // A file-type glyph, tinted by kind — sized to match the diff header's leading status
+            // badge (12–13pt in a 16-wide slot) so the editor and diff headers are the same height.
+            let icon = FileTypeIcon.icon(for: url)
+            Image(systemName: icon.symbol)
+                .font(.system(size: 13))
+                .foregroundStyle(icon.color)
+                .frame(width: 16)
+            // The repo-relative path already ends in the file name, so showing the bare name
+            // alongside it just repeats the same word — keep only the path as the header label.
+            if let relativePath {
+                Text(relativePath)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.primary.opacity(0.7))
+                    .lineLimit(1)
+                    .truncationMode(.head)
+            } else {
+                Text(url.lastPathComponent)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            // A faint dot while an auto-save is pending — quieter than a word, no button to click.
+            if isDirty {
+                Circle()
+                    .fill(Color.secondary)
+                    .frame(width: 5, height: 5)
+                    .help("Unsaved changes — saving…")
+                    .transition(.opacity)
+            }
+            if let saveError {
+                Label(saveError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button(action: close) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.borderless)
+            .help("Close (Esc)")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color(nsColor: settings.terminalBackgroundColor))
+        .animation(.easeOut(duration: 0.15), value: isDirty)
+    }
+
+    /// A slim VS Code-style footer: language on the left, cursor position and file facts on the
+    /// right. The caret tracks as you move around the file.
+    private var statusBar: some View {
+        HStack(spacing: 0) {
+            Text(languageName)
+            if readOnly {
+                // Mark the peek so the absent caret/typing doesn't read as the editor being broken.
+                statusItem("Read-Only")
+            }
+            Spacer()
+            if let cursor {
+                statusItem("Ln \(cursor.line), Col \(cursor.column)")
+            }
+            statusItem("UTF-8")
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .background(Color(nsColor: settings.terminalBackgroundColor))
+    }
+
+    private func statusItem(_ text: String) -> some View {
+        Text(text).padding(.leading, 14)
+    }
+
+    /// A human-readable name for the detected language ("Plain Text" when auto/unknown).
+    private var languageName: String {
+        guard let language else { return "Plain Text" }
+        return language.prefix(1).uppercased() + language.dropFirst()
+    }
+
+    /// An explicit save (⌘S): cancels the pending debounce and flushes the buffer to disk right
+    /// now, rather than waiting out the idle delay. The auto-save still runs on its own; this just
+    /// lets the muscle-memory ⌘S commit immediately (and the unsaved dot clears at once).
+    private func saveNow() {
+        saveTask?.cancel()
+        writeIfNeeded()
+    }
+
+    /// (Re)arms the debounced write — the previous pending save is cancelled so only a quiet pause
+    /// after the last keystroke actually hits the disk.
+    private func scheduleSave() {
+        saveTask?.cancel()
+        saveTask = Task {
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            if Task.isCancelled { return }
+            writeIfNeeded()
+        }
+    }
+
+    /// Closes the overlay, flushing any pending edit first so nothing is lost on the way out.
+    private func close() {
+        saveTask?.cancel()
+        writeIfNeeded()
+        onClose()
+    }
+
+    /// Writes the buffer to disk if it differs from what's already there. The single place a save
+    /// happens, shared by the debounce, the close button, and the disappear safety net.
+    private func writeIfNeeded() {
+        guard !readOnly, text != savedText else { return }
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            savedText = text
+            saveError = nil
+        } catch {
+            saveError = "Save failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Maps a file to a highlight.js language id, matched against grammars the bundled highlight.js
+    /// actually ships (e.g. it has no `toml`/`jsonc` — those fold into `ini`/`json`). The whole file
+    /// name is checked first (so `Dockerfile`, `Cargo.lock`, `yarn.lock`, … resolve by name, not
+    /// extension), then the extension. Unknown files return `nil` to let highlight.js auto-detect.
+    private static func highlightLanguage(for url: URL) -> String? {
+        // Extension-less or specially-named files, keyed by the whole (lowercased) name.
+        switch url.lastPathComponent.lowercased() {
+        case "dockerfile", "containerfile": return "dockerfile"
+        case "makefile", "gnumakefile": return "makefile"
+        case "cmakelists.txt": return "cmake"
+        case "gemfile", "podfile", "rakefile", "gemfile.lock": return "ruby"
+        case "cargo.lock", "poetry.lock", "pipfile": return "ini" // TOML-ish (no toml grammar)
+        case "yarn.lock": return "yaml"
+        case ".gitignore", ".dockerignore", ".npmignore": return "bash"
+        case ".env", ".editorconfig", ".npmrc": return "ini"
+        case "nginx.conf": return "nginx"
+        default: break
+        }
+
+        switch url.pathExtension.lowercased() {
+        case "swift": return "swift"
+        case "js", "mjs", "cjs", "jsx": return "javascript"
+        case "ts", "tsx", "mts", "cts": return "typescript"
+        case "py", "pyw", "pyi": return "python"
+        case "rb": return "ruby"
+        case "go": return "go"
+        case "rs": return "rust"
+        case "c", "h": return "c"
+        case "cpp", "cc", "cxx", "hpp", "hh", "hxx": return "cpp"
+        case "m", "mm": return "objectivec"
+        case "cs": return "csharp"
+        case "java": return "java"
+        case "kt", "kts": return "kotlin"
+        case "php": return "php"
+        case "dart": return "dart"
+        case "lua": return "lua"
+        case "r": return "r"
+        case "scala", "sc": return "scala"
+        case "hs": return "haskell"
+        case "ex", "exs": return "elixir"
+        case "erl", "hrl": return "erlang"
+        case "clj", "cljs", "edn": return "clojure"
+        case "pl", "pm": return "perl"
+        // JSON family — highlight.js has no jsonc/json5 grammar, so they fold into json. Most
+        // `.lock` files (deno.lock, flake.lock, composer.lock, Pipfile.lock) are JSON too.
+        case "json", "jsonc", "json5", "lock": return "json"
+        case "yml", "yaml": return "yaml"
+        case "toml", "ini", "conf", "cfg", "properties": return "ini"
+        case "md", "markdown", "mdx": return "markdown"
+        case "sh", "bash", "zsh", "fish", "ksh": return "bash"
+        case "ps1", "psm1": return "powershell"
+        case "bat", "cmd": return "dos"
+        case "html", "htm", "xml", "plist", "svg", "xhtml": return "xml"
+        case "css": return "css"
+        case "scss", "sass": return "scss"
+        case "less": return "less"
+        case "sql": return "sql"
+        case "graphql", "gql": return "graphql"
+        case "proto": return "protobuf"
+        case "cmake": return "cmake"
+        case "mk", "mak": return "makefile"
+        case "diff", "patch": return "diff"
+        default: return nil
+        }
+    }
+}
