@@ -1,6 +1,6 @@
-// Shared site constants. termio ships free with Sparkle auto-updates today; paid
-// lifetime licenses are sold through Lemon Squeezy (Merchant of Record), which
-// hosts checkout and issues the license keys — there is no self-hosted backend.
+// Shared site constants. termio is free to use and ships with Sparkle
+// auto-updates — no account, no license keys, no payment backend. (Source will be
+// opened later; not yet.)
 
 export const supportedAgents = [
   "Claude Code",

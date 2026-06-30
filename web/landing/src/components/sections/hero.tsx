@@ -16,6 +16,10 @@ export function Hero() {
       <HeroGradient className="absolute inset-0 -z-10" />
       <div
         aria-hidden="true"
+        className="grain-overlay pointer-events-none absolute -inset-[6%] -z-10"
+      />
+      <div
+        aria-hidden="true"
         className="pointer-events-none absolute inset-x-0 bottom-0 -z-10 h-72 bg-gradient-to-b from-transparent to-background"
       />
       <div className="relative mx-auto flex w-full max-w-6xl flex-1 flex-col items-center justify-center px-5 pb-20 pt-36 text-center sm:px-8 sm:pt-40">
@@ -58,7 +62,7 @@ export function Hero() {
         </Reveal>
         <Reveal delayMs={260}>
           <p className="mt-6 text-sm text-muted-foreground">
-            7-day free trial · No account needed · Local-only, no telemetry
+            Free to use · No account needed · Local-only, no telemetry
           </p>
         </Reveal>
 

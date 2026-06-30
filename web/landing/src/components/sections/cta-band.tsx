@@ -18,7 +18,7 @@ export function CtaBand() {
             </h2>
             <p className="mx-auto mt-5 max-w-xl text-lg text-muted-foreground">
               Run Claude Code, Codex, Gemini and more side by side in one native
-              window. Free for seven days — no account, no card.
+              window. Free to use — no account, no card.
             </p>
             <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
               <a

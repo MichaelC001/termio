@@ -10,6 +10,15 @@ import { supportedAgents } from "@/lib/site";
 
 const faqs: { question: string; answer: React.ReactNode }[] = [
   {
+    question: "Is termio free?",
+    answer: (
+      <p>
+        Yes. termio is free to use — every feature, no trial clock, no license
+        key, no card. Just download it and go.
+      </p>
+    ),
+  },
+  {
     question: "How do I get updates?",
     answer: (
       <p>

@@ -18,9 +18,9 @@ const kindLabel: Record<ChangeKind, string> = {
 };
 
 const kindAccent: Record<ChangeKind, string> = {
-  new: "text-[#1a8f4c]",
-  improved: "text-[#0071e3]",
-  fixed: "text-[#b8740a]",
+  new: "text-[#34d399]",
+  improved: "text-[#4ea3ff]",
+  fixed: "text-[#fbbf24]",
 };
 
 const kindOrder: ChangeKind[] = ["new", "improved", "fixed"];

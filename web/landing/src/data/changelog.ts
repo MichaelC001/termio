@@ -14,6 +14,15 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.8.0",
+    date: "2026-06-30",
+    changes: {
+      new: [
+        "termio is now free to use — no trial clock, no license key, no account, no card. Just download it and go.",
+      ],
+    },
+  },
+  {
     version: "0.7.0",
     date: "2026-06-29",
     changes: {
@@ -38,7 +47,6 @@ export const changelog: ChangelogEntry[] = [
         "A bundled command-line tool lets you open projects and launch sessions from your shell.",
       ],
       improved: [
-        "Adopted Lemon Squeezy for licensing and retired the self-hosted backend — checkout and license keys are now handled by a Merchant of Record.",
         "Reorder projects by drag and drop in the sidebar.",
       ],
     },

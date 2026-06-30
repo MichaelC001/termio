@@ -47,10 +47,9 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* Light, Apple-style — a white canvas with near-black ink (#1d1d1f), Apple's
-   warm gray for secondary text, soft #f5f5f7 fills, and an Apple-blue focus ring.
-   The page is light by default; `.dark` below re-darkens a scoped subtree (the
-   terminal product shot) so it reads as a real dark terminal on the light page. */
+/* Light token set — kept as a fallback only. The site forces dark by putting
+   `.dark` on <html> (see layout.tsx), so these light values never resolve in
+   practice; they remain here in case a light mode is reintroduced later. */
 :root {
   --background: #ffffff;
   --foreground: #1d1d1f;
@@ -81,11 +80,12 @@
   --font-mono-stack: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
-/* Scoped dark surface for the terminal product shot — a near-black terminal that
-   floats on the light page (the classic Apple "dark device on white" treatment).
-   Anything inside a `.dark` element resolves these tokens instead of the light
-   ones above. */
+/* The site's real palette — a near-black canvas with light ink, the superwhisper
+   dark cinematic look. Applied to <html> so the whole page resolves these tokens
+   (and shadcn `dark:` variants fire); the terminal product shot reuses the same
+   class so it stays consistent with the page. */
 .dark {
+  color-scheme: dark;
   --background: #08080a;
   --foreground: #f4f4f6;
   --card: #0c0c0f;
@@ -127,28 +127,52 @@
 }
 
 @layer utilities {
-  /* The full-bleed bright dusk gradient behind the hero — Superwhisper's airy
-     sky-blue → periwinkle → soft-lavender, with a darker top corner standing in
-     for their photographic shadow, easing back to black at the very bottom so it
-     meets the black page below. */
+  /* The full-bleed cinematic dusk gradient behind the hero — a deep, restrained
+     navy → indigo glow over near-black, easing back to the page's #08080a at the
+     bottom so it meets the dark page below. Acts as the SSR / no-WebGL fallback
+     under the animated aurora. */
   .hero-cinematic {
     background-image:
-      radial-gradient(60% 50% at 50% -8%, rgba(0, 113, 227, 0.1), transparent 60%),
+      radial-gradient(54% 44% at 50% -6%, rgba(40, 120, 200, 0.22), transparent 62%),
+      radial-gradient(40% 36% at 78% 8%, rgba(40, 150, 165, 0.12), transparent 60%),
       linear-gradient(
         180deg,
-        #f3f6ff 0%,
-        #eef1fb 28%,
-        #f4f1fb 58%,
-        #fbfaff 82%,
-        #ffffff 100%
+        #0a1a40 0%,
+        #09152e 30%,
+        #08101f 60%,
+        #08080e 84%,
+        #08080a 100%
       );
   }
 
-  /* Subtler glow wash reused behind the CTA band, tuned for the light canvas. */
+  /* Film-grain "frosted" overlay — fine SVG fractal noise blended over the aurora
+     so the hero reads as matte/sanded rather than a glossy gradient. Static by
+     default; a barely-there step animation gives it a subtle film shimmer. */
+  .grain-overlay {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 160px 160px;
+    opacity: 0.6;
+    mix-blend-mode: overlay;
+    animation: grain-shift 6s steps(4) infinite;
+  }
+  @keyframes grain-shift {
+    0% { transform: translate(0, 0); }
+    25% { transform: translate(-3%, 2%); }
+    50% { transform: translate(2%, -3%); }
+    75% { transform: translate(-2%, -1%); }
+    100% { transform: translate(0, 0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .grain-overlay {
+      animation: none;
+    }
+  }
+
+  /* Subtler glow wash reused behind the CTA band, tuned for the dark canvas. */
   .brand-wash {
     background-image:
-      radial-gradient(40rem 30rem at 50% 0%, rgba(0, 113, 227, 0.1), transparent 60%),
-      radial-gradient(34rem 28rem at 85% 110%, rgba(174, 108, 255, 0.12), transparent 60%);
+      radial-gradient(40rem 30rem at 50% 0%, rgba(70, 110, 255, 0.18), transparent 60%),
+      radial-gradient(34rem 28rem at 85% 110%, rgba(174, 108, 255, 0.2), transparent 60%);
   }
 
   /* Cool accent for keywords: blue → violet → magenta, deepened for white. */
@@ -159,40 +183,41 @@
     color: transparent;
   }
 
-  /* Soft Apple-style elevation that lifts cards and the product shot off the
-     white canvas. */
+  /* Elevation for the dark canvas: a faint top sheen plus a deep ambient shadow,
+     since black-on-black drop shadows read as a glow-edge rather than a cast. */
   .shadow-soft {
     box-shadow:
-      0 1px 2px rgba(0, 0, 0, 0.04),
-      0 12px 32px -12px rgba(0, 0, 0, 0.18),
-      0 2px 8px -4px rgba(0, 0, 0, 0.08);
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.06),
+      0 1px 2px rgba(0, 0, 0, 0.5),
+      0 24px 56px -20px rgba(0, 0, 0, 0.7);
   }
 
-  /* Apple "Liquid Glass" (2026): a translucent, blurred, saturated surface with
-     a top sheen and soft drop shadow — used for floating chrome (the nav). */
+  /* Apple "Liquid Glass" (2026): a translucent, blurred, saturated surface — used
+     for floating chrome (the nav). Dark variant: a smoked panel with a white-hairline
+     sheen instead of the light glass. */
   .liquid-glass {
-    background-color: rgba(255, 255, 255, 0.6);
+    background-color: rgba(16, 16, 20, 0.6);
     backdrop-filter: blur(20px) saturate(180%);
     -webkit-backdrop-filter: blur(20px) saturate(180%);
     box-shadow:
-      inset 0 1px 0 0 rgba(255, 255, 255, 0.6),
-      inset 0 0 0 1px rgba(0, 0, 0, 0.04),
-      0 1px 1px rgba(0, 0, 0, 0.04),
-      0 8px 24px -12px rgba(0, 0, 0, 0.18);
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.08),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+      0 1px 1px rgba(0, 0, 0, 0.4),
+      0 8px 24px -12px rgba(0, 0, 0, 0.6);
   }
 
   /* Frosted pill used for section eyebrow labels. */
   .glass-pill {
-    background-color: rgba(255, 255, 255, 0.7);
+    background-color: rgba(255, 255, 255, 0.06);
     box-shadow:
-      inset 0 0 0 1px rgba(0, 0, 0, 0.06),
-      0 1px 2px rgba(0, 0, 0, 0.06);
+      inset 0 0 0 1px rgba(255, 255, 255, 0.1),
+      0 1px 2px rgba(0, 0, 0, 0.3);
     backdrop-filter: blur(8px);
   }
 
   /* Faint character-grid texture behind statement sections. */
   .dot-grid {
-    background-image: radial-gradient(rgba(0, 0, 0, 0.05) 1px, transparent 1px);
+    background-image: radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px);
     background-size: 24px 24px;
     -webkit-mask-image: radial-gradient(70% 60% at 50% 40%, #000 0%, transparent 75%);
     mask-image: radial-gradient(70% 60% at 50% 40%, #000 0%, transparent 75%);
