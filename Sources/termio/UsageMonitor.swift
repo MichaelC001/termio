@@ -152,12 +152,15 @@ final class UsageMonitor: ObservableObject {
                 scanned[.codex] = codex
             }
             let result = scanned
-            await MainActor.run {
-                self?.tokenUsage = result
-                self?.lastTokenScan = Date()
-                self?.isScanning = false
-            }
+            await self?.finishTokenScan(result)
         }
+    }
+
+    @MainActor
+    private func finishTokenScan(_ result: [AgentPreset: AgentTokenUsage]) {
+        tokenUsage = result
+        lastTokenScan = Date()
+        isScanning = false
     }
 
     // MARK: - Fetching
