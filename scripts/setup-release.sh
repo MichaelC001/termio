@@ -43,7 +43,7 @@ echo "    OK — public key matches: $expected_key"
 
 if command -v gh >/dev/null 2>&1; then
     echo "==> Setting the SPARKLE_ED_KEY repository secret"
-    key_file="$(mktemp)"
+    key_file="$(mktemp -u)"   # -u: name only; generate_keys -x refuses to overwrite an existing file
     trap 'rm -f "$key_file"' EXIT
     "$generate_keys" -x "$key_file" >/dev/null
     gh secret set SPARKLE_ED_KEY < "$key_file"

@@ -8,6 +8,10 @@ termio.app/
 
 # Local state from the omo agent tool (run-continuation cache); not project source.
 .omo/
+
+# Wrangler local state (caches the Cloudflare account id/email); not project source.
+.wrangler/
+
 packaging/.cache/
 /termio.app/
 sandbox-helper/.build/
