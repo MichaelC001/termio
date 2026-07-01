@@ -1,6 +1,5 @@
 import { GitBranch, EyeOff } from "lucide-react";
 import { Reveal } from "@/components/reveal";
-import { SectionLabel } from "@/components/section-label";
 import { AgentIcon } from "@/components/agent-icons";
 import { supportedAgents } from "@/lib/site";
 import { cn } from "@/lib/utils";
@@ -94,10 +93,6 @@ function LocalOnlyVisual() {
 }
 
 type Bento = {
-  // Mono eyebrow color + a subtle corner glow tint, Warp-style — each card gets
-  // its own tinted-dark surface drawn from termio's brand accents.
-  eyebrowColor: string;
-  glow: string;
   eyebrow: string;
   heading: string;
   intro: string;
@@ -107,18 +102,14 @@ type Bento = {
 
 const cards: Bento[] = [
   {
-    eyebrowColor: "text-[#4ea3ff]",
-    glow: "rgba(0, 136, 255, 0.10)",
     eyebrow: "Multi-agent",
     heading: "Every agent, first-class",
     intro:
-      "Claude Code, Codex, Gemini and five more — each in a real native terminal, one tap to launch.",
+      "Claude Code, Codex, OpenCode, Pi Agent and four more — each in a real native terminal, one tap to launch.",
     visual: <MultiAgentVisual />,
     wide: true,
   },
   {
-    eyebrowColor: "text-[#34d399]",
-    glow: "rgba(22, 194, 83, 0.10)",
     eyebrow: "Always live",
     heading: "Switch without tearing down",
     intro:
@@ -127,8 +118,6 @@ const cards: Bento[] = [
     wide: false,
   },
   {
-    eyebrowColor: "text-[#0fb7fa]",
-    glow: "rgba(15, 183, 250, 0.10)",
     eyebrow: "Git-aware",
     heading: "Organized by branch",
     intro:
@@ -137,8 +126,6 @@ const cards: Bento[] = [
     wide: false,
   },
   {
-    eyebrowColor: "text-[#fbbf24]",
-    glow: "rgba(255, 183, 100, 0.10)",
     eyebrow: "Private by default",
     heading: "Local-only, by design",
     intro:
@@ -151,15 +138,10 @@ const cards: Bento[] = [
 function BentoCard({ card, index }: { card: Bento; index: number }) {
   const header = (
     <div className={cn(card.wide && "md:max-w-sm")}>
-      <span
-        className={cn(
-          "font-mono text-[11px] font-medium uppercase tracking-[0.18em]",
-          card.eyebrowColor,
-        )}
-      >
+      <span className="text-sm font-semibold tracking-tight text-muted-foreground">
         {card.eyebrow}
       </span>
-      <h3 className="mt-3 text-balance text-2xl font-semibold tracking-[-0.04em] text-foreground">
+      <h3 className="mt-2 text-balance text-2xl font-semibold tracking-[-0.02em] text-foreground">
         {card.heading}
       </h3>
       <p className="mt-3 text-base leading-relaxed text-muted-foreground">
@@ -173,18 +155,10 @@ function BentoCard({ card, index }: { card: Bento; index: number }) {
       as="article"
       delayMs={(index % 2) * 80}
       className={cn(
-        "shadow-soft relative isolate flex flex-col overflow-hidden rounded-3xl border border-border bg-card p-8 sm:p-10",
+        "shadow-soft flex flex-col rounded-3xl border border-border bg-card p-8 sm:p-10",
         card.wide && "md:col-span-2",
       )}
     >
-      {/* Subtle per-card corner glow, Warp-style tinted-dark surface. */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0 -z-10"
-        style={{
-          backgroundImage: `radial-gradient(115% 90% at 100% 0%, ${card.glow}, transparent 60%)`,
-        }}
-      />
       {card.wide ? (
         <div className="grid items-center gap-8 md:grid-cols-2 md:gap-12">
           {header}
@@ -209,8 +183,10 @@ export function Features() {
     <section id="features" className="scroll-mt-24">
       <div className="mx-auto w-full max-w-6xl px-5 py-32 sm:py-40 sm:px-8">
         <Reveal>
-          <SectionLabel accent="violet">What&apos;s inside</SectionLabel>
-          <h2 className="mt-4 max-w-2xl text-balance text-4xl font-semibold tracking-[-0.045em] text-foreground sm:text-6xl">
+          <p className="text-base font-semibold tracking-tight text-muted-foreground">
+            What&apos;s inside
+          </p>
+          <h2 className="mt-3 max-w-2xl text-balance text-4xl font-semibold tracking-[-0.02em] text-foreground sm:text-6xl">
             Everything your agents need.
             <br className="hidden sm:block" /> Nothing they don&apos;t.
           </h2>

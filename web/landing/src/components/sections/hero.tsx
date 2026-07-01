@@ -2,73 +2,64 @@ import Image from "next/image";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Reveal } from "@/components/reveal";
+import { HeroGradient } from "@/components/hero-gradient";
 import { TermioWindow } from "@/components/termio-window";
 import { AppleMark } from "@/components/section-label";
-import { HeroGradient } from "@/components/hero-gradient";
-import { downloadUrl, heroScreenshot } from "@/lib/site";
+import { AgentMarquee } from "@/components/agent-icons";
+import { downloadUrl, heroScreenshot, supportedAgents } from "@/lib/site";
 
 export function Hero() {
   return (
     <section
       id="top"
-      className="hero-cinematic relative isolate flex min-h-screen flex-col overflow-hidden"
+      className="hero-cinematic relative isolate flex min-h-screen flex-col overflow-hidden text-foreground"
     >
+      {/* Slow navy→indigo→violet aurora (WebGL MeshGradient) behind the hero. */}
       <HeroGradient className="absolute inset-0 -z-10" />
+      {/* Frosted film grain over the aurora so it reads matte, not glossy. */}
       <div
         aria-hidden="true"
         className="grain-overlay pointer-events-none absolute -inset-[6%] -z-10"
       />
+      {/* Fade the hero into the page below. */}
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-x-0 bottom-0 -z-10 h-72 bg-gradient-to-b from-transparent to-background"
       />
       <div className="relative mx-auto flex w-full max-w-6xl flex-1 flex-col items-center justify-center px-5 pb-20 pt-36 text-center sm:px-8 sm:pt-40">
         <Reveal>
-          <p className="font-mono text-sm uppercase tracking-[0.2em] text-muted-foreground sm:text-base">
-            Modern Agentic Engineering Environment
+          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground sm:text-base">
+            Modern agentic workspace
           </p>
         </Reveal>
         <Reveal delayMs={40}>
-          <h1 className="mt-4 text-balance text-5xl font-semibold leading-[0.95] tracking-[-0.05em] text-foreground sm:text-7xl">
-            Every agent.
-            <br />
-            One window.
+          <h1 className="mt-7 text-balance text-5xl font-semibold leading-[1.05] tracking-[-0.02em] text-foreground sm:text-7xl">
+            Orchestrate your fleet of agents.
           </h1>
         </Reveal>
         <Reveal delayMs={120}>
-          <p className="mx-auto mt-8 max-w-xl text-pretty text-lg leading-relaxed text-muted-foreground sm:text-xl">
-            One native Mac window for every coding agent — Claude Code, Codex,
-            Gemini, Amp and more. Each gets a real terminal, you switch
-            instantly, and nothing ever leaves your machine.
+          <p className="mx-auto mt-9 max-w-2xl text-pretty text-lg leading-relaxed text-muted-foreground sm:text-xl">
+            Each in its own real terminal. One native Mac window, and nothing
+            ever leaves your machine.
           </p>
         </Reveal>
+        <Reveal delayMs={170} className="mt-10 w-full max-w-3xl">
+          <AgentMarquee agents={supportedAgents} />
+        </Reveal>
         <Reveal delayMs={200}>
-          <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
+          <div className="mt-12 flex flex-col items-center justify-center gap-x-8 gap-y-3 sm:flex-row">
             <a
               href={downloadUrl}
               className={cn(
                 buttonVariants(),
-                "h-12 gap-2 rounded-full px-7 text-base shadow-[0_6px_20px_-6px_rgba(0,113,227,0.5)]",
+                "h-12 gap-2 rounded-full px-7 text-base",
+                "shadow-[0_12px_32px_rgba(20,23,28,0.18),0_0_0_1px_rgba(0,211,199,0.14)]",
               )}
             >
               <AppleMark />
               Download for Mac
             </a>
-            <a
-              href="#features"
-              className={cn(
-                buttonVariants({ variant: "outline" }),
-                "h-12 rounded-full px-7 text-base",
-              )}
-            >
-              See features
-            </a>
           </div>
-        </Reveal>
-        <Reveal delayMs={260}>
-          <p className="mt-6 text-sm text-muted-foreground">
-            Free to use · No account needed · Local-only, no telemetry
-          </p>
         </Reveal>
 
         <Reveal delayMs={160} className="mt-auto w-full pt-20">

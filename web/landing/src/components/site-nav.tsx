@@ -12,10 +12,10 @@ export function SiteNav() {
       <div className="relative mx-auto flex w-full max-w-6xl items-center justify-center px-5 sm:px-8">
         <Link
           href="/"
-          className="absolute left-5 hidden rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring sm:left-8 sm:block"
+          className="group absolute left-5 hidden rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring sm:left-8 sm:block"
           aria-label="Termio home"
         >
-          <Logo />
+          <Logo size="lg" />
         </Link>
 
         <nav
@@ -26,7 +26,7 @@ export function SiteNav() {
             <a
               key={link.href}
               href={link.href}
-              className="rounded-full px-4 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground"
+              className="rounded-full px-4 py-1.5 text-sm font-medium text-white transition-all duration-200 ease-[var(--ease-apple)] hover:bg-white/[0.08] hover:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)]"
             >
               {link.label}
             </a>

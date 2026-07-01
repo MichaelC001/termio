@@ -21,6 +21,10 @@
   --color-brand-blue-deep: #0072fb;
   --color-brand-cyan: #0fb7fa;
   --color-brand-purple: #b855e7;
+  /* The Termio brand anchor — an electric terminal teal, used sparingly for the
+     hero eyebrow, the live prompt arrow, and the CTA's edge light. */
+  --color-brand-teal: #00d3c7;
+  --color-brand-teal-deep: #00afa5;
 
   --color-ring: var(--ring);
   --color-input: var(--input);
@@ -47,30 +51,33 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* The site's palette — a clean, cool light theme (Linear / Vercel / Resend
-   register): a crisp near-white canvas with the faintest cool cast (not a warm
-   beige), cool near-black ink, neutral gray secondaries, and a single crisp blue
-   accent. Applied to <html> (see layout.tsx). */
+/* The site's palette — Apple's HIG light system, matched to developer.apple.com:
+   a neutral #f5f5f7 canvas with pure-white cards, #1d1d1f ink (Apple's soft
+   near-black, not pure black), the signature #86868b secondary gray, #d2d2d7
+   hairlines, and a soft-black (#1d1d1f) primary for buttons. Fully monochrome —
+   no colored accent. Applied to <html> (see layout.tsx). */
 :root {
   color-scheme: light;
-  --background: #f8f9fb;
-  --foreground: #16161a;
+  --background: #ffffff;
+  --foreground: #1d1d1f;
   --card: #ffffff;
-  --card-foreground: #16161a;
+  --card-foreground: #1d1d1f;
   --popover: #ffffff;
-  --popover-foreground: #16161a;
-  --primary: #16161a;
+  --popover-foreground: #1d1d1f;
+  /* Premium near-black for buttons — a hair cooler and deeper than the ink, so the
+     CTA reads as an object rather than heavy text. */
+  --primary: #14171c;
   --primary-foreground: #ffffff;
-  --secondary: #f1f2f5;
-  --secondary-foreground: #16161a;
-  --muted: #f1f2f5;
-  --muted-foreground: #6a6b75;
-  --accent: #eceef2;
-  --accent-foreground: #16161a;
-  --destructive: #ff3b30;
-  --border: rgba(18, 20, 28, 0.09);
-  --input: rgba(18, 20, 28, 0.14);
-  --ring: #007aff;
+  --secondary: #f5f5f7;
+  --secondary-foreground: #1d1d1f;
+  --muted: #f5f5f7;
+  --muted-foreground: #6e6e73;
+  --accent: #e8e8ed;
+  --accent-foreground: #1d1d1f;
+  --destructive: #e30000;
+  --border: #d2d2d7;
+  --input: #d2d2d7;
+  --ring: #1d1d1f;
   --radius: 1rem;
   /* Apple's standard easing curve and the spring used for press feedback. */
   --ease-apple: cubic-bezier(0.25, 0.1, 0.25, 1);
@@ -129,19 +136,35 @@
 }
 
 @layer utilities {
-  /* The full-bleed cinematic dusk gradient behind the hero — a deep, restrained
-     navy → indigo glow over near-black, easing back to the page's #08080a at the
-     bottom so it meets the dark page below. Acts as the SSR / no-WebGL fallback
-     under the animated aurora. */
+  /* The near-white hero canvas the Liquid-Glass pixel beams drift over (see
+     hero-gradient.tsx). A barely-there vertical gradient — pure white at the top,
+     settling to Apple's #f5f5f7 glass tint — acting as the SSR / no-WebGL fallback
+     under the animated beams; the hero fades into the page below via hero.tsx's
+     bottom wash. */
+  .hero-light {
+    background-color: #f5f5f7;
+    background-image: linear-gradient(
+      180deg,
+      #ffffff 0%,
+      #f6f7fa 55%,
+      #f0f1f5 100%
+    );
+  }
+
+  /* The near-black hero canvas the aurora drifts over (see hero-gradient.tsx) —
+     the SSR / no-WebGL fallback under the MeshGradient. Deep navy settling to the
+     page's #08080a background. */
   .hero-cinematic {
     background-image:
-      radial-gradient(54% 44% at 50% -6%, rgba(0, 122, 255, 0.13), transparent 62%),
-      radial-gradient(40% 36% at 80% 6%, rgba(90, 140, 255, 0.09), transparent 60%),
+      radial-gradient(54% 44% at 50% -6%, rgba(40, 120, 200, 0.22), transparent 62%),
+      radial-gradient(40% 36% at 78% 8%, rgba(40, 150, 165, 0.12), transparent 60%),
       linear-gradient(
         180deg,
-        #eaf0fb 0%,
-        #f2f5fb 40%,
-        #f8f9fb 100%
+        #0a1a40 0%,
+        #09152e 30%,
+        #08101f 60%,
+        #08080e 84%,
+        #08080a 100%
       );
   }
 
@@ -151,7 +174,7 @@
   .grain-overlay {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
     background-size: 160px 160px;
-    opacity: 0.4;
+    opacity: 0.04;
     mix-blend-mode: multiply;
     animation: grain-shift 6s steps(4) infinite;
   }
@@ -188,8 +211,8 @@
   /* Subtler glow wash reused behind the CTA band, tuned for the dark canvas. */
   .brand-wash {
     background-image:
-      radial-gradient(40rem 30rem at 50% 0%, rgba(0, 122, 255, 0.1), transparent 60%),
-      radial-gradient(34rem 28rem at 85% 110%, rgba(60, 120, 255, 0.1), transparent 60%);
+      radial-gradient(40rem 30rem at 50% 0%, rgba(29, 29, 31, 0.05), transparent 60%),
+      radial-gradient(34rem 28rem at 85% 110%, rgba(29, 29, 31, 0.04), transparent 60%);
   }
 
   /* Cool accent for keywords: blue → violet → magenta, deepened for white. */
@@ -221,6 +244,16 @@
       inset 0 0 0 1px rgba(20, 20, 20, 0.06),
       0 1px 1px rgba(20, 20, 20, 0.04),
       0 8px 24px -12px rgba(20, 20, 20, 0.16);
+  }
+  /* Dark variant: a smoked, low-tint panel with a white-hairline sheen — reads as
+     frosted chrome over the cinematic hero instead of the bright light glass. */
+  .dark .liquid-glass {
+    background-color: rgba(8, 8, 11, 0.78);
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.1),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.09),
+      0 1px 1px rgba(0, 0, 0, 0.35),
+      0 12px 32px -14px rgba(0, 0, 0, 0.7);
   }
 
   /* Frosted pill used for section eyebrow labels. */

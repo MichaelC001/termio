@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 const siteDescription =
-  "Termio is a native Mac workspace for your AI coding agents — Claude Code, Codex, Gemini, Amp and more. Run them side by side, each in a real terminal, switch between them instantly, and nothing ever leaves your machine.";
+  "Termio is a native Mac workspace for your AI coding agents — Claude Code, Codex, OpenCode, Pi Agent and more. Run them side by side, each in a real terminal, switch between them instantly, and nothing ever leaves your machine.";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://www.termio.sh"),
@@ -56,7 +56,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="h-full antialiased">
+    <html lang="en" className="dark h-full antialiased">
       <body className="min-h-full flex flex-col bg-background text-foreground">
         {children}
       </body>
