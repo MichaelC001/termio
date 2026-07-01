@@ -8,7 +8,7 @@ import { changelog, type ChangeKind } from "@/data/changelog";
 export const metadata: Metadata = {
   title: "Changelog",
   description:
-    "What's new in termio — new features, improvements and fixes, shipped to every Mac through built-in auto-updates.",
+    "What's new in Termio — new features, improvements and fixes, shipped to every Mac through built-in auto-updates.",
 };
 
 const kindLabel: Record<ChangeKind, string> = {
@@ -46,7 +46,7 @@ export default function ChangelogPage() {
             <Reveal>
               <SectionLabel accent="violet">Changelog</SectionLabel>
               <h1 className="mt-4 text-balance text-4xl font-semibold tracking-[-0.045em] text-foreground sm:text-5xl">
-                What&apos;s new in termio
+                What&apos;s new in Termio
               </h1>
               <p className="mt-5 max-w-xl text-base leading-relaxed text-muted-foreground">
                 Every release ships to your Mac through built-in auto-updates —

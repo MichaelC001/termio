@@ -22,7 +22,7 @@ const agentDotColor: Record<string, string> = {
   Amp: "bg-brand-purple",
 };
 
-// A pure-CSS mock of the termio app: a Mac-style title bar with traffic lights,
+// A pure-CSS mock of the Termio app: a Mac-style title bar with traffic lights,
 // a sidebar of agent sessions grouped under a project, and a live terminal pane.
 // No screenshots — everything here is JSX so it stays crisp at any size.
 export function TermioWindow({ className }: { className?: string }) {
@@ -33,7 +33,7 @@ export function TermioWindow({ className }: { className?: string }) {
         className,
       )}
       role="img"
-      aria-label="The termio app showing a sidebar of AI coding-agent sessions and a live terminal pane"
+      aria-label="The Termio app showing a sidebar of AI coding-agent sessions and a live terminal pane"
     >
       {/* Title bar */}
       <div className="flex items-center gap-2 border-b border-border bg-white/[0.03] px-4 py-3">
@@ -41,7 +41,7 @@ export function TermioWindow({ className }: { className?: string }) {
         <span className="h-3 w-3 rounded-full bg-brand-amber" />
         <span className="h-3 w-3 rounded-full bg-brand-green" />
         <span className="ml-3 font-mono text-xs text-muted-foreground">
-          termio — acme-api
+          Termio — acme-api
         </span>
       </div>
 

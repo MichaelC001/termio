@@ -126,7 +126,7 @@ const cards: Bento[] = [
     eyebrow: "Git-aware",
     heading: "Organized by branch",
     intro:
-      "Run each agent in its own git worktree — termio groups them under the project and shows every branch live in the sidebar, so parallel work never gets confusing.",
+      "Run each agent in its own git worktree — Termio groups them under the project and shows every branch live in the sidebar, so parallel work never gets confusing.",
     visual: <WorktreeVisual />,
     wide: false,
   },

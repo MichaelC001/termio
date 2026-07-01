@@ -65,7 +65,7 @@ export function SiteFooter() {
         </div>
 
         <div className="mt-12 flex flex-col items-center justify-between gap-3 border-t border-border pt-6 text-sm text-muted-foreground sm:flex-row">
-          <p>© {new Date().getFullYear()} termio. All rights reserved.</p>
+          <p>© {new Date().getFullYear()} Termio. All rights reserved.</p>
           <p className="font-mono text-xs">Built for Apple Silicon.</p>
         </div>
       </div>

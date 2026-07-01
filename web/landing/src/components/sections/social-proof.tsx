@@ -13,7 +13,7 @@ export function SocialProof() {
         </Reveal>
         <Reveal delayMs={60}>
           <p className="mx-auto mt-4 max-w-xl text-center text-base text-muted-foreground">
-            Bring your own CLI and API keys — termio gives each one a real native
+            Bring your own CLI and API keys — Termio gives each one a real native
             terminal.
           </p>
         </Reveal>

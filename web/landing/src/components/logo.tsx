@@ -1,7 +1,7 @@
 import Image from "next/image";
 import { cn } from "@/lib/utils";
 
-// The termio wordmark: the real macOS app icon set next to the lowercase name.
+// The Termio wordmark: the real macOS app icon set next to the name.
 // Decorative — the surrounding link/anchor carries the accessible label.
 export function Logo({ className }: { className?: string }) {
   return (
@@ -16,7 +16,7 @@ export function Logo({ className }: { className?: string }) {
         priority
       />
       <span className="text-lg font-semibold tracking-tight text-foreground">
-        termio
+        Termio
       </span>
     </span>
   );

@@ -2,17 +2,17 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 const siteDescription =
-  "termio is a native Mac workspace for your AI coding agents — Claude Code, Codex, Gemini, Amp and more. Run them side by side, each in a real terminal, switch between them instantly, and nothing ever leaves your machine.";
+  "Termio is a native Mac workspace for your AI coding agents — Claude Code, Codex, Gemini, Amp and more. Run them side by side, each in a real terminal, switch between them instantly, and nothing ever leaves your machine.";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://termio.app"),
   title: {
-    default: "termio — the terminal home for your AI coding agents",
-    template: "%s — termio",
+    default: "Termio — the terminal home for your AI coding agents",
+    template: "%s — Termio",
   },
   description: siteDescription,
   keywords: [
-    "termio",
+    "Termio",
     "AI coding agents",
     "terminal",
     "macOS terminal",
@@ -21,12 +21,12 @@ export const metadata: Metadata = {
     "git worktree",
     "Apple Silicon",
   ],
-  applicationName: "termio",
+  applicationName: "Termio",
   openGraph: {
-    title: "termio — the terminal home for your AI coding agents",
+    title: "Termio — the terminal home for your AI coding agents",
     description: siteDescription,
     type: "website",
-    siteName: "termio",
+    siteName: "Termio",
     url: "/",
     images: [
       {
@@ -34,13 +34,13 @@ export const metadata: Metadata = {
         type: "image/webp",
         width: 2400,
         height: 1260,
-        alt: "termio — a native Mac workspace for running multiple AI coding agents, shown beside a live Claude Code session.",
+        alt: "Termio — a native Mac workspace for running multiple AI coding agents, shown beside a live Claude Code session.",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "termio — the terminal home for your AI coding agents",
+    title: "Termio — the terminal home for your AI coding agents",
     description: siteDescription,
     images: ["/og.webp"],
   },

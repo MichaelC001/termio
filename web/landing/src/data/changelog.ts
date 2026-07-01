@@ -1,4 +1,4 @@
-// The changelog rendered at /changelog, newest entry first. termio ships through
+// The changelog rendered at /changelog, newest entry first. Termio ships through
 // Sparkle, so a release here corresponds to a notarized build users auto-update
 // to. Keep entries short and user-facing — what changed, not how. Categories are
 // optional; omit any that are empty for a release.
@@ -18,7 +18,7 @@ export const changelog: ChangelogEntry[] = [
     date: "2026-06-30",
     changes: {
       new: [
-        "termio is now free to use — no trial clock, no license key, no account, no card. Just download it and go.",
+        "Termio is now free to use — no trial clock, no license key, no account, no card. Just download it and go.",
       ],
     },
   },

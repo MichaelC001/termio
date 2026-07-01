@@ -10,10 +10,10 @@ import { supportedAgents } from "@/lib/site";
 
 const faqs: { question: string; answer: React.ReactNode }[] = [
   {
-    question: "Is termio free?",
+    question: "Is Termio free?",
     answer: (
       <p>
-        Yes. termio is free to use — every feature, no trial clock, no license
+        Yes. Termio is free to use — every feature, no trial clock, no license
         key, no card. Just download it and go.
       </p>
     ),
@@ -22,7 +22,7 @@ const faqs: { question: string; answer: React.ReactNode }[] = [
     question: "How do I get updates?",
     answer: (
       <p>
-        Automatically. termio ships with built-in auto-updates, so once you
+        Automatically. Termio ships with built-in auto-updates, so once you
         download it the app keeps itself current — no reinstalling, no checking a
         website.
       </p>
@@ -32,7 +32,7 @@ const faqs: { question: string; answer: React.ReactNode }[] = [
     question: "Do I need an account?",
     answer: (
       <p>
-        No. Download termio and use every feature — the app runs entirely on your
+        No. Download Termio and use every feature — the app runs entirely on your
         Mac, with no sign-in and no card.
       </p>
     ),
@@ -41,7 +41,7 @@ const faqs: { question: string; answer: React.ReactNode }[] = [
     question: "Which agents are supported?",
     answer: (
       <p>
-        termio gives a first-class native terminal to {supportedAgents.join(", ")}
+        Termio gives a first-class native terminal to {supportedAgents.join(", ")}
         . Because each session is just a real PTY, any CLI-based agent works — and
         we add more as the ecosystem grows.
       </p>
@@ -51,7 +51,7 @@ const faqs: { question: string; answer: React.ReactNode }[] = [
     question: "Is my code private?",
     answer: (
       <p>
-        Yes. termio is local-only: no telemetry, no cloud sync, and no account is
+        Yes. Termio is local-only: no telemetry, no cloud sync, and no account is
         needed to start. Your repositories, agent output and sessions never leave
         your machine.
       </p>
@@ -61,7 +61,7 @@ const faqs: { question: string; answer: React.ReactNode }[] = [
     question: "What are the requirements?",
     answer: (
       <p>
-        macOS, Apple Silicon. termio is a native app built for Apple Silicon
+        macOS, Apple Silicon. Termio is a native app built for Apple Silicon
         Macs. You bring your own agent CLIs and their API keys.
       </p>
     ),

@@ -13,7 +13,7 @@ export function SiteNav() {
         <Link
           href="/"
           className="absolute left-5 hidden rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring sm:left-8 sm:block"
-          aria-label="termio home"
+          aria-label="Termio home"
         >
           <Logo />
         </Link>

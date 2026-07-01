@@ -1,4 +1,4 @@
-// Shared site constants. termio is free to use and ships with Sparkle
+// Shared site constants. Termio is free to use and ships with Sparkle
 // auto-updates — no account, no license keys, no payment backend. (Source will be
 // opened later; not yet.)
 
@@ -25,7 +25,7 @@ export const navLinks = [
 export const downloadUrl = "https://downloads.termio.sh/termio.dmg";
 
 // Real app screenshot for the hero. Drop a polished capture at
-// public/screenshots/hero.png (or .webp) — the termio window, dark, ~2× the
+// public/screenshots/hero.png (or .webp) — the Termio window, dark, ~2× the
 // window size (≈1996×1210) showing the sidebar + a live agent session — then set
 // this to its path and its real pixel dimensions. While null, the hero shows the
 // hand-built CSS mock instead, so nothing breaks and nothing false ships.

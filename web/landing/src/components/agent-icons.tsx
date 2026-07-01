@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 
 // Real brand glyphs for every supported agent, keyed by the names in
 // `supportedAgents`. We use each brand's monochrome (`.Mono`) variant so the
-// logos render in `currentColor` — on termio's near-black canvas the full-color
+// logos render in `currentColor` — on Termio's near-black canvas the full-color
 // variants of the black-on-white brands (Codex, Copilot, Cursor, OpenCode) would
 // otherwise vanish. Pi has no brand icon in the set, so it falls back to a glyph.
 type GlyphProps = { size?: number };

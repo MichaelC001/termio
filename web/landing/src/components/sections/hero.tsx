@@ -74,7 +74,7 @@ export function Hero() {
                   src={heroScreenshot.src}
                   width={heroScreenshot.width}
                   height={heroScreenshot.height}
-                  alt="The termio app: a sidebar of AI coding-agent sessions beside a live terminal pane."
+                  alt="The Termio app: a sidebar of AI coding-agent sessions beside a live terminal pane."
                   className="shadow-soft h-auto w-full rounded-2xl"
                   priority
                 />
