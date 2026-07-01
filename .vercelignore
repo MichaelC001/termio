@@ -1,0 +1,14 @@
+# Only web/landing is deployed (Vercel project root directory = web/landing).
+# Keep the upload to sources: exclude the Swift app, build artifacts and deps.
+.build/
+.swiftpm/
+Sources/
+Tests/
+termio.app/
+packaging/
+scripts/
+tools/
+docs/
+web/docs/
+web/landing/node_modules/
+web/landing/.next/

@@ -17,3 +17,6 @@ packaging/.cache/
 sandbox-helper/.build/
 
 # Build artifacts inside vendored packages
+
+# Vercel project link (local credentials/metadata)
+.vercel/
