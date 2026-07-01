@@ -20,7 +20,7 @@ export function CtaBand() {
             </div>
             <h2
               id="cta-heading"
-              className="mx-auto max-w-2xl text-balance text-4xl font-semibold tracking-[-0.045em] text-foreground sm:text-5xl"
+              className="mx-auto max-w-2xl text-balance text-3xl font-medium leading-[1.1] tracking-tight text-foreground sm:text-[44px]"
             >
               Stop babysitting terminals
             </h2>

@@ -28,26 +28,28 @@ export function Hero() {
       />
       <div className="relative mx-auto flex w-full max-w-6xl flex-1 flex-col items-center justify-center px-5 pb-20 pt-36 text-center sm:px-8 sm:pt-40">
         <Reveal>
-          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground sm:text-base">
+          {/* Glaze-style eyebrow: quiet sentence-case medium text, not an
+              uppercase letterspaced label. */}
+          <p className="text-sm font-medium text-muted-foreground sm:text-base">
             Modern agentic workspace
           </p>
         </Reveal>
         <Reveal delayMs={40}>
-          <h1 className="mt-7 text-balance text-5xl font-semibold leading-[1.05] tracking-[-0.02em] text-foreground sm:text-7xl">
+          <h1 className="mt-5 text-balance text-5xl font-medium leading-[1.1] tracking-tight text-foreground sm:text-6xl">
             Orchestrate your fleet of agents.
           </h1>
         </Reveal>
         <Reveal delayMs={120}>
-          <p className="mx-auto mt-9 max-w-2xl text-pretty text-lg leading-relaxed text-muted-foreground sm:text-xl">
+          <p className="mx-auto mt-5 max-w-md text-pretty text-base leading-relaxed text-muted-foreground sm:text-lg">
             Each in its own real terminal. One native Mac window, and nothing
             ever leaves your machine.
           </p>
         </Reveal>
-        <Reveal delayMs={170} className="mt-10 w-full max-w-3xl">
+        <Reveal delayMs={170} className="mt-9 w-full max-w-3xl">
           <AgentMarquee agents={supportedAgents} />
         </Reveal>
         <Reveal delayMs={200}>
-          <div className="mt-12 flex flex-col items-center justify-center gap-x-8 gap-y-3 sm:flex-row">
+          <div className="mt-10 flex flex-col items-center justify-center gap-x-8 gap-y-3 sm:flex-row">
             <a
               href={downloadUrl}
               className={cn(

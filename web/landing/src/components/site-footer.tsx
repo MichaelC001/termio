@@ -5,36 +5,34 @@ const footerLinks: { label: string; href: string }[] = [
   { label: "Terms", href: "#" },
 ];
 
+// Glaze-style footer: one compact centered column — copyright and page links on
+// a single row, a quiet tagline underneath. No border, no link grid; on the
+// homepage it floats over the outro aurora, on inner pages it just sits on the
+// canvas.
 export function SiteFooter() {
   return (
-    <footer className="relative border-t border-white/10">
-      <div className="mx-auto w-full max-w-6xl px-5 py-12 sm:px-8">
-        <div className="flex flex-col gap-8 sm:flex-row sm:items-center sm:justify-between">
-          <div className="max-w-xs">
-            <p className="text-sm leading-relaxed text-white/70">
-              The native macOS terminal home for your AI coding agents.
-            </p>
-          </div>
+    <footer className="px-5 pb-8 pt-16 sm:px-8 sm:pb-14">
+      <div className="mx-auto flex w-full max-w-[960px] flex-col items-center justify-center gap-2.5 text-sm leading-5 text-muted-foreground">
+        <div className="flex w-full flex-col items-center justify-center gap-2.5 sm:flex-row sm:gap-4">
+          <span>© {new Date().getFullYear()} Termio</span>
           <nav
-            className="flex flex-wrap gap-x-7 gap-y-2 sm:justify-end"
+            className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2"
             aria-label="Footer"
           >
             {footerLinks.map((link) => (
               <a
                 key={link.label}
                 href={link.href}
-                className="text-sm text-white/80 transition-colors hover:text-white"
+                className="py-1 text-muted-foreground transition-colors hover:text-foreground"
               >
                 {link.label}
               </a>
             ))}
           </nav>
         </div>
-
-        <div className="mt-10 flex flex-col items-center justify-between gap-3 pt-6 text-sm text-white/60 sm:flex-row">
-          <p>© {new Date().getFullYear()} Termio. All rights reserved.</p>
-          <p className="font-mono text-xs">Built for Apple Silicon.</p>
-        </div>
+        <p className="font-mono text-xs text-muted-foreground/80">
+          Built for Apple Silicon. Local-only by design.
+        </p>
       </div>
     </footer>
   );

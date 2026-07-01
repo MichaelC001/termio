@@ -93,7 +93,6 @@ function LocalOnlyVisual() {
 }
 
 type Bento = {
-  eyebrow: string;
   heading: string;
   intro: string;
   visual: React.ReactNode;
@@ -102,7 +101,6 @@ type Bento = {
 
 const cards: Bento[] = [
   {
-    eyebrow: "Multi-agent",
     heading: "Every agent, first-class",
     intro:
       "Claude Code, Codex, OpenCode, Pi Agent and four more — each in a real native terminal, one tap to launch.",
@@ -110,7 +108,6 @@ const cards: Bento[] = [
     wide: true,
   },
   {
-    eyebrow: "Always live",
     heading: "Switch without tearing down",
     intro:
       "Every session stays mounted and keeps running as you switch. Your sidebar layout comes back exactly as you left it, next launch.",
@@ -118,7 +115,6 @@ const cards: Bento[] = [
     wide: false,
   },
   {
-    eyebrow: "Git-aware",
     heading: "Organized by branch",
     intro:
       "Termio groups every git worktree under its project and shows each branch live in the sidebar — so parallel agents never blur together.",
@@ -126,7 +122,6 @@ const cards: Bento[] = [
     wide: false,
   },
   {
-    eyebrow: "Private by default",
     heading: "Local-only, by design",
     intro:
       "No telemetry, no cloud sync, no account. Your code and your agents never leave your Mac.",
@@ -135,16 +130,16 @@ const cards: Bento[] = [
   },
 ];
 
+// Glaze-style bento card: a flat, borderless tile whose surface reads a hair
+// lighter than the canvas — the title + one-liner sit tight at the top, the
+// visual fills the rest. No eyebrow, no inner panel.
 function BentoCard({ card, index }: { card: Bento; index: number }) {
   const header = (
     <div className={cn(card.wide && "md:max-w-sm")}>
-      <span className="text-sm font-semibold tracking-tight text-muted-foreground">
-        {card.eyebrow}
-      </span>
-      <h3 className="mt-2 text-balance text-2xl font-semibold tracking-[-0.02em] text-foreground">
+      <h3 className="text-balance text-2xl font-medium leading-tight tracking-tight text-foreground sm:text-3xl">
         {card.heading}
       </h3>
-      <p className="mt-3 text-base leading-relaxed text-muted-foreground">
+      <p className="mt-2 text-balance text-sm leading-relaxed text-muted-foreground sm:text-base">
         {card.intro}
       </p>
     </div>
@@ -155,23 +150,19 @@ function BentoCard({ card, index }: { card: Bento; index: number }) {
       as="article"
       delayMs={(index % 2) * 80}
       className={cn(
-        "shadow-soft flex flex-col rounded-3xl border border-border bg-card p-8 sm:p-10",
+        "flex flex-col overflow-hidden rounded-2xl bg-card p-6 sm:p-8",
         card.wide && "md:col-span-2",
       )}
     >
       {card.wide ? (
-        <div className="grid items-center gap-8 md:grid-cols-2 md:gap-12">
+        <div className="grid items-center gap-6 md:grid-cols-2 md:gap-12">
           {header}
-          <div className="rounded-2xl bg-secondary p-6">
-            {card.visual}
-          </div>
+          <div>{card.visual}</div>
         </div>
       ) : (
         <>
           {header}
-          <div className="mt-8 rounded-2xl bg-secondary p-6">
-            {card.visual}
-          </div>
+          <div className="mt-auto pt-8">{card.visual}</div>
         </>
       )}
     </Reveal>
@@ -182,17 +173,17 @@ export function Features() {
   return (
     <section id="features" className="scroll-mt-24">
       <div className="mx-auto w-full max-w-6xl px-5 py-32 sm:py-40 sm:px-8">
-        <Reveal>
-          <p className="text-base font-semibold tracking-tight text-muted-foreground">
+        <Reveal className="flex flex-col items-center text-center">
+          <p className="text-sm font-medium text-muted-foreground sm:text-base">
             What&apos;s inside
           </p>
-          <h2 className="mt-3 max-w-2xl text-balance text-4xl font-semibold tracking-[-0.02em] text-foreground sm:text-6xl">
+          <h2 className="mt-3 max-w-2xl text-balance text-3xl font-medium leading-[1.1] tracking-tight text-foreground sm:text-[44px]">
             Everything your agents need.
             <br className="hidden sm:block" /> Nothing they don&apos;t.
           </h2>
         </Reveal>
 
-        <div className="mt-16 grid gap-5 md:grid-cols-2">
+        <div className="mt-12 grid gap-4 md:grid-cols-2 sm:gap-5">
           {cards.map((card, index) => (
             <BentoCard key={card.heading} card={card} index={index} />
           ))}

@@ -74,7 +74,7 @@ export function Faq() {
       <div className="mx-auto w-full max-w-2xl px-5 py-32 sm:py-40 sm:px-8">
         <Reveal className="flex flex-col items-center text-center">
           <SectionLabel accent="muted">Support</SectionLabel>
-          <h2 className="mt-4 text-balance text-4xl font-semibold tracking-[-0.045em] text-foreground sm:text-5xl">
+          <h2 className="mt-4 text-balance text-3xl font-medium leading-[1.1] tracking-tight text-foreground sm:text-[44px]">
             Frequently asked questions
           </h2>
           <p className="mt-5 max-w-md text-balance text-base leading-relaxed text-muted-foreground">
@@ -83,7 +83,7 @@ export function Faq() {
           </p>
         </Reveal>
 
-        <Reveal delayMs={80} className="mt-14">
+        <Reveal delayMs={80} className="mt-10">
           <Accordion className="border-t border-border">
             {faqs.map((faq) => (
               <AccordionItem key={faq.question} value={faq.question}>

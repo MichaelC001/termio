@@ -13,16 +13,8 @@ export const metadata: Metadata = {
 
 const kindLabel: Record<ChangeKind, string> = {
   new: "New",
-  improved: "Improved",
-  fixed: "Fixed",
-};
-
-// One restrained tone for every category — the labels read as structural
-// eyebrows, not a rainbow. The single purple timeline dot is the only accent.
-const kindAccent: Record<ChangeKind, string> = {
-  new: "text-muted-foreground",
-  improved: "text-muted-foreground",
-  fixed: "text-muted-foreground",
+  improved: "Improvements",
+  fixed: "Fixes",
 };
 
 const kindOrder: ChangeKind[] = ["new", "improved", "fixed"];
@@ -32,10 +24,20 @@ function formatDate(iso: string): string {
   // renderer's timezone.
   return new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-US", {
     year: "numeric",
-    month: "short",
+    month: "long",
     day: "numeric",
     timeZone: "UTC",
   });
+}
+
+// "Label: rest" items get a bold lead. Only short, sentence-free prefixes count
+// as labels, so a colon that happens to appear mid-sentence stays plain.
+function splitLead(item: string): { lead: string; rest: string } | null {
+  const idx = item.indexOf(": ");
+  if (idx <= 0 || idx > 40) return null;
+  const lead = item.slice(0, idx);
+  if (lead.includes(".")) return null;
+  return { lead, rest: item.slice(idx + 2) };
 }
 
 export default function ChangelogPage() {
@@ -44,75 +46,87 @@ export default function ChangelogPage() {
       <SiteNav />
       <main className="flex-1">
         <section className="scroll-mt-24">
-          <div className="mx-auto w-full max-w-3xl px-5 pb-32 pt-36 sm:px-8 sm:pb-40 sm:pt-44">
-            <Reveal>
+          <div className="mx-auto w-full px-5 pb-32 pt-36 sm:px-8 sm:pb-40 sm:pt-44">
+            <Reveal className="mx-auto mb-14 w-full max-w-[680px] text-center sm:mb-20">
               <SectionLabel accent="muted">Changelog</SectionLabel>
-              <h1 className="mt-4 text-balance text-4xl font-semibold tracking-[-0.045em] text-foreground sm:text-5xl">
+              <h1 className="mt-4 text-balance text-4xl font-medium leading-[1.1] tracking-tight text-foreground sm:text-5xl">
                 What&apos;s new in Termio
               </h1>
-              <p className="mt-5 max-w-xl text-base leading-relaxed text-muted-foreground">
+              <p className="mx-auto mt-5 max-w-md text-base leading-relaxed text-muted-foreground">
                 Every release ships to your Mac through built-in auto-updates —
                 no reinstalling, no checking a website.
               </p>
             </Reveal>
 
-            <div className="relative mt-14 sm:mt-16">
-              {/* Continuous timeline rail behind the entries, fading out at the tail. */}
-              <span
-                aria-hidden="true"
-                className="absolute bottom-3 left-[3px] top-2.5 w-px bg-gradient-to-b from-border via-border to-transparent"
-              />
-              <div className="space-y-12 sm:space-y-14">
+            {/* Glaze-style release ledger: a 640px reading column that grows a
+                sticky meta rail (version pill + date, right-aligned) on xl,
+                entries separated by hairlines rather than cards. */}
+            <div className="mx-auto w-full max-w-[640px] xl:max-w-[1200px]">
+              <div className="flex flex-col">
                 {changelog.map((entry, index) => (
                   <Reveal
                     as="article"
                     key={entry.version}
                     delayMs={Math.min(index, 3) * 70}
-                    className="relative pl-7 sm:pl-8"
+                    className="grid border-t border-border py-10 first:border-t-0 first:pt-0 last:border-b xl:grid-cols-[minmax(0,1fr)_minmax(0,640px)_minmax(0,1fr)] xl:gap-x-16 xl:py-16 xl:first:pt-16"
                   >
-                    <span
-                      aria-hidden="true"
-                      className="absolute left-0 top-[7px] h-[7px] w-[7px] rounded-full bg-foreground ring-4 ring-background"
-                    />
-                    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                      <h2 className="font-mono text-base font-semibold tracking-tight text-foreground">
-                        v{entry.version}
-                      </h2>
-                      <time className="text-[13px] text-muted-foreground">
-                        {formatDate(entry.date)}
-                      </time>
-                    </div>
+                    <aside className="mb-5 xl:col-start-1 xl:mb-0 xl:justify-self-end">
+                      <div className="flex items-center gap-3 text-sm text-muted-foreground xl:sticky xl:top-28 xl:justify-end xl:pt-1.5">
+                        <span className="inline-flex shrink-0 items-center justify-center rounded-full bg-white/[0.08] px-3 py-1 font-mono text-[13px] font-medium leading-none text-foreground/80">
+                          v{entry.version}
+                        </span>
+                        <time dateTime={entry.date}>{formatDate(entry.date)}</time>
+                      </div>
+                    </aside>
 
-                    <div className="mt-4 space-y-4">
-                      {kindOrder.map((kind) => {
-                        const items = entry.changes[kind];
-                        if (!items || items.length === 0) return null;
-                        return (
-                          <div key={kind}>
-                            <h3>
-                              <span
-                                className={`inline-flex items-center rounded-full border border-border bg-muted/40 px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.18em] ${kindAccent[kind]}`}
-                              >
+                    <div className="min-w-0 xl:col-start-2">
+                      <h2 className="text-balance text-2xl font-medium leading-[1.08] tracking-tight text-foreground sm:text-3xl">
+                        {entry.title}
+                      </h2>
+
+                      <div className="mt-6 space-y-6">
+                        {kindOrder.map((kind) => {
+                          const items = entry.changes[kind];
+                          if (!items || items.length === 0) return null;
+                          return (
+                            <div key={kind}>
+                              <h3 className="text-lg font-medium leading-tight text-foreground">
                                 {kindLabel[kind]}
-                              </span>
-                            </h3>
-                            <ul className="mt-2 space-y-2">
-                              {items.map((item) => (
-                                <li
-                                  key={item}
-                                  className="flex gap-2.5 text-[15px] leading-relaxed text-foreground/75"
-                                >
-                                  <span
-                                    aria-hidden="true"
-                                    className="mt-[9px] h-1 w-1 shrink-0 rounded-full bg-current opacity-40"
-                                  />
-                                  <span>{item}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        );
-                      })}
+                              </h3>
+                              <ul className="mt-3 space-y-2.5">
+                                {items.map((item) => {
+                                  const split = splitLead(item);
+                                  return (
+                                    <li
+                                      key={item}
+                                      className="flex gap-3 text-[15px] leading-[1.65] text-foreground/75"
+                                    >
+                                      {/* Glaze's dash bullet — a short hairline
+                                          instead of a dot. */}
+                                      <span
+                                        aria-hidden="true"
+                                        className="mt-[0.78em] h-px w-3 shrink-0 bg-muted-foreground/70"
+                                      />
+                                      <span>
+                                        {split ? (
+                                          <>
+                                            <strong className="font-medium text-foreground">
+                                              {split.lead}:
+                                            </strong>{" "}
+                                            {split.rest}
+                                          </>
+                                        ) : (
+                                          item
+                                        )}
+                                      </span>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   </Reveal>
                 ))}
