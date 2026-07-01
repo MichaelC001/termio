@@ -5,7 +5,7 @@ const siteDescription =
   "Termio is a native Mac workspace for your AI coding agents — Claude Code, Codex, Gemini, Amp and more. Run them side by side, each in a real terminal, switch between them instantly, and nothing ever leaves your machine.";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://termio.app"),
+  metadataBase: new URL("https://www.termio.sh"),
   title: {
     default: "Termio — the terminal home for your AI coding agents",
     template: "%s — Termio",
