@@ -15,6 +15,32 @@ struct Project: Identifiable, Hashable, Codable {
     /// sessions directly on the host; a value runs them under an Apple Seatbelt profile
     /// (see `SeatbeltProfile`), which confines the agent's whole process tree.
     var sandbox: SandboxProfile?
+
+    /// Whether the user has pinned this project to the top of the sidebar. Pinned
+    /// projects always sort ahead of the rest, regardless of the chosen sort order
+    /// (see `TermioStore.orderedProjects`).
+    var pinned: Bool = false
+}
+
+extension Project {
+    private enum CodingKeys: String, CodingKey {
+        case id, name, path, branch, sessions, sandbox, pinned
+    }
+
+    /// Custom decoding so state files written before `pinned` existed still load: a
+    /// missing flag defaults to not-pinned. Kept in an extension (not the main body)
+    /// so the synthesized memberwise initializer survives for the call sites that
+    /// build projects directly; encoding stays synthesized.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        path = try container.decode(String.self, forKey: .path)
+        branch = try container.decode(String.self, forKey: .branch)
+        sessions = try container.decode([Session].self, forKey: .sessions)
+        sandbox = try container.decodeIfPresent(SandboxProfile.self, forKey: .sandbox)
+        pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+    }
 }
 
 /// What a new session launches: a plain login shell, or a coding agent CLI.

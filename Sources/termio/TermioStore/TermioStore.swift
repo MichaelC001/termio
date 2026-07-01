@@ -26,10 +26,21 @@ final class TermioStore: ObservableObject {
                 statuses[id] = .idle
                 currentTool[id] = nil
                 lastWorkingAt[id] = nil
+                // Switching to a session counts as activity for its project, so the
+                // "Recent Activity" sort floats a project the moment you focus it.
+                if let pid = project(for: id)?.id { liveActivity[pid] = Date() }
             }
             persist()
         }
     }
+
+    /// When each project was last active — the moment one of its agents last reported
+    /// work, or the user last switched to one of its sessions. Drives the sidebar's
+    /// "Recent Activity" sort (see `orderedProjects`). In-memory and `@Published` so a
+    /// change re-sorts the list live; it deliberately does not persist (a fresh launch
+    /// falls back to the stored project order until activity resumes), which keeps the
+    /// high-frequency working-event updates off the disk-writing `projects` array.
+    @Published var liveActivity: [Project.ID: Date] = [:]
 
     /// The project whose Security panel is open, or `nil` when none is. Transient UI
     /// state (not persisted) driving the sandbox-configuration sheet.

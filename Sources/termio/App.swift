@@ -585,7 +585,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 /// divider), the custom branch-picker title item, and a trailing inspector toggle. The store and
 /// settings drive the branch picker.
 @MainActor
-private final class MainToolbarDelegate: NSObject, NSToolbarDelegate {
+private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDelegate {
     private let store: TermioStore
     private let settings: AppSettings
     /// Used to build the inspector tracking separator, which pins the pane switch to the
@@ -596,6 +596,34 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate {
         self.store = store
         self.settings = settings
         self.splitViewController = splitViewController
+    }
+
+    /// Builds the project-sort pull-down for the `.sortProjects` toolbar item: one
+    /// entry per `ProjectSortOrder`, each setting `AppSettings.projectSortOrder`. The
+    /// checkmark on the active order is refreshed on open via `menuNeedsUpdate`.
+    func makeProjectSortMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.delegate = self
+        for order in ProjectSortOrder.allCases {
+            let item = NSMenuItem(title: order.displayName, action: #selector(setProjectSortOrder(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = order.rawValue
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func setProjectSortOrder(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let order = ProjectSortOrder(rawValue: raw) else { return }
+        settings.projectSortOrder = order
+    }
+
+    // NSMenuDelegate — check the active sort each time the pull-down opens.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        for item in menu.items {
+            item.state = (item.representedObject as? String) == settings.projectSortOrder.rawValue ? .on : .off
+        }
     }
 
     // `.sidebarTrackingSeparator` is AppKit-provided simply by naming the system identifier;
@@ -610,7 +638,7 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate {
     // open (see `setInspectorSwitchVisible`) — keeping the separator in the default set would draw a
     // stray divider line in the toolbar while the panel is collapsed.
     private let defaultIdentifiers: [NSToolbarItem.Identifier] = [
-        .toggleNavigator, .flexibleSpace, .newTerminal, .sidebarTrackingSeparator, .branchPicker,
+        .toggleNavigator, .flexibleSpace, .sortProjects, .newTerminal, .sidebarTrackingSeparator, .branchPicker,
         .flexibleSpace, .toggleInspector,
     ]
 
@@ -638,6 +666,19 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate {
             // the system animation. `nil` target routes up the responder chain to the split
             // controller (the window's content view controller), so no custom action is needed.
             item.action = #selector(NSSplitViewController.toggleSidebar(_:))
+            return item
+        case .sortProjects:
+            // A pull-down that sets how the sidebar orders projects (Recent Activity /
+            // Name). Sits just left of the `+`, at the trailing edge of the sidebar's
+            // toolbar region. Native `NSMenuToolbarItem` so it carries the standard
+            // menu chevron and free Liquid Glass bordered look, matching the toggles.
+            let item = NSMenuToolbarItem(itemIdentifier: .sortProjects)
+            item.label = "Sort"
+            item.toolTip = "Choose how projects are ordered"
+            item.image = NSImage(systemSymbolName: "line.3.horizontal.decrease", accessibilityDescription: "Sort projects")
+            item.isBordered = true
+            item.showsIndicator = true
+            item.menu = makeProjectSortMenu()
             return item
         case .newTerminal:
             // Pinned to the trailing edge of the sidebar's toolbar region (just before the
@@ -710,6 +751,7 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate {
 
 private extension NSToolbarItem.Identifier {
     static let toggleNavigator = NSToolbarItem.Identifier("TermioToggleNavigator")
+    static let sortProjects = NSToolbarItem.Identifier("TermioSortProjects")
     static let newTerminal = NSToolbarItem.Identifier("TermioNewTerminal")
     static let inspectorTabs = NSToolbarItem.Identifier("TermioInspectorTabs")
     static let toggleInspector = NSToolbarItem.Identifier("TermioToggleInspector")

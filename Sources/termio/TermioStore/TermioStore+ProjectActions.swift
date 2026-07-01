@@ -39,10 +39,34 @@ extension TermioStore {
         selectedSessionID = session.id
     }
 
-    /// Reorders the project list for the sidebar's drag-to-reorder. The new order
-    /// persists through `projects`' `didSet`, so it survives a relaunch.
-    func moveProject(fromOffsets source: IndexSet, toOffset destination: Int) {
-        projects.move(fromOffsets: source, toOffset: destination)
+    /// The projects in sidebar display order: pinned ones first, then the rest, each
+    /// group ordered by the user's chosen sort (`AppSettings.projectSortOrder`). A
+    /// computed view over `projects` — the stored array keeps its own insertion order,
+    /// so ordering is a presentation concern that never mutates (or persists) the tree.
+    var orderedProjects: [Project] {
+        let order = settings.projectSortOrder
+        return projects.sorted { a, b in
+            // Pinned projects always float to the top, whichever sort is active.
+            if a.pinned != b.pinned { return a.pinned }
+            switch order {
+            case .name:
+                return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            case .recentActivity:
+                let da = liveActivity[a.id] ?? .distantPast
+                let db = liveActivity[b.id] ?? .distantPast
+                // Newer activity first; equal timestamps keep the array's stable order
+                // (Swift's sort is stable), so untouched projects hold their positions.
+                if da != db { return da > db }
+                return false
+            }
+        }
+    }
+
+    /// Pins or unpins a project. Pinned projects sort ahead of the rest in the sidebar
+    /// (see `orderedProjects`); the flag persists via `projects`' `didSet`.
+    func togglePinned(_ id: Project.ID) {
+        guard let index = projects.firstIndex(where: { $0.id == id }) else { return }
+        projects[index].pinned.toggle()
     }
 
     /// Presents a folder picker. `sandboxed` decides whether the opened project runs

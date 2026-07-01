@@ -40,10 +40,11 @@ struct SidebarView: View {
         // weight (small-caps label + folder mark), so folded projects stack tight.
         List {
             // A flat list of projects (each opened folder, including any git worktree
-            // the user opened, is just a project). Each project is one draggable unit
-            // — its header plus its session rows — so dragging reorders whole
-            // projects; the new order persists through the store.
-            ForEach(store.projects) { project in
+            // the user opened, is just a project), in display order: pinned first, then
+            // the rest ordered by the sidebar toolbar's sort (Recent Activity / Name).
+            // A project can be pinned from its right-click menu below. See
+            // `TermioStore.orderedProjects` — the stored tree keeps its own order.
+            ForEach(store.orderedProjects) { project in
                 ProjectHeader(
                     project: project,
                     isCollapsed: collapsedProjects.contains(project.id),
@@ -56,7 +57,6 @@ struct SidebarView: View {
                     }
                 }
             }
-            .onMove(perform: store.moveProject)
         }
         // The native macOS `.sidebar` source list — its own Liquid Glass material, full-height
         // behind the traffic lights. (We previously painted the column ourselves to dodge a macOS 26
@@ -125,6 +125,9 @@ private struct ProjectHeader: View {
             }
         }
         items.append(.separator)
+        items.append(.action(project.pinned ? "Unpin" : "Pin to Top") {
+            store.togglePinned(project.id)
+        })
         items.append(.action("Security…") { store.editingSecurityProjectID = project.id })
         items.append(.action("Reveal in Finder") {
             NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: project.path)
@@ -156,6 +159,15 @@ private struct ProjectHeader: View {
                 .textCase(.uppercase)
                 .tracking(0.5)
                 .foregroundStyle(chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.primary))
+            // A small pin mark when the project is pinned to the top, so the reason it
+            // floats above the sort order reads at a glance (toggled from the row's
+            // right-click menu). Muted so it sits quietly next to the name.
+            if project.pinned {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .help("Pinned to top")
+            }
             // A quiet "Sandbox" tag when this project runs under a Seatbelt profile —
             // borrows the same soft quaternary capsule as the title-bar chips. Clicking it
             // opens the Security panel (the same sheet the right-click menu offers), so the

@@ -39,6 +39,26 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// How the sidebar orders its projects. Raw values persist. Pinned projects always
+/// sort ahead of the rest (see `TermioStore.orderedProjects`); this decides the order
+/// within each group.
+enum ProjectSortOrder: String, CaseIterable, Identifiable {
+    /// Most recently active project first — a project rises whenever one of its
+    /// agents reports work (or the user switches to one of its sessions).
+    case recentActivity
+    /// Stable A→Z by project name.
+    case name
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .recentActivity: return "Recent Activity"
+        case .name: return "Name"
+        }
+    }
+}
+
 /// App-wide, persisted preferences. Plain values only — the translation into
 /// libghostty configuration lives in `TermioStore`, so this type stays free of
 /// terminal-core types and is trivial to read, test, and persist.
@@ -78,6 +98,7 @@ final class AppSettings: ObservableObject {
         static let agentHooksEnabled = "agents.hooksEnabled"
         static let sessionControlEnabled = "agents.sessionControlEnabled"
         static let sessionControlPrompted = "agents.sessionControlPrompted"
+        static let projectSortOrder = "sidebar.projectSortOrder"
     }
 
     // MARK: Appearance
@@ -104,6 +125,12 @@ final class AppSettings: ObservableObject {
     /// theme pair then follows the resulting effective appearance.
     @Published var appearanceMode: AppearanceMode {
         didSet { defaults.set(appearanceMode.rawValue, forKey: Key.appearanceMode) }
+    }
+
+    /// How the sidebar orders projects (pinned always first; see `ProjectSortOrder`).
+    /// Driven by the sort menu in the sidebar's toolbar.
+    @Published var projectSortOrder: ProjectSortOrder {
+        didSet { defaults.set(projectSortOrder.rawValue, forKey: Key.projectSortOrder) }
     }
 
     /// Name of the Ghostty bundled theme used while macOS is in light mode, or
@@ -266,6 +293,7 @@ final class AppSettings: ObservableObject {
             Key.interfaceRowPadding: 2.0,
             Key.agentHooksEnabled: false,
             Key.sessionControlEnabled: false,
+            Key.projectSortOrder: "recentActivity",
         ])
 
         fontFamily = defaults.string(forKey: Key.fontFamily) ?? ""
@@ -289,6 +317,7 @@ final class AppSettings: ObservableObject {
         disabledAgents = Set(defaults.stringArray(forKey: Key.disabledAgents) ?? [])
         agentHooksEnabled = defaults.bool(forKey: Key.agentHooksEnabled)
         sessionControlEnabled = defaults.bool(forKey: Key.sessionControlEnabled)
+        projectSortOrder = defaults.string(forKey: Key.projectSortOrder).flatMap(ProjectSortOrder.init) ?? .recentActivity
     }
 
     /// Effective command for an agent: the user's override if it's non-empty,
