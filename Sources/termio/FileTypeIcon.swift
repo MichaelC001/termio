@@ -1,10 +1,12 @@
 import SwiftUI
 
-/// A file-type icon: an SF Symbol plus a tint, chosen by file extension. The mapping is ported from
-/// CodeEdit's `FileIcon` (https://github.com/CodeEditApp/CodeEdit, MIT) — its document-badge symbols
-/// (`doc.json`, `doc.javascript`, `doc.python`, `doc.ruby`, `lock.doc`, …) read far better than a
-/// generic glyph, and its per-language tints are tasteful. Extended here with a few extensions
-/// CodeEdit doesn't list. Shared so both the editor header and the file tree can show the same icon.
+/// A file-type icon: an SF Symbol plus a tint, chosen by file extension. The per-language tints are
+/// ported from CodeEdit's `FileIcon` (https://github.com/CodeEditApp/CodeEdit, MIT). Every symbol here
+/// must be a real SF Symbol — CodeEdit's `doc.json`/`doc.javascript`/`doc.python`/`doc.ruby` are its own
+/// asset-catalog glyphs, not system symbols, so they render blank via `Image(systemName:)`. Most files
+/// draw a bundled Devicon instead (see `FileIconView`); this fallback shows only when none is bundled,
+/// e.g. `Package.resolved`. Extended with a few extensions CodeEdit doesn't list. Shared so both the
+/// editor header and the file tree show the same icon.
 enum FileTypeIcon {
     /// The SF Symbol + tint for a file, keyed by its lowercased extension (special names like
     /// `Dockerfile`/`Makefile`/`LICENSE` are matched too). Falls back to a plain doc in steel.
@@ -21,14 +23,14 @@ enum FileTypeIcon {
 
         switch url.pathExtension.lowercased() {
         case "swift": return ("swift", .orange)
-        case "js", "mjs", "cjs": return ("doc.javascript", amber)
-        case "ts", "mts", "cts": return ("doc.javascript", .blue)
+        case "js", "mjs", "cjs": return ("j.square", amber)
+        case "ts", "mts", "cts": return ("j.square", .blue)
         case "jsx", "tsx": return ("atom", .cyan)
-        case "json", "jsonc", "json5", "resolved": return ("doc.json", scarlet)
-        case "yml", "yaml": return ("doc.json", scarlet)
+        case "json", "jsonc", "json5", "resolved": return ("curlybraces", scarlet)
+        case "yml", "yaml": return ("curlybraces", scarlet)
         case "lock": return ("lock.doc", steel)
-        case "py", "pyw", "pyi": return ("doc.python", amber)
-        case "rb": return ("doc.ruby", scarlet)
+        case "py", "pyw", "pyi": return ("p.square", amber)
+        case "rb": return ("diamond", scarlet)
         case "go": return ("g.square", goCyan)
         case "rs": return ("r.square", .orange)
         case "c": return ("c.square", .purple)

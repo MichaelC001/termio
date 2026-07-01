@@ -105,6 +105,7 @@ enum LangIconCatalog {
         "nuxt.config.ts": "nuxtjs",
         "package-lock.json": "npm",
         "package.json": "nodejs",
+        "package.resolved": "swift",
         "package.swift": "swift",
         "pipfile": "python",
         "playbook.yml": "ansible",

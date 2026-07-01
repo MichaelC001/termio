@@ -202,19 +202,12 @@ enum HugeIcon: Hashable {
     case terminal
     case folder
     case folderOpen
-    case gitBranch
 
     /// Side length of the source SVG's square viewBox (Hugeicons uses 24).
     var viewBox: CGFloat { 24 }
 
     var pathData: String {
         switch self {
-        case .gitBranch:
-            // Trunk node (top) and merge node (bottom) on the left, a branch node
-            // to the upper right, the vertical trunk between the left nodes, and a
-            // curve carrying the branch back into the trunk's middle. Each circle
-            // is two half-arcs so it strokes as an open ring like the other marks.
-            return "M8 4A2 2 0 1 0 4 4A2 2 0 1 0 8 4Z M8 20A2 2 0 1 0 4 20A2 2 0 1 0 8 20Z M20 4A2 2 0 1 0 16 4A2 2 0 1 0 20 4Z M6 6V18 M18 6C18 11 13 12 6 12"
         case .terminal:
             return "M7.5 7.5L8.72654 8.55719C9.24218 9.00163 9.5 9.22386 9.5 9.5C9.5 9.77614 9.24218 9.99836 8.72654 10.4428L7.5 11.5 M11.5 12.5H15.5 M12 21C15.7497 21 17.6246 21 18.9389 20.0451C19.3634 19.7367 19.7367 19.3634 20.0451 18.9389C21 17.6246 21 15.7497 21 12C21 8.25027 21 6.3754 20.0451 5.06107C19.7367 4.6366 19.3634 4.26331 18.9389 3.95491C17.6246 3 15.7497 3 12 3C8.25027 3 6.3754 3 5.06107 3.95491C4.6366 4.26331 4.26331 4.6366 3.95491 5.06107C3 6.3754 3 8.25027 3 12C3 15.7497 3 17.6246 3.95491 18.9389C4.26331 19.3634 4.6366 19.7367 5.06107 20.0451C6.3754 21 8.25027 21 12 21Z"
         case .folder:
