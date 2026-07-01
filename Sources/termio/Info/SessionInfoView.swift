@@ -23,8 +23,9 @@ struct SessionInfoView: View {
         return session?.worktreePath ?? project.path
     }
 
-    /// Claude Code's conversation log for this session, learned from the hook stream
-    /// (`TermioStore.transcriptPaths`). `nil` until the agent reports its first status.
+    /// The agent's conversation log for this session (`TermioStore.transcriptPaths`) —
+    /// carried in Claude Code's hook stream, or discovered from Codex's on-disk rollout.
+    /// `nil` until the agent reports its first status.
     private var transcriptPath: String? {
         store.selectedSessionID.flatMap { store.transcriptPaths[$0] }
     }
@@ -73,9 +74,12 @@ struct SessionInfoView: View {
 
     private func agentSection(_ session: Session) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Agent")
-
             HStack(spacing: 8) {
+                Text("Agent")
+                    .font(.system(size: 11, weight: .semibold))
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+                    .foregroundStyle(.secondary)
                 AgentIconView(agent: session.agent, size: 15)
                 Text(session.agent.displayName)
                     .font(.system(size: 13, weight: .medium))

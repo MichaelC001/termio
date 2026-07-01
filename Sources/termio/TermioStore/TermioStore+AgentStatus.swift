@@ -67,6 +67,15 @@ extension TermioStore {
         // `sessions send` can hand it back as the place to read the response.
         if let path = report.transcriptPath, !path.isEmpty {
             transcriptPaths[id] = path
+        } else if transcriptPaths[id] == nil,
+                  let session = session(id), session.agent.usesDiscoveredResumeID, session.launched,
+                  let directory = session.worktreePath ?? project(for: id)?.path,
+                  let path = AgentSessionStore.discoverTranscript(
+                    agent: session.agent, directory: directory, after: session.launchedAt) {
+            // Codex's hook can't carry a transcript path, so learn it from Codex's own
+            // on-disk rollout file the first time it reports — same result as Claude's
+            // hook-carried path, just discovered instead of handed to us.
+            transcriptPaths[id] = path
         }
         switch report.state {
         case "working":

@@ -18,12 +18,31 @@ import Foundation
 /// most recent session in the directory.
 enum AgentSessionStore {
     static func discover(agent: AgentPreset, directory: String, after launchedAt: Date?) -> String? {
+        match(agent: agent, directory: directory, after: launchedAt)?.id
+    }
+
+    /// The on-disk conversation transcript for an agent that doesn't hand termio a
+    /// transcript path through its hooks the way Claude Code does. Codex writes a
+    /// rollout JSONL per session under `~/.codex/sessions`; that file *is* the
+    /// transcript, so the Info pane can render a trace from it. Returns the file path,
+    /// or `nil` when none matches (yet) or the agent has no readable transcript.
+    /// Only Codex is supported: OpenCode's session record is metadata, not a transcript.
+    static func discoverTranscript(agent: AgentPreset, directory: String, after launchedAt: Date?) -> String? {
+        guard agent == .codex else { return nil }
+        return match(agent: agent, directory: directory, after: launchedAt)?.url.path
+    }
+
+    /// The session file for this agent — its URL (the transcript) and the session id
+    /// parsed from it. Both `discover` (id, for resume) and `discoverTranscript` (path,
+    /// for the trace viewer) read from the same scan.
+    private static func match(agent: AgentPreset, directory: String, after launchedAt: Date?)
+        -> (url: URL, id: String)? {
         guard let launchedAt else { return nil }
         switch agent {
         case .codex:
-            return discoverCodex(directory: directory, after: launchedAt)
+            return matchCodex(directory: directory, after: launchedAt)
         case .opencode:
-            return discoverOpenCode(directory: directory, after: launchedAt)
+            return matchOpenCode(directory: directory, after: launchedAt)
         default:
             return nil
         }
@@ -35,7 +54,7 @@ enum AgentSessionStore {
 
     /// Codex writes one rollout file per session at `~/.codex/sessions/YYYY/MM/DD/`,
     /// whose first line is a `session_meta` event carrying the session `id` and `cwd`.
-    private static func discoverCodex(directory: String, after launchedAt: Date) -> String? {
+    private static func matchCodex(directory: String, after launchedAt: Date) -> (url: URL, id: String)? {
         let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/sessions", isDirectory: true)
         let target = canonical(directory)
@@ -55,7 +74,7 @@ enum AgentSessionStore {
     /// OpenCode stores one JSON record per session under
     /// `~/.local/share/opencode/storage/session/<projectID>/<id>.json`, carrying the
     /// `id` and the absolute `directory` the session ran in.
-    private static func discoverOpenCode(directory: String, after launchedAt: Date) -> String? {
+    private static func matchOpenCode(directory: String, after launchedAt: Date) -> (url: URL, id: String)? {
         let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".local/share/opencode/storage/session", isDirectory: true)
         let target = canonical(directory)
@@ -71,16 +90,16 @@ enum AgentSessionStore {
     }
 
     /// Walks `root` for `ext` files created at/after `launchedAt`, runs `identify` (which
-    /// confirms the working directory and returns the session id), and returns the id of
-    /// the *earliest-created* match — the session born when we launched this one.
+    /// confirms the working directory and returns the session id), and returns the URL and
+    /// id of the *earliest-created* match — the session born when we launched this one.
     private static func bestMatch(in root: URL, ext: String, after launchedAt: Date,
-                                  identify: (URL) -> String?) -> String? {
+                                  identify: (URL) -> String?) -> (url: URL, id: String)? {
         let keys: [URLResourceKey] = [.creationDateKey, .isRegularFileKey]
         guard let enumerator = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: keys) else { return nil }
 
         let threshold = launchedAt.addingTimeInterval(-tolerance)
-        var best: (id: String, created: Date)?
+        var best: (url: URL, id: String, created: Date)?
         for case let url as URL in enumerator {
             guard url.pathExtension == ext,
                   let values = try? url.resourceValues(forKeys: Set(keys)),
@@ -89,9 +108,9 @@ enum AgentSessionStore {
                   best == nil || created < best!.created,
                   let id = identify(url)
             else { continue }
-            best = (id, created)
+            best = (url, id, created)
         }
-        return best?.id
+        return best.map { ($0.url, $0.id) }
     }
 
     /// Resolves symlinks and standardizes a path so termio's recorded workspace and the

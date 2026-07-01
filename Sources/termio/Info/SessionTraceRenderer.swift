@@ -1,12 +1,14 @@
 import Foundation
 
-/// Turns a Claude Code transcript JSONL file into a single self-contained HTML
-/// document rendered *inside* termio (loaded into the `TraceView` web overlay), not
-/// a browser. Each line of the transcript is one JSON object; we decode them
-/// leniently — skipping any line we can't read rather than failing the whole render,
-/// so an evolving transcript schema degrades gracefully — and lay out a dashboard
-/// (turn / tool-call / token stats) above a collapsible conversation trace, all
-/// painted in the caller's live termio theme (see `TraceTheme`).
+/// Turns an agent transcript JSONL file into a single self-contained HTML document
+/// rendered *inside* termio (loaded into the `TraceView` web overlay), not a browser.
+/// Both Claude Code and Codex are understood — their on-disk schemas differ, so the
+/// first line picks the parser (Codex opens with a `session_meta` header) — and both
+/// render into the same dashboard-over-trace layout. Each line of the transcript is
+/// one JSON object; we decode them leniently — skipping any line we can't read rather
+/// than failing the whole render, so an evolving transcript schema degrades gracefully
+/// — laid out as a dashboard (turn / tool-call / token stats) above a collapsible
+/// conversation trace, all painted in the caller's live termio theme (see `TraceTheme`).
 enum SessionTraceRenderer {
     enum RenderError: LocalizedError {
         case unreadable(String)
@@ -35,7 +37,11 @@ enum SessionTraceRenderer {
                 return obj
             }
 
-        let stats = analyze(rows)
+        // Codex rollouts open with a `session_meta` header; Claude transcripts don't.
+        // The header picks the parser — the two schemas share nothing below it.
+        let isCodex = rows.first?["type"] as? String == "session_meta"
+        let stats = isCodex ? analyzeCodex(rows) : analyze(rows)
+        let renderEntry = isCodex ? renderCodexEntry : renderEntry
         let body = rows.map(renderEntry).filter { !$0.isEmpty }.joined(separator: "\n")
         return document(title: title, stats: stats, body: body, theme: theme)
     }
@@ -62,12 +68,23 @@ enum SessionTraceRenderer {
         var toolTotal: Int { toolCounts.values.reduce(0, +) }
     }
 
+    /// Both Claude and Codex stamp their timestamps with fractional seconds
+    /// (`…:01.327Z`), which the default `ISO8601DateFormatter` won't parse — so try the
+    /// fractional format first and fall back to the plain one.
+    private static let isoFractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
     private static let iso = ISO8601DateFormatter()
+    private static func date(from string: String) -> Date? {
+        isoFractional.date(from: string) ?? iso.date(from: string)
+    }
 
     private static func analyze(_ rows: [[String: Any]]) -> Stats {
         var s = Stats()
         for entry in rows {
-            if let ts = entry["timestamp"] as? String, let date = iso.date(from: ts) {
+            if let ts = entry["timestamp"] as? String, let date = date(from: ts) {
                 if s.firstTimestamp == nil { s.firstTimestamp = date }
                 s.lastTimestamp = date
             }
@@ -215,11 +232,124 @@ enum SessionTraceRenderer {
         let toolCards = cards.filter { !$0.isEmpty }.joined(separator: "\n")
 
         if !convo.isEmpty {
-            let label = role == "user" ? "You" : "Agent"
-            return "<div class=\"turn \(role)\"><div class=\"role\">\(label)</div>\(convo)\(toolCards)</div>"
+            return turnCard(role: role, label: role == "user" ? "You" : "Agent", body: convo + toolCards)
         }
         // Only tool blocks: render them bare, no speaker label.
         return toolCards
+    }
+
+    /// A conversational turn card: a role label above its body. Shared by both parsers.
+    private static func turnCard(role: String, label: String, body: String) -> String {
+        "<div class=\"turn \(role)\"><div class=\"role\">\(escaped(label))</div>\(body)</div>"
+    }
+
+    // MARK: Codex
+
+    /// Codex's rollout schema: every line is `{timestamp, type, payload}`. Conversation
+    /// text arrives as `event_msg` (`user_message` / `agent_message`), tool activity as
+    /// `response_item` (`function_call` / `function_call_output`), and the running token
+    /// total as `event_msg` `token_count`. We read only those and ignore the rest
+    /// (raw protocol messages, encrypted reasoning) so the trace stays conversational.
+    private static func analyzeCodex(_ rows: [[String: Any]]) -> Stats {
+        var s = Stats()
+        for entry in rows {
+            if let ts = entry["timestamp"] as? String, let date = date(from: ts) {
+                if s.firstTimestamp == nil { s.firstTimestamp = date }
+                s.lastTimestamp = date
+            }
+            guard let payload = entry["payload"] as? [String: Any] else { continue }
+            switch entry["type"] as? String {
+            case "session_meta":
+                s.cwd = payload["cwd"] as? String
+                s.version = payload["cli_version"] as? String
+            case "turn_context":
+                if let model = payload["model"] as? String { s.models.insert(model) }
+            case "event_msg":
+                switch payload["type"] as? String {
+                case "user_message": s.userTurns += 1
+                case "agent_message": s.assistantTurns += 1
+                case "token_count":
+                    // Codex reports a running session total each turn, so the last wins.
+                    if let info = payload["info"] as? [String: Any],
+                       let total = info["total_token_usage"] as? [String: Any] {
+                        s.inputTokens = (total["input_tokens"] as? Int) ?? s.inputTokens
+                        s.outputTokens = (total["output_tokens"] as? Int) ?? s.outputTokens
+                        s.cacheTokens = (total["cached_input_tokens"] as? Int) ?? s.cacheTokens
+                    }
+                default: break
+                }
+            case "response_item":
+                switch payload["type"] as? String {
+                case "function_call":
+                    s.toolCounts[payload["name"] as? String ?? "tool", default: 0] += 1
+                case "function_call_output":
+                    if codexOutputFailed(payload["output"]) { s.toolErrors += 1 }
+                default: break
+                }
+            default: break
+            }
+        }
+        return s
+    }
+
+    private static func renderCodexEntry(_ entry: [String: Any]) -> String {
+        guard let payload = entry["payload"] as? [String: Any] else { return "" }
+        switch entry["type"] as? String {
+        case "event_msg":
+            switch payload["type"] as? String {
+            case "user_message": return codexTurn(payload["message"], role: "user", label: "You")
+            case "agent_message": return codexTurn(payload["message"], role: "assistant", label: "Agent")
+            default: return ""
+            }
+        case "response_item":
+            switch payload["type"] as? String {
+            case "function_call": return codexToolUseCard(payload)
+            case "function_call_output": return codexToolResultCard(payload)
+            default: return ""
+            }
+        default: return ""
+        }
+    }
+
+    private static func codexTurn(_ message: Any?, role: String, label: String) -> String {
+        let body = textBlock(message as? String ?? "")
+        return body.isEmpty ? "" : turnCard(role: role, label: label, body: body)
+    }
+
+    private static func codexToolUseCard(_ payload: [String: Any]) -> String {
+        let name = payload["name"] as? String ?? "tool"
+        let args = codexArguments(payload["arguments"])
+        let pre = args.isEmpty ? "" : "<pre>\(escaped(args))</pre>"
+        return "<details class=\"tool-use\"><summary>▶ \(escaped(name))</summary>\(pre)</details>"
+    }
+
+    private static func codexToolResultCard(_ payload: [String: Any]) -> String {
+        let out = (payload["output"] as? String) ?? ""
+        guard !out.isEmpty else { return "" }
+        let failed = codexOutputFailed(out)
+        return "<details class=\"tool-result\(failed ? " error" : "")\"><summary>\(failed ? "⚠ result" : "◀ result")</summary><pre>\(escaped(out))</pre></details>"
+    }
+
+    /// Codex encodes a function call's arguments as a JSON *string*; pretty-print it
+    /// when it parses, else show it verbatim.
+    private static func codexArguments(_ raw: Any?) -> String {
+        guard let text = raw as? String else { return prettyJSON(raw) }
+        guard let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              JSONSerialization.isValidJSONObject(object),
+              let pretty = try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.prettyPrinted, .sortedKeys]),
+              let string = String(data: pretty, encoding: .utf8) else { return text }
+        return string
+    }
+
+    /// Codex exec results embed the process exit line; a non-zero code marks a failed
+    /// tool call. When absent (non-exec tools) we don't guess and treat it as success.
+    private static func codexOutputFailed(_ output: Any?) -> Bool {
+        guard let text = output as? String,
+              let range = text.range(of: "exited with code ") else { return false }
+        let code = text[range.upperBound...].prefix { $0.isNumber }
+        return !code.isEmpty && code != "0"
     }
 
     private static func toolUseCard(_ b: [String: Any]) -> String {
