@@ -20,6 +20,13 @@ struct InspectorTabsToolbar: View {
     @EnvironmentObject var store: TermioStore
     @Namespace private var glassNamespace
 
+    /// Outer height of the glass track, matched to the native bordered toolbar buttons either
+    /// side of it so all the toolbar backgrounds line up. The track is built bottom-up as
+    /// `glyphHeight + 2 * trackPadding`, so those two derive from this single number.
+    static let toolbarControlHeight: CGFloat = 30
+    private static let trackPadding: CGFloat = 3
+    private static var glyphHeight: CGFloat { toolbarControlHeight - 2 * trackPadding }
+
     private let segments: [(tab: InspectorTab, icon: String, help: String)] = [
         (.files, "list.bullet.indent", "Project Files"),
         (.changes, "arrow.triangle.branch", "Changes"),
@@ -33,10 +40,12 @@ struct InspectorTabsToolbar: View {
                 legacyControl
             }
         }
-        // Bound the hosting view to a fixed, standard toolbar height — an unconstrained
-        // control can report a tall intrinsic height that grows the unified toolbar (and,
-        // with `.fullSizeContentView`, nudges the window frame) when the item is inserted.
-        .frame(height: 28)
+        // Bound the hosting view to a fixed height that matches the native bordered toolbar
+        // buttons flanking it (the collapse / + / inspector glass capsules), so every toolbar
+        // background reads at one consistent height. An unconstrained control can also report a
+        // tall intrinsic height that grows the unified toolbar (and, with `.fullSizeContentView`,
+        // nudges the window frame) when the item is inserted, so the clamp stays.
+        .frame(height: Self.toolbarControlHeight)
         .fixedSize()
     }
 
@@ -67,7 +76,7 @@ struct InspectorTabsToolbar: View {
                         .help(seg.help)
                 }
             }
-            .padding(3)
+            .padding(Self.trackPadding)
             // The shared track: a faint, slightly-whitened glass so it stays lighter than the
             // system collapse button and lets the brighter selected pill read as raised.
             .glassEffect(.regular.tint(Color.white.opacity(0.12)), in: .capsule)
@@ -93,7 +102,7 @@ struct InspectorTabsToolbar: View {
                 .help(seg.help)
             }
         }
-        .padding(2)
+        .padding(Self.trackPadding)
         .background(Capsule(style: .continuous).fill(Color.primary.opacity(0.06)))
     }
 
@@ -107,6 +116,6 @@ struct InspectorTabsToolbar: View {
             // it (and Files) comparable visual mass.
             .font(.system(size: 17, weight: .medium))
             .foregroundStyle(.secondary)
-            .frame(width: 34, height: 24)
+            .frame(width: 34, height: Self.glyphHeight)
     }
 }
