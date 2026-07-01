@@ -82,7 +82,8 @@ final class AppSettings: ObservableObject {
 
     // MARK: Appearance
 
-    /// Terminal font family. Empty means "let libghostty pick its default
+    /// Terminal font family. Defaults to "SF Mono" (the Apple system monospace,
+    /// as used by Xcode/Terminal). Empty means "let libghostty pick its default
     /// monospace", so we never force a face the user doesn't have installed.
     @Published var fontFamily: String {
         didSet { defaults.set(fontFamily, forKey: Key.fontFamily) }
@@ -247,7 +248,7 @@ final class AppSettings: ObservableObject {
         }
 
         defaults.register(defaults: [
-            Key.fontFamily: "",
+            Key.fontFamily: "SF Mono",
             Key.fontSize: 13.0,
             Key.fontThicken: false,
             Key.appearanceMode: "system",
