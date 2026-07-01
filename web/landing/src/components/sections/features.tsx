@@ -1,6 +1,6 @@
 import { GitBranch, EyeOff } from "lucide-react";
 import { Reveal } from "@/components/reveal";
-import { SectionLabel, type Accent } from "@/components/section-label";
+import { SectionLabel } from "@/components/section-label";
 import { AgentIcon } from "@/components/agent-icons";
 import { supportedAgents } from "@/lib/site";
 import { cn } from "@/lib/utils";
@@ -94,7 +94,10 @@ function LocalOnlyVisual() {
 }
 
 type Bento = {
-  accent: Accent;
+  // Mono eyebrow color + a subtle corner glow tint, Warp-style — each card gets
+  // its own tinted-dark surface drawn from termio's brand accents.
+  eyebrowColor: string;
+  glow: string;
   eyebrow: string;
   heading: string;
   intro: string;
@@ -104,7 +107,8 @@ type Bento = {
 
 const cards: Bento[] = [
   {
-    accent: "pink",
+    eyebrowColor: "text-[#4ea3ff]",
+    glow: "rgba(0, 136, 255, 0.10)",
     eyebrow: "Multi-agent",
     heading: "Every agent, first-class",
     intro:
@@ -113,25 +117,28 @@ const cards: Bento[] = [
     wide: true,
   },
   {
-    accent: "green",
+    eyebrowColor: "text-[#34d399]",
+    glow: "rgba(22, 194, 83, 0.10)",
     eyebrow: "Always live",
     heading: "Switch without tearing down",
     intro:
-      "Open as many agents as you like — every session stays mounted and keeps running as you move between them, and your sidebar layout is remembered next launch.",
+      "Every session stays mounted and keeps running as you switch. Your sidebar layout comes back exactly as you left it, next launch.",
     visual: <SessionsVisual />,
     wide: false,
   },
   {
-    accent: "blue",
+    eyebrowColor: "text-[#0fb7fa]",
+    glow: "rgba(15, 183, 250, 0.10)",
     eyebrow: "Git-aware",
     heading: "Organized by branch",
     intro:
-      "Run each agent in its own git worktree — Termio groups them under the project and shows every branch live in the sidebar, so parallel work never gets confusing.",
+      "Termio groups every git worktree under its project and shows each branch live in the sidebar — so parallel agents never blur together.",
     visual: <WorktreeVisual />,
     wide: false,
   },
   {
-    accent: "yellow",
+    eyebrowColor: "text-[#fbbf24]",
+    glow: "rgba(255, 183, 100, 0.10)",
     eyebrow: "Private by default",
     heading: "Local-only, by design",
     intro:
@@ -144,7 +151,14 @@ const cards: Bento[] = [
 function BentoCard({ card, index }: { card: Bento; index: number }) {
   const header = (
     <div className={cn(card.wide && "md:max-w-sm")}>
-      <SectionLabel accent={card.accent}>{card.eyebrow}</SectionLabel>
+      <span
+        className={cn(
+          "font-mono text-[11px] font-medium uppercase tracking-[0.18em]",
+          card.eyebrowColor,
+        )}
+      >
+        {card.eyebrow}
+      </span>
       <h3 className="mt-3 text-balance text-2xl font-semibold tracking-[-0.04em] text-foreground">
         {card.heading}
       </h3>
@@ -159,10 +173,18 @@ function BentoCard({ card, index }: { card: Bento; index: number }) {
       as="article"
       delayMs={(index % 2) * 80}
       className={cn(
-        "shadow-soft flex flex-col rounded-3xl bg-card p-8 sm:p-10",
+        "shadow-soft relative isolate flex flex-col overflow-hidden rounded-3xl border border-border bg-card p-8 sm:p-10",
         card.wide && "md:col-span-2",
       )}
     >
+      {/* Subtle per-card corner glow, Warp-style tinted-dark surface. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 -z-10"
+        style={{
+          backgroundImage: `radial-gradient(115% 90% at 100% 0%, ${card.glow}, transparent 60%)`,
+        }}
+      />
       {card.wide ? (
         <div className="grid items-center gap-8 md:grid-cols-2 md:gap-12">
           {header}

@@ -47,27 +47,29 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* Light token set — kept as a fallback only. The site forces dark by putting
-   `.dark` on <html> (see layout.tsx), so these light values never resolve in
-   practice; they remain here in case a light mode is reintroduced later. */
+/* The site's palette — a clean, cool light theme (Linear / Vercel / Resend
+   register): a crisp near-white canvas with the faintest cool cast (not a warm
+   beige), cool near-black ink, neutral gray secondaries, and a single crisp blue
+   accent. Applied to <html> (see layout.tsx). */
 :root {
-  --background: #ffffff;
-  --foreground: #1d1d1f;
+  color-scheme: light;
+  --background: #f8f9fb;
+  --foreground: #16161a;
   --card: #ffffff;
-  --card-foreground: #1d1d1f;
+  --card-foreground: #16161a;
   --popover: #ffffff;
-  --popover-foreground: #1d1d1f;
-  --primary: #0071e3;
+  --popover-foreground: #16161a;
+  --primary: #16161a;
   --primary-foreground: #ffffff;
-  --secondary: #f2f2f7;
-  --secondary-foreground: #1d1d1f;
-  --muted: #f2f2f7;
-  --muted-foreground: #6e6e73;
-  --accent: #e8e8ed;
-  --accent-foreground: #1d1d1f;
+  --secondary: #f1f2f5;
+  --secondary-foreground: #16161a;
+  --muted: #f1f2f5;
+  --muted-foreground: #6a6b75;
+  --accent: #eceef2;
+  --accent-foreground: #16161a;
   --destructive: #ff3b30;
-  --border: rgba(0, 0, 0, 0.1);
-  --input: rgba(0, 0, 0, 0.16);
+  --border: rgba(18, 20, 28, 0.09);
+  --input: rgba(18, 20, 28, 0.14);
   --ring: #007aff;
   --radius: 1rem;
   /* Apple's standard easing curve and the spring used for press feedback. */
@@ -133,15 +135,13 @@
      under the animated aurora. */
   .hero-cinematic {
     background-image:
-      radial-gradient(54% 44% at 50% -6%, rgba(40, 120, 200, 0.22), transparent 62%),
-      radial-gradient(40% 36% at 78% 8%, rgba(40, 150, 165, 0.12), transparent 60%),
+      radial-gradient(54% 44% at 50% -6%, rgba(0, 122, 255, 0.13), transparent 62%),
+      radial-gradient(40% 36% at 80% 6%, rgba(90, 140, 255, 0.09), transparent 60%),
       linear-gradient(
         180deg,
-        #0a1a40 0%,
-        #09152e 30%,
-        #08101f 60%,
-        #08080e 84%,
-        #08080a 100%
+        #eaf0fb 0%,
+        #f2f5fb 40%,
+        #f8f9fb 100%
       );
   }
 
@@ -151,8 +151,8 @@
   .grain-overlay {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
     background-size: 160px 160px;
-    opacity: 0.6;
-    mix-blend-mode: overlay;
+    opacity: 0.4;
+    mix-blend-mode: multiply;
     animation: grain-shift 6s steps(4) infinite;
   }
   @keyframes grain-shift {
@@ -168,11 +168,28 @@
     }
   }
 
+  /* Grain tuned for dark surfaces (e.g. the CTA card). `overlay` blend keeps
+     black pixels black, so on a near-black card the hero's grain is invisible.
+     Here we blend the noise normally at low opacity so it reads as a faint
+     frosted haze — the same matte texture, visible on a dark canvas. */
+  .grain-overlay-soft {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 130px 130px;
+    opacity: 0.5;
+    mix-blend-mode: multiply;
+    animation: grain-shift 6s steps(4) infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .grain-overlay-soft {
+      animation: none;
+    }
+  }
+
   /* Subtler glow wash reused behind the CTA band, tuned for the dark canvas. */
   .brand-wash {
     background-image:
-      radial-gradient(40rem 30rem at 50% 0%, rgba(70, 110, 255, 0.18), transparent 60%),
-      radial-gradient(34rem 28rem at 85% 110%, rgba(174, 108, 255, 0.2), transparent 60%);
+      radial-gradient(40rem 30rem at 50% 0%, rgba(0, 122, 255, 0.1), transparent 60%),
+      radial-gradient(34rem 28rem at 85% 110%, rgba(60, 120, 255, 0.1), transparent 60%);
   }
 
   /* Cool accent for keywords: blue → violet → magenta, deepened for white. */
@@ -183,35 +200,35 @@
     color: transparent;
   }
 
-  /* Elevation for the dark canvas: a faint top sheen plus a deep ambient shadow,
-     since black-on-black drop shadows read as a glow-edge rather than a cast. */
+  /* Elevation on the light bone canvas: a soft, diffuse ambient shadow with a
+     hairline top edge — no glow, a real cast. */
   .shadow-soft {
     box-shadow:
-      inset 0 1px 0 0 rgba(255, 255, 255, 0.06),
-      0 1px 2px rgba(0, 0, 0, 0.5),
-      0 24px 56px -20px rgba(0, 0, 0, 0.7);
+      0 1px 2px rgba(20, 20, 20, 0.04),
+      0 2px 8px rgba(20, 20, 20, 0.04),
+      0 24px 56px -24px rgba(20, 20, 20, 0.14);
   }
 
   /* Apple "Liquid Glass" (2026): a translucent, blurred, saturated surface — used
      for floating chrome (the nav). Dark variant: a smoked panel with a white-hairline
      sheen instead of the light glass. */
   .liquid-glass {
-    background-color: rgba(16, 16, 20, 0.6);
+    background-color: rgba(255, 255, 255, 0.7);
     backdrop-filter: blur(20px) saturate(180%);
     -webkit-backdrop-filter: blur(20px) saturate(180%);
     box-shadow:
-      inset 0 1px 0 0 rgba(255, 255, 255, 0.08),
-      inset 0 0 0 1px rgba(255, 255, 255, 0.06),
-      0 1px 1px rgba(0, 0, 0, 0.4),
-      0 8px 24px -12px rgba(0, 0, 0, 0.6);
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.6),
+      inset 0 0 0 1px rgba(20, 20, 20, 0.06),
+      0 1px 1px rgba(20, 20, 20, 0.04),
+      0 8px 24px -12px rgba(20, 20, 20, 0.16);
   }
 
   /* Frosted pill used for section eyebrow labels. */
   .glass-pill {
-    background-color: rgba(255, 255, 255, 0.06);
+    background-color: rgba(20, 20, 20, 0.04);
     box-shadow:
-      inset 0 0 0 1px rgba(255, 255, 255, 0.1),
-      0 1px 2px rgba(0, 0, 0, 0.3);
+      inset 0 0 0 1px rgba(20, 20, 20, 0.08),
+      0 1px 2px rgba(20, 20, 20, 0.05);
     backdrop-filter: blur(8px);
   }
 

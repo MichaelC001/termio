@@ -23,18 +23,23 @@ export function Hero() {
         className="pointer-events-none absolute inset-x-0 bottom-0 -z-10 h-72 bg-gradient-to-b from-transparent to-background"
       />
       <div className="relative mx-auto flex w-full max-w-6xl flex-1 flex-col items-center justify-center px-5 pb-20 pt-36 text-center sm:px-8 sm:pt-40">
+        <Reveal>
+          <p className="font-mono text-sm uppercase tracking-[0.2em] text-muted-foreground sm:text-base">
+            Modern Agentic Engineering Environment
+          </p>
+        </Reveal>
         <Reveal delayMs={40}>
-          <h1 className="text-balance text-6xl font-semibold leading-[0.9] tracking-[-0.05em] text-foreground sm:text-[7rem]">
-            Run every agent.
+          <h1 className="mt-4 text-balance text-5xl font-semibold leading-[0.95] tracking-[-0.05em] text-foreground sm:text-7xl">
+            Every agent.
             <br />
-            Side by side.
+            One window.
           </h1>
         </Reveal>
         <Reveal delayMs={120}>
           <p className="mx-auto mt-8 max-w-xl text-pretty text-lg leading-relaxed text-muted-foreground sm:text-xl">
-            A native Mac workspace for your AI coding agents — Claude Code, Codex,
-            Gemini, Amp and more. Each gets a real terminal, you switch between
-            them instantly, and nothing ever leaves your machine.
+            One native Mac window for every coding agent — Claude Code, Codex,
+            Gemini, Amp and more. Each gets a real terminal, you switch
+            instantly, and nothing ever leaves your machine.
           </p>
         </Reveal>
         <Reveal delayMs={200}>

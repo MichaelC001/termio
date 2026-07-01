@@ -9,7 +9,13 @@ export function CtaBand() {
     <section aria-labelledby="cta-heading">
       <div className="mx-auto w-full max-w-6xl px-5 py-32 sm:py-40 sm:px-8">
         <Reveal>
-          <div className="brand-wash shadow-soft relative overflow-hidden rounded-[2rem] bg-card px-8 py-20 text-center sm:px-16">
+          <div className="brand-wash shadow-soft relative isolate overflow-hidden rounded-[2rem] border border-border bg-card px-8 py-20 text-center sm:px-16">
+            {/* Same frosted film-grain the hero uses, so the wash reads matte
+                rather than glossy. Clipped to the rounded card via overflow-hidden. */}
+            <div
+              aria-hidden="true"
+              className="grain-overlay-soft pointer-events-none absolute inset-0 -z-10"
+            />
             <h2
               id="cta-heading"
               className="mx-auto max-w-2xl text-balance text-4xl font-semibold tracking-[-0.045em] text-foreground sm:text-5xl"
