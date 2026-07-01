@@ -129,7 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .sink { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.setCloseOverlayVisible(self.store.openFileURL != nil || self.store.openDiff != nil)
+                    self.setCloseOverlayVisible(self.store.openFileURL != nil || self.store.openDiff != nil || self.store.openTrace != nil)
                 }
             }
 
@@ -459,13 +459,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// the same nil-target routing the Settings item uses.
     @objc func openProject(_ sender: Any?) {
         store.presentOpenProjectPanel()
-    }
-
-    /// File ▸ Open Project Sandboxed… — same picker, but the opened project runs its
-    /// sessions under a Seatbelt sandbox profile. The sandbox is chosen here, at open
-    /// time, rather than toggled afterward.
-    @objc func openProjectSandboxed(_ sender: Any?) {
-        store.presentOpenProjectPanel(sandboxed: true)
     }
 
     /// The toolbar's `+` button — opens a fresh scratch terminal at the user's home
@@ -852,14 +845,6 @@ private func buildMainMenu() -> NSMenu {
         action: #selector(AppDelegate.openProject(_:)),
         keyEquivalent: "o"
     )
-    // Open the project straight into a Seatbelt sandbox. Shift-⌘O sits right beside
-    // the plain Open Project (⌘O), so the two open modes read as a pair.
-    let openSandboxed = fileMenu.addItem(
-        withTitle: "Open Project Sandboxed…",
-        action: #selector(AppDelegate.openProjectSandboxed(_:)),
-        keyEquivalent: "O"
-    )
-    openSandboxed.keyEquivalentModifierMask = [.command, .shift]
     fileItem.submenu = fileMenu
 
     // Standard Edit menu so copy/paste/select-all responder actions work.
