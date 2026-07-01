@@ -23,9 +23,20 @@ extension Notification.Name {
 struct TerminalPane: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
+    @Environment(\.colorScheme) private var colorScheme
     @FocusState private var focusedSession: Session.ID?
     @State private var activated: [Session.ID] = []
     @State private var isDropTargeted = false
+
+    /// The wash painted over the terminal while a file is dragged onto it. The old fill was a flat
+    /// `accentColor.opacity(0.18)`, which read as a heavy, saturated blue. This is a much softer,
+    /// desaturated blue-grey: barely-there in light mode, a touch stronger in dark so it still
+    /// registers over a dark terminal without looking like a solid panel.
+    private var dropTint: Color {
+        colorScheme == .dark
+            ? Color(.sRGB, red: 0.62, green: 0.70, blue: 0.82, opacity: 0.10)
+            : Color(.sRGB, red: 0.40, green: 0.52, blue: 0.68, opacity: 0.09)
+    }
 
     var body: some View {
         ZStack {
@@ -48,7 +59,7 @@ struct TerminalPane: View {
         // no border, only the background tint, fading in and out.
         .overlay {
             if isDropTargeted {
-                Color.accentColor.opacity(0.18)
+                dropTint
                     .allowsHitTesting(false)
                     .transition(.opacity)
             }

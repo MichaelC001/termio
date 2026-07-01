@@ -39,20 +39,22 @@ struct GitChangesView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(changes) { change in
-                            GitChangeRow(
-                                change: change,
-                                font: settings.interfaceFont,
-                                chrome: chrome,
-                                isSelected: store.openDiff?.change.path == change.path,
-                                onOpen: { open(change) }
-                            )
-                        }
-                    }
-                    .padding(.vertical, 2)
+                // A native `List` with a `selection:` binding — the same shape as the file
+                // tree (`FileTreeList`). Selection drives "open the diff", which is what lets
+                // each row be `.draggable` at the same time: a SwiftUI tap gesture would
+                // strangle the drag, but List's AppKit-level selection coexists with it.
+                List(changes, selection: selectedChange) { change in
+                    GitChangeRow(
+                        change: change,
+                        fileURL: fileURL(for: change),
+                        font: settings.interfaceFont,
+                        chrome: chrome,
+                        isSelected: store.openDiff?.change.path == change.path
+                    )
                 }
+                .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
+                .environment(\.defaultMinListRowHeight, 1)
             }
         }
         .task(id: repoRoot) { await reload() }
@@ -96,17 +98,36 @@ struct GitChangesView: View {
     private func open(_ change: GitChange) {
         store.openDiff = GitDiffRequest(repoRoot: repoRoot, change: change)
     }
+
+    /// The absolute on-disk URL for a change — `git status` paths are repo-relative.
+    /// Dragged out of a row and dropped on the terminal, which shell-quotes it at the
+    /// prompt (see `TerminalPane.sendPaths`).
+    private func fileURL(for change: GitChange) -> URL {
+        URL(fileURLWithPath: repoRoot).appendingPathComponent(change.path)
+    }
+
+    /// Bridges List selection to the open diff: the selected row is whichever change is
+    /// currently open, and selecting a row opens it. Deselection is ignored — closing the
+    /// diff is the overlay's own job, not a click-away.
+    private var selectedChange: Binding<GitChange?> {
+        Binding(
+            get: { changes.first { $0.path == store.openDiff?.change.path } },
+            set: { if let change = $0 { open(change) } }
+        )
+    }
 }
 
 /// A single row in the changes list: a colored status letter, the file name (dimmed
-/// when deleted), and right-aligned `+adds −dels`. Plain SwiftUI hover/tap — unlike
-/// the file tree, these rows are not `.draggable`, so a tap gesture is safe.
+/// when deleted), and right-aligned `+adds −dels`. `.draggable` out as the file's URL —
+/// dropped on the terminal it becomes a shell-quoted path (see `TerminalPane`). Opening
+/// is the List's own `selection:` binding, not a tap gesture, which is what keeps the
+/// drag immediate (a SwiftUI tap gesture on a `.draggable` row makes it sticky).
 private struct GitChangeRow: View {
     let change: GitChange
+    let fileURL: URL
     let font: Font
     let chrome: ChromeTheme?
     let isSelected: Bool
-    let onOpen: () -> Void
 
     @State private var isHovering = false
 
@@ -135,13 +156,18 @@ private struct GitChangeRow: View {
         .padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .background(
+        // Strip the source list's blue selection fill at the AppKit layer, leaving our own
+        // `SidebarRowHighlight` as the sole selection cue — the file tree does the same.
+        .background(OutlineSelectionStyleStripper())
+        .draggable(fileURL)
+        .listRowInsets(EdgeInsets())
+        .listRowSeparator(.hidden)
+        .listRowBackground(
             SidebarRowHighlight(isSelected: isSelected, isHovering: isHovering, chrome: chrome)
                 .animation(.easeInOut(duration: 0.12), value: isSelected)
                 .animation(.easeInOut(duration: 0.12), value: isHovering)
         )
         .onHover { isHovering = $0 }
-        .onTapGesture { onOpen() }
         .help(change.path)
     }
 }
