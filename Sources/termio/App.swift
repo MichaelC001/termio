@@ -788,10 +788,6 @@ private struct BranchPickerToolbarView: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 7) {
-            Image(systemName: branch != nil ? "arrow.triangle.branch" : "folder.fill.badge.gearshape")
-                .foregroundStyle(secondaryColor)
-                .font(.system(size: 13))
-                .frame(width: 16, height: 16)
             VStack(alignment: .leading, spacing: 0) {
                 Text(title)
                     .font(.headline)

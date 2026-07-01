@@ -1,0 +1,404 @@
+import Foundation
+
+/// Turns a Claude Code transcript JSONL file into a single self-contained HTML
+/// document rendered *inside* termio (loaded into the `TraceView` web overlay), not
+/// a browser. Each line of the transcript is one JSON object; we decode them
+/// leniently — skipping any line we can't read rather than failing the whole render,
+/// so an evolving transcript schema degrades gracefully — and lay out a dashboard
+/// (turn / tool-call / token stats) above a collapsible conversation trace, all
+/// painted in the caller's live termio theme (see `TraceTheme`).
+enum SessionTraceRenderer {
+    enum RenderError: LocalizedError {
+        case unreadable(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .unreadable(let path): return "Could not read the transcript at \(path)."
+            }
+        }
+    }
+
+    /// Reads the JSONL at `jsonlPath` and returns a full HTML document string, themed
+    /// with `theme`. The caller hands the string to a `WKWebView`.
+    static func html(jsonlPath: String, title: String, theme: TraceTheme) throws -> String {
+        guard let data = FileManager.default.contents(atPath: jsonlPath),
+              let text = String(data: data, encoding: .utf8) else {
+            throw RenderError.unreadable(jsonlPath)
+        }
+
+        let rows: [[String: Any]] = text
+            .split(whereSeparator: \.isNewline)
+            .compactMap { line in
+                guard let d = line.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any]
+                else { return nil }
+                return obj
+            }
+
+        let stats = analyze(rows)
+        let body = rows.map(renderEntry).filter { !$0.isEmpty }.joined(separator: "\n")
+        return document(title: title, stats: stats, body: body, theme: theme)
+    }
+
+    // MARK: Stats
+
+    /// Aggregate figures shown in the dashboard, gathered in one pass over the rows.
+    private struct Stats {
+        var userTurns = 0
+        var assistantTurns = 0
+        var toolCounts: [String: Int] = [:]
+        var toolErrors = 0
+        var inputTokens = 0
+        var outputTokens = 0
+        var cacheTokens = 0
+        var models: Set<String> = []
+        var firstTimestamp: Date?
+        var lastTimestamp: Date?
+        var cwd: String?
+        var gitBranch: String?
+        var version: String?
+        var systemNotes: [String] = []
+
+        var toolTotal: Int { toolCounts.values.reduce(0, +) }
+    }
+
+    private static let iso = ISO8601DateFormatter()
+
+    private static func analyze(_ rows: [[String: Any]]) -> Stats {
+        var s = Stats()
+        for entry in rows {
+            if let ts = entry["timestamp"] as? String, let date = iso.date(from: ts) {
+                if s.firstTimestamp == nil { s.firstTimestamp = date }
+                s.lastTimestamp = date
+            }
+            if s.cwd == nil, let cwd = entry["cwd"] as? String { s.cwd = cwd }
+            if s.gitBranch == nil, let b = entry["gitBranch"] as? String, !b.isEmpty { s.gitBranch = b }
+            if s.version == nil, let v = entry["version"] as? String { s.version = v }
+
+            let type = entry["type"] as? String
+            if type == "system", let c = entry["content"] as? String, !c.isEmpty {
+                s.systemNotes.append(c)
+            }
+            guard type == "user" || type == "assistant",
+                  let message = entry["message"] as? [String: Any] else { continue }
+
+            if let model = message["model"] as? String { s.models.insert(model) }
+            if let usage = message["usage"] as? [String: Any] {
+                s.inputTokens += (usage["input_tokens"] as? Int) ?? 0
+                s.outputTokens += (usage["output_tokens"] as? Int) ?? 0
+                s.cacheTokens += (usage["cache_read_input_tokens"] as? Int) ?? 0
+                s.cacheTokens += (usage["cache_creation_input_tokens"] as? Int) ?? 0
+            }
+
+            let blocks = (message["content"] as? [[String: Any]]) ?? []
+            let hasText = message["content"] is String
+                || blocks.contains { ($0["type"] as? String) == "text" }
+            if type == "user", hasText { s.userTurns += 1 }
+            if type == "assistant", hasText { s.assistantTurns += 1 }
+
+            for b in blocks {
+                switch b["type"] as? String {
+                case "tool_use":
+                    let name = b["name"] as? String ?? "tool"
+                    s.toolCounts[name, default: 0] += 1
+                case "tool_result":
+                    if (b["is_error"] as? Bool) ?? false { s.toolErrors += 1 }
+                default:
+                    break
+                }
+            }
+        }
+        return s
+    }
+
+    // MARK: Dashboard
+
+    private static func dashboard(_ s: Stats) -> String {
+        var chips: [String] = []
+        chips.append(chip("Turns", "\(s.userTurns + s.assistantTurns)",
+                          sub: "\(s.userTurns) you · \(s.assistantTurns) agent"))
+        chips.append(chip("Tool calls", "\(s.toolTotal)",
+                          sub: s.toolErrors > 0 ? "\(s.toolErrors) errored" : "no errors"))
+        if s.inputTokens + s.outputTokens > 0 {
+            chips.append(chip("Tokens", "\(compact(s.inputTokens))↓ \(compact(s.outputTokens))↑",
+                              sub: s.cacheTokens > 0 ? "\(compact(s.cacheTokens)) cached" : "input · output"))
+        }
+        if let model = s.models.sorted().first {
+            let extra = s.models.count > 1 ? " +\(s.models.count - 1)" : ""
+            chips.append(chip("Model", escaped(shortModel(model)) + extra, sub: "model"))
+        }
+        if let first = s.firstTimestamp, let last = s.lastTimestamp, last > first {
+            chips.append(chip("Duration", duration(last.timeIntervalSince(first)), sub: "wall clock"))
+        }
+
+        var sections = "<div class=\"stats\">\(chips.joined())</div>"
+
+        // Tool-call breakdown, busiest first.
+        if !s.toolCounts.isEmpty {
+            let rows = s.toolCounts.sorted { $0.value > $1.value }.map { name, count in
+                let pct = s.toolTotal > 0 ? Int(round(Double(count) / Double(s.toolTotal) * 100)) : 0
+                return """
+                <div class="tool-row">
+                  <span class="tool-label">\(escaped(name))</span>
+                  <span class="tool-bar"><span style="width:\(pct)%"></span></span>
+                  <span class="tool-count">\(count)</span>
+                </div>
+                """
+            }.joined()
+            sections += "<details class=\"panel\" open><summary>Tool calls</summary><div class=\"tools\">\(rows)</div></details>"
+        }
+
+        // Session / system metadata.
+        var meta: [String] = []
+        if let cwd = s.cwd { meta.append(metaRow("cwd", cwd)) }
+        if let b = s.gitBranch { meta.append(metaRow("branch", b)) }
+        if let v = s.version { meta.append(metaRow("cli version", v)) }
+        for note in s.systemNotes.prefix(20) {
+            meta.append("<div class=\"sysnote\">\(escaped(note))</div>")
+        }
+        if !meta.isEmpty {
+            let label = s.systemNotes.isEmpty ? "Session" : "Session &amp; system"
+            sections += "<details class=\"panel\"><summary>\(label)</summary><div class=\"meta\">\(meta.joined())</div></details>"
+        }
+
+        return "<section class=\"dashboard\">\(sections)</section>"
+    }
+
+    private static func chip(_ label: String, _ value: String, sub: String) -> String {
+        "<div class=\"chip\"><div class=\"chip-value\">\(value)</div><div class=\"chip-label\">\(escaped(label))</div><div class=\"chip-sub\">\(escaped(sub))</div></div>"
+    }
+
+    private static func metaRow(_ key: String, _ value: String) -> String {
+        "<div class=\"meta-row\"><span class=\"meta-key\">\(escaped(key))</span><span class=\"meta-val\">\(escaped(value))</span></div>"
+    }
+
+    // MARK: Entries
+
+    private static func renderEntry(_ entry: [String: Any]) -> String {
+        switch entry["type"] as? String {
+        case "user": return renderMessage(entry, role: "user")
+        case "assistant": return renderMessage(entry, role: "assistant")
+        case "summary": return renderSummary(entry)
+        default: return ""
+        }
+    }
+
+    /// A turn. Text/thinking blocks are wrapped under a role label; tool_use and
+    /// tool_result render as standalone collapsible cards (so a user message that is
+    /// purely tool output doesn't masquerade as something the human typed).
+    private static func renderMessage(_ entry: [String: Any], role: String) -> String {
+        guard let message = entry["message"] as? [String: Any] else { return "" }
+
+        var conversational: [String] = []
+        var cards: [String] = []
+
+        if let s = message["content"] as? String {
+            conversational.append(textBlock(s))
+        } else if let blocks = message["content"] as? [[String: Any]] {
+            for b in blocks {
+                switch b["type"] as? String {
+                case "text": conversational.append(textBlock(b["text"] as? String ?? ""))
+                case "thinking":
+                    let t = b["thinking"] as? String ?? ""
+                    if !t.isEmpty {
+                        conversational.append("<details class=\"thinking\"><summary>Thinking</summary><div>\(escaped(t))</div></details>")
+                    }
+                case "tool_use": cards.append(toolUseCard(b))
+                case "tool_result": cards.append(toolResultCard(b))
+                case "image": cards.append("<div class=\"image\">🖼 image</div>")
+                default: break
+                }
+            }
+        }
+
+        let convo = conversational.filter { !$0.isEmpty }.joined(separator: "\n")
+        let toolCards = cards.filter { !$0.isEmpty }.joined(separator: "\n")
+
+        if !convo.isEmpty {
+            let label = role == "user" ? "You" : "Agent"
+            return "<div class=\"turn \(role)\"><div class=\"role\">\(label)</div>\(convo)\(toolCards)</div>"
+        }
+        // Only tool blocks: render them bare, no speaker label.
+        return toolCards
+    }
+
+    private static func toolUseCard(_ b: [String: Any]) -> String {
+        let name = b["name"] as? String ?? "tool"
+        let input = prettyJSON(b["input"])
+        let pre = input.isEmpty ? "" : "<pre>\(escaped(input))</pre>"
+        return "<details class=\"tool-use\"><summary>▶ \(escaped(name))</summary>\(pre)</details>"
+    }
+
+    private static func toolResultCard(_ b: [String: Any]) -> String {
+        let out = toolResultText(b["content"])
+        guard !out.isEmpty else { return "" }
+        let isError = (b["is_error"] as? Bool) ?? false
+        return "<details class=\"tool-result\(isError ? " error" : "")\"><summary>\(isError ? "⚠ result" : "◀ result")</summary><pre>\(escaped(out))</pre></details>"
+    }
+
+    private static func renderSummary(_ entry: [String: Any]) -> String {
+        let s = entry["summary"] as? String ?? ""
+        return s.isEmpty ? "" : "<div class=\"summary\">\(escaped(s))</div>"
+    }
+
+    // MARK: Helpers
+
+    private static func textBlock(_ s: String) -> String {
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "" : "<div class=\"text\">\(escaped(s))</div>"
+    }
+
+    private static func toolResultText(_ content: Any?) -> String {
+        if let s = content as? String { return s }
+        if let arr = content as? [[String: Any]] {
+            return arr.compactMap { $0["text"] as? String }.joined(separator: "\n")
+        }
+        return ""
+    }
+
+    private static func prettyJSON(_ value: Any?) -> String {
+        guard let value else { return "" }
+        if let s = value as? String { return s }
+        guard JSONSerialization.isValidJSONObject(value),
+              let d = try? JSONSerialization.data(withJSONObject: value,
+                                                  options: [.prettyPrinted, .sortedKeys]),
+              let s = String(data: d, encoding: .utf8) else {
+            return String(describing: value)
+        }
+        return s
+    }
+
+    /// `12345` → `12.3k`; small counts stay exact.
+    private static func compact(_ n: Int) -> String {
+        if n < 1000 { return "\(n)" }
+        let k = Double(n) / 1000
+        return k >= 100 ? "\(Int(k.rounded()))k" : String(format: "%.1fk", k)
+    }
+
+    private static func duration(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded())
+        let h = total / 3600, m = (total % 3600) / 60, sec = total % 60
+        if h > 0 { return "\(h)h \(m)m" }
+        if m > 0 { return "\(m)m \(sec)s" }
+        return "\(sec)s"
+    }
+
+    /// `claude-opus-4-8-20260101` → `opus-4-8`, trimming the vendor prefix and any
+    /// trailing date so the chip stays short.
+    private static func shortModel(_ model: String) -> String {
+        var m = model
+        if m.hasPrefix("claude-") { m = String(m.dropFirst("claude-".count)) }
+        // Drop a trailing 8-digit date component.
+        let parts = m.split(separator: "-")
+        if let last = parts.last, last.count == 8, last.allSatisfy(\.isNumber) {
+            m = parts.dropLast().joined(separator: "-")
+        }
+        return m
+    }
+
+    private static func escaped(_ s: String) -> String {
+        s.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    // MARK: Document
+
+    private static func document(title: String, stats: Stats, body: String, theme: TraceTheme) -> String {
+        """
+        <!doctype html>
+        <html><head><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>\(escaped(title)) — termio trace</title>
+        <style>\(themeVariables(theme))\n\(css)</style></head>
+        <body>
+        <header>
+          <h1>\(escaped(title))</h1>
+        </header>
+        <main>
+        \(dashboard(stats))
+        <section class="trace">\(body)</section>
+        </main>
+        </body></html>
+        """
+    }
+
+    /// The live termio theme injected as CSS custom properties; the static stylesheet
+    /// below references them, so the page always matches the app's current colors.
+    private static func themeVariables(_ t: TraceTheme) -> String {
+        """
+        :root {
+          color-scheme: \(t.isDark ? "dark" : "light");
+          --bg: \(t.background);
+          --panel: \(t.panel);
+          --fg: \(t.foreground);
+          --muted: \(t.secondary);
+          --accent: \(t.accent);
+          --line: \(t.isDark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.10)");
+          --soft: \(t.isDark ? "rgba(255,255,255,0.045)" : "rgba(0,0,0,0.035)");
+        }
+        """
+    }
+
+    /// Static stylesheet, all colors via `var(--…)` from `themeVariables`. Only `{`/`}`
+    /// (safe in a plain Swift string — interpolation is solely `\(…)`) and no `\`.
+    private static let css = """
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg);
+      font: 13.5px/1.6 -apple-system, "SF Pro Text", system-ui, sans-serif; }
+    header { position: sticky; top: 0; z-index: 2; padding: 8px 22px;
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
+    header h1 { margin: 0; font-size: 14px; font-weight: 600; }
+    main { max-width: 900px; margin: 0 auto; padding: 20px 22px 96px; }
+    .dashboard { margin-bottom: 26px; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 10px; margin-bottom: 14px; }
+    .chip { background: var(--soft); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+    .chip-value { font-size: 17px; font-weight: 650; }
+    .chip-label { font-size: 11px; color: var(--fg); opacity: 0.8; margin-top: 3px; }
+    .chip-sub { font-size: 10.5px; color: var(--muted); margin-top: 1px; }
+    .panel { background: var(--soft); border: 1px solid var(--line); border-radius: 10px;
+      padding: 4px 12px; margin: 8px 0; }
+    .panel > summary { cursor: pointer; font-size: 11px; font-weight: 600; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.5px; padding: 8px 0; list-style: none; }
+    .panel > summary::-webkit-details-marker { display: none; }
+    .tools { padding: 4px 0 10px; }
+    .tool-row { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
+    .tool-label { flex: 0 0 34%; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+    .tool-bar { flex: 1; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+    .tool-bar > span { display: block; height: 100%; background: var(--accent); }
+    .tool-count { flex: 0 0 auto; color: var(--muted); font-size: 12px; min-width: 24px; text-align: right; }
+    .meta { padding: 4px 0 10px; }
+    .meta-row { display: flex; gap: 10px; padding: 2px 0; font-size: 12px; }
+    .meta-key { flex: 0 0 90px; color: var(--muted); text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.4px; padding-top: 1px; }
+    .meta-val { font-family: ui-monospace, "SF Mono", Menlo, monospace; word-break: break-all; }
+    .sysnote { white-space: pre-wrap; color: var(--muted); font-size: 12px; margin: 6px 0;
+      border-left: 2px solid var(--line); padding-left: 10px; }
+    .trace { }
+    .turn { margin: 16px 0; padding: 12px 14px; border-radius: 10px; }
+    .turn.user { background: var(--soft); }
+    .turn.assistant { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+    .role { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+      color: var(--muted); margin-bottom: 8px; font-weight: 600; }
+    .text { white-space: pre-wrap; word-wrap: break-word; }
+    details.thinking { margin: 8px 0; }
+    details.thinking > summary { cursor: pointer; color: var(--muted); font-style: italic; font-size: 12px; list-style: none; }
+    details.thinking > summary::-webkit-details-marker { display: none; }
+    details.thinking > div { white-space: pre-wrap; color: var(--muted); font-style: italic;
+      border-left: 2px solid var(--line); padding-left: 12px; margin-top: 6px; }
+    .tool-use, .tool-result { margin: 8px 0; border-radius: 8px; border: 1px solid var(--line); overflow: hidden; }
+    .tool-use > summary, .tool-result > summary { cursor: pointer; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 12px; padding: 8px 12px; background: var(--soft); list-style: none; }
+    .tool-use > summary { color: var(--accent); }
+    .tool-result > summary { color: var(--muted); }
+    .tool-use > summary::-webkit-details-marker, .tool-result > summary::-webkit-details-marker { display: none; }
+    pre { margin: 0; padding: 12px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; opacity: 0.92; }
+    .tool-result.error { border-color: color-mix(in srgb, red 45%, var(--line)); }
+    .tool-result.error > summary { color: #ff9a9a; }
+    .image { color: var(--muted); font-size: 12px; margin: 8px 0; }
+    .summary { font-size: 12px; color: var(--fg); background: var(--soft);
+      padding: 6px 12px; border-radius: 999px; display: inline-block; margin: 8px 0; }
+    """
+}

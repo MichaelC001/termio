@@ -29,7 +29,8 @@ struct InspectorTabsToolbar: View {
 
     private let segments: [(tab: InspectorTab, icon: String, help: String)] = [
         (.files, "list.bullet.indent", "Project Files"),
-        (.changes, "arrow.triangle.branch", "Changes"),
+        (.changes, "arrow.trianglehead.branch", "Changes"),
+        (.info, "info.circle", "Info"),
     ]
 
     var body: some View {

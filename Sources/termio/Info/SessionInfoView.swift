@@ -1,0 +1,211 @@
+import AppKit
+import SwiftUI
+
+/// The inspector's Info pane — the third tab beside Files and Changes. At-a-glance
+/// facts about the selected session plus quick actions on its working directory and,
+/// for an agent session, its conversation transcript: copy the path, reveal it in
+/// Finder, open the folder in an installed editor, or open a rendered HTML trace of
+/// the agent's conversation in the browser.
+struct SessionInfoView: View {
+    @EnvironmentObject var store: TermioStore
+
+    private var session: Session? {
+        store.selectedSessionID.flatMap { store.session($0) }
+    }
+
+    private var project: Project? {
+        store.selectedSessionID.flatMap { store.project(for: $0) }
+    }
+
+    /// Where the session runs: its worktree if it has one, else the project root.
+    private var workingDirectory: String? {
+        guard let project else { return nil }
+        return session?.worktreePath ?? project.path
+    }
+
+    /// Claude Code's conversation log for this session, learned from the hook stream
+    /// (`TermioStore.transcriptPaths`). `nil` until the agent reports its first status.
+    private var transcriptPath: String? {
+        store.selectedSessionID.flatMap { store.transcriptPaths[$0] }
+    }
+
+    var body: some View {
+        if let session, let workingDirectory {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    workingDirectorySection(workingDirectory)
+                    if session.agent != .terminal {
+                        agentSection(session)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else {
+            ContentUnavailableView(
+                "No Session",
+                systemImage: "info.circle",
+                description: Text("Select a session to see its info.")
+            )
+        }
+    }
+
+    // MARK: Working directory
+
+    private func workingDirectorySection(_ path: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionLabel("Working Directory")
+
+            VStack(alignment: .leading, spacing: 1) {
+                InfoRow(symbol: "doc.on.doc", title: "Copy Path") { copy(path) }
+                InfoRow(symbol: "folder", title: "Reveal in Finder") { revealInFinder(path) }
+                ForEach(EditorTarget.installed) { editor in
+                    InfoRow(appIcon: editor.appIcon, title: "Open in \(editor.name)") {
+                        editor.open(URL(fileURLWithPath: path))
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Agent
+
+    private func agentSection(_ session: Session) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionLabel("Agent")
+
+            HStack(spacing: 8) {
+                AgentIconView(agent: session.agent, size: 15)
+                Text(session.agent.displayName)
+                    .font(.system(size: 13, weight: .medium))
+            }
+            .padding(.horizontal, 10)
+
+            if let transcriptPath {
+                VStack(alignment: .leading, spacing: 1) {
+                    InfoRow(symbol: "list.bullet.rectangle", title: "View Trace") { viewTrace(transcriptPath, session: session) }
+                    InfoRow(symbol: "doc.on.doc", title: "Copy Path") { copy(transcriptPath) }
+                    InfoRow(symbol: "folder", title: "Reveal in Finder") { revealInFinder(transcriptPath) }
+                }
+            } else {
+                Text("Waiting for the agent's first status report.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.top, 2)
+            }
+        }
+    }
+
+    // MARK: Pieces
+
+    private func sectionLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold))
+            .textCase(.uppercase)
+            .tracking(0.5)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+    }
+
+    // MARK: Actions
+
+    private func copy(_ string: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
+    }
+
+    /// Reveals `path` in Finder: a directory opens with itself selected in its
+    /// parent, a file is highlighted in its folder.
+    private func revealInFinder(_ path: String) {
+        var isDir: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
+        if exists, isDir.boolValue {
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        }
+    }
+
+    /// Opens the session's rendered trace over the terminal (the `TraceView` overlay),
+    /// like clicking a file or a diff. Rendering — and any failure — is handled inside
+    /// the overlay, themed to match termio.
+    private func viewTrace(_ jsonlPath: String, session: Session) {
+        store.openTrace = TraceRequest(jsonlPath: jsonlPath, title: store.displayTitle(for: session))
+    }
+}
+
+/// A single action row in the Info pane: a leading glyph, a label, and a hover
+/// highlight — the same calm, borderless look as the actions in the reference Info
+/// panel. The leading glyph is either a muted SF Symbol (for termio's own actions —
+/// Copy Path, Reveal, View Trace) or an editor's real app icon (for "Open in …"),
+/// so an editor row is unmistakably that app. `.buttonStyle(.plain)` keeps it flat;
+/// the highlight is drawn on hover.
+private struct InfoRow: View {
+    private enum Leading {
+        case symbol(String)
+        case appIcon(NSImage?)
+    }
+
+    private let leading: Leading
+    let title: String
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    init(symbol: String, title: String, action: @escaping () -> Void) {
+        self.leading = .symbol(symbol)
+        self.title = title
+        self.action = action
+    }
+
+    init(appIcon: NSImage?, title: String, action: @escaping () -> Void) {
+        self.leading = .appIcon(appIcon)
+        self.title = title
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                leadingGlyph
+                    .frame(width: 18, height: 18)
+                Text(title)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 5)
+            .padding(.horizontal, 10)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(hovering ? Color.primary.opacity(0.08) : .clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+
+    @ViewBuilder
+    private var leadingGlyph: some View {
+        switch leading {
+        case .symbol(let name):
+            Image(systemName: name)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+        case .appIcon(let image):
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 16, height: 16)
+            } else {
+                Image(systemName: "app")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}

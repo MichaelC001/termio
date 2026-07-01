@@ -101,6 +101,20 @@ struct TerminalPane: View {
             }
         }
         .animation(.easeOut(duration: 0.12), value: store.openDiff)
+        // The Info pane's "View Trace" covers the terminal with the session's rendered agent trace
+        // (dashboard + collapsible conversation), themed to match termio. Escape or the close button
+        // clears it, like the editor and diff overlays.
+        .overlay {
+            if let request = store.openTrace {
+                TraceView(request: request, settings: settings, onClose: {
+                    store.openTrace = nil
+                    focusedSession = store.selectedSessionID
+                })
+                .id(request)
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: store.openTrace)
         // Dropping a file (dragged from the file-tree inspector or the Finder) inserts
         // its shell-quoted path at the prompt — the prebuilt libghostty surface does not
         // register for file drops itself, so the pane catches them and feeds the path to
@@ -118,6 +132,7 @@ struct TerminalPane: View {
             // flushes any pending auto-save first). The diff overlay is dismissed for the same reason.
             store.openFileURL = nil
             store.openDiff = nil
+            store.openTrace = nil
             focusedSession = id
         }
         // The toolbar's close button posts this; tear the overlay down the same way the overlay's
@@ -125,6 +140,7 @@ struct TerminalPane: View {
         .onReceive(NotificationCenter.default.publisher(for: .termioCloseContentOverlay)) { _ in
             store.openFileURL = nil
             store.openDiff = nil
+            store.openTrace = nil
             focusedSession = store.selectedSessionID
         }
     }

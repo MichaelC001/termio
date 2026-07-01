@@ -52,7 +52,7 @@ final class TermioStore: ObservableObject {
     /// Opening a file dismisses any open diff — the two overlays are mutually exclusive.
     @Published var openFileURL: URL? {
         didSet {
-            if openFileURL != nil { openDiff = nil }
+            if openFileURL != nil { openDiff = nil; openTrace = nil }
             // Closing always returns to the editable default; a read-only open re-asserts the flag
             // immediately before setting the URL (see `openTerminalLink`).
             else { openFileReadOnly = false }
@@ -69,7 +69,15 @@ final class TermioStore: ObservableObject {
     /// pane covers itself with `GitDiffView` while it is non-nil. Opening a diff dismisses any open
     /// file editor.
     @Published var openDiff: GitDiffRequest? {
-        didSet { if openDiff != nil { openFileURL = nil } }
+        didSet { if openDiff != nil { openFileURL = nil; openTrace = nil } }
+    }
+
+    /// The agent trace currently shown over the terminal, or `nil` when none is. The
+    /// third content overlay alongside `openFileURL` and `openDiff`: the Info pane's
+    /// "View Trace" sets it, and `TerminalPane` covers itself with `TraceView` while
+    /// it is non-nil. Mutually exclusive with the other two.
+    @Published var openTrace: TraceRequest? {
+        didSet { if openTrace != nil { openFileURL = nil; openDiff = nil } }
     }
 
     /// Which pane the trailing inspector shows — the file tree or git changes. Set by the toolbar's

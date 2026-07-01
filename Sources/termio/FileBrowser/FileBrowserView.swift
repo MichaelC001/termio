@@ -41,6 +41,8 @@ struct FileBrowserView: View {
                 } else {
                     content
                 }
+            case .info:
+                SessionInfoView()
             }
         }
         // The file column lives on the terminal side, so it takes the terminal's own background
