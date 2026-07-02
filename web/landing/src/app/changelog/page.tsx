@@ -9,6 +9,15 @@ export const metadata: Metadata = {
   title: "Changelog",
   description:
     "What's new in Termio — new features, improvements and fixes, shipped to every Mac through built-in auto-updates.",
+  alternates: {
+    canonical: "/changelog",
+  },
+  openGraph: {
+    title: "Termio changelog",
+    description:
+      "What's new in Termio — new features, improvements and fixes, shipped to every Mac through built-in auto-updates.",
+    url: "/changelog",
+  },
 };
 
 const kindLabel: Record<ChangeKind, string> = {

@@ -8,69 +8,58 @@ import { Reveal } from "@/components/reveal";
 import { SectionLabel } from "@/components/section-label";
 import { supportedAgents } from "@/lib/site";
 
-const faqs: { question: string; answer: React.ReactNode }[] = [
+// Plain strings (not JSX) so the same copy feeds both the rendered accordion
+// and the FAQPage structured data below.
+const faqs: { question: string; answer: string }[] = [
   {
     question: "Is Termio free?",
-    answer: (
-      <p>
-        Yes. Termio is free to use — every feature, no trial clock, no license
-        key, no card. Just download it and go.
-      </p>
-    ),
+    answer:
+      "Yes. Termio is free to use — every feature, no trial clock, no license key, no card. Just download it and go.",
   },
   {
     question: "How do I get updates?",
-    answer: (
-      <p>
-        Automatically. Termio ships with built-in auto-updates, so once you
-        download it the app keeps itself current — no reinstalling, no checking a
-        website.
-      </p>
-    ),
+    answer:
+      "Automatically. Termio ships with built-in auto-updates, so once you download it the app keeps itself current — no reinstalling, no checking a website.",
   },
   {
     question: "Do I need an account?",
-    answer: (
-      <p>
-        No. Download Termio and use every feature — the app runs entirely on your
-        Mac, with no sign-in and no card.
-      </p>
-    ),
+    answer:
+      "No. Download Termio and use every feature — the app runs entirely on your Mac, with no sign-in and no card.",
   },
   {
     question: "Which agents are supported?",
-    answer: (
-      <p>
-        Termio gives a first-class native terminal to {supportedAgents.join(", ")}
-        . Because each session is just a real PTY, any CLI-based agent works — and
-        we add more as the ecosystem grows.
-      </p>
-    ),
+    answer: `Termio gives a first-class native terminal to ${supportedAgents.join(", ")}. Because each session is just a real PTY, any CLI-based agent works — and we add more as the ecosystem grows.`,
   },
   {
     question: "Is my code private?",
-    answer: (
-      <p>
-        Yes. Termio is local-only: no telemetry, no cloud sync, and no account is
-        needed to start. Your repositories, agent output and sessions never leave
-        your machine.
-      </p>
-    ),
+    answer:
+      "Yes. Termio is local-only: no telemetry, no cloud sync, and no account is needed to start. Your repositories, agent output and sessions never leave your machine.",
   },
   {
     question: "What are the requirements?",
-    answer: (
-      <p>
-        macOS, Apple Silicon. Termio is a native app built for Apple Silicon
-        Macs. You bring your own agent CLIs and their API keys.
-      </p>
-    ),
+    answer:
+      "macOS, Apple Silicon. Termio is a native app built for Apple Silicon Macs. You bring your own agent CLIs and their API keys.",
   },
 ];
+
+// FAQPage structured data so the questions are eligible for rich results.
+const faqJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: faqs.map((faq) => ({
+    "@type": "Question",
+    name: faq.question,
+    acceptedAnswer: { "@type": "Answer", text: faq.answer },
+  })),
+};
 
 export function Faq() {
   return (
     <section id="faq" className="scroll-mt-24">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(faqJsonLd) }}
+      />
       <div className="mx-auto w-full max-w-2xl px-5 py-32 sm:py-40 sm:px-8">
         <Reveal className="flex flex-col items-center text-center">
           <SectionLabel accent="muted">Support</SectionLabel>
@@ -91,7 +80,7 @@ export function Faq() {
                   {faq.question}
                 </AccordionTrigger>
                 <AccordionContent className="pr-8 text-muted-foreground">
-                  {faq.answer}
+                  <p>{faq.answer}</p>
                 </AccordionContent>
               </AccordionItem>
             ))}

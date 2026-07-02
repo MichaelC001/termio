@@ -1,0 +1,22 @@
+import type { MetadataRoute } from "next";
+import { changelog } from "@/data/changelog";
+
+// /colors is a design scratch page and is deliberately left out (it is also
+// noindexed via its own layout).
+export default function sitemap(): MetadataRoute.Sitemap {
+  const latestRelease = new Date(`${changelog[0].date}T12:00:00Z`);
+  return [
+    {
+      url: "https://www.termio.sh/",
+      lastModified: latestRelease,
+      changeFrequency: "weekly",
+      priority: 1,
+    },
+    {
+      url: "https://www.termio.sh/changelog",
+      lastModified: latestRelease,
+      changeFrequency: "weekly",
+      priority: 0.7,
+    },
+  ];
+}

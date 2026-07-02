@@ -22,6 +22,9 @@ export const metadata: Metadata = {
     "Apple Silicon",
   ],
   applicationName: "Termio",
+  alternates: {
+    canonical: "/",
+  },
   openGraph: {
     title: "Termio — the terminal home for your AI coding agents",
     description: siteDescription,
