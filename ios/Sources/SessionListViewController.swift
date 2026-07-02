@@ -3,12 +3,24 @@ import TermioSSH
 import TermioShared
 import UIKit
 
-// MARK: - Level 1: projects
-
-final class ProjectListViewController: UITableViewController {
+/// The home list: a single expandable tree matching the macOS sidebar —
+/// projects are collapsible headers, their sessions nested inline, everything
+/// in one scroll. Tap a project to expand/collapse; tap a session to open it.
+final class ProjectTreeViewController: UITableViewController {
     private let projects = MockProject.samples
+    /// Indices of expanded projects — all open by default, like the desktop.
+    private var expanded: Set<Int>
+
+    /// A flattened row is either a project header or one of its sessions,
+    /// rebuilt from `expanded` on every toggle (the file-tree pattern).
+    private enum Row {
+        case project(Int)
+        case session(project: Int, session: Int)
+    }
+    private var rows: [Row] = []
 
     init() {
+        expanded = Set(0 ..< MockProject.samples.count)
         super.init(style: .plain)
     }
 
@@ -23,9 +35,21 @@ final class ProjectListViewController: UITableViewController {
             image: UIImage(systemName: "plus"),
             primaryAction: UIAction { [weak self] _ in self?.presentConnectSheet() }
         )
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "project")
-        tableView.rowHeight = 60
-        tableView.separatorInset = UIEdgeInsets(top: 0, left: 52, bottom: 0, right: 0)
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "row")
+        tableView.separatorStyle = .none
+        rebuildRows()
+    }
+
+    private func rebuildRows() {
+        rows = []
+        for (p, _) in projects.enumerated() {
+            rows.append(.project(p))
+            if expanded.contains(p) {
+                for s in projects[p].sessions.indices {
+                    rows.append(.session(project: p, session: s))
+                }
+            }
+        }
     }
 
     private func presentConnectSheet() {
@@ -39,48 +63,71 @@ final class ProjectListViewController: UITableViewController {
         present(UINavigationController(rootViewController: connect), animated: true)
     }
 
+    // MARK: - Table
+
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        projects.count
+        rows.count
+    }
+
+    override func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
+        switch rows[indexPath.row] {
+        case .project: 38
+        case .session: 44
+        }
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "project", for: indexPath)
-        let project = projects[indexPath.row]
-        cell.contentConfiguration = UIHostingConfiguration {
-            ProjectRow(project: project)
+        let cell = tableView.dequeueReusableCell(withIdentifier: "row", for: indexPath)
+        cell.selectionStyle = .none
+        switch rows[indexPath.row] {
+        case .project(let p):
+            let project = projects[p]
+            let isOpen = expanded.contains(p)
+            cell.contentConfiguration = UIHostingConfiguration {
+                ProjectHeaderRow(project: project, expanded: isOpen)
+            }
+            .margins(.vertical, 4)
+        case .session(let p, let s):
+            let session = projects[p].sessions[s]
+            cell.contentConfiguration = UIHostingConfiguration {
+                SessionRow(session: session)
+            }
+            .margins(.vertical, 2)
         }
-        cell.accessoryType = .disclosureIndicator
         return cell
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
-        navigationController?.pushViewController(
-            SessionListViewController(project: projects[indexPath.row]),
-            animated: true
-        )
+        switch rows[indexPath.row] {
+        case .project(let p):
+            if expanded.contains(p) { expanded.remove(p) } else { expanded.insert(p) }
+            rebuildRows()
+            tableView.reloadSections([0], with: .automatic)
+        case .session(let p, let s):
+            navigationController?.pushViewController(
+                TerminalViewController(session: projects[p].sessions[s]),
+                animated: true
+            )
+        }
     }
 }
 
-/// Project row: the desktop sidebar's project header as a list row — folder
-/// mark in the same 16-wide icon slot, name, and a roll-up of session state
-/// (a working spinner and/or attention dot) so the level-1 page still shows
-/// where the action is.
-private struct ProjectRow: View {
+// MARK: - Rows
+
+/// A project header: folder mark (open when expanded), the project name in the
+/// desktop's uppercase style, and a roll-up of session state on the right.
+private struct ProjectHeaderRow: View {
     let project: MockProject
+    let expanded: Bool
 
     var body: some View {
         HStack(spacing: 6) {
-            HugeIconView(icon: .folder, size: 15, color: .monochromeInk)
+            HugeIconView(icon: expanded ? .folderOpen : .folder, size: 15, color: .monochromeInk)
                 .frame(width: 16)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(project.name)
-                    .font(.body.weight(.medium))
-                Text(project.path)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            Text(project.name.uppercased())
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             Spacer(minLength: 4)
             if let tint = workingTint {
                 WorkingIndicator(tint: tint)
@@ -104,59 +151,9 @@ private struct ProjectRow: View {
     }
 }
 
-// MARK: - Level 2: sessions in a project
-
-final class SessionListViewController: UITableViewController {
-    private let project: MockProject
-
-    init(project: MockProject) {
-        self.project = project
-        super.init(style: .plain)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        title = project.name
-        navigationItem.largeTitleDisplayMode = .never
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            image: UIImage(systemName: "square.and.pencil"),
-            primaryAction: nil
-        )
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "session")
-        tableView.rowHeight = 60
-        tableView.separatorInset = UIEdgeInsets(top: 0, left: 52, bottom: 0, right: 0)
-    }
-
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        project.sessions.count
-    }
-
-    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "session", for: indexPath)
-        let session = project.sessions[indexPath.row]
-        cell.contentConfiguration = UIHostingConfiguration {
-            SessionRow(session: session)
-        }
-        cell.accessoryType = .disclosureIndicator
-        return cell
-    }
-
-    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
-        navigationController?.pushViewController(
-            TerminalViewController(session: project.sessions[indexPath.row]),
-            animated: true
-        )
-    }
-}
-
-/// Session row, matching the desktop sidebar's `SessionRow`: while the agent
-/// is working the leading mark becomes the rotating nine-dot grid (in the
-/// agent's brand color) and reverts to the brand mark when the turn ends; a
-/// status dot trails only when the session is done or needs the user.
+/// A session row under a project, matching the desktop sidebar: the working
+/// spinner (in the agent's brand color) while a turn is in flight, else the
+/// brand mark; a status dot trails only when done or awaiting the user.
 private struct SessionRow: View {
     let session: MockSession
 
@@ -170,20 +167,13 @@ private struct SessionRow: View {
                 }
             }
             .frame(width: 16)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(session.title)
-                    .font(.body.weight(.medium))
-                    .lineLimit(1)
-                Text(session.subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            Text(session.title)
+                .font(.body)
+                .lineLimit(1)
+                .truncationMode(.tail)
             Spacer(minLength: 4)
-            Text(session.time)
-                .font(.footnote)
-                .foregroundStyle(.tertiary)
             StatusDot(status: session.status)
         }
+        .padding(.leading, 16) // nest under the project's folder mark
     }
 }

@@ -10,7 +10,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         let window = UIWindow(frame: UIScreen.main.bounds)
-        let projects = ProjectListViewController()
+        let projects = ProjectTreeViewController()
         let nav = UINavigationController(rootViewController: projects)
         window.rootViewController = nav
         window.makeKeyAndVisible()
@@ -53,9 +53,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         if let flagIndex = args.firstIndex(of: "-demo"), args.indices.contains(flagIndex + 1) {
             let mode = args[flagIndex + 1]
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                guard mode != "list" else { return }
                 let project = MockProject.samples[0]
-                nav.pushViewController(SessionListViewController(project: project), animated: false)
-                guard mode != "sessions" else { return }
                 let terminal = TerminalViewController(session: project.sessions[0])
                 nav.pushViewController(terminal, animated: false)
                 if mode == "drawer" {
