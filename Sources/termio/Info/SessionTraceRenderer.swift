@@ -209,12 +209,13 @@ enum SessionTraceRenderer {
         var conversational: [String] = []
         var cards: [String] = []
 
+        let markdown = role == "assistant"
         if let s = message["content"] as? String {
-            conversational.append(textBlock(s))
+            conversational.append(textBlock(s, markdown: markdown))
         } else if let blocks = message["content"] as? [[String: Any]] {
             for b in blocks {
                 switch b["type"] as? String {
-                case "text": conversational.append(textBlock(b["text"] as? String ?? ""))
+                case "text": conversational.append(textBlock(b["text"] as? String ?? "", markdown: markdown))
                 case "thinking":
                     let t = b["thinking"] as? String ?? ""
                     if !t.isEmpty {
@@ -312,7 +313,7 @@ enum SessionTraceRenderer {
     }
 
     private static func codexTurn(_ message: Any?, role: String, label: String) -> String {
-        let body = textBlock(message as? String ?? "")
+        let body = textBlock(message as? String ?? "", markdown: role == "assistant")
         return body.isEmpty ? "" : turnCard(role: role, label: label, body: body)
     }
 
@@ -373,9 +374,15 @@ enum SessionTraceRenderer {
 
     // MARK: Helpers
 
-    private static func textBlock(_ s: String) -> String {
+    /// Agent text renders as markdown (headings, fences, tables…); user text stays
+    /// plain pre-wrap, since prompts often contain pasted output that markdown
+    /// markers would mangle.
+    private static func textBlock(_ s: String, markdown: Bool = false) -> String {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "" : "<div class=\"text\">\(escaped(s))</div>"
+        if trimmed.isEmpty { return "" }
+        return markdown
+            ? "<div class=\"text md\">\(TraceMarkdown.html(s))</div>"
+            : "<div class=\"text\">\(escaped(s))</div>"
     }
 
     private static func toolResultText(_ content: Any?) -> String {
@@ -512,6 +519,29 @@ enum SessionTraceRenderer {
     .role { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
       color: var(--muted); margin-bottom: 8px; font-weight: 600; }
     .text { white-space: pre-wrap; word-wrap: break-word; }
+    .text.md { white-space: normal; }
+    .text.md > *:first-child { margin-top: 0; }
+    .text.md > *:last-child { margin-bottom: 0; }
+    .text.md p { margin: 0 0 10px; }
+    .text.md h1, .text.md h2, .text.md h3, .text.md h4, .text.md h5, .text.md h6 {
+      margin: 16px 0 8px; line-height: 1.35; }
+    .text.md h1 { font-size: 16px; }
+    .text.md h2 { font-size: 15px; }
+    .text.md h3 { font-size: 14px; }
+    .text.md h4, .text.md h5, .text.md h6 { font-size: 13.5px; }
+    .text.md code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px;
+      background: var(--soft); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+    .text.md pre { background: var(--soft); border: 1px solid var(--line); border-radius: 8px; margin: 10px 0; }
+    .text.md pre code { background: none; border: none; padding: 0; }
+    .text.md ul, .text.md ol { margin: 8px 0; padding-left: 22px; }
+    .text.md li { margin: 3px 0; }
+    .text.md blockquote { margin: 10px 0; padding-left: 12px;
+      border-left: 3px solid var(--line); color: var(--muted); }
+    .text.md table { border-collapse: collapse; margin: 10px 0; font-size: 12.5px; display: block; overflow-x: auto; }
+    .text.md th, .text.md td { border: 1px solid var(--line); padding: 4px 10px; text-align: left; }
+    .text.md th { background: var(--soft); }
+    .text.md hr { border: none; border-top: 1px solid var(--line); margin: 14px 0; }
+    .text.md a { color: var(--accent); }
     details.thinking { margin: 8px 0; }
     details.thinking > summary { cursor: pointer; color: var(--muted); font-style: italic; font-size: 12px; list-style: none; }
     details.thinking > summary::-webkit-details-marker { display: none; }

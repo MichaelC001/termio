@@ -103,6 +103,7 @@ private struct TraceWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let view = WKWebView()
         view.setValue(false, forKey: "drawsBackground")
+        view.navigationDelegate = context.coordinator
         view.loadHTMLString(html, baseURL: nil)
         return view
     }
@@ -116,8 +117,21 @@ private struct TraceWebView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(lastHTML: html) }
 
-    final class Coordinator {
+    /// Markdown in agent messages can contain links; open them in the browser
+    /// instead of letting them navigate the trace page away.
+    final class Coordinator: NSObject, WKNavigationDelegate {
         var lastHTML: String
         init(lastHTML: String) { self.lastHTML = lastHTML }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            if navigationAction.navigationType == .linkActivated,
+               let url = navigationAction.request.url {
+                NSWorkspace.shared.open(url)
+                decisionHandler(.cancel)
+            } else {
+                decisionHandler(.allow)
+            }
+        }
     }
 }

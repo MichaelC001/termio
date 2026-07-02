@@ -18,6 +18,10 @@ let package = Package(
         // themes, and it builds with plain `swift build` (its resources are declared, so
         // no vendoring or Xcode-only steps).
         .package(url: "https://github.com/raspu/Highlightr.git", from: "2.3.0"),
+        // swift-markdown — Apple's cmark-gfm wrapper (the parser behind DocC). Parses
+        // agent messages for the session trace; `TraceMarkdown` walks the AST and emits
+        // escaped HTML. Apache-2.0.
+        .package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.5.0"),
     ],
     targets: [
         .executableTarget(
@@ -33,6 +37,7 @@ let package = Package(
                 .product(name: "GhosttyTheme", package: "libghostty-spm"),
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Highlightr", package: "Highlightr"),
+                .product(name: "Markdown", package: "swift-markdown"),
             ],
             path: "Sources/termio",
             resources: [
