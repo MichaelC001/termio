@@ -24,6 +24,10 @@ enum Termio {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    /// The main window's frame-autosave name, doubling as its identity for observers
+    /// elsewhere in the app (`TerminalPane` filters key-window notifications with it,
+    /// so the settings window never triggers the terminal refocus rescue).
+    static let mainWindowFrameAutosaveName = "TermioMainWindow"
     private var window: NSWindow!
     private let settings = AppSettings()
     private lazy var store = TermioStore.restored(settings: settings)
@@ -105,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.contentViewController = makeContentSplitViewController()
         window.delegate = self
         window.center()
-        window.setFrameAutosaveName("TermioMainWindow")
+        window.setFrameAutosaveName(Self.mainWindowFrameAutosaveName)
         window.makeKeyAndOrderFront(nil)
         applyWindowTransparency()
         applyChromeAppearance()

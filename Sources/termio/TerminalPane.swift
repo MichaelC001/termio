@@ -143,6 +143,25 @@ struct TerminalPane: View {
             store.openTrace = nil
             focusedSession = store.selectedSessionID
         }
+        // Refocus rescue for a libghostty-spm focus bug. When the window resigns key
+        // (Cmd-Tab, Spotlight, the tray, Settings…), the package writes "unfocused"
+        // through the SwiftUI binding, clearing `focusedSession`; if any store-driven
+        // re-render lands while the window is non-key, `synchronizeFocus` then strips
+        // the terminal's first-responder status outright (`makeFirstResponder(nil)`),
+        // and on reactivation the package only restores focus when the view is *still*
+        // first responder — so the cursor stays hollow until the user clicks. Detect
+        // exactly that orphaned state when the main window becomes key — first responder
+        // fell back to the window itself — and hand focus to the selected session. Any
+        // legitimate owner (an overlay's text view, a toolbar field) survives key-window
+        // cycles as first responder, so this can never steal focus from one.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+            guard let window = note.object as? NSWindow,
+                  window.frameAutosaveName == AppDelegate.mainWindowFrameAutosaveName,
+                  window.firstResponder === window || window.firstResponder == nil,
+                  store.openFileURL == nil, store.openDiff == nil, store.openTrace == nil
+            else { return }
+            focusedSession = store.selectedSessionID
+        }
     }
 
     /// Inserts the dropped files' paths into the selected session's terminal,
