@@ -70,7 +70,7 @@ const faqs: { question: string; answer: React.ReactNode }[] = [
 
 export function Faq() {
   return (
-    <section id="faq" className="scroll-mt-24 border-t border-border">
+    <section id="faq" className="scroll-mt-24">
       <div className="mx-auto w-full max-w-2xl px-5 py-32 sm:py-40 sm:px-8">
         <Reveal className="flex flex-col items-center text-center">
           <SectionLabel accent="muted">Support</SectionLabel>
