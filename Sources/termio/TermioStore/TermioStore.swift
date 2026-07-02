@@ -139,7 +139,7 @@ final class TermioStore: ObservableObject {
     /// (Claude Code's `transcript_path`). This is the address `sessions send` hands
     /// back so a caller can read the raw Q&A — and the response — from the agent's
     /// structured log instead of scraping the terminal.
-    var transcriptPaths: [Session.ID: String] = [:]
+    @Published var transcriptPaths: [Session.ID: String] = [:]
 
     /// When each currently-working session last reported activity, used to recover
     /// a session whose agent died mid-turn (see `sweepStaleWorking`).

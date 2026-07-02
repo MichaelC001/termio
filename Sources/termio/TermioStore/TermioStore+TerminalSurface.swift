@@ -9,15 +9,25 @@ import GhosttyTheme
 /// encoding (which is its private detail). Used to decide between `--session-id`
 /// (create) and `--resume` (resume) — resuming an id with no saved conversation errors.
 enum ClaudeConversation {
-    static func exists(id: String) -> Bool {
+    static func exists(id: String) -> Bool { transcriptPath(id: id) != nil }
+
+    /// The transcript file for a saved conversation `id`, or `nil` if none exists.
+    /// Globs the project folders for `<id>.jsonl` rather than reconstructing Claude's
+    /// cwd encoding. Because termio pins Claude's id (`Session.resumeID`) up front, this
+    /// resolves a session's transcript directly — the fallback the Info pane uses when
+    /// the hook never delivered a `transcript_path` (a session started before the
+    /// transcript-capturing hook was installed; Claude reads hooks only at startup).
+    static func transcriptPath(id: String) -> String? {
         let projects = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects", isDirectory: true)
         guard let folders = try? FileManager.default.contentsOfDirectory(
-            at: projects, includingPropertiesForKeys: nil) else { return false }
+            at: projects, includingPropertiesForKeys: nil) else { return nil }
         let transcript = "\(id).jsonl"
-        return folders.contains {
-            FileManager.default.fileExists(atPath: $0.appendingPathComponent(transcript).path)
+        for folder in folders {
+            let candidate = folder.appendingPathComponent(transcript)
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate.path }
         }
+        return nil
     }
 }
 

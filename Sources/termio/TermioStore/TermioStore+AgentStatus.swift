@@ -67,14 +67,10 @@ extension TermioStore {
         // `sessions send` can hand it back as the place to read the response.
         if let path = report.transcriptPath, !path.isEmpty {
             transcriptPaths[id] = path
-        } else if transcriptPaths[id] == nil,
-                  let session = session(id), session.agent.usesDiscoveredResumeID, session.launched,
-                  let directory = session.worktreePath ?? project(for: id)?.path,
-                  let path = AgentSessionStore.discoverTranscript(
-                    agent: session.agent, directory: directory, after: session.launchedAt) {
-            // Codex's hook can't carry a transcript path, so learn it from Codex's own
-            // on-disk rollout file the first time it reports — same result as Claude's
-            // hook-carried path, just discovered instead of handed to us.
+        } else if transcriptPaths[id] == nil, let path = resolveTranscriptPath(for: id) {
+            // The hook didn't carry a path (Codex never does; a pre-hook Claude session
+            // never will), so learn it from the agent's own on-disk transcript instead —
+            // same result as Claude's hook-carried path, just discovered.
             transcriptPaths[id] = path
         }
         switch report.state {
@@ -116,6 +112,21 @@ extension TermioStore {
     private func clearWorking(_ id: Session.ID) {
         currentTool[id] = nil
         lastWorkingAt[id] = nil
+    }
+
+    /// Resolves a session's transcript file from disk when its hook hasn't handed
+    /// termio one — the source of truth for the Info pane's trace when no hook fired.
+    /// Claude Code names its transcript by the id termio pinned (`Session.resumeID`),
+    /// so it's located directly; Codex/OpenCode fall back to the launch-time file
+    /// match (`AgentSessionStore`). `nil` until a matching transcript exists on disk.
+    func resolveTranscriptPath(for id: Session.ID) -> String? {
+        guard let session = session(id), session.launched else { return nil }
+        if session.agent == .claudeCode {
+            return session.resumeID.flatMap(ClaudeConversation.transcriptPath)
+        }
+        guard let directory = session.worktreePath ?? project(for: id)?.path else { return nil }
+        return AgentSessionStore.discoverTranscript(
+            agent: session.agent, directory: directory, after: session.launchedAt)
     }
 
     /// Sweeps sessions stuck in `.working` with no activity for a generous window

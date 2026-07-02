@@ -31,6 +31,21 @@ struct SessionInfoView: View {
     }
 
     var body: some View {
+        content
+            // Learn the transcript from disk when no hook has delivered it — so the
+            // trace is available even for a session that fired no termio hook (one
+            // started before the hook was installed). Runs once per selection, only
+            // while the path is still unknown; a later hook value simply agrees.
+            .task(id: store.selectedSessionID) {
+                guard let id = store.selectedSessionID,
+                      store.transcriptPaths[id] == nil,
+                      let path = store.resolveTranscriptPath(for: id) else { return }
+                store.transcriptPaths[id] = path
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         if let session, let workingDirectory {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
