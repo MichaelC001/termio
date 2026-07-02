@@ -11,7 +11,7 @@ updated: 2026-06-28
 > 可分享链接（`https://termio.app/s/<slug>`）。链接本身不可枚举、可选密码保护、
 > **实时同步**（Agent 继续干活时观看者能看到更新）。后端落在现有 `web/server`。
 >
-> 竞品参考：opencode 的 share（`docs/竞品分析` 未单列，结论见下文「四」）。
+> 竞品参考：opencode 的 share（`docs/competitive-analysis` 未单列，结论见下文「四」）。
 
 ---
 
@@ -89,7 +89,7 @@ opencode 的**超集**，三层清晰分开：
 
 opencode 能订阅自己进程的内部事件；termio 是**外部**观察 Codex/Claude 进程，拿不到
 它们的事件总线。但 termio 有它们的 transcript 文件——所以 termio 的实时同步 = **tail
-那个 JSONL 文件**（正是 `docs/竞品分析/07-vibe-island.md` 提到的 `claude-watch`
+那个 JSONL 文件**（正是 `docs/competitive-analysis/07-vibe-island.md` 提到的 `claude-watch`
 「无 hook 直接 tail JSONL」路子）。
 
 ```

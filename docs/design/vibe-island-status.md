@@ -7,7 +7,7 @@ updated: 2026-06-28
 
 # 设计：Vibe Island 式 Agent 状态层（Claude Code hooks）
 
-> 目标：把竞品分析 `docs/竞品分析/07-vibe-island.md` 里 "状态监控方法论" 落到 termio。
+> 目标：把竞品分析 `docs/competitive-analysis/07-vibe-island.md` 里 "状态监控方法论" 落到 termio。
 > termio 已经做完了**结构性的难活**，本设计只补上唯一缺口：可靠的"忙 / 思考中 / 在用哪个工具"。
 
 ## 一、为什么这是个小改动
@@ -190,4 +190,4 @@ termio 选**菜单栏托盘**（已做），不做刘海。更克制、不挡内
 - 冗余通道参考：https://github.com/gmr/claude-status
 - 无 hook tail 方案（termio 不需要）：https://github.com/sooink/claude-watch
 - Claude Code Hooks：https://code.claude.com/docs/en/hooks-guide
-- 竞品分析原文：`docs/竞品分析/07-vibe-island.md`
+- 竞品分析原文：`docs/competitive-analysis/07-vibe-island.md`

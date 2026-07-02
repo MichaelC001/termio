@@ -9,7 +9,7 @@ updated: 2026-06-28
 # termio — Go-to-Market & Revenue Reality
 
 > Strategy memo, 2026-06-27. Grounded in the competitor analysis
-> (`docs/竞品分析/`) and the pricing memo (`web/docs/PRICING.md`).
+> (`docs/competitive-analysis/`) and the pricing memo (`web/docs/PRICING.md`).
 > This is positioning + channels + honest revenue math — not a launch checklist.
 
 ## The one fact that governs everything
