@@ -12,7 +12,7 @@ struct MockSession: Identifiable {
 
     static let samples: [MockSession] = [
         .init(title: "fix-sidebar", project: "termio", agent: .claude,
-              status: .needsAttention, subtitle: "「允许运行 npm install?」", time: "2m"),
+              status: .needsAttention, subtitle: "Allow running npm install?", time: "2m"),
         .init(title: "landing-hero", project: "termio", agent: .claude,
               status: .working, subtitle: "Editing hero.tsx…", time: "5m"),
         .init(title: "info-pane", project: "termio", agent: .codex,

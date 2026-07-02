@@ -6,21 +6,21 @@ import UIKit
 final class ConnectViewController: UIViewController {
     var onConnect: ((SSHConfig) -> Void)?
 
-    private let hostField = ConnectViewController.field("主机 (如 192.168.1.10)", key: "ssh.host")
-    private let portField = ConnectViewController.field("端口", key: "ssh.port", fallback: "22")
-    private let userField = ConnectViewController.field("用户名", key: "ssh.user")
+    private let hostField = ConnectViewController.field("Host (e.g. 192.168.1.10)", key: "ssh.host")
+    private let portField = ConnectViewController.field("Port", key: "ssh.port", fallback: "22")
+    private let userField = ConnectViewController.field("Username", key: "ssh.user")
     private let passwordField: UITextField = {
-        let field = ConnectViewController.field("密码", key: nil)
+        let field = ConnectViewController.field("Password", key: nil)
         field.isSecureTextEntry = true
         return field
     }()
     private let commandField = ConnectViewController.field(
-        "命令(可选,如 tmux new -A -s termio)", key: "ssh.command"
+        "Command (optional, e.g. tmux new -A -s termio)", key: "ssh.command"
     )
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "SSH 连接"
+        title = "SSH Connection"
         view.backgroundColor = .systemBackground
         navigationItem.leftBarButtonItem = UIBarButtonItem(
             systemItem: .cancel,
@@ -28,7 +28,7 @@ final class ConnectViewController: UIViewController {
         )
 
         let connectButton = UIButton(configuration: .borderedProminent())
-        connectButton.setTitle("连接", for: .normal)
+        connectButton.setTitle("Connect", for: .normal)
         connectButton.addAction(UIAction { [weak self] _ in self?.connect() }, for: .touchUpInside)
 
         let stack = UIStackView(arrangedSubviews: [

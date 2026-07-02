@@ -20,3 +20,6 @@ sandbox-helper/.build/
 
 # Vercel project link (local credentials/metadata)
 .vercel/
+
+# SwiftPM build artifacts inside the companion package
+companion/.build/

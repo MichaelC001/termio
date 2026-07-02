@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Partial Info.plist merged into the generated one (GENERATE_INFOPLIST_FILE
+	  stays on). Allows cleartext ws:// to a companion server on the LAN /
+	  loopback; a tunnel gives wss:// in production, but the local PoC and
+	  direct-LAN connections need this exception.
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

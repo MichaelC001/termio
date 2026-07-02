@@ -13,6 +13,7 @@ final class TerminalViewController: UIViewController {
     private enum Backend {
         case demoShell
         case ssh(SSHConfig)
+        case companion(URL)
     }
 
     private let session: MockSession
@@ -22,6 +23,8 @@ final class TerminalViewController: UIViewController {
     private lazy var shellSession = ShellSession(shell: defaultSandboxShell)
     private var sshClient: SSHTerminalClient?
     private var sshTerminalSession: InMemoryTerminalSession?
+    private var companion: CompanionTransport?
+    private var companionSession: InMemoryTerminalSession?
     private let statusLabel = UILabel()
     private lazy var controller = TerminalController(theme: Self.terminalTheme()) { builder in
         builder.withBackgroundOpacity(0)
@@ -53,8 +56,20 @@ final class TerminalViewController: UIViewController {
         hidesBottomBarWhenPushed = true
     }
 
+    init(companionURL: URL) {
+        session = MockSession(
+            title: companionURL.host ?? "companion",
+            project: "companion", agent: .terminal, status: .idle,
+            subtitle: "", time: ""
+        )
+        backend = .companion(companionURL)
+        super.init(nibName: nil, bundle: nil)
+        hidesBottomBarWhenPushed = true
+    }
+
     deinit {
         sshClient?.stop()
+        companion?.stop()
     }
 
     @available(*, unavailable)
@@ -79,6 +94,8 @@ final class TerminalViewController: UIViewController {
             shellSession.start()
         case .ssh:
             sshClient?.start()
+        case .companion:
+            companion?.start()
         }
     }
 
@@ -98,7 +115,7 @@ final class TerminalViewController: UIViewController {
         statusLabel.textColor = .secondaryLabel
         statusLabel.text = switch backend {
         case .demoShell: "\(session.agent.rawValue) · \(session.time)"
-        case .ssh: "连接中…"
+        case .ssh, .companion: "Connecting…"
         }
         let stack = UIStackView(arrangedSubviews: [titleLabel, statusLabel])
         stack.axis = .vertical
@@ -158,6 +175,43 @@ final class TerminalViewController: UIViewController {
             sshClient = client
             sshTerminalSession = terminalSession
             return terminalSession
+
+        case .companion(let url):
+            let transport = CompanionTransport(url: url)
+            let terminalSession = InMemoryTerminalSession(
+                write: { [weak transport] data in transport?.send(data) },
+                resize: { [weak transport] viewport in
+                    transport?.resize(cols: Int(viewport.columns), rows: Int(viewport.rows))
+                }
+            )
+            transport.onOutput = { [weak terminalSession] data in
+                terminalSession?.receive(data)
+            }
+            transport.onState = { [weak self] state in
+                self?.companionStateChanged(state)
+            }
+            companion = transport
+            companionSession = terminalSession
+            return terminalSession
+        }
+    }
+
+    private func companionStateChanged(_ state: CompanionTransport.State) {
+        switch state {
+        case .connecting:
+            statusLabel.text = "Connecting…"
+        case .connected:
+            statusLabel.text = "Connected"
+        case .failed(let reason):
+            statusLabel.text = "Connection failed"
+            let alert = UIAlertController(title: "Companion connection failed", message: reason, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
+                self?.navigationController?.popViewController(animated: true)
+            })
+            present(alert, animated: true)
+        case .closed:
+            statusLabel.text = "Disconnected"
+            companionSession?.finish(exitCode: 0, runtimeMilliseconds: 0)
         }
     }
 
@@ -166,18 +220,18 @@ final class TerminalViewController: UIViewController {
         case .idle:
             break
         case .connecting:
-            statusLabel.text = "连接中…"
+            statusLabel.text = "Connecting…"
         case .connected:
-            statusLabel.text = "已连接"
+            statusLabel.text = "Connected"
         case .failed(let reason):
-            statusLabel.text = "连接失败"
-            let alert = UIAlertController(title: "SSH 连接失败", message: reason, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "好", style: .default) { [weak self] _ in
+            statusLabel.text = "Connection failed"
+            let alert = UIAlertController(title: "SSH connection failed", message: reason, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
                 self?.navigationController?.popViewController(animated: true)
             })
             present(alert, animated: true)
         case .closed:
-            statusLabel.text = "已断开"
+            statusLabel.text = "Disconnected"
             sshTerminalSession?.finish(exitCode: 0, runtimeMilliseconds: 0)
         }
     }

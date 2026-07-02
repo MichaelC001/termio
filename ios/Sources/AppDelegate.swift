@@ -21,6 +21,15 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         // capture states that gestures can't reach from the CLI.
         let args = ProcessInfo.processInfo.arguments
 
+        // Automated companion test drive: `-companion-url ws://localhost:8787`.
+        if let urlString = Self.argument("-companion-url", in: args),
+           let url = URL(string: urlString) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                nav.pushViewController(TerminalViewController(companionURL: url), animated: false)
+            }
+            return true
+        }
+
         // Automated SSH test drive: `-ssh-host H -ssh-port P -ssh-user U
         // -ssh-key-file /path` connects straight to an SSH server (simulator
         // apps run on the host, so the key path can be a host path).

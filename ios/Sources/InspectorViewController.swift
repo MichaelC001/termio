@@ -7,7 +7,7 @@ final class InspectorViewController: UIViewController {
 
     private let session: MockSession
     private let tableView = UITableView(frame: .zero, style: .plain)
-    private let segment = UISegmentedControl(items: ["文件", "改动"])
+    private let segment = UISegmentedControl(items: ["Files", "Changes"])
 
     private var fileRows: [(node: FileNode, depth: Int)] = []
     private var pane: Pane = .files
