@@ -15,8 +15,17 @@ let package = Package(
     ],
     products: [
         .library(name: "TermioShared", targets: ["TermioShared"]),
+        .library(name: "TermioSSH", targets: ["TermioSSH"]),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-nio-ssh.git", "0.13.0" ..< "0.14.0"),
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
     ],
     targets: [
         .target(name: "TermioShared"),
+        .target(name: "TermioSSH", dependencies: [
+            .product(name: "NIOSSH", package: "swift-nio-ssh"),
+            .product(name: "Crypto", package: "swift-crypto"),
+        ]),
     ]
 )

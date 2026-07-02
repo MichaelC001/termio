@@ -1,16 +1,28 @@
 import GhosttyTerminal
 import GhosttyTheme
 import ShellCraftKit
+import TermioSSH
+import TermioShared
 import UIKit
 
-/// Full-screen terminal for one session. The right screen edge slides in the
-/// inspector drawer (file tree + changes); the terminal keeps rendering,
+/// Full-screen terminal for one session — the bundled demo sandbox shell for
+/// mock sessions, or a live SSH connection. The right screen edge slides in
+/// the inspector drawer (file tree + changes); the terminal keeps rendering,
 /// dimmed, behind it.
 final class TerminalViewController: UIViewController {
+    private enum Backend {
+        case demoShell
+        case ssh(SSHConfig)
+    }
+
     private let session: MockSession
+    private let backend: Backend
 
     private lazy var terminalView = TerminalView(frame: .zero)
     private lazy var shellSession = ShellSession(shell: defaultSandboxShell)
+    private var sshClient: SSHTerminalClient?
+    private var sshTerminalSession: InMemoryTerminalSession?
+    private let statusLabel = UILabel()
     private lazy var controller = TerminalController(theme: Self.terminalTheme()) { builder in
         builder.withBackgroundOpacity(0)
     }
@@ -25,8 +37,24 @@ final class TerminalViewController: UIViewController {
 
     init(session: MockSession) {
         self.session = session
+        backend = .demoShell
         super.init(nibName: nil, bundle: nil)
         hidesBottomBarWhenPushed = true
+    }
+
+    init(sshConfig: SSHConfig) {
+        session = MockSession(
+            title: "\(sshConfig.username)@\(sshConfig.host)",
+            project: "ssh", agent: .terminal, status: .idle,
+            subtitle: "", time: ""
+        )
+        backend = .ssh(sshConfig)
+        super.init(nibName: nil, bundle: nil)
+        hidesBottomBarWhenPushed = true
+    }
+
+    deinit {
+        sshClient?.stop()
     }
 
     @available(*, unavailable)
@@ -46,7 +74,12 @@ final class TerminalViewController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         if !drawerOpen { terminalView.becomeFirstResponder() }
-        shellSession.start()
+        switch backend {
+        case .demoShell:
+            shellSession.start()
+        case .ssh:
+            sshClient?.start()
+        }
     }
 
     override func viewDidLayoutSubviews() {
@@ -61,10 +94,12 @@ final class TerminalViewController: UIViewController {
         let titleLabel = UILabel()
         titleLabel.font = .preferredFont(forTextStyle: .headline)
         titleLabel.text = session.title
-        let statusLabel = UILabel()
         statusLabel.font = .preferredFont(forTextStyle: .caption1)
         statusLabel.textColor = .secondaryLabel
-        statusLabel.text = "\(session.agent) · \(session.time)"
+        statusLabel.text = switch backend {
+        case .demoShell: "\(session.agent.rawValue) · \(session.time)"
+        case .ssh: "连接中…"
+        }
         let stack = UIStackView(arrangedSubviews: [titleLabel, statusLabel])
         stack.axis = .vertical
         stack.alignment = .center
@@ -84,7 +119,7 @@ final class TerminalViewController: UIViewController {
     private func configureTerminal() {
         terminalView.delegate = self
         terminalView.configuration = TerminalSurfaceOptions(
-            backend: .inMemory(shellSession.terminalSession)
+            backend: .inMemory(makeTerminalSession())
         )
         terminalView.controller = controller
         terminalView.backgroundColor = .clear
@@ -97,6 +132,54 @@ final class TerminalViewController: UIViewController {
             terminalView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             terminalView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
         ])
+    }
+
+    /// Demo sessions use ShellCraftKit's sandbox shell; SSH sessions bridge
+    /// the surface to the SSH channel — keystrokes out, remote bytes in,
+    /// grid resize → SSH window-change.
+    private func makeTerminalSession() -> InMemoryTerminalSession {
+        switch backend {
+        case .demoShell:
+            return shellSession.terminalSession
+        case .ssh(let config):
+            let client = SSHTerminalClient(config: config)
+            let terminalSession = InMemoryTerminalSession(
+                write: { [weak client] data in client?.send(data) },
+                resize: { [weak client] viewport in
+                    client?.resize(cols: Int(viewport.columns), rows: Int(viewport.rows))
+                }
+            )
+            client.onOutput = { [weak terminalSession] data in
+                terminalSession?.receive(data)
+            }
+            client.onState = { [weak self] state in
+                self?.sshStateChanged(state)
+            }
+            sshClient = client
+            sshTerminalSession = terminalSession
+            return terminalSession
+        }
+    }
+
+    private func sshStateChanged(_ state: SSHClientState) {
+        switch state {
+        case .idle:
+            break
+        case .connecting:
+            statusLabel.text = "连接中…"
+        case .connected:
+            statusLabel.text = "已连接"
+        case .failed(let reason):
+            statusLabel.text = "连接失败"
+            let alert = UIAlertController(title: "SSH 连接失败", message: reason, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "好", style: .default) { [weak self] _ in
+                self?.navigationController?.popViewController(animated: true)
+            })
+            present(alert, animated: true)
+        case .closed:
+            statusLabel.text = "已断开"
+            sshTerminalSession?.finish(exitCode: 0, runtimeMilliseconds: 0)
+        }
     }
 
     private static func terminalTheme() -> TerminalTheme {

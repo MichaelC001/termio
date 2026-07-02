@@ -1,4 +1,5 @@
 import SwiftUI
+import TermioSSH
 import TermioShared
 import UIKit
 
@@ -20,11 +21,22 @@ final class ProjectListViewController: UITableViewController {
         navigationController?.navigationBar.prefersLargeTitles = true
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             image: UIImage(systemName: "plus"),
-            primaryAction: nil
+            primaryAction: UIAction { [weak self] _ in self?.presentConnectSheet() }
         )
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "project")
         tableView.rowHeight = 60
         tableView.separatorInset = UIEdgeInsets(top: 0, left: 52, bottom: 0, right: 0)
+    }
+
+    private func presentConnectSheet() {
+        let connect = ConnectViewController()
+        connect.onConnect = { [weak self] config in
+            self?.navigationController?.pushViewController(
+                TerminalViewController(sshConfig: config),
+                animated: true
+            )
+        }
+        present(UINavigationController(rootViewController: connect), animated: true)
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
