@@ -284,7 +284,8 @@ private struct JSONHookFile: AgentStatusInstaller {
                 // dropping it here loses no real "needs you" signal.
                 ("PermissionRequest", "attention", "*"),
                 ("Stop", "done", nil),
-                ("SubagentStop", "done", nil),
+                // A subagent finishing means the parent turn is still in flight.
+                ("SubagentStop", "working", nil),
             ],
             label: "claude",
             capturesTranscript: true)
@@ -299,7 +300,7 @@ private struct JSONHookFile: AgentStatusInstaller {
                 ("PostToolUse", "working", nil),
                 ("PermissionRequest", "attention", nil),
                 ("Stop", "done", nil),
-                ("SubagentStop", "done", nil),
+                ("SubagentStop", "working", nil),
             ],
             label: "codex")
     }

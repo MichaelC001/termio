@@ -20,12 +20,15 @@ final class TermioStore: ObservableObject {
     }
     @Published var selectedSessionID: Session.ID? {
         // Selecting a session means the user is now looking at it, so any pending
-        // "needs attention" is, by definition, answered.
+        // "needs attention" (or unseen "done") is, by definition, answered.
         didSet {
+            guard oldValue != selectedSessionID else { return }
             if let id = selectedSessionID {
-                statuses[id] = .idle
-                currentTool[id] = nil
-                lastWorkingAt[id] = nil
+                // A mid-turn `.working` keeps its spinner; only the resting
+                // "your turn" states are answered by looking.
+                if statuses[id] == .needsAttention || statuses[id] == .done {
+                    statuses[id] = .idle
+                }
                 // Switching to a session counts as activity for its project, so the
                 // "Recent Activity" sort floats a project the moment you focus it.
                 if let pid = project(for: id)?.id { liveActivity[pid] = Date() }
@@ -148,10 +151,9 @@ final class TermioStore: ObservableObject {
     /// a session whose agent died mid-turn (see `sweepStaleWorking`).
     var lastWorkingAt: [Session.ID: Date] = [:]
     var staleWorkingSweep: Timer?
-    /// Long on purpose: tool events refresh `lastWorkingAt` throughout a normal
-    /// turn, so this only fires for a genuinely stuck session, and only while the
-    /// user is looking elsewhere (selecting clears it anyway).
-    let staleWorkingTimeout: TimeInterval = 300
+    /// Must outlast the longest real tool run: nothing refreshes `lastWorkingAt`
+    /// between the start and end of a single tool call.
+    let staleWorkingTimeout: TimeInterval = 900
 
     init(projects: [Project], settings: AppSettings) {
         self.settings = settings
