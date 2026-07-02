@@ -7,9 +7,12 @@ import UIKit
 /// projects are collapsible headers, their sessions nested inline, everything
 /// in one scroll. Tap a project to expand/collapse; tap a session to open it.
 final class ProjectTreeViewController: UITableViewController {
-    private let projects = MockProject.samples
+    /// Live roster from the Mac when a companion URL is configured, else the
+    /// bundled mock so the UI is explorable offline.
+    private var projects: [MockProject] = MockProject.samples
     /// Indices of expanded projects — all open by default, like the desktop.
-    private var expanded: Set<Int>
+    private var expanded: Set<Int> = []
+    private var client: CompanionClient?
 
     /// A flattened row is either a project header or one of its sessions,
     /// rebuilt from `expanded` on every toggle (the file-tree pattern).
@@ -20,8 +23,8 @@ final class ProjectTreeViewController: UITableViewController {
     private var rows: [Row] = []
 
     init() {
-        expanded = Set(0 ..< MockProject.samples.count)
         super.init(style: .plain)
+        expanded = Set(projects.indices)
     }
 
     @available(*, unavailable)
@@ -38,6 +41,32 @@ final class ProjectTreeViewController: UITableViewController {
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "row")
         tableView.separatorStyle = .none
         rebuildRows()
+        connectRosterIfConfigured()
+    }
+
+    /// A companion roster URL comes from a launch arg (`-roster-url ws://…`) or
+    /// UserDefaults; when present the tree switches to the Mac's live list.
+    private func connectRosterIfConfigured() {
+        let arg = ProcessInfo.processInfo.arguments
+            .firstIndex(of: "-roster-url")
+            .flatMap { idx -> String? in
+                let next = idx + 1
+                return ProcessInfo.processInfo.arguments.indices.contains(next)
+                    ? ProcessInfo.processInfo.arguments[next] : nil
+            }
+        let saved = UserDefaults.standard.string(forKey: "companion.rosterURL")
+        guard let urlString = arg ?? saved, let url = URL(string: urlString) else { return }
+
+        let client = CompanionClient(url: url)
+        client.onRoster = { [weak self] roster in
+            guard let self else { return }
+            projects = roster.map(MockProject.init(roster:))
+            expanded = Set(projects.indices)
+            rebuildRows()
+            tableView.reloadData()
+        }
+        client.start()
+        self.client = client
     }
 
     private func rebuildRows() {

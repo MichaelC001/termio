@@ -50,6 +50,55 @@ struct MockProject: Identifiable {
     }()
 }
 
+// MARK: - Roster → model mapping
+
+extension AgentKind {
+    /// Map a wire agent string (`RosterSession.agent`) to an icon kind.
+    init(wire: String) {
+        switch wire {
+        case "claude": self = .claude
+        case "codex": self = .codex
+        case "opencode": self = .opencode
+        default: self = .terminal
+        }
+    }
+}
+
+extension SessionStatus {
+    /// Map a wire status string (`RosterSession.status`) to a status.
+    init(wire: String) {
+        switch wire {
+        case "working": self = .working
+        case "done": self = .done
+        case "needsAttention": self = .needsAttention
+        default: self = .idle
+        }
+    }
+}
+
+extension MockSession {
+    init(roster: RosterSession) {
+        self.init(
+            title: roster.title,
+            project: "",
+            agent: AgentKind(wire: roster.agent),
+            status: SessionStatus(wire: roster.status),
+            subtitle: "",
+            time: ""
+        )
+    }
+}
+
+extension MockProject {
+    init(roster: RosterProject) {
+        self.init(
+            name: roster.name,
+            path: roster.path,
+            sessions: roster.sessions.map(MockSession.init(roster:))
+        )
+    }
+}
+
 // MARK: - Mock file tree
 
 final class FileNode {

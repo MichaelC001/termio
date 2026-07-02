@@ -44,3 +44,65 @@ public enum CompanionControl: Codable, Sendable, Equatable {
         }
     }
 }
+
+// MARK: - Roster (server → client)
+
+/// One session as it appears in the phone's tree. `agent` and `status` are the
+/// raw values of `AgentKind` / `SessionStatus` so the wire stays string-stable
+/// and decoupled from either app's internal enums.
+public struct RosterSession: Codable, Sendable, Equatable {
+    public let id: String
+    public let title: String
+    public let agent: String   // "claude" | "codex" | "opencode" | "terminal"
+    public let status: String  // "idle" | "working" | "done" | "needsAttention"
+
+    public init(id: String, title: String, agent: String, status: String) {
+        self.id = id
+        self.title = title
+        self.agent = agent
+        self.status = status
+    }
+}
+
+/// One project and its sessions.
+public struct RosterProject: Codable, Sendable, Equatable {
+    public let id: String
+    public let name: String
+    public let path: String
+    public let sessions: [RosterSession]
+
+    public init(id: String, name: String, path: String, sessions: [RosterSession]) {
+        self.id = id
+        self.name = name
+        self.path = path
+        self.sessions = sessions
+    }
+}
+
+/// The full project/session roster the companion server pushes to the phone —
+/// the same data the desktop sidebar shows. Sent on connect and whenever the
+/// store's projects/statuses/titles change. Carried as a text frame tagged
+/// `"roster"` so it coexists with the small `CompanionControl` messages.
+public struct CompanionRoster: Codable, Sendable, Equatable {
+    public let t: String
+    public let projects: [RosterProject]
+
+    public init(projects: [RosterProject]) {
+        t = "roster"
+        self.projects = projects
+    }
+
+    public func encodedJSON() -> String {
+        guard let data = try? JSONEncoder().encode(self) else { return #"{"t":"roster","projects":[]}"# }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Decode a text frame if it is a roster (tagged `"t":"roster"`), else nil.
+    public static func decode(_ text: String) -> CompanionRoster? {
+        guard let data = text.data(using: .utf8),
+              let roster = try? JSONDecoder().decode(CompanionRoster.self, from: data),
+              roster.t == "roster"
+        else { return nil }
+        return roster
+    }
+}

@@ -22,6 +22,9 @@ let package = Package(
         // agent messages for the session trace; `TraceMarkdown` walks the AST and emits
         // escaped HTML. Apache-2.0.
         .package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.5.0"),
+        // Code shared with the iOS companion app — the companion wire protocol
+        // (roster + control messages) lives here so both ends stay in sync.
+        .package(path: "Shared"),
     ],
     targets: [
         .executableTarget(
@@ -38,6 +41,7 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Highlightr", package: "Highlightr"),
                 .product(name: "Markdown", package: "swift-markdown"),
+                .product(name: "TermioShared", package: "Shared"),
             ],
             path: "Sources/termio",
             resources: [
