@@ -21,11 +21,23 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         // capture states that gestures can't reach from the CLI.
         let args = ProcessInfo.processInfo.arguments
 
-        // Automated companion test drive: `-companion-url ws://localhost:8787`.
+        // Automated companion test drive: `-companion-url ws://localhost:8787`
+        // streams the PoC server; add `-companion-session <roster-id>` to
+        // attach straight to a real Mac session's PTY.
         if let urlString = Self.argument("-companion-url", in: args),
            let url = URL(string: urlString) {
+            let session = Self.argument("-companion-session", in: args).map { rosterID in
+                MockSession(
+                    title: url.host ?? "companion",
+                    project: "companion", agent: .terminal, status: .idle,
+                    subtitle: "", time: "", rosterID: rosterID
+                )
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                nav.pushViewController(TerminalViewController(companionURL: url), animated: false)
+                nav.pushViewController(
+                    TerminalViewController(companionURL: url, session: session),
+                    animated: false
+                )
             }
             return true
         }

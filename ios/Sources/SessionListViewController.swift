@@ -13,6 +13,9 @@ final class ProjectTreeViewController: UITableViewController {
     /// Indices of expanded projects — all open by default, like the desktop.
     private var expanded: Set<Int> = []
     private var client: CompanionClient?
+    /// The companion server URL when the tree is live — session taps open the
+    /// real Mac PTY through it instead of the bundled demo shell.
+    private var companionURL: URL?
 
     /// A flattened row is either a project header or one of its sessions,
     /// rebuilt from `expanded` on every toggle (the file-tree pattern).
@@ -57,6 +60,7 @@ final class ProjectTreeViewController: UITableViewController {
         let saved = UserDefaults.standard.string(forKey: "companion.rosterURL")
         guard let urlString = arg ?? saved, let url = URL(string: urlString) else { return }
 
+        companionURL = url
         let client = CompanionClient(url: url)
         client.onRoster = { [weak self] roster in
             guard let self else { return }
@@ -133,10 +137,14 @@ final class ProjectTreeViewController: UITableViewController {
             rebuildRows()
             tableView.reloadSections([0], with: .automatic)
         case .session(let p, let s):
-            navigationController?.pushViewController(
-                TerminalViewController(session: projects[p].sessions[s]),
-                animated: true
-            )
+            let session = projects[p].sessions[s]
+            let terminal: TerminalViewController
+            if let companionURL, session.rosterID != nil {
+                terminal = TerminalViewController(companionURL: companionURL, session: session)
+            } else {
+                terminal = TerminalViewController(session: session)
+            }
+            navigationController?.pushViewController(terminal, animated: true)
         }
     }
 }

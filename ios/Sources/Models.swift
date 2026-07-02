@@ -9,6 +9,9 @@ struct MockSession: Identifiable {
     let status: SessionStatus
     let subtitle: String
     let time: String
+    /// The Mac session's wire id when this row came from the live roster —
+    /// what `attach` sends to bridge the real PTY. nil for bundled mock rows.
+    var rosterID: String?
 
     static let samples: [MockSession] = [
         .init(title: "fix-sidebar", project: "termio", agent: .claude,
@@ -84,7 +87,8 @@ extension MockSession {
             agent: AgentKind(wire: roster.agent),
             status: SessionStatus(wire: roster.status),
             subtitle: "",
-            time: ""
+            time: "",
+            rosterID: roster.id
         )
     }
 }

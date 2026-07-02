@@ -17,6 +17,10 @@ final class CompanionTransport: NSObject {
     }
 
     private let url: URL
+    /// Roster session id to bridge; sent as an `attach` control the moment the
+    /// socket opens. nil connects to a server that streams without attach
+    /// (the standalone companion PoC).
+    private let attachSessionID: String?
     private var task: URLSessionWebSocketTask?
     private lazy var session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
 
@@ -25,8 +29,9 @@ final class CompanionTransport: NSObject {
     /// State transitions, delivered on the main queue.
     var onState: ((State) -> Void)?
 
-    init(url: URL) {
+    init(url: URL, attachSessionID: String? = nil) {
         self.url = url
+        self.attachSessionID = attachSessionID
     }
 
     func start() {
@@ -60,8 +65,13 @@ final class CompanionTransport: NSObject {
                 case .data(let data):
                     onOutput?(data)
                 case .string(let text):
-                    if case .exit? = CompanionControl.decode(text) {
+                    switch CompanionControl.decode(text) {
+                    case .exit:
                         notify(.closed)
+                    case .error(let message):
+                        notify(.failed(message))
+                    default:
+                        break // roster frames and echoes are not for this link
                     }
                 @unknown default:
                     break
@@ -81,6 +91,10 @@ final class CompanionTransport: NSObject {
 extension CompanionTransport: URLSessionWebSocketDelegate {
     func urlSession(_: URLSession, webSocketTask _: URLSessionWebSocketTask,
                     didOpenWithProtocol _: String?) {
+        if let attachSessionID {
+            let attach = CompanionControl.attach(sessionID: attachSessionID).encoded()
+            task?.send(.string(attach)) { _ in }
+        }
         notify(.connected)
     }
 

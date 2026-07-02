@@ -56,8 +56,10 @@ final class TerminalViewController: UIViewController {
         hidesBottomBarWhenPushed = true
     }
 
-    init(companionURL: URL) {
-        session = MockSession(
+    /// A companion terminal: bridges a real Mac session's PTY when `session`
+    /// carries a roster id, else streams whatever the server serves (PoC mode).
+    init(companionURL: URL, session: MockSession? = nil) {
+        self.session = session ?? MockSession(
             title: companionURL.host ?? "companion",
             project: "companion", agent: .terminal, status: .idle,
             subtitle: "", time: ""
@@ -177,7 +179,7 @@ final class TerminalViewController: UIViewController {
             return terminalSession
 
         case .companion(let url):
-            let transport = CompanionTransport(url: url)
+            let transport = CompanionTransport(url: url, attachSessionID: session.rosterID)
             let terminalSession = InMemoryTerminalSession(
                 write: { [weak transport] data in transport?.send(data) },
                 resize: { [weak transport] viewport in

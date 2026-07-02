@@ -12,18 +12,31 @@ import Foundation
 /// is transport-agnostic (works identically over ws:// localhost, wss:// via a
 /// tunnel, or a QUIC stream).
 public enum CompanionControl: Codable, Sendable, Equatable {
+    /// The client asks to bridge a specific session's PTY (roster session id).
+    /// Sent once, immediately after the socket opens; the server replays its
+    /// recent output and starts streaming.
+    case attach(sessionID: String)
     /// The client's terminal grid changed; the server resizes the PTY.
     case resize(cols: Int, rows: Int)
     /// The remote process exited.
     case exit(code: Int32)
+    /// The server rejected a request (unknown session, no live PTY).
+    case error(message: String)
 
     public func encoded() -> String {
         // Small, hand-stable JSON so both ends agree without a schema tool.
         switch self {
+        case .attach(let sessionID):
+            return #"{"t":"attach","session":"\#(sessionID)"}"#
         case .resize(let cols, let rows):
             return #"{"t":"resize","cols":\#(cols),"rows":\#(rows)}"#
         case .exit(let code):
             return #"{"t":"exit","code":\#(code)}"#
+        case .error(let message):
+            let escaped = message
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            return #"{"t":"error","message":"\#(escaped)"}"#
         }
     }
 
@@ -33,12 +46,18 @@ public enum CompanionControl: Codable, Sendable, Equatable {
               let type = obj["t"] as? String
         else { return nil }
         switch type {
+        case "attach":
+            guard let sessionID = obj["session"] as? String else { return nil }
+            return .attach(sessionID: sessionID)
         case "resize":
             guard let cols = obj["cols"] as? Int, let rows = obj["rows"] as? Int else { return nil }
             return .resize(cols: cols, rows: rows)
         case "exit":
             let code = (obj["code"] as? Int).map(Int32.init) ?? 0
             return .exit(code: code)
+        case "error":
+            guard let message = obj["message"] as? String else { return nil }
+            return .error(message: message)
         default:
             return nil
         }

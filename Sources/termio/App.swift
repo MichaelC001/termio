@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Sparkle
 import SwiftUI
+import TermioShared
 
 /// AppKit bootstrap. We drive `NSApplication` directly (rather than the SwiftUI
 /// `App` lifecycle) so a plain SwiftPM executable launches as a real foreground
@@ -33,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private lazy var store = TermioStore.restored(settings: settings)
     private lazy var usageMonitor = UsageMonitor(settings: settings)
     private var menuBar: MenuBarController?
+    private var companionServer: CompanionServer?
     private var settingsWindow: NSWindow?
     private var settingsObserver: AnyCancellable?
     // Drives in-app auto-update. Started only in release builds — a debug build has
@@ -154,6 +156,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.window.makeKeyAndOrderFront(nil)
         }
         usageMonitor.start()
+
+        // Serve the iOS companion app: the live roster, plus PTY bridging for
+        // any session the phone attaches to. Bound to localhost; a tunnel
+        // fronts it for remote use.
+        let companion = CompanionServer(
+            rosterProvider: { [weak store] in
+                store?.companionRoster() ?? CompanionRoster(projects: [])
+            },
+            ptyForSession: { [weak store] id in
+                guard let uuid = UUID(uuidString: id) else { return nil }
+                return store?.ptyProcesses[uuid]
+            }
+        )
+        companion.start()
+        companionServer = companion
 
         if !pendingOpenURLs.isEmpty {
             let urls = pendingOpenURLs
