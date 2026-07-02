@@ -65,24 +65,43 @@ extension TermioStore {
         }
 
         let controller = TerminalController { [self] builder in
-            if let sandboxedCommand {
-                builder.withCustom("command", sandboxedCommand)
-            } else if let agentCommand {
-                builder.withCustom("command", agentCommand)
-            }
-            // Stamp the session's id into the shell environment so any agent hook
-            // (Claude/Codex/Pi/OpenCode) running inside it can echo it back, letting
-            // `HookListener` correlate events to this exact session even when several
-            // share one project directory. Ghostty's `env` key adds it to the PTY.
-            builder.withCustom("env", "TERMIO_SESSION=\(session.id.uuidString)")
             applyAppearance(to: &builder)
         }
         let state = TerminalViewState(controller: controller)
         state.controller.setTheme(makeTheme())
-        state.configuration = TerminalSurfaceOptions(
-            backend: .exec,
-            workingDirectory: workspacePath
+
+        // Host-managed backend: termio owns the PTY (rather than libghostty's
+        // `.exec`), so the byte stream can be teed to a phone and read for
+        // session control. The surface's keystrokes/resizes flow to the PTY via
+        // the callbacks; the PTY's output fans back into the surface (and any
+        // attached companion sink) through `receive`.
+        let effectiveCommand = sandboxedCommand ?? agentCommand
+        let argv = Self.launchArgv(command: effectiveCommand)
+        var env = ProcessInfo.processInfo.environment
+        // Stamp the session id so any agent hook running inside can echo it back,
+        // letting `HookListener` correlate events to this exact session.
+        env["TERMIO_SESSION"] = session.id.uuidString
+        env["TERM"] = "xterm-256color"
+        env["COLORTERM"] = "truecolor"
+
+        // The PTY is created first so the surface's `@Sendable` write/resize
+        // callbacks can capture it directly (it is thread-safe: fd writes and
+        // ioctl are atomic, sinks are lock-guarded).
+        let pty = PTYProcess(argv: argv, cwd: workspacePath, env: env, cols: 80, rows: 24)
+        let inMemory = InMemoryTerminalSession(
+            write: { data in pty?.write(data) },
+            resize: { viewport in pty?.resize(cols: Int(viewport.columns), rows: Int(viewport.rows)) }
         )
+        if let pty {
+            pty.addSink { [weak inMemory] data in inMemory?.receive(data) }
+            pty.onExit = { [weak self, weak inMemory] code in
+                inMemory?.finish(exitCode: UInt32(bitPattern: code), runtimeMilliseconds: 0)
+                self?.ptyProcesses[session.id] = nil
+            }
+            ptyProcesses[session.id] = pty
+        }
+
+        state.configuration = TerminalSurfaceOptions(backend: .inMemory(inMemory))
         surfaces[session.id] = state
         monitor(state, for: session.id)
         warmUpRendering(state)
@@ -98,6 +117,18 @@ extension TermioStore {
         // writing them here is fine; only the `projects` write must be deferred.)
         DispatchQueue.main.async { [self] in recordLaunch(session.id, resumeID: launch.resumeID) }
         return state
+    }
+
+    /// The argv to spawn in the session's PTY. An agent command string (possibly
+    /// a full sandbox-exec line) runs through the shell so its quoting/args parse
+    /// exactly as under libghostty's `.exec`; `exec` keeps the shell from lingering
+    /// as an extra process. A `nil` command is the plain interactive login shell.
+    private static func launchArgv(command: String?) -> [String] {
+        if let command, !command.isEmpty {
+            return ["/bin/sh", "-c", "exec \(command)"]
+        }
+        let loginShell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        return [loginShell, "-il"]
     }
 
     /// The launch command for a session, with resume arguments folded in, plus the

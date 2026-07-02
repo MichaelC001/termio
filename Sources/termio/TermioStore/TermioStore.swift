@@ -114,6 +114,9 @@ final class TermioStore: ObservableObject {
 
     var surfaces: [Session.ID: TerminalViewState] = [:]
     var monitors: [Session.ID: [AnyCancellable]] = [:]
+    /// The termio-owned PTY behind each host-managed session — the byte stream
+    /// the surface renders and the companion server taps for a phone.
+    var ptyProcesses: [Session.ID: PTYProcess] = [:]
     private var settingsObserver: AnyCancellable?
     private var branchObserver: AnyCancellable?
     private var linkObserver: AnyCancellable?

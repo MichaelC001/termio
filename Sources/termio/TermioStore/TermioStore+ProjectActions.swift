@@ -144,6 +144,8 @@ extension TermioStore {
         let removedSessionIDs = Set(projects[projectIndex].sessions.map(\.id))
         for sessionID in removedSessionIDs {
             SandboxLauncher.cleanUp(sessionID: sessionID)
+            ptyProcesses[sessionID]?.terminate()
+            ptyProcesses[sessionID] = nil
             surfaces[sessionID] = nil
             monitors[sessionID] = nil
             statuses[sessionID] = nil
@@ -171,6 +173,8 @@ extension TermioStore {
 
         projects[projectIndex].sessions.remove(at: sessionIndex)
         SandboxLauncher.cleanUp(sessionID: id)
+        ptyProcesses[id]?.terminate()
+        ptyProcesses[id] = nil
         surfaces[id] = nil
         monitors[id] = nil
         statuses[id] = nil
