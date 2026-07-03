@@ -119,6 +119,61 @@ final class TermioMobileUITests: XCTestCase {
         add(shot)
     }
 
+    // MARK: - Attachments (live companion only)
+
+    /// End-to-end over a REAL companion link: multi-select two photos, watch
+    /// the queue upload them, and expect both Mac-side paths in the draft.
+    /// Skips itself when no Mac companion server is reachable, so the demo
+    /// suite stays green without one.
+    func testAttachPhotoBatchUploadsToCompanion() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-roster-url", "ws://127.0.0.1:8787"]
+        app.launch()
+        let row = app.staticTexts
+            .matching(NSPredicate(format: "label CONTAINS 'Claude Code'")).firstMatch
+        try XCTSkipUnless(row.waitForExistence(timeout: 15), "no live companion roster")
+        row.tap()
+        let attach = app.buttons["Attach"]
+        try XCTSkipUnless(attach.waitForExistence(timeout: 10), "session has no upload backend")
+        attach.tap()
+        // The source sheet. (Camera's row is environment-dependent — the
+        // iOS 26 simulator reports a camera — so it isn't asserted.)
+        XCTAssertTrue(app.buttons["Photo Library"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Choose File"].exists)
+        app.buttons["Photo Library"].tap()
+        // PHPicker is remote but its cells surface through the a11y tree,
+        // labeled "Photo, <date>, <time>" — scope by label so the app's own
+        // symbol images (chevrons etc.) don't match first.
+        sleep(4)
+        attachShot(app, "picker-open")
+        // PHPicker's remote tree hangs XCUITest queries (runner gets SIGKILLed
+        // building snapshots), so the picker is driven blind: normalized
+        // coordinate taps for two grid cells, then the Add button.
+        tapNormalized(app, 0.17, 0.63)
+        tapNormalized(app, 0.50, 0.63)
+        sleep(1)
+        attachShot(app, "picker-selected")
+        tapNormalized(app, 0.91, 0.167)
+        sleep(2)
+        attachShot(app, "picker-added")
+        // Both uploads land as absolute Mac paths in the draft.
+        let uploaded = app.textViews.matching(
+            NSPredicate(format: "value CONTAINS '.termio/uploads/'")).firstMatch
+        XCTAssertTrue(uploaded.waitForExistence(timeout: 30), "no upload path in draft")
+        attachShot(app, "attach-upload-draft")
+    }
+
+    private func tapNormalized(_ app: XCUIApplication, _ dx: Double, _ dy: Double) {
+        app.coordinate(withNormalizedOffset: CGVector(dx: dx, dy: dy)).tap()
+    }
+
+    private func attachShot(_ app: XCUIApplication, _ name: String) {
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        shot.name = name
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
     // MARK: - File viewer
 
     func testFileViewerShowsHighlightedSource() {

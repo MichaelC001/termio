@@ -40,6 +40,7 @@ final class ComposerBar: UIView {
     }()
     private let attachButton = UIButton(type: .system)
     private let attachSpinner = UIActivityIndicatorView(style: .medium)
+    private let attachProgressLabel = UILabel()
     private let suggestionsPanel = UIVisualEffectView(effect: ComposerBar.fieldEffect())
     private let suggestionsStack = UIStackView()
     private let pill = UIVisualEffectView(effect: ComposerBar.fieldEffect())
@@ -130,6 +131,9 @@ final class ComposerBar: UIView {
             self?.onAttach?()
         }, for: .touchUpInside)
         attachSpinner.hidesWhenStopped = true
+        attachProgressLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        attachProgressLabel.textColor = .secondaryLabel
+        attachProgressLabel.isHidden = true
 
         textView.font = .preferredFont(forTextStyle: .body)
         textView.backgroundColor = .clear
@@ -167,7 +171,7 @@ final class ComposerBar: UIView {
             setTerminalKeyboardActive(textView.inputView == nil)
         }, for: .touchUpInside)
 
-        for subview in [attachButton, attachSpinner] {
+        for subview in [attachButton, attachSpinner, attachProgressLabel] {
             subview.translatesAutoresizingMaskIntoConstraints = false
             pillWrapper.addSubview(subview)
         }
@@ -201,6 +205,8 @@ final class ComposerBar: UIView {
             attachButton.heightAnchor.constraint(equalToConstant: 34),
             attachSpinner.centerXAnchor.constraint(equalTo: attachButton.centerXAnchor),
             attachSpinner.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
+            attachProgressLabel.centerXAnchor.constraint(equalTo: attachButton.centerXAnchor),
+            attachProgressLabel.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
             pillLeadingFlush,
             pill.trailingAnchor.constraint(equalTo: pillWrapper.trailingAnchor, constant: -8),
             pill.topAnchor.constraint(equalTo: pillWrapper.topAnchor),
@@ -294,11 +300,19 @@ final class ComposerBar: UIView {
         pill.layer.borderColor = UIColor.separator.resolvedColor(with: traitCollection).cgColor
     }
 
-    /// Spins the attach slot while an upload is in flight.
-    func setAttachBusy(_ busy: Bool) {
+    /// Spins the attach slot while an upload is in flight; a batch shows its
+    /// "n/m" position instead of the spinner.
+    func setAttachBusy(_ busy: Bool, progress: (done: Int, total: Int)? = nil) {
         attachButton.alpha = busy ? 0 : 1
         attachButton.isEnabled = !busy
-        if busy { attachSpinner.startAnimating() } else { attachSpinner.stopAnimating() }
+        if busy, let progress, progress.total > 1 {
+            attachSpinner.stopAnimating()
+            attachProgressLabel.text = "\(progress.done + 1)/\(progress.total)"
+            attachProgressLabel.isHidden = false
+        } else {
+            attachProgressLabel.isHidden = true
+            if busy { attachSpinner.startAnimating() } else { attachSpinner.stopAnimating() }
+        }
     }
 
     /// Appends text to the draft (an uploaded file's path), space-separated.

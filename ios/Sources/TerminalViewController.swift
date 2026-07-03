@@ -45,6 +45,10 @@ final class TerminalViewController: UIViewController {
     private var backendStarted = false
     private var settingsObserver: NSObjectProtocol?
     private var uploadClient: CompanionClient?
+    private var uploadQueue: [(name: String, data: Data)] = []
+    private var uploadInFlight = false
+    private var uploadTotal = 0
+    private var uploadDone = 0
     private var restylePump: Timer?
     private lazy var controller = TerminalController(
         theme: Self.terminalTheme(),
@@ -335,11 +339,18 @@ final class TerminalViewController: UIViewController {
 
     // MARK: - Attachments
 
+    private static let uploadByteCap = 8 << 20
+
     private func presentAttachOptions() {
         let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
         sheet.addAction(UIAlertAction(title: "Photo Library", style: .default) { [weak self] _ in
             self?.presentPhotoPicker()
         })
+        if UIImagePickerController.isSourceTypeAvailable(.camera) {
+            sheet.addAction(UIAlertAction(title: "Camera", style: .default) { [weak self] _ in
+                self?.presentCamera()
+            })
+        }
         sheet.addAction(UIAlertAction(title: "Choose File", style: .default) { [weak self] _ in
             self?.presentDocumentPicker()
         })
@@ -350,45 +361,95 @@ final class TerminalViewController: UIViewController {
     private func presentPhotoPicker() {
         var config = PHPickerConfiguration()
         config.filter = .images
-        config.selectionLimit = 1
+        // Telegram's default batch limit; .ordered gives numbered selection
+        // circles from the system picker.
+        config.selectionLimit = 10
+        config.selection = .ordered
         let picker = PHPickerViewController(configuration: config)
         picker.delegate = self
         present(picker, animated: true)
     }
 
-    private func presentDocumentPicker() {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
+    private func presentCamera() {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
         picker.delegate = self
         present(picker, animated: true)
     }
 
-    /// Pushes the picked bytes to the Mac; the reply's absolute path lands
-    /// in the draft — Moshi's flow (agents take file paths), but over the
-    /// companion link instead of SCP.
-    private func upload(name: String, data: Data) {
-        guard case .companion(let url) = backend,
-              let projectID = session.projectRosterID else { return }
-        guard data.count <= 8 << 20 else {
-            presentAlert("File too large", "Attachments are capped at 8 MB.")
+    private func presentDocumentPicker() {
+        // asCopy avoids the whole security-scope/bookmark dance — the bytes
+        // get copied to the Mac anyway.
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
+        picker.allowsMultipleSelection = true
+        picker.delegate = self
+        present(picker, animated: true)
+    }
+
+    /// Pushes picked bytes to the Mac one file at a time; each reply's
+    /// absolute path lands in the draft — Moshi's flow (agents take file
+    /// paths), but over the companion link instead of SCP. Uploads run
+    /// sequentially because .uploaded replies carry no correlation id.
+    private func enqueueUploads(_ items: [(name: String, data: Data)]) {
+        guard case .companion = backend, session.projectRosterID != nil else { return }
+        let oversized = items.filter { $0.data.count > Self.uploadByteCap }
+        reportSkipped(oversized: oversized.map(\.name))
+        let accepted = items.filter { $0.data.count <= Self.uploadByteCap }
+        guard !accepted.isEmpty else { return }
+        uploadQueue.append(contentsOf: accepted)
+        uploadTotal += accepted.count
+        sendNextUpload()
+    }
+
+    private func sendNextUpload() {
+        guard !uploadInFlight else { return }
+        guard let item = uploadQueue.first else {
+            uploadTotal = 0
+            uploadDone = 0
+            composerBar.setAttachBusy(false)
             return
         }
-        composerBar.setAttachBusy(true)
+        guard case .companion(let url) = backend,
+              let projectID = session.projectRosterID else { return }
+        uploadQueue.removeFirst()
+        uploadInFlight = true
+        composerBar.setAttachBusy(true, progress: (done: uploadDone, total: uploadTotal))
         if uploadClient == nil {
             let client = CompanionClient(url: url)
             client.onUploaded = { [weak self] path in
-                self?.composerBar.setAttachBusy(false)
-                self?.composerBar.insertDraft(path)
+                guard let self else { return }
+                self.composerBar.insertDraft(path)
+                self.uploadDone += 1
+                self.uploadInFlight = false
+                self.sendNextUpload()
             }
             client.onError = { [weak self] message in
-                self?.composerBar.setAttachBusy(false)
-                self?.presentAlert("Upload failed", message)
+                guard let self else { return }
+                self.uploadQueue.removeAll()
+                self.uploadInFlight = false
+                self.uploadTotal = 0
+                self.uploadDone = 0
+                self.composerBar.setAttachBusy(false)
+                self.presentAlert("Upload failed", message)
             }
             client.start()
             uploadClient = client
         }
         uploadClient?.send(
-            .upload(projectID: projectID, name: name, base64: data.base64EncodedString())
+            .upload(projectID: projectID, name: item.name, base64: item.data.base64EncodedString())
         )
+    }
+
+    private func reportSkipped(oversized: [String], unreadable: [String] = []) {
+        var lines: [String] = []
+        if !oversized.isEmpty {
+            lines.append("Over the 8 MB cap: \(oversized.joined(separator: ", "))")
+        }
+        if !unreadable.isEmpty {
+            lines.append("Couldn't read: \(unreadable.joined(separator: ", "))")
+        }
+        guard !lines.isEmpty else { return }
+        presentAlert("Some files were skipped", lines.joined(separator: "\n"))
     }
 
     private func presentAlert(_ title: String, _ message: String) {
@@ -734,12 +795,26 @@ extension TerminalViewController: UIGestureRecognizerDelegate {
 extension TerminalViewController: PHPickerViewControllerDelegate {
     func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
         picker.dismiss(animated: true)
-        guard let provider = results.first?.itemProvider,
-              provider.canLoadObject(ofClass: UIImage.self) else { return }
-        provider.loadObject(ofClass: UIImage.self) { [weak self] object, _ in
-            guard let image = object as? UIImage,
-                  let data = Self.jpegPayload(from: image) else { return }
-            DispatchQueue.main.async { self?.upload(name: "photo.jpg", data: data) }
+        guard !results.isEmpty else { return }
+        // Slots keep the user's selection order while loads land out of order.
+        var payloads = [(name: String, data: Data)?](repeating: nil, count: results.count)
+        let group = DispatchGroup()
+        for (index, result) in results.enumerated() {
+            let provider = result.itemProvider
+            guard provider.canLoadObject(ofClass: UIImage.self) else { continue }
+            group.enter()
+            provider.loadObject(ofClass: UIImage.self) { object, _ in
+                defer { group.leave() }
+                guard let image = object as? UIImage,
+                      let data = Self.jpegPayload(from: image) else { return }
+                let base = provider.suggestedName.map {
+                    ($0 as NSString).deletingPathExtension
+                } ?? "photo-\(index + 1)"
+                payloads[index] = (base + ".jpg", data)
+            }
+        }
+        group.notify(queue: .main) { [weak self] in
+            self?.enqueueUploads(payloads.compactMap { $0 })
         }
     }
 
@@ -760,8 +835,41 @@ extension TerminalViewController: PHPickerViewControllerDelegate {
 
 extension TerminalViewController: UIDocumentPickerDelegate {
     func documentPicker(_: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        guard let url = urls.first, let data = try? Data(contentsOf: url) else { return }
-        upload(name: url.lastPathComponent, data: data)
+        var items: [(name: String, data: Data)] = []
+        var oversized: [String] = []
+        var unreadable: [String] = []
+        for url in urls {
+            // Size gate before reading — no point pulling an over-cap file
+            // into memory just to reject it.
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? Int.max
+            guard size <= Self.uploadByteCap else {
+                oversized.append(url.lastPathComponent)
+                continue
+            }
+            guard let data = try? Data(contentsOf: url) else {
+                unreadable.append(url.lastPathComponent)
+                continue
+            }
+            items.append((url.lastPathComponent, data))
+        }
+        reportSkipped(oversized: oversized, unreadable: unreadable)
+        enqueueUploads(items)
+    }
+}
+
+extension TerminalViewController: UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+    func imagePickerController(
+        _ picker: UIImagePickerController,
+        didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+    ) {
+        picker.dismiss(animated: true)
+        guard let image = info[.originalImage] as? UIImage,
+              let data = Self.jpegPayload(from: image) else { return }
+        enqueueUploads([("camera.jpg", data)])
+    }
+
+    func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+        picker.dismiss(animated: true)
     }
 }
 

@@ -10,6 +10,8 @@
 	-->
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Termio connects to the companion server running on your Mac over the local network.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Termio uses the camera to scan the pairing QR code on your Mac and to attach photos you capture to your prompt.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
