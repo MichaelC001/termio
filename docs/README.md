@@ -33,6 +33,7 @@ from the real front matter).
 | --- | --- | --- |
 | active | backlog | [Backlog](backlog/backlog.md) |
 | active | bug | [Terminal randomly loses keyboard focus (hollow cursor) after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
+| active | design | [iOS terminal input & attachments](design/ios-terminal-input.md) |
 | active | marketing | [termio — Go-to-Market & Revenue Reality](maketing/go-to-market.md) |
 | approved | design | [会话历史 · 搜索 · 恢复（Session History / Search / Resume）](design/session-history-search-resume.md) |
 | archived | design | [Sandbox VM —— 原生 per-project 容器（Apple Containerization）](design/sandbox-vm.md) |
