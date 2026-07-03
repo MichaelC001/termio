@@ -593,6 +593,7 @@ final class TerminalViewController: UIViewController {
         TerminalConfiguration { builder in
             builder.withBackgroundOpacity(0)
             builder.withFontSize(Float(MobileSettings.shared.fontSize))
+            builder.withWindowPaddingX(8)
         }
     }
 

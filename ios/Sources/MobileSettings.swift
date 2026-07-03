@@ -33,11 +33,11 @@ final class MobileSettings {
         }
     }
 
-    /// The Catppuccin pair matches what the app shipped with before themes
-    /// were configurable, so existing installs look unchanged.
-    static let defaultLightThemeName = "Catppuccin Latte"
-    static let defaultDarkThemeName = "Catppuccin Mocha"
-    static let defaultFontSize = 13.0
+    /// The Alabaster/Afterglow pair mirrors the Mac app's out-of-the-box
+    /// look, so a session opened on the phone matches the desk.
+    static let defaultLightThemeName = "Alabaster"
+    static let defaultDarkThemeName = "Afterglow"
+    static let defaultFontSize = 12.0
     static let fontSizeRange = 8.0 ... 24.0
 
     private enum Key {
