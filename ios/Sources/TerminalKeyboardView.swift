@@ -109,14 +109,40 @@ final class TerminalKeyboardView: UIInputView {
         var repeats = false
     }
 
-    private static let rowHeight: CGFloat = 46
-    private static let spacing: CGFloat = 7
+    // System-keyboard metrics: a 54pt row pitch splits into a 42pt keycap
+    // with 12pt between rows; keys sit 6pt apart, 3pt from the edges. The
+    // keycap height only decides the self-sized fallback — under a matched
+    // system-keyboard height the rows split the frame evenly instead.
+    private static let rowHeight: CGFloat = 42
+    private static let rowSpacing: CGFloat = 12
+    private static let keySpacing: CGFloat = 6
+    private static let edgeInset: CGFloat = 3
     /// Above this a control row splits, evenly, so keys stay thumb-sized.
     private static let maxKeysPerRow = 5
 
     private let column = UIStackView()
+    private var matchedHeight: NSLayoutConstraint?
+    private var preferredHeight: NSLayoutConstraint?
     private let haptic = UIImpactFeedbackGenerator(style: .light)
     private var settingsObserver: NSObjectProtocol?
+
+    /// Pins the whole view to the system keyboard's measured height. Swapping
+    /// an inputView keeps the keyboard container at its current height, so a
+    /// shorter self-sized view leaves dead glass below the last row — match
+    /// the container instead and let the rows stretch into it.
+    func matchSystemKeyboardHeight(_ height: CGFloat) {
+        guard height > 0 else { return }
+        if let matchedHeight {
+            matchedHeight.constant = height
+            return
+        }
+        let constraint = heightAnchor.constraint(equalToConstant: height)
+        // Just below required: the system's own placement constraints win if
+        // they ever disagree.
+        constraint.priority = .required - 1
+        constraint.isActive = true
+        matchedHeight = constraint
+    }
 
     init() {
         super.init(frame: .zero, inputViewStyle: .keyboard)
@@ -124,17 +150,26 @@ final class TerminalKeyboardView: UIInputView {
         translatesAutoresizingMaskIntoConstraints = false
 
         column.axis = .vertical
-        column.spacing = Self.spacing
+        column.spacing = Self.rowSpacing
+        column.distribution = .fillEqually
         column.translatesAutoresizingMaskIntoConstraints = false
         addSubview(column)
 
-        // The keyboard's height comes purely from these constraints
-        // (allowsSelfSizing); the safe-area bottom keeps the last row above
-        // the home indicator.
+        // The keyboard's height comes from these constraints
+        // (allowsSelfSizing) — the matched system height when known, the
+        // preferred keycap rows otherwise; the safe-area bottom keeps the
+        // last row above the home indicator. Rows pin to the BOTTOM at their
+        // natural keycap height: under a taller matched height the slack
+        // pools at the top (where the system parks QuickType), so keycaps
+        // stay 42pt and sit exactly where the system's own keys sit —
+        // stretching the rows to fill instead reads as a 63pt-key bug.
+        let hugTop = column.topAnchor.constraint(equalTo: topAnchor, constant: 8)
+        hugTop.priority = .defaultHigh
         NSLayoutConstraint.activate([
-            column.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            column.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            column.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            column.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.edgeInset),
+            column.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.edgeInset),
+            column.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: 8),
+            hugTop,
             column.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -8),
         ])
 
@@ -152,6 +187,18 @@ final class TerminalKeyboardView: UIInputView {
     deinit {
         if let settingsObserver {
             NotificationCenter.default.removeObserver(settingsObserver)
+        }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // UIInputView's built-in `.keyboard` material still renders as the
+        // legacy flat grey slab, layered over the much lighter Liquid Glass
+        // backdrop the real keyboard sits on — hide it so the keycaps float
+        // on the same glass as the system keys. (UIKit inserts the material
+        // as a sibling subview of `column`, sometimes after init.)
+        for view in subviews where view !== column {
+            view.isHidden = true
         }
     }
 
@@ -182,9 +229,18 @@ final class TerminalKeyboardView: UIInputView {
         ].map(makeKeyButton)))
         column.addArrangedSubview(makeBottomRow())
 
-        for row in column.arrangedSubviews {
-            row.heightAnchor.constraint(equalToConstant: Self.rowHeight).isActive = true
-        }
+        // Native 42pt keycaps. Outranks hugTop (750) so a taller matched
+        // height breaks the top hug — slack above, not inside the rows — but
+        // still breakable itself, so a SHORTER container (landscape) evenly
+        // compresses the rows instead of clipping them.
+        preferredHeight?.isActive = false
+        let rows = column.arrangedSubviews.count
+        let height = column.heightAnchor.constraint(
+            equalToConstant: CGFloat(rows) * Self.rowHeight + CGFloat(rows - 1) * Self.rowSpacing
+        )
+        height.priority = UILayoutPriority(900)
+        height.isActive = true
+        preferredHeight = height
     }
 
     /// Splits an overfull control zone into evenly sized rows (7 keys → 4+3,
@@ -204,7 +260,7 @@ final class TerminalKeyboardView: UIInputView {
     private func makeRow(_ buttons: [UIButton]) -> UIView {
         let row = UIStackView(arrangedSubviews: buttons)
         row.axis = .horizontal
-        row.spacing = Self.spacing
+        row.spacing = Self.keySpacing
         row.distribution = .fillEqually
         return row
     }
@@ -212,10 +268,12 @@ final class TerminalKeyboardView: UIInputView {
     /// System-keyboard bottom row: globe on the left, a wide Return filling
     /// the rest.
     private func makeBottomRow() -> UIView {
-        var globeConfig = UIButton.Configuration.gray()
+        var globeConfig = UIButton.Configuration.plain()
         globeConfig.image = UIImage(systemName: "globe")
-        globeConfig.cornerStyle = .medium
-        let globe = UIButton(configuration: globeConfig)
+        globeConfig.preferredSymbolConfigurationForImage = .init(pointSize: 18, weight: .regular)
+        globeConfig.baseForegroundColor = KeyCapButton.keyForeground
+        let globe = KeyCapButton(configuration: globeConfig)
+        globe.keyCapRole = .function
         globe.accessibilityLabel = "Switch to system keyboard"
         globe.addAction(UIAction { [weak self] _ in
             self?.haptic.impactOccurred()
@@ -226,7 +284,7 @@ final class TerminalKeyboardView: UIInputView {
 
         let row = UIStackView(arrangedSubviews: [globe, enter])
         row.axis = .horizontal
-        row.spacing = Self.spacing
+        row.spacing = Self.keySpacing
         globe.widthAnchor.constraint(equalTo: row.widthAnchor, multiplier: 0.22).isActive = true
         return row
     }
@@ -255,16 +313,23 @@ final class TerminalKeyboardView: UIInputView {
     }
 
     private func makeKeyButton(_ key: Key) -> UIButton {
-        var config = UIButton.Configuration.gray()
-        config.cornerStyle = .medium
+        // A single character means the key types that character — those get
+        // the white keycap and the big letter-key font; everything else
+        // (esc, ^C, arrows, return) is a gray function key with a 16pt label.
+        let typesACharacter = key.symbolName == nil && key.title.count == 1
+
+        var config = UIButton.Configuration.plain()
+        config.contentInsets = .zero
+        config.baseForegroundColor = KeyCapButton.keyForeground
         if let symbolName = key.symbolName {
             config.image = UIImage(systemName: symbolName)
-            config.preferredSymbolConfigurationForImage = .init(pointSize: 16, weight: .medium)
+            config.preferredSymbolConfigurationForImage = .init(pointSize: 18, weight: .regular)
         } else {
             config.title = key.title
+            let font = UIFont.systemFont(ofSize: typesACharacter ? 25 : 16)
             config.titleTextAttributesTransformer = .init { attributes in
                 var attributes = attributes
-                attributes.font = UIFont.monospacedSystemFont(ofSize: 16, weight: .regular)
+                attributes.font = font
                 return attributes
             }
         }
@@ -273,24 +338,102 @@ final class TerminalKeyboardView: UIInputView {
             self?.haptic.impactOccurred()
             self?.onKey?(key.payload)
         }
-        let button: UIButton
+        let button: KeyCapButton
         if key.repeats {
             let repeating = RepeatingKeyButton(configuration: config)
             repeating.onFire = fire
             button = repeating
         } else {
-            button = UIButton(configuration: config)
+            button = KeyCapButton(configuration: config)
             button.addAction(UIAction { _ in fire() }, for: .touchUpInside)
         }
+        button.keyCapRole = typesACharacter ? .character : .function
         button.accessibilityLabel = key.title
         return button
     }
 }
 
+/// The system keyboard's keycap, replicated: white character keys and darker
+/// function keys (KeyboardKit's measured tokens — #FFFFFF/#6B6B6B and
+/// #ABB1BA/#474747 across light/dark), a 1pt bottom shadow, and the native
+/// pressed-state palette swap (shift flashes light, letters flash dark).
+///
+/// Styling is opt-in via `keyCapRole` so `RepeatingKeyButton` subclasses can
+/// live elsewhere unstyled — the composer's answer chips keep their own look.
+class KeyCapButton: UIButton {
+    enum Role {
+        /// Types a character — the white letter-key cap.
+        case character
+        /// Modifier or action — the gray cap of shift, return, 123.
+        case function
+    }
+
+    var keyCapRole: Role? {
+        didSet {
+            guard keyCapRole != nil else { return }
+            if !observesTraits {
+                observesTraits = true
+                registerForTraitChanges([UITraitUserInterfaceStyle.self]) {
+                    (button: KeyCapButton, _) in button.applyKeyCap()
+                }
+            }
+            applyKeyCap()
+        }
+    }
+
+    override var isHighlighted: Bool {
+        didSet { if keyCapRole != nil { applyKeyCap() } }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard keyCapRole != nil else { return }
+        layer.shadowPath = UIBezierPath(
+            roundedRect: bounds, cornerRadius: Self.cornerRadius
+        ).cgPath
+    }
+
+    /// iOS 26 keycaps are visibly rounder than the classic 5pt token; 9pt on
+    /// a 42pt cap matches screenshots (no published value to cite).
+    private static let cornerRadius: CGFloat = 9
+
+    static let keyForeground = UIColor { traits in
+        traits.userInterfaceStyle == .dark ? .white : .black
+    }
+    private static let characterBackground = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(white: 0x6B / 255.0, alpha: 1) : .white
+    }
+    private static let functionBackground = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(white: 0x47 / 255.0, alpha: 1)
+            : UIColor(red: 0xAB / 255.0, green: 0xB1 / 255.0, blue: 0xBA / 255.0, alpha: 1)
+    }
+    private static let keyShadow = UIColor { traits in
+        UIColor(white: 0, alpha: traits.userInterfaceStyle == .dark ? 0.7 : 0.3)
+    }
+
+    private var observesTraits = false
+
+    private func applyKeyCap() {
+        guard let role = keyCapRole else { return }
+        let swapped = (role == .character) != isHighlighted
+        let background = swapped ? Self.characterBackground : Self.functionBackground
+        layer.backgroundColor = background.resolvedColor(with: traitCollection).cgColor
+        layer.cornerRadius = Self.cornerRadius
+        layer.cornerCurve = .continuous
+        layer.shadowColor = Self.keyShadow.resolvedColor(with: traitCollection).cgColor
+        layer.shadowOpacity = 1
+        layer.shadowRadius = 0
+        layer.shadowOffset = CGSize(width: 0, height: 1)
+    }
+}
+
 /// A button that behaves like a held key: a tap fires once, holding fires and
 /// then repeats — long agent menus would otherwise cost one tap per row.
-/// Shared by the composer's answer chips and the terminal keyboard's arrows.
-final class RepeatingKeyButton: UIButton {
+/// Shared by the composer's answer chips and the terminal keyboard's arrows;
+/// keycap styling only kicks in when a `keyCapRole` is set.
+final class RepeatingKeyButton: KeyCapButton {
     var onFire: (() -> Void)?
 
     private static let initialDelay: TimeInterval = 0.4

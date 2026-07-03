@@ -84,6 +84,24 @@ final class TermioMobileUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Prompt"].exists)
     }
 
+    func testTerminalKeyboardSwapsIn() {
+        let app = launch("terminal")
+        let toggle = app.buttons["Terminal keyboard"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 8))
+        // The real flow: the system keyboard comes up first (the swap reuses
+        // its measured height), then ⌨︎ switches planes.
+        app.textViews.firstMatch.tap()
+        toggle.tap()
+        // The swap-in keyboard: esc leads the control zone, return anchors
+        // the bottom row.
+        XCTAssertTrue(app.buttons["esc"].waitForExistence(timeout: 4))
+        XCTAssertTrue(app.buttons["return"].exists)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "terminal-keyboard"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
     // MARK: - File viewer
 
     func testFileViewerShowsHighlightedSource() {

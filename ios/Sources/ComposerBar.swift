@@ -59,13 +59,24 @@ final class ComposerBar: UIView {
         effect: UIBlurEffect(style: .systemUltraThinMaterial)
     )
     private let suggestionsStack = UIStackView()
+    private let pill = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
     private var suggestionsHeight: NSLayoutConstraint!
     private var textHeight: NSLayoutConstraint!
-    private var textLeadingWithAttach: NSLayoutConstraint!
-    private var textLeadingFlush: NSLayoutConstraint!
+    private var pillLeadingWithAttach: NSLayoutConstraint!
+    private var pillLeadingFlush: NSLayoutConstraint!
+    /// The system keyboard's height, recorded on every show while it (not
+    /// the terminal keyboard) is up. The swap hands this to the terminal
+    /// keyboard so it fills the container the system keeps at that height.
+    private var systemKeyboardHeight: CGFloat = 0
+    private var keyboardObserver: NSObjectProtocol?
 
     private static let minTextHeight: CGFloat = 36
     private static let maxTextHeight: CGFloat = 120
+    /// The pill's rest height — one line of the body font plus the text
+    /// insets, MEASURED in init (the body style's line fragment is 22pt,
+    /// taller than font.lineHeight, so a hardcoded constant sits every
+    /// trailing control visibly below center).
+    private var restTextHeight: CGFloat = ComposerBar.minTextHeight
     private static let suggestionRowHeight: CGFloat = 44
     /// 4.5 rows: the half row signals there is more to scroll (Telegram's trick).
     private static let maxSuggestionsHeight: CGFloat = 198
@@ -82,13 +93,18 @@ final class ComposerBar: UIView {
         chipsScroll.addSubview(chipsStack)
         chipsScroll.isHidden = true
 
+        // iMessage's field: a slim hairline-bordered capsule, not a chunky
+        // blur slab. The border tracks appearance changes below.
         let pillWrapper = UIView()
-        let pill = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
         pill.clipsToBounds = true
-        pill.layer.cornerRadius = 22
         pill.layer.cornerCurve = .continuous
+        pill.layer.borderWidth = 1 / max(traitCollection.displayScale, 1)
         pill.translatesAutoresizingMaskIntoConstraints = false
         pillWrapper.addSubview(pill)
+        updatePillBorder()
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: ComposerBar, _) in
+            self.updatePillBorder()
+        }
 
         let suggestionsWrapper = UIView()
         suggestionsWrapper.isHidden = true
@@ -109,8 +125,19 @@ final class ComposerBar: UIView {
 
         // Attachments: photos/files land on the Mac, their path lands in the
         // draft (hidden until the session can actually receive uploads).
-        attachButton.setImage(UIImage(systemName: "plus.circle"), for: .normal)
-        attachButton.setPreferredSymbolConfiguration(.init(pointSize: 26), forImageIn: .normal)
+        // A standalone circle to the LEFT of the field, where iMessage puts
+        // its "+" — not a glyph inside the pill.
+        var attachConfig: UIButton.Configuration = if #available(iOS 26.0, *) {
+            .glass()
+        } else {
+            .gray()
+        }
+        attachConfig.image = UIImage(
+            systemName: "plus",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .medium)
+        )
+        attachConfig.cornerStyle = .capsule
+        attachButton.configuration = attachConfig
         attachButton.accessibilityLabel = "Attach"
         attachButton.tintColor = .secondaryLabel
         attachButton.isHidden = true
@@ -125,14 +152,20 @@ final class ComposerBar: UIView {
         textView.delegate = self
         textView.onTerminalKey = { [weak self] payload in self?.onTerminalKey?(payload) }
 
+        restTextHeight = max(Self.minTextHeight, ceil(textView.sizeThatFits(
+            CGSize(width: 1000, height: CGFloat.greatestFiniteMagnitude)
+        ).height))
+        pill.layer.cornerRadius = restTextHeight / 2
+
         placeholder.text = "Prompt"
         placeholder.font = textView.font
         placeholder.textColor = .tertiaryLabel
 
-        // Telegram-scale controls: the send circle fills most of the pill's
-        // height, the companions follow proportionally.
+        // The pill's right slot works like iMessage's mic/send swap: the
+        // terminal-keyboard toggle owns it while the draft is empty, the send
+        // circle appears the moment there is something to send.
         sendButton.setImage(UIImage(systemName: "arrow.up.circle.fill"), for: .normal)
-        sendButton.setPreferredSymbolConfiguration(.init(pointSize: 32), forImageIn: .normal)
+        sendButton.setPreferredSymbolConfiguration(.init(pointSize: 30), forImageIn: .normal)
         sendButton.accessibilityLabel = "Send"
         sendButton.addAction(UIAction { [weak self] _ in
             self?.submit()
@@ -141,7 +174,7 @@ final class ComposerBar: UIView {
         // Swap to the terminal keyboard the way iOS swaps to the number or
         // handwriting keyboard — by replacing the text view's inputView.
         keyboardButton.setImage(UIImage(systemName: "keyboard"), for: .normal)
-        keyboardButton.setPreferredSymbolConfiguration(.init(pointSize: 21), forImageIn: .normal)
+        keyboardButton.setPreferredSymbolConfiguration(.init(pointSize: 18), forImageIn: .normal)
         keyboardButton.accessibilityLabel = "Terminal keyboard"
         keyboardButton.tintColor = .secondaryLabel
         keyboardButton.addAction(UIAction { [weak self] _ in
@@ -149,19 +182,28 @@ final class ComposerBar: UIView {
             setTerminalKeyboardActive(textView.inputView == nil)
         }, for: .touchUpInside)
 
-        for subview in [attachButton, attachSpinner, textView, placeholder, keyboardButton, sendButton] {
+        for subview in [attachButton, attachSpinner] {
+            subview.translatesAutoresizingMaskIntoConstraints = false
+            pillWrapper.addSubview(subview)
+        }
+        for subview in [textView, placeholder, keyboardButton, sendButton] {
             subview.translatesAutoresizingMaskIntoConstraints = false
             pill.contentView.addSubview(subview)
         }
 
-        textHeight = textView.heightAnchor.constraint(equalToConstant: Self.minTextHeight)
-        // The draft hugs the pill's edge until the attach button earns its
+        textHeight = textView.heightAnchor.constraint(equalToConstant: restTextHeight)
+        // Trailing controls center on the rest-height strip at the pill's
+        // bottom: dead-center while the field is one line, hugging the last
+        // line as it grows (iMessage's send-button behavior).
+        let controlCenter = -restTextHeight / 2
+        let controlGap = -(restTextHeight - 30) / 2
+        // The field hugs the leading edge until the attach button earns its
         // place (companion sessions only).
-        textLeadingWithAttach = textView.leadingAnchor.constraint(
-            equalTo: attachButton.trailingAnchor, constant: 6
+        pillLeadingWithAttach = pill.leadingAnchor.constraint(
+            equalTo: attachButton.trailingAnchor, constant: 8
         )
-        textLeadingFlush = textView.leadingAnchor.constraint(
-            equalTo: pill.contentView.leadingAnchor, constant: 14
+        pillLeadingFlush = pill.leadingAnchor.constraint(
+            equalTo: pillWrapper.leadingAnchor, constant: 8
         )
         NSLayoutConstraint.activate([
             column.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -174,38 +216,57 @@ final class ComposerBar: UIView {
             chipsStack.topAnchor.constraint(equalTo: chipsScroll.contentLayoutGuide.topAnchor),
             chipsStack.bottomAnchor.constraint(equalTo: chipsScroll.contentLayoutGuide.bottomAnchor),
             chipsStack.heightAnchor.constraint(equalTo: chipsScroll.frameLayoutGuide.heightAnchor),
-            pill.leadingAnchor.constraint(equalTo: pillWrapper.leadingAnchor, constant: 8),
+            attachButton.leadingAnchor.constraint(equalTo: pillWrapper.leadingAnchor, constant: 8),
+            attachButton.centerYAnchor.constraint(equalTo: pill.bottomAnchor, constant: controlCenter),
+            attachButton.widthAnchor.constraint(equalToConstant: 34),
+            attachButton.heightAnchor.constraint(equalToConstant: 34),
+            attachSpinner.centerXAnchor.constraint(equalTo: attachButton.centerXAnchor),
+            attachSpinner.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
+            pillLeadingFlush,
             pill.trailingAnchor.constraint(equalTo: pillWrapper.trailingAnchor, constant: -8),
             pill.topAnchor.constraint(equalTo: pillWrapper.topAnchor),
             pill.bottomAnchor.constraint(equalTo: pillWrapper.bottomAnchor),
-            attachButton.leadingAnchor.constraint(equalTo: pill.contentView.leadingAnchor, constant: 8),
-            attachButton.bottomAnchor.constraint(equalTo: pill.contentView.bottomAnchor, constant: -8),
-            attachButton.widthAnchor.constraint(equalToConstant: 32),
-            attachButton.heightAnchor.constraint(equalToConstant: 32),
-            attachSpinner.centerXAnchor.constraint(equalTo: attachButton.centerXAnchor),
-            attachSpinner.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
-            textLeadingFlush,
-            textView.trailingAnchor.constraint(equalTo: keyboardButton.leadingAnchor, constant: -4),
-            keyboardButton.trailingAnchor.constraint(equalTo: sendButton.leadingAnchor, constant: -4),
-            keyboardButton.bottomAnchor.constraint(equalTo: pill.contentView.bottomAnchor, constant: -6),
-            keyboardButton.widthAnchor.constraint(equalToConstant: 34),
-            keyboardButton.heightAnchor.constraint(equalToConstant: 34),
-            textView.topAnchor.constraint(equalTo: pill.contentView.topAnchor, constant: 4),
-            textView.bottomAnchor.constraint(equalTo: pill.contentView.bottomAnchor, constant: -4),
+            textView.leadingAnchor.constraint(equalTo: pill.contentView.leadingAnchor, constant: 12),
+            textView.trailingAnchor.constraint(equalTo: pill.contentView.trailingAnchor, constant: -36),
+            textView.topAnchor.constraint(equalTo: pill.contentView.topAnchor),
+            textView.bottomAnchor.constraint(equalTo: pill.contentView.bottomAnchor),
             textHeight,
             placeholder.leadingAnchor.constraint(equalTo: textView.leadingAnchor, constant: 5),
             placeholder.centerYAnchor.constraint(equalTo: textView.centerYAnchor),
-            sendButton.trailingAnchor.constraint(equalTo: pill.contentView.trailingAnchor, constant: -6),
-            sendButton.bottomAnchor.constraint(equalTo: pill.contentView.bottomAnchor, constant: -4),
-            sendButton.widthAnchor.constraint(equalToConstant: 36),
-            sendButton.heightAnchor.constraint(equalToConstant: 36),
+            sendButton.trailingAnchor.constraint(equalTo: pill.contentView.trailingAnchor, constant: controlGap),
+            sendButton.centerYAnchor.constraint(equalTo: pill.contentView.bottomAnchor, constant: controlCenter),
+            sendButton.widthAnchor.constraint(equalToConstant: 30),
+            sendButton.heightAnchor.constraint(equalToConstant: 30),
+            keyboardButton.trailingAnchor.constraint(equalTo: pill.contentView.trailingAnchor, constant: controlGap),
+            keyboardButton.centerYAnchor.constraint(equalTo: pill.contentView.bottomAnchor, constant: controlCenter),
+            keyboardButton.widthAnchor.constraint(equalToConstant: 30),
+            keyboardButton.heightAnchor.constraint(equalToConstant: 30),
         ])
 
         refreshControls()
+
+        // Every system-keyboard show refreshes the height the terminal
+        // keyboard must fill on swap (device rotations included). Shows of
+        // the terminal keyboard itself are skipped — its (possibly shorter)
+        // fallback height must never become the measurement.
+        keyboardObserver = NotificationCenter.default.addObserver(
+            forName: UIResponder.keyboardWillShowNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, textView.inputView == nil,
+                  let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue
+            else { return }
+            systemKeyboardHeight = frame.cgRectValue.height
+        }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    deinit {
+        if let keyboardObserver {
+            NotificationCenter.default.removeObserver(keyboardObserver)
+        }
+    }
 
     func focus() {
         textView.becomeFirstResponder()
@@ -220,6 +281,9 @@ final class ComposerBar: UIView {
     /// keyboard is up nothing can land in the draft, so the placeholder
     /// says where the keys are going instead of inviting a prompt.
     private func setTerminalKeyboardActive(_ active: Bool) {
+        if active {
+            terminalKeyboard.matchSystemKeyboardHeight(systemKeyboardHeight)
+        }
         textView.inputView = active ? terminalKeyboard : nil
         keyboardButton.setImage(
             UIImage(systemName: active ? "keyboard.fill" : "keyboard"), for: .normal
@@ -234,16 +298,21 @@ final class ComposerBar: UIView {
     }
 
     /// Shows the attach (+) button — only sessions with a Mac behind them
-    /// can receive uploads. The draft's leading edge follows.
+    /// can receive uploads. The field's leading edge follows.
     func setAttachAvailable(_ available: Bool) {
         attachButton.isHidden = !available
         if available {
-            textLeadingFlush.isActive = false
-            textLeadingWithAttach.isActive = true
+            pillLeadingFlush.isActive = false
+            pillLeadingWithAttach.isActive = true
         } else {
-            textLeadingWithAttach.isActive = false
-            textLeadingFlush.isActive = true
+            pillLeadingWithAttach.isActive = false
+            pillLeadingFlush.isActive = true
         }
+    }
+
+    /// CGColor doesn't follow appearance changes on its own.
+    private func updatePillBorder() {
+        pill.layer.borderColor = UIColor.separator.resolvedColor(with: traitCollection).cgColor
     }
 
     /// Spins the attach slot while an upload is in flight.
@@ -308,6 +377,7 @@ final class ComposerBar: UIView {
     private func submit() {
         let text = textView.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        PromptHistory.shared.record(text)
         textView.text = ""
         refreshControls()
         refreshSuggestions()
@@ -317,17 +387,27 @@ final class ComposerBar: UIView {
     private func refreshControls() {
         let empty = textView.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         placeholder.isHidden = !textView.text.isEmpty
+        // iMessage's swap: the right slot shows the keyboard toggle at rest
+        // and becomes the send circle once there is something to send.
+        sendButton.isHidden = empty
         sendButton.isEnabled = !empty
-        sendButton.alpha = empty ? 0.35 : 1
+        keyboardButton.isHidden = !empty
 
         let fitting = textView.sizeThatFits(
             CGSize(width: textView.bounds.width, height: .greatestFiniteMagnitude)
         ).height
-        textHeight.constant = min(max(fitting, Self.minTextHeight), Self.maxTextHeight)
+        textHeight.constant = min(max(fitting, restTextHeight), Self.maxTextHeight)
         textView.isScrollEnabled = fitting > Self.maxTextHeight
     }
 
-    // MARK: - Slash suggestions
+    // MARK: - Suggestions
+
+    /// What the panel above the pill can offer: the "/" command catalog, or
+    /// a previously sent prompt recalled from history.
+    private enum Suggestion {
+        case slash(SlashCommand)
+        case history(String)
+    }
 
     private func configureSuggestionsPanel() {
         suggestionsPanel.clipsToBounds = true
@@ -354,35 +434,55 @@ final class ComposerBar: UIView {
         suggestionsPanel.translatesAutoresizingMaskIntoConstraints = false
     }
 
-    /// Telegram's trigger rule: the query lives while the draft starts with
-    /// "/" and contains no whitespace yet; it filters by prefix and dies the
-    /// moment a space lands (arguments are free text).
+    /// Telegram's trigger rule for "/": the query lives while the draft
+    /// starts with "/" and contains no whitespace yet; it filters by prefix
+    /// and dies the moment a space lands (arguments are free text). Any other
+    /// single-line draft of 2+ characters recalls prompt history instead —
+    /// the highest-hit-rate source on mobile (people re-send yesterday's
+    /// prompts), and fully local so typing never waits on a lookup.
     private func refreshSuggestions() {
         let text = textView.text ?? ""
-        guard !slashCommands.isEmpty, text.hasPrefix("/"),
-              !text.contains(where: \.isWhitespace) else {
+        if !slashCommands.isEmpty, text.hasPrefix("/"),
+           !text.contains(where: \.isWhitespace) {
+            let query = text.dropFirst().lowercased()
+            // Capped, not scrolled: typing another letter narrows the rest
+            // away (Telegram shows a handful and relies on the query).
+            let matches = slashCommands.filter { $0.name.lowercased().hasPrefix(query) }
+            setSuggestions(matches.prefix(4).map(Suggestion.slash))
+        } else if text.count >= 2, !text.contains("\n") {
+            // A newline means they're composing something new, not recalling.
+            setSuggestions(
+                PromptHistory.shared.matches(for: text, limit: 3).map(Suggestion.history)
+            )
+        } else {
             setSuggestions([])
-            return
         }
-        let query = text.dropFirst().lowercased()
-        // Capped, not scrolled: typing another letter narrows the rest away
-        // (Telegram shows a handful and relies on the query, not scrolling).
-        let matches = slashCommands.filter { $0.name.lowercased().hasPrefix(query) }
-        setSuggestions(Array(matches.prefix(4)))
     }
 
-    private func setSuggestions(_ commands: [SlashCommand]) {
+    private func setSuggestions(_ suggestions: [Suggestion]) {
         suggestionsStack.arrangedSubviews.forEach { view in
             suggestionsStack.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
-        for command in commands {
-            suggestionsStack.addArrangedSubview(makeSuggestionRow(command))
+        for (index, suggestion) in suggestions.enumerated() {
+            // Hairlines separate rows; the last row ends at the panel's own
+            // edge, so a line there would just underline the panel.
+            let separated = index < suggestions.count - 1
+            switch suggestion {
+            case .slash(let command):
+                suggestionsStack.addArrangedSubview(
+                    makeSuggestionRow(command, showsHairline: separated)
+                )
+            case .history(let text):
+                suggestionsStack.addArrangedSubview(
+                    makeHistoryRow(text, showsHairline: separated)
+                )
+            }
         }
         // The wrapper (the stack's arranged view) is what collapses.
-        suggestionsPanel.superview?.isHidden = commands.isEmpty
+        suggestionsPanel.superview?.isHidden = suggestions.isEmpty
         suggestionsHeight.constant = min(
-            CGFloat(commands.count) * Self.suggestionRowHeight,
+            CGFloat(suggestions.count) * Self.suggestionRowHeight,
             Self.maxSuggestionsHeight
         )
     }
@@ -392,7 +492,7 @@ final class ComposerBar: UIView {
     /// arguments — Telegram's arrowButtonPressed. Plain labels + an overlay
     /// button: UIButton.Configuration text refused to render inside this
     /// effect-view stack, labels never fail.
-    private func makeSuggestionRow(_ command: SlashCommand) -> UIView {
+    private func makeSuggestionRow(_ command: SlashCommand, showsHairline: Bool) -> UIView {
         let row = UIView()
 
         let name = UILabel()
@@ -434,6 +534,7 @@ final class ComposerBar: UIView {
 
         let hairline = UIView()
         hairline.backgroundColor = .separator.withAlphaComponent(0.4)
+        hairline.isHidden = !showsHairline
 
         for subview in [main, labels, insert, hairline] {
             subview.translatesAutoresizingMaskIntoConstraints = false
@@ -458,6 +559,83 @@ final class ComposerBar: UIView {
             hairline.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
         ])
         return row
+    }
+
+    /// One history row: a recall glyph and the past prompt on a single line.
+    /// Tap fills the draft — never sends; recall shouldn't fire a prompt —
+    /// and long-press forgets the entry.
+    private func makeHistoryRow(_ text: String, showsHairline: Bool) -> UIView {
+        let row = UIView()
+
+        // The plain clock — Apple's own "recents" glyph (Spotlight, App
+        // Store searches), quieter than the arrowed variant.
+        let icon = UIImageView(image: UIImage(systemName: "clock"))
+        icon.tintColor = .tertiaryLabel
+        icon.preferredSymbolConfiguration = .init(pointSize: 13)
+
+        let label = UILabel()
+        label.text = text.replacingOccurrences(of: "\n", with: " ")
+        label.font = .systemFont(ofSize: 15)
+        label.textColor = .label
+        label.lineBreakMode = .byTruncatingTail
+
+        let main = UIButton(type: .custom)
+        main.accessibilityLabel = "Fill draft with \(text)"
+        main.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            textView.text = text
+            refreshControls()
+            // Not refreshSuggestions(): re-matching the filled draft would
+            // only re-open the panel with the row that was just tapped.
+            setSuggestions([])
+        }, for: .touchUpInside)
+        // Recognition cancels the button's touch, so a forget never fills.
+        main.addGestureRecognizer(ClosureLongPress { [weak self] in
+            PromptHistory.shared.remove(text)
+            self?.refreshSuggestions()
+        })
+
+        let hairline = UIView()
+        hairline.backgroundColor = .separator.withAlphaComponent(0.4)
+        hairline.isHidden = !showsHairline
+
+        for subview in [main, icon, label, hairline] {
+            subview.translatesAutoresizingMaskIntoConstraints = false
+            row.addSubview(subview)
+        }
+        NSLayoutConstraint.activate([
+            row.heightAnchor.constraint(equalToConstant: Self.suggestionRowHeight),
+            icon.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 14),
+            icon.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: row.trailingAnchor, constant: -14),
+            label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            main.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            main.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            main.topAnchor.constraint(equalTo: row.topAnchor),
+            main.bottomAnchor.constraint(equalTo: row.bottomAnchor),
+            hairline.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 14),
+            hairline.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            hairline.bottomAnchor.constraint(equalTo: row.bottomAnchor),
+            hairline.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
+        ])
+        return row
+    }
+}
+
+/// A long-press recognizer carrying a closure — target/action can't capture
+/// the row's text.
+private final class ClosureLongPress: UILongPressGestureRecognizer {
+    private let handler: () -> Void
+
+    init(handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(target: nil, action: nil)
+        addTarget(self, action: #selector(fire))
+    }
+
+    @objc private func fire() {
+        if state == .began { handler() }
     }
 }
 
