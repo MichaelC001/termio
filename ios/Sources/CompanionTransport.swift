@@ -134,6 +134,10 @@ final class CompanionTransport: NSObject {
         guard !stopped else { return }
         task?.cancel(with: .goingAway, reason: nil)
         let task = session.webSocketTask(with: url)
+        // The server replays the session's ring buffer (up to 1 MB) as a single
+        // binary frame on attach; the 1 MB default cap would kill the socket
+        // mid-replay and loop the link in "Reconnecting…" forever.
+        task.maximumMessageSize = 8 << 20
         self.task = task
         task.resume()
         receive(on: task)
