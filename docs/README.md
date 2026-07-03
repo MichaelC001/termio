@@ -49,7 +49,9 @@ from the real front matter).
 | draft | marketing | [OG image & landing copy](maketing/og-image-and-messaging.md) |
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/sandbox-seatbelt.md) |
 | draft | rfc | [Automation — scheduled agent runs](rfcs/automation-scheduled-agent-runs.md) |
+| draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](rfcs/fork-libghostty-spm.md) |
 | draft | rfc | [Onboarding —— 首次启动体验设计](design/onboarding.md) |
 | draft | rfc | [可扩展 Agent —— 配置化定义 + 配置化 Hook](design/agent-extensibility.md) |
 | implemented (phase 1) | design | [Worktree information architecture](design/worktree-information-architecture.md) |
+| in-review | rfc | [Split panes — Ghostty-style splits in the terminal column](rfcs/split-panes.md) |
 <!-- END docs-index -->
