@@ -151,15 +151,15 @@ final class SessionListViewController: UIViewController {
             }]
         }
         return projects.filter { $0.rosterID != nil }.map { project in
-            let action: (String, String, String) -> UIAction = { [weak self] title, icon, agent in
-                UIAction(title: title, image: UIImage(systemName: icon)) { _ in
+            let action: (String, String) -> UIAction = { [weak self] title, agent in
+                UIAction(title: title, image: AgentKind(wire: agent).menuIcon()) { _ in
                     self?.startSession(agent: agent, in: project)
                 }
             }
             return UIMenu(title: project.name, image: UIImage(systemName: "folder"), children: [
-                action("Claude Code", "sparkles", "claude"),
-                action("Codex", "cube", "codex"),
-                action("Terminal", "terminal", "terminal"),
+                action("Claude Code", "claude"),
+                action("Codex", "codex"),
+                action("Terminal", "terminal"),
             ])
         }
     }
@@ -472,11 +472,12 @@ extension SessionListViewController: UITableViewDataSource, UITableViewDelegate 
     }
 
     func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
-        // ChatGPT's group label: small, gray, flush with the row text.
+        // The group label: semibold and full-contrast so the project names
+        // anchor the list, not whisper under it.
         let label = UILabel()
         label.text = visible[section].name
-        label.font = .preferredFont(forTextStyle: .footnote)
-        label.textColor = .secondaryLabel
+        label.font = .systemFont(ofSize: 15, weight: .semibold)
+        label.textColor = .label
         label.translatesAutoresizingMaskIntoConstraints = false
         let header = UIView()
         header.addSubview(label)
@@ -484,6 +485,37 @@ extension SessionListViewController: UITableViewDataSource, UITableViewDelegate 
             label.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 22),
             label.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -6),
         ])
+        // The Mac project menu's "New … Session" actions, as a + on the
+        // group header — the project-level home for project-level actions
+        // (and reachable even when every session is closed).
+        let project = visible[section]
+        if companionURL != nil, project.rosterID != nil {
+            let add = UIButton(type: .system)
+            add.setImage(UIImage(systemName: "plus"), for: .normal)
+            add.setPreferredSymbolConfiguration(.init(pointSize: 17, weight: .medium), forImageIn: .normal)
+            add.tintColor = .secondaryLabel
+            add.accessibilityLabel = "New session in \(project.name)"
+            add.showsMenuAsPrimaryAction = true
+            add.menu = UIMenu(children: [
+                UIAction(title: "Claude Code", image: AgentKind.claude.menuIcon()) { [weak self] _ in
+                    self?.startSession(agent: "claude", in: project)
+                },
+                UIAction(title: "Codex", image: AgentKind.codex.menuIcon()) { [weak self] _ in
+                    self?.startSession(agent: "codex", in: project)
+                },
+                UIAction(title: "Terminal", image: AgentKind.terminal.menuIcon()) { [weak self] _ in
+                    self?.startSession(agent: "terminal", in: project)
+                },
+            ])
+            add.translatesAutoresizingMaskIntoConstraints = false
+            header.addSubview(add)
+            NSLayoutConstraint.activate([
+                add.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -12),
+                add.centerYAnchor.constraint(equalTo: label.centerYAnchor),
+                add.widthAnchor.constraint(equalToConstant: 44),
+                add.heightAnchor.constraint(equalToConstant: 44),
+            ])
+        }
         // A hairline between project groups (none above the first), so the
         // blocks read as separate — the inbox's section split.
         if section > 0 {
@@ -502,7 +534,7 @@ extension SessionListViewController: UITableViewDataSource, UITableViewDelegate 
     }
 
     func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
-        section == 0 ? 30 : 36
+        section == 0 ? 38 : 46
     }
 
     func tableView(_ tableView: UITableView, heightForFooterInSection section: Int) -> CGFloat {
@@ -531,30 +563,9 @@ extension SessionListViewController: UITableViewDataSource, UITableViewDelegate 
         onOpenSession?(session, companionURL)
     }
 
-    /// Leading swipe, Mail-style: the Mac project menu's "New … Session"
-    /// actions, aimed at the swiped row's project.
-    func tableView(
-        _ tableView: UITableView,
-        leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath
-    ) -> UISwipeActionsConfiguration? {
-        let project = visible[indexPath.section]
-        guard companionURL != nil, project.rosterID != nil else { return nil }
-        let claude = UIContextualAction(style: .normal, title: "Claude Code") { [weak self] _, _, done in
-            self?.startSession(agent: "claude", in: project)
-            done(true)
-        }
-        claude.image = UIImage(systemName: "sparkles")
-        claude.backgroundColor = .systemOrange
-        let terminal = UIContextualAction(style: .normal, title: "Terminal") { [weak self] _, _, done in
-            self?.startSession(agent: "terminal", in: project)
-            done(true)
-        }
-        terminal.image = UIImage(systemName: "terminal")
-        terminal.backgroundColor = .systemGray
-        return UISwipeActionsConfiguration(actions: [claude, terminal])
-    }
-
-    /// Trailing swipe: the Mac session menu's "Close Session".
+    /// Trailing swipe: the Mac session menu's "Close Session". New-session
+    /// actions live on the project HEADER's + menu, not on session rows —
+    /// they act on the project, and headers can't swipe on iOS.
     func tableView(
         _ tableView: UITableView,
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath

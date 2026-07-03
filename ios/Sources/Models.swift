@@ -1,3 +1,4 @@
+import SwiftUI
 import TermioShared
 import UIKit
 
@@ -80,6 +81,37 @@ extension AgentKind {
         case "opencode": self = .opencode
         default: self = .terminal
         }
+    }
+}
+
+extension AgentKind {
+    /// The agent's real brand mark as a `UIImage`, for UIKit spots (UIMenu
+    /// rows) that can't host the SwiftUI `AgentIconView` the session rows use —
+    /// so the menus show the same marks as the macOS sidebar, not SF Symbol
+    /// stand-ins. Claude keeps its brand orange via `.alwaysOriginal`; the
+    /// monochrome marks render as templates so the menu tints them with the
+    /// current label color.
+    @MainActor
+    func menuIcon(pointSize: CGFloat = 18) -> UIImage? {
+        let mark: AnyView = switch self {
+        case .claude:
+            AnyView(BrandLogoShape(logo: .claude).fill(BrandLogo.claude.tint))
+        case .codex:
+            AnyView(BrandLogoShape(logo: .codex).fill(.black, style: FillStyle(eoFill: true)))
+        case .opencode, .terminal:
+            // Hugeicons' native 1.5px-on-24 stroke ratio, same as HugeIconView.
+            AnyView(HugeIconShape(icon: .terminal).stroke(
+                .black,
+                style: StrokeStyle(
+                    lineWidth: max(1.1, pointSize * 1.5 / 24),
+                    lineCap: .round, lineJoin: .round
+                )
+            ))
+        }
+        let renderer = ImageRenderer(content: mark.frame(width: pointSize, height: pointSize))
+        renderer.scale = 3
+        guard let image = renderer.uiImage else { return nil }
+        return image.withRenderingMode(self == .claude ? .alwaysOriginal : .alwaysTemplate)
     }
 }
 
