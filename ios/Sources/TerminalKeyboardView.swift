@@ -21,6 +21,11 @@ enum TerminalKeyCatalog {
             payload: Data("\u{1B}[Z".utf8)
         ),
         TerminalControlKey(
+            id: "tab", title: "tab",
+            detail: "Autocomplete, accept a suggestion",
+            payload: Data([0x09])
+        ),
+        TerminalControlKey(
             id: "ctrlO", title: "^O",
             detail: "Toggle the transcript viewer (what the agent did)",
             payload: Data([0x0F])
@@ -34,11 +39,6 @@ enum TerminalKeyCatalog {
             id: "ctrlL", title: "^L",
             detail: "Redraw a glitched screen",
             payload: Data([0x0C])
-        ),
-        TerminalControlKey(
-            id: "tab", title: "tab",
-            detail: "Autocomplete, accept a suggestion",
-            payload: Data([0x09])
         ),
         TerminalControlKey(
             id: "ctrlB", title: "^B",
@@ -78,7 +78,9 @@ enum TerminalKeyCatalog {
     ]
 
     /// The research-backed hot set for driving Claude Code from a phone.
-    static let defaultIDs = ["shiftTab", "ctrlO", "ctrlC", "ctrlL"]
+    /// Tab earns its default slot on ubiquity: 11 of 12 surveyed mobile
+    /// terminals ship it on their bar (completion + field navigation).
+    static let defaultIDs = ["shiftTab", "tab", "ctrlO", "ctrlC", "ctrlL"]
 
     static func keys(for ids: [String]) -> [TerminalControlKey] {
         all.filter { ids.contains($0.id) }
@@ -109,18 +111,26 @@ final class TerminalKeyboardView: UIInputView {
         var repeats = false
     }
 
-    // System-keyboard metrics: a 54pt row pitch splits into a 42pt keycap
-    // with 12pt between rows; keys sit 6pt apart, 3pt from the edges. The
-    // keycap height only decides the self-sized fallback — under a matched
-    // system-keyboard height the rows split the frame evenly instead.
-    private static let rowHeight: CGFloat = 42
-    private static let rowSpacing: CGFloat = 12
-    private static let keySpacing: CGFloat = 6
-    private static let edgeInset: CGFloat = 3
-    /// Above this a control row splits, evenly, so keys stay thumb-sized.
-    private static let maxKeysPerRow = 5
+    // System-keyboard metrics, pixel-measured off iOS 26 (iPhone 16 Pro,
+    // 402pt): 43pt keycaps on a 54pt row pitch (11pt between rows), keys
+    // 7pt apart and 7pt from the screen edges. The keycap height only
+    // decides the self-sized fallback — under a matched system-keyboard
+    // height the rows keep their pitch and the slack pools on top.
+    private static let rowHeight: CGFloat = 43
+    private static let rowSpacing: CGFloat = 11
+    private static let keySpacing: CGFloat = 7
+    private static let edgeInset: CGFloat = 7
+    /// Above this a control row splits, evenly, so keys stay thumb-sized
+    /// (the system fits 10 per row; 7 keeps ~49pt caps).
+    private static let maxKeysPerRow = 7
+    /// The strip under the key plane where the system parks its bare globe
+    /// key (measured: the plane ends ~44pt above the safe-area bottom).
+    private static let globeBandHeight: CGFloat = 44
+    /// System return key: 92pt of the 388pt usable row.
+    private static let returnWidthFraction: CGFloat = 92.0 / 388.0
 
     private let column = UIStackView()
+    private var globe: UIButton!
     private var matchedHeight: NSLayoutConstraint?
     private var preferredHeight: NSLayoutConstraint?
     private let haptic = UIImpactFeedbackGenerator(style: .light)
@@ -165,12 +175,25 @@ final class TerminalKeyboardView: UIInputView {
         // stretching the rows to fill instead reads as a 63pt-key bug.
         let hugTop = column.topAnchor.constraint(equalTo: topAnchor, constant: 8)
         hugTop.priority = .defaultHigh
+        // The key plane stops a globe-band above the safe area, and the
+        // globe sits below it as a bare icon — where the system keyboard
+        // puts its own (center 43pt from the left edge).
+        globe = makeGlobeButton()
+        addSubview(globe)
         NSLayoutConstraint.activate([
             column.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.edgeInset),
             column.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.edgeInset),
             column.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: 8),
             hugTop,
-            column.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -8),
+            column.bottomAnchor.constraint(
+                equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -Self.globeBandHeight
+            ),
+            globe.centerXAnchor.constraint(equalTo: leadingAnchor, constant: 43),
+            globe.centerYAnchor.constraint(
+                equalTo: column.bottomAnchor, constant: Self.globeBandHeight / 2
+            ),
+            globe.widthAnchor.constraint(equalToConstant: 44),
+            globe.heightAnchor.constraint(equalToConstant: 44),
         ])
 
         rebuild()
@@ -197,7 +220,7 @@ final class TerminalKeyboardView: UIInputView {
         // backdrop the real keyboard sits on — hide it so the keycaps float
         // on the same glass as the system keys. (UIKit inserts the material
         // as a sibling subview of `column`, sometimes after init.)
-        for view in subviews where view !== column {
+        for view in subviews where view !== column && view !== globe {
             view.isHidden = true
         }
     }
@@ -210,24 +233,56 @@ final class TerminalKeyboardView: UIInputView {
             view.removeFromSuperview()
         }
 
-        // esc leads the control zone; the rest comes from Settings.
-        let controls = [makeEscButton()] + TerminalKeyCatalog
+        // The top row keeps the physical keyboard's corners (Fitts: corners
+        // are the fastest targets): esc top-left, its spot since the VT100,
+        // and ⌫ top-right, where every layout since the typewriter has put
+        // it. ⌫ sends DEL 0x7F — the byte every surveyed terminal sends —
+        // and auto-repeats; without it a typo at a raw prompt would force a
+        // switch back to the system keyboard, which this keyboard replaces.
+        // Configurable keys fill the row between the corners; overflow
+        // drops to rows below.
+        let bksp = makeKeyButton(Key(
+            title: "⌫", payload: Data([0x7F]), symbolName: "delete.left", repeats: true
+        ))
+        let configurable = TerminalKeyCatalog
             .keys(for: MobileSettings.shared.terminalKeyIDs)
             .map { makeKeyButton(Key(title: $0.title, payload: $0.payload)) }
-        for chunk in Self.split(controls, limit: Self.maxKeysPerRow) {
-            column.addArrangedSubview(makeRow(chunk))
+        let betweenCorners = Self.maxKeysPerRow - 2
+        column.addArrangedSubview(makeRow(
+            [makeEscButton()] + Array(configurable.prefix(betweenCorners)) + [bksp]
+        ))
+        let overflow = Array(configurable.dropFirst(betweenCorners))
+        if !overflow.isEmpty {
+            for chunk in Self.split(overflow, limit: Self.maxKeysPerRow) {
+                column.addArrangedSubview(makeRow(chunk))
+            }
         }
 
+        // Digits answer the agent's option menus.
         column.addArrangedSubview(makeRow(["1", "2", "3", "4"].map { digit in
             makeKeyButton(Key(title: digit, payload: Data(digit.utf8)))
         }))
-        column.addArrangedSubview(makeRow([
+        // Bottom plane row mirrors the system's: return anchors the right
+        // corner at the system return key's width, arrows share the rest.
+        let arrows = [
             Key(title: "←", payload: Data("\u{1B}[D".utf8), symbolName: "arrow.left", repeats: true),
             Key(title: "↓", payload: Data("\u{1B}[B".utf8), symbolName: "arrow.down", repeats: true),
             Key(title: "↑", payload: Data("\u{1B}[A".utf8), symbolName: "arrow.up", repeats: true),
             Key(title: "→", payload: Data("\u{1B}[C".utf8), symbolName: "arrow.right", repeats: true),
-        ].map(makeKeyButton)))
-        column.addArrangedSubview(makeBottomRow())
+        ].map(makeKeyButton)
+        let enter = makeKeyButton(Key(
+            title: "return", payload: Data("\r".utf8), symbolName: "return"
+        ))
+        let lastRow = UIStackView(arrangedSubviews: arrows + [enter])
+        lastRow.axis = .horizontal
+        lastRow.spacing = Self.keySpacing
+        for arrow in arrows.dropFirst() {
+            arrow.widthAnchor.constraint(equalTo: arrows[0].widthAnchor).isActive = true
+        }
+        enter.widthAnchor.constraint(
+            equalTo: lastRow.widthAnchor, multiplier: Self.returnWidthFraction
+        ).isActive = true
+        column.addArrangedSubview(lastRow)
 
         // Native 42pt keycaps. Outranks hugTop (750) so a taller matched
         // height breaks the top hug — slack above, not inside the rows — but
@@ -265,28 +320,24 @@ final class TerminalKeyboardView: UIInputView {
         return row
     }
 
-    /// System-keyboard bottom row: globe on the left, a wide Return filling
-    /// the rest.
-    private func makeBottomRow() -> UIView {
-        var globeConfig = UIButton.Configuration.plain()
-        globeConfig.image = UIImage(systemName: "globe")
-        globeConfig.preferredSymbolConfigurationForImage = .init(pointSize: 18, weight: .regular)
-        globeConfig.baseForegroundColor = KeyCapButton.keyForeground
-        let globe = KeyCapButton(configuration: globeConfig)
-        globe.keyCapRole = .function
+    /// The system's globe, replicated: a bare icon below the key plane, no
+    /// keycap behind it.
+    private func makeGlobeButton() -> UIButton {
+        var config = UIButton.Configuration.plain()
+        // iOS 26's plain configuration ships a glass background with its own
+        // soft shadow — strip it so only the icon shows.
+        config.background = .clear()
+        config.image = UIImage(systemName: "globe")
+        config.preferredSymbolConfigurationForImage = .init(pointSize: 21, weight: .regular)
+        config.baseForegroundColor = KeyCapButton.keyForeground
+        let globe = UIButton(configuration: config)
+        globe.translatesAutoresizingMaskIntoConstraints = false
         globe.accessibilityLabel = "Switch to system keyboard"
         globe.addAction(UIAction { [weak self] _ in
             self?.haptic.impactOccurred()
             self?.onSwitchBack?()
         }, for: .touchUpInside)
-
-        let enter = makeKeyButton(Key(title: "return", payload: Data("\r".utf8)))
-
-        let row = UIStackView(arrangedSubviews: [globe, enter])
-        row.axis = .horizontal
-        row.spacing = Self.keySpacing
-        globe.widthAnchor.constraint(equalTo: row.widthAnchor, multiplier: 0.22).isActive = true
-        return row
+        return globe
     }
 
     // MARK: - Keys
@@ -319,6 +370,8 @@ final class TerminalKeyboardView: UIInputView {
         let typesACharacter = key.symbolName == nil && key.title.count == 1
 
         var config = UIButton.Configuration.plain()
+        // Same glass-background strip as the globe key (see makeBottomRow).
+        config.background = .clear()
         config.contentInsets = .zero
         config.baseForegroundColor = KeyCapButton.keyForeground
         if let symbolName = key.symbolName {
@@ -353,10 +406,12 @@ final class TerminalKeyboardView: UIInputView {
     }
 }
 
-/// The system keyboard's keycap, replicated: white character keys and darker
-/// function keys (KeyboardKit's measured tokens — #FFFFFF/#6B6B6B and
-/// #ABB1BA/#474747 across light/dark), a 1pt bottom shadow, and the native
-/// pressed-state palette swap (shift flashes light, letters flash dark).
+/// The system keyboard's keycap, replicated. Pixel-measured off iOS 26's
+/// light keyboard: EVERY key face is white there — the classic #ABB1BA
+/// function-key gray is gone — so in light mode the roles share a white cap
+/// and presses flash gray. Dark mode keeps the two-tone scheme (#6B6B6B
+/// letters, #474747 functions) with the native pressed palette swap. A 1pt
+/// crisp bottom shadow under every cap.
 ///
 /// Styling is opt-in via `keyCapRole` so `RepeatingKeyButton` subclasses can
 /// live elsewhere unstyled.
@@ -393,9 +448,9 @@ class KeyCapButton: UIButton {
         ).cgPath
     }
 
-    /// iOS 26 keycaps are visibly rounder than the classic 5pt token; 9pt on
-    /// a 42pt cap matches screenshots (no published value to cite).
-    private static let cornerRadius: CGFloat = 9
+    /// Measured: a 99px key reads 56px wide at its top scanline, so the
+    /// corner arc is ~21.5px ≈ 7pt on a 43pt cap.
+    private static let cornerRadius: CGFloat = 7
 
     static let keyForeground = UIColor { traits in
         traits.userInterfaceStyle == .dark ? .white : .black
@@ -406,9 +461,14 @@ class KeyCapButton: UIButton {
     }
     private static let functionBackground = UIColor { traits in
         traits.userInterfaceStyle == .dark
-            ? UIColor(white: 0x47 / 255.0, alpha: 1)
-            : UIColor(red: 0xAB / 255.0, green: 0xB1 / 255.0, blue: 0xBA / 255.0, alpha: 1)
+            ? UIColor(white: 0x47 / 255.0, alpha: 1) : .white
     }
+    /// Light mode's pressed flash — both roles are white at rest there, so
+    /// the dark-mode palette swap would be invisible; dim toward the
+    /// backdrop (#E0E1E5) instead.
+    private static let lightPressed = UIColor(
+        red: 0xD1 / 255.0, green: 0xD4 / 255.0, blue: 0xDA / 255.0, alpha: 1
+    )
     private static let keyShadow = UIColor { traits in
         UIColor(white: 0, alpha: traits.userInterfaceStyle == .dark ? 0.7 : 0.3)
     }
@@ -417,11 +477,23 @@ class KeyCapButton: UIButton {
 
     private func applyKeyCap() {
         guard let role = keyCapRole else { return }
-        let swapped = (role == .character) != isHighlighted
-        let background = swapped ? Self.characterBackground : Self.functionBackground
-        layer.backgroundColor = background.resolvedColor(with: traitCollection).cgColor
-        layer.cornerRadius = Self.cornerRadius
-        layer.cornerCurve = .continuous
+        let background: UIColor
+        if isHighlighted, traitCollection.userInterfaceStyle != .dark {
+            background = Self.lightPressed
+        } else {
+            // Dark mode (and rest state): the native palette — pressed keys
+            // swap tones, which in light mode is a white-on-white no-op.
+            let swapped = (role == .character) != isHighlighted
+            background = swapped ? Self.characterBackground : Self.functionBackground
+        }
+        // Paint the cap through the configuration's background — fighting it
+        // with a raw `layer.backgroundColor`/`cornerRadius` loses on iOS 26,
+        // where the configuration render pass rewrites the layer (and its
+        // stock glass background drew a second, offset "cap" behind ours).
+        var cap = UIBackgroundConfiguration.clear()
+        cap.backgroundColor = background.resolvedColor(with: traitCollection)
+        cap.cornerRadius = Self.cornerRadius
+        configuration?.background = cap
         layer.shadowColor = Self.keyShadow.resolvedColor(with: traitCollection).cgColor
         layer.shadowOpacity = 1
         layer.shadowRadius = 0
