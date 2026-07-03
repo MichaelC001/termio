@@ -481,9 +481,13 @@ extension SessionListViewController: UITableViewDataSource, UITableViewDelegate 
         label.translatesAutoresizingMaskIntoConstraints = false
         let header = UIView()
         header.addSubview(label)
+        // 13pt under the label so the 44pt + button, center-aligned with the
+        // label, stays fully inside the header — touches outside a superview's
+        // bounds never reach a subview, so an overflowing button reads as a
+        // dead zone (its bottom half used to fall through to the row below).
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 22),
-            label.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -6),
+            label.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -13),
         ])
         // The Mac project menu's "New … Session" actions, as a + on the
         // group header — the project-level home for project-level actions
@@ -534,7 +538,7 @@ extension SessionListViewController: UITableViewDataSource, UITableViewDelegate 
     }
 
     func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
-        section == 0 ? 38 : 46
+        section == 0 ? 46 : 54
     }
 
     func tableView(_ tableView: UITableView, heightForFooterInSection section: Int) -> CGFloat {
