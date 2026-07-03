@@ -23,3 +23,9 @@ sandbox-helper/.build/
 
 # SwiftPM build artifacts inside the companion package
 companion/.build/
+
+# xcodebuild derived data for the iOS dev-run script
+ios/build/
+
+# Per-project termio session state
+/.termio/

@@ -44,10 +44,19 @@ final class SettingsViewController: UITableViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Settings"
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            systemItem: .done,
-            primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) }
-        )
+        // A real glass ✕ at a Telegram-scale target, not the slim system
+        // Done text item.
+        let close = UIButton(type: .system)
+        close.applyGlassSymbol("xmark", pointSize: 16)
+        close.accessibilityLabel = "Close"
+        close.addAction(UIAction { [weak self] _ in
+            self?.dismiss(animated: true)
+        }, for: .touchUpInside)
+        NSLayoutConstraint.activate([
+            close.widthAnchor.constraint(equalToConstant: 40),
+            close.heightAnchor.constraint(equalToConstant: 40),
+        ])
+        navigationItem.rightBarButtonItem = UIBarButtonItem(customView: close)
     }
 
     override func numberOfSections(in tableView: UITableView) -> Int { 1 }

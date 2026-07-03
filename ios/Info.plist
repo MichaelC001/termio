@@ -8,6 +8,8 @@
 	  loopback; a tunnel gives wss:// in production, but the local PoC and
 	  direct-LAN connections need this exception.
 	-->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Termio connects to the companion server running on your Mac over the local network.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

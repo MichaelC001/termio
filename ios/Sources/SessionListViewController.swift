@@ -3,10 +3,9 @@ import TermioSSH
 import TermioShared
 import UIKit
 
-/// The root screen, iMessage-inbox style: a large title over a search field
-/// with a compose button, the sessions grouped under small gray project
-/// headers, and the Mac connection pinned to the bottom like ChatGPT's
-/// account row. Lives at the root of RootContainerViewController's
+/// The root screen, iMessage-inbox style: a large title with sort and compose
+/// buttons riding it, the sessions grouped under small gray project headers,
+/// and the Mac connection pinned to the bottom like ChatGPT's account row. Lives at the root of RootContainerViewController's
 /// navigation stack and owns the companion roster connection.
 final class SessionListViewController: UIViewController {
     /// Open a session row; `companionURL` is non-nil when the row is live.
@@ -19,16 +18,19 @@ final class SessionListViewController: UIViewController {
     /// Live roster from the Mac when a companion URL is configured, else the
     /// bundled mock so the UI is explorable offline.
     private var projects: [MockProject] = MockProject.samples
-    /// `projects` filtered by the search query — what the table shows.
+    /// `projects` in the chosen order — what the table shows.
     private var visible: [MockProject] = []
     private var client: CompanionClient?
     private var companionURL: URL?
     /// The project+agent of an in-flight `start`, so the `.started` reply
     /// knows what to open.
     private var pendingStart: (project: MockProject, agent: String)?
-    private var query = ""
+    /// Mirrors the Mac sidebar's sort pull-down. The roster arrives in the
+    /// Mac's recent-activity order, so "Recent Activity" means "as pushed";
+    /// "Name" re-sorts locally A→Z.
+    private var sortByName = UserDefaults.standard.string(forKey: "sessions.sortOrder") == "name"
 
-    private let searchField = UITextField()
+    private let filterButton = UIButton(type: .system)
     private let composeButton = UIButton(type: .system)
     private let tableView = UITableView(frame: .zero, style: .grouped)
     private let macLabel = UILabel()
@@ -72,7 +74,7 @@ final class SessionListViewController: UIViewController {
         tableView.reloadData()
     }
 
-    // MARK: - Top bar (large title + search + compose)
+    // MARK: - Top bar (large title + filter + compose)
 
     private func configureTopBar() -> UIView {
         let pageTitle = UILabel()
@@ -80,37 +82,17 @@ final class SessionListViewController: UIViewController {
         pageTitle.font = .systemFont(ofSize: 34, weight: .bold)
         pageTitle.textColor = .label
 
-        let searchBox = UIView()
-        searchBox.backgroundColor = UIColor { traits in
-            traits.userInterfaceStyle == .dark
-                ? UIColor(white: 0.16, alpha: 1) : UIColor(white: 0.92, alpha: 1)
-        }
-        searchBox.layer.cornerRadius = 10
-
-        let glass = UIImageView(image: UIImage(systemName: "magnifyingglass"))
-        glass.tintColor = .secondaryLabel
-        glass.contentMode = .scaleAspectFit
-
-        searchField.attributedPlaceholder = NSAttributedString(
-            string: "Search",
-            attributes: [.foregroundColor: UIColor.secondaryLabel]
-        )
-        searchField.textColor = .label
-        searchField.font = .preferredFont(forTextStyle: .subheadline)
-        searchField.autocorrectionType = .no
-        searchField.autocapitalizationType = .none
-        searchField.returnKeyType = .search
-        searchField.clearButtonMode = .whileEditing
-        searchField.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            query = searchField.text ?? ""
-            refilter()
-        }, for: .editingChanged)
-
-        glass.translatesAutoresizingMaskIntoConstraints = false
-        searchField.translatesAutoresizingMaskIntoConstraints = false
-        searchBox.addSubview(glass)
-        searchBox.addSubview(searchField)
+        // The Mac sidebar's sort pull-down, translated to iMessage chrome:
+        // a glass circle riding the large title, menu as primary action.
+        filterButton.applyGlassSymbol("line.3.horizontal.decrease")
+        filterButton.tintColor = .label
+        filterButton.accessibilityLabel = "Sort"
+        filterButton.showsMenuAsPrimaryAction = true
+        filterButton.menu = UIMenu(children: [
+            UIDeferredMenuElement.uncached { [weak self] completion in
+                completion(self?.sortMenuItems() ?? [])
+            },
+        ])
 
         composeButton.applyGlassSymbol("square.and.pencil")
         composeButton.tintColor = .label
@@ -121,35 +103,43 @@ final class SessionListViewController: UIViewController {
             },
         ])
 
-        let bar = UIStackView(arrangedSubviews: [searchBox, composeButton])
+        // Messages-inbox chrome: the bold title on the left, the round
+        // buttons riding the same line on the right.
+        let spacer = UIView()
+        let bar = UIStackView(arrangedSubviews: [pageTitle, spacer, filterButton, composeButton])
         bar.axis = .horizontal
         bar.alignment = .center
         bar.spacing = 8
-
-        // Messages-inbox chrome: the bold page title sits above the search
-        // row (the compose button rides the search row, not a nav bar).
-        let top = UIStackView(arrangedSubviews: [pageTitle, bar])
-        top.axis = .vertical
-        top.alignment = .fill
-        top.spacing = 10
-        top.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(top)
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(bar)
         NSLayoutConstraint.activate([
-            top.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            top.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            top.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            searchBox.heightAnchor.constraint(equalToConstant: 36),
+            bar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            bar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            bar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            filterButton.widthAnchor.constraint(equalToConstant: 36),
+            filterButton.heightAnchor.constraint(equalToConstant: 36),
             composeButton.widthAnchor.constraint(equalToConstant: 36),
             composeButton.heightAnchor.constraint(equalToConstant: 36),
-            glass.leadingAnchor.constraint(equalTo: searchBox.leadingAnchor, constant: 10),
-            glass.centerYAnchor.constraint(equalTo: searchBox.centerYAnchor),
-            glass.widthAnchor.constraint(equalToConstant: 16),
-            glass.heightAnchor.constraint(equalToConstant: 16),
-            searchField.leadingAnchor.constraint(equalTo: glass.trailingAnchor, constant: 6),
-            searchField.trailingAnchor.constraint(equalTo: searchBox.trailingAnchor, constant: -8),
-            searchField.centerYAnchor.constraint(equalTo: searchBox.centerYAnchor),
         ])
-        return top
+        return bar
+    }
+
+    /// The same two orders as the Mac's sort menu, checkmarked like it too.
+    private func sortMenuItems() -> [UIMenuElement] {
+        [
+            UIAction(title: "Recent Activity", state: sortByName ? .off : .on) { [weak self] _ in
+                self?.setSortByName(false)
+            },
+            UIAction(title: "Name", state: sortByName ? .on : .off) { [weak self] _ in
+                self?.setSortByName(true)
+            },
+        ]
+    }
+
+    private func setSortByName(_ byName: Bool) {
+        sortByName = byName
+        UserDefaults.standard.set(byName ? "name" : "recentActivity", forKey: "sessions.sortOrder")
+        refilter()
     }
 
     /// Compose = ChatGPT's "new chat": pick a project, then the agent. Offline
@@ -369,21 +359,12 @@ final class SessionListViewController: UIViewController {
         ])
     }
 
+    /// Applies the chosen order: as pushed (the Mac's recent-activity order)
+    /// or A→Z by project name.
     private func refilter() {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        if q.isEmpty {
-            visible = projects
-        } else {
-            visible = projects.compactMap { project in
-                if project.name.lowercased().contains(q) { return project }
-                let hits = project.sessions.filter { $0.title.lowercased().contains(q) }
-                return hits.isEmpty ? nil : MockProject(
-                    name: project.name, path: project.path,
-                    rosterID: project.rosterID, branch: project.branch,
-                    sessions: hits
-                )
-            }
-        }
+        visible = sortByName
+            ? projects.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            : projects
         tableView.reloadData()
     }
 
@@ -503,6 +484,20 @@ extension SessionListViewController: UITableViewDataSource, UITableViewDelegate 
             label.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 22),
             label.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -6),
         ])
+        // A hairline between project groups (none above the first), so the
+        // blocks read as separate — the inbox's section split.
+        if section > 0 {
+            let hairline = UIView()
+            hairline.backgroundColor = .separator.withAlphaComponent(0.5)
+            hairline.translatesAutoresizingMaskIntoConstraints = false
+            header.addSubview(hairline)
+            NSLayoutConstraint.activate([
+                hairline.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 22),
+                hairline.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+                hairline.topAnchor.constraint(equalTo: header.topAnchor),
+                hairline.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
+            ])
+        }
         return header
     }
 
@@ -534,6 +529,46 @@ extension SessionListViewController: UITableViewDataSource, UITableViewDelegate 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         let session = visible[indexPath.section].sessions[indexPath.row]
         onOpenSession?(session, companionURL)
+    }
+
+    /// Leading swipe, Mail-style: the Mac project menu's "New … Session"
+    /// actions, aimed at the swiped row's project.
+    func tableView(
+        _ tableView: UITableView,
+        leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath
+    ) -> UISwipeActionsConfiguration? {
+        let project = visible[indexPath.section]
+        guard companionURL != nil, project.rosterID != nil else { return nil }
+        let claude = UIContextualAction(style: .normal, title: "Claude Code") { [weak self] _, _, done in
+            self?.startSession(agent: "claude", in: project)
+            done(true)
+        }
+        claude.image = UIImage(systemName: "sparkles")
+        claude.backgroundColor = .systemOrange
+        let terminal = UIContextualAction(style: .normal, title: "Terminal") { [weak self] _, _, done in
+            self?.startSession(agent: "terminal", in: project)
+            done(true)
+        }
+        terminal.image = UIImage(systemName: "terminal")
+        terminal.backgroundColor = .systemGray
+        return UISwipeActionsConfiguration(actions: [claude, terminal])
+    }
+
+    /// Trailing swipe: the Mac session menu's "Close Session".
+    func tableView(
+        _ tableView: UITableView,
+        trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
+    ) -> UISwipeActionsConfiguration? {
+        guard companionURL != nil,
+              let sessionID = visible[indexPath.section].sessions[indexPath.row].rosterID
+        else { return nil }
+        let close = UIContextualAction(style: .destructive, title: "Close") { [weak self] _, _, done in
+            // Close on the Mac; the next roster push drops the row.
+            self?.client?.send(.stop(sessionID: sessionID))
+            done(true)
+        }
+        close.image = UIImage(systemName: "xmark.circle")
+        return UISwipeActionsConfiguration(actions: [close])
     }
 
     func tableView(

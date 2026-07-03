@@ -1,23 +1,38 @@
 import TermioSSH
+import TermioShared
 import UIKit
 
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
+    private var settingsObserver: (any NSObjectProtocol)?
 
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         let window = UIWindow(frame: UIScreen.main.bounds)
-        let projects = ProjectTreeViewController()
-        let nav = UINavigationController(rootViewController: projects)
-        window.rootViewController = nav
+        // iMessage-style shell: the session list is the root page; a tapped
+        // session pushes its terminal.
+        let root = RootContainerViewController()
+        window.rootViewController = root
         window.makeKeyAndVisible()
         self.window = window
 
+        // The Appearance setting is app-wide, same as the Mac pinning
+        // NSAppearance on NSApp: the window override cascades to every
+        // screen — shell, sidebar, sheets, and the terminal's theme slot.
+        window.overrideUserInterfaceStyle = MobileSettings.shared.appearanceMode.uiStyle
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: MobileSettings.didChange, object: nil, queue: .main
+        ) { [weak window] _ in
+            MainActor.assumeIsolated {
+                window?.overrideUserInterfaceStyle = MobileSettings.shared.appearanceMode.uiStyle
+            }
+        }
+
         // Screenshot-driven verification: `-demo sessions|terminal|drawer`
-        // walks the project → session → terminal stack so simctl runs can
+        // walks the sidebar → session → terminal states so simctl runs can
         // capture states that gestures can't reach from the CLI.
         let args = ProcessInfo.processInfo.arguments
 
@@ -29,15 +44,24 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             let session = Self.argument("-companion-session", in: args).map { rosterID in
                 MockSession(
                     title: url.host ?? "companion",
-                    project: "companion", agent: .terminal, status: .idle,
-                    subtitle: "", time: "", rosterID: rosterID
+                    project: Self.argument("-companion-project", in: args) ?? "",
+                    agent: Self.argument("-companion-agent", in: args).map(AgentKind.init(wire:)) ?? .terminal,
+                    status: .idle,
+                    subtitle: "", time: "", rosterID: rosterID,
+                    projectRosterID: Self.argument("-companion-projectid", in: args),
+                    branch: Self.argument("-companion-branch", in: args)
                 )
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                nav.pushViewController(
-                    TerminalViewController(companionURL: url, session: session),
-                    animated: false
-                )
+                let terminal = TerminalViewController(companionURL: url, session: session)
+                root.open(terminal, sessionKey: session?.key, animated: false)
+                // `-open-inspector` slides the file drawer out once attached,
+                // so simctl runs can screenshot the live tree.
+                if args.contains("-open-inspector") {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                        terminal.setDrawer(open: true, animated: false)
+                    }
+                }
             }
             return true
         }
@@ -57,7 +81,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 command: Self.argument("-ssh-command", in: args)
             )
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                nav.pushViewController(TerminalViewController(sshConfig: config), animated: false)
+                root.open(TerminalViewController(sshConfig: config), animated: false)
             }
             return true
         }
@@ -65,13 +89,22 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         if let flagIndex = args.firstIndex(of: "-demo"), args.indices.contains(flagIndex + 1) {
             let mode = args[flagIndex + 1]
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                guard mode != "list" else { return }
-                let project = MockProject.samples[0]
-                let terminal = TerminalViewController(session: project.sessions[0])
-                nav.pushViewController(terminal, animated: false)
+                // "list"/"sessions" is the launch state: the inbox page.
+                guard mode != "list", mode != "sessions" else { return }
+                let session = MockProject.samples[0].sessions[0]
+                let terminal = TerminalViewController(session: session)
+                root.open(terminal, sessionKey: session.key, animated: false)
                 if mode == "drawer" {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                         terminal.setDrawer(open: true, animated: false)
+                    }
+                }
+                // The read-only file viewer with a bundled sample, so simctl
+                // runs can verify highlight + chrome without a Mac link.
+                if mode == "file" {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        let sample = Self.sampleFile()
+                        root.present(FileViewerController(file: sample), animated: false)
                     }
                 }
             }
@@ -84,5 +117,41 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             return nil
         }
         return args[index + 1]
+    }
+
+    /// A `WireFile` for `-demo file`: real Swift source (this file's header),
+    /// enough lines to exercise highlighting, scrolling, and the footer.
+    private static func sampleFile() -> WireFile {
+        let code = """
+        import UIKit
+
+        /// ChatGPT-style shell: the terminal owns the whole screen and the
+        /// session list lives in a left slide-over drawer.
+        final class RootContainerViewController: UIViewController {
+            let sidebar = SidebarViewController()
+            private var content: TerminalViewController?
+            private var sidebarOpen = false
+            private var sidebarWidth: CGFloat { min(view.bounds.width * 0.85, 360) }
+
+            func setSidebar(open: Bool, animated: Bool) {
+                sidebarOpen = open
+                let animations = { self.layoutSidebar() }
+                if animated {
+                    UIView.animate(withDuration: 0.35, delay: 0,
+                                   usingSpringWithDamping: 0.9, initialSpringVelocity: 0,
+                                   animations: animations)
+                } else {
+                    animations()
+                }
+            }
+        }
+        """
+        return WireFile(
+            path: "ios/Sources/RootContainerViewController.swift",
+            base64: Data(code.utf8).base64EncodedString(),
+            size: code.utf8.count,
+            binary: false,
+            truncated: false
+        )
     }
 }

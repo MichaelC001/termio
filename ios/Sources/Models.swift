@@ -12,6 +12,11 @@ struct MockSession: Identifiable {
     /// The Mac session's wire id when this row came from the live roster —
     /// what `attach` sends to bridge the real PTY. nil for bundled mock rows.
     var rosterID: String?
+    /// The Mac project's wire id — what the file plane (`listFiles`/`readFile`)
+    /// scopes requests to. nil for bundled mock rows.
+    var projectRosterID: String?
+    /// The project's current git branch (nil for non-repos / mock rows).
+    var branch: String?
 
     static let samples: [MockSession] = [
         .init(title: "fix-sidebar", project: "termio", agent: .claude,
@@ -33,6 +38,11 @@ struct MockProject: Identifiable {
     let id = UUID()
     let name: String
     let path: String
+    /// The Mac project's wire id when this came from the live roster — what
+    /// `start` sends to create a session there. nil for bundled mock data.
+    var rosterID: String?
+    /// Current git branch of the checkout (nil for non-repos / mock data).
+    var branch: String?
     let sessions: [MockSession]
 
     /// Projects keep their order; within a project, attention floats up.
@@ -51,6 +61,12 @@ struct MockProject: Identifiable {
             )
         }
     }()
+}
+
+extension MockSession {
+    /// Stable identity across roster refreshes (the `id` UUID is rebuilt on
+    /// every push) — what the sidebar uses to highlight the open session.
+    var key: String { rosterID ?? "\(project)/\(title)" }
 }
 
 // MARK: - Roster → model mapping
@@ -80,15 +96,19 @@ extension SessionStatus {
 }
 
 extension MockSession {
-    init(roster: RosterSession) {
+    init(roster: RosterSession, project: RosterProject) {
+        // "—" is the desktop's placeholder for "no branch"; drop it here.
+        let branch = project.branch.flatMap { $0 == "—" || $0.isEmpty ? nil : $0 }
         self.init(
             title: roster.title,
-            project: "",
+            project: project.name,
             agent: AgentKind(wire: roster.agent),
             status: SessionStatus(wire: roster.status),
             subtitle: "",
             time: "",
-            rosterID: roster.id
+            rosterID: roster.id,
+            projectRosterID: project.id,
+            branch: branch
         )
     }
 }
@@ -98,7 +118,9 @@ extension MockProject {
         self.init(
             name: roster.name,
             path: roster.path,
-            sessions: roster.sessions.map(MockSession.init(roster:))
+            rosterID: roster.id,
+            branch: roster.branch.flatMap { $0 == "—" || $0.isEmpty ? nil : $0 },
+            sessions: roster.sessions.map { MockSession(roster: $0, project: roster) }
         )
     }
 }
@@ -191,4 +213,55 @@ struct MockChange {
          inspector.refresh()
      }
     """
+}
+
+// MARK: - Cross-screen notifications
+
+extension Notification.Name {
+    /// Posted by the sidebar on every roster push. `userInfo["statuses"]` is
+    /// `[String: SessionStatus]` keyed by roster session id — how an open
+    /// terminal tracks its session's live status without owning the socket.
+    static let sessionStatusesDidChange = Notification.Name("SessionStatusesDidChange")
+}
+
+// MARK: - Companion link state
+
+/// The app-wide view of the single Mac roster link. The sidebar owns the
+/// socket and keeps `state` current; other screens (the Connectivity settings
+/// page, the sidebar's presence dot) observe `stateDidChange` and read it.
+enum CompanionLink {
+    enum State {
+        /// No Mac address saved.
+        case unpaired
+        /// Paired, but the socket is down — connecting or in backoff retry.
+        case connecting
+        case connected
+    }
+
+    static var state: State = .unpaired {
+        didSet {
+            guard state != oldValue else { return }
+            NotificationCenter.default.post(name: stateDidChange, object: nil)
+        }
+    }
+
+    static let stateDidChange = Notification.Name("CompanionLinkStateDidChange")
+    /// Posted when a screen other than the sidebar changes the pairing (the
+    /// Connectivity page's connect/forget); the sidebar reacts by reconnecting
+    /// to `savedURL` or tearing the link down.
+    static let pairingDidChange = Notification.Name("CompanionPairingDidChange")
+
+    static let defaultsKey = "companion.rosterURL"
+
+    static var savedURL: URL? {
+        UserDefaults.standard.string(forKey: defaultsKey).flatMap(URL.init(string:))
+    }
+
+    /// Bare-host shorthand: "studio.local" → ws://studio.local:8787.
+    static func normalize(_ raw: String) -> URL? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let full = trimmed.contains("://") ? trimmed : "ws://\(trimmed):8787"
+        return URL(string: full)
+    }
 }

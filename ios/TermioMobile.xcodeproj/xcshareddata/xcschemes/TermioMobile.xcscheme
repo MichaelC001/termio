@@ -39,6 +39,16 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "AA10000000000000000000A1"
+               BuildableName = "TermioMobileUITests.xctest"
+               BlueprintName = "TermioMobileUITests"
+               ReferencedContainer = "container:TermioMobile.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
       <CommandLineArguments>
       </CommandLineArguments>
