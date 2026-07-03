@@ -89,8 +89,15 @@ extension TermioStore {
         // ioctl are atomic, sinks are lock-guarded).
         let pty = PTYProcess(argv: argv, cwd: workspacePath, env: env, cols: 80, rows: 24)
         let inMemory = InMemoryTerminalSession(
-            write: { data in pty?.write(data) },
-            resize: { viewport in pty?.resize(cols: Int(viewport.columns), rows: Int(viewport.rows)) }
+            write: { data in
+                // Typing on the Mac reclaims the winsize from an attached
+                // phone — the size follows the device being used.
+                pty?.claimHostOwnership()
+                pty?.write(data)
+            },
+            resize: { viewport in
+                pty?.resizeFromHost(cols: Int(viewport.columns), rows: Int(viewport.rows))
+            }
         )
         if let pty {
             pty.addSink { [weak inMemory] data in inMemory?.receive(data) }

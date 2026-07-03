@@ -11,6 +11,17 @@ import Foundation
 /// control and signals (Ctrl-C → SIGINT to the foreground group) work exactly
 /// as under a real terminal.
 final class PTYProcess: @unchecked Sendable {
+    /// Which device's grid the PTY is sized for. One PTY has one winsize and
+    /// the child lays its output out for it, so two differently-sized viewers
+    /// can't both fit — the size follows the device being used (tmux's
+    /// newest-client rule): a companion claims by resizing (it reports its
+    /// grid on attach, foreground, and layout) or typing; the host claims
+    /// back by typing; a companion detach hands back.
+    enum SizeOwner {
+        case host
+        case companion
+    }
+
     /// How much recent raw output is kept for replay to late-attaching sinks
     /// (a phone connecting mid-session). Bounded so an long-lived chatty agent
     /// can't grow memory without limit.
@@ -25,13 +36,48 @@ final class PTYProcess: @unchecked Sendable {
         let handler: (Data) -> Void
     }
 
+    /// DEC private modes a TUI sets once at startup (alternate screen, mouse
+    /// reporting, bracketed paste, …). A late-attaching sink whose replay
+    /// window no longer contains those set sequences would join believing the
+    /// terminal is in its default state — its scroll gestures then move a
+    /// nonexistent scrollback instead of being reported to the app as wheel
+    /// events. The read pump tracks these so `addSink` can re-assert them.
+    private static let trackedPrivateModes: Set<Int> = [
+        25, 47, 1000, 1002, 1003, 1004, 1005, 1006, 1015, 1047, 1048, 1049, 2004, 2031,
+    ]
+    /// Modes that are ON in a fresh terminal; everything else defaults off.
+    private static let defaultOnPrivateModes: Set<Int> = [25]
+    /// Emission order: enter the alternate screen first so the cursor/mouse
+    /// modes land in the screen the TUI is about to repaint into.
+    private static let privateModeEmissionOrder = [
+        1049, 1047, 47, 1048, 25, 1000, 1002, 1003, 1004, 1005, 1006, 1015, 2004, 2031,
+    ]
+
+    private enum ModeScanState {
+        case idle
+        case escape        // saw ESC
+        case csi           // saw ESC [
+        case privateParams // saw ESC [ ? — accumulating digits and semicolons
+    }
+
     private let masterFD: Int32
     private(set) var pid: pid_t = -1
     private var readSource: DispatchSourceRead?
     private var sinks: [UUID: Sink] = [:]
     private var replayBuffer = Data()
+    private var totalBytesRead = 0
+    private var privateModeStates: [Int: (enabled: Bool, offset: Int)] = [:]
+    private var modeScanState: ModeScanState = .idle
+    private var modeScanParams: [Int] = []
+    private var modeScanCurrent: Int?
     private var lastCols: Int
     private var lastRows: Int
+    private var sizeOwner: SizeOwner = .host
+    private var hostCols: Int
+    private var hostRows: Int
+    private var companionCols = 0
+    private var companionRows = 0
+    private var resizeObservers: [UUID: (Int, Int) -> Void] = [:]
     private var exitObservers: [(Int32) -> Void] = []
     private var terminated = false
     private let lock = NSLock()
@@ -44,6 +90,8 @@ final class PTYProcess: @unchecked Sendable {
     init?(argv: [String], cwd: String, env: [String: String], cols: Int, rows: Int) {
         lastCols = cols
         lastRows = rows
+        hostCols = cols
+        hostRows = rows
         var master: Int32 = 0
         var slave: Int32 = 0
         var win = winsize(ws_row: UInt16(rows), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)
@@ -114,6 +162,7 @@ final class PTYProcess: @unchecked Sendable {
             if n > 0 {
                 let data = Data(buffer[0 ..< n])
                 lock.lock()
+                scanPrivateModesLocked(data)
                 replayBuffer.append(data)
                 if replayBuffer.count > Self.replayCapacity {
                     replayBuffer.removeFirst(replayBuffer.count - Self.replayCapacity)
@@ -153,17 +202,87 @@ final class PTYProcess: @unchecked Sendable {
     ) -> UUID {
         let id = UUID()
         lock.lock()
-        if replayingBuffer, !replayBuffer.isEmpty {
-            let replay = replayBuffer
-            if let queue {
-                queue.async { handler(replay) }
-            } else {
-                handler(replay)
+        if replayingBuffer {
+            // Replay first, then re-assert private modes whose set sequences
+            // have already been evicted from the ring buffer — the client's
+            // terminal must agree with the child about alternate screen and
+            // mouse reporting, or its scroll input goes nowhere.
+            var replay = replayBuffer
+            replay.append(modeCatchUpPreambleLocked())
+            if !replay.isEmpty {
+                if let queue {
+                    queue.async { handler(replay) }
+                } else {
+                    handler(replay)
+                }
             }
         }
         sinks[id] = Sink(queue: queue, handler: handler)
         lock.unlock()
         return id
+    }
+
+    /// Byte-level scan for `ESC [ ? params h/l` (DECSET/DECRST), tolerant of
+    /// sequences split across read chunks. Only tracked modes are recorded,
+    /// along with the stream offset of their last change so the preamble can
+    /// tell whether the replay window already carries the sequence.
+    private func scanPrivateModesLocked(_ data: Data) {
+        let chunkStart = totalBytesRead
+        totalBytesRead += data.count
+        for (index, byte) in data.enumerated() {
+            switch modeScanState {
+            case .idle:
+                if byte == 0x1B { modeScanState = .escape }
+            case .escape:
+                modeScanState = byte == UInt8(ascii: "[") ? .csi : .idle
+            case .csi:
+                if byte == UInt8(ascii: "?") {
+                    modeScanState = .privateParams
+                    modeScanParams = []
+                    modeScanCurrent = nil
+                } else if byte == 0x1B {
+                    modeScanState = .escape
+                } else {
+                    modeScanState = .idle
+                }
+            case .privateParams:
+                switch byte {
+                case UInt8(ascii: "0") ... UInt8(ascii: "9"):
+                    modeScanCurrent = (modeScanCurrent ?? 0) * 10 + Int(byte - UInt8(ascii: "0"))
+                case UInt8(ascii: ";"):
+                    if let current = modeScanCurrent { modeScanParams.append(current) }
+                    modeScanCurrent = nil
+                case UInt8(ascii: "h"), UInt8(ascii: "l"):
+                    if let current = modeScanCurrent { modeScanParams.append(current) }
+                    let enabled = byte == UInt8(ascii: "h")
+                    for mode in modeScanParams where Self.trackedPrivateModes.contains(mode) {
+                        privateModeStates[mode] = (enabled, chunkStart + index)
+                    }
+                    modeScanState = .idle
+                case 0x1B:
+                    modeScanState = .escape
+                default:
+                    modeScanState = .idle
+                }
+            }
+        }
+    }
+
+    /// DECSET/DECRST sequences a replay-attached sink still needs: modes whose
+    /// current state deviates from a fresh terminal's defaults AND whose last
+    /// change happened before the replay window (a change inside the window is
+    /// already delivered by the replay itself).
+    private func modeCatchUpPreambleLocked() -> Data {
+        let windowStart = totalBytesRead - replayBuffer.count
+        var preamble = ""
+        for mode in Self.privateModeEmissionOrder {
+            guard let state = privateModeStates[mode],
+                  state.offset < windowStart,
+                  state.enabled != Self.defaultOnPrivateModes.contains(mode)
+            else { continue }
+            preamble += "\u{1B}[?\(mode)\(state.enabled ? "h" : "l")"
+        }
+        return Data(preamble.utf8)
     }
 
     func removeSink(_ id: UUID) {
@@ -186,13 +305,99 @@ final class PTYProcess: @unchecked Sendable {
         }
     }
 
-    func resize(cols: Int, rows: Int) {
+    /// The Mac surface's grid changed. Applied only while the host owns the
+    /// size — a layout pass on the Mac (window resize, inspector toggle) must
+    /// not yank the width from a phone that is actively viewing. Recorded
+    /// regardless, so a later host claim restores the surface's real size.
+    func resizeFromHost(cols: Int, rows: Int) {
         lock.lock()
+        hostCols = cols
+        hostRows = rows
+        guard sizeOwner == .host else {
+            lock.unlock()
+            return
+        }
+        applyWindowSizeAndUnlock(cols: cols, rows: rows)
+    }
+
+    /// A phone reported its grid; a companion resize always claims the size
+    /// (the phone only reports it while actively viewing: attach, foreground,
+    /// layout). Returns whether the applied winsize actually changed — an
+    /// unchanged size delivers no SIGWINCH, so a caller that needs a repaint
+    /// must jiggle.
+    @discardableResult
+    func resizeFromCompanion(cols: Int, rows: Int) -> Bool {
+        lock.lock()
+        companionCols = cols
+        companionRows = rows
+        sizeOwner = .companion
+        return applyWindowSizeAndUnlock(cols: cols, rows: rows)
+    }
+
+    /// Host input reclaims the size — typing on the Mac means the user is
+    /// there. Also the hand-back when the last companion detaches. A no-op
+    /// while the host already owns it, so it is cheap on every keystroke.
+    func claimHostOwnership() {
+        lock.lock()
+        guard sizeOwner != .host else {
+            lock.unlock()
+            return
+        }
+        sizeOwner = .host
+        applyWindowSizeAndUnlock(cols: hostCols, rows: hostRows)
+    }
+
+    /// Companion input reclaims the size using the last grid the phone
+    /// reported (nothing to apply if it never reported one — its resize
+    /// control is about to arrive anyway).
+    func claimCompanionOwnership() {
+        lock.lock()
+        guard sizeOwner != .companion else {
+            lock.unlock()
+            return
+        }
+        sizeOwner = .companion
+        guard companionCols > 0, companionRows > 0 else {
+            lock.unlock()
+            return
+        }
+        applyWindowSizeAndUnlock(cols: companionCols, rows: companionRows)
+    }
+
+    /// Observe applied winsize changes from any side. Fired on the resizing
+    /// thread — hop to your own queue before doing anything slow. A bridge
+    /// uses this to wipe its client ahead of a repaint laid out for some
+    /// other device's grid.
+    func addResizeObserver(_ observer: @escaping (Int, Int) -> Void) -> UUID {
+        let id = UUID()
+        lock.lock()
+        resizeObservers[id] = observer
+        lock.unlock()
+        return id
+    }
+
+    func removeResizeObserver(_ id: UUID) {
+        lock.lock()
+        resizeObservers[id] = nil
+        lock.unlock()
+    }
+
+    /// Applies the winsize if it differs from the current one and notifies
+    /// resize observers. Must be entered with `lock` held; always unlocks.
+    @discardableResult
+    private func applyWindowSizeAndUnlock(cols: Int, rows: Int) -> Bool {
+        guard cols != lastCols || rows != lastRows else {
+            lock.unlock()
+            return false
+        }
         lastCols = cols
         lastRows = rows
+        let observers = Array(resizeObservers.values)
         lock.unlock()
         var win = winsize(ws_row: UInt16(rows), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)
         _ = ioctl(masterFD, TIOCSWINSZ, &win)
+        for observer in observers { observer(cols, rows) }
+        return true
     }
 
     /// Force a full-screen repaint from TUI apps by delivering a spurious
@@ -205,12 +410,16 @@ final class PTYProcess: @unchecked Sendable {
         lock.unlock()
         var shrunk = winsize(ws_row: UInt16(max(rows - 1, 1)), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)
         _ = ioctl(masterFD, TIOCSWINSZ, &shrunk)
-        // A beat between the two so the child observes both changes. The
-        // terminated check keeps the delayed ioctl off a recycled fd number.
+        // A beat between the two so the child observes both changes. The size
+        // is re-read at fire time: if a client resized during the beat (a
+        // phone attaching does), its size must win, not the captured one.
+        // The terminated check keeps the delayed ioctl off a recycled fd.
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) { [weak self] in
             guard let self else { return }
             self.lock.lock()
             let dead = self.terminated
+            let cols = self.lastCols
+            let rows = self.lastRows
             self.lock.unlock()
             guard !dead else { return }
             var win = winsize(ws_row: UInt16(rows), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)

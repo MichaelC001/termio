@@ -165,8 +165,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 store?.companionRoster() ?? CompanionRoster(projects: [])
             },
             ptyForSession: { [weak store] id in
-                guard let uuid = UUID(uuidString: id) else { return nil }
-                return store?.ptyProcesses[uuid]
+                store?.companionPTY(for: id)
+            },
+            startSession: { [weak store] projectID, agent in
+                store?.companionStartSession(projectID: projectID, agent: agent)
+            },
+            stopSession: { [weak store] sessionID in
+                store?.companionStopSession(sessionID: sessionID) ?? false
             }
         )
         companion.start()

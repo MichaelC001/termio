@@ -15,6 +15,8 @@ final class CompanionServer {
     private let port: UInt16
     private let rosterProvider: () -> CompanionRoster
     private let ptyForSession: (String) -> PTYProcess?
+    private let startSession: (String, String) -> String?
+    private let stopSession: (String) -> Bool
     private var listener: NWListener?
     private var connections: Set<ObjectIdentifier> = []
     private var connectionByID: [ObjectIdentifier: NWConnection] = [:]
@@ -26,17 +28,27 @@ final class CompanionServer {
     init(
         port: UInt16 = 8787,
         rosterProvider: @escaping () -> CompanionRoster,
-        ptyForSession: @escaping (String) -> PTYProcess?
+        ptyForSession: @escaping (String) -> PTYProcess?,
+        startSession: @escaping (String, String) -> String?,
+        stopSession: @escaping (String) -> Bool
     ) {
         self.port = port
         self.rosterProvider = rosterProvider
         self.ptyForSession = ptyForSession
+        self.startSession = startSession
+        self.stopSession = stopSession
     }
 
     func start() {
         let params = NWParameters.tcp
+        // A dev relaunch rebinds while the old instance's sockets sit in
+        // TIME_WAIT; without reuse the new listener dies silently.
+        params.allowLocalEndpointReuse = true
         let ws = NWProtocolWebSocket.Options()
         ws.autoReplyPing = true
+        // Phone uploads (photos for prompts) arrive as one base64 text frame;
+        // the default cap is too small for them.
+        ws.maximumMessageSize = 16 << 20
         params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
 
         guard let listener = try? NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!) else {
@@ -47,7 +59,16 @@ final class CompanionServer {
             Task { @MainActor in self?.accept(connection) }
         }
         listener.stateUpdateHandler = { state in
-            if case .ready = state { NSLog("[companion] listening on ws://localhost:\(self.port)") }
+            switch state {
+            case .ready:
+                NSLog("[companion] listening on ws://localhost:\(self.port)")
+            case .failed(let error):
+                NSLog("[companion] listener FAILED: \(error)")
+            case .waiting(let error):
+                NSLog("[companion] listener waiting: \(error)")
+            default:
+                break
+            }
         }
         listener.start(queue: .main)
         self.listener = listener
@@ -79,7 +100,10 @@ final class CompanionServer {
     func stop() {
         pollTimer?.invalidate()
         listener?.cancel()
-        for bridge in bridges.values { bridge.stop() }
+        for bridge in bridges.values {
+            bridge.stop()
+            bridge.pty.claimHostOwnership()
+        }
         bridges.removeAll()
         for connection in connectionByID.values { connection.cancel() }
         connectionByID.removeAll()
@@ -106,8 +130,14 @@ final class CompanionServer {
     }
 
     private func drop(_ id: ObjectIdentifier) {
-        bridges[id]?.stop()
-        bridges[id] = nil
+        if let bridge = bridges[id] {
+            bridge.stop()
+            bridges[id] = nil
+            // The last phone detached: hand the winsize back to the Mac.
+            if !bridges.values.contains(where: { $0.pty === bridge.pty }) {
+                bridge.pty.claimHostOwnership()
+            }
+        }
         connectionByID[id]?.cancel()
         connectionByID[id] = nil
         connections.remove(id)
@@ -125,8 +155,11 @@ final class CompanionServer {
                 switch meta.opcode {
                 case .binary:
                     // Keystrokes from the phone into the session's PTY.
+                    // Typing from the phone is active use — the size follows it.
                     Task { @MainActor in
-                        self?.bridges[ObjectIdentifier(connection)]?.pty.write(content)
+                        guard let bridge = self?.bridges[ObjectIdentifier(connection)] else { return }
+                        bridge.pty.claimCompanionOwnership()
+                        bridge.pty.write(content)
                     }
                 case .text:
                     if let text = String(data: content, encoding: .utf8),
@@ -146,7 +179,7 @@ final class CompanionServer {
         switch control {
         case .attach(let sessionID):
             guard let pty = ptyForSession(sessionID) else {
-                sendControl(.error(message: "session has no live terminal on the Mac"), to: connection)
+                sendControl(.error(message: "unknown session — pull the list to refresh"), to: connection)
                 return
             }
             bridges[id]?.stop()
@@ -160,13 +193,257 @@ final class CompanionServer {
                     self?.drop(ObjectIdentifier(connection))
                 }
             }
+        case .start(let projectID, let agent):
+            // The phone's sidebar-equivalent "new session" — same store action
+            // the CLI's `sessions start` uses; the roster push announces it to
+            // every other client, the reply lets this one attach immediately.
+            if let sessionID = startSession(projectID, agent) {
+                sendControl(.started(sessionID: sessionID), to: connection)
+            } else {
+                sendControl(.error(message: "could not start a session there"), to: connection)
+            }
+        case .stop(let sessionID):
+            // Close on the Mac; the roster push drops the row on every phone.
+            if !stopSession(sessionID) {
+                sendControl(.error(message: "unknown session — pull the list to refresh"), to: connection)
+            }
         case .resize(let cols, let rows):
-            // Last writer wins, like tmux's newest-client rule — v1 mirrors
-            // one PTY, it does not maintain per-client grids.
-            bridges[id]?.pty.resize(cols: cols, rows: rows)
-        case .exit, .error:
+            // The phone reports its grid on attach, foreground, and layout —
+            // each report claims the size (tmux's newest-client rule; one PTY
+            // has one winsize, per-client grids don't exist at this layer).
+            bridges[id]?.applyClientResize(cols: cols, rows: rows)
+        case .listFiles(let projectID, let path):
+            handleListFiles(projectID: projectID, path: path, on: connection)
+        case .readFile(let projectID, let path):
+            handleReadFile(projectID: projectID, path: path, on: connection)
+        case .writeFile(let projectID, let path, let base64, let baseMtime):
+            handleWriteFile(
+                projectID: projectID, path: path, base64: base64,
+                baseMtime: baseMtime, on: connection
+            )
+        case .upload(let projectID, let name, let base64):
+            handleUpload(projectID: projectID, name: name, base64: base64, on: connection)
+        case .exit, .error, .started, .fileList, .file, .written, .uploaded:
             break
         }
+    }
+
+    // MARK: - File plane (read-only)
+
+    /// The project root for a wire project id, straight from the roster —
+    /// the same source of truth the phone's tree came from.
+    private func projectRoot(for wireID: String) -> String? {
+        let prefix = wireID.lowercased()
+        guard !prefix.isEmpty else { return nil }
+        return rosterProvider().projects
+            .first { $0.id.lowercased().hasPrefix(prefix) }?.path
+    }
+
+    private func handleListFiles(projectID: String, path: String, on connection: NWConnection) {
+        guard let root = projectRoot(for: projectID),
+              let dir = Self.resolve(path, under: root) else {
+            sendControl(.error(message: "unknown project or path"), to: connection)
+            return
+        }
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let entries = Self.listEntries(in: dir, listedPath: path, projectRoot: root)
+            await MainActor.run {
+                self?.sendControl(.fileList(path: path, entries: entries), to: connection)
+            }
+        }
+    }
+
+    private func handleReadFile(projectID: String, path: String, on connection: NWConnection) {
+        guard let root = projectRoot(for: projectID),
+              let url = Self.resolve(path, under: root) else {
+            sendControl(.error(message: "unknown project or path"), to: connection)
+            return
+        }
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let reply: CompanionControl
+            if let file = Self.readFilePayload(at: url, path: path) {
+                reply = .file(file)
+            } else {
+                reply = .error(message: "could not read \(path)")
+            }
+            await MainActor.run { self?.sendControl(reply, to: connection) }
+        }
+    }
+
+    private func handleWriteFile(
+        projectID: String, path: String, base64: String, baseMtime: Int,
+        on connection: NWConnection
+    ) {
+        guard let root = projectRoot(for: projectID),
+              let url = Self.resolve(path, under: root) else {
+            sendControl(.error(message: "unknown project or path"), to: connection)
+            return
+        }
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let reply = Self.performWrite(at: url, path: path, base64: base64, baseMtime: baseMtime)
+            await MainActor.run { self?.sendControl(reply, to: connection) }
+        }
+    }
+
+    /// Lands a phone attachment under `<project>/.termio/uploads/` and
+    /// replies with the absolute path, ready to paste into a prompt. The
+    /// timestamp prefix keeps repeated picks of the same photo distinct.
+    private func handleUpload(
+        projectID: String, name: String, base64: String, on connection: NWConnection
+    ) {
+        guard let root = projectRoot(for: projectID) else {
+            sendControl(.error(message: "unknown project"), to: connection)
+            return
+        }
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let reply: CompanionControl
+            if let data = Data(base64Encoded: base64), !data.isEmpty {
+                let safeName = (name as NSString).lastPathComponent
+                    .replacingOccurrences(of: " ", with: "-")
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyyMMdd-HHmmss"
+                let dir = URL(fileURLWithPath: root)
+                    .appendingPathComponent(".termio/uploads", isDirectory: true)
+                let url = dir.appendingPathComponent(
+                    "\(formatter.string(from: Date()))-\(safeName)"
+                )
+                do {
+                    try FileManager.default.createDirectory(
+                        at: dir, withIntermediateDirectories: true
+                    )
+                    try data.write(to: url, options: .atomic)
+                    reply = .uploaded(path: url.path)
+                } catch {
+                    reply = .error(message: "upload failed: \(error.localizedDescription)")
+                }
+            } else {
+                reply = .error(message: "bad upload payload")
+            }
+            await MainActor.run { self?.sendControl(reply, to: connection) }
+        }
+    }
+
+    /// Writes edited bytes back — to existing regular files only (editing,
+    /// never creating), atomically, and only if the file hasn't moved on
+    /// since the client read it. The agent may write the same file mid-edit;
+    /// the mtime check turns that race into an explicit conflict instead of
+    /// a silent clobber.
+    nonisolated private static func performWrite(
+        at url: URL, path: String, base64: String, baseMtime: Int
+    ) -> CompanionControl {
+        guard let data = Data(base64Encoded: base64) else {
+            return .error(message: "bad write payload for \(path)")
+        }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
+              !isDir.boolValue else {
+            return .error(message: "no such file — \(path)")
+        }
+        if baseMtime != 0, mtimeMillis(url) != baseMtime {
+            return .error(message: "conflict: \(path) changed on the Mac")
+        }
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            return .error(message: "write failed: \(error.localizedDescription)")
+        }
+        return .written(path: path, mtime: mtimeMillis(url))
+    }
+
+    nonisolated private static func mtimeMillis(_ url: URL) -> Int {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let date = attributes?[.modificationDate] as? Date
+        return Int((date?.timeIntervalSince1970 ?? 0) * 1000)
+    }
+
+    /// Resolves a relative wire path against a project root, refusing anything
+    /// that escapes it (absolute paths, `..`, symlinks out of the tree). Both
+    /// sides are realpath'd — project roots often sit behind `/private`.
+    nonisolated private static func resolve(_ relative: String, under root: String) -> URL? {
+        guard !relative.hasPrefix("/") else { return nil }
+        let rootReal = URL(fileURLWithPath: root).standardizedFileURL
+            .resolvingSymlinksInPath().path
+        let candidate = URL(fileURLWithPath: rootReal)
+            .appendingPathComponent(relative).standardizedFileURL
+            .resolvingSymlinksInPath().path
+        guard candidate == rootReal || candidate.hasPrefix(rootReal + "/") else { return nil }
+        return URL(fileURLWithPath: candidate)
+    }
+
+    /// One directory's entries: directories first, then names; `.git` hidden;
+    /// `changed` marks files the working diff touches (and the directories
+    /// containing them), so the phone's tree shows the same dots the desktop's.
+    nonisolated private static func listEntries(in dir: URL, listedPath: String, projectRoot: String) -> [WireFileEntry] {
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.isDirectoryKey]
+        )) ?? []
+        let changedPaths = gitChangedPaths(root: projectRoot)
+        return contents
+            .compactMap { url -> WireFileEntry? in
+                let name = url.lastPathComponent
+                guard name != ".git" else { return nil }
+                let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+                let relative = listedPath.isEmpty ? name : "\(listedPath)/\(name)"
+                let changed = isDir
+                    ? changedPaths.contains { $0.hasPrefix(relative + "/") }
+                    : changedPaths.contains(relative)
+                return WireFileEntry(name: name, isDir: isDir, changed: changed)
+            }
+            .sorted {
+                if $0.isDir != $1.isDir { return $0.isDir }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+    }
+
+    /// Repo-relative paths of files the working tree touches. `--no-renames`
+    /// keeps every record a plain `XY path`, so parsing stays trivial.
+    nonisolated private static func gitChangedPaths(root: String) -> Set<String> {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["status", "--porcelain", "--no-renames", "-z", "--untracked-files=all"]
+        process.currentDirectoryURL = URL(fileURLWithPath: root)
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        guard (try? process.run()) != nil else { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let raw = String(data: data, encoding: .utf8) else { return [] }
+        return Set(raw.split(separator: "\0").compactMap { record in
+            record.count > 3 ? String(record.dropFirst(3)) : nil
+        })
+    }
+
+    nonisolated private static let maxFileBytes = 1 << 20 // 1 MB — plenty for "peek at a source file"
+
+    nonisolated private static func readFilePayload(at url: URL, path: String) -> WireFile? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        guard var data = try? handle.read(upToCount: maxFileBytes) ?? Data() else { return nil }
+        let size = max(attributes?[.size] as? Int ?? 0, data.count)
+        let truncated = size > data.count
+        // NUL in the head or undecodable UTF-8 → treat as binary (Quick Look).
+        var binary = data.prefix(8192).contains(0)
+        if !binary, truncated {
+            // A cap cut can split a UTF-8 sequence; trim the partial tail
+            // before judging decodability.
+            while let last = data.last, last & 0b1100_0000 == 0b1000_0000 {
+                data.removeLast()
+            }
+        }
+        if !binary, String(data: data, encoding: .utf8) == nil {
+            binary = true
+        }
+        return WireFile(
+            path: path,
+            base64: data.base64EncodedString(),
+            size: size,
+            binary: binary,
+            truncated: truncated,
+            mtime: mtimeMillis(url)
+        )
     }
 
     private func sendControl(_ control: CompanionControl, to connection: NWConnection) {
@@ -215,11 +492,22 @@ private final class PTYBridge: @unchecked Sendable {
     private let connection: NWConnection
     private let queue = DispatchQueue(label: "termio.companion.bridge")
     private var sinkToken: UUID?
+    private var resizeToken: UUID?
     private let lock = NSLock()
     private var pendingBytes = 0
     private var behind = false
+    private var clientCols = 0
+    private var clientRows = 0
+    /// The PTY is currently sized for some other device's grid, so this
+    /// client's screen holds wrong-width layout that the next repaint must
+    /// not draw over.
+    private var ptyIsForeignSized = false
+    private var repaintRequested = false
     private static let highWater = 1 << 20   // start dropping above 1 MB in flight
     private static let lowWater = 128 << 10  // recovered once under 128 KB
+    /// Clears glyphs and scrollback but not modes — alt-screen and mouse
+    /// reporting survive, where a full RIS would knock the TUI out of them.
+    private static let wipe = Data("\u{1B}[2J\u{1B}[3J\u{1B}[H".utf8)
 
     init(pty: PTYProcess, connection: NWConnection) {
         self.pty = pty
@@ -230,14 +518,57 @@ private final class PTYBridge: @unchecked Sendable {
         sinkToken = pty.addSink(on: queue, replayingBuffer: true) { [weak self] data in
             self?.send(data)
         }
-        // The replayed buffer ends wherever the last write happened; a spurious
-        // SIGWINCH makes TUI apps repaint so the phone shows the live screen.
-        pty.jiggleResize()
+        // The replay was laid out for whatever grid the PTY had when those
+        // bytes were written; on a phone-sized grid its cursor motions land
+        // wrong and the stale frames would survive as ghosts above the live
+        // one. Render it anyway (it carries mode switches like alt-screen),
+        // then wipe the glyphs — 2J/3J/home rather than a full RIS, so those
+        // modes survive. The repaint comes from the client's resize claim,
+        // which follows the attach on the same socket. The bridge queue is
+        // serial, so this lands after the replay and before that repaint.
+        queue.async { [weak self] in
+            self?.send(Self.wipe)
+        }
+        // Any winsize change this client didn't ask for (the Mac typing and
+        // reclaiming the size) makes the repaint that follows land wrong on
+        // this grid — wipe first so it can't draw over the current frame,
+        // and once more when the size comes back home.
+        resizeToken = pty.addResizeObserver { [weak self] cols, rows in
+            guard let self else { return }
+            lock.lock()
+            let foreign = cols != clientCols || rows != clientRows
+            let needsWipe = foreign || ptyIsForeignSized
+            ptyIsForeignSized = foreign
+            lock.unlock()
+            if needsWipe {
+                queue.async { self.send(Self.wipe) }
+            }
+        }
+    }
+
+    /// A resize control from this client: record its grid and claim the size
+    /// for it. When the winsize didn't actually change there is no SIGWINCH,
+    /// so the first claim after attach jiggles instead — the reconnect-at-
+    /// the-same-size case, where the screen was just wiped and would
+    /// otherwise stay blank until the next output.
+    func applyClientResize(cols: Int, rows: Int) {
+        lock.lock()
+        clientCols = cols
+        clientRows = rows
+        let firstClaim = !repaintRequested
+        repaintRequested = true
+        lock.unlock()
+        let changed = pty.resizeFromCompanion(cols: cols, rows: rows)
+        if firstClaim, !changed {
+            pty.jiggleResize()
+        }
     }
 
     func stop() {
         if let token = sinkToken { pty.removeSink(token) }
         sinkToken = nil
+        if let token = resizeToken { pty.removeResizeObserver(token) }
+        resizeToken = nil
     }
 
     private func send(_ data: Data) {
@@ -261,9 +592,71 @@ private final class PTYBridge: @unchecked Sendable {
                 let recovered = behind && pendingBytes < Self.lowWater
                 if recovered { behind = false }
                 lock.unlock()
-                if recovered { pty.jiggleResize() }
+                if recovered {
+                    // The dropped frames tore escape sequences mid-stream;
+                    // clean the slate so remnants can't survive the forced
+                    // repaint as ghosts.
+                    queue.async { [weak self] in self?.send(Self.wipe) }
+                    pty.jiggleResize()
+                }
             }
         )
+    }
+}
+
+// MARK: - Store → PTY attach
+
+extension TermioStore {
+    /// The PTY backing a session for a phone attach. If the session was never
+    /// shown on the Mac (surfaces are made lazily on first render), create it
+    /// now — that spawns the agent with its recorded resume arguments, so the
+    /// phone wakes the same conversation instead of being told "no terminal".
+    /// `wireID` is a full session UUID or the CLI's 8-char prefix.
+    func companionPTY(for wireID: String) -> PTYProcess? {
+        guard let (project, session) = findCompanionSession(wireID) else { return nil }
+        if let pty = ptyProcesses[session.id] { return pty }
+        _ = surface(for: session, in: project)
+        return ptyProcesses[session.id]
+    }
+
+    /// Create a session in a project for a phone `start` request — the same
+    /// `addSession` the sidebar buttons and the CLI use. Returns the new
+    /// session's wire id, nil if the project is unknown.
+    func companionStartSession(projectID wireID: String, agent wireAgent: String) -> String? {
+        let prefix = wireID.lowercased()
+        guard !prefix.isEmpty,
+              let project = projects.first(where: {
+                  $0.id.uuidString.lowercased().hasPrefix(prefix)
+              })
+        else { return nil }
+        let preset: AgentPreset = switch wireAgent {
+        case "claude": .claudeCode
+        case "codex": .codex
+        case "opencode": .opencode
+        default: .terminal
+        }
+        addSession(to: project.id, agent: preset)
+        return selectedSessionID?.uuidString
+    }
+
+    /// Close a session for a phone `stop` request — the same `closeSession`
+    /// the sidebar and CLI use. Returns false if the id matches nothing.
+    func companionStopSession(sessionID wireID: String) -> Bool {
+        guard let (_, session) = findCompanionSession(wireID) else { return false }
+        closeSession(session.id)
+        return true
+    }
+
+    private func findCompanionSession(_ wireID: String) -> (Project, Session)? {
+        let prefix = wireID.lowercased()
+        guard !prefix.isEmpty else { return nil }
+        for project in projects {
+            for session in project.sessions
+            where session.id.uuidString.lowercased().hasPrefix(prefix) {
+                return (project, session)
+            }
+        }
+        return nil
     }
 }
 
@@ -278,6 +671,7 @@ extension TermioStore {
                 id: project.id.uuidString,
                 name: project.name,
                 path: project.path,
+                branch: branchModel.branch(for: project.path) ?? project.branch,
                 sessions: project.sessions.map { session in
                     RosterSession(
                         id: session.id.uuidString,
