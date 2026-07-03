@@ -102,6 +102,23 @@ final class TermioMobileUITests: XCTestCase {
         add(shot)
     }
 
+    // MARK: - Inspector drawer (file tree)
+
+    func testInspectorFileTreeShowsLanguageIcons() {
+        let app = launch("terminal")
+        XCTAssertTrue(app.staticTexts["Prompt"].waitForExistence(timeout: 8))
+        // A leftward pan on the surface pulls the inspector drawer out.
+        app.swipeLeft()
+        // The mock tree's rows come up; files draw their language marks.
+        XCTAssertTrue(app.staticTexts["App.swift"].waitForExistence(timeout: 4))
+        XCTAssertTrue(app.staticTexts["README.md"].exists)
+        XCTAssertTrue(app.staticTexts["Package.swift"].exists)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "inspector-file-tree"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
     // MARK: - File viewer
 
     func testFileViewerShowsHighlightedSource() {

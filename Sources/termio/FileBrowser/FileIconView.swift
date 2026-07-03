@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import TermioShared
 
 /// The icon shown beside a file: its real language/tool logo when termio bundles one
 /// (a Devicon SVG, keyed by extension or exact name via `LangIconCatalog`), otherwise
@@ -18,7 +19,7 @@ struct FileIconView: View {
     var symbolSize: CGFloat = 13
 
     var body: some View {
-        if let resource = LangIconCatalog.resource(for: url),
+        if let resource = LangIconCatalog.resource(forFileName: url.lastPathComponent),
            let image = LangIconLoader.shared.image(named: resource.name) {
             if resource.monochrome {
                 Image(nsImage: image)
@@ -40,18 +41,6 @@ struct FileIconView: View {
                 .foregroundStyle(icon.color)
                 .frame(width: size)
         }
-    }
-}
-
-extension LangIconCatalog {
-    /// The bundled logo for a file, by exact name first (so `vite.config.ts` beats a
-    /// bare `ts`) then by extension; `nil` when none is bundled and the caller should
-    /// fall back to an SF Symbol.
-    static func resource(for url: URL) -> (name: String, monochrome: Bool)? {
-        let name = byName[url.lastPathComponent.lowercased()]
-            ?? byExtension[url.pathExtension.lowercased()]
-        guard let name else { return nil }
-        return (name, monochrome.contains(name))
     }
 }
 

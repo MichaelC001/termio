@@ -218,11 +218,16 @@ extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
             if isDir {
                 config.image = UIImage(systemName: expanded ? "chevron.down" : "chevron.right")
                 config.imageProperties.tintColor = .secondaryLabel
+                config.imageProperties.maximumSize = CGSize(width: 14, height: 14)
             } else {
-                config.image = UIImage(systemName: "doc")
-                config.imageProperties.tintColor = .systemGray2
+                let icon = FileIcons.icon(forFileName: name)
+                config.image = icon.image
+                config.imageProperties.tintColor = icon.tint
+                config.imageProperties.maximumSize = CGSize(width: 16, height: 16)
             }
-            config.imageProperties.maximumSize = CGSize(width: 14, height: 14)
+            // Icons vary in width (chevron vs logo vs symbol); a fixed layout
+            // box keeps every label at the same leading edge per depth.
+            config.imageProperties.reservedLayoutSize = CGSize(width: 16, height: 16)
             config.directionalLayoutMargins.leading = CGFloat(depth) * 18 + 12
             cell.contentConfiguration = config
             cell.accessoryView = changed ? Self.changedDot() : nil

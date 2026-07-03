@@ -7,10 +7,10 @@ import SwiftUI
 /// draw a bundled Devicon instead (see `FileIconView`); this fallback shows only when none is bundled,
 /// e.g. `Package.resolved`. Extended with a few extensions CodeEdit doesn't list. Shared so both the
 /// editor header and the file tree show the same icon.
-enum FileTypeIcon {
+public enum FileTypeIcon {
     /// The SF Symbol + tint for a file, keyed by its lowercased extension (special names like
     /// `Dockerfile`/`Makefile`/`LICENSE` are matched too). Falls back to a plain doc in steel.
-    static func icon(for url: URL) -> (symbol: String, color: Color) {
+    public static func icon(for url: URL) -> (symbol: String, color: Color) {
         // Whole-name matches first, for files that carry meaning without an extension.
         switch url.lastPathComponent.lowercased() {
         case "license", "license.md", "license.txt": return ("key.fill", amber)
