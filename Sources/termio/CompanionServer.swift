@@ -25,8 +25,12 @@ final class CompanionServer {
     private var pollTimer: Timer?
     private var ticks = 0
 
+    /// The one port everything agrees on: the app serves here, dev-run.sh
+    /// points the phone here, and the Settings ▸ Mobile QR encodes it.
+    static let defaultPort: UInt16 = 8787
+
     init(
-        port: UInt16 = 8787,
+        port: UInt16 = CompanionServer.defaultPort,
         rosterProvider: @escaping () -> CompanionRoster,
         ptyForSession: @escaping (String) -> PTYProcess?,
         startSession: @escaping (String, String) -> String?,

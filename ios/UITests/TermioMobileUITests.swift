@@ -174,6 +174,26 @@ final class TermioMobileUITests: XCTestCase {
         add(shot)
     }
 
+    // MARK: - Mac pairing (QR)
+
+    /// Pairing lives in Settings ▸ Connectivity: its Scan QR Code row brings
+    /// up the scanner sheet (camera-less simulators show its typed-address
+    /// fallback instead of a preview — presentation is what's under test).
+    func testScanEntryPresentsScanner() throws {
+        let app = launch("list")
+        XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 8))
+        app.buttons["Settings"].tap()
+        let connectivity = app.staticTexts["Connectivity"]
+        XCTAssertTrue(connectivity.waitForExistence(timeout: 4))
+        connectivity.tap()
+        let scan = app.staticTexts["Scan QR Code"]
+        XCTAssertTrue(scan.waitForExistence(timeout: 4))
+        scan.tap()
+        XCTAssertTrue(app.navigationBars["Scan QR Code"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(app.navigationBars["Connectivity"].waitForExistence(timeout: 3))
+    }
+
     // MARK: - File viewer
 
     func testFileViewerShowsHighlightedSource() {

@@ -9,6 +9,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case terminal
     case agents
     case usage
+    case mobile
 
     var id: String { rawValue }
 
@@ -19,6 +20,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .terminal: return "Terminal"
         case .agents: return "Agents"
         case .usage: return "Usage"
+        case .mobile: return "Mobile"
         }
     }
 
@@ -29,6 +31,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .terminal: return "terminal"
         case .agents: return "sparkles"
         case .usage: return "gauge.medium"
+        case .mobile: return "iphone"
         }
     }
 }

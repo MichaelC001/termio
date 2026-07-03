@@ -35,6 +35,7 @@ struct SettingsView: View {
                 case .terminal: TerminalSettingsTab(settings: settings)
                 case .agents: AgentSettingsTab(settings: settings)
                 case .usage: UsageSettingsTab(settings: settings, usage: usage)
+                case .mobile: MobileSettingsTab()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

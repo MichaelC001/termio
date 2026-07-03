@@ -258,7 +258,7 @@ final class ConnectivitySettingsViewController: UITableViewController {
     }
 
     private enum MacRow: Int, CaseIterable {
-        case status, address
+        case status, address, scan
     }
 
     private var stateObserver: NSObjectProtocol?
@@ -331,6 +331,10 @@ final class ConnectivitySettingsViewController: UITableViewController {
             cell.textLabel?.text = "Address"
             cell.detailTextLabel?.text = CompanionLink.savedURL?.absoluteString ?? "Not Set"
             cell.accessoryType = .disclosureIndicator
+        case (.mac, .scan):
+            cell.textLabel?.text = "Scan QR Code"
+            cell.imageView?.image = UIImage(systemName: "qrcode.viewfinder")
+            cell.imageView?.tintColor = .label
         default:
             cell.textLabel?.text = "Forget This Mac"
             cell.textLabel?.textColor = .systemRed
@@ -343,6 +347,8 @@ final class ConnectivitySettingsViewController: UITableViewController {
         switch (Section(rawValue: indexPath.section), MacRow(rawValue: indexPath.row)) {
         case (.mac, .address):
             presentEditAddress()
+        case (.mac, .scan):
+            presentScanner()
         case (.forget, _):
             forgetMac()
         default:
@@ -374,6 +380,19 @@ final class ConnectivitySettingsViewController: UITableViewController {
         })
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         present(alert, animated: true)
+    }
+
+    /// Camera pairing — same save/notify path as typing the address, minus
+    /// the typing. The QR lives on the Mac's Settings ▸ Mobile tab.
+    private func presentScanner() {
+        let scanner = QRScannerViewController()
+        scanner.onCode = { [weak self] code in
+            guard let url = CompanionLink.normalize(code) else { return }
+            UserDefaults.standard.set(url.absoluteString, forKey: CompanionLink.defaultsKey)
+            NotificationCenter.default.post(name: CompanionLink.pairingDidChange, object: nil)
+            self?.tableView.reloadData()
+        }
+        present(UINavigationController(rootViewController: scanner), animated: true)
     }
 
     private func forgetMac() {
