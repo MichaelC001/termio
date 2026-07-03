@@ -1,8 +1,9 @@
 ---
 title: 会话历史 · 搜索 · 恢复（Session History / Search / Resume）
-status: backlog
+status: approved
 type: design
-updated: 2026-06-28
+created: 2026-06-28
+updated: 2026-07-03
 ---
 
 # 设计：会话历史 · 搜索 · 恢复
