@@ -7,11 +7,12 @@ import UIKit
 /// terminal look; Connectivity carries the Mac pairing and its live status.
 final class SettingsViewController: UITableViewController {
     private enum Row: Int, CaseIterable {
-        case appearance, connectivity
+        case appearance, terminalKeyboard, connectivity
 
         var title: String {
             switch self {
             case .appearance: "Appearance"
+            case .terminalKeyboard: "Terminal Keyboard"
             case .connectivity: "Connectivity"
             }
         }
@@ -19,6 +20,7 @@ final class SettingsViewController: UITableViewController {
         var icon: String {
             switch self {
             case .appearance: "paintbrush"
+            case .terminalKeyboard: "keyboard"
             case .connectivity: "antenna.radiowaves.left.and.right"
             }
         }
@@ -26,6 +28,7 @@ final class SettingsViewController: UITableViewController {
         func makePage() -> UIViewController {
             switch self {
             case .appearance: AppearanceSettingsViewController()
+            case .terminalKeyboard: TerminalKeyboardSettingsViewController()
             case .connectivity: ConnectivitySettingsViewController()
             }
         }
@@ -169,6 +172,68 @@ final class AppearanceSettingsViewController: UITableViewController {
 
     private static func pointsLabel(_ size: Double) -> String {
         "\(Int(size)) pt"
+    }
+}
+
+// MARK: - Terminal keyboard
+
+/// Which control keys the terminal keyboard carries — a toggle per catalog
+/// entry (curated Claude Code shortcuts), not a free-form binding editor.
+/// The keyboard itself observes `MobileSettings.didChange` and rebuilds, so
+/// a flip here is live on its next appearance.
+final class TerminalKeyboardSettingsViewController: UITableViewController {
+    private let settings = MobileSettings.shared
+
+    init() {
+        super.init(style: .insetGrouped)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Terminal Keyboard"
+    }
+
+    // MARK: - Table
+
+    override func numberOfSections(in tableView: UITableView) -> Int { 1 }
+
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        TerminalKeyCatalog.all.count
+    }
+
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        "Control Keys"
+    }
+
+    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        "Keys on the terminal keyboard — the ⌨︎ in the composer. "
+            + "Esc, 1–4, the arrows, and return are always there; "
+            + "hold esc for esc-esc (Claude Code's rewind menu)."
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
+        let key = TerminalKeyCatalog.all[indexPath.row]
+        cell.selectionStyle = .none
+        cell.textLabel?.text = key.title
+        cell.textLabel?.font = .monospacedSystemFont(ofSize: 16, weight: .regular)
+        cell.detailTextLabel?.text = key.detail
+        cell.detailTextLabel?.textColor = .secondaryLabel
+
+        let toggle = UISwitch()
+        toggle.isOn = settings.terminalKeyIDs.contains(key.id)
+        toggle.addAction(UIAction { [weak self, weak toggle] _ in
+            guard let self, let toggle else { return }
+            var enabled = Set(settings.terminalKeyIDs)
+            if toggle.isOn { enabled.insert(key.id) } else { enabled.remove(key.id) }
+            // Stored in catalog order so the keyboard rows never reshuffle.
+            settings.terminalKeyIDs = TerminalKeyCatalog.all.map(\.id).filter(enabled.contains)
+        }, for: .valueChanged)
+        cell.accessoryView = toggle
+        return cell
     }
 }
 

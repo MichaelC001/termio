@@ -45,6 +45,7 @@ final class MobileSettings {
         static let lightThemeName = "appearance.lightThemeName"
         static let darkThemeName = "appearance.darkThemeName"
         static let fontSize = "appearance.fontSize"
+        static let terminalKeys = "terminalKeyboard.keys"
     }
 
     private let defaults = UserDefaults.standard
@@ -77,12 +78,23 @@ final class MobileSettings {
         }
     }
 
+    /// Which catalog keys join the terminal keyboard's control zone, in
+    /// catalog order (esc, numbers, arrows, and return are fixed core, not
+    /// stored here).
+    var terminalKeyIDs: [String] {
+        didSet {
+            defaults.set(terminalKeyIDs, forKey: Key.terminalKeys)
+            notify()
+        }
+    }
+
     private init() {
         defaults.register(defaults: [
             Key.appearanceMode: AppearanceMode.system.rawValue,
             Key.lightThemeName: Self.defaultLightThemeName,
             Key.darkThemeName: Self.defaultDarkThemeName,
             Key.fontSize: Self.defaultFontSize,
+            Key.terminalKeys: TerminalKeyCatalog.defaultIDs,
         ])
         appearanceMode = AppearanceMode(
             rawValue: defaults.string(forKey: Key.appearanceMode) ?? ""
@@ -90,6 +102,8 @@ final class MobileSettings {
         lightThemeName = defaults.string(forKey: Key.lightThemeName) ?? Self.defaultLightThemeName
         darkThemeName = defaults.string(forKey: Key.darkThemeName) ?? Self.defaultDarkThemeName
         fontSize = defaults.double(forKey: Key.fontSize)
+        terminalKeyIDs = defaults.stringArray(forKey: Key.terminalKeys)
+            ?? TerminalKeyCatalog.defaultIDs
     }
 
     private func notify() {
