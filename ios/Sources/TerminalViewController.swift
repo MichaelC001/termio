@@ -44,7 +44,6 @@ final class TerminalViewController: UIViewController {
     private var surfaceConfigured = false
     private var backendStarted = false
     private var settingsObserver: NSObjectProtocol?
-    private var statusObserver: NSObjectProtocol?
     private var uploadClient: CompanionClient?
     private var restylePump: Timer?
     private lazy var controller = TerminalController(
@@ -106,9 +105,6 @@ final class TerminalViewController: UIViewController {
         restylePump?.invalidate()
         if let settingsObserver {
             NotificationCenter.default.removeObserver(settingsObserver)
-        }
-        if let statusObserver {
-            NotificationCenter.default.removeObserver(statusObserver)
         }
     }
 
@@ -304,7 +300,6 @@ final class TerminalViewController: UIViewController {
         view.addSubview(terminalView)
 
         composerBar.onSend = { [weak self] text in self?.sendComposedPrompt(text) }
-        composerBar.onChip = { [weak self] chip in self?.terminalView.send(chip.payload) }
         composerBar.onTerminalKey = { [weak self] payload in self?.terminalView.send(payload) }
         composerBar.onAttach = { [weak self] in self?.presentAttachOptions() }
         composerBar.slashCommands = Self.slashCatalog(for: session.agent)
@@ -313,18 +308,6 @@ final class TerminalViewController: UIViewController {
         }
         composerBar.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(composerBar)
-        applyChips(for: session.status)
-        statusObserver = NotificationCenter.default.addObserver(
-            forName: .sessionStatusesDidChange, object: nil, queue: .main
-        ) { [weak self] note in
-            MainActor.assumeIsolated {
-                guard let self, let rosterID = self.session.rosterID,
-                      let statuses = note.userInfo?["statuses"] as? [String: SessionStatus],
-                      let status = statuses[rosterID]
-                else { return }
-                self.applyChips(for: status)
-            }
-        }
 
         NSLayoutConstraint.activate([
             terminalView.topAnchor.constraint(equalTo: headerBar.bottomAnchor),
@@ -348,27 +331,6 @@ final class TerminalViewController: UIViewController {
             payload = "\u{1B}[200~" + payload + "\u{1B}[201~"
         }
         terminalView.send(Data((payload + "\r").utf8))
-    }
-
-    /// The chip row exists only while the agent is blocked on a prompt: the
-    /// answer keys, big (tap injects the number the agent's own menu is
-    /// asking for — MobileCLI's trick; holding ↑/↓ repeats for long menus).
-    /// Slash commands moved into the type-"/" panel, so idle sessions get a
-    /// clean composer.
-    private func applyChips(for status: SessionStatus) {
-        guard session.agent != .terminal, status == .needsAttention else {
-            composerBar.setChips([])
-            return
-        }
-        composerBar.setChips([
-            ComposerChip(title: "1", payload: Data("1".utf8)),
-            ComposerChip(title: "2", payload: Data("2".utf8)),
-            ComposerChip(title: "3", payload: Data("3".utf8)),
-            ComposerChip(title: "↑", payload: Data("\u{1B}[A".utf8), repeats: true),
-            ComposerChip(title: "↓", payload: Data("\u{1B}[B".utf8), repeats: true),
-            ComposerChip(title: "↵", payload: Data("\r".utf8)),
-            ComposerChip(title: "Esc", payload: Data([0x1B])),
-        ])
     }
 
     // MARK: - Attachments
@@ -741,8 +703,8 @@ extension TerminalViewController: UIGestureRecognizerDelegate {
         _ gesture: UIGestureRecognizer, shouldReceive touch: UITouch
     ) -> Bool {
         guard gesture.view === view else { return true }
-        // Horizontal drags inside controls, scrollers (the chip row, the
-        // composer's text view), or the drawer itself mean something else.
+        // Horizontal drags inside controls, scrollers (the composer's text
+        // view), or the drawer itself mean something else.
         var candidate = touch.view
         while let current = candidate, current !== view {
             if current is UIControl || current is UIScrollView { return false }
@@ -861,8 +823,8 @@ private final class DisplayTerminalView: UITerminalView {
     }
 
     /// Raw bytes straight to the PTY — every termio backend is in-memory.
-    /// Prompts and chips are whole writes, the same delivery a keyboard's
-    /// keys would use.
+    /// Prompts and terminal keys are whole writes, the same delivery a
+    /// keyboard's keys would use.
     func send(_ data: Data) {
         guard case let .inMemory(session) = configuration.backend else { return }
         session.sendInput(data)

@@ -1,17 +1,5 @@
 import UIKit
 
-/// One tappable chip above the composer — since the slash commands moved
-/// into the type-"/" suggestion panel this row only carries answer keys
-/// while the agent is blocked on a prompt. Styled like keyboard keys, not
-/// accent pills: the row only existing during a prompt is already the
-/// urgency signal, and the system keyboard sits right below.
-struct ComposerChip {
-    let title: String
-    let payload: Data
-    /// Holding the chip repeats its payload (arrow keys walking a long menu).
-    var repeats = false
-}
-
 /// One entry of the "/" autocomplete catalog (name without the slash).
 struct SlashCommand {
     let name: String
@@ -30,7 +18,6 @@ struct SlashCommand {
 /// where the query dies on the first whitespace.
 final class ComposerBar: UIView {
     var onSend: ((String) -> Void)?
-    var onChip: ((ComposerChip) -> Void)?
     var onAttach: (() -> Void)?
     /// Raw bytes a hardware keyboard aimed at the TUI (arrows, Esc, Return
     /// while the draft is empty) — the owner writes them to the PTY.
@@ -53,13 +40,18 @@ final class ComposerBar: UIView {
     }()
     private let attachButton = UIButton(type: .system)
     private let attachSpinner = UIActivityIndicatorView(style: .medium)
-    private let chipsScroll = UIScrollView()
-    private let chipsStack = UIStackView()
-    private let suggestionsPanel = UIVisualEffectView(
-        effect: UIBlurEffect(style: .systemUltraThinMaterial)
-    )
+    private let suggestionsPanel = UIVisualEffectView(effect: ComposerBar.fieldEffect())
     private let suggestionsStack = UIStackView()
-    private let pill = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
+    private let pill = UIVisualEffectView(effect: ComposerBar.fieldEffect())
+
+    /// iMessage's compose field is Liquid Glass, not a frosted material —
+    /// the ultra-thin blur reads as a flat grey film over the keyboard.
+    private static func fieldEffect() -> UIVisualEffect {
+        if #available(iOS 26, *) {
+            return UIGlassEffect(style: .regular)
+        }
+        return UIBlurEffect(style: .systemUltraThinMaterial)
+    }
     private var suggestionsHeight: NSLayoutConstraint!
     private var textHeight: NSLayoutConstraint!
     private var pillLeadingWithAttach: NSLayoutConstraint!
@@ -86,13 +78,6 @@ final class ComposerBar: UIView {
 
         configureSuggestionsPanel()
 
-        chipsStack.axis = .horizontal
-        chipsStack.spacing = 6
-        chipsStack.translatesAutoresizingMaskIntoConstraints = false
-        chipsScroll.showsHorizontalScrollIndicator = false
-        chipsScroll.addSubview(chipsStack)
-        chipsScroll.isHidden = true
-
         // iMessage's field: a slim hairline-bordered capsule, not a chunky
         // blur slab. The border tracks appearance changes below.
         let pillWrapper = UIView()
@@ -117,7 +102,7 @@ final class ComposerBar: UIView {
             suggestionsPanel.bottomAnchor.constraint(equalTo: suggestionsWrapper.bottomAnchor),
         ])
 
-        let column = UIStackView(arrangedSubviews: [suggestionsWrapper, chipsScroll, pillWrapper])
+        let column = UIStackView(arrangedSubviews: [suggestionsWrapper, pillWrapper])
         column.axis = .vertical
         column.spacing = 8
         column.translatesAutoresizingMaskIntoConstraints = false
@@ -210,12 +195,6 @@ final class ComposerBar: UIView {
             column.trailingAnchor.constraint(equalTo: trailingAnchor),
             column.topAnchor.constraint(equalTo: topAnchor, constant: 2),
             column.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
-            chipsScroll.heightAnchor.constraint(equalToConstant: 32),
-            chipsStack.leadingAnchor.constraint(equalTo: chipsScroll.contentLayoutGuide.leadingAnchor, constant: 10),
-            chipsStack.trailingAnchor.constraint(equalTo: chipsScroll.contentLayoutGuide.trailingAnchor, constant: -10),
-            chipsStack.topAnchor.constraint(equalTo: chipsScroll.contentLayoutGuide.topAnchor),
-            chipsStack.bottomAnchor.constraint(equalTo: chipsScroll.contentLayoutGuide.bottomAnchor),
-            chipsStack.heightAnchor.constraint(equalTo: chipsScroll.frameLayoutGuide.heightAnchor),
             attachButton.leadingAnchor.constraint(equalTo: pillWrapper.leadingAnchor, constant: 8),
             attachButton.centerYAnchor.constraint(equalTo: pill.bottomAnchor, constant: controlCenter),
             attachButton.widthAnchor.constraint(equalToConstant: 34),
@@ -332,46 +311,6 @@ final class ComposerBar: UIView {
         }
         refreshControls()
         refreshSuggestions()
-    }
-
-    /// Replaces the chip row. Empty hides the row entirely.
-    func setChips(_ chips: [ComposerChip]) {
-        chipsStack.arrangedSubviews.forEach { view in
-            chipsStack.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-        for chip in chips {
-            // Floating over the terminal: glass capsules on iOS 26 (iMessage's
-            // floating-control look). No accent tint — the row only existing
-            // while the agent is blocked is the signal, and neutral keys match
-            // the keyboard right below.
-            var config: UIButton.Configuration = if #available(iOS 26.0, *) {
-                .glass()
-            } else {
-                .gray()
-            }
-            config.title = chip.title
-            config.cornerStyle = .capsule
-            config.contentInsets = .init(top: 6, leading: 12, bottom: 6, trailing: 12)
-            config.titleTextAttributesTransformer = .init { attributes in
-                var attributes = attributes
-                attributes.font = UIFont.monospacedSystemFont(ofSize: 14, weight: .regular)
-                return attributes
-            }
-            let button: UIButton
-            if chip.repeats {
-                let repeating = RepeatingKeyButton(configuration: config)
-                repeating.onFire = { [weak self] in self?.onChip?(chip) }
-                button = repeating
-            } else {
-                button = UIButton(configuration: config)
-                button.addAction(UIAction { [weak self] _ in
-                    self?.onChip?(chip)
-                }, for: .touchUpInside)
-            }
-            chipsStack.addArrangedSubview(button)
-        }
-        chipsScroll.isHidden = chips.isEmpty
     }
 
     private func submit() {

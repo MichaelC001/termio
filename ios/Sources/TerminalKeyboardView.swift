@@ -359,7 +359,7 @@ final class TerminalKeyboardView: UIInputView {
 /// pressed-state palette swap (shift flashes light, letters flash dark).
 ///
 /// Styling is opt-in via `keyCapRole` so `RepeatingKeyButton` subclasses can
-/// live elsewhere unstyled — the composer's answer chips keep their own look.
+/// live elsewhere unstyled.
 class KeyCapButton: UIButton {
     enum Role {
         /// Types a character — the white letter-key cap.
@@ -431,8 +431,8 @@ class KeyCapButton: UIButton {
 
 /// A button that behaves like a held key: a tap fires once, holding fires and
 /// then repeats — long agent menus would otherwise cost one tap per row.
-/// Shared by the composer's answer chips and the terminal keyboard's arrows;
-/// keycap styling only kicks in when a `keyCapRole` is set.
+/// Used by the terminal keyboard's arrows; keycap styling only kicks in when
+/// a `keyCapRole` is set.
 final class RepeatingKeyButton: KeyCapButton {
     var onFire: (() -> Void)?
 
