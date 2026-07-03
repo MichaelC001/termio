@@ -52,7 +52,12 @@ struct GitChangesView: View {
                         isSelected: store.openDiff?.change.path == change.path
                     )
                 }
-                .listStyle(.sidebar)
+                // `.plain`, not `.sidebar`: the sidebar style pads every row with its own
+                // leading margin (on top of our zeroed `listRowInsets`), pushing the rows
+                // out of line with the header above. This list is flat — no disclosure
+                // chevrons to make room for — so plain keeps row text at the same 14pt
+                // leading edge as the header.
+                .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .environment(\.defaultMinListRowHeight, 1)
             }
