@@ -15,7 +15,11 @@ final class RootContainerViewController: UINavigationController {
     let list = SessionListViewController()
     private var recentTerminals: [String: UIViewController] = [:]
     private var recentKeys: [String] = []
-    private let maxRecentTerminals = 3
+    // Each parked terminal is a live libghostty surface (scrollback + render
+    // buffers + a streaming socket). On the phone those add up fast, and
+    // libghostty answers memory exhaustion by replacing the surface with its
+    // own "non-functional" panic screen — so keep the cache small.
+    private let maxRecentTerminals = 2
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -41,6 +45,20 @@ final class RootContainerViewController: UINavigationController {
             self?.open(TerminalViewController(sshConfig: config))
         }
         viewControllers = [list]
+    }
+
+    /// Under memory pressure, shed every parked terminal except the one on
+    /// screen: each is a live libghostty surface, and the alternative is the
+    /// engine hitting its allocator ceiling and painting the "out of memory /
+    /// non-functional" panic. The foreground screen's key stays in `recentKeys`
+    /// so it isn't dropped, and parked screens tear down detached and idle.
+    override func didReceiveMemoryWarning() {
+        super.didReceiveMemoryWarning()
+        let survivor = recentTerminals.first { $0.value === topViewController }?.key
+        for key in recentKeys where key != survivor {
+            recentTerminals.removeValue(forKey: key)
+        }
+        recentKeys = survivor.map { [$0] } ?? []
     }
 
     // MARK: - Content

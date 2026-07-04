@@ -649,6 +649,13 @@ final class TerminalViewController: UIViewController {
             builder.withBackgroundOpacity(0)
             builder.withFontSize(Float(MobileSettings.shared.fontSize))
             builder.withWindowPaddingX(8)
+            // The phone is a viewer, not the scrollback of record — the Mac keeps
+            // the full history. libghostty's default limit is large, and with up
+            // to a few surfaces parked live (RootContainer's keep-alive cache) plus
+            // the attach replay reflowing at this narrow grid, the allocator can tip
+            // over and paint its own "out of memory / non-functional" panic screen.
+            // Cap it low so a session-hopping run stays inside the phone's budget.
+            builder.withCustom("scrollback-limit", "2000000")
         }
     }
 
