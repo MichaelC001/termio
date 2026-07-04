@@ -136,7 +136,7 @@ extension MockSession {
             project: project.name,
             agent: AgentKind(wire: roster.agent),
             status: SessionStatus(wire: roster.status),
-            subtitle: "",
+            subtitle: roster.subtitle ?? "",
             time: "",
             rosterID: roster.id,
             projectRosterID: project.id,

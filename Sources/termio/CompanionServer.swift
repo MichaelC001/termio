@@ -743,11 +743,15 @@ extension TermioStore {
                 path: project.path,
                 branch: branchModel.branch(for: project.path) ?? project.branch,
                 sessions: project.sessions.map { session in
-                    RosterSession(
+                    // The sidebar tooltip's activity line doubles as the
+                    // phone's row preview; empty means "nothing to say".
+                    let activity = statusDescription(for: session.id)
+                    return RosterSession(
                         id: session.id.uuidString,
                         title: displayTitle(for: session),
                         agent: Self.wireAgent(session.agent),
-                        status: Self.wireStatus(status(for: session.id))
+                        status: Self.wireStatus(status(for: session.id)),
+                        subtitle: activity.isEmpty ? nil : activity
                     )
                 }
             )

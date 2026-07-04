@@ -258,12 +258,18 @@ public struct RosterSession: Codable, Sendable, Equatable {
     public let title: String
     public let agent: String   // "claude" | "codex" | "opencode" | "terminal"
     public let status: String  // "idle" | "working" | "done" | "needsAttention"
+    /// One line of live activity — the tool a working turn is in, or what the
+    /// agent is waiting on ("Working — Bash", "Waiting for you"). The phone
+    /// shows it as the row's preview line, Messages-style. Optional so older
+    /// peers that don't send it still decode; nil when there is nothing to say.
+    public let subtitle: String?
 
-    public init(id: String, title: String, agent: String, status: String) {
+    public init(id: String, title: String, agent: String, status: String, subtitle: String? = nil) {
         self.id = id
         self.title = title
         self.agent = agent
         self.status = status
+        self.subtitle = subtitle
     }
 }
 

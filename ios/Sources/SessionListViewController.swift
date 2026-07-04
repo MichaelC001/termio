@@ -5,8 +5,9 @@ import UIKit
 
 /// The root screen, iMessage-inbox style: a large title with sort and compose
 /// buttons riding it, the sessions grouped under small gray project headers,
-/// and the Mac connection pinned to the bottom like ChatGPT's account row. Lives at the root of RootContainerViewController's
-/// navigation stack and owns the companion roster connection.
+/// and a floating settings button bottom-right. Lives at the root of
+/// RootContainerViewController's navigation stack and owns the companion
+/// roster connection; pairing itself lives in Settings ▸ Connectivity.
 final class SessionListViewController: UIViewController {
     /// Open a session row; `companionURL` is non-nil when the row is live.
     var onOpenSession: ((MockSession, URL?) -> Void)?
@@ -33,8 +34,6 @@ final class SessionListViewController: UIViewController {
     private let filterButton = UIButton(type: .system)
     private let composeButton = UIButton(type: .system)
     private let tableView = UITableView(frame: .zero, style: .grouped)
-    private let macLabel = UILabel()
-    private let statusDot = UIView()
     private var pairingObserver: NSObjectProtocol?
 
     override func viewDidLoad() {
@@ -116,10 +115,11 @@ final class SessionListViewController: UIViewController {
             bar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
             bar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             bar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            filterButton.widthAnchor.constraint(equalToConstant: 36),
-            filterButton.heightAnchor.constraint(equalToConstant: 36),
-            composeButton.widthAnchor.constraint(equalToConstant: 36),
-            composeButton.heightAnchor.constraint(equalToConstant: 36),
+            // Telegram's nav-bar glass buttons are 40pt circles.
+            filterButton.widthAnchor.constraint(equalToConstant: 40),
+            filterButton.heightAnchor.constraint(equalToConstant: 40),
+            composeButton.widthAnchor.constraint(equalToConstant: 40),
+            composeButton.heightAnchor.constraint(equalToConstant: 40),
         ])
         return bar
     }
@@ -164,96 +164,38 @@ final class SessionListViewController: UIViewController {
         }
     }
 
-    // MARK: - Bottom bar (the "account" row: Mac connection)
+    // MARK: - Bottom bar (the floating settings button)
 
-    /// Telegram's iOS 26 tab bar: nothing spans the width. A rounded **glass
-    /// pill** floats bottom-left (the Mac device — tap to pair/switch), and a
-    /// **detached circular glass button** floats bottom-right (settings). The
-    /// list scrolls under both, so the footer reads as chrome, not a divider.
+    /// Telegram's iOS 26 tab bar: nothing spans the width. A **detached
+    /// circular glass button** floats bottom-right (settings) and the list
+    /// scrolls under it, so the footer reads as chrome, not a divider. The
+    /// Mac pairing and its live status live in Settings ▸ Connectivity.
     private func configureBottomBar() {
-        let bar = UIView()
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        // Purely a layout guide for the floating pieces — no fill, no hairline.
-        view.addSubview(bar)
-
-        let avatar = UIImageView(image: UIImage(systemName: "desktopcomputer"))
-        avatar.tintColor = .label
-        avatar.contentMode = .center
-        avatar.preferredSymbolConfiguration = .init(pointSize: 15, weight: .semibold)
-
-        macLabel.text = "Connect to Mac"
-        macLabel.font = .preferredFont(forTextStyle: .subheadline)
-        macLabel.textColor = .label
-
-        // Presence dot on the Mac avatar, iMessage-style: green = roster link
-        // up, orange = paired but reconnecting. Hidden until a Mac is paired.
-        statusDot.backgroundColor = .systemOrange
-        statusDot.layer.cornerRadius = 5
-        statusDot.layer.borderWidth = 2
-        statusDot.layer.borderColor = UIColor.systemBackground.cgColor
-        statusDot.isHidden = true
-
-        // The device pill: a capsule of liquid glass holding the avatar + name.
-        let pill = Self.makeGlassView(interactive: true)
-        let pillContent = pill.contentView
-        for subview in [avatar, macLabel, statusDot] {
-            subview.translatesAutoresizingMaskIntoConstraints = false
-            pillContent.addSubview(subview)
-        }
-        pill.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(bottomBarTapped)))
-
-        // The settings puck: a circle of the same glass, detached to the right.
         let gear = UIButton(type: .system)
         gear.setImage(
             UIImage(systemName: "gearshape", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .medium)),
             for: .normal
         )
         gear.tintColor = .label
+        gear.accessibilityLabel = "Settings"
         gear.addAction(UIAction { [weak self] _ in
             self?.presentSettings()
         }, for: .touchUpInside)
         let puck = Self.makeGlassView(interactive: true)
         gear.translatesAutoresizingMaskIntoConstraints = false
         puck.contentView.addSubview(gear)
+        puck.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(puck)
 
-        for piece in [pill, puck] {
-            piece.translatesAutoresizingMaskIntoConstraints = false
-            bar.addSubview(piece)
-        }
-
-        let pillHeight: CGFloat = 44
-        pill.layer.cornerRadius = pillHeight / 2
-        pill.clipsToBounds = true
-        puck.layer.cornerRadius = pillHeight / 2
+        let puckSize: CGFloat = 44
+        puck.layer.cornerRadius = puckSize / 2
         puck.clipsToBounds = true
 
         NSLayoutConstraint.activate([
-            bar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            bar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            bar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
-            bar.heightAnchor.constraint(equalToConstant: pillHeight),
-
-            pill.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 12),
-            pill.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            pill.heightAnchor.constraint(equalToConstant: pillHeight),
-            pill.trailingAnchor.constraint(lessThanOrEqualTo: puck.leadingAnchor, constant: -10),
-
-            avatar.leadingAnchor.constraint(equalTo: pillContent.leadingAnchor, constant: 8),
-            avatar.centerYAnchor.constraint(equalTo: pillContent.centerYAnchor),
-            avatar.widthAnchor.constraint(equalToConstant: 28),
-            avatar.heightAnchor.constraint(equalToConstant: 28),
-            macLabel.leadingAnchor.constraint(equalTo: avatar.trailingAnchor, constant: 8),
-            macLabel.trailingAnchor.constraint(equalTo: pillContent.trailingAnchor, constant: -16),
-            macLabel.centerYAnchor.constraint(equalTo: pillContent.centerYAnchor),
-            statusDot.centerXAnchor.constraint(equalTo: avatar.trailingAnchor, constant: -1),
-            statusDot.centerYAnchor.constraint(equalTo: avatar.bottomAnchor, constant: -1),
-            statusDot.widthAnchor.constraint(equalToConstant: 10),
-            statusDot.heightAnchor.constraint(equalToConstant: 10),
-
-            puck.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -12),
-            puck.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            puck.widthAnchor.constraint(equalToConstant: pillHeight),
-            puck.heightAnchor.constraint(equalToConstant: pillHeight),
+            puck.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            puck.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
+            puck.widthAnchor.constraint(equalToConstant: puckSize),
+            puck.heightAnchor.constraint(equalToConstant: puckSize),
             gear.centerXAnchor.constraint(equalTo: puck.contentView.centerXAnchor),
             gear.centerYAnchor.constraint(equalTo: puck.contentView.centerYAnchor),
             gear.widthAnchor.constraint(equalTo: puck.widthAnchor),
@@ -273,50 +215,11 @@ final class SessionListViewController: UIViewController {
         return UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
     }
 
-    /// The account row: pair with a Mac ONCE — the roster link then carries
-    /// every project and session on it (switch, start, stop), no per-session
-    /// setup ever.
-    @objc private func bottomBarTapped() {
-        let alert = UIAlertController(
-            title: "Connect to Mac",
-            message: "The address termio on your Mac is serving (one-time — all sessions ride this link).",
-            preferredStyle: .alert
-        )
-        alert.addTextField { [weak self] field in
-            field.placeholder = "ws://mac-hostname:8787"
-            field.text = CompanionLink.savedURL?.absoluteString
-                ?? self?.companionURL?.absoluteString
-            field.autocapitalizationType = .none
-            field.autocorrectionType = .no
-            field.keyboardType = .URL
-        }
-        alert.addAction(UIAlertAction(title: "Connect", style: .default) { [weak self, weak alert] _ in
-            guard let text = alert?.textFields?.first?.text else { return }
-            self?.setCompanionURL(text)
-        })
-        alert.addAction(UIAlertAction(title: "SSH Instead…", style: .default) { [weak self] _ in
-            self?.presentConnectSheet()
-        })
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        present(alert, animated: true)
-    }
-
-    /// Save the Mac address and (re)connect the roster link to it.
-    private func setCompanionURL(_ raw: String) {
-        guard let url = CompanionLink.normalize(raw) else { return }
-        UserDefaults.standard.set(url.absoluteString, forKey: CompanionLink.defaultsKey)
-        client?.stop()
-        client = nil
-        connectRoster(to: url)
-    }
-
     /// Forget-Mac teardown: back to the offline mock list.
     private func disconnectRoster() {
         client?.stop()
         client = nil
         companionURL = nil
-        macLabel.text = "Connect to Mac"
-        statusDot.isHidden = true
         CompanionLink.state = .unpaired
         projects = MockProject.samples
         refilter()
@@ -391,13 +294,9 @@ final class SessionListViewController: UIViewController {
     /// Open (or replace) the app's single Mac link: one socket, whole roster.
     private func connectRoster(to url: URL) {
         companionURL = url
-        macLabel.text = url.host ?? "Mac"
-        statusDot.isHidden = false
-        statusDot.backgroundColor = .systemOrange
         CompanionLink.state = .connecting
         let client = CompanionClient(url: url)
-        client.onConnected = { [weak self] connected in
-            self?.statusDot.backgroundColor = connected ? .systemGreen : .systemOrange
+        client.onConnected = { connected in
             CompanionLink.state = connected ? .connected : .connecting
         }
         client.onRoster = { [weak self] roster in
@@ -545,10 +444,6 @@ extension SessionListViewController: UITableViewDataSource, UITableViewDelegate 
         .leastNonzeroMagnitude
     }
 
-    func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
-        44
-    }
-
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "session", for: indexPath)
         cell.selectionStyle = .none
@@ -614,13 +509,16 @@ extension SessionListViewController: UITableViewDataSource, UITableViewDelegate 
 
 /// A session row, ChatGPT-chat-list style: mostly just the title, the agent
 /// mark (or its working spinner) leading, the status dot trailing, and the
-/// current session wrapped in a rounded pill.
+/// current session wrapped in a rounded pill. When the session carries live
+/// activity text (a pending question, the running command), it appears as a
+/// gray preview line under the title — Messages' "last message", shown only
+/// when there is one, so quiet sessions stay one dense line.
 private struct SidebarSessionRow: View {
     let session: MockSession
     let isCurrent: Bool
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .top, spacing: 10) {
             Group {
                 if session.status == .working {
                     WorkingIndicator(tint: session.agent.tintColor)
@@ -628,13 +526,23 @@ private struct SidebarSessionRow: View {
                     AgentIconView(agent: session.agent, size: 14)
                 }
             }
-            .frame(width: 16)
-            Text(session.title)
-                .font(.subheadline)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            .frame(width: 16, height: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(session.title)
+                    .font(.subheadline)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if !session.subtitle.isEmpty {
+                    Text(session.subtitle)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
             Spacer(minLength: 4)
             StatusDot(status: session.status)
+                .frame(height: 18)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
