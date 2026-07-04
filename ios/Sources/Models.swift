@@ -289,11 +289,26 @@ enum CompanionLink {
         UserDefaults.standard.string(forKey: defaultsKey).flatMap(URL.init(string:))
     }
 
-    /// Bare-host shorthand: "studio.local" → ws://studio.local:8787.
+    /// Bare-host shorthand: "studio.local" → ws://studio.local:8787. Tunnel
+    /// addresses often get pasted with their http(s) scheme; the socket wants
+    /// ws(s), same host, same everything else.
     static func normalize(_ raw: String) -> URL? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        let full = trimmed.contains("://") ? trimmed : "ws://\(trimmed):8787"
+        var full = trimmed.contains("://") ? trimmed : "ws://\(trimmed):8787"
+        if full.hasPrefix("https://") {
+            full = "wss://" + full.dropFirst("https://".count)
+        } else if full.hasPrefix("http://") {
+            full = "ws://" + full.dropFirst("http://".count)
+        }
         return URL(string: full)
+    }
+
+    /// The pairing token riding the paired URL's `t` query param — sent as
+    /// the first frame on every companion socket; the Mac serves nothing
+    /// without it.
+    static func token(of url: URL) -> String? {
+        URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == "t" }?.value
     }
 }

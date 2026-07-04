@@ -1,6 +1,41 @@
 import Foundation
 import Network
+import Security
 import TermioShared
+
+/// The shared secret a phone must present before the companion server serves
+/// it anything. It rides the pairing QR as a `t` query param, so possession
+/// means "was shown the Mac's screen" — which holds up whether the socket is
+/// reached over the LAN or through a public tunnel URL.
+///
+/// Stored in UserDefaults rather than the Keychain on purpose: the trust
+/// boundary is the local user account either way (anyone who can read the
+/// prefs can also screenshot the QR), and plain defaults keep `dev-run.sh`
+/// able to read the token for the phone's launch argument.
+enum PairingToken {
+    static let defaultsKey = "companion.pairingToken"
+
+    static var current: String {
+        if let token = UserDefaults.standard.string(forKey: defaultsKey), !token.isEmpty {
+            return token
+        }
+        return regenerate()
+    }
+
+    /// Mints a fresh token, revoking every previously paired phone.
+    @discardableResult
+    static func regenerate() -> String {
+        var bytes = [UInt8](repeating: 0, count: 24)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        // base64url so the token travels inside a URL query untouched.
+        let token = Data(bytes).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        UserDefaults.standard.set(token, forKey: defaultsKey)
+        return token
+    }
+}
 
 /// Serves the iOS companion app over WebSockets on one port: every connection
 /// starts as a roster subscriber (the same project/session tree the sidebar
@@ -20,6 +55,10 @@ final class CompanionServer {
     private var listener: NWListener?
     private var connections: Set<ObjectIdentifier> = []
     private var connectionByID: [ObjectIdentifier: NWConnection] = [:]
+    /// Connections that have presented the pairing token. Everyone else gets
+    /// silence and a short clock: the roster names every project on this Mac
+    /// and an attach is keystroke access to a shell.
+    private var authed: Set<ObjectIdentifier> = []
     private var bridges: [ObjectIdentifier: PTYBridge] = [:]
     private var lastRoster: CompanionRoster?
     private var pollTimer: Timer?
@@ -127,8 +166,17 @@ final class CompanionServer {
             }
         }
         connection.start(queue: .main)
-        // Send the current roster straight away so the phone paints immediately.
-        send(rosterProvider(), to: connection)
+        // Nothing is sent until the client authenticates; the roster follows
+        // a valid `auth` (the phone sends it the moment the socket opens, so
+        // the paint is just as immediate). Unauthenticated sockets don't get
+        // to linger either.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+            Task { @MainActor in
+                guard let self, self.connections.contains(id), !self.authed.contains(id) else { return }
+                self.sendControl(.error(message: "unauthorized — scan the QR code in Settings ▸ Mobile"), to: connection)
+                self.drop(id)
+            }
+        }
         // Keep the receive pump alive so pings/close are handled.
         receive(on: connection)
     }
@@ -145,6 +193,7 @@ final class CompanionServer {
         connectionByID[id]?.cancel()
         connectionByID[id] = nil
         connections.remove(id)
+        authed.remove(id)
     }
 
     private func receive(on connection: NWConnection) {
@@ -180,6 +229,21 @@ final class CompanionServer {
 
     private func handle(_ control: CompanionControl, on connection: NWConnection) {
         let id = ObjectIdentifier(connection)
+        if case .auth(let token) = control {
+            guard token == PairingToken.current else {
+                sendControl(.error(message: "unauthorized — re-scan the QR code on your Mac"), to: connection)
+                drop(id)
+                return
+            }
+            authed.insert(id)
+            send(rosterProvider(), to: connection)
+            return
+        }
+        guard authed.contains(id) else {
+            sendControl(.error(message: "unauthorized — scan the QR code in Settings ▸ Mobile"), to: connection)
+            drop(id)
+            return
+        }
         switch control {
         case .attach(let sessionID):
             guard let pty = ptyForSession(sessionID) else {
@@ -227,7 +291,7 @@ final class CompanionServer {
             )
         case .upload(let projectID, let name, let base64):
             handleUpload(projectID: projectID, name: name, base64: base64, on: connection)
-        case .exit, .error, .started, .fileList, .file, .written, .uploaded:
+        case .auth, .exit, .error, .started, .fileList, .file, .written, .uploaded:
             break
         }
     }
@@ -466,8 +530,10 @@ final class CompanionServer {
         guard roster != lastRoster else { return }
         lastRoster = roster
         // Bridged connections are a byte stream now; roster frames would only
-        // interleave with PTY traffic for no benefit.
-        for (id, connection) in connectionByID where bridges[id] == nil {
+        // interleave with PTY traffic for no benefit. Unauthenticated ones
+        // get nothing at all.
+        for (id, connection) in connectionByID
+        where bridges[id] == nil && authed.contains(id) {
             send(roster, to: connection)
         }
     }

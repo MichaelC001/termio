@@ -13,21 +13,35 @@ struct MobileSettingsTab: View {
     @State private var hosts: [String] = []
     @State private var selectedHost = ""
     @State private var copied = false
+    @State private var token = PairingToken.current
+    @ObservedObject private var tunnel = TunnelManager.shared
 
+    /// What the QR encodes: the tunnel's public URL while one is running,
+    /// the LAN address otherwise — either way carrying the pairing token the
+    /// server demands before serving anything.
     private var url: String {
-        "ws://\(selectedHost):\(CompanionServer.defaultPort)"
+        if case .running(let publicURL) = tunnel.status {
+            let host = publicURL.absoluteString.replacingOccurrences(of: "https://", with: "wss://")
+            return "\(host)/?t=\(token)"
+        }
+        return "ws://\(selectedHost):\(CompanionServer.defaultPort)/?t=\(token)"
+    }
+
+    private var tunnelRunning: Bool {
+        if case .running = tunnel.status { return true }
+        return false
     }
 
     var body: some View {
         Form {
             Section {
-                if hosts.isEmpty {
+                if hosts.isEmpty, !tunnelRunning {
                     Text("No network address found. Join a network, then reopen this tab.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 } else {
                     qrCard
-                    if hosts.count > 1 {
+                    if hosts.count > 1, !tunnelRunning {
                         Picker("Address", selection: $selectedHost) {
                             ForEach(hosts, id: \.self) { host in
                                 Text(host).tag(host)
@@ -39,13 +53,76 @@ struct MobileSettingsTab: View {
             } header: {
                 SectionHeaderLabel(title: "Pair iPhone")
             } footer: {
-                Text("On the iPhone app, tap the Mac pill on the session list (or Settings ▸ Connectivity) and choose Scan QR Code. Both devices must be on the same network.")
+                Text(tunnelRunning
+                    ? "On the iPhone app, tap the Mac pill on the session list (or Settings ▸ Connectivity) and choose Scan QR Code. The tunnel address works from anywhere."
+                    : "On the iPhone app, tap the Mac pill on the session list (or Settings ▸ Connectivity) and choose Scan QR Code. Both devices must be on the same network.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Picker("Tunnel", selection: Binding(
+                    get: { tunnel.provider },
+                    set: { tunnel.setProvider($0) }
+                )) {
+                    ForEach(TunnelManager.Provider.allCases) { provider in
+                        Text(provider.label).tag(provider)
+                    }
+                }
+                statusRow
+            } header: {
+                SectionHeaderLabel(title: "Remote Access")
+            } footer: {
+                Text("Fronts this Mac with a public URL so the iPhone can connect away from home. The QR above switches to the tunnel address while one is running; every connection still has to present this Mac's pairing token.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Button("Reset Pairing…", role: .destructive) {
+                    token = PairingToken.regenerate()
+                }
+            } footer: {
+                Text("Generates a new pairing token. Every previously paired phone is signed out until it scans the new QR.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         .onAppear(perform: refreshHosts)
+    }
+
+    @ViewBuilder
+    private var statusRow: some View {
+        HStack {
+            Text("Status")
+            Spacer()
+            switch tunnel.status {
+            case .off:
+                Text("Off — LAN only")
+                    .foregroundStyle(.secondary)
+            case .installing:
+                ProgressView().controlSize(.small)
+                Text("Installing \(tunnel.provider.binaryName)…")
+                    .foregroundStyle(.secondary)
+            case .starting:
+                ProgressView().controlSize(.small)
+                Text("Starting tunnel…")
+                    .foregroundStyle(.secondary)
+            case .running(let publicURL):
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.green)
+                Text(publicURL.host ?? publicURL.absoluteString)
+                    .font(.system(.callout, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            case .failed(let message):
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+            }
+        }
     }
 
     private var qrCard: some View {

@@ -176,6 +176,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         )
         companion.start()
         companionServer = companion
+        // Resume the public tunnel if the user had one on at last quit; the
+        // pairing token gate in the server is what makes this safe to front.
+        TunnelManager.shared.startIfEnabled()
 
         if !pendingOpenURLs.isEmpty {
             let urls = pendingOpenURLs

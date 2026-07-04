@@ -216,6 +216,11 @@ extension CompanionTransport: URLSessionWebSocketDelegate {
             onOutput?(Data("\u{1B}c".utf8))
         }
         everConnected = true
+        // Auth precedes the attach on the same socket — the server refuses
+        // the bridge (and everything else) until the token lands.
+        if let token = CompanionLink.token(of: url) {
+            task.send(.string(CompanionControl.auth(token: token).encoded())) { _ in }
+        }
         if let attachSessionID {
             let attach = CompanionControl.attach(sessionID: attachSessionID).encoded()
             task.send(.string(attach)) { _ in }

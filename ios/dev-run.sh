@@ -19,7 +19,10 @@ fi
 echo "Device: ${DEVICE}"
 
 MAC_IP=$(ipconfig getifaddr en0 || ipconfig getifaddr en1)
-ROSTER_URL="${1:-ws://${MAC_IP}:8787}"
+# The companion server refuses unauthenticated sockets; the pairing token
+# lives in the Mac app's defaults (deliberately, so this script can read it).
+TOKEN=$(defaults read com.termio.app companion.pairingToken 2>/dev/null || true)
+ROSTER_URL="${1:-ws://${MAC_IP}:8787${TOKEN:+/?t=${TOKEN}}}"
 echo "Roster URL: ${ROSTER_URL}"
 
 xcodebuild \

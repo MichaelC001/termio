@@ -12,6 +12,11 @@ import Foundation
 /// is transport-agnostic (works identically over ws:// localhost, wss:// via a
 /// tunnel, or a QUIC stream).
 public enum CompanionControl: Codable, Sendable, Equatable {
+    /// The client's first message on any connection: proves possession of the
+    /// pairing token from the Mac's QR code. Until it lands, the server sends
+    /// nothing and refuses every other message — the port may sit behind a
+    /// public tunnel URL, where "connected" must not mean "trusted".
+    case auth(token: String)
     /// The client asks to bridge a specific session's PTY (roster session id).
     /// Sent once, immediately after the socket opens; the server replays its
     /// recent output and starts streaming.
@@ -59,6 +64,8 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     public func encoded() -> String {
         // Small, hand-stable JSON so both ends agree without a schema tool.
         switch self {
+        case .auth(let token):
+            return Self.json(["t": "auth", "token": token])
         case .attach(let sessionID):
             return #"{"t":"attach","session":"\#(sessionID)"}"#
         case .start(let projectID, let agent):
@@ -113,6 +120,9 @@ public enum CompanionControl: Codable, Sendable, Equatable {
               let type = obj["t"] as? String
         else { return nil }
         switch type {
+        case "auth":
+            guard let token = obj["token"] as? String else { return nil }
+            return .auth(token: token)
         case "attach":
             guard let sessionID = obj["session"] as? String else { return nil }
             return .attach(sessionID: sessionID)

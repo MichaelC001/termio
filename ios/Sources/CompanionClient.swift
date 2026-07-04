@@ -190,7 +190,11 @@ final class CompanionClient: NSObject {
 extension CompanionClient: URLSessionWebSocketDelegate {
     func urlSession(_: URLSession, webSocketTask task: URLSessionWebSocketTask, didOpenWithProtocol _: String?) {
         guard task === self.task else { return }
-        NSLog("[companion] roster link connected to %@", url.absoluteString)
+        NSLog("[companion] roster link connected to %@", url.host ?? "?")
+        // Auth rides first on every connect; the roster is the server's reply.
+        if let token = CompanionLink.token(of: url) {
+            task.send(.string(CompanionControl.auth(token: token).encoded())) { _ in }
+        }
         isConnected = true
         attempts = 0
         onConnected?(true)
