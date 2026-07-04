@@ -258,10 +258,14 @@ final class TerminalKeyboardView: UIInputView {
             }
         }
 
-        // Digits answer the agent's option menus.
-        column.addArrangedSubview(makeRow(["1", "2", "3", "4"].map { digit in
-            makeKeyButton(Key(title: digit, payload: Data(digit.utf8)))
-        }))
+        // The full digit row, system-keyboard density: 1-4 answer the agent's
+        // option menus, the rest make numeric input possible without leaving
+        // the plane.
+        column.addArrangedSubview(makeRow(
+            ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"].map { digit in
+                makeKeyButton(Key(title: digit, payload: Data(digit.utf8)))
+            }
+        ))
         // Bottom plane row mirrors the system's: return anchors the right
         // corner at the system return key's width, arrows share the rest.
         let arrows = [
@@ -410,8 +414,9 @@ final class TerminalKeyboardView: UIInputView {
 /// light keyboard: EVERY key face is white there — the classic #ABB1BA
 /// function-key gray is gone — so in light mode the roles share a white cap
 /// and presses flash gray. Dark mode keeps the two-tone scheme (#6B6B6B
-/// letters, #474747 functions) with the native pressed palette swap. A 1pt
-/// crisp bottom shadow under every cap.
+/// letters, #474747 functions) with the native pressed palette swap. Caps
+/// are flat — the system's 1pt bottom shadow was tried and removed by user
+/// preference.
 ///
 /// Styling is opt-in via `keyCapRole` so `RepeatingKeyButton` subclasses can
 /// live elsewhere unstyled.
@@ -440,14 +445,6 @@ class KeyCapButton: UIButton {
         didSet { if keyCapRole != nil { applyKeyCap() } }
     }
 
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        guard keyCapRole != nil else { return }
-        layer.shadowPath = UIBezierPath(
-            roundedRect: bounds, cornerRadius: Self.cornerRadius
-        ).cgPath
-    }
-
     /// Measured: a 99px key reads 56px wide at its top scanline, so the
     /// corner arc is ~21.5px ≈ 7pt on a 43pt cap.
     private static let cornerRadius: CGFloat = 7
@@ -469,10 +466,6 @@ class KeyCapButton: UIButton {
     private static let lightPressed = UIColor(
         red: 0xD1 / 255.0, green: 0xD4 / 255.0, blue: 0xDA / 255.0, alpha: 1
     )
-    private static let keyShadow = UIColor { traits in
-        UIColor(white: 0, alpha: traits.userInterfaceStyle == .dark ? 0.7 : 0.3)
-    }
-
     private var observesTraits = false
 
     private func applyKeyCap() {
@@ -494,10 +487,6 @@ class KeyCapButton: UIButton {
         cap.backgroundColor = background.resolvedColor(with: traitCollection)
         cap.cornerRadius = Self.cornerRadius
         configuration?.background = cap
-        layer.shadowColor = Self.keyShadow.resolvedColor(with: traitCollection).cgColor
-        layer.shadowOpacity = 1
-        layer.shadowRadius = 0
-        layer.shadowOffset = CGSize(width: 0, height: 1)
     }
 }
 
