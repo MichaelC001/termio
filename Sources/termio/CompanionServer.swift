@@ -173,8 +173,7 @@ final class CompanionServer {
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
             Task { @MainActor in
                 guard let self, self.connections.contains(id), !self.authed.contains(id) else { return }
-                self.sendControl(.error(message: "unauthorized — scan the QR code in Settings ▸ Mobile"), to: connection)
-                self.drop(id)
+                self.refuse(connection, message: "unauthorized — scan the QR code in Settings ▸ Mobile")
             }
         }
         // Keep the receive pump alive so pings/close are handled.
@@ -231,8 +230,7 @@ final class CompanionServer {
         let id = ObjectIdentifier(connection)
         if case .auth(let token) = control {
             guard token == PairingToken.current else {
-                sendControl(.error(message: "unauthorized — re-scan the QR code on your Mac"), to: connection)
-                drop(id)
+                refuse(connection, message: "unauthorized — re-scan the QR code on your Mac")
                 return
             }
             authed.insert(id)
@@ -240,8 +238,7 @@ final class CompanionServer {
             return
         }
         guard authed.contains(id) else {
-            sendControl(.error(message: "unauthorized — scan the QR code in Settings ▸ Mobile"), to: connection)
-            drop(id)
+            refuse(connection, message: "unauthorized — scan the QR code in Settings ▸ Mobile")
             return
         }
         switch control {
@@ -511,6 +508,21 @@ final class CompanionServer {
             binary: binary,
             truncated: truncated,
             mtime: mtimeMillis(url)
+        )
+    }
+
+    /// Sends a last control frame, then drops the connection only after the
+    /// frame has been handed to the transport — a plain send-then-cancel
+    /// loses that race and the phone sees a dead socket instead of the reason.
+    private func refuse(_ connection: NWConnection, message: String) {
+        let meta = NWProtocolWebSocket.Metadata(opcode: .text)
+        let context = NWConnection.ContentContext(identifier: "control", metadata: [meta])
+        connection.send(
+            content: Data(CompanionControl.error(message: message).encoded().utf8),
+            contentContext: context,
+            completion: .contentProcessed { [weak self] _ in
+                Task { @MainActor in self?.drop(ObjectIdentifier(connection)) }
+            }
         )
     }
 
