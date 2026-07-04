@@ -285,6 +285,35 @@ final class PTYProcess: @unchecked Sendable {
         return Data(preamble.utf8)
     }
 
+    /// True when the child is currently drawing in the alternate screen — a
+    /// full-screen TUI (Claude Code, vim). Such a session repaints its whole
+    /// screen on the next SIGWINCH, so an attaching client needs only the
+    /// current modes and a resize, never a raw byte replay laid out for the
+    /// grid the buffer was captured at.
+    var isAlternateScreenActive: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return [1049, 1047, 47].contains { privateModeStates[$0]?.enabled == true }
+    }
+
+    /// Every private mode that currently deviates from a fresh terminal's
+    /// defaults, as the DECSET/DECRST sequences to re-assert it — for a client
+    /// that attaches *without* a byte replay (an alt-screen TUI it will repaint
+    /// from scratch) and so must be put into the alternate screen and mouse
+    /// modes explicitly, since no replay carries those set sequences.
+    func modeResyncPreamble() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        var preamble = ""
+        for mode in Self.privateModeEmissionOrder {
+            guard let state = privateModeStates[mode],
+                  state.enabled != Self.defaultOnPrivateModes.contains(mode)
+            else { continue }
+            preamble += "\u{1B}[?\(mode)\(state.enabled ? "h" : "l")"
+        }
+        return Data(preamble.utf8)
+    }
+
     func removeSink(_ id: UUID) {
         lock.lock()
         sinks[id] = nil

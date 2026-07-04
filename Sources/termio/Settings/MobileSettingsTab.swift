@@ -15,6 +15,7 @@ struct MobileSettingsTab: View {
     @State private var copied = false
     @State private var token = PairingToken.current
     @ObservedObject private var tunnel = TunnelManager.shared
+    @ObservedObject private var mobile = MobileAccess.shared
 
     /// What the QR encodes: the tunnel's public URL while one is running,
     /// the LAN address otherwise — either way carrying the pairing token the
@@ -35,57 +36,70 @@ struct MobileSettingsTab: View {
     var body: some View {
         Form {
             Section {
-                if hosts.isEmpty, !tunnelRunning {
-                    Text("No network address found. Join a network, then reopen this tab.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                } else {
-                    qrCard
-                    if hosts.count > 1, !tunnelRunning {
-                        Picker("Address", selection: $selectedHost) {
-                            ForEach(hosts, id: \.self) { host in
-                                Text(host).tag(host)
+                Toggle("Mobile Access", isOn: $mobile.isEnabled)
+            } footer: {
+                Text("When off, this Mac stops listening and your iPhone disconnects — but stays paired. Turn it back on to reconnect; no new QR needed.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            // Everything below only means anything while we're serving, so the
+            // master switch reveals it — a dimmed, unscannable QR (and an
+            // address nothing is listening on) is more misleading than absent.
+            if mobile.isEnabled {
+                Section {
+                    if hosts.isEmpty, !tunnelRunning {
+                        Text("No network address found. Join a network, then reopen this tab.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        qrCard
+                        if hosts.count > 1, !tunnelRunning {
+                            Picker("Address", selection: $selectedHost) {
+                                ForEach(hosts, id: \.self) { host in
+                                    Text(host).tag(host)
+                                }
                             }
                         }
+                        addressRow
                     }
-                    copyRow
+                } header: {
+                    SectionHeaderLabel(title: "Pair iPhone")
+                } footer: {
+                    Text(tunnelRunning
+                        ? "On the iPhone app, tap the Mac pill on the session list (or Settings ▸ Connectivity) and choose Scan QR Code. The tunnel address works from anywhere."
+                        : "On the iPhone app, tap the Mac pill on the session list (or Settings ▸ Connectivity) and choose Scan QR Code. Both devices must be on the same network.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
-            } header: {
-                SectionHeaderLabel(title: "Pair iPhone")
-            } footer: {
-                Text(tunnelRunning
-                    ? "On the iPhone app, tap the Mac pill on the session list (or Settings ▸ Connectivity) and choose Scan QR Code. The tunnel address works from anywhere."
-                    : "On the iPhone app, tap the Mac pill on the session list (or Settings ▸ Connectivity) and choose Scan QR Code. Both devices must be on the same network.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
 
-            Section {
-                Picker("Tunnel", selection: Binding(
-                    get: { tunnel.provider },
-                    set: { tunnel.setProvider($0) }
-                )) {
-                    ForEach(TunnelManager.Provider.allCases) { provider in
-                        Text(provider.label).tag(provider)
+                Section {
+                    Picker("Tunnel", selection: Binding(
+                        get: { tunnel.provider },
+                        set: { tunnel.setProvider($0) }
+                    )) {
+                        ForEach(TunnelManager.Provider.allCases) { provider in
+                            Text(provider.label).tag(provider)
+                        }
                     }
+                    statusRow
+                } header: {
+                    SectionHeaderLabel(title: "Remote Access")
+                } footer: {
+                    Text("Fronts this Mac with a public URL so the iPhone can connect away from home. The QR above switches to the tunnel address while one is running; every connection still has to present this Mac's pairing token.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
-                statusRow
-            } header: {
-                SectionHeaderLabel(title: "Remote Access")
-            } footer: {
-                Text("Fronts this Mac with a public URL so the iPhone can connect away from home. The QR above switches to the tunnel address while one is running; every connection still has to present this Mac's pairing token.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
 
-            Section {
-                Button("Reset Pairing…", role: .destructive) {
-                    token = PairingToken.regenerate()
+                Section {
+                    Button("Reset Pairing…", role: .destructive) {
+                        token = PairingToken.regenerate()
+                    }
+                } footer: {
+                    Text("Generates a new pairing token. Every previously paired phone is signed out until it scans the new QR.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
-            } footer: {
-                Text("Generates a new pairing token. Every previously paired phone is signed out until it scans the new QR.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -128,34 +142,42 @@ struct MobileSettingsTab: View {
     private var qrCard: some View {
         HStack {
             Spacer()
-            VStack(spacing: 10) {
-                if let qr = Self.qrImage(for: url) {
-                    Image(nsImage: qr)
-                        .interpolation(.none)
-                        .resizable()
-                        .frame(width: 180, height: 180)
-                        .padding(10)
-                        .background(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                Text(url)
-                    .font(.system(.callout, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+            if let qr = Self.qrImage(for: url) {
+                Image(nsImage: qr)
+                    .interpolation(.none)
+                    .resizable()
+                    .frame(width: 180, height: 180)
+                    .padding(10)
+                    .background(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             Spacer()
         }
         .padding(.vertical, 8)
     }
 
-    private var copyRow: some View {
-        Button {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(url, forType: .string)
-            copied = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
-        } label: {
-            Label(copied ? "Copied" : "Copy Address", systemImage: copied ? "checkmark" : "doc.on.doc")
+    /// The scannable address as a value row: the URL leading (monospaced,
+    /// middle-truncated so the token tail never pushes the button off-screen),
+    /// a trailing Copy the way Apple pins Copy to a serial-number row.
+    private var addressRow: some View {
+        HStack(spacing: 8) {
+            Text(url)
+                .font(.system(.callout, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+            Spacer(minLength: 8)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(url, forType: .string)
+                copied = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+            } label: {
+                Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+            }
+            .buttonStyle(.borderless)
+            .fixedSize()
         }
     }
 

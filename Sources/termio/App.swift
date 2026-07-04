@@ -37,6 +37,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var companionServer: CompanionServer?
     private var settingsWindow: NSWindow?
     private var settingsObserver: AnyCancellable?
+    /// Starts/stops the companion server + tunnel as the Mobile Access toggle flips.
+    private var mobileAccessObserver: AnyCancellable?
     // Drives in-app auto-update. Started only in release builds — a debug build has
     // no Developer-ID signature for Sparkle to validate the appcast's EdDSA against,
     // and we don't want dev runs phoning the update feed. The feed URL and public
@@ -174,11 +176,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 store?.companionStopSession(sessionID: sessionID) ?? false
             }
         )
-        companion.start()
         companionServer = companion
-        // Resume the public tunnel if the user had one on at last quit; the
-        // pairing token gate in the server is what makes this safe to front.
-        TunnelManager.shared.startIfEnabled()
+        // Mobile Access is the master switch: only serve (and resume the public
+        // tunnel) when it's on. The token gate in the server is what makes
+        // fronting it with a tunnel safe.
+        if MobileAccess.shared.isEnabled {
+            companion.start()
+            TunnelManager.shared.startIfEnabled()
+        }
+        // React to the Settings toggle. `dropFirst` skips the value already
+        // handled by the launch branch above, so we never double-start.
+        mobileAccessObserver = MobileAccess.shared.$isEnabled
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [weak self] enabled in
+                guard let companion = self?.companionServer else { return }
+                if enabled {
+                    companion.start()
+                    TunnelManager.shared.startIfEnabled()
+                } else {
+                    // Fully dark: drop live phones and kill the public URL.
+                    companion.stop()
+                    TunnelManager.shared.suspend()
+                }
+            }
 
         if !pendingOpenURLs.isEmpty {
             let urls = pendingOpenURLs

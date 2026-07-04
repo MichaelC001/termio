@@ -37,6 +37,32 @@ enum PairingToken {
     }
 }
 
+/// The master on/off for phone access. Off is a true stop — the companion
+/// server stops listening and the tunnel is torn down (nothing public remains),
+/// and any live phone drops. The pairing token is left untouched, so flipping
+/// it back on reconnects an already-paired phone with no new QR scan; that is
+/// what separates this "disconnect for now" from `PairingToken.regenerate()`'s
+/// permanent "sign every phone out". Defaults on, so existing installs are
+/// unchanged. AppDelegate owns the wiring (start/stop the server + tunnel); this
+/// is just the observable, persisted state the Settings toggle drives.
+@MainActor
+final class MobileAccess: ObservableObject {
+    static let shared = MobileAccess()
+    private static let defaultsKey = "companion.mobileEnabled"
+
+    @Published var isEnabled: Bool {
+        didSet {
+            guard isEnabled != oldValue else { return }
+            UserDefaults.standard.set(isEnabled, forKey: Self.defaultsKey)
+        }
+    }
+
+    private init() {
+        // Absent key → on, so upgrading users keep today's always-serving behavior.
+        isEnabled = UserDefaults.standard.object(forKey: Self.defaultsKey) as? Bool ?? true
+    }
+}
+
 /// Serves the iOS companion app over WebSockets on one port: every connection
 /// starts as a roster subscriber (the same project/session tree the sidebar
 /// shows, pushed on connect and on change); a connection that sends an
@@ -597,19 +623,32 @@ private final class PTYBridge: @unchecked Sendable {
     }
 
     func start() {
-        sinkToken = pty.addSink(on: queue, replayingBuffer: true) { [weak self] data in
+        // A full-screen TUI (Claude Code, vim) repaints its whole screen on the
+        // next SIGWINCH, and its ring buffer was laid out for whatever grid the
+        // Mac had — replaying those bytes at the phone's narrower grid lands the
+        // cursor motions wrong, so the stale frame survives as a ghost under the
+        // live one (and the reflow spike can tip the phone's allocator over). So
+        // for an alt-screen session skip the replay entirely: re-assert just the
+        // current modes below, wipe, and let the client's resize claim force a
+        // clean full repaint. A plain shell has no such repaint, so it still
+        // replays — its history is the screen.
+        let altScreen = pty.isAlternateScreenActive
+        sinkToken = pty.addSink(on: queue, replayingBuffer: !altScreen) { [weak self] data in
             self?.send(data)
         }
-        // The replay was laid out for whatever grid the PTY had when those
-        // bytes were written; on a phone-sized grid its cursor motions land
-        // wrong and the stale frames would survive as ghosts above the live
-        // one. Render it anyway (it carries mode switches like alt-screen),
-        // then wipe the glyphs — 2J/3J/home rather than a full RIS, so those
-        // modes survive. The repaint comes from the client's resize claim,
-        // which follows the attach on the same socket. The bridge queue is
-        // serial, so this lands after the replay and before that repaint.
+        // When the replay is skipped nothing carries the mode switches, so the
+        // phone must be put into the alternate screen and mouse modes explicitly.
+        // Then wipe the glyphs — 2J/3J/home rather than a full RIS, so those modes
+        // survive. The repaint comes from the client's resize claim, which follows
+        // the attach on the same socket. The bridge queue is serial, so this lands
+        // after any replay and before that repaint.
         queue.async { [weak self] in
-            self?.send(Self.wipe)
+            guard let self else { return }
+            if altScreen {
+                let preamble = pty.modeResyncPreamble()
+                if !preamble.isEmpty { send(preamble) }
+            }
+            send(Self.wipe)
         }
         // Any winsize change this client didn't ask for (the Mac typing and
         // reclaiming the size) makes the repaint that follows land wrong on
