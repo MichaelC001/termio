@@ -209,6 +209,20 @@ AnimatedCountLabelNode) — use these before inventing new ones:
   (damping 0.6, scale 0.5→1), the iMessage/Telegram appearance, not a blink
   per keystroke; the attach slot crossfades busy⇄idle.
 
+Control dimensions, measured from their source (AttachmentPanel /
+MediaPickerScreen / SolidRoundedButtonNode / MediaPickerGridItem) and
+adopted in the sheet:
+
+| control | Telegram | ours |
+| --- | --- | --- |
+| Sheet ✕ circle | 44pt, 16pt side inset | 44pt / 16pt ✓ |
+| Nav row in sheet | 44pt | header row 44pt (grid top 64) ✓ |
+| Tab panel | 62pt tall, 30pt icons, 20pt side inset | 66pt bar, 24pt SF symbols, 20pt ✓ |
+| Tab label | 10pt medium | ✓ |
+| Full-width action button | 48pt tall, r24, 17pt title | 48pt capsule, 17pt rounded semibold ✓ |
+| Selection circle | 29pt, 3pt corner inset, ordinal 16/15pt | 29pt / 3pt / 15pt ✓ |
+| Caption-bar send circle | 34pt | composer (+) is 34pt ✓ |
+
 ## Deferred (documented so we don't re-litigate)
 - **Live camera tile** — see above.
 - **Recent-files list** — needs upload history on the Mac side first.
