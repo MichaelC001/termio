@@ -13,13 +13,14 @@ final class SettingsViewController: UITableViewController {
     }
 
     private enum Row: Int, CaseIterable {
-        case connectivity, appearance, terminalKeyboard
+        case connectivity, appearance, terminalKeyboard, voice
 
         var title: String {
             switch self {
             case .connectivity: "Connectivity"
             case .appearance: "Appearance"
             case .terminalKeyboard: "Terminal Keyboard"
+            case .voice: "Voice"
             }
         }
 
@@ -28,6 +29,7 @@ final class SettingsViewController: UITableViewController {
             case .connectivity: "antenna.radiowaves.left.and.right"
             case .appearance: "paintbrush"
             case .terminalKeyboard: "keyboard"
+            case .voice: "mic"
             }
         }
 
@@ -36,6 +38,7 @@ final class SettingsViewController: UITableViewController {
             case .connectivity: ConnectivitySettingsViewController()
             case .appearance: AppearanceSettingsViewController()
             case .terminalKeyboard: TerminalKeyboardSettingsViewController()
+            case .voice: VoiceSettingsViewController()
             }
         }
     }
@@ -351,6 +354,126 @@ final class TerminalKeyboardSettingsViewController: UITableViewController {
         }, for: .valueChanged)
         cell.accessoryView = toggle
         return cell
+    }
+}
+
+// MARK: - Voice
+
+/// Voice dictation setup: the push-to-talk switch and the OpenAI key that
+/// powers it. With push-to-talk on, holding the terminal keyboard's space bar
+/// dictates a prompt; off, the space bar is just a space. The key lives in the
+/// Keychain (via `VoiceDictation`); two knobs on purpose.
+final class VoiceSettingsViewController: UITableViewController {
+    private let settings = MobileSettings.shared
+
+    private enum Section: Int, CaseIterable {
+        case pushToTalk, key
+    }
+
+    private enum KeyRow: Int, CaseIterable {
+        case apiKey, remove
+    }
+
+    init() {
+        super.init(style: .insetGrouped)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Voice"
+    }
+
+    override func numberOfSections(in tableView: UITableView) -> Int {
+        Section.allCases.count
+    }
+
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        switch Section(rawValue: section) {
+        case .pushToTalk, nil: 1
+        // "Remove" only earns a row once there's a key to remove.
+        case .key: VoiceDictation.hasAPIKey ? KeyRow.allCases.count : 1
+        }
+    }
+
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        section == Section.key.rawValue ? "OpenAI" : nil
+    }
+
+    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        switch Section(rawValue: section) {
+        case .pushToTalk, nil:
+            "Hold the space bar on the terminal keyboard to dictate a prompt — "
+                + "release to drop the transcript into the draft, slide up to cancel."
+        case .key:
+            "Transcribed with OpenAI gpt-4o-transcribe; your key stays in this "
+                + "device's Keychain and is used only for transcription."
+        }
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        switch Section(rawValue: indexPath.section) {
+        case .pushToTalk, nil:
+            let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+            cell.textLabel?.text = "Push-to-Talk"
+            cell.selectionStyle = .none
+            let toggle = UISwitch()
+            toggle.isOn = settings.pushToTalkEnabled
+            toggle.addAction(UIAction { [weak self, weak toggle] _ in
+                guard let self, let toggle else { return }
+                settings.pushToTalkEnabled = toggle.isOn
+            }, for: .valueChanged)
+            cell.accessoryView = toggle
+            return cell
+        case .key:
+            let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
+            switch KeyRow(rawValue: indexPath.row) {
+            case .apiKey, nil:
+                cell.textLabel?.text = "API Key"
+                cell.detailTextLabel?.text = VoiceDictation.hasAPIKey ? "•••• Set" : "Not Set"
+                cell.detailTextLabel?.textColor = VoiceDictation.hasAPIKey ? .systemGreen : .secondaryLabel
+                cell.accessoryType = .disclosureIndicator
+            case .remove:
+                cell.textLabel?.text = "Remove Key"
+                cell.textLabel?.textColor = .systemRed
+            }
+            return cell
+        }
+    }
+
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard Section(rawValue: indexPath.section) == .key else { return }
+        switch KeyRow(rawValue: indexPath.row) {
+        case .apiKey, nil:
+            presentKeyEditor()
+        case .remove:
+            VoiceDictation.apiKey = nil
+            tableView.reloadData()
+        }
+    }
+
+    private func presentKeyEditor() {
+        let alert = UIAlertController(
+            title: "OpenAI API Key",
+            message: "Paste your key (sk-…). It's stored in this device's Keychain.",
+            preferredStyle: .alert
+        )
+        alert.addTextField { field in
+            field.placeholder = "sk-..."
+            field.isSecureTextEntry = true
+            field.autocapitalizationType = .none
+            field.autocorrectionType = .no
+            field.text = VoiceDictation.apiKey
+        }
+        alert.addAction(UIAlertAction(title: "Save", style: .default) { [weak self, weak alert] _ in
+            VoiceDictation.apiKey = alert?.textFields?.first?.text
+            self?.tableView.reloadData()
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
     }
 }
 

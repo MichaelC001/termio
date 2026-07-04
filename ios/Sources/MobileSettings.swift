@@ -46,6 +46,7 @@ final class MobileSettings {
         static let darkThemeName = "appearance.darkThemeName"
         static let fontSize = "appearance.fontSize"
         static let terminalKeys = "terminalKeyboard.keys"
+        static let pushToTalk = "voice.pushToTalk"
     }
 
     private let defaults = UserDefaults.standard
@@ -88,6 +89,17 @@ final class MobileSettings {
         }
     }
 
+    /// Hold-to-talk on the terminal keyboard's space bar. Off by default — the
+    /// space bar is just a space until the user opts in (and adds an OpenAI
+    /// key). Flipping it reposts `didChange`, which rebuilds the keyboard so
+    /// the space bar gains or drops its hold gesture.
+    var pushToTalkEnabled: Bool {
+        didSet {
+            defaults.set(pushToTalkEnabled, forKey: Key.pushToTalk)
+            notify()
+        }
+    }
+
     private init() {
         defaults.register(defaults: [
             Key.appearanceMode: AppearanceMode.system.rawValue,
@@ -95,6 +107,7 @@ final class MobileSettings {
             Key.darkThemeName: Self.defaultDarkThemeName,
             Key.fontSize: Self.defaultFontSize,
             Key.terminalKeys: TerminalKeyCatalog.defaultIDs,
+            Key.pushToTalk: false,
         ])
         appearanceMode = AppearanceMode(
             rawValue: defaults.string(forKey: Key.appearanceMode) ?? ""
@@ -104,6 +117,7 @@ final class MobileSettings {
         fontSize = defaults.double(forKey: Key.fontSize)
         terminalKeyIDs = defaults.stringArray(forKey: Key.terminalKeys)
             ?? TerminalKeyCatalog.defaultIDs
+        pushToTalkEnabled = defaults.bool(forKey: Key.pushToTalk)
     }
 
     private func notify() {

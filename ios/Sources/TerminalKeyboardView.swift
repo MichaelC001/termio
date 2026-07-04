@@ -103,6 +103,14 @@ final class TerminalKeyboardView: UIInputView {
     var onKey: ((Data) -> Void)?
     /// The 🌐 key: restore the system keyboard.
     var onSwitchBack: (() -> Void)?
+    /// Hold-to-talk on the space bar, wired only when push-to-talk is on: the
+    /// hold begins dictation, dragging up past the bar arms cancel, release
+    /// ends it. The owner runs the recorder and shows the HUD — the space key
+    /// only forwards its gesture (Doubao's long-press-spacebar).
+    var onDictationBegan: (() -> Void)?
+    var onDictationChanged: ((_ cancelling: Bool) -> Void)?
+    var onDictationEnded: (() -> Void)?
+    var onDictationCancelled: (() -> Void)?
 
     private struct Key {
         let title: String
@@ -266,23 +274,27 @@ final class TerminalKeyboardView: UIInputView {
                 makeKeyButton(Key(title: digit, payload: Data(digit.utf8)))
             }
         ))
-        // Bottom plane row mirrors the system's: return anchors the right
-        // corner at the system return key's width, arrows share the rest.
+        // The four arrows get a roomy row of their own.
         let arrows = [
             Key(title: "←", payload: Data("\u{1B}[D".utf8), symbolName: "arrow.left", repeats: true),
             Key(title: "↓", payload: Data("\u{1B}[B".utf8), symbolName: "arrow.down", repeats: true),
             Key(title: "↑", payload: Data("\u{1B}[A".utf8), symbolName: "arrow.up", repeats: true),
             Key(title: "→", payload: Data("\u{1B}[C".utf8), symbolName: "arrow.right", repeats: true),
         ].map(makeKeyButton)
+        column.addArrangedSubview(makeRow(arrows))
+
+        // Bottom row mirrors the system keyboard's: a wide space bar and the
+        // return key (globe sits below the plane, 123 isn't needed). Space
+        // types a literal space; held — when push-to-talk is on — it becomes
+        // the mic, Doubao's long-press-spacebar.
+        let space = makeSpaceButton()
         let enter = makeKeyButton(Key(
             title: "return", payload: Data("\r".utf8), symbolName: "return"
         ))
-        let lastRow = UIStackView(arrangedSubviews: arrows + [enter])
+        let lastRow = UIStackView(arrangedSubviews: [space, enter])
         lastRow.axis = .horizontal
         lastRow.spacing = Self.keySpacing
-        for arrow in arrows.dropFirst() {
-            arrow.widthAnchor.constraint(equalTo: arrows[0].widthAnchor).isActive = true
-        }
+        lastRow.distribution = .fill
         enter.widthAnchor.constraint(
             equalTo: lastRow.widthAnchor, multiplier: Self.returnWidthFraction
         ).isActive = true
@@ -364,6 +376,39 @@ final class TerminalKeyboardView: UIInputView {
         // as a single Alt-prefixed key to a terminal parser.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             self?.onKey?(Data([0x1B]))
+        }
+    }
+
+    /// The space bar: a tap types a space. When push-to-talk is on a hold
+    /// starts dictation instead — the long press cancels the tap (like esc's),
+    /// so no stray space lands — and sliding up past the bar arms cancel.
+    private func makeSpaceButton() -> UIButton {
+        let button = makeKeyButton(Key(title: "space", payload: Data([0x20])))
+        // Let the bar stretch into the row's slack; return keeps its width.
+        button.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        guard MobileSettings.shared.pushToTalkEnabled else { return button }
+        let hold = UILongPressGestureRecognizer(target: self, action: #selector(spaceHeld(_:)))
+        hold.minimumPressDuration = 0.25
+        hold.cancelsTouchesInView = true
+        button.addGestureRecognizer(hold)
+        return button
+    }
+
+    @objc private func spaceHeld(_ gesture: UILongPressGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            haptic.impactOccurred()
+            onDictationBegan?()
+        case .changed:
+            // Up off the bar (negative y in the key's own space) arms cancel.
+            let cancelling = gesture.location(in: gesture.view).y < -60
+            onDictationChanged?(cancelling)
+        case .ended:
+            onDictationEnded?()
+        case .cancelled, .failed:
+            onDictationCancelled?()
+        default:
+            break
         }
     }
 

@@ -30,12 +30,27 @@ final class ComposerBar: UIView {
     private let placeholder = UILabel()
     private let sendButton = UIButton(type: .system)
     private let keyboardButton = UIButton(type: .system)
+    /// Hold-to-talk: the terminal keyboard's space bar drives this when
+    /// push-to-talk is on. Recording lives here — the composer owns the draft
+    /// the transcript lands in and the pill the HUD sits over; the space key
+    /// only forwards its hold gesture. The transcript is inserted, never
+    /// auto-sent (the same contract as the send button).
+    private let dictation = VoiceDictation()
+    private let recordingHUD = VoiceRecordingHUD()
+    private var dictationHeld = false
+    private var dictationCancelZone = false
     /// Built on first use; staying set across focus cycles means the user's
     /// keyboard choice survives dismiss/reopen, like any system keyboard.
     private lazy var terminalKeyboard: TerminalKeyboardView = {
         let keyboard = TerminalKeyboardView()
         keyboard.onKey = { [weak self] payload in self?.onTerminalKey?(payload) }
         keyboard.onSwitchBack = { [weak self] in self?.setTerminalKeyboardActive(false) }
+        keyboard.onDictationBegan = { [weak self] in self?.startDictation() }
+        keyboard.onDictationChanged = { [weak self] cancelling in
+            self?.updateDictationCancelZone(cancelling)
+        }
+        keyboard.onDictationEnded = { [weak self] in self?.finishDictation() }
+        keyboard.onDictationCancelled = { [weak self] in self?.cancelDictation() }
         return keyboard
     }()
     private let attachButton = UIButton(type: .system)
@@ -150,9 +165,9 @@ final class ComposerBar: UIView {
         placeholder.font = textView.font
         placeholder.textColor = .tertiaryLabel
 
-        // The pill's right slot works like iMessage's mic/send swap: the
-        // terminal-keyboard toggle owns it while the draft is empty, the send
-        // circle appears the moment there is something to send.
+        // The pill's right slot is send's alone (iMessage puts its send arrow
+        // inside the field): empty while there is nothing to send, the circle
+        // springing in the moment a draft exists.
         sendButton.setImage(UIImage(systemName: "arrow.up.circle.fill"), for: .normal)
         sendButton.setPreferredSymbolConfiguration(.init(pointSize: 30), forImageIn: .normal)
         sendButton.accessibilityLabel = "Send"
@@ -160,25 +175,49 @@ final class ComposerBar: UIView {
             self?.submit()
         }, for: .touchUpInside)
 
-        // Swap to the terminal keyboard the way iOS swaps to the number or
-        // handwriting keyboard — by replacing the text view's inputView.
-        keyboardButton.setImage(UIImage(systemName: "keyboard"), for: .normal)
-        keyboardButton.setPreferredSymbolConfiguration(.init(pointSize: 18), forImageIn: .normal)
+        // A persistent toggle OUTSIDE the pill on the right, mirroring the
+        // attach "+" on the left, that swaps to the terminal keyboard the way
+        // iOS swaps to the number or handwriting keyboard (replacing the text
+        // view's inputView). Unlike send it never leaves: driving the TUI is a
+        // core loop here, so the switch stays one reachable thumb-tap away,
+        // draft or not.
+        var keyboardConfig: UIButton.Configuration = if #available(iOS 26.0, *) {
+            .glass()
+        } else {
+            .gray()
+        }
+        keyboardConfig.image = UIImage(
+            systemName: "keyboard",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)
+        )
+        keyboardConfig.cornerStyle = .capsule
+        // Color the glyph through the configuration, NOT tintColor: on a glass
+        // capsule tintColor washes the whole background, so toggling active
+        // would flip the capsule's fill — baseForegroundColor keeps the tint on
+        // the icon and the glass steady.
+        keyboardConfig.baseForegroundColor = .secondaryLabel
+        keyboardButton.configuration = keyboardConfig
         keyboardButton.accessibilityLabel = "Terminal keyboard"
-        keyboardButton.tintColor = .secondaryLabel
         keyboardButton.addAction(UIAction { [weak self] _ in
             guard let self else { return }
             setTerminalKeyboardActive(textView.inputView == nil)
         }, for: .touchUpInside)
 
-        for subview in [attachButton, attachSpinner, attachProgressLabel] {
+        // The recording HUD is purely presentational; the space bar's gesture
+        // already owns the touch while it's up.
+        recordingHUD.isUserInteractionEnabled = false
+
+        for subview in [attachButton, keyboardButton, attachSpinner, attachProgressLabel] {
             subview.translatesAutoresizingMaskIntoConstraints = false
             pillWrapper.addSubview(subview)
         }
-        for subview in [textView, placeholder, keyboardButton, sendButton] {
+        for subview in [textView, placeholder, sendButton] {
             subview.translatesAutoresizingMaskIntoConstraints = false
             pill.contentView.addSubview(subview)
         }
+        // The recording HUD covers the pill while the mic button is held.
+        recordingHUD.translatesAutoresizingMaskIntoConstraints = false
+        pillWrapper.addSubview(recordingHUD)
 
         textHeight = textView.heightAnchor.constraint(equalToConstant: restTextHeight)
         // Trailing controls center on the rest-height strip at the pill's
@@ -208,9 +247,16 @@ final class ComposerBar: UIView {
             attachProgressLabel.centerXAnchor.constraint(equalTo: attachButton.centerXAnchor),
             attachProgressLabel.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
             pillLeadingFlush,
-            pill.trailingAnchor.constraint(equalTo: pillWrapper.trailingAnchor, constant: -8),
+            pill.trailingAnchor.constraint(equalTo: keyboardButton.leadingAnchor, constant: -8),
             pill.topAnchor.constraint(equalTo: pillWrapper.topAnchor),
             pill.bottomAnchor.constraint(equalTo: pillWrapper.bottomAnchor),
+            keyboardButton.trailingAnchor.constraint(equalTo: pillWrapper.trailingAnchor, constant: -8),
+            keyboardButton.centerYAnchor.constraint(equalTo: pill.bottomAnchor, constant: controlCenter),
+            // Sized to the pill's rest height so it reads as a peer capsule,
+            // not a dot; bottom-anchored, so it hugs the last line as the pill
+            // grows (like send and attach).
+            keyboardButton.widthAnchor.constraint(equalToConstant: restTextHeight),
+            keyboardButton.heightAnchor.constraint(equalToConstant: restTextHeight),
             textView.leadingAnchor.constraint(equalTo: pill.contentView.leadingAnchor, constant: 12),
             textView.trailingAnchor.constraint(equalTo: pill.contentView.trailingAnchor, constant: -36),
             textView.topAnchor.constraint(equalTo: pill.contentView.topAnchor),
@@ -222,10 +268,10 @@ final class ComposerBar: UIView {
             sendButton.centerYAnchor.constraint(equalTo: pill.contentView.bottomAnchor, constant: controlCenter),
             sendButton.widthAnchor.constraint(equalToConstant: 30),
             sendButton.heightAnchor.constraint(equalToConstant: 30),
-            keyboardButton.trailingAnchor.constraint(equalTo: pill.contentView.trailingAnchor, constant: controlGap),
-            keyboardButton.centerYAnchor.constraint(equalTo: pill.contentView.bottomAnchor, constant: controlCenter),
-            keyboardButton.widthAnchor.constraint(equalToConstant: 30),
-            keyboardButton.heightAnchor.constraint(equalToConstant: 30),
+            recordingHUD.leadingAnchor.constraint(equalTo: pill.leadingAnchor),
+            recordingHUD.trailingAnchor.constraint(equalTo: pill.trailingAnchor),
+            recordingHUD.topAnchor.constraint(equalTo: pill.topAnchor),
+            recordingHUD.bottomAnchor.constraint(equalTo: pill.bottomAnchor),
         ])
 
         refreshControls()
@@ -270,10 +316,13 @@ final class ComposerBar: UIView {
             terminalKeyboard.matchSystemKeyboardHeight(systemKeyboardHeight)
         }
         textView.inputView = active ? terminalKeyboard : nil
-        keyboardButton.setImage(
-            UIImage(systemName: active ? "keyboard.fill" : "keyboard"), for: .normal
+        // Only the glyph changes on toggle — outline→filled, dim→full — so the
+        // capsule's glass background stays put (see baseForegroundColor above).
+        keyboardButton.configuration?.image = UIImage(
+            systemName: active ? "keyboard.fill" : "keyboard",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)
         )
-        keyboardButton.tintColor = active ? .label : .secondaryLabel
+        keyboardButton.configuration?.baseForegroundColor = active ? .label : .secondaryLabel
         placeholder.text = active ? "Keys go to the terminal" : "Prompt"
         if textView.isFirstResponder {
             textView.reloadInputViews()
@@ -340,17 +389,83 @@ final class ComposerBar: UIView {
         onSend?(text)
     }
 
+    // MARK: - Hold-to-talk
+
+    /// Driven by the terminal keyboard's space bar when push-to-talk is on.
+    private func startDictation() {
+        dictationHeld = true
+        dictationCancelZone = false
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        dictation.start { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                // Released during the permission prompt: don't leave a mic hot.
+                guard dictationHeld else {
+                    dictation.cancel()
+                    return
+                }
+                recordingHUD.beginRecording { [weak self] in self?.dictation.currentLevel() ?? 0 }
+            case .failure(let failure):
+                recordingHUD.showError(failure.hudMessage)
+            }
+        }
+    }
+
+    private func updateDictationCancelZone(_ cancelling: Bool) {
+        guard dictation.isRecording, cancelling != dictationCancelZone else { return }
+        dictationCancelZone = cancelling
+        recordingHUD.setCancelZone(cancelling)
+        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+    }
+
+    private func finishDictation() {
+        dictationHeld = false
+        guard dictation.isRecording else {
+            // Too fast to have started, or still awaiting permission — tidy up.
+            dictation.cancel()
+            recordingHUD.dismiss()
+            return
+        }
+        if dictationCancelZone {
+            cancelDictation()
+            return
+        }
+        recordingHUD.showTranscribing()
+        dictation.stopAndTranscribe { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let transcript):
+                recordingHUD.dismiss()
+                insertDraft(transcript)
+                if !textView.isFirstResponder { textView.becomeFirstResponder() }
+            case .failure(.empty):
+                // A stray tap or silence — don't scold, just clear the HUD.
+                recordingHUD.dismiss()
+            case .failure(let failure):
+                recordingHUD.showError(failure.hudMessage)
+            }
+        }
+    }
+
+    private func cancelDictation() {
+        dictationHeld = false
+        dictationCancelZone = false
+        dictation.cancel()
+        recordingHUD.dismiss()
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
     private func refreshControls() {
         let empty = textView.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         placeholder.isHidden = !textView.text.isEmpty
-        // iMessage's swap: the right slot shows the keyboard toggle at rest
-        // and becomes the send circle once there is something to send. The
-        // send circle springs in (Telegram's check-appearance curve) rather
-        // than blinking on — but only on the empty⇄draft transition, not on
-        // every keystroke.
+        // The keyboard toggle lives outside the pill and never leaves; only
+        // send comes and goes. It springs into the pill's right slot the
+        // moment there is something to send (Telegram's check-appearance
+        // curve) rather than blinking on — but only on the empty⇄draft
+        // transition, not on every keystroke.
         if sendButton.isHidden != empty {
             sendButton.isHidden = empty
-            keyboardButton.isHidden = !empty
             if !empty {
                 sendButton.transform = CGAffineTransform(scaleX: 0.5, y: 0.5)
                 sendButton.alpha = 0
