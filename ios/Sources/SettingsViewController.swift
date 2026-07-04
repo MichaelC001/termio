@@ -107,22 +107,24 @@ final class SettingsViewController: UITableViewController {
         case .connecting: (.systemOrange, "Reconnecting…")
         case .connected: (.systemGreen, "Connected")
         }
-        // Both runs carry explicit fonts: an attributed string without one
-        // falls back to a 12pt default (not the cell's 17pt), which left the
-        // detail floating off the row title's baseline. The dot is a real
-        // status light — ● at 13pt reads as an LED, not a text bullet — and
-        // since its font is smaller than the text's, a small baseline offset
-        // re-centers it on the x-height (the text run still owns the line
-        // metrics, so the shared baseline stays put).
+        // The dot is a drawn image in an NSTextAttachment, not a glyph:
+        // mixed-size text runs never sit still (a ● run smaller than the text
+        // needs a hand-tuned baseline offset that drifts with every size
+        // change), while an attachment centers exactly via its bounds — the
+        // standard recipe: y = (capHeight − height) / 2. The text run carries
+        // an explicit body font so the line metrics (and the row baseline)
+        // are its own.
         let font = UIFont.preferredFont(forTextStyle: .body)
-        let status = NSMutableAttributedString(
-            string: "● ", attributes: [
-                .foregroundColor: color,
-                .font: UIFont.systemFont(ofSize: 13),
-                .baselineOffset: 1,
-            ]
-        )
-        status.append(NSAttributedString(string: text, attributes: [
+        let diameter: CGFloat = 11
+        let dot = NSTextAttachment()
+        dot.image = UIGraphicsImageRenderer(size: CGSize(width: diameter, height: diameter))
+            .image { _ in
+                color.setFill()
+                UIBezierPath(ovalIn: CGRect(x: 0, y: 0, width: diameter, height: diameter)).fill()
+            }
+        dot.bounds = CGRect(x: 0, y: (font.capHeight - diameter) / 2, width: diameter, height: diameter)
+        let status = NSMutableAttributedString(attachment: dot)
+        status.append(NSAttributedString(string: " \(text)", attributes: [
             .foregroundColor: UIColor.secondaryLabel,
             .font: font,
         ]))
