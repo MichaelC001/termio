@@ -99,18 +99,27 @@ final class SettingsViewController: UITableViewController {
         tableView.reloadData()
     }
 
-    /// The Connectivity row's detail: a presence dot + the state, the same
-    /// three states the Connectivity page spells out.
-    private static func linkStatus() -> NSAttributedString {
+    /// The Connectivity row's detail: a presence dot + the state. Shared with
+    /// the Connectivity page's Status row so the two always read the same.
+    static func linkStatus() -> NSAttributedString {
         let (color, text): (UIColor, String) = switch CompanionLink.state {
         case .unpaired: (.tertiaryLabel, "Not Paired")
         case .connecting: (.systemOrange, "Reconnecting…")
         case .connected: (.systemGreen, "Connected")
         }
+        // One font for both runs, explicitly: an attributed string without a
+        // font falls back to a 12pt default (not the cell's 17pt), and a
+        // smaller-font dot run skews UILabel's line metrics — both left the
+        // detail floating off the row title's baseline. A bullet at the text
+        // size keeps a single baseline and sits on the x-height center.
+        let font = UIFont.preferredFont(forTextStyle: .body)
         let status = NSMutableAttributedString(
-            string: "● ", attributes: [.foregroundColor: color, .font: UIFont.systemFont(ofSize: 11)]
+            string: "• ", attributes: [.foregroundColor: color, .font: font]
         )
-        status.append(NSAttributedString(string: text, attributes: [.foregroundColor: UIColor.secondaryLabel]))
+        status.append(NSAttributedString(string: text, attributes: [
+            .foregroundColor: UIColor.secondaryLabel,
+            .font: font,
+        ]))
         return status
     }
 
@@ -405,22 +414,16 @@ final class ConnectivitySettingsViewController: UITableViewController {
         case (.mac, .status):
             cell.textLabel?.text = "Status"
             cell.selectionStyle = .none
-            cell.imageView?.image = UIImage(systemName: "circle.fill")
-            cell.imageView?.preferredSymbolConfiguration = .init(pointSize: 11)
-            switch CompanionLink.state {
-            case .unpaired:
-                cell.imageView?.tintColor = .tertiaryLabel
-                cell.detailTextLabel?.text = "Not Paired"
-            case .connecting:
-                cell.imageView?.tintColor = .systemOrange
-                cell.detailTextLabel?.text = "Reconnecting…"
-            case .connected:
-                cell.imageView?.tintColor = .systemGreen
-                cell.detailTextLabel?.text = "Connected"
-            }
+            // The dot rides right before the state word ("● Connected"), not
+            // out front as the row's icon — same rendering as the root page.
+            cell.detailTextLabel?.attributedText = SettingsViewController.linkStatus()
         case (.mac, .address):
             cell.textLabel?.text = "Address"
-            cell.detailTextLabel?.text = CompanionLink.savedURL?.absoluteString ?? "Not Set"
+            // Host + port only: the scheme is noise and the pairing token
+            // riding the query is a secret — and the full URL overflows the
+            // row. The edit alert still carries the complete URL.
+            cell.detailTextLabel?.text = Self.displayAddress(CompanionLink.savedURL)
+            cell.detailTextLabel?.lineBreakMode = .byTruncatingMiddle
             cell.accessoryType = .disclosureIndicator
         case (.mac, .scan):
             cell.textLabel?.text = "Scan QR Code"
@@ -445,6 +448,14 @@ final class ConnectivitySettingsViewController: UITableViewController {
         default:
             break
         }
+    }
+
+    /// "ws://studio.local:8787?t=<token>" → "studio.local:8787".
+    private static func displayAddress(_ url: URL?) -> String {
+        guard let url else { return "Not Set" }
+        guard let host = url.host else { return url.absoluteString }
+        let port = url.port.map { ":\($0)" } ?? ""
+        return host + port
     }
 
     // MARK: - Actions
