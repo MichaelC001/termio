@@ -16,9 +16,10 @@ final class SessionListViewController: UIViewController {
     /// the current-chat pill.
     var currentSessionKey: String?
 
-    /// Live roster from the Mac when a companion URL is configured, else the
-    /// bundled mock so the UI is explorable offline.
-    private var projects: [MockProject] = MockProject.samples
+    /// Live roster from the Mac when a companion URL is configured. Empty when
+    /// unpaired/connecting — the zero state fills the screen instead of fake
+    /// rows. The bundled mock only appears under `-demo` (screenshots / tests).
+    private var projects: [MockProject] = []
     /// `projects` in the chosen order — what the table shows.
     private var visible: [MockProject] = []
     private var client: CompanionClient?
@@ -34,7 +35,15 @@ final class SessionListViewController: UIViewController {
     private let filterButton = UIButton(type: .system)
     private let composeButton = UIButton(type: .system)
     private let tableView = UITableView(frame: .zero, style: .grouped)
+    /// The Telegram/iMessage-style zero state shown when there are no real
+    /// sessions to list — never fake rows. Its copy tracks `CompanionLink.state`.
+    private let emptyState = SessionListEmptyState()
+    /// Set once a `.connecting` state has lingered past the grace window, so the
+    /// zero state escalates from "Connecting…" to "Can't reach your Mac".
+    private var reconnectStalled = false
+    private var connectingGraceTimer: Timer?
     private var pairingObserver: NSObjectProtocol?
+    private var linkStateObserver: NSObjectProtocol?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -43,10 +52,16 @@ final class SessionListViewController: UIViewController {
         view.backgroundColor = .systemBackground
         let topBar = configureTopBar()
         configureTable(below: topBar)
+        configureEmptyState(below: topBar)
         // Added last so the floating glass footer layers over the list.
         configureBottomBar()
         refilter()
         connectRosterIfConfigured()
+        // The zero-state copy ("No Mac connected" → "Connecting…" → the empty
+        // roster) follows the live link state, not just roster pushes.
+        linkStateObserver = NotificationCenter.default.addObserver(
+            forName: CompanionLink.stateDidChange, object: nil, queue: .main
+        ) { [weak self] _ in self?.updateEmptyState() }
         // The Connectivity settings page edits the pairing; this socket's
         // owner follows it.
         pairingObserver = NotificationCenter.default.addObserver(
@@ -67,6 +82,10 @@ final class SessionListViewController: UIViewController {
         if let pairingObserver {
             NotificationCenter.default.removeObserver(pairingObserver)
         }
+        if let linkStateObserver {
+            NotificationCenter.default.removeObserver(linkStateObserver)
+        }
+        connectingGraceTimer?.invalidate()
     }
 
     func refresh() {
@@ -215,13 +234,13 @@ final class SessionListViewController: UIViewController {
         return UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
     }
 
-    /// Forget-Mac teardown: back to the offline mock list.
+    /// Forget-Mac teardown: no roster, so the unpaired zero state takes over.
     private func disconnectRoster() {
         client?.stop()
         client = nil
         companionURL = nil
         CompanionLink.state = .unpaired
-        projects = MockProject.samples
+        projects = []
         refilter()
     }
 
@@ -269,6 +288,112 @@ final class SessionListViewController: UIViewController {
             ? projects.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             : projects
         tableView.reloadData()
+        updateEmptyState()
+    }
+
+    // MARK: - Empty state
+
+    private func configureEmptyState(below topBar: UIView) {
+        emptyState.isHidden = true
+        // The button's job depends on the state: unpaired → go pair a Mac in
+        // Settings; stalled reconnect → kick the socket now ("Try Again").
+        emptyState.onAction = { [weak self] in self?.emptyStateAction() }
+        emptyState.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(emptyState)
+        NSLayoutConstraint.activate([
+            emptyState.topAnchor.constraint(equalTo: topBar.bottomAnchor),
+            emptyState.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            emptyState.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            emptyState.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+    }
+
+    /// Show the zero state only when there are genuinely no rows, and phrase it
+    /// for where the link is: unpaired (onboard), connecting (reassure) →
+    /// stalled (the Mac isn't answering — offer Try Again), or connected-but-idle
+    /// (nudge toward starting one on the Mac).
+    private func updateEmptyState() {
+        emptyState.isHidden = !visible.isEmpty
+        guard !emptyState.isHidden else {
+            stopConnectingGraceTimer()
+            return
+        }
+        switch CompanionLink.state {
+        case .unpaired:
+            stopConnectingGraceTimer()
+            reconnectStalled = false
+            emptyState.configure(
+                symbol: "macbook.and.iphone",
+                title: "No Mac connected",
+                message: "Open termio on your Mac, then pair this phone to see and drive your sessions from here.",
+                actionTitle: "Connect a Mac",
+                busy: false
+            )
+        case .connecting where reconnectStalled:
+            // The socket has been down long enough that the Mac is probably
+            // asleep or off-network. Say so, and let the user force a retry —
+            // the link keeps trying on its slow heartbeat regardless.
+            emptyState.configure(
+                symbol: "wifi.exclamationmark",
+                title: "Can't reach your Mac",
+                message: "It may be asleep or off your network. termio keeps trying — reopen the lid, or tap to retry now.",
+                actionTitle: "Try Again",
+                busy: false
+            )
+        case .connecting:
+            startConnectingGraceTimer()
+            emptyState.configure(
+                symbol: nil,
+                title: "Connecting…",
+                message: "Reaching your Mac over the companion link.",
+                actionTitle: nil,
+                busy: true
+            )
+        case .connected:
+            stopConnectingGraceTimer()
+            reconnectStalled = false
+            emptyState.configure(
+                symbol: "tray",
+                title: "No active sessions",
+                message: "Start a session on your Mac, or tap ＋ above, and it'll show up here.",
+                actionTitle: nil,
+                busy: false
+            )
+        }
+    }
+
+    /// After ~15s of unbroken "Connecting…", assume the Mac isn't coming right
+    /// back and escalate the copy. Foreground/path events that reconnect will
+    /// flip the state to `.connected` and cancel this.
+    private func startConnectingGraceTimer() {
+        guard connectingGraceTimer == nil, !reconnectStalled else { return }
+        connectingGraceTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            connectingGraceTimer = nil
+            reconnectStalled = true
+            updateEmptyState()
+        }
+    }
+
+    private func stopConnectingGraceTimer() {
+        connectingGraceTimer?.invalidate()
+        connectingGraceTimer = nil
+    }
+
+    /// The zero-state button. Unpaired → open pairing; stalled → force an
+    /// immediate reconnect and drop back to the "Connecting…" copy.
+    private func emptyStateAction() {
+        if case .unpaired = CompanionLink.state {
+            presentSettings()
+            return
+        }
+        reconnectStalled = false
+        updateEmptyState()
+        if let client {
+            client.reconnectNow()
+        } else if let url = CompanionLink.savedURL {
+            connectRoster(to: url)
+        }
     }
 
     // MARK: - Roster
@@ -278,7 +403,12 @@ final class SessionListViewController: UIViewController {
     private func connectRosterIfConfigured() {
         // Demo modes (UI tests, screenshots) are hermetic: they show the
         // bundled mock roster, not whatever Mac this device paired with last.
-        guard !ProcessInfo.processInfo.arguments.contains("-demo") else { return }
+        // This is the ONLY path that surfaces the sample sessions.
+        guard !ProcessInfo.processInfo.arguments.contains("-demo") else {
+            projects = MockProject.samples
+            refilter()
+            return
+        }
         let arg = ProcessInfo.processInfo.arguments
             .firstIndex(of: "-roster-url")
             .flatMap { idx -> String? in
@@ -550,5 +680,78 @@ private struct SidebarSessionRow: View {
             isCurrent ? Color.primary.opacity(0.08) : .clear,
             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
         )
+    }
+}
+
+// MARK: - Empty state view
+
+/// The centered zero state — a quiet glyph (or spinner), a title, a line of
+/// guidance, and an optional pill button. Modeled on Messages/Telegram's empty
+/// inbox: never fake content, always a status + a next step.
+private final class SessionListEmptyState: UIView {
+    private let icon = UIImageView()
+    private let spinner = UIActivityIndicatorView(style: .medium)
+    private let titleLabel = UILabel()
+    private let messageLabel = UILabel()
+    private let actionButton = UIButton(type: .system)
+    /// Fired when the pill button is tapped (only shown when it has a title).
+    var onAction: (() -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+
+        icon.contentMode = .center
+        icon.tintColor = .tertiaryLabel
+        icon.preferredSymbolConfiguration = .init(pointSize: 44, weight: .regular)
+        spinner.color = .secondaryLabel
+        spinner.hidesWhenStopped = true
+
+        titleLabel.font = .systemFont(ofSize: 20, weight: .semibold)
+        titleLabel.textColor = .label
+        titleLabel.textAlignment = .center
+
+        messageLabel.font = .systemFont(ofSize: 15)
+        messageLabel.textColor = .secondaryLabel
+        messageLabel.textAlignment = .center
+        messageLabel.numberOfLines = 0
+
+        actionButton.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
+        actionButton.addAction(UIAction { [weak self] _ in self?.onAction?() }, for: .touchUpInside)
+
+        let stack = UIStackView(arrangedSubviews: [icon, spinner, titleLabel, messageLabel, actionButton])
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 8
+        stack.setCustomSpacing(16, after: icon)
+        stack.setCustomSpacing(20, after: messageLabel)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            // Nudged above dead-center so it reads as content, not a modal.
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -44),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 44),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -44),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(symbol: String?, title: String, message: String, actionTitle: String?, busy: Bool) {
+        if let symbol {
+            icon.image = UIImage(systemName: symbol)
+            icon.isHidden = false
+        } else {
+            icon.isHidden = true
+        }
+        if busy { spinner.startAnimating() } else { spinner.stopAnimating() }
+        titleLabel.text = title
+        messageLabel.text = message
+        if let actionTitle {
+            actionButton.setTitle(actionTitle, for: .normal)
+            actionButton.isHidden = false
+        } else {
+            actionButton.isHidden = true
+        }
     }
 }

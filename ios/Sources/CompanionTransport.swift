@@ -37,7 +37,7 @@ final class CompanionTransport: NSObject {
     // Reconnect state, all touched on the main queue.
     private var stopped = true
     private var isConnected = false
-    private var attempts = 0
+    private var policy = ReconnectPolicy()
     private var foregroundObserver: NSObjectProtocol?
     /// Only touched on the delegate queue (see `didOpen`).
     private var everConnected = false
@@ -49,6 +49,16 @@ final class CompanionTransport: NSObject {
     private var gridCols = 0
     private var gridRows = 0
     private let gridLock = NSLock()
+    /// Guards send order: `auth` must be the first frame on the socket. The
+    /// terminal view calls `resize` (→ `sendGrid`) as it lays out, which can land
+    /// after `task.resume()` but before `didOpen` — URLSession then flushes that
+    /// queued `resize` *ahead* of the `auth` `didOpen` sends. The server refuses
+    /// any non-`auth` control on an unauthenticated connection, so that stray
+    /// `resize` trips "unauthorized" before `auth` is ever read (the roster socket
+    /// never sends anything but `auth`, which is why the list works and the
+    /// terminal didn't). So grid and keystroke frames stay suppressed until
+    /// `didOpen` has queued the auth preamble and set this true. Guarded by `gridLock`.
+    private var authSent = false
 
     /// Remote PTY bytes for the terminal. Fired on a URLSession queue.
     var onOutput: ((Data) -> Void)?
@@ -68,7 +78,7 @@ final class CompanionTransport: NSObject {
 
     func start() {
         stopped = false
-        attempts = 0
+        policy.reset()
         notify(.connecting)
         connect()
         if foregroundObserver == nil {
@@ -84,7 +94,7 @@ final class CompanionTransport: NSObject {
                 } else {
                     // Skip any pending backoff — the user is looking at the
                     // screen now.
-                    attempts = 0
+                    policy.reset()
                     connect()
                 }
             }
@@ -92,6 +102,10 @@ final class CompanionTransport: NSObject {
     }
 
     func send(_ data: Data) {
+        gridLock.lock()
+        let ready = authSent
+        gridLock.unlock()
+        guard ready else { return }
         task?.send(.data(data)) { _ in }
     }
 
@@ -113,8 +127,9 @@ final class CompanionTransport: NSObject {
         gridLock.lock()
         let cols = gridCols
         let rows = gridRows
+        let ready = authSent
         gridLock.unlock()
-        guard cols > 0, rows > 0 else { return }
+        guard ready, cols > 0, rows > 0 else { return }
         let control = CompanionControl.resize(cols: cols, rows: rows).encoded()
         task?.send(.string(control)) { _ in }
     }
@@ -139,6 +154,11 @@ final class CompanionTransport: NSObject {
         // mid-replay and loop the link in "Reconnecting…" forever.
         task.maximumMessageSize = 8 << 20
         self.task = task
+        // A fresh socket has not sent its auth preamble yet — suppress grid and
+        // keystroke frames until `didOpen` does, so nothing precedes `auth`.
+        gridLock.lock()
+        authSent = false
+        gridLock.unlock()
         task.resume()
         receive(on: task)
     }
@@ -152,10 +172,10 @@ final class CompanionTransport: NSObject {
             guard let self, task === self.task, !stopped else { return }
             isConnected = false
             notify(.reconnecting)
-            attempts += 1
-            // Fast cadence with jitter: failed LAN connects are cheap, and the
-            // win is noticing quickly when the Mac is back.
-            let delay = min(0.5 * pow(2.0, Double(attempts - 1)), 5) * .random(in: 0.8...1.2)
+            // Fast burst then a slow heartbeat (see ReconnectPolicy): re-attach
+            // is idempotent, so quick when the Mac's rebuilding, light when the
+            // laptop's closed.
+            let delay = policy.nextDelay()
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self, !stopped, !isConnected else { return }
                 connect()
@@ -220,7 +240,19 @@ extension CompanionTransport: URLSessionWebSocketDelegate {
         // the bridge (and everything else) until the token lands.
         if let token = CompanionLink.token(of: url) {
             task.send(.string(CompanionControl.auth(token: token).encoded())) { _ in }
+        } else {
+            // No `?t=` on the URL: the Mac drops this socket after its ~10s
+            // auth grace window, so the session just churns "Reconnecting…"
+            // with no visible cause. Say so.
+            NSLog("[companion] session URL has no pairing token (?t=…) — the Mac will refuse this socket after ~10s. Re-pair via Settings ▸ Mobile.")
         }
+        // Auth is now queued ahead of everything else, so grid/keystroke frames
+        // may flow. `URLSessionWebSocketTask` preserves send-call order, so the
+        // attach and grid below land after auth; and any external `resize` that
+        // fired during the connect stayed suppressed until this moment.
+        gridLock.lock()
+        authSent = true
+        gridLock.unlock()
         if let attachSessionID {
             let attach = CompanionControl.attach(sessionID: attachSessionID).encoded()
             task.send(.string(attach)) { _ in }
@@ -231,7 +263,7 @@ extension CompanionTransport: URLSessionWebSocketDelegate {
         DispatchQueue.main.async { [weak self] in
             guard let self, task === self.task, !stopped else { return }
             isConnected = true
-            attempts = 0
+            policy.reset()
             notify(.connected)
         }
     }

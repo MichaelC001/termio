@@ -18,7 +18,7 @@ final class CompanionClient: NSObject {
     private lazy var session = URLSession(configuration: .default, delegate: self, delegateQueue: .main)
     private var stopped = true
     private var isConnected = false
-    private var attempts = 0
+    private var policy = ReconnectPolicy()
     private var foregroundObserver: NSObjectProtocol?
     private var pathMonitor: NWPathMonitor?
     private var lastPathStatus: NWPath.Status?
@@ -58,7 +58,7 @@ final class CompanionClient: NSObject {
 
     func start() {
         stopped = false
-        attempts = 0
+        policy.reset()
         connect()
         startPathMonitor()
         startPingTimer()
@@ -69,7 +69,7 @@ final class CompanionClient: NSObject {
                 // Skip any pending backoff — the socket rarely survives a trip
                 // to the background, and the user is looking at the list now.
                 guard let self, !stopped, !isConnected else { return }
-                attempts = 0
+                policy.reset()
                 connect()
             }
         }
@@ -103,13 +103,19 @@ final class CompanionClient: NSObject {
         receive(on: task)
     }
 
+    /// Force an immediate reconnect, dropping any pending backoff — the "Try
+    /// Again" affordance on the stalled zero state.
+    func reconnectNow() {
+        guard !stopped, !isConnected else { return }
+        policy.reset()
+        connect()
+    }
+
     private func scheduleReconnect() {
         guard !stopped else { return }
-        attempts += 1
-        // Fast cadence with jitter, capped low: the usual outage is the Mac
-        // app rebuilding, failed LAN connects are cheap, and the win is
-        // noticing quickly when it's back.
-        let delay = min(0.5 * pow(2.0, Double(attempts - 1)), 6) * .random(in: 0.8...1.2)
+        // Fast burst then a slow heartbeat (see ReconnectPolicy): quick to
+        // notice a rebuilt Mac, easy on the radio when the laptop's just closed.
+        let delay = policy.nextDelay()
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, !stopped, !isConnected else { return }
             connect()
@@ -127,7 +133,7 @@ final class CompanionClient: NSObject {
                 && lastPathStatus != nil && lastPathStatus != .satisfied
             lastPathStatus = path.status
             guard cameUp, !isConnected else { return }
-            attempts = 0
+            policy.reset()
             connect()
         }
         monitor.start(queue: .main)
@@ -147,7 +153,7 @@ final class CompanionClient: NSObject {
                     guard let self, !stopped, task === self.task, isConnected else { return }
                     isConnected = false
                     onConnected?(false)
-                    attempts = 0
+                    policy.reset()
                     connect()
                 }
             }
@@ -194,9 +200,14 @@ extension CompanionClient: URLSessionWebSocketDelegate {
         // Auth rides first on every connect; the roster is the server's reply.
         if let token = CompanionLink.token(of: url) {
             task.send(.string(CompanionControl.auth(token: token).encoded())) { _ in }
+        } else {
+            // No `?t=` on the paired URL: the socket opens, but the Mac refuses
+            // it after its ~10s auth grace window, so the link loops
+            // connect→unauthorized→reconnect with no visible cause. Say so.
+            NSLog("[companion] roster URL has no pairing token (?t=…) — the Mac will refuse this socket after ~10s. Re-pair via Settings ▸ Mobile.")
         }
         isConnected = true
-        attempts = 0
+        policy.reset()
         onConnected?(true)
     }
 
