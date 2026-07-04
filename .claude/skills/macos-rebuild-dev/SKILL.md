@@ -26,9 +26,15 @@ that need headless Chrome, so plain ImageMagick can't render it).
 When invoked, execute these steps sequentially:
 
 1. **Kill the running app** (`-9 -x` catches both the bundle binary and any
-   leftover bare `.build` binary — both are named `termio`):
+   leftover bare `.build` binary — both are named `termio`). SIGKILL skips the
+   app's `willTerminate` cleanup, so also reap the companion tunnel it spawned —
+   otherwise `cloudflared`/`tunelo` is reparented to launchd and keeps advertising
+   a stale URL the phone stays pinned to (the app now also reaps on launch, but
+   this stops the orphan lingering between kill and relaunch):
    ```bash
    pkill -9 -x termio || true
+   pkill -9 -f "cloudflared tunnel --url http://127.0.0.1:8787" || true
+   pkill -9 -f "tunelo port 8787" || true
    ```
 
 2. **Refresh the icon PNG** from the SVG (non-fatal — if the renderer is missing,

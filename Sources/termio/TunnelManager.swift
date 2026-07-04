@@ -72,9 +72,17 @@ final class TunnelManager: ObservableObject {
         }
     }
 
-    /// App-launch hook: resume the tunnel the user had on last quit.
+    /// App-launch hook (and Mobile-Access resume): bring the tunnel the user had
+    /// on last quit back up. A no-op when the provider is Off.
     func startIfEnabled() {
         if provider != .off { restart() }
+    }
+
+    /// Mobile Access was switched off: tear the tunnel down so nothing public
+    /// remains, but keep the provider *preference* — turning Mobile Access back
+    /// on calls `startIfEnabled()` and restores the same provider.
+    func suspend() {
+        stopProcess()
     }
 
     func setProvider(_ newProvider: Provider) {
@@ -91,6 +99,16 @@ final class TunnelManager: ObservableObject {
             status = .off
             return
         }
+        // Reap any tunnel a prior run left behind. `stopProcess`'s SIGTERM (and
+        // even the clean-quit `willTerminate` hook) misses two cases: a crash or
+        // SIGKILL never runs the hook, and cloudflared can ignore SIGTERM — so an
+        // old child gets reparented to launchd and keeps advertising a *stale*
+        // trycloudflare URL the phone is still pinned to. That's the "list works
+        // but the terminal can't connect" trap: the roster rides the warm old
+        // socket while a fresh session socket hits a dead/rotated URL. Only this
+        // app ever fronts the companion port, so killing every tunnel on it right
+        // before we spawn ours is safe and converges to exactly one.
+        Self.reapStrayTunnels()
         let target = provider
         status = .starting
         Task {
@@ -205,6 +223,27 @@ final class TunnelManager: ObservableObject {
         process.terminate()
         self.process = nil
         status = .off
+    }
+
+    /// Force-kill any tunnel process still pointed at the companion port — an
+    /// orphan from a previous run that `stopProcess`/`willTerminate` couldn't
+    /// reach (crash, SIGKILL, or a cloudflared that swallows SIGTERM). Matched by
+    /// the exact argv we spawn with, so it only ever hits our own tunnels.
+    /// SIGKILL (not TERM) because cloudflared drains slowly on TERM and we want
+    /// the port's advertised URL gone *now*, before we mint a fresh one.
+    private static func reapStrayTunnels() {
+        let port = CompanionServer.defaultPort
+        let patterns = [
+            "cloudflared tunnel --url http://127.0.0.1:\(port)",
+            "tunelo port \(port)",
+        ]
+        for pattern in patterns {
+            let pkill = Process()
+            pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+            pkill.arguments = ["-9", "-f", pattern]
+            try? pkill.run()
+            pkill.waitUntilExit()
+        }
     }
 
     // MARK: - Binary discovery & install
