@@ -418,25 +418,35 @@ final class ConnectivitySettingsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
+        // Every row leads with an SF Symbol, matching the root Settings page.
+        cell.imageView?.tintColor = .label
         switch (Section(rawValue: indexPath.section), MacRow(rawValue: indexPath.row)) {
         case (.mac, .status):
             cell.textLabel?.text = "Status"
+            cell.imageView?.image = UIImage(systemName: "link")
             cell.selectionStyle = .none
             // The dot rides right before the state word ("● Connected"), not
             // out front as the row's icon — same rendering as the root page.
             cell.detailTextLabel?.attributedText = SettingsViewController.linkStatus()
         case (.mac, .address):
-            cell.textLabel?.text = "Address"
-            // Host + port only: the scheme is noise and the pairing token
-            // riding the query is a secret — and the full URL overflows the
-            // row. The edit alert still carries the complete URL.
-            cell.detailTextLabel?.text = Self.displayAddress(CompanionLink.savedURL)
-            cell.detailTextLabel?.lineBreakMode = .byTruncatingMiddle
             cell.accessoryType = .disclosureIndicator
+            if let url = CompanionLink.savedURL {
+                cell.textLabel?.text = "Address"
+                cell.imageView?.image = UIImage(systemName: "network")
+                // Host + port only: the scheme is noise and the pairing token
+                // riding the query is a secret — and the full URL overflows the
+                // row. The edit alert still carries the complete URL.
+                cell.detailTextLabel?.text = Self.displayAddress(url)
+                cell.detailTextLabel?.lineBreakMode = .byTruncatingMiddle
+            } else {
+                // Empty state: a plain "Not Set" is a dead end. Make the row
+                // the invitation to type the address itself.
+                cell.textLabel?.text = "Enter Address Manually"
+                cell.imageView?.image = UIImage(systemName: "keyboard")
+            }
         case (.mac, .scan):
             cell.textLabel?.text = "Scan QR Code"
             cell.imageView?.image = UIImage(systemName: "qrcode.viewfinder")
-            cell.imageView?.tintColor = .label
         default:
             cell.textLabel?.text = "Forget This Mac"
             cell.textLabel?.textColor = .systemRed
@@ -459,8 +469,7 @@ final class ConnectivitySettingsViewController: UITableViewController {
     }
 
     /// "ws://studio.local:8787?t=<token>" → "studio.local:8787".
-    private static func displayAddress(_ url: URL?) -> String {
-        guard let url else { return "Not Set" }
+    private static func displayAddress(_ url: URL) -> String {
         guard let host = url.host else { return url.absoluteString }
         let port = url.port.map { ":\($0)" } ?? ""
         return host + port
