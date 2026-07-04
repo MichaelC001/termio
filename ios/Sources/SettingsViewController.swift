@@ -107,14 +107,20 @@ final class SettingsViewController: UITableViewController {
         case .connecting: (.systemOrange, "Reconnecting…")
         case .connected: (.systemGreen, "Connected")
         }
-        // One font for both runs, explicitly: an attributed string without a
-        // font falls back to a 12pt default (not the cell's 17pt), and a
-        // smaller-font dot run skews UILabel's line metrics — both left the
-        // detail floating off the row title's baseline. A bullet at the text
-        // size keeps a single baseline and sits on the x-height center.
+        // Both runs carry explicit fonts: an attributed string without one
+        // falls back to a 12pt default (not the cell's 17pt), which left the
+        // detail floating off the row title's baseline. The dot is a real
+        // status light — ● at 13pt reads as an LED, not a text bullet — and
+        // since its font is smaller than the text's, a small baseline offset
+        // re-centers it on the x-height (the text run still owns the line
+        // metrics, so the shared baseline stays put).
         let font = UIFont.preferredFont(forTextStyle: .body)
         let status = NSMutableAttributedString(
-            string: "• ", attributes: [.foregroundColor: color, .font: font]
+            string: "● ", attributes: [
+                .foregroundColor: color,
+                .font: UIFont.systemFont(ofSize: 13),
+                .baselineOffset: 1,
+            ]
         )
         status.append(NSAttributedString(string: text, attributes: [
             .foregroundColor: UIColor.secondaryLabel,
