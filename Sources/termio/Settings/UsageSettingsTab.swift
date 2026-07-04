@@ -103,11 +103,23 @@ private struct UsageAgentDetail: View {
     let agent: AgentPreset
     @ObservedObject var usage: UsageMonitor
 
+    /// Yesterday's totals out of the per-day buckets — the one recent day the
+    /// rolling week/month rows can't answer at a glance (and, at a week or month
+    /// boundary, don't contain at all).
+    private func yesterdayStats(_ tokens: AgentTokenUsage) -> TokenWindowStats {
+        let calendar = Calendar.current
+        guard let yesterday = calendar.date(
+            byAdding: .day, value: -1, to: calendar.startOfDay(for: Date()))
+        else { return TokenWindowStats() }
+        return tokens.daily[yesterday] ?? TokenWindowStats()
+    }
+
     var body: some View {
         Form {
             Section {
                 if let tokens = usage.tokenUsage[agent] {
                     TokenUsageRow(label: "Today", stats: tokens.today, hasCost: tokens.hasCost)
+                    TokenUsageRow(label: "Yesterday", stats: yesterdayStats(tokens), hasCost: tokens.hasCost)
                     TokenUsageRow(label: "This week", stats: tokens.week, hasCost: tokens.hasCost)
                     TokenUsageRow(label: "This month", stats: tokens.month, hasCost: tokens.hasCost)
                 } else {
@@ -121,6 +133,14 @@ private struct UsageAgentDetail: View {
                 Text("Tallied from \(agent.displayName)'s own local session logs across every terminal and editor on this Mac — your actual usage, regardless of how the plan bills.\(usage.tokenUsage[agent]?.hasCost == true ? " Cost is estimated at API rates." : "")")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            if let tokens = usage.tokenUsage[agent], !tokens.daily.isEmpty {
+                Section {
+                    UsageActivityChart(daily: tokens.daily, hasCost: tokens.hasCost)
+                } header: {
+                    SectionHeaderLabel(title: "Activity")
+                }
             }
 
             if let reading = usage.usage[agent], !reading.windows.isEmpty {
@@ -168,6 +188,131 @@ private struct TokenUsageRow: View {
             }
         }
         .padding(.vertical, 1)
+    }
+}
+
+/// The activity chart's spans — one bar per day in either.
+private enum UsageChartRange: String, CaseIterable, Identifiable {
+    case week = "7D"
+    case month = "30D"
+
+    var id: String { rawValue }
+    var dayCount: Int { self == .week ? 7 : 30 }
+
+    var summaryLabel: String {
+        self == .week ? "Last 7 days" : "Last 30 days"
+    }
+}
+
+/// One bar of the activity chart plus the day phrase ("Jul 3") the summary line
+/// shows while it is hovered.
+private struct UsageChartBar: Identifiable, Equatable {
+    let id: Int
+    let label: String
+    let stats: TokenWindowStats
+}
+
+/// The per-day activity chart: a range picker (7 or 30 days) over a row of bars
+/// scaled to the busiest day in view. Hovering a bar swaps the summary line from
+/// the range total to that day's own numbers — no tooltip chrome, the same quiet
+/// register as the rest of the pane.
+private struct UsageActivityChart: View {
+    let daily: [Date: TokenWindowStats]
+    let hasCost: Bool
+    @State private var range: UsageChartRange = .month
+    @State private var hoveredID: Int?
+
+    var body: some View {
+        let bars = bars(for: range)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(summary(for: bars))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Picker("Range", selection: $range) {
+                    ForEach(UsageChartRange.allCases) { range in
+                        Text(range.rawValue).tag(range)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .controlSize(.small)
+                .labelsHidden()
+                .fixedSize()
+            }
+            barsView(bars)
+            HStack {
+                Text(bars.first?.label ?? "")
+                Spacer()
+                Text("Today")
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 4)
+        .onChange(of: range) { hoveredID = nil }
+    }
+
+    /// The bars for the chosen range, oldest first, one per day, with empty days
+    /// kept so the time axis stays honest.
+    private func bars(for range: UsageChartRange) -> [UsageChartBar] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let count = range.dayCount
+        return (0..<count).compactMap { index in
+            guard let day = calendar.date(byAdding: .day, value: index - count + 1, to: today)
+            else { return nil }
+            return UsageChartBar(
+                id: index,
+                label: day.formatted(.dateTime.month(.abbreviated).day()),
+                stats: daily[day] ?? TokenWindowStats())
+        }
+    }
+
+    /// The hovered day's numbers, or the whole range's total when nothing is.
+    private func summary(for bars: [UsageChartBar]) -> String {
+        if let hoveredID, let bar = bars.first(where: { $0.id == hoveredID }) {
+            return phrase(bar.label, bar.stats)
+        }
+        var total = TokenWindowStats()
+        for bar in bars { total.add(bar.stats) }
+        return phrase(range.summaryLabel, total)
+    }
+
+    private func phrase(_ label: String, _ stats: TokenWindowStats) -> String {
+        var text = "\(label) · \(stats.tokenSummary) tokens"
+        if hasCost, !stats.costSummary.isEmpty { text += " · \(stats.costSummary)" }
+        return text
+    }
+
+    private func barsView(_ bars: [UsageChartBar]) -> some View {
+        let peak = max(bars.map(\.stats.total).max() ?? 0, 1)
+        return HStack(alignment: .bottom, spacing: bars.count > 7 ? 2 : 4) {
+            ForEach(bars) { bar in
+                let fraction = Double(bar.stats.total) / Double(peak)
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(color(for: bar))
+                        .frame(height: bar.stats.total == 0 ? 2 : max(3, fraction * 56))
+                }
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    if inside {
+                        hoveredID = bar.id
+                    } else if hoveredID == bar.id {
+                        hoveredID = nil
+                    }
+                }
+            }
+        }
+        .frame(height: 56)
+    }
+
+    private func color(for bar: UsageChartBar) -> Color {
+        if bar.stats.total == 0 { return Color.primary.opacity(0.08) }
+        return Color.accentColor.opacity(hoveredID == bar.id ? 1 : 0.55)
     }
 }
 

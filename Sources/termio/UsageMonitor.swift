@@ -145,11 +145,13 @@ final class UsageMonitor: ObservableObject {
         scanTask = Task.detached(priority: .utility) { [weak self] in
             let windows = DateWindows()
             var scanned: [AgentPreset: AgentTokenUsage] = [:]
-            if claudeEnabled, let claude = Self.scanClaude(windows) {
-                scanned[.claudeCode] = claude
+            if claudeEnabled {
+                let claude = Self.scanClaude(windows)
+                if !claude.isEmpty { scanned[.claudeCode] = claude }
             }
-            if codexEnabled, let codex = Self.scanCodex(windows) {
-                scanned[.codex] = codex
+            if codexEnabled {
+                let codex = Self.scanCodex(windows)
+                if !codex.isEmpty { scanned[.codex] = codex }
             }
             let result = scanned
             await self?.finishTokenScan(result)
@@ -433,7 +435,14 @@ struct AgentTokenUsage: Sendable, Hashable {
     var today = TokenWindowStats()
     var week = TokenWindowStats()
     var month = TokenWindowStats()
+    /// Per-local-day totals feeding the activity chart, covering the scan window
+    /// (the last ~month). Keys are `startOfDay` instants in the scan's calendar.
+    var daily: [Date: TokenWindowStats] = [:]
     var hasCost = false
+
+    /// True when there is nothing to show at all — no in-month totals and no
+    /// historical days — so the agent's pane can fall back to its hint.
+    var isEmpty: Bool { month.isEmpty && daily.values.allSatisfy(\.isEmpty) }
 }
 
 /// The local-calendar boundaries the scan buckets into. Today is since local
@@ -444,11 +453,20 @@ struct DateWindows: Sendable {
     let todayStart: Date
     let weekStart: Date
     let monthStart: Date
+    /// Where the scan stops looking back: the older of the month start and the
+    /// activity chart's 30-day horizon, so the month totals stay whole and the
+    /// chart's oldest day is never half-scanned. Anything older is skipped.
+    let scanStart: Date
+    let calendar: Calendar
 
     init(now: Date = Date(), calendar: Calendar = .current) {
+        self.calendar = calendar
         todayStart = calendar.startOfDay(for: now)
         weekStart = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? todayStart
         monthStart = calendar.dateInterval(of: .month, for: now)?.start ?? todayStart
+        let chartStart = calendar.date(byAdding: .day, value: -29, to: todayStart)
+            ?? todayStart.addingTimeInterval(-29 * 86_400)
+        scanStart = min(monthStart, chartStart)
     }
 }
 
@@ -485,37 +503,57 @@ private struct ModelPrice {
 
 extension UsageMonitor {
     private nonisolated static func bucket(
-        _ usage: inout AgentTokenUsage, at timestamp: Date, in windows: DateWindows,
+        _ usage: inout AgentTokenUsage, at timestamp: Date, day: Date, in windows: DateWindows,
         _ delta: TokenWindowStats
     ) {
         if timestamp >= windows.monthStart { usage.month.add(delta) }
         if timestamp >= windows.weekStart { usage.week.add(delta) }
         if timestamp >= windows.todayStart { usage.today.add(delta) }
+        usage.daily[day, default: TokenWindowStats()].add(delta)
+    }
+
+    /// Resolves a timestamp to its local `startOfDay`, caching the current day's
+    /// bounds — log lines arrive in near-chronological runs, so almost every call
+    /// is a two-comparison hit instead of a calendar computation.
+    private struct DayResolver {
+        private var start = Date.distantFuture
+        private var end = Date.distantPast
+        mutating func day(for timestamp: Date, calendar: Calendar) -> Date {
+            if timestamp >= start, timestamp < end { return start }
+            start = calendar.startOfDay(for: timestamp)
+            end = calendar.date(byAdding: .day, value: 1, to: start)
+                ?? start.addingTimeInterval(86_400)
+            return start
+        }
     }
 
     /// Scans Claude Code's per-session JSONL logs (`~/.claude/projects/**/*.jsonl`)
-    /// and totals tokens + estimated cost into the three windows. Each line is one
-    /// API turn carrying `message.usage` and `message.model`. Files untouched since
-    /// before the month started can't hold an in-window line (logs are append-only),
-    /// so they're skipped by modification date — the one cheap prefilter available.
-    /// Duplicate turns (re-emitted on resume) are de-duplicated by request id.
-    nonisolated static func scanClaude(_ windows: DateWindows) -> AgentTokenUsage? {
+    /// and totals tokens + estimated cost into the windows and per-day buckets.
+    /// Each line is one API turn carrying `message.usage` and `message.model`.
+    /// Files untouched since before the scan window can't hold an in-window line
+    /// (logs are append-only), so they're skipped by modification date — the one
+    /// cheap prefilter available. Duplicate turns (re-emitted on resume) are
+    /// de-duplicated by request id.
+    nonisolated static func scanClaude(_ windows: DateWindows) -> AgentTokenUsage {
         let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
+        var usage = AgentTokenUsage(hasCost: true)
         let keys: [URLResourceKey] = [.contentModificationDateKey]
         guard let walker = FileManager.default.enumerator(
-            at: root, includingPropertiesForKeys: keys) else { return nil }
+            at: root, includingPropertiesForKeys: keys) else { return usage }
 
         // Match on raw UTF-8 bytes, never Swift `String`: a `Substring.contains`
         // over 1.5 GB of logs does Unicode-grapheme work on every byte and is ~20×
         // slower than byte scanning. The cheap byte probe gates the (rare) JSON
         // parse, so only genuine turn lines are decoded.
         let usageProbe = Data("\"usage\"".utf8)
-        var usage = AgentTokenUsage(hasCost: true)
-        var seen = Set<String>()
+        // Hashes, not the id strings themselves — a month of heavy use is hundreds
+        // of thousands of ids, and a Set of full strings would hold tens of MB.
+        var seen = Set<Int>()
+        var resolver = DayResolver()
         for case let url as URL in walker where url.pathExtension == "jsonl" {
             if let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate, modified < windows.monthStart {
+                .contentModificationDate, modified < windows.scanStart {
                 continue
             }
             guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { continue }
@@ -525,15 +563,12 @@ extension UsageMonitor {
                         with: Data(line)) as? [String: Any],
                     let timestampString = object["timestamp"] as? String,
                     let timestamp = UsageWindow.fastLogTimestamp(timestampString),
-                    timestamp >= windows.monthStart,
+                    timestamp >= windows.scanStart,
                     let message = object["message"] as? [String: Any],
                     let usageObject = message["usage"] as? [String: Any] else { continue }
 
                 let key = (object["requestId"] as? String) ?? (message["id"] as? String) ?? ""
-                if !key.isEmpty {
-                    if seen.contains(key) { continue }
-                    seen.insert(key)
-                }
+                if !key.isEmpty, !seen.insert(key.hashValue).inserted { continue }
 
                 let price = ModelPrice.forClaudeModel(message["model"] as? String ?? "")
                 let input = usageObject["input_tokens"] as? Int ?? 0
@@ -542,30 +577,31 @@ extension UsageMonitor {
                 let cacheRead = usageObject["cache_read_input_tokens"] as? Int ?? 0
                 let cost = Double(input) * price.input + Double(output) * price.output
                     + Double(cacheWrite) * price.cacheWrite + Double(cacheRead) * price.cacheRead
-                bucket(&usage, at: timestamp, in: windows, TokenWindowStats(
+                let day = resolver.day(for: timestamp, calendar: windows.calendar)
+                bucket(&usage, at: timestamp, day: day, in: windows, TokenWindowStats(
                     input: input, output: output, cacheWrite: cacheWrite,
                     cacheRead: cacheRead, costUSD: cost))
             }
         }
-        return usage.month.isEmpty ? nil : usage
+        return usage
     }
 
     /// Scans Codex's rollout logs (`~/.codex/sessions/YYYY/MM/DD/*.jsonl`) for
-    /// `token_count` events and totals tokens into the three windows. The date is
-    /// in the directory path, so whole days before the month start are skipped
-    /// without opening a file. Codex's `last_token_usage` is the per-turn delta
-    /// (its `total_token_usage` is cumulative — summing that would double-count).
-    /// No dollar estimate: termio doesn't carry OpenAI model pricing.
-    nonisolated static func scanCodex(_ windows: DateWindows) -> AgentTokenUsage? {
+    /// `token_count` events and totals tokens into the windows and per-day
+    /// buckets. The date is in the directory path, so whole days before the scan
+    /// window are skipped without opening a file. Codex's `last_token_usage` is
+    /// the per-turn delta (its `total_token_usage` is cumulative — summing that
+    /// would double-count). No dollar estimate: termio doesn't carry OpenAI
+    /// model pricing.
+    nonisolated static func scanCodex(_ windows: DateWindows) -> AgentTokenUsage {
         let home = ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
         let sessions = home.appendingPathComponent("sessions")
-        let calendar = Calendar.current
-        let monthDay = calendar.startOfDay(for: windows.monthStart)
 
         let tokenProbe = Data("token_count".utf8)
         var usage = AgentTokenUsage(hasCost: false)
-        let dayDirectories = Self.codexDayDirectories(under: sessions, onOrAfter: monthDay)
+        var resolver = DayResolver()
+        let dayDirectories = Self.codexDayDirectories(under: sessions, onOrAfter: windows.scanStart)
         for directory in dayDirectories {
             guard let files = try? FileManager.default.contentsOfDirectory(
                 at: directory, includingPropertiesForKeys: nil) else { continue }
@@ -577,7 +613,7 @@ extension UsageMonitor {
                             with: Data(line)) as? [String: Any],
                         let timestampString = object["timestamp"] as? String,
                         let timestamp = UsageWindow.fastLogTimestamp(timestampString),
-                        timestamp >= windows.monthStart,
+                        timestamp >= windows.scanStart,
                         let payload = object["payload"] as? [String: Any],
                         payload["type"] as? String == "token_count",
                         let info = payload["info"] as? [String: Any],
@@ -586,13 +622,14 @@ extension UsageMonitor {
                     let inputTotal = last["input_tokens"] as? Int ?? 0
                     let cached = last["cached_input_tokens"] as? Int ?? 0
                     let output = last["output_tokens"] as? Int ?? 0
-                    bucket(&usage, at: timestamp, in: windows, TokenWindowStats(
+                    let day = resolver.day(for: timestamp, calendar: windows.calendar)
+                    bucket(&usage, at: timestamp, day: day, in: windows, TokenWindowStats(
                         input: max(0, inputTotal - cached), output: output,
                         cacheWrite: 0, cacheRead: cached, costUSD: 0))
                 }
             }
         }
-        return usage.month.isEmpty ? nil : usage
+        return usage
     }
 
     /// Codex day-directories at or after `start`, read from the `YYYY/MM/DD` path
