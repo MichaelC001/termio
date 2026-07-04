@@ -77,12 +77,13 @@ extension TermioStore {
         // attached companion sink) through `receive`.
         let effectiveCommand = sandboxedCommand ?? agentCommand
         let argv = Self.launchArgv(command: effectiveCommand)
-        var env = ProcessInfo.processInfo.environment
+        var env = Self.sanitizedEnvironment()
         // Stamp the session id so any agent hook running inside can echo it back,
         // letting `HookListener` correlate events to this exact session.
         env["TERMIO_SESSION"] = session.id.uuidString
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
+        env["TERM_PROGRAM"] = "termio"
 
         // The PTY is created first so the surface's `@Sendable` write/resize
         // callbacks can capture it directly (it is thread-safe: fd writes and
@@ -124,6 +125,29 @@ extension TermioStore {
         // writing them here is fine; only the `projects` write must be deferred.)
         DispatchQueue.main.async { [self] in recordLaunch(session.id, resumeID: launch.resumeID) }
         return state
+    }
+
+    /// The app's environment minus identity claims that belong to whatever launched
+    /// it, not to the sessions it hosts. When termio is relaunched from a terminal
+    /// (a dev rebuild out of VS Code, or an agent session), the child agent would
+    /// otherwise detect the *host's* terminal (`TERM_PROGRAM=vscode`) or believe it
+    /// is a nested Claude Code run (`CLAUDECODE`, `CLAUDE_CODE_SSE_PORT`, …). termio
+    /// is the terminal here, so none of those claims may reach the session. A
+    /// Finder launch carries none of them — this only matters for dev relaunches.
+    private static func sanitizedEnvironment() -> [String: String] {
+        let dropped: Set<String> = [
+            "CLAUDECODE", "CLAUDE_EFFORT", "TERM_SESSION_ID", "TERMINAL_EMULATOR",
+            "TMUX", "TMUX_PANE", "STY", "INSIDE_EMACS", "LC_TERMINAL",
+            "LC_TERMINAL_VERSION", "KONSOLE_VERSION", "GNOME_TERMINAL_SERVICE",
+            "WT_SESSION",
+        ]
+        let droppedPrefixes = [
+            "TERM_PROGRAM", "VSCODE_", "CLAUDE_CODE_", "ITERM_", "GHOSTTY_",
+            "KITTY_", "WEZTERM_", "ALACRITTY_",
+        ]
+        return ProcessInfo.processInfo.environment.filter { key, _ in
+            !dropped.contains(key) && !droppedPrefixes.contains { key.hasPrefix($0) }
+        }
     }
 
     /// The argv to spawn in the session's PTY. An agent command string (possibly
