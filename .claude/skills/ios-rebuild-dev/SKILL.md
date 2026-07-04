@@ -61,8 +61,13 @@ When invoked, execute these steps sequentially:
    xcrun simctl boot "$SIM" 2>/dev/null || true
    open -a Simulator
    xcrun simctl install "$SIM" build/Build/Products/Debug-iphonesimulator/TermioMobile.app
+   # The companion server refuses unauthenticated sockets after a 10s grace
+   # window, so the roster URL MUST carry the pairing token (?t=…) or the app
+   # loops "connected → unauthorized → reconnect" forever. Token lives in the
+   # Mac app's defaults (readable by design), same as dev-run.sh.
+   TOKEN=$(defaults read com.termio.app companion.pairingToken 2>/dev/null || true)
    xcrun simctl launch --terminate-running-process "$SIM" sh.termio.mobile \
-       -roster-url "ws://127.0.0.1:8787"
+       -roster-url "ws://127.0.0.1:8787${TOKEN:+/?t=${TOKEN}}"
    ```
    In the simulator the Mac is `127.0.0.1`, not the en0 IP. Remember: simulator
    UserDefaults overrides only work via launch arguments, not `simctl defaults
