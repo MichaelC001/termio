@@ -345,6 +345,13 @@ struct Session: Identifiable, Hashable, Codable {
     /// started fresh.
     var launched = false
 
+    /// The last meaningful terminal title (`OSC 0/2`) the session's agent reported,
+    /// e.g. Claude Code's conversation topic. Persisted so the sidebar keeps the
+    /// adopted label across app restarts — the agent only re-emits a title once it
+    /// is actively conversing again, which used to leave every row back at the
+    /// default agent name after a relaunch. Display-only; `title` stays untouched.
+    var liveTitle: String?
+
     /// When the agent was first launched, used to correlate Codex/OpenCode's own
     /// session record (matched by working directory) back to *this* session — their
     /// CLIs won't accept an id up front, so the id is discovered afterward from the
@@ -364,7 +371,8 @@ struct Session: Identifiable, Hashable, Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, agent, createdAt, worktreePath, resumeID, launched, launchedAt
+        case id, title, agent, createdAt, worktreePath, resumeID, launched, launchedAt,
+             liveTitle
     }
 
     /// Custom decoding so state files written before the resume fields existed still
@@ -381,6 +389,7 @@ struct Session: Identifiable, Hashable, Codable {
         resumeID = try container.decodeIfPresent(String.self, forKey: .resumeID)
         launched = try container.decodeIfPresent(Bool.self, forKey: .launched) ?? false
         launchedAt = try container.decodeIfPresent(Date.self, forKey: .launchedAt)
+        liveTitle = try container.decodeIfPresent(String.self, forKey: .liveTitle)
     }
 }
 

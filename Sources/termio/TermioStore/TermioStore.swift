@@ -301,7 +301,7 @@ final class TermioStore: ObservableObject {
             if session.title != session.agent.displayName {
                 return session.title
             }
-            return liveTitles[session.id] ?? session.title
+            return liveTitles[session.id] ?? session.liveTitle ?? session.title
         }
         guard session.agent == .terminal,
               Self.isAutoTerminalName(session.title) else {

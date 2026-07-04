@@ -358,6 +358,12 @@ extension TermioStore {
                 guard self.isMeaningfulLiveTitle(cleaned, for: session),
                       self.liveTitles[id] != cleaned else { return }
                 self.liveTitles[id] = cleaned
+                // Also record it on the session itself, so the label survives an
+                // app restart (the agent won't re-emit a title until it next works).
+                if let location = self.locate(id) {
+                    self.projects[location.project].sessions[location.session]
+                        .liveTitle = cleaned
+                }
             },
         ]
     }
