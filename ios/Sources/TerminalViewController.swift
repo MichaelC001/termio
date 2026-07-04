@@ -1,5 +1,6 @@
 import GhosttyTerminal
 import GhosttyTheme
+import Photos
 import PhotosUI
 import ShellCraftKit
 import TermioSSH
@@ -342,20 +343,50 @@ final class TerminalViewController: UIViewController {
     private static let uploadByteCap = 8 << 20
 
     private func presentAttachOptions() {
-        let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
-        sheet.addAction(UIAlertAction(title: "Photo Library", style: .default) { [weak self] _ in
-            self?.presentPhotoPicker()
-        })
-        if UIImagePickerController.isSourceTypeAvailable(.camera) {
-            sheet.addAction(UIAlertAction(title: "Camera", style: .default) { [weak self] _ in
-                self?.presentCamera()
-            })
+        let sheet = AttachmentSheetViewController()
+        sheet.onPickAssets = { [weak self] assets in self?.uploadAssets(assets) }
+        sheet.onCamera = { [weak self] in self?.presentCamera() }
+        sheet.onPhotoLibrary = { [weak self] in self?.presentPhotoPicker() }
+        sheet.onFiles = { [weak self] in self?.presentDocumentPicker() }
+        if let presentation = sheet.sheetPresentationController {
+            presentation.detents = [.medium(), .large()]
+            presentation.prefersGrabberVisible = true
         }
-        sheet.addAction(UIAlertAction(title: "Choose File", style: .default) { [weak self] _ in
-            self?.presentDocumentPicker()
-        })
-        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         present(sheet, animated: true)
+    }
+
+    /// Exports the sheet's PHAsset selection through the same downscale +
+    /// queue path as the system pickers; original filenames survive the
+    /// JPEG re-encode.
+    private func uploadAssets(_ assets: [PHAsset]) {
+        guard !assets.isEmpty else { return }
+        var payloads = [(name: String, data: Data)?](repeating: nil, count: assets.count)
+        let group = DispatchGroup()
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = true
+        for (index, asset) in assets.enumerated() {
+            group.enter()
+            PHImageManager.default().requestImage(
+                for: asset,
+                targetSize: CGSize(width: 2048, height: 2048),
+                contentMode: .aspectFit,
+                options: options
+            ) { image, info in
+                let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+                guard !degraded else { return }
+                defer { group.leave() }
+                guard let image, let data = Self.jpegPayload(from: image) else { return }
+                let original = PHAssetResource.assetResources(for: asset)
+                    .first(where: { $0.type == .photo })?.originalFilename
+                let base = original.map { ($0 as NSString).deletingPathExtension }
+                    ?? "photo-\(index + 1)"
+                payloads[index] = (base + ".jpg", data)
+            }
+        }
+        group.notify(queue: .main) { [weak self] in
+            self?.enqueueUploads(payloads.compactMap { $0 })
+        }
     }
 
     private func presentPhotoPicker() {
@@ -371,6 +402,7 @@ final class TerminalViewController: UIViewController {
     }
 
     private func presentCamera() {
+        guard UIImagePickerController.isSourceTypeAvailable(.camera) else { return }
         let picker = UIImagePickerController()
         picker.sourceType = .camera
         picker.delegate = self

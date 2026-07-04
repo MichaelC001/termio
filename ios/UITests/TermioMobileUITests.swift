@@ -136,26 +136,32 @@ final class TermioMobileUITests: XCTestCase {
         let attach = app.buttons["Attach"]
         try XCTSkipUnless(attach.waitForExistence(timeout: 10), "session has no upload backend")
         attach.tap()
-        // The source sheet. (Camera's row is environment-dependent — the
-        // iOS 26 simulator reports a camera — so it isn't asserted.)
-        XCTAssertTrue(app.buttons["Photo Library"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Choose File"].exists)
-        app.buttons["Photo Library"].tap()
-        // PHPicker is remote but its cells surface through the a11y tree,
-        // labeled "Photo, <date>, <time>" — scope by label so the app's own
-        // symbol images (chevrons etc.) don't match first.
-        sleep(4)
-        attachShot(app, "picker-open")
-        // PHPicker's remote tree hangs XCUITest queries (runner gets SIGKILLed
-        // building snapshots), so the picker is driven blind: normalized
-        // coordinate taps for two grid cells, then the Add button.
-        tapNormalized(app, 0.17, 0.63)
-        tapNormalized(app, 0.50, 0.63)
-        sleep(1)
-        attachShot(app, "picker-selected")
-        tapNormalized(app, 0.91, 0.167)
+        // The attachment sheet: ✕ / "Recents ⌄" header, edge-to-edge recents
+        // grid with a camera tile up front, Gallery·File tab bar. The grid is
+        // our own collection view, so a11y queries are safe here (unlike
+        // PHPicker's remote tree, which SIGKILLs the runner).
+        XCTAssertTrue(app.buttons["Recents"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["File"].exists)
+        XCTAssertTrue(app.buttons["Close"].exists)
+        // First open asks for photo access (each test run resets TCC and
+        // XCTest's implicit interruption monitor would deny it) — answer the
+        // system alert explicitly.
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allow = springboard.buttons["Allow Full Access"]
+        if allow.waitForExistence(timeout: 4) { allow.tap() }
         sleep(2)
-        attachShot(app, "picker-added")
+        attachShot(app, "sheet-open")
+        // Cell 0 is the camera tile (the iOS 26 simulator reports a camera),
+        // so the photos start at index 1.
+        let cells = app.collectionViews["attach.grid"].cells
+        XCTAssertTrue(cells.element(boundBy: 2).waitForExistence(timeout: 8))
+        cells.element(boundBy: 1).tap()
+        cells.element(boundBy: 2).tap()
+        attachShot(app, "sheet-selected")
+        let addButton = app.buttons
+            .matching(NSPredicate(format: "label BEGINSWITH 'Add'")).firstMatch
+        XCTAssertTrue(addButton.waitForExistence(timeout: 5))
+        addButton.tap()
         // Both uploads land as absolute Mac paths in the draft.
         let uploaded = app.textViews.matching(
             NSPredicate(format: "value CONTAINS '.termio/uploads/'")).firstMatch

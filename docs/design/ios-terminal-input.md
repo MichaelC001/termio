@@ -152,14 +152,41 @@ Explicitly validated by the study, no change needed:
 - **Draft-as-caption.** Telegram's shared caption field across tabs is
   conceptually our draft + inserted paths. Nothing to build.
 
-## Deferred (documented so we don't re-litigate)
+## v1.2: the attachment sheet (SHIPPED 2026-07-04)
 
-- **Custom half-sheet container** (recents grid at medium detent, tabs at the
-  bottom). If ever justified, the cheap version is
-  `UISheetPresentationController` with `.medium()/.large()` detents hosting a
-  PHPicker-backed page — not Telegram's hand-rolled pan/snap physics. Their
-  reference implementation: `AttachmentContainer.swift` (snap logic),
-  `AttachmentContainable` (tab protocol).
+User verdict on v1.1's bare `UIAlertController`: not good enough — "no image
+preview, and the popup just hugs the bottom edge". So the deferred half-sheet
+got built, in its cheap form (`AttachmentSheetViewController.swift`):
+
+- `UISheetPresentationController` with `.medium()/.large()` detents + grabber
+  — system physics, zero hand-rolled pan/snap code.
+- Anatomy faithful to Telegram's gallery tab (user pushed back on a first cut
+  that used a top action bar): circled ✕ + centered "Recents ⌄" header
+  (tapping it opens the full system picker — Telegram opens its album list
+  there), an edge-to-edge 3-column PHAsset recents grid (fetch limit 120,
+  `PHCachingImageManager` thumbnails) whose FIRST CELL is a dark camera tile
+  (tap → full camera; the live AVCaptureSession feed stays deferred), a
+  selection ring on every photo that fills blue with the ordinal when picked
+  (cap 10), and a chrome-material bottom tab bar (Gallery active · File) that
+  swaps to a full-width blue `Add n` button once anything is selected —
+  Telegram's tabs-to-sendbar swap, distilled.
+- This DOES cost the photo permission PHPicker avoided
+  (`NSPhotoLibraryUsageDescription`); denied/limited degrades to a hint label
+  and the three buttons — the Photos button (PHPicker) remains the
+  no-permission path. `.limited` shows just the granted subset.
+- Export goes through `PHImageManager.requestImage` (2048pt aspect-fit,
+  network-allowed for iCloud originals) into the same JPEG + queue path;
+  original filenames survive via `PHAssetResource.originalFilename`.
+
+XCUITest notes: the sheet grid is in-process (id `attach.grid`), so element
+queries are safe again — only PHPicker's remote tree needs the
+coordinate-tap workaround. Each `xcodebuild test` run re-prompts photo
+permission; XCTest's implicit interruption monitor answers it with DENY and
+that sticks in TCC, so the smoke test resets via
+`simctl privacy reset photos` and answers the alert explicitly through the
+springboard proxy ("Allow Full Access").
+
+## Deferred (documented so we don't re-litigate)
 - **Live camera tile** — see above.
 - **Recent-files list** — needs upload history on the Mac side first.
 - **Background/resumable upload, >8 MB files** — raise the cap only when a

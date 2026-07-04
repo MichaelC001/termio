@@ -12,6 +12,8 @@
 	<string>Termio connects to the companion server running on your Mac over the local network.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Termio uses the camera to scan the pairing QR code on your Mac and to attach photos you capture to your prompt.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Termio shows your recent photos in the attachment sheet so you can pick them quickly.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
