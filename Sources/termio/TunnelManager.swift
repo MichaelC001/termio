@@ -56,6 +56,9 @@ final class TunnelManager: ObservableObject {
     private var process: Process?
     private var outputBuffer = Data()
     private var terminationObserver: NSObjectProtocol?
+    /// Unexpected exits since the last healthy URL: the tunnel self-heals on
+    /// relay hiccups but refuses to hot-loop against a hard failure.
+    private var consecutiveFailures = 0
 
     private init() {
         provider = UserDefaults.standard.string(forKey: Self.providerKey)
@@ -78,6 +81,7 @@ final class TunnelManager: ObservableObject {
         guard newProvider != provider else { return }
         provider = newProvider
         UserDefaults.standard.set(newProvider.rawValue, forKey: Self.providerKey)
+        consecutiveFailures = 0
         restart()
     }
 
@@ -135,11 +139,31 @@ final class TunnelManager: ObservableObject {
                 guard let self, self.process === process else { return }
                 pipe.fileHandleForReading.readabilityHandler = nil
                 self.process = nil
-                self.status = .failed("\(provider.binaryName) exited — pick the tunnel again to retry")
+                NSLog("[tunnel] %@ exited (status %d)", provider.binaryName, process.terminationStatus)
+                // Quick tunnels drop when the relay blips; restart while the
+                // user still wants one, but don't hot-loop a hard failure.
+                // Each restart mints a NEW public URL — the open QR follows,
+                // an already-paired phone must re-scan (stable subdomains
+                // need tunelo to grow a --subdomain flag).
+                guard self.provider == provider else { return }
+                self.consecutiveFailures += 1
+                guard self.consecutiveFailures < 5 else {
+                    self.status = .failed("\(provider.binaryName) keeps exiting — pick the tunnel again to retry")
+                    return
+                }
+                self.status = .starting
+                NSLog("[tunnel] restarting %@ in 3s (attempt %d)", provider.binaryName, self.consecutiveFailures)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                    Task { @MainActor in
+                        guard let self, self.process == nil, self.provider == provider else { return }
+                        self.restart()
+                    }
+                }
             }
         }
         do {
             try process.run()
+            NSLog("[tunnel] spawned %@ (pid %d)", provider.binaryName, process.processIdentifier)
         } catch {
             status = .failed("couldn't launch \(provider.binaryName): \(error.localizedDescription)")
             return
@@ -169,6 +193,8 @@ final class TunnelManager: ObservableObject {
               ),
               let url = URL(string: String(text[range]))
         else { return }
+        NSLog("[tunnel] up at %@", url.absoluteString)
+        consecutiveFailures = 0
         status = .running(url)
     }
 
