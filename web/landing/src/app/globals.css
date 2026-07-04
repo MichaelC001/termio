@@ -345,3 +345,32 @@
     }
   }
 }
+
+@layer components {
+  /* Legal prose (privacy / terms): the changelog's reading-column typography
+     applied to plain sectioned text — medium section heads, quiet body copy,
+     dash-marked lists. */
+  .prose-legal h2 {
+    @apply mt-12 text-lg font-medium leading-tight text-foreground first:mt-0;
+  }
+  .prose-legal p {
+    @apply mt-3 text-[15px] leading-[1.65] text-foreground/75;
+  }
+  .prose-legal ul {
+    @apply mt-3 space-y-2.5;
+  }
+  .prose-legal li {
+    @apply relative pl-6 text-[15px] leading-[1.65] text-foreground/75;
+  }
+  /* The changelog's dash bullet — a short hairline instead of a dot. */
+  .prose-legal li::before {
+    content: "";
+    @apply absolute left-0 top-[0.78em] h-px w-3 bg-muted-foreground/70;
+  }
+  .prose-legal strong {
+    @apply font-medium text-foreground;
+  }
+  .prose-legal a {
+    @apply text-foreground underline decoration-muted-foreground/50 underline-offset-4 transition-colors hover:decoration-foreground;
+  }
+}

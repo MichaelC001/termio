@@ -18,5 +18,15 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "weekly",
       priority: 0.7,
     },
+    {
+      url: "https://www.termio.sh/privacy",
+      changeFrequency: "yearly",
+      priority: 0.3,
+    },
+    {
+      url: "https://www.termio.sh/terms",
+      changeFrequency: "yearly",
+      priority: 0.3,
+    },
   ];
 }

@@ -1,8 +1,8 @@
 const footerLinks: { label: string; href: string }[] = [
   { label: "Docs", href: "/#faq" },
   { label: "Changelog", href: "/changelog" },
-  { label: "Privacy", href: "#" },
-  { label: "Terms", href: "#" },
+  { label: "Privacy", href: "/privacy" },
+  { label: "Terms", href: "/terms" },
 ];
 
 // Glaze-style footer: one compact centered column — copyright and page links on
