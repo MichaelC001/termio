@@ -186,6 +186,29 @@ that sticks in TCC, so the smoke test resets via
 `simctl privacy reset photos` and answers the alert explicitly through the
 springboard proxy ("Allow Full Access").
 
+## Motion & type language (from the 2026-07-04 Telegram animation study)
+
+Constants transplanted from Telegram-iOS source (Display /
+ContainedViewLayoutTransition, CheckNode, AttachmentPanel,
+AnimatedCountLabelNode) — use these before inventing new ones:
+
+- **Durations**: 0.2s button state, 0.25s panel/bar swaps (slide + fade, no
+  hard cuts), 0.45s sheet snaps. Their spring: damping 124 / stiffness 900 /
+  mass 5 (≈0.92 damping ratio).
+- **Selection bounce** (CheckNode): select = 1.0→0.9 (0.08s) → 1.1 (0.13s) →
+  1.0 (0.10s); deselect = 0.9-dip and return. Implemented on the photo ring.
+- **Button press** = opacity only: 0.4 instantly on touch-down, ease back
+  0.2s on release. No scaling. Implemented on the camera tile.
+- **Haptics are SPARSE**: Telegram fires none on photo selection — only
+  `.error` on the selection-limit breach (implemented) and impact on
+  reorder/destructive. Don't sprinkle selection haptics.
+- **Counters**: SF Rounded + tabular digits everywhere a number lives
+  (`UIFont.roundedCounter` in GlassControls.swift) — ring badges, Add n,
+  upload n/m. Tab labels 10pt medium; nav/header titles 17pt semibold.
+- Composer send button springs in on the empty⇄draft transition only
+  (damping 0.6, scale 0.5→1), the iMessage/Telegram appearance, not a blink
+  per keystroke; the attach slot crossfades busy⇄idle.
+
 ## Deferred (documented so we don't re-litigate)
 - **Live camera tile** — see above.
 - **Recent-files list** — needs upload history on the Mac side first.

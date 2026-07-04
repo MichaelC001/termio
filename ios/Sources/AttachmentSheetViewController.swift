@@ -60,7 +60,7 @@ final class AttachmentSheetViewController: UIViewController {
         closeConfig.cornerStyle = .capsule
         closeConfig.image = UIImage(
             systemName: "xmark",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
         )
         close.configuration = closeConfig
         close.tintColor = .label
@@ -89,11 +89,12 @@ final class AttachmentSheetViewController: UIViewController {
             subview.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(subview)
         }
+        // Telegram's sheet chrome: 44pt circle, 16pt side inset, 44pt nav row.
         NSLayoutConstraint.activate([
-            close.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
-            close.topAnchor.constraint(equalTo: view.topAnchor, constant: 14),
-            close.widthAnchor.constraint(equalToConstant: 34),
-            close.heightAnchor.constraint(equalToConstant: 34),
+            close.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            close.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
+            close.widthAnchor.constraint(equalToConstant: 44),
+            close.heightAnchor.constraint(equalToConstant: 44),
             title.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             title.centerYAnchor.constraint(equalTo: close.centerYAnchor),
         ])
@@ -123,7 +124,7 @@ final class AttachmentSheetViewController: UIViewController {
         grid.delegate = self
         grid.alwaysBounceVertical = true
         // Keep the tail of the grid reachable above the floating bottom bar.
-        grid.contentInset.bottom = 72
+        grid.contentInset.bottom = 76
 
         deniedLabel.text = "Allow photo access to pick from your library here, or use the buttons below."
         deniedLabel.font = .preferredFont(forTextStyle: .footnote)
@@ -137,7 +138,7 @@ final class AttachmentSheetViewController: UIViewController {
             view.addSubview(subview)
         }
         NSLayoutConstraint.activate([
-            grid.topAnchor.constraint(equalTo: view.topAnchor, constant: 62),
+            grid.topAnchor.constraint(equalTo: view.topAnchor, constant: 64),
             grid.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             grid.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             grid.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -168,7 +169,7 @@ final class AttachmentSheetViewController: UIViewController {
         addConfig.cornerStyle = .capsule
         addConfig.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
             var attrs = attrs
-            attrs.font = UIFont.roundedCounter(size: 16, weight: .semibold)
+            attrs.font = UIFont.roundedCounter(size: 17, weight: .semibold)
             return attrs
         }
         addButton.configuration = addConfig
@@ -185,15 +186,17 @@ final class AttachmentSheetViewController: UIViewController {
             bottomBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             bottomBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             bottomBar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            bottomBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -64),
-            tabs.leadingAnchor.constraint(equalTo: bottomBar.contentView.leadingAnchor, constant: 24),
-            tabs.trailingAnchor.constraint(equalTo: bottomBar.contentView.trailingAnchor, constant: -24),
-            tabs.topAnchor.constraint(equalTo: bottomBar.contentView.topAnchor, constant: 6),
-            tabs.heightAnchor.constraint(equalToConstant: 52),
+            // Telegram's glass tab panel: 62pt tall, 20pt side insets, 30pt
+            // icons; the Add face copies SolidRoundedButtonNode (48pt / r24).
+            bottomBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -66),
+            tabs.leadingAnchor.constraint(equalTo: bottomBar.contentView.leadingAnchor, constant: 20),
+            tabs.trailingAnchor.constraint(equalTo: bottomBar.contentView.trailingAnchor, constant: -20),
+            tabs.topAnchor.constraint(equalTo: bottomBar.contentView.topAnchor, constant: 4),
+            tabs.heightAnchor.constraint(equalToConstant: 58),
             addButton.leadingAnchor.constraint(equalTo: bottomBar.contentView.leadingAnchor, constant: 16),
             addButton.trailingAnchor.constraint(equalTo: bottomBar.contentView.trailingAnchor, constant: -16),
             addButton.topAnchor.constraint(equalTo: bottomBar.contentView.topAnchor, constant: 8),
-            addButton.heightAnchor.constraint(equalToConstant: 46),
+            addButton.heightAnchor.constraint(equalToConstant: 48),
         ])
     }
 
@@ -202,11 +205,11 @@ final class AttachmentSheetViewController: UIViewController {
         var config = UIButton.Configuration.plain()
         config.image = UIImage(
             systemName: symbol,
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 24, weight: .regular)
         )
         config.title = title
         config.imagePlacement = .top
-        config.imagePadding = 3
+        config.imagePadding = 4
         config.baseForegroundColor = tint
         // Telegram's attachment tabs sit at 10pt medium (system tab bars too).
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
@@ -343,7 +346,7 @@ private final class AttachmentPhotoCell: UICollectionViewCell {
 
         ring.layer.borderColor = UIColor.white.cgColor
         ring.layer.borderWidth = 1.5
-        ring.layer.cornerRadius = 11
+        ring.layer.cornerRadius = 14.5
         ring.layer.shadowColor = UIColor.black.cgColor
         ring.layer.shadowOpacity = 0.25
         ring.layer.shadowRadius = 2
@@ -352,18 +355,21 @@ private final class AttachmentPhotoCell: UICollectionViewCell {
         ring.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(ring)
 
-        badge.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+        // Telegram sizes the ordinal by digit count (16/15pt); our cap is 10,
+        // so two digits max — 15pt covers both.
+        badge.font = .roundedCounter(size: 15, weight: .semibold)
         badge.textColor = .white
         badge.textAlignment = .center
         badge.isHidden = true
         badge.translatesAutoresizingMaskIntoConstraints = false
         ring.addSubview(badge)
 
+        // Telegram's check circle: 29pt, 3pt off the cell corner.
         NSLayoutConstraint.activate([
-            ring.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 5),
-            ring.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -5),
-            ring.widthAnchor.constraint(equalToConstant: 22),
-            ring.heightAnchor.constraint(equalToConstant: 22),
+            ring.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 3),
+            ring.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -3),
+            ring.widthAnchor.constraint(equalToConstant: 29),
+            ring.heightAnchor.constraint(equalToConstant: 29),
             badge.centerXAnchor.constraint(equalTo: ring.centerXAnchor),
             badge.centerYAnchor.constraint(equalTo: ring.centerYAnchor),
         ])
@@ -389,12 +395,37 @@ private final class AttachmentPhotoCell: UICollectionViewCell {
         setSelectionIndex(selectionIndex)
     }
 
-    func setSelectionIndex(_ index: Int?) {
+    func setSelectionIndex(_ index: Int?, animated: Bool = false) {
+        let selecting = index != nil && badge.isHidden
         badge.isHidden = index == nil
         badge.text = index.map(String.init)
         ring.backgroundColor = index == nil ? .clear : .systemBlue
-        ring.layer.borderColor = UIColor.white.cgColor
         imageView.alpha = index == nil ? 1 : 0.75
+        guard animated else { return }
+        // Telegram's CheckNode bounce: dip, overshoot, settle on select
+        // (0.08/0.13/0.10s); just dip-and-return on deselect.
+        if selecting {
+            UIView.animateKeyframes(withDuration: 0.31, delay: 0) {
+                UIView.addKeyframe(withRelativeStartTime: 0, relativeDuration: 0.26) {
+                    self.ring.transform = CGAffineTransform(scaleX: 0.9, y: 0.9)
+                }
+                UIView.addKeyframe(withRelativeStartTime: 0.26, relativeDuration: 0.42) {
+                    self.ring.transform = CGAffineTransform(scaleX: 1.1, y: 1.1)
+                }
+                UIView.addKeyframe(withRelativeStartTime: 0.68, relativeDuration: 0.32) {
+                    self.ring.transform = .identity
+                }
+            }
+        } else {
+            UIView.animateKeyframes(withDuration: 0.21, delay: 0) {
+                UIView.addKeyframe(withRelativeStartTime: 0, relativeDuration: 0.38) {
+                    self.ring.transform = CGAffineTransform(scaleX: 0.9, y: 0.9)
+                }
+                UIView.addKeyframe(withRelativeStartTime: 0.38, relativeDuration: 0.62) {
+                    self.ring.transform = .identity
+                }
+            }
+        }
     }
 
     override func prepareForReuse() {
@@ -426,6 +457,20 @@ private final class AttachmentCameraCell: UICollectionViewCell {
         ])
         isAccessibilityElement = true
         accessibilityLabel = "Camera"
+    }
+
+    /// Telegram's button feedback: dim instantly on touch-down, ease back
+    /// on release — opacity only, no scaling.
+    override var isHighlighted: Bool {
+        didSet {
+            if isHighlighted {
+                contentView.alpha = 0.4
+            } else {
+                UIView.animate(withDuration: 0.2, delay: 0, options: [.curveEaseInOut]) {
+                    self.contentView.alpha = 1
+                }
+            }
+        }
     }
 
     @available(*, unavailable)

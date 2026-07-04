@@ -131,7 +131,7 @@ final class ComposerBar: UIView {
             self?.onAttach?()
         }, for: .touchUpInside)
         attachSpinner.hidesWhenStopped = true
-        attachProgressLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        attachProgressLabel.font = .roundedCounter(size: 12, weight: .medium)
         attachProgressLabel.textColor = .secondaryLabel
         attachProgressLabel.isHidden = true
 
@@ -301,9 +301,9 @@ final class ComposerBar: UIView {
     }
 
     /// Spins the attach slot while an upload is in flight; a batch shows its
-    /// "n/m" position instead of the spinner.
+    /// "n/m" position instead of the spinner. The slot crossfades between
+    /// faces instead of blinking (Telegram's panel-swap timing).
     func setAttachBusy(_ busy: Bool, progress: (done: Int, total: Int)? = nil) {
-        attachButton.alpha = busy ? 0 : 1
         attachButton.isEnabled = !busy
         if busy, let progress, progress.total > 1 {
             attachSpinner.stopAnimating()
@@ -312,6 +312,9 @@ final class ComposerBar: UIView {
         } else {
             attachProgressLabel.isHidden = true
             if busy { attachSpinner.startAnimating() } else { attachSpinner.stopAnimating() }
+        }
+        UIView.animate(withDuration: 0.2, delay: 0, options: [.curveEaseInOut]) {
+            self.attachButton.alpha = busy ? 0 : 1
         }
     }
 
@@ -341,10 +344,26 @@ final class ComposerBar: UIView {
         let empty = textView.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         placeholder.isHidden = !textView.text.isEmpty
         // iMessage's swap: the right slot shows the keyboard toggle at rest
-        // and becomes the send circle once there is something to send.
-        sendButton.isHidden = empty
+        // and becomes the send circle once there is something to send. The
+        // send circle springs in (Telegram's check-appearance curve) rather
+        // than blinking on — but only on the empty⇄draft transition, not on
+        // every keystroke.
+        if sendButton.isHidden != empty {
+            sendButton.isHidden = empty
+            keyboardButton.isHidden = !empty
+            if !empty {
+                sendButton.transform = CGAffineTransform(scaleX: 0.5, y: 0.5)
+                sendButton.alpha = 0
+                UIView.animate(
+                    withDuration: 0.4, delay: 0, usingSpringWithDamping: 0.6,
+                    initialSpringVelocity: 0, options: [.allowUserInteraction]
+                ) {
+                    self.sendButton.transform = .identity
+                    self.sendButton.alpha = 1
+                }
+            }
+        }
         sendButton.isEnabled = !empty
-        keyboardButton.isHidden = !empty
 
         let fitting = textView.sizeThatFits(
             CGSize(width: textView.bounds.width, height: .greatestFiniteMagnitude)
