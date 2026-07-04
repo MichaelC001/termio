@@ -3,36 +3,51 @@ import SwiftUI
 import UIKit
 
 /// The app's settings sheet — ChatGPT-style two-level: this root is a small
-/// menu of categories, each pushing its own page. Appearance carries the
-/// terminal look; Connectivity carries the Mac pairing and its live status.
+/// menu of categories, each pushing its own page, plus an About group.
+/// Connectivity leads (the Mac link is the app's lifeline — its row carries
+/// the live link status inline, the only at-a-glance copy of it since the
+/// session list dropped its device pill); Appearance carries the terminal look.
 final class SettingsViewController: UITableViewController {
+    private enum Section: Int, CaseIterable {
+        case pages, about
+    }
+
     private enum Row: Int, CaseIterable {
-        case appearance, terminalKeyboard, connectivity
+        case connectivity, appearance, terminalKeyboard
 
         var title: String {
             switch self {
+            case .connectivity: "Connectivity"
             case .appearance: "Appearance"
             case .terminalKeyboard: "Terminal Keyboard"
-            case .connectivity: "Connectivity"
             }
         }
 
         var icon: String {
             switch self {
+            case .connectivity: "antenna.radiowaves.left.and.right"
             case .appearance: "paintbrush"
             case .terminalKeyboard: "keyboard"
-            case .connectivity: "antenna.radiowaves.left.and.right"
             }
         }
 
         func makePage() -> UIViewController {
             switch self {
+            case .connectivity: ConnectivitySettingsViewController()
             case .appearance: AppearanceSettingsViewController()
             case .terminalKeyboard: TerminalKeyboardSettingsViewController()
-            case .connectivity: ConnectivitySettingsViewController()
             }
         }
     }
+
+    private enum AboutRow: Int, CaseIterable {
+        case version, github, privacy
+    }
+
+    private static let githubURL = URL(string: "https://github.com/jiweiyuan/termio")!
+    private static let privacyURL = URL(string: "https://termio.sh/privacy")!
+
+    private var stateObserver: NSObjectProtocol?
 
     init() {
         super.init(style: .insetGrouped)
@@ -41,43 +56,119 @@ final class SettingsViewController: UITableViewController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    deinit {
+        if let stateObserver {
+            NotificationCenter.default.removeObserver(stateObserver)
+        }
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Settings"
         // A real glass ✕ at a Telegram-scale target, not the slim system
         // Done text item.
+        // Telegram's sheet close: a 44pt glass circle with a ~17pt cross.
         let close = UIButton(type: .system)
-        close.applyGlassSymbol("xmark", pointSize: 16)
+        close.applyGlassSymbol("xmark", pointSize: 17)
         close.accessibilityLabel = "Close"
         close.addAction(UIAction { [weak self] _ in
             self?.dismiss(animated: true)
         }, for: .touchUpInside)
         NSLayoutConstraint.activate([
-            close.widthAnchor.constraint(equalToConstant: 40),
-            close.heightAnchor.constraint(equalToConstant: 40),
+            close.widthAnchor.constraint(equalToConstant: 44),
+            close.heightAnchor.constraint(equalToConstant: 44),
         ])
-        navigationItem.rightBarButtonItem = UIBarButtonItem(customView: close)
+        let closeItem = UIBarButtonItem(customView: close)
+        if #available(iOS 26.0, *) {
+            // The bar wraps items in its own glass; the button already has one.
+            closeItem.hidesSharedBackground = true
+        }
+        navigationItem.rightBarButtonItem = closeItem
+        // The Connectivity row's inline status tracks the live link.
+        stateObserver = NotificationCenter.default.addObserver(
+            forName: CompanionLink.stateDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.tableView.reloadData()
+        }
     }
 
-    override func numberOfSections(in tableView: UITableView) -> Int { 1 }
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // Coming back from Connectivity after pairing/forgetting: refresh
+        // the inline status.
+        tableView.reloadData()
+    }
+
+    /// The Connectivity row's detail: a presence dot + the state, the same
+    /// three states the Connectivity page spells out.
+    private static func linkStatus() -> NSAttributedString {
+        let (color, text): (UIColor, String) = switch CompanionLink.state {
+        case .unpaired: (.tertiaryLabel, "Not Paired")
+        case .connecting: (.systemOrange, "Reconnecting…")
+        case .connected: (.systemGreen, "Connected")
+        }
+        let status = NSMutableAttributedString(
+            string: "● ", attributes: [.foregroundColor: color, .font: UIFont.systemFont(ofSize: 11)]
+        )
+        status.append(NSAttributedString(string: text, attributes: [.foregroundColor: UIColor.secondaryLabel]))
+        return status
+    }
+
+    override func numberOfSections(in tableView: UITableView) -> Int {
+        Section.allCases.count
+    }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        Row.allCases.count
+        section == Section.pages.rawValue ? Row.allCases.count : AboutRow.allCases.count
+    }
+
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        section == Section.about.rawValue ? "About" : nil
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
-        let row = Row.allCases[indexPath.row]
-        cell.textLabel?.text = row.title
-        cell.imageView?.image = UIImage(systemName: row.icon)
-        cell.imageView?.tintColor = .label
-        cell.accessoryType = .disclosureIndicator
+        let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
+        switch Section(rawValue: indexPath.section) {
+        case .pages:
+            let row = Row.allCases[indexPath.row]
+            cell.textLabel?.text = row.title
+            cell.imageView?.image = UIImage(systemName: row.icon)
+            cell.imageView?.tintColor = .label
+            cell.accessoryType = .disclosureIndicator
+            if row == .connectivity {
+                cell.detailTextLabel?.attributedText = Self.linkStatus()
+            }
+        default:
+            switch AboutRow(rawValue: indexPath.row) {
+            case .version:
+                cell.textLabel?.text = "Version"
+                cell.selectionStyle = .none
+                let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+                let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+                cell.detailTextLabel?.text = [short, build.map { "(\($0))" }]
+                    .compactMap(\.self).joined(separator: " ")
+            case .github:
+                cell.textLabel?.text = "GitHub"
+                cell.detailTextLabel?.text = "jiweiyuan/termio"
+            case .privacy, nil:
+                cell.textLabel?.text = "Privacy Policy"
+            }
+        }
         return cell
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        navigationController?.pushViewController(Row.allCases[indexPath.row].makePage(), animated: true)
+        switch Section(rawValue: indexPath.section) {
+        case .pages:
+            navigationController?.pushViewController(Row.allCases[indexPath.row].makePage(), animated: true)
+        default:
+            switch AboutRow(rawValue: indexPath.row) {
+            case .github: UIApplication.shared.open(Self.githubURL)
+            case .privacy: UIApplication.shared.open(Self.privacyURL)
+            default: break
+            }
+        }
     }
 }
 

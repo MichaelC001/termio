@@ -137,10 +137,11 @@ final class FileViewerController: UIViewController {
             bar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             bar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             bar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+            // Square 40pt circles (Telegram nav-bar scale), not 40×36 ovals.
             close.widthAnchor.constraint(equalToConstant: 40),
-            close.heightAnchor.constraint(equalToConstant: 36),
+            close.heightAnchor.constraint(equalToConstant: 40),
             editButton.widthAnchor.constraint(equalToConstant: 40),
-            editButton.heightAnchor.constraint(equalToConstant: 36),
+            editButton.heightAnchor.constraint(equalToConstant: 40),
         ])
         return bar
     }
