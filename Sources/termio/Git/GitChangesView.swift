@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // MARK: - Changes list
@@ -17,6 +18,9 @@ struct GitChangesView: View {
 
     @State private var changes: [GitChange] = []
     @State private var isLoading = true
+    /// The file a "Discard Changes…" action is waiting to confirm — non-nil while the
+    /// destructive alert is up, so the actual `git restore`/delete only fires on "OK".
+    @State private var pendingDiscard: GitChange?
 
     private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
 
@@ -49,8 +53,19 @@ struct GitChangesView: View {
                         fileURL: fileURL(for: change),
                         font: settings.interfaceFont,
                         chrome: chrome,
-                        isSelected: store.openDiff?.change.path == change.path
+                        isSelected: store.openDiff?.change.path == change.path,
+                        onDiscard: { pendingDiscard = change }
                     )
+                    .contextMenu {
+                        Button("Open in Editor") { openInEditor(change) }
+                        Button("Reveal in Finder") { revealInFinder(change) }
+                        Divider()
+                        Button("Copy Path") { copyPath(change) }
+                        Button("Copy Relative Path") { copyToPasteboard(change.path) }
+                        Button("Copy Diff") { copyDiff(change) }
+                        Divider()
+                        Button("Discard Changes…", role: .destructive) { pendingDiscard = change }
+                    }
                 }
                 // `.plain`, not `.sidebar`: the sidebar style pads every row with its own
                 // leading margin (on top of our zeroed `listRowInsets`), pushing the rows
@@ -66,6 +81,12 @@ struct GitChangesView: View {
         // Re-read when a diff overlay closes — the user may have just acted on it.
         .onChange(of: store.openDiff) { _, request in
             if request == nil { Task { await reload() } }
+        }
+        .alert("Discard Changes?", isPresented: discardAlertPresented, presenting: pendingDiscard) { change in
+            Button("Discard Changes", role: .destructive) { performDiscard(change) }
+            Button("Cancel", role: .cancel) { pendingDiscard = nil }
+        } message: { change in
+            Text("All changes to “\(change.name)” will be lost. This cannot be undone.")
         }
     }
 
@@ -104,6 +125,49 @@ struct GitChangesView: View {
         store.openDiff = GitDiffRequest(repoRoot: repoRoot, change: change)
     }
 
+    // MARK: Row actions
+
+    /// Opens the file's editable buffer over the terminal (distinct from clicking the
+    /// row, which shows its read-only diff).
+    private func openInEditor(_ change: GitChange) {
+        store.openFileInEditor(fileURL(for: change))
+    }
+
+    private func revealInFinder(_ change: GitChange) {
+        NSWorkspace.shared.activateFileViewerSelecting([fileURL(for: change)])
+    }
+
+    private func copyPath(_ change: GitChange) {
+        copyToPasteboard(fileURL(for: change).path)
+    }
+
+    /// Puts the file's raw unified diff on the pasteboard — ready to paste into an agent
+    /// prompt ("fix this") or `git apply`.
+    private func copyDiff(_ change: GitChange) {
+        Task { copyToPasteboard(await GitService.diffText(for: change, in: repoRoot)) }
+    }
+
+    private func copyToPasteboard(_ string: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(string, forType: .string)
+    }
+
+    /// Runs the confirmed discard off the main thread, closes the diff overlay if it was
+    /// showing the file we just reverted, then reloads so the row drops out of the list.
+    private func performDiscard(_ change: GitChange) {
+        pendingDiscard = nil
+        Task {
+            await GitService.discard(change, in: repoRoot)
+            if store.openDiff?.change.path == change.path { store.openDiff = nil }
+            await reload()
+        }
+    }
+
+    private var discardAlertPresented: Binding<Bool> {
+        Binding(get: { pendingDiscard != nil }, set: { if !$0 { pendingDiscard = nil } })
+    }
+
     /// The absolute on-disk URL for a change — `git status` paths are repo-relative.
     /// Dragged out of a row and dropped on the terminal, which shell-quotes it at the
     /// prompt (see `TerminalPane.sendPaths`).
@@ -133,6 +197,8 @@ private struct GitChangeRow: View {
     let font: Font
     let chrome: ChromeTheme?
     let isSelected: Bool
+    /// Fires the discard confirmation for this row (owned by `GitChangesView`).
+    let onDiscard: () -> Void
 
     @State private var isHovering = false
 
@@ -148,7 +214,18 @@ private struct GitChangeRow: View {
                 .truncationMode(.middle)
                 .foregroundStyle(change.status == .deleted ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
             Spacer(minLength: 6)
-            if change.additions > 0 || change.deletions > 0 {
+            // On hover the trailing +/− counts give way to a single discard button — the
+            // one destructive action worth a one-click affordance (everything else lives
+            // in the right-click menu). The counts return when the pointer leaves.
+            if isHovering {
+                Button(action: onDiscard) {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Discard Changes…")
+            } else if change.additions > 0 || change.deletions > 0 {
                 HStack(spacing: 5) {
                     if change.additions > 0 { Text("+\(change.additions)").foregroundStyle(.green) }
                     if change.deletions > 0 { Text("−\(change.deletions)").foregroundStyle(.red) }

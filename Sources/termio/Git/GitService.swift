@@ -18,6 +18,21 @@ enum GitService {
         await offMain { parseDiff(loadDiffText(change, repoRoot)) }
     }
 
+    /// The raw unified-diff text for one changed file — what "Copy Diff" puts on the
+    /// pasteboard, so it round-trips cleanly into `git apply` or an agent prompt.
+    static func diffText(for change: GitChange, in repoRoot: String) async -> String {
+        await offMain { loadDiffText(change, repoRoot) }
+    }
+
+    /// Throws away every change to a single file, restoring it to its clean state:
+    /// modified/deleted files reset to `HEAD` (index *and* worktree), a newly-added file
+    /// is unstaged and removed, and an untracked file is deleted from disk. Best-effort —
+    /// the caller reloads the changes list afterwards regardless of the return.
+    @discardableResult
+    static func discard(_ change: GitChange, in repoRoot: String) async -> Bool {
+        await offMain { discardChanges(change, repoRoot) }
+    }
+
     // MARK: Loading
 
     private static func loadChanges(_ repoRoot: String) -> [GitChange] {
@@ -100,6 +115,24 @@ enum GitService {
                 changes[idx].additions = c.0
                 changes[idx].deletions = c.1
             }
+        }
+    }
+
+    /// Reverts one file to clean. Untracked and freshly-added files are deleted from
+    /// disk (the added one is unstaged first so git forgets it); everything else is
+    /// reset to its `HEAD` blob across both the index and the working tree via
+    /// `git restore`. Renames restore the current path only — a rare, best-effort case.
+    private static func discardChanges(_ change: GitChange, _ repoRoot: String) -> Bool {
+        let abs = (repoRoot as NSString).appendingPathComponent(change.path)
+        switch change.status {
+        case .untracked:
+            return (try? FileManager.default.removeItem(atPath: abs)) != nil
+        case .added:
+            _ = run(["restore", "--staged", "--", change.path], in: repoRoot, ignoreStatus: true)
+            return (try? FileManager.default.removeItem(atPath: abs)) != nil
+        default:
+            return run(["restore", "--staged", "--worktree", "--source=HEAD", "--", change.path],
+                       in: repoRoot, ignoreStatus: true) != nil
         }
     }
 
