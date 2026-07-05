@@ -41,10 +41,10 @@ final class SettingsViewController: UITableViewController {
     }
 
     private enum AboutRow: Int, CaseIterable {
-        case version, github, privacy
+        case version, website, privacy
     }
 
-    private static let githubURL = URL(string: "https://github.com/jiweiyuan/termio")!
+    private static let websiteURL = URL(string: "https://termio.sh")!
     private static let privacyURL = URL(string: "https://termio.sh/privacy")!
 
     private var stateObserver: NSObjectProtocol?
@@ -160,13 +160,11 @@ final class SettingsViewController: UITableViewController {
             case .version:
                 cell.textLabel?.text = "Version"
                 cell.selectionStyle = .none
-                let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-                let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-                cell.detailTextLabel?.text = [short, build.map { "(\($0))" }]
-                    .compactMap(\.self).joined(separator: " ")
-            case .github:
-                cell.textLabel?.text = "GitHub"
-                cell.detailTextLabel?.text = "jiweiyuan/termio"
+                cell.detailTextLabel?.text =
+                    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            case .website:
+                cell.textLabel?.text = "Website"
+                cell.detailTextLabel?.text = "termio.sh"
             case .privacy, nil:
                 cell.textLabel?.text = "Privacy Policy"
             }
@@ -181,7 +179,7 @@ final class SettingsViewController: UITableViewController {
             navigationController?.pushViewController(Row.allCases[indexPath.row].makePage(), animated: true)
         default:
             switch AboutRow(rawValue: indexPath.row) {
-            case .github: UIApplication.shared.open(Self.githubURL)
+            case .website: UIApplication.shared.open(Self.websiteURL)
             case .privacy: UIApplication.shared.open(Self.privacyURL)
             default: break
             }
