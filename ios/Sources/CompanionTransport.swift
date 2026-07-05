@@ -4,8 +4,8 @@ import UIKit
 
 /// v1 companion transport: a WebSocket to the Mac companion server (directly on
 /// LAN, or via a tunnel URL). Binary frames are raw PTY bytes; text frames are
-/// `CompanionControl` JSON. Same byte-source shape as `SSHTerminalClient`, so
-/// `TerminalViewController` bridges it to `InMemoryTerminalSession` the same way.
+/// `CompanionControl` JSON. `TerminalViewController` bridges it to an
+/// `InMemoryTerminalSession`.
 ///
 /// The link self-heals: any socket drop (Mac app rebuild, phone sleep, network
 /// blip) schedules a backoff reconnect and re-attaches, and the server replays

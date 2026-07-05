@@ -29,7 +29,7 @@ final class RootContainerViewController: UIViewController {
     private let maxRecentTerminals = 2
 
     /// The terminal currently slid in over the list, or nil when the list is
-    /// the top screen. Tracked directly (not via the key) so keyless SSH/demo
+    /// the top screen. Tracked directly (not via the key) so keyless demo
     /// runs are handled too.
     private weak var activeScreen: UIViewController?
 
@@ -61,9 +61,6 @@ final class RootContainerViewController: UIViewController {
             }
             open(screen, sessionKey: session.key)
         }
-        list.onOpenSSH = { [weak self] config in
-            self?.open(TerminalViewController(sshConfig: config))
-        }
     }
 
     /// Under memory pressure, shed every parked terminal except the one on
@@ -85,7 +82,7 @@ final class RootContainerViewController: UIViewController {
     // MARK: - Content
 
     /// Slide a session screen in over the list. `sessionKey` marks the list row
-    /// as current (nil for SSH/demo runs) and parks the screen in the keep-alive
+    /// as current (nil for demo runs) and parks the screen in the keep-alive
     /// cache. One conversation at a time, like Messages.
     func open(_ screen: UIViewController, sessionKey: String? = nil, animated: Bool = true) {
         loadViewIfNeeded()

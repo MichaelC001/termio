@@ -1,17 +1,16 @@
 import SwiftUI
-import TermioSSH
 import TermioShared
 import UIKit
 
-/// The root screen, iMessage-inbox style: a large title with sort and compose
-/// buttons riding it, the sessions grouped under small gray project headers,
-/// and a floating settings button bottom-right. Lives at the root of
-/// RootContainerViewController's navigation stack and owns the companion
-/// roster connection; pairing itself lives in Settings ▸ Connectivity.
+/// The root screen, iMessage-inbox style: a large title with a sort button
+/// riding it, the sessions grouped under small gray project headers (each with
+/// its own ＋ to start a session), and a floating settings button bottom-right.
+/// Lives at the root of RootContainerViewController's navigation stack and owns
+/// the companion roster connection; pairing itself lives in Settings ▸
+/// Connectivity.
 final class SessionListViewController: UIViewController {
     /// Open a session row; `companionURL` is non-nil when the row is live.
     var onOpenSession: ((MockSession, URL?) -> Void)?
-    var onOpenSSH: ((SSHConfig) -> Void)?
     /// `MockSession.key` of the session filling the screen — its row gets
     /// the current-chat pill.
     var currentSessionKey: String?
@@ -41,7 +40,6 @@ final class SessionListViewController: UIViewController {
     )
 
     private let filterButton = UIButton(type: .system)
-    private let composeButton = UIButton(type: .system)
     private let tableView = UITableView(frame: .zero, style: .grouped)
     /// The Telegram/iMessage-style zero state shown when there are no real
     /// sessions to list — never fake rows. Its copy tracks `CompanionLink.state`.
@@ -100,7 +98,7 @@ final class SessionListViewController: UIViewController {
         tableView.reloadData()
     }
 
-    // MARK: - Top bar (large title + filter + compose)
+    // MARK: - Top bar (large title + filter)
 
     private func configureTopBar() -> UIView {
         let pageTitle = UILabel()
@@ -120,19 +118,10 @@ final class SessionListViewController: UIViewController {
             },
         ])
 
-        composeButton.applyGlassSymbol("square.and.pencil")
-        composeButton.tintColor = .label
-        composeButton.showsMenuAsPrimaryAction = true
-        composeButton.menu = UIMenu(children: [
-            UIDeferredMenuElement.uncached { [weak self] completion in
-                completion(self?.composeMenuItems() ?? [])
-            },
-        ])
-
         // Messages-inbox chrome: the bold title on the left, the round
-        // buttons riding the same line on the right.
+        // sort button riding the same line on the right.
         let spacer = UIView()
-        let bar = UIStackView(arrangedSubviews: [pageTitle, spacer, filterButton, composeButton])
+        let bar = UIStackView(arrangedSubviews: [pageTitle, spacer, filterButton])
         bar.axis = .horizontal
         bar.alignment = .center
         bar.spacing = 8
@@ -145,8 +134,6 @@ final class SessionListViewController: UIViewController {
             // Telegram's nav-bar glass buttons are 40pt circles.
             filterButton.widthAnchor.constraint(equalToConstant: 40),
             filterButton.heightAnchor.constraint(equalToConstant: 40),
-            composeButton.widthAnchor.constraint(equalToConstant: 40),
-            composeButton.heightAnchor.constraint(equalToConstant: 40),
         ])
         return bar
     }
@@ -167,28 +154,6 @@ final class SessionListViewController: UIViewController {
         sortByName = byName
         UserDefaults.standard.set(byName ? "name" : "recentActivity", forKey: "sessions.sortOrder")
         refilter()
-    }
-
-    /// Compose = ChatGPT's "new chat": pick a project, then the agent. Offline
-    /// (no companion roster) it falls back to the SSH connect sheet.
-    private func composeMenuItems() -> [UIMenuElement] {
-        guard companionURL != nil else {
-            return [UIAction(title: "Connect via SSH…", image: UIImage(systemName: "network")) { [weak self] _ in
-                self?.presentConnectSheet()
-            }]
-        }
-        return projects.filter { $0.rosterID != nil }.map { project in
-            let action: (String, String) -> UIAction = { [weak self] title, agent in
-                UIAction(title: title, image: AgentKind(wire: agent).menuIcon()) { _ in
-                    self?.startSession(agent: agent, in: project)
-                }
-            }
-            return UIMenu(title: project.name, image: UIImage(systemName: "folder"), children: [
-                action("Claude Code", "claude"),
-                action("Codex", "codex"),
-                action("Terminal", "terminal"),
-            ])
-        }
     }
 
     // MARK: - Bottom bar (the floating settings button)
@@ -250,12 +215,6 @@ final class SessionListViewController: UIViewController {
         CompanionLink.state = .unpaired
         projects = []
         refilter()
-    }
-
-    private func presentConnectSheet() {
-        let connect = ConnectViewController()
-        connect.onConnect = { [weak self] config in self?.onOpenSSH?(config) }
-        present(UINavigationController(rootViewController: connect), animated: true)
     }
 
     private func presentSettings() {

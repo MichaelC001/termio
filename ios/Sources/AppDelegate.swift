@@ -1,4 +1,3 @@
-import TermioSSH
 import TermioShared
 import UIKit
 
@@ -62,26 +61,6 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                         terminal.setDrawer(open: true, animated: false)
                     }
                 }
-            }
-            return true
-        }
-
-        // Automated SSH test drive: `-ssh-host H -ssh-port P -ssh-user U
-        // -ssh-key-file /path` connects straight to an SSH server (simulator
-        // apps run on the host, so the key path can be a host path).
-        if let host = Self.argument("-ssh-host", in: args) {
-            let key = Self.argument("-ssh-key-file", in: args)
-                .flatMap { try? String(contentsOfFile: $0, encoding: .utf8) }
-            let config = SSHConfig(
-                host: host,
-                port: Self.argument("-ssh-port", in: args).flatMap(Int.init) ?? 22,
-                username: Self.argument("-ssh-user", in: args) ?? "",
-                password: Self.argument("-ssh-password", in: args),
-                privateKey: key,
-                command: Self.argument("-ssh-command", in: args)
-            )
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                root.open(TerminalViewController(sshConfig: config), animated: false)
             }
             return true
         }

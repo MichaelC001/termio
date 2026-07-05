@@ -3,19 +3,17 @@ import GhosttyTheme
 import Photos
 import PhotosUI
 import ShellCraftKit
-import TermioSSH
 import TermioShared
 import UIKit
 import UniformTypeIdentifiers
 
 /// Full-screen terminal for one session — the bundled demo sandbox shell for
-/// mock sessions, or a live SSH connection. The right screen edge slides in
-/// the inspector drawer (file tree + changes); the terminal keeps rendering,
-/// dimmed, behind it.
+/// mock sessions, or a live companion connection to a Mac session. The right
+/// screen edge slides in the inspector drawer (file tree + changes); the
+/// terminal keeps rendering, dimmed, behind it.
 final class TerminalViewController: UIViewController {
     private enum Backend {
         case demoShell
-        case ssh(SSHConfig)
         case companion(URL)
     }
 
@@ -40,8 +38,6 @@ final class TerminalViewController: UIViewController {
     private var lastFittedSize: CGSize = .zero
     private var fitDebounce: DispatchWorkItem?
     private lazy var shellSession = ShellSession(shell: defaultSandboxShell)
-    private var sshClient: SSHTerminalClient?
-    private var sshTerminalSession: InMemoryTerminalSession?
     private var companion: CompanionTransport?
     private var companionSession: InMemoryTerminalSession?
     private let headerBar = UIStackView()
@@ -85,17 +81,6 @@ final class TerminalViewController: UIViewController {
         hidesBottomBarWhenPushed = true
     }
 
-    init(sshConfig: SSHConfig) {
-        session = MockSession(
-            title: "\(sshConfig.username)@\(sshConfig.host)",
-            project: "ssh", agent: .terminal, status: .idle,
-            subtitle: "", time: ""
-        )
-        backend = .ssh(sshConfig)
-        super.init(nibName: nil, bundle: nil)
-        hidesBottomBarWhenPushed = true
-    }
-
     /// A companion terminal: bridges a real Mac session's PTY when `session`
     /// carries a roster id, else streams whatever the server serves (PoC mode).
     init(companionURL: URL, session: MockSession? = nil) {
@@ -110,7 +95,6 @@ final class TerminalViewController: UIViewController {
     }
 
     deinit {
-        sshClient?.stop()
         companion?.stop()
         uploadClient?.stop()
         restylePump?.invalidate()
@@ -164,8 +148,6 @@ final class TerminalViewController: UIViewController {
             switch backend {
             case .demoShell:
                 shellSession.start()
-            case .ssh:
-                sshClient?.start()
             case .companion:
                 companion?.start()
             }
@@ -229,11 +211,11 @@ final class TerminalViewController: UIViewController {
         statusLabel.textColor = .secondaryLabel
         statusLabel.text = switch backend {
         case .demoShell: "\(session.agent.rawValue) · \(session.time)"
-        case .ssh, .companion: "Connecting…"
+        case .companion: "Connecting…"
         }
         contextLabel.isHidden = contextLabel.text?.isEmpty ?? true
         switch backend {
-        case .ssh, .companion: contextLabel.isHidden = true // until connected
+        case .companion: contextLabel.isHidden = true // until connected
         case .demoShell: break
         }
 
@@ -551,31 +533,13 @@ final class TerminalViewController: UIViewController {
         }
     }
 
-    /// Demo sessions use ShellCraftKit's sandbox shell; SSH sessions bridge
-    /// the surface to the SSH channel — keystrokes out, remote bytes in,
-    /// grid resize → SSH window-change.
+    /// Demo sessions use ShellCraftKit's sandbox shell; companion sessions
+    /// bridge the surface to the Mac's PTY over the wire — keystrokes out,
+    /// remote bytes in, grid resize → window-change.
     private func makeTerminalSession() -> InMemoryTerminalSession {
         switch backend {
         case .demoShell:
             return shellSession.terminalSession
-        case .ssh(let config):
-            let client = SSHTerminalClient(config: config)
-            let terminalSession = InMemoryTerminalSession(
-                write: { [weak client] data in client?.send(data) },
-                resize: { [weak client] viewport in
-                    client?.resize(cols: Int(viewport.columns), rows: Int(viewport.rows))
-                }
-            )
-            client.onOutput = { [weak terminalSession] data in
-                terminalSession?.receive(data)
-            }
-            client.onState = { [weak self] state in
-                self?.sshStateChanged(state)
-            }
-            sshClient = client
-            sshTerminalSession = terminalSession
-            return terminalSession
-
         case .companion(let url):
             let transport = CompanionTransport(url: url, attachSessionID: session.rosterID)
             let terminalSession = InMemoryTerminalSession(
@@ -619,30 +583,6 @@ final class TerminalViewController: UIViewController {
         case .closed:
             statusLabel.text = "Disconnected"
             companionSession?.finish(exitCode: 0, runtimeMilliseconds: 0)
-        }
-    }
-
-    private func sshStateChanged(_ state: SSHClientState) {
-        statusLabel.isHidden = false
-        contextLabel.isHidden = true
-        switch state {
-        case .idle:
-            break
-        case .connecting:
-            statusLabel.text = "Connecting…"
-        case .connected:
-            statusLabel.isHidden = true
-            contextLabel.isHidden = contextLabel.text?.isEmpty ?? true
-        case .failed(let reason):
-            statusLabel.text = "Connection failed"
-            let alert = UIAlertController(title: "SSH connection failed", message: reason, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
-                self?.close()
-            })
-            present(alert, animated: true)
-        case .closed:
-            statusLabel.text = "Disconnected"
-            sshTerminalSession?.finish(exitCode: 0, runtimeMilliseconds: 0)
         }
     }
 
