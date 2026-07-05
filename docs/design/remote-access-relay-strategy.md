@@ -84,15 +84,28 @@ tunelo（自研 Rust + QUIC，quinn/rustls）**已经 80% 是 broker**——#4 �
 
 `router.rs::resolve_subdomain`：请求名对应的 session 一旦 QUIC 断开（`close_reason().is_some()`）就 **evict 后发给来者**。含义：**Mac 网络一抖，任何知道 subdomain 的人都能 `Register` 抢走它**（现有 `password` 只 gate `Attach`，不 gate `Register` 回收）→ 拒真主 + 占名的 DoS。
 
-**修复 = owner-key 门控回收：**
+**修复 = 稳定身份 owner 自证回收。稳定身份用密钥对，不用机器码。**
 
-- `messages.rs` — `Register` 加 `owner_key: Option<String>`（= termio pairing token 的 hash）。
-- `router.rs` — `TunnelSession` 存 `owner_key`；`resolve_subdomain` → `claim`：
-  1. 名字空闲 → 发；
-  2. 被**同一 owner_key** 占 → 发（Mac 重连回收），踢旧 session；
-  3. keyed 但 key 不对 → 拒（不管死活）★ 这就是修复；
-  4. 无 key 的老式公共隧道 → 保留懒回收，向后兼容。
-- 存 `hash(token)` 而非原 token，relay 被攻破不泄 token。`Attach` 侧继续被 `password_ok`（`auth.rs`，常数时间比较）挡。
+> **先看同类项目怎么做（2026-07-05 调研）。** 严肃项目的设备/隧道身份**无一用硬件机器码**，全是"首次运行生成的密钥对 + 稳定名 = hash(公钥)"：
+> - **Syncthing**：device ID = `base32(SHA-256(自签证书))`，TLS 握手时对端哈希你的证书即得你的 ID，持私钥即证明是你。
+> - **Tailscale**：curve25519 machine/node key，官方明说**不基于硬件 ID**，"机器叫什么名字都无所谓"。
+> - **cloudflared / ngrok**：稳定名绑一个 **server 发的秘密凭证**（tunnel credentials.json / authtoken + bind ACL），不是硬件。
+> - 机器码库自己的文档也承认：MAC/BIOS/CPU 在 VM 里不可靠，且**未经同意的设备指纹 = GDPR/PECR 违规、用户删不掉**。
+>
+> **为什么密钥对完胜机器码**：①身份+证明合一（challenge 签名自证，不用额外字段）；②跨平台=一份纯 Rust 代码（`ed25519-dalek`，无 `#[cfg]`；机器码要读三套 OS 源 + 容器里还得兜底存文件，反而更复杂）；③隐私干净（tunelo 开源，躲开硬件指纹）。**机器码只留给 License 3-座位计数**（它擅长"是不是同一台物理机、扛系统重装"），与隧道身份正交，别混。
+
+具体机制：
+
+- **身份**：tunelo client 首次运行生成 Ed25519 密钥对。存储：独立用户 `~/.config/tunelo/identity.key`(0600, via `dirs`)；termio 嵌入时走 **macOS Keychain**（扛 app 重装，和机器码一样耐久）。
+- **命名**：`subdomain = base32_lower(SHA-256(pubkey))[..12]`，client 本地即可算出，不必等 relay 回（QR 可提前生成、永久固定）。
+- `protocol/messages.rs` — 新增 `RelayControl::Challenge { nonce }`（relay 连上先发）；`Register` 去掉 `owner_key`，改带 `pubkey` + `signature`（签 `nonce ‖ subdomain`）。
+- `relay/src/router.rs` — `resolve_subdomain` → `claim`：
+  1. 验签失败 / `hash(pubkey) != subdomain` → 拒；
+  2. 名字空闲 → 发；
+  3. 被**同一 pubkey** 占 → 发（Mac 重连回收），踢旧 session；★ 抢注修复
+  4. 无 pubkey 的老式公共隧道 → 保留懒回收，向后兼容。
+- relay **零持久化**：名字自带证明（preimage resistance），不需要存任何 owner_key 表。`Attach` 侧继续被 `password_ok`（`auth.rs`，常数时间比较）挡。
+- 新依赖 `ed25519-dalek` + `dirs`，纯 Rust，不破坏 Windows/Linux 交叉编译。
 
 ### 5.3 时长限制：已是开关
 
@@ -109,10 +122,12 @@ tunelo（自研 Rust + QUIC，quinn/rustls）**已经 80% 是 broker**——#4 �
 
 **机制 = 复用已有的 Lemon Squeezy 授权后端签短期 token：**
 
-1. termio app（有 license 或 trial 期）→ 你的控制端点 `POST /relay-token {license/install_id}`；
-2. 后端校验 → 返回短期（≤1h）token，用你的 **Ed25519 私钥**签 `{install_id, exp}`；
+1. termio app（有 license 或 trial 期）→ 你的控制端点 `POST /relay-token {license/install_id, pubkey_hash}`；
+2. 后端校验 → 返回短期（≤1h）token，用你的 **Ed25519 私钥**签 `{install_id, pubkey_hash, exp}`；签进 `pubkey_hash` 就把 **license ↔ 身份密钥对**绑死，relay 可顺带校验"这个 token 只配这个 subdomain"；
 3. tunelo client 在 `Register` 带上（`messages.rs` 加 `auth_token: Option<String>`）；
 4. relay 用**内嵌公钥**验签 + 查 exp（`tunnel.rs::handle_owner` 在 `router.register` 之前），失败 `send_error(UNAUTHORIZED)` + `bail!`。
+
+> 准入（`auth_token`，防白嫖）与归属（§5.2 密钥对自证）是**两层正交的东西**：前者证明"你付费了"，后者证明"这个名字是你的"。可以分开加，也可以让 token 签 `pubkey_hash` 把两者合流。
 
 - 私钥只在你后端；relay 里是**公钥**，可光明正大写进开源 crate——**开源不泄任何东西**，无 license 拿不到 token。
 - 补：短 exp + 撤销名单、每 install_id 隧道数上限、按 IP register 限速。
@@ -131,19 +146,19 @@ tunelo（自研 Rust + QUIC，quinn/rustls）**已经 80% 是 broker**——#4 �
 
 ## 6. termio 侧接线（长期路径 A）
 
-1. `TunnelManager.swift:139`：cloudflared spawn → 起 tunelo **client(owner)**：`tunelo port 8787 --relay <你的relay> --subdomain <每台Mac高熵稳定id> --password <token>`（或直接嵌 `crates/tunelo` client）。稳定 id 取 token 的 hash → subdomain 本身也不可枚举，多一道路由密钥。删 `reapStrayTunnels`/regex 抓 URL。
+1. `TunnelManager.swift:139`：cloudflared spawn → 起 tunelo **client(owner)**：`tunelo port 8787 --relay <你的relay> --identity <Keychain 里的密钥> --password <token>`（或直接嵌 `crates/tunelo` client）。subdomain = `base32(SHA-256(pubkey))`，**termio 本地即可算出**（不必等 relay 回），不可枚举。删 `reapStrayTunnels`/regex 抓 URL。
 2. `MobileSettingsTab.swift:23`：QR host 从随机 `*.trycloudflare.com` → 固定 `wss://<稳定subdomain>.<domain>/?t=<token>`。**跨重建稳定 → tunnel-churn 重配对痛点根除。**
 3. iOS：`CompanionLink` 存的 URL 变常量；`token(of:)`、auth-first 首帧**全不动**。
 
 ## 7. 决策与下一步
 
 - **现在**：走 §4 短期 BYO-tunnel（复用 Cloudflare/ngrok），先上线验证需求，零基础设施、无白嫖者问题。
-- **待需求验证后**：做 §5 tunelo 改造——最小可用套餐 = `claim`（含抢注修复）+ `owner_key` + `auth_token` 验签 + `--max-session 0`，可合成一个 diff。
+- **待需求验证后**：做 §5 tunelo 改造——最小可用套餐 = 密钥对身份 `claim`（challenge 签名自证，含抢注修复）+ `auth_token` 验签 + `--max-session 0`，可合成一个 diff。
 - **推迟**：多 relay 目录、App Attest、native QUIC Attach（路径 B）——真撞规模/隐私红线再上。
 
 ### 待办
 
-- [ ] tunelo：`owner_key` 抢注修复 + `auth_token` Ed25519 验签（合一个 diff）
+- [ ] tunelo：密钥对身份（Ed25519 challenge 签名自证）抢注修复 + `auth_token` Ed25519 验签（合一个 diff）；新依赖 `ed25519-dalek` + `dirs`，纯 Rust 保交叉编译
 - [ ] 后端：`/relay-token` 签发端点（复用 Lemon Squeezy license/trial 校验）
 - [ ] termio：`TunnelManager` 可插拔 provider（cloudflared quick/named、ngrok）
 - [ ] 决策：relay 是否需要 E2EE（取决于对"relay 可读终端"的容忍度）
