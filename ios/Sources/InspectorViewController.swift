@@ -14,6 +14,7 @@ final class InspectorViewController: UIViewController {
     private let tableView = UITableView(frame: .zero, style: .plain)
     private let segment = UISegmentedControl(items: ["Files", "Changes"])
     private let spinner = UIActivityIndicatorView(style: .medium)
+    private let searchBar = UISearchBar()
 
     /// Offline sample tree (mock sessions, PoC streams).
     private var fileRows: [(node: FileNode, depth: Int)] = []
@@ -27,6 +28,13 @@ final class InspectorViewController: UIViewController {
     /// The presented viewer, kept weak so save acks/conflicts route to it.
     private weak var activeViewer: FileViewerController?
     private var pane: Pane = .files
+
+    /// Filename search over the *loaded* tree — a flat list of file matches,
+    /// not the tree. Whole-repo/content search is a server-side follow-up.
+    private var isSearching = false
+    private var searchQuery = ""
+    private var remoteResults: [RemoteNode] = []
+    private var fileResults: [FileNode] = []
 
     /// The file plane needs a companion link and a project to scope it to.
     private var isLive: Bool { companionURL != nil && session.projectRosterID != nil }
@@ -51,29 +59,122 @@ final class InspectorViewController: UIViewController {
         segment.addAction(UIAction { [weak self] _ in
             guard let self else { return }
             pane = Pane(rawValue: segment.selectedSegmentIndex) ?? .files
+            // Search only applies to Files; leaving the pane drops out of it.
+            if isSearching { endSearch() }
+            updateRightBarButton()
             tableView.reloadData()
         }, for: .valueChanged)
         navigationItem.titleView = segment
 
+        searchBar.delegate = self
+        searchBar.placeholder = "Search files"
+        searchBar.showsCancelButton = true
+        searchBar.sizeToFit()
+
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.rowHeight = 44
+        // Self-sizing rows: a fixed 44pt height left only ~2pt of slack over the
+        // subheadline line height plus the content margins, so glyph descenders
+        // (p, g, j) clipped at the bottom. Let each cell's content configuration
+        // drive the height instead — it always reserves room for descenders, and
+        // the two-line Changes rows breathe too.
+        tableView.rowHeight = UITableView.automaticDimension
+        tableView.estimatedRowHeight = 44
         tableView.frame = view.bounds
         tableView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(tableView)
 
+        // The spinner rides the nav bar only while a request is in flight. On
+        // iOS 26 a bar button item is wrapped in a glass capsule, so leaving an
+        // idle (zero-size) spinner attached leaves an empty glass circle
+        // crowding the segment — attach it lazily instead.
         spinner.hidesWhenStopped = true
-        navigationItem.rightBarButtonItem = UIBarButtonItem(customView: spinner)
 
         if isLive {
             connectFilePlane()
         } else {
             reloadFileRows()
+            updateRightBarButton()
         }
     }
 
     private func reloadFileRows() {
         fileRows = FileNode.visibleRows(from: FileNode.sampleRoot)
+    }
+
+    /// Show/hide the nav-bar spinner, attaching its bar button only while busy
+    /// so no empty glass capsule lingers in the header when idle.
+    private func setLoading(_ loading: Bool) {
+        if loading {
+            spinner.startAnimating()
+            navigationItem.rightBarButtonItem = UIBarButtonItem(customView: spinner)
+        } else {
+            spinner.stopAnimating()
+            updateRightBarButton()
+        }
+    }
+
+    /// The right slot shows the search affordance when idle in the Files pane;
+    /// the loading spinner and active search both claim it while they're up.
+    private func updateRightBarButton() {
+        guard pane == .files, !isSearching, !spinner.isAnimating else {
+            navigationItem.rightBarButtonItem = spinner.isAnimating
+                ? UIBarButtonItem(customView: spinner) : nil
+            return
+        }
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            image: UIImage(systemName: "magnifyingglass"),
+            primaryAction: UIAction { [weak self] _ in self?.beginSearch() }
+        )
+    }
+
+    private func beginSearch() {
+        isSearching = true
+        searchQuery = ""
+        searchBar.text = ""
+        rebuildSearchResults()
+        tableView.tableHeaderView = searchBar
+        updateRightBarButton()
+        tableView.reloadData()
+        searchBar.becomeFirstResponder()
+    }
+
+    private func endSearch() {
+        isSearching = false
+        searchQuery = ""
+        searchBar.text = ""
+        searchBar.resignFirstResponder()
+        tableView.tableHeaderView = nil
+        remoteResults = []
+        fileResults = []
+        updateRightBarButton()
+        tableView.reloadData()
+    }
+
+    /// Filter every loaded node (ignoring expansion) down to files whose name
+    /// contains the query — directories aren't openable results yet.
+    private func rebuildSearchResults() {
+        let query = searchQuery.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !query.isEmpty else {
+            remoteResults = []
+            fileResults = []
+            return
+        }
+        if isLive {
+            remoteResults = Self.flatten(remoteRoots)
+                .filter { !$0.isDir && $0.name.lowercased().contains(query) }
+        } else {
+            fileResults = Self.flatten(FileNode.sampleRoot)
+                .filter { !$0.isDirectory && $0.name.lowercased().contains(query) }
+        }
+    }
+
+    private static func flatten(_ nodes: [RemoteNode]) -> [RemoteNode] {
+        nodes.flatMap { [$0] + flatten($0.children ?? []) }
+    }
+
+    private static func flatten(_ nodes: [FileNode]) -> [FileNode] {
+        nodes.flatMap { [$0] + flatten($0.children ?? []) }
     }
 
     // MARK: - Live tree (companion file plane)
@@ -82,7 +183,7 @@ final class InspectorViewController: UIViewController {
     /// socket is a raw PTY byte stream once attached, so it can't carry these.
     private func connectFilePlane() {
         guard let companionURL, let projectID = session.projectRosterID else { return }
-        spinner.startAnimating()
+        setLoading(true)
         let client = CompanionClient(url: companionURL)
         client.onConnected = { [weak self] connected in
             guard let self, connected, remoteRoots.isEmpty else { return }
@@ -105,7 +206,7 @@ final class InspectorViewController: UIViewController {
                 return
             }
             pendingRead = nil
-            spinner.stopAnimating()
+            setLoading(false)
             let alert = UIAlertController(title: "Couldn't open file", message: message, preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "OK", style: .default))
             present(alert, animated: true)
@@ -115,7 +216,7 @@ final class InspectorViewController: UIViewController {
     }
 
     private func receiveListing(path: String, entries: [WireFileEntry]) {
-        spinner.stopAnimating()
+        setLoading(false)
         let nodes = entries.map { RemoteNode(entry: $0, parentPath: path) }
         if path.isEmpty {
             remoteRoots = nodes
@@ -130,7 +231,7 @@ final class InspectorViewController: UIViewController {
     private func receiveFile(_ file: WireFile) {
         guard file.path == pendingRead else { return }
         pendingRead = nil
-        spinner.stopAnimating()
+        setLoading(false)
         if file.binary {
             guard let quickLook = FileViewerController.quickLook(for: file) else { return }
             present(quickLook, animated: true)
@@ -154,7 +255,7 @@ final class InspectorViewController: UIViewController {
     private func requestFile(_ path: String) {
         guard let projectID = session.projectRosterID else { return }
         pendingRead = path
-        spinner.startAnimating()
+        setLoading(true)
         client?.send(.readFile(projectID: projectID, path: path))
     }
 
@@ -181,6 +282,37 @@ final class InspectorViewController: UIViewController {
         }
     }
 
+    /// The row's node as (name, project-relative path, isDir), resolving which
+    /// backing list feeds this index (live vs mock, search vs tree). nil for
+    /// non-file panes or a stale index.
+    private func fileNode(at indexPath: IndexPath) -> (name: String, relPath: String, isDir: Bool)? {
+        guard pane == .files else { return nil }
+        if isSearching {
+            if isLive {
+                guard indexPath.row < remoteResults.count else { return nil }
+                let node = remoteResults[indexPath.row]
+                return (node.name, node.relPath, node.isDir)
+            }
+            guard indexPath.row < fileResults.count else { return nil }
+            return (fileResults[indexPath.row].name, "", fileResults[indexPath.row].isDirectory)
+        }
+        if isLive {
+            guard indexPath.row < remoteRows.count else { return nil }
+            let node = remoteRows[indexPath.row].node
+            return (node.name, node.relPath, node.isDir)
+        }
+        guard indexPath.row < fileRows.count else { return nil }
+        let node = fileRows[indexPath.row].node
+        return (node.name, "", node.isDirectory)
+    }
+
+    /// Join a project-relative path onto the Mac's absolute project root, so
+    /// "Copy Path" yields a full path ready to paste into an agent prompt.
+    private func absolutePath(for relPath: String) -> String {
+        guard let root = session.projectPath, !root.isEmpty else { return relPath }
+        return relPath.isEmpty ? root : "\(root)/\(relPath)"
+    }
+
     private static func changedDot() -> UIView {
         let dot = UIView(frame: CGRect(x: 0, y: 0, width: 8, height: 8))
         dot.backgroundColor = .systemBlue
@@ -192,6 +324,7 @@ final class InspectorViewController: UIViewController {
 extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch pane {
+        case .files where isSearching: isLive ? remoteResults.count : fileResults.count
         case .files: isLive ? remoteRows.count : fileRows.count
         case .changes: MockChange.samples.count
         }
@@ -201,6 +334,29 @@ extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
         let cell = tableView.dequeueReusableCell(withIdentifier: "cell")
             ?? UITableViewCell(style: .value1, reuseIdentifier: "cell")
         switch pane {
+        case .files where isSearching:
+            let name: String, relPath: String
+            if isLive {
+                let node = remoteResults[indexPath.row]
+                (name, relPath) = (node.name, node.relPath)
+            } else {
+                (name, relPath) = (fileResults[indexPath.row].name, "")
+            }
+            var config = cell.defaultContentConfiguration()
+            config.text = name
+            config.textProperties.font = .preferredFont(forTextStyle: .subheadline)
+            let parent = (relPath as NSString).deletingLastPathComponent
+            config.secondaryText = parent.isEmpty ? nil : parent
+            config.secondaryTextProperties.font = .preferredFont(forTextStyle: .caption1)
+            config.secondaryTextProperties.color = .secondaryLabel
+            let icon = FileIcons.icon(forFileName: name)
+            config.image = icon.image
+            config.imageProperties.tintColor = icon.tint
+            config.imageProperties.maximumSize = CGSize(width: 16, height: 16)
+            config.imageProperties.reservedLayoutSize = CGSize(width: 16, height: 16)
+            cell.contentConfiguration = config
+            cell.accessoryView = nil
+            cell.accessoryType = .none
         case .files:
             let name: String, isDir: Bool, expanded: Bool, changed: Bool, depth: Int
             if isLive {
@@ -249,6 +405,11 @@ extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
+        if isSearching, pane == .files {
+            // Results are files only; offline mocks have no path to open.
+            if isLive { requestFile(remoteResults[indexPath.row].relPath) }
+            return
+        }
         switch pane {
         case .files where isLive:
             let (node, _) = remoteRows[indexPath.row]
@@ -259,7 +420,7 @@ extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
                     tableView.reloadData()
                 } else if let projectID = session.projectRosterID {
                     // First expand: fetch, then `receiveListing` opens it.
-                    spinner.startAnimating()
+                    setLoading(true)
                     client?.send(.listFiles(projectID: projectID, path: node.relPath))
                 }
             } else {
@@ -276,6 +437,46 @@ extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
             let change = MockChange.samples[indexPath.row]
             navigationController?.pushViewController(DiffViewController(change: change), animated: true)
         }
+    }
+
+    /// Long-press a file/folder row for its per-item actions — the iOS-native
+    /// tree menu (Apple Files, and the session rows use the same). Only live
+    /// rows carry a real Mac path, so the mock tree gets no menu.
+    func tableView(
+        _ tableView: UITableView,
+        contextMenuConfigurationForRowAt indexPath: IndexPath,
+        point: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        guard isLive, let node = fileNode(at: indexPath) else { return nil }
+        let absolute = absolutePath(for: node.relPath)
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+            var actions: [UIMenuElement] = []
+            if !node.isDir {
+                actions.append(UIAction(
+                    title: "Open", image: UIImage(systemName: "doc.text")
+                ) { [weak self] _ in self?.requestFile(node.relPath) })
+            }
+            actions.append(UIAction(
+                title: "Copy Path", image: UIImage(systemName: "doc.on.doc")
+            ) { _ in UIPasteboard.general.string = absolute })
+            return UIMenu(title: node.name, children: actions)
+        }
+    }
+}
+
+extension InspectorViewController: UISearchBarDelegate {
+    func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
+        searchQuery = searchText
+        rebuildSearchResults()
+        tableView.reloadData()
+    }
+
+    func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {
+        searchBar.resignFirstResponder()
+    }
+
+    func searchBarCancelButtonClicked(_ searchBar: UISearchBar) {
+        endSearch()
     }
 }
 

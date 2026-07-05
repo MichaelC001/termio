@@ -291,7 +291,7 @@ final class SessionListViewController: UIViewController {
         tableView.verticalScrollIndicatorInsets.bottom = 56
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 4),
+            tableView.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 16),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -356,7 +356,7 @@ final class SessionListViewController: UIViewController {
         emptyState.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(emptyState)
         NSLayoutConstraint.activate([
-            emptyState.topAnchor.constraint(equalTo: topBar.bottomAnchor),
+            emptyState.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 16),
             emptyState.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             emptyState.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             emptyState.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -538,6 +538,7 @@ final class SessionListViewController: UIViewController {
             subtitle: "", time: "",
             rosterID: sessionID,
             projectRosterID: pending.project.rosterID,
+            projectPath: pending.project.path,
             branch: pending.project.branch
         )
         onOpenSession?(session, companionURL)

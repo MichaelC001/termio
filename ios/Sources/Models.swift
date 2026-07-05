@@ -16,6 +16,9 @@ struct MockSession: Identifiable {
     /// The Mac project's wire id — what the file plane (`listFiles`/`readFile`)
     /// scopes requests to. nil for bundled mock rows.
     var projectRosterID: String?
+    /// The project's absolute path on the Mac — the root the file tree's
+    /// relative paths hang off, so "Copy Path" can hand back a full path.
+    var projectPath: String?
     /// The project's current git branch (nil for non-repos / mock rows).
     var branch: String?
 
@@ -140,6 +143,7 @@ extension MockSession {
             time: "",
             rosterID: roster.id,
             projectRosterID: project.id,
+            projectPath: project.path,
             branch: branch
         )
     }
