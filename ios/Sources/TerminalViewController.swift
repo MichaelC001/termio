@@ -976,6 +976,17 @@ private final class DisplayTerminalView: UITerminalView {
     var onScrollGesture: (() -> Void)?
     private var scrollHookInstalled = false
 
+    /// The wrapper's `ghostty_surface_t`, resolved once per scroll interaction
+    /// so the per-frame draw path never re-walks its private mirror at touch-
+    /// sample rate (up to 120 Hz on ProMotion).
+    private var scrollSurfaceHandle: UnsafeMutableRawPointer?
+
+    /// Vsync-aligned draw pump that covers the momentum glide after the finger
+    /// lifts — the wrapper runs its own momentum recognizer but still paints
+    /// through `DispatchQueue.main.async`, off the vsync boundary.
+    private var momentumPump: CADisplayLink?
+    private var momentumPumpDeadline: CFTimeInterval = 0
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         installScrollHookIfNeeded()
@@ -999,8 +1010,59 @@ private final class DisplayTerminalView: UITerminalView {
         scrollHookInstalled = true
     }
 
+    /// The wrapper renders every frame through `DispatchQueue.main.async`
+    /// (its `startDisplayLink` is a stub — no real vsync loop), so a finger
+    /// scroll lands a beat behind the gesture: the viewport is already moved
+    /// but the GPU draw slips past the CA commit deadline. We ride the same
+    /// pan recognizer — our target is added after the wrapper's, so by the
+    /// time `.changed` reaches us the viewport is current — and draw it
+    /// synchronously, in-frame. The momentum tail keeps painting at vsync
+    /// until the wrapper's glide decelerates.
     @objc private func scrollGestureChanged(_ gesture: UIPanGestureRecognizer) {
-        if gesture.state == .began { onScrollGesture?() }
+        switch gesture.state {
+        case .began:
+            stopMomentumPump()
+            onScrollGesture?()
+            scrollSurfaceHandle = ghosttySurfaceHandle()
+        case .changed:
+            drawScrollFrameNow()
+        case .ended, .cancelled, .failed:
+            startMomentumPump()
+        default:
+            break
+        }
+    }
+
+    /// Mirror the coordinator's proven per-tick sequence (refresh then draw),
+    /// but synchronously and on the vsync-aligned call path instead of a
+    /// deferred main-queue block.
+    private func drawScrollFrameNow() {
+        guard let handle = scrollSurfaceHandle ?? ghosttySurfaceHandle() else { return }
+        termio_ghostty_surface_refresh(handle)
+        termio_ghostty_surface_draw(handle)
+    }
+
+    private func startMomentumPump() {
+        momentumPumpDeadline = 0 // armed from the first frame's own timestamp
+        guard momentumPump == nil else { return }
+        let link = CADisplayLink(target: self, selector: #selector(momentumPumpFrame(_:)))
+        link.add(to: .main, forMode: .common)
+        momentumPump = link
+    }
+
+    @objc private func momentumPumpFrame(_ link: CADisplayLink) {
+        // 0.92-per-frame decel from a hard fling reaches the wrapper's <50 px/s
+        // cutoff well inside 1.2 s; past that the surface is idle and the pump
+        // is pure waste, so it stops itself.
+        if momentumPumpDeadline == 0 { momentumPumpDeadline = link.timestamp + 1.2 }
+        if link.timestamp >= momentumPumpDeadline { stopMomentumPump(); return }
+        drawScrollFrameNow()
+    }
+
+    private func stopMomentumPump() {
+        momentumPump?.invalidate()
+        momentumPump = nil
+        scrollSurfaceHandle = nil
     }
 
     /// Raw bytes straight to the PTY — every termio backend is in-memory.
@@ -1062,3 +1124,12 @@ private final class DisplayTerminalView: UITerminalView {
 private func termio_ghostty_surface_mouse_pos(
     _ surface: UnsafeMutableRawPointer, _ x: Double, _ y: Double, _ mods: Int32
 )
+
+/// `ghostty_surface_refresh` / `ghostty_surface_draw` — the same synchronous
+/// render pair the coordinator runs each tick, bound by symbol so the scroll
+/// path can present a frame at vsync instead of on a deferred main-queue block.
+@_silgen_name("ghostty_surface_refresh")
+private func termio_ghostty_surface_refresh(_ surface: UnsafeMutableRawPointer)
+
+@_silgen_name("ghostty_surface_draw")
+private func termio_ghostty_surface_draw(_ surface: UnsafeMutableRawPointer)

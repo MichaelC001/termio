@@ -3,7 +3,7 @@ title: Backlog
 status: active
 type: backlog
 created: 2026-07-03
-updated: 2026-07-03
+updated: 2026-07-05
 related:
   - rfcs/fork-libghostty-spm.md
   - design/session-history-search-resume.md
@@ -56,6 +56,23 @@ until the official packages land.
   probabilistic and the official replacement has no release date.*
 - [ ] **Offer the one-line lock fix upstream first** as a cheap test of
   Lakr233's responsiveness before (or alongside) forking.
+- [ ] **Restore a real vsync render loop** — `TerminalSurfaceCoordinator`'s
+  `startDisplayLink()` is a stub: every frame (PTY output, scroll, momentum)
+  presents through `DispatchQueue.main.async { surface.draw() }`, off the CA
+  commit deadline, so iOS scroll lands a beat behind the finger. The intended
+  design (the package still imports `MSDisplayLink`, names `startDisplayLink`
+  / `DisplayLinkCallbackContext`) is a CADisplayLink that ticks+draws at vsync
+  while input/PTY events just mark dirty. Land it in the fork and PR upstream.
+  *Workaround shipped termio-side (2026-07-05, `DisplayTerminalView` in
+  `TerminalViewController.swift`): ride the wrapper's scroll pan (our target
+  fires after its) and drive `ghostty_surface_refresh`+`draw` synchronously on
+  `.changed`, plus a momentum-tail CADisplayLink — via `@_silgen_name`, the
+  same private-handle route as the mouse-pos seed. Remove once the fork's loop
+  lands. Trigger: with the fork.*
+- [ ] **Expose `touchScrollMultiplier` (scroll gain)** — hardcoded `3.0` in the
+  package's `handleTouchScrollGesture`; if finger-to-content gain still reads
+  slow after the vsync fix, make it configurable in the fork. *Trigger: only if
+  the render-timing fix doesn't settle the "scroll too slow" feel.*
 
 ## Deferred designs
 
