@@ -163,13 +163,14 @@ final class TerminalAccessoryBar: UIInputView {
             view.removeFromSuperview()
         }
 
-        // esc leads (its spot since the VT100), then the keys the user picked
-        // in Settings. The arrows — the highest-frequency navigation keys —
-        // ride right after tab so they stay in the always-visible zone instead
-        // of scrolling off the end; if tab is off they lead, right after esc.
-        // Everything the system keyboard already provides (letters, digits,
-        // symbols, return, backspace) is left to it — no y/n or number keys.
+        // esc and ⏎ anchor the left, both always visible while the bar scrolls:
+        // esc cancels, Return confirms. The system keyboard's own return edits
+        // the draft by contract, so this raw carriage return is the only way to
+        // fire a menu choice or run a prompt in the TUI. Then the keys the user
+        // picked in Settings, with the arrows riding right after tab so they
+        // stay visible too; if tab is off they lead, right after Return.
         row.addArrangedSubview(makeEscButton())
+        row.addArrangedSubview(makeKeyButton(title: "⏎", payload: Data([0x0D])))
         let configured = TerminalKeyCatalog.keys(for: MobileSettings.shared.terminalKeyIDs)
         if !configured.contains(where: { $0.id == "tab" }) { addArrows() }
         for key in configured {
