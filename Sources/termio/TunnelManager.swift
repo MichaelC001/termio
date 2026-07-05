@@ -2,11 +2,18 @@ import AppKit
 import Foundation
 
 /// Fronts the companion server with a public tunnel so the iPhone can connect
-/// away from the LAN. Two providers, same shape: spawn the CLI pointed at the
-/// companion port, scrape the public URL it prints, publish it for the QR.
-/// The CLI is found on the usual install paths or downloaded once from its
-/// GitHub release into Application Support — the app itself stays small and
-/// tunnel updates stay decoupled from app releases.
+/// away from the LAN. Every provider has the same shape: spawn the CLI pointed
+/// at the companion port, scrape the public URL it prints, publish it for the
+/// QR. All of a provider's per-tool knowledge — argv, the URL it prints, where
+/// to fetch its binary, how to reap a stray copy — lives in one `Spec`, so
+/// adding a tunnel is a single new `case` plus one `spec` arm, not edits smeared
+/// across spawn / scan / install / reap.
+///
+/// The CLI is found on the usual install paths or (when the spec carries a
+/// download) fetched once from its GitHub release into Application Support — the
+/// app itself stays small and tunnel updates stay decoupled from app releases.
+/// A provider with no download is bring-your-own: it must already be on PATH
+/// (e.g. `brew install ngrok`, plus a one-time `ngrok config add-authtoken`).
 ///
 /// The tunnel is a dumb pipe: every connection that arrives through it still
 /// has to present the pairing token before the server serves it anything.
@@ -16,23 +23,87 @@ final class TunnelManager: ObservableObject {
         case off
         case tunelo
         case cloudflared
+        case ngrok
 
         var id: String { rawValue }
+        var label: String { spec?.label ?? "Off" }
+        var binaryName: String { spec?.binaryName ?? "" }
 
-        var label: String {
+        /// Everything the manager needs to run this provider, in one place.
+        /// `nil` for `.off`. Bakes in the companion port and the host arch so
+        /// the call sites stay provider-agnostic.
+        var spec: Spec? {
+            let port = String(CompanionServer.defaultPort)
+            #if arch(arm64)
+            let arch = "arm64"
+            #else
+            let arch = "amd64"
+            #endif
             switch self {
-            case .off: "Off"
-            case .tunelo: "Tunelo"
-            case .cloudflared: "Cloudflare"
+            case .off:
+                return nil
+            case .tunelo:
+                return Spec(
+                    binaryName: "tunelo",
+                    label: "Tunelo",
+                    arguments: ["port", port],
+                    urlPattern: #"https://[a-zA-Z0-9-]+\.tunelo\.net"#,
+                    download: Spec.Download(
+                        url: "https://github.com/jiweiyuan/tunelo/releases/latest/download/tunelo-macos-\(arch)",
+                        isArchive: false
+                    )
+                )
+            case .cloudflared:
+                return Spec(
+                    binaryName: "cloudflared",
+                    label: "Cloudflare",
+                    arguments: ["tunnel", "--url", "http://127.0.0.1:\(port)", "--no-autoupdate"],
+                    urlPattern: #"https://[a-zA-Z0-9-]+\.trycloudflare\.com"#,
+                    download: Spec.Download(
+                        url: "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-\(arch).tgz",
+                        isArchive: true
+                    )
+                )
+            case .ngrok:
+                return Spec(
+                    binaryName: "ngrok",
+                    label: "ngrok",
+                    // `--log stdout` turns off the interactive TUI and prints the
+                    // public URL as a logfmt `url=…` field we can scrape.
+                    arguments: ["http", port, "--log", "stdout"],
+                    urlPattern: #"https://[a-zA-Z0-9-]+\.ngrok(?:-free)?\.(?:app|io)"#,
+                    // Bring-your-own: ngrok needs `ngrok config add-authtoken`
+                    // run once against the user's account, so auto-fetching the
+                    // bare binary wouldn't save the real setup step. Discover a
+                    // brew/manual install on PATH, or fail with a hint.
+                    download: nil
+                )
             }
         }
 
-        var binaryName: String {
-            switch self {
-            case .off: ""
-            case .tunelo: "tunelo"
-            case .cloudflared: "cloudflared"
-            }
+        /// A `pkill -f` substring that matches *our* tunnel for this provider and
+        /// nothing else. Always port-scoped (the argv carries the companion port),
+        /// so a user's unrelated tunnel on another port is spared.
+        var reapPattern: String? {
+            spec.map { "\($0.binaryName) \($0.arguments.joined(separator: " "))" }
+        }
+    }
+
+    /// One provider's full recipe. See `Provider.spec`.
+    struct Spec {
+        let binaryName: String
+        let label: String
+        /// argv (after the binary) that exposes the companion port.
+        let arguments: [String]
+        /// Regex matching the public https URL the CLI prints on start-up.
+        let urlPattern: String
+        /// A one-time binary fetch, or `nil` for bring-your-own-on-PATH.
+        let download: Download?
+
+        struct Download {
+            let url: String
+            /// A `.tgz` to unpack vs a bare binary to move into place.
+            let isArchive: Bool
         }
     }
 
@@ -131,26 +202,22 @@ final class TunnelManager: ObservableObject {
     }
 
     private func spawn(_ binary: URL, for provider: Provider) {
+        guard let spec = provider.spec else { return }
         let process = Process()
         process.executableURL = binary
-        process.arguments = switch provider {
-        case .tunelo:
-            ["port", String(CompanionServer.defaultPort)]
-        case .cloudflared:
-            ["tunnel", "--url", "http://127.0.0.1:\(CompanionServer.defaultPort)", "--no-autoupdate"]
-        case .off:
-            []
-        }
-        // Both CLIs print their public URL to the console (tunelo on stdout,
-        // cloudflared inside a stderr banner); one merged pipe catches either.
+        process.arguments = spec.arguments
+        // CLIs print their public URL to the console (tunelo on stdout,
+        // cloudflared/ngrok inside a stderr/stdout banner); one merged pipe
+        // catches either.
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
         outputBuffer.removeAll()
+        let urlPattern = spec.urlPattern
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty else { return }
-            Task { @MainActor in self?.scanOutput(data, from: process) }
+            Task { @MainActor in self?.scanOutput(data, from: process, pattern: urlPattern) }
         }
         process.terminationHandler = { [weak self] _ in
             Task { @MainActor in
@@ -199,16 +266,13 @@ final class TunnelManager: ObservableObject {
         }
     }
 
-    private func scanOutput(_ data: Data, from process: Process) {
+    private func scanOutput(_ data: Data, from process: Process, pattern: String) {
         guard self.process === process, status == .starting else { return }
         outputBuffer.append(data)
         // ANSI color codes may sit right against the URL; the character class
         // stops at the escape byte either way.
         guard let text = String(data: outputBuffer, encoding: .utf8),
-              let range = text.range(
-                  of: #"https://[a-zA-Z0-9-]+\.(trycloudflare\.com|tunelo\.net)"#,
-                  options: .regularExpression
-              ),
+              let range = text.range(of: pattern, options: .regularExpression),
               let url = URL(string: String(text[range]))
         else { return }
         NSLog("[tunnel] up at %@", url.absoluteString)
@@ -232,12 +296,7 @@ final class TunnelManager: ObservableObject {
     /// SIGKILL (not TERM) because cloudflared drains slowly on TERM and we want
     /// the port's advertised URL gone *now*, before we mint a fresh one.
     private static func reapStrayTunnels() {
-        let port = CompanionServer.defaultPort
-        let patterns = [
-            "cloudflared tunnel --url http://127.0.0.1:\(port)",
-            "tunelo port \(port)",
-        ]
-        for pattern in patterns {
+        for pattern in Provider.allCases.compactMap(\.reapPattern) {
             let pkill = Process()
             pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
             pkill.arguments = ["-9", "-f", pattern]
@@ -272,21 +331,14 @@ final class TunnelManager: ObservableObject {
     /// binary; cloudflared ships a single-file tgz. Both are small enough to
     /// pull on first use, and neither ends up inside the app bundle (which
     /// would bloat every Sparkle update and freeze their CVE fixes to ours).
+    /// A bring-your-own provider (no `spec.download`) throws a hint instead.
     nonisolated private static func install(_ provider: Provider) async throws -> URL {
-        #if arch(arm64)
-        let (tuneloArch, cfArch) = ("arm64", "arm64")
-        #else
-        let (tuneloArch, cfArch) = ("amd64", "amd64")
-        #endif
-        let source = switch provider {
-        case .tunelo:
-            "https://github.com/jiweiyuan/tunelo/releases/latest/download/tunelo-macos-\(tuneloArch)"
-        case .cloudflared:
-            "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-\(cfArch).tgz"
-        case .off:
-            ""
+        guard let download = provider.spec?.download else {
+            throw NSError(domain: "termio.tunnel", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "\(provider.binaryName) isn't installed — `brew install \(provider.binaryName)`, then run `\(provider.binaryName) config add-authtoken <token>` once",
+            ])
         }
-        let (temp, response) = try await URLSession.shared.download(from: URL(string: source)!)
+        let (temp, response) = try await URLSession.shared.download(from: URL(string: download.url)!)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw NSError(domain: "termio.tunnel", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "download failed (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0))",
@@ -296,7 +348,7 @@ final class TunnelManager: ObservableObject {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = directory.appendingPathComponent(provider.binaryName)
         try? FileManager.default.removeItem(at: destination)
-        if source.hasSuffix(".tgz") {
+        if download.isArchive {
             let tar = Process()
             tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
             tar.arguments = ["-xzf", temp.path, "-C", directory.path]
