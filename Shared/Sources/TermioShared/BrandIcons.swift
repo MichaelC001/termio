@@ -17,6 +17,7 @@ public enum AgentKind: String, Sendable {
     case claude
     case codex
     case opencode
+    case pi
     case terminal
 
     /// The agent's representative color — tints the "working" spinner so a busy
@@ -25,7 +26,7 @@ public enum AgentKind: String, Sendable {
         switch self {
         case .claude: BrandLogo.claude.tint
         case .codex: BrandLogo.codex.tint
-        case .opencode, .terminal: .monochromeInk
+        case .opencode, .pi, .terminal: .monochromeInk
         }
     }
 }
@@ -70,7 +71,7 @@ public struct AgentIconView: View {
             BrandLogoShape(logo: .codex)
                 .fill(BrandLogo.codex.tint, style: FillStyle(eoFill: true))
                 .frame(width: size, height: size)
-        case .opencode, .terminal:
+        case .opencode, .pi, .terminal:
             HugeIconView(icon: .terminal, size: size, color: .monochromeInk)
         }
     }

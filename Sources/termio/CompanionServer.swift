@@ -772,6 +772,7 @@ extension TermioStore {
         case "claude": .claudeCode
         case "codex": .codex
         case "opencode": .opencode
+        case "pi": .pi
         default: .terminal
         }
         addSession(to: project.id, agent: preset)
@@ -825,7 +826,12 @@ extension TermioStore {
                 }
             )
         }
-        return CompanionRoster(projects: projects)
+        // The phone's new-session menu mirrors the desktop's enabled agents,
+        // in preset order — the same filter the sidebar's quick-add row uses.
+        let agents = AgentPreset.allCases
+            .filter(settings.isAgentEnabled)
+            .map { RosterAgent(id: Self.wireAgent($0), name: $0.displayName) }
+        return CompanionRoster(projects: projects, agents: agents)
     }
 
     private static func wireAgent(_ agent: AgentPreset) -> String {
@@ -834,7 +840,7 @@ extension TermioStore {
         case .codex: "codex"
         case .opencode: "opencode"
         case .terminal: "terminal"
-        case .pi: "opencode"
+        case .pi: "pi"
         }
     }
 

@@ -82,6 +82,7 @@ extension AgentKind {
         case "claude": self = .claude
         case "codex": self = .codex
         case "opencode": self = .opencode
+        case "pi": self = .pi
         default: self = .terminal
         }
     }
@@ -101,7 +102,7 @@ extension AgentKind {
             AnyView(BrandLogoShape(logo: .claude).fill(BrandLogo.claude.tint))
         case .codex:
             AnyView(BrandLogoShape(logo: .codex).fill(.black, style: FillStyle(eoFill: true)))
-        case .opencode, .terminal:
+        case .opencode, .pi, .terminal:
             // Hugeicons' native 1.5px-on-24 stroke ratio, same as HugeIconView.
             AnyView(HugeIconShape(icon: .terminal).stroke(
                 .black,

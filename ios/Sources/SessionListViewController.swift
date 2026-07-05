@@ -21,6 +21,11 @@ final class SessionListViewController: UIViewController {
     private var projects: [MockProject] = []
     /// `projects` in the chosen order — what the table shows.
     private var visible: [MockProject] = []
+    /// The agents the Mac has enabled in Settings ▸ Agents, pushed on the roster.
+    /// The new-session menus mirror this so the phone never offers an agent the
+    /// desktop has turned off. Falls back to a built-in list when the roster
+    /// carries none (an older Mac, or before the first push lands).
+    private var enabledAgents: [RosterAgent] = []
     private var client: CompanionClient?
     private var companionURL: URL?
     /// The project+agent of an in-flight `start`, so the `.started` reply
@@ -98,7 +103,7 @@ final class SessionListViewController: UIViewController {
         tableView.reloadData()
     }
 
-    // MARK: - Top bar (large title + filter)
+    // MARK: - Top bar (large title + filter + compose)
 
     private func configureTopBar() -> UIView {
         let pageTitle = UILabel()
@@ -154,6 +159,23 @@ final class SessionListViewController: UIViewController {
         sortByName = byName
         UserDefaults.standard.set(byName ? "name" : "recentActivity", forKey: "sessions.sortOrder")
         refilter()
+    }
+
+    /// The "new session" actions for a project, one per agent the Mac has left
+    /// enabled — driving each project header's ＋ button. Falls back to a
+    /// built-in list until the roster's agent list arrives (or when paired to
+    /// an older Mac).
+    private func newSessionActions(in project: MockProject) -> [UIAction] {
+        let agents = enabledAgents.isEmpty
+            ? [RosterAgent(id: "claude", name: "Claude Code"),
+               RosterAgent(id: "codex", name: "Codex"),
+               RosterAgent(id: "terminal", name: "Terminal")]
+            : enabledAgents
+        return agents.map { agent in
+            UIAction(title: agent.name, image: AgentKind(wire: agent.id).menuIcon()) { [weak self] _ in
+                self?.startSession(agent: agent.id, in: project)
+            }
+        }
     }
 
     // MARK: - Bottom bar (the floating settings button)
@@ -445,12 +467,13 @@ final class SessionListViewController: UIViewController {
         }
         client.onRoster = { [weak self] roster in
             guard let self else { return }
-            projects = roster.map(MockProject.init(roster:))
+            projects = roster.projects.map(MockProject.init(roster:))
+            enabledAgents = roster.agents
             refilter()
             // Open terminals track their session's live status from here —
             // the roster socket is the app's only status feed.
             let statuses = Dictionary(
-                roster.flatMap { project in
+                roster.projects.flatMap { project in
                     project.sessions.map { ($0.id, SessionStatus(wire: $0.status)) }
                 },
                 uniquingKeysWith: { first, _ in first }
@@ -538,17 +561,7 @@ extension SessionListViewController: UITableViewDataSource, UITableViewDelegate 
         if companionURL != nil, project.rosterID != nil {
             header.addButton.isHidden = false
             header.addButton.accessibilityLabel = "New session in \(project.name)"
-            header.addButton.menu = UIMenu(children: [
-                UIAction(title: "Claude Code", image: AgentKind.claude.menuIcon()) { [weak self] _ in
-                    self?.startSession(agent: "claude", in: project)
-                },
-                UIAction(title: "Codex", image: AgentKind.codex.menuIcon()) { [weak self] _ in
-                    self?.startSession(agent: "codex", in: project)
-                },
-                UIAction(title: "Terminal", image: AgentKind.terminal.menuIcon()) { [weak self] _ in
-                    self?.startSession(agent: "terminal", in: project)
-                },
-            ])
+            header.addButton.menu = UIMenu(children: newSessionActions(in: project))
         } else {
             header.addButton.isHidden = true
             header.addButton.menu = nil
@@ -560,13 +573,13 @@ extension SessionListViewController: UITableViewDataSource, UITableViewDelegate 
         // One height for every group so, when collapsed, the folder rows stack
         // on an even rhythm with each between-group hairline sitting exactly
         // midway — the content is centered, so symmetric top/bottom spacing.
-        50
+        42
     }
 
     /// A whitespace gap below each group — the divider-free separator between
     /// projects, matching the macOS sidebar's spacing-based grouping.
     func tableView(_ tableView: UITableView, heightForFooterInSection section: Int) -> CGFloat {
-        18
+        12
     }
 
     /// An empty (transparent) footer view, so the gap above is just whitespace.
@@ -708,9 +721,10 @@ private final class ProjectHeaderView: UITableViewHeaderFooterView {
         contentView.addSubview(addButton)
 
         NSLayoutConstraint.activate([
-            // 22pt leading puts the folder mark at the list's left rail; the
-            // session rows below indent past it to read as nested children.
-            content.leadingAnchor.constraint(equalTo: discloseButton.leadingAnchor, constant: 22),
+            // 16pt leading lines the folder mark up with the "Sessions" title's
+            // left rail; the session rows below indent past it to read as nested
+            // children.
+            content.leadingAnchor.constraint(equalTo: discloseButton.leadingAnchor, constant: 16),
             content.trailingAnchor.constraint(lessThanOrEqualTo: discloseButton.trailingAnchor),
             content.centerYAnchor.constraint(equalTo: discloseButton.centerYAnchor),
 

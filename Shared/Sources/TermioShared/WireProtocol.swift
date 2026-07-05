@@ -292,6 +292,19 @@ public struct RosterProject: Codable, Sendable, Equatable {
     }
 }
 
+/// One agent the phone may start a new session with — mirrors an entry the user
+/// has left enabled in the Mac's Settings ▸ Agents page. `id` is the wire string
+/// echoed back in a `start` request; `name` is the menu label.
+public struct RosterAgent: Codable, Sendable, Equatable {
+    public let id: String
+    public let name: String
+
+    public init(id: String, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
 /// The full project/session roster the companion server pushes to the phone —
 /// the same data the desktop sidebar shows. Sent on connect and whenever the
 /// store's projects/statuses/titles change. Carried as a text frame tagged
@@ -299,10 +312,25 @@ public struct RosterProject: Codable, Sendable, Equatable {
 public struct CompanionRoster: Codable, Sendable, Equatable {
     public let t: String
     public let projects: [RosterProject]
+    /// The agents the Mac has enabled in Settings ▸ Agents, in preset order —
+    /// the phone's new-session menu mirrors this instead of a fixed list. Empty
+    /// when talking to an older Mac that predates the field (the phone then
+    /// falls back to its built-in defaults).
+    public let agents: [RosterAgent]
 
-    public init(projects: [RosterProject]) {
+    public init(projects: [RosterProject], agents: [RosterAgent] = []) {
         t = "roster"
         self.projects = projects
+        self.agents = agents
+    }
+
+    private enum CodingKeys: String, CodingKey { case t, projects, agents }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        t = try c.decode(String.self, forKey: .t)
+        projects = try c.decodeIfPresent([RosterProject].self, forKey: .projects) ?? []
+        agents = try c.decodeIfPresent([RosterAgent].self, forKey: .agents) ?? []
     }
 
     public func encodedJSON() -> String {
