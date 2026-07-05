@@ -31,6 +31,14 @@ final class SessionListViewController: UIViewController {
     /// Mac's recent-activity order, so "Recent Activity" means "as pushed";
     /// "Name" re-sorts locally A→Z.
     private var sortByName = UserDefaults.standard.string(forKey: "sessions.sortOrder") == "name"
+    /// Projects the user has collapsed, keyed by `collapseKey` (path — stable
+    /// across reconnects, since the Mac's `rosterID` churns on rebuild). A
+    /// collapsed project keeps its header but shows no session rows. Persisted
+    /// so the list reopens the way it was left. Only honored with ≥2 projects —
+    /// a lone project has no disclosure and always shows its sessions.
+    private var collapsed: Set<String> = Set(
+        UserDefaults.standard.stringArray(forKey: "sessions.collapsedProjects") ?? []
+    )
 
     private let filterButton = UIButton(type: .system)
     private let composeButton = UIButton(type: .system)
@@ -264,8 +272,17 @@ final class SessionListViewController: UIViewController {
         tableView.backgroundColor = .clear
         tableView.separatorStyle = .none
         tableView.sectionHeaderTopPadding = 0
+        // Groups are split by whitespace, not a line (the macOS sidebar way): a
+        // fixed footer gap under each group. Zeroing the *estimates* keeps the
+        // table from adding its own phantom footer height on top of ours.
+        tableView.estimatedSectionHeaderHeight = 0
+        tableView.estimatedSectionFooterHeight = 0
         tableView.keyboardDismissMode = .onDrag
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "session")
+        tableView.register(
+            ProjectHeaderView.self,
+            forHeaderFooterViewReuseIdentifier: ProjectHeaderView.reuseID
+        )
         tableView.translatesAutoresizingMaskIntoConstraints = false
         // The floating glass footer sits over the list, so the list runs to the
         // bottom edge and reserves room with an inset — the last rows clear the
@@ -289,6 +306,44 @@ final class SessionListViewController: UIViewController {
             : projects
         tableView.reloadData()
         updateEmptyState()
+    }
+
+    // MARK: - Collapse
+
+    /// The stable per-project collapse key. Path is stable across roster pushes;
+    /// name is the fallback for the (path-less) bundled mock.
+    private func collapseKey(_ project: MockProject) -> String {
+        project.path.isEmpty ? project.name : project.path
+    }
+
+    /// Whether a section is collapsed *and* collapse is offered here. A single
+    /// project has no disclosure, so its sessions always show.
+    private func isCollapsed(_ section: Int) -> Bool {
+        guard visible.count > 1 else { return false }
+        return collapsed.contains(collapseKey(visible[section]))
+    }
+
+    /// Toggle a project's disclosure: flip and persist the state, spin the
+    /// header's chevron, and slide the rows in/out. Uses row insert/delete
+    /// (not a section reload) so the tapped header stays put and its chevron
+    /// animates smoothly.
+    private func toggleCollapse(section: Int, header: ProjectHeaderView) {
+        guard section < visible.count else { return }
+        let project = visible[section]
+        let key = collapseKey(project)
+        let nowCollapsed = !collapsed.contains(key)
+        if nowCollapsed { collapsed.insert(key) } else { collapsed.remove(key) }
+        UserDefaults.standard.set(Array(collapsed), forKey: "sessions.collapsedProjects")
+        header.setCollapsed(nowCollapsed, animated: true)
+        let rows = (0..<project.sessions.count).map { IndexPath(row: $0, section: section) }
+        guard !rows.isEmpty else { return }
+        tableView.performBatchUpdates {
+            if nowCollapsed {
+                tableView.deleteRows(at: rows, with: .fade)
+            } else {
+                tableView.insertRows(at: rows, with: .fade)
+            }
+        }
     }
 
     // MARK: - Empty state
@@ -497,39 +552,33 @@ extension SessionListViewController: UITableViewDataSource, UITableViewDelegate 
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        visible[section].sessions.count
+        isCollapsed(section) ? 0 : visible[section].sessions.count
     }
 
     func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
-        // The group label: semibold and full-contrast so the project names
-        // anchor the list, not whisper under it.
-        let label = UILabel()
-        label.text = visible[section].name
-        label.font = .systemFont(ofSize: 15, weight: .semibold)
-        label.textColor = .label
-        label.translatesAutoresizingMaskIntoConstraints = false
-        let header = UIView()
-        header.addSubview(label)
-        // 13pt under the label so the 44pt + button, center-aligned with the
-        // label, stays fully inside the header — touches outside a superview's
-        // bounds never reach a subview, so an overflowing button reads as a
-        // dead zone (its bottom half used to fall through to the row below).
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 22),
-            label.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -13),
-        ])
-        // The Mac project menu's "New … Session" actions, as a + on the
-        // group header — the project-level home for project-level actions
-        // (and reachable even when every session is closed).
+        let header = tableView.dequeueReusableHeaderFooterView(
+            withIdentifier: ProjectHeaderView.reuseID
+        ) as! ProjectHeaderView
         let project = visible[section]
+        // Collapse is only offered with ≥2 projects; a lone project reads
+        // cleaner with no disclosure and always shows its sessions.
+        let canCollapse = visible.count > 1
+        header.configure(
+            title: project.name,
+            canCollapse: canCollapse,
+            collapsed: isCollapsed(section)
+        )
+        header.onToggle = { [weak self, weak header] in
+            guard let self, let header else { return }
+            self.toggleCollapse(section: section, header: header)
+        }
+        // The Mac project menu's "New … Session" actions, as a + on the group
+        // header — the project-level home for project-level actions (reachable
+        // even when every session is closed). Shown only for live projects.
         if companionURL != nil, project.rosterID != nil {
-            let add = UIButton(type: .system)
-            add.setImage(UIImage(systemName: "plus"), for: .normal)
-            add.setPreferredSymbolConfiguration(.init(pointSize: 17, weight: .medium), forImageIn: .normal)
-            add.tintColor = .secondaryLabel
-            add.accessibilityLabel = "New session in \(project.name)"
-            add.showsMenuAsPrimaryAction = true
-            add.menu = UIMenu(children: [
+            header.addButton.isHidden = false
+            header.addButton.accessibilityLabel = "New session in \(project.name)"
+            header.addButton.menu = UIMenu(children: [
                 UIAction(title: "Claude Code", image: AgentKind.claude.menuIcon()) { [weak self] _ in
                     self?.startSession(agent: "claude", in: project)
                 },
@@ -540,38 +589,29 @@ extension SessionListViewController: UITableViewDataSource, UITableViewDelegate 
                     self?.startSession(agent: "terminal", in: project)
                 },
             ])
-            add.translatesAutoresizingMaskIntoConstraints = false
-            header.addSubview(add)
-            NSLayoutConstraint.activate([
-                add.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -12),
-                add.centerYAnchor.constraint(equalTo: label.centerYAnchor),
-                add.widthAnchor.constraint(equalToConstant: 44),
-                add.heightAnchor.constraint(equalToConstant: 44),
-            ])
-        }
-        // A hairline between project groups (none above the first), so the
-        // blocks read as separate — the inbox's section split.
-        if section > 0 {
-            let hairline = UIView()
-            hairline.backgroundColor = .separator.withAlphaComponent(0.5)
-            hairline.translatesAutoresizingMaskIntoConstraints = false
-            header.addSubview(hairline)
-            NSLayoutConstraint.activate([
-                hairline.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 22),
-                hairline.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-                hairline.topAnchor.constraint(equalTo: header.topAnchor),
-                hairline.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
-            ])
+        } else {
+            header.addButton.isHidden = true
+            header.addButton.menu = nil
         }
         return header
     }
 
     func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
-        section == 0 ? 46 : 54
+        // One height for every group so, when collapsed, the folder rows stack
+        // on an even rhythm with each between-group hairline sitting exactly
+        // midway — the content is centered, so symmetric top/bottom spacing.
+        50
     }
 
+    /// A whitespace gap below each group — the divider-free separator between
+    /// projects, matching the macOS sidebar's spacing-based grouping.
     func tableView(_ tableView: UITableView, heightForFooterInSection section: Int) -> CGFloat {
-        .leastNonzeroMagnitude
+        18
+    }
+
+    /// An empty (transparent) footer view, so the gap above is just whitespace.
+    func tableView(_ tableView: UITableView, viewForFooterInSection section: Int) -> UIView? {
+        UIView()
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -582,7 +622,10 @@ extension SessionListViewController: UITableViewDataSource, UITableViewDelegate 
         cell.contentConfiguration = UIHostingConfiguration {
             SidebarSessionRow(session: session, isCurrent: session.key == currentSessionKey)
         }
-        .margins(.horizontal, 12)
+        // Indent past the folder mark so the sessions read as nested under their
+        // project (no divider line needed to tell the groups apart).
+        .margins(.leading, 30)
+        .margins(.trailing, 12)
         .margins(.vertical, 1)
         return cell
     }
@@ -632,6 +675,152 @@ extension SessionListViewController: UITableViewDataSource, UITableViewDelegate 
                 },
             ])
         }
+    }
+}
+
+// MARK: - Project header
+
+/// A collapsible project group header, mirroring the macOS sidebar: the folder
+/// glyph itself is the open/closed affordance — an **open** folder when the
+/// project's sessions are showing, a **closed** one when folded — so there is
+/// no separate chevron. Tapping anywhere across the name row toggles collapse;
+/// the project's "New … Session" ＋ menu rides the right, kept as its own hit
+/// target so reaching for it never folds the group. Like the macOS sidebar,
+/// there is **no divider line** between groups — the bold header, the folder
+/// mark, and the whitespace footer below each group carry the grouping, and the
+/// session rows indent beneath it. Content is vertically centered.
+private final class ProjectHeaderView: UITableViewHeaderFooterView {
+    static let reuseID = "projectHeader"
+
+    /// The same Hugeicons folder marks the macOS sidebar draws, rendered once
+    /// as tintable template images (open = expanded, closed = collapsed).
+    private let openFolder: UIImage?
+    private let closedFolder: UIImage?
+
+    private let folderIcon = UIImageView()
+    private let titleLabel = UILabel()
+    /// Exposed so the list can hang the per-project "New Session" menu on it.
+    let addButton = UIButton(type: .system)
+    /// The tap region (folder + name, filling the row up to the ＋ button).
+    private let discloseButton = UIControl()
+
+    /// Fired when the row is tapped.
+    var onToggle: (() -> Void)?
+
+    override init(reuseIdentifier: String?) {
+        openFolder = ProjectHeaderView.renderFolder(open: true, size: 18)
+        closedFolder = ProjectHeaderView.renderFolder(open: false, size: 18)
+        super.init(reuseIdentifier: reuseIdentifier)
+
+        folderIcon.tintColor = .secondaryLabel
+        folderIcon.contentMode = .center
+        folderIcon.setContentHuggingPriority(.required, for: .horizontal)
+
+        // Bigger than the 15pt session titles but at a normal weight — the size
+        // and the folder mark set the project apart, not a heavy stroke.
+        titleLabel.font = .systemFont(ofSize: 18, weight: .regular)
+        titleLabel.textColor = .label
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        addButton.setImage(UIImage(systemName: "plus"), for: .normal)
+        addButton.setPreferredSymbolConfiguration(.init(pointSize: 18, weight: .regular), forImageIn: .normal)
+        addButton.tintColor = .secondaryLabel
+        addButton.showsMenuAsPrimaryAction = true
+
+        let content = UIStackView(arrangedSubviews: [folderIcon, titleLabel])
+        content.axis = .horizontal
+        content.alignment = .center
+        content.spacing = 9
+        content.isUserInteractionEnabled = false
+        content.translatesAutoresizingMaskIntoConstraints = false
+
+        discloseButton.translatesAutoresizingMaskIntoConstraints = false
+        discloseButton.addSubview(content)
+        discloseButton.addAction(UIAction { [weak self] _ in self?.onToggle?() }, for: .touchUpInside)
+        discloseButton.addTarget(self, action: #selector(pressDown), for: [.touchDown, .touchDragEnter])
+        discloseButton.addTarget(
+            self, action: #selector(pressUp),
+            for: [.touchUpInside, .touchUpOutside, .touchDragExit, .touchCancel]
+        )
+
+        addButton.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(discloseButton)
+        contentView.addSubview(addButton)
+
+        NSLayoutConstraint.activate([
+            // 22pt leading puts the folder mark at the list's left rail; the
+            // session rows below indent past it to read as nested children.
+            content.leadingAnchor.constraint(equalTo: discloseButton.leadingAnchor, constant: 22),
+            content.trailingAnchor.constraint(lessThanOrEqualTo: discloseButton.trailingAnchor),
+            content.centerYAnchor.constraint(equalTo: discloseButton.centerYAnchor),
+
+            discloseButton.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            discloseButton.topAnchor.constraint(equalTo: contentView.topAnchor),
+            discloseButton.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            discloseButton.trailingAnchor.constraint(equalTo: addButton.leadingAnchor, constant: -8),
+
+            addButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
+            addButton.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            addButton.widthAnchor.constraint(equalToConstant: 44),
+            addButton.heightAnchor.constraint(equalToConstant: 44),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// The macOS sidebar's Hugeicons folder, stroked at its native 1.5-on-24
+    /// ratio and flattened to a tintable template image.
+    @MainActor
+    private static func renderFolder(open: Bool, size: CGFloat) -> UIImage? {
+        let mark = HugeIconShape(icon: open ? .folderOpen : .folder)
+            .stroke(
+                Color.black,
+                style: StrokeStyle(lineWidth: max(1.1, size * 1.5 / 24), lineCap: .round, lineJoin: .round)
+            )
+            .frame(width: size, height: size)
+        let renderer = ImageRenderer(content: mark)
+        renderer.scale = UIScreen.main.scale
+        return renderer.uiImage?.withRenderingMode(.alwaysTemplate)
+    }
+
+    @objc private func pressDown() {
+        UIView.animate(withDuration: 0.1) { self.discloseButton.alpha = 0.5 }
+    }
+
+    @objc private func pressUp() {
+        UIView.animate(withDuration: 0.2) { self.discloseButton.alpha = 1 }
+    }
+
+    func configure(title: String, canCollapse: Bool, collapsed: Bool) {
+        titleLabel.text = title
+        discloseButton.isUserInteractionEnabled = canCollapse
+        discloseButton.isAccessibilityElement = true
+        discloseButton.accessibilityTraits = canCollapse ? .button : .header
+        discloseButton.accessibilityLabel = title
+        // A lone project can't fold, so it always shows an open folder.
+        setCollapsed(canCollapse ? collapsed : false, animated: false)
+    }
+
+    /// Swap between the open and closed folder — the disclosure state — and
+    /// update the a11y value. Cross-fade on tap; instant on a data reload.
+    func setCollapsed(_ collapsed: Bool, animated: Bool) {
+        discloseButton.accessibilityValue = collapsed ? "Collapsed" : "Expanded"
+        let image = collapsed ? closedFolder : openFolder
+        guard folderIcon.image !== image else { return }
+        if animated {
+            UIView.transition(with: folderIcon, duration: 0.22, options: .transitionCrossDissolve) {
+                self.folderIcon.image = image
+            }
+        } else {
+            folderIcon.image = image
+        }
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        onToggle = nil
+        addButton.menu = nil
+        discloseButton.alpha = 1
     }
 }
 
