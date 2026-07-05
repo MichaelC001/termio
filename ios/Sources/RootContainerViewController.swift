@@ -196,7 +196,11 @@ final class RootContainerViewController: UIViewController {
     private func evict(_ screen: UIViewController) {
         guard screen.parent === self else { return }
         screen.willMove(toParent: nil)
+        // Leaving the window frees the libghostty surface, but leaves its
+        // CAMetalLayer (with a dangling delegate) in the tree; drop it before
+        // the next CoreAnimation commit can fault on it. See TerminalVC.
         screen.view.removeFromSuperview()
+        (screen as? TerminalViewController)?.releaseOrphanedSurfaceLayers()
         screen.removeFromParent()
     }
 }

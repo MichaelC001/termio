@@ -13,4 +13,5 @@ import OSLog
 enum Log {
     private static let subsystem = "sh.termio.mobile"
     static let companion = Logger(subsystem: subsystem, category: "companion")
+    static let terminal = Logger(subsystem: subsystem, category: "terminal")
 }

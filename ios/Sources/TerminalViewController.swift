@@ -372,15 +372,48 @@ final class TerminalViewController: UIViewController {
         composerBar.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(composerBar)
 
+        activateTerminalConstraints()
+        NSLayoutConstraint.activate([
+            composerBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            composerBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            composerBar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
+        ])
+    }
+
+    /// Pins the surface into the header/composer sandwich.
+    private func activateTerminalConstraints() {
         NSLayoutConstraint.activate([
             terminalView.topAnchor.constraint(equalTo: headerBar.bottomAnchor),
             terminalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             terminalView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             terminalView.bottomAnchor.constraint(equalTo: composerBar.topAnchor),
-            composerBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            composerBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            composerBar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
         ])
+    }
+
+    /// Called by the container right after it removes this screen from the view
+    /// hierarchy (which frees the surface via `didMoveToWindow(nil)`), so
+    /// libghostty's orphaned Metal layer is dropped before the next
+    /// CoreAnimation commit can fault on its dangling delegate.
+    func releaseOrphanedSurfaceLayers() {
+        detachOrphanedSurfaceLayers()
+    }
+
+    /// Neutralize libghostty's orphaned Metal layers after a surface free.
+    ///
+    /// `ghostty_surface_free` frees the Zig surface object but leaves the
+    /// CAMetalLayer it added as a sublayer in the view's layer tree — and that
+    /// layer's delegate still points at the now-freed surface. The wrapper never
+    /// detaches it, so the next CoreAnimation commit dereferences freed memory:
+    /// the `renderer.Metal` / `apprt.surface.Mailbox.push` EXC_BAD_ACCESS inside
+    /// `CA::Context::commit_transaction` seen in the device crash logs. Nil the
+    /// delegate (a plain unsafe_unretained assignment — never messages the freed
+    /// object) and remove the layer, so no commit can call back into it. Only
+    /// ever runs while the surface is torn down, never during healthy rendering.
+    private func detachOrphanedSurfaceLayers() {
+        terminalView.layer.sublayers?.forEach { layer in
+            layer.delegate = nil
+            layer.removeFromSuperlayer()
+        }
     }
 
     // MARK: - Composer
