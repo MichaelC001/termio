@@ -224,7 +224,7 @@ final class TunnelManager: ObservableObject {
                 guard let self, self.process === process else { return }
                 pipe.fileHandleForReading.readabilityHandler = nil
                 self.process = nil
-                NSLog("[tunnel] %@ exited (status %d)", provider.binaryName, process.terminationStatus)
+                Log.tunnel.notice("\(provider.binaryName, privacy: .public) exited (status \(process.terminationStatus, privacy: .public))")
                 // Quick tunnels drop when the relay blips; restart while the
                 // user still wants one, but don't hot-loop a hard failure.
                 // Each restart mints a NEW public URL — the open QR follows,
@@ -237,7 +237,7 @@ final class TunnelManager: ObservableObject {
                     return
                 }
                 self.status = .starting
-                NSLog("[tunnel] restarting %@ in 3s (attempt %d)", provider.binaryName, self.consecutiveFailures)
+                Log.tunnel.notice("restarting \(provider.binaryName, privacy: .public) in 3s (attempt \(self.consecutiveFailures, privacy: .public))")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
                     Task { @MainActor in
                         guard let self, self.process == nil, self.provider == provider else { return }
@@ -248,7 +248,7 @@ final class TunnelManager: ObservableObject {
         }
         do {
             try process.run()
-            NSLog("[tunnel] spawned %@ (pid %d)", provider.binaryName, process.processIdentifier)
+            Log.tunnel.info("spawned \(provider.binaryName, privacy: .public) (pid \(process.processIdentifier, privacy: .public))")
         } catch {
             status = .failed("couldn't launch \(provider.binaryName): \(error.localizedDescription)")
             return
@@ -275,7 +275,7 @@ final class TunnelManager: ObservableObject {
               let range = text.range(of: pattern, options: .regularExpression),
               let url = URL(string: String(text[range]))
         else { return }
-        NSLog("[tunnel] up at %@", url.absoluteString)
+        Log.tunnel.notice("up at \(url.absoluteString, privacy: .public)")
         consecutiveFailures = 0
         status = .running(url)
     }

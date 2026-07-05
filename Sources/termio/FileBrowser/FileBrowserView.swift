@@ -203,7 +203,7 @@ struct FileBrowserView: View {
                 }
                 changedAny = true
             } catch {
-                NSLog("termio: failed to place %@ into %@: %@", src.path, destinationDir.path, String(describing: error))
+                Log.files.error("failed to place \(src.path, privacy: .public) into \(destinationDir.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
             }
         }
         if changedAny { refresh() }
@@ -243,7 +243,7 @@ struct FileBrowserView: View {
         guard let name = promptForName(title: "New File", defaultName: "untitled.txt") else { return }
         let target = uniqueDestination(for: name, in: directory, manager: .default)
         guard FileManager.default.createFile(atPath: target.path, contents: nil) else {
-            NSLog("termio: failed to create file at %@", target.path)
+            Log.files.error("failed to create file at \(target.path, privacy: .public)")
             return
         }
         refresh()
@@ -260,7 +260,7 @@ struct FileBrowserView: View {
             refresh()
             browserState.selection = target
         } catch {
-            NSLog("termio: failed to create folder at %@: %@", target.path, String(describing: error))
+            Log.files.error("failed to create folder at \(target.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -278,7 +278,7 @@ struct FileBrowserView: View {
             if browserState.selection == url { browserState.selection = nil }
             refresh()
         } catch {
-            NSLog("termio: failed to trash %@: %@", url.path, String(describing: error))
+            Log.files.error("failed to trash \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
     }
 

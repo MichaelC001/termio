@@ -184,7 +184,7 @@ struct TerminalPane: View {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(300))
             if !store.surface(for: session, in: project).send(text) {
-                NSLog("termio: dropped path could not be sent — %@ has no live terminal", session.title)
+                Log.pty.error("dropped path could not be sent — \(session.title, privacy: .public) has no live terminal")
             }
         }
         return true
