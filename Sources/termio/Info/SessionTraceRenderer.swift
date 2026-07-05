@@ -46,6 +46,14 @@ enum SessionTraceRenderer {
         return document(title: title, stats: stats, body: body, theme: theme)
     }
 
+    /// A themed one-line page for when there is nothing to render yet — used by
+    /// the companion server so a trace request always returns a valid document
+    /// (never a fatal `.error` on the PTY-bridge socket).
+    static func placeholder(message: String, theme: TraceTheme) -> String {
+        let body = "<div class=\"turn\"><div class=\"text\">\(escaped(message))</div></div>"
+        return document(title: "Trace", stats: Stats(), body: body, theme: theme)
+    }
+
     // MARK: Stats
 
     /// Aggregate figures shown in the dashboard, gathered in one pass over the rows.

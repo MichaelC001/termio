@@ -58,7 +58,25 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     /// An `upload` landed; `path` is absolute on the Mac — ready to paste
     /// into an agent prompt (the Moshi pattern: agents take file paths).
     case uploaded(path: String)
+    /// The client asks the Mac to search the whole project for files whose
+    /// name contains `query` (case-insensitive). Unlike the lazily-loaded
+    /// tree, this walks the entire repo server-side. Answered with
+    /// `.searchResults`.
+    case searchFiles(projectID: String, query: String)
+    /// Filename-search matches (server → client): repo-relative paths, capped;
+    /// `truncated` marks that more matched than the returned batch. `query`
+    /// echoes the request so a stale reply for an old keystroke is discardable.
+    case searchResults(query: String, paths: [String], truncated: Bool)
     /// The server rejected a request (unknown session, no live PTY).
+    /// Phone → Mac: render this session's agent transcript as an HTML trace
+    /// (the same dashboard-over-conversation the desktop Info pane shows). The
+    /// phone passes its own light/dark trait so the returned page matches.
+    case trace(sessionID: String, dark: Bool)
+
+    /// Mac → phone: the rendered trace document for `sessionID`. The phone drops
+    /// it into a `WKWebView` overlay. Large, so it rides the 8 MB-capped socket.
+    case traceHTML(sessionID: String, html: String)
+
     case error(message: String)
 
     public func encoded() -> String {
@@ -106,6 +124,16 @@ public enum CompanionControl: Codable, Sendable, Equatable {
             return Self.json(["t": "upload", "project": projectID, "name": name, "data": base64])
         case .uploaded(let path):
             return Self.json(["t": "uploaded", "path": path])
+        case .searchFiles(let projectID, let query):
+            return Self.json(["t": "searchFiles", "project": projectID, "query": query])
+        case .searchResults(let query, let paths, let truncated):
+            return Self.json([
+                "t": "searchResults", "query": query, "paths": paths, "truncated": truncated,
+            ])
+        case .trace(let sessionID, let dark):
+            return Self.json(["t": "trace", "session": sessionID, "dark": dark])
+        case .traceHTML(let sessionID, let html):
+            return Self.json(["t": "traceHTML", "session": sessionID, "html": html])
         case .error(let message):
             let escaped = message
                 .replacingOccurrences(of: "\\", with: "\\\\")
@@ -193,6 +221,24 @@ public enum CompanionControl: Codable, Sendable, Equatable {
         case "uploaded":
             guard let path = obj["path"] as? String else { return nil }
             return .uploaded(path: path)
+        case "searchFiles":
+            guard let projectID = obj["project"] as? String,
+                  let query = obj["query"] as? String else { return nil }
+            return .searchFiles(projectID: projectID, query: query)
+        case "searchResults":
+            guard let query = obj["query"] as? String,
+                  let paths = obj["paths"] as? [String] else { return nil }
+            return .searchResults(
+                query: query, paths: paths,
+                truncated: obj["truncated"] as? Bool ?? false
+            )
+        case "trace":
+            guard let sessionID = obj["session"] as? String else { return nil }
+            return .trace(sessionID: sessionID, dark: obj["dark"] as? Bool ?? false)
+        case "traceHTML":
+            guard let sessionID = obj["session"] as? String,
+                  let html = obj["html"] as? String else { return nil }
+            return .traceHTML(sessionID: sessionID, html: html)
         case "error":
             guard let message = obj["message"] as? String else { return nil }
             return .error(message: message)

@@ -29,11 +29,14 @@ final class InspectorViewController: UIViewController {
     private weak var activeViewer: FileViewerController?
     private var pane: Pane = .files
 
-    /// Filename search over the *loaded* tree — a flat list of file matches,
-    /// not the tree. Whole-repo/content search is a server-side follow-up.
+    /// Filename search. Live sessions search the *whole* repo on the Mac
+    /// (`searchFiles`), since the on-device tree is only lazily loaded; results
+    /// come back as repo-relative paths. Offline mocks filter the sample tree.
     private var isSearching = false
     private var searchQuery = ""
-    private var remoteResults: [RemoteNode] = []
+    private var remoteResults: [String] = []
+    private var searchTruncated = false
+    private var searchDebounce: DispatchWorkItem?
     private var fileResults: [FileNode] = []
 
     /// The file plane needs a companion link and a project to scope it to.
@@ -132,7 +135,9 @@ final class InspectorViewController: UIViewController {
         isSearching = true
         searchQuery = ""
         searchBar.text = ""
-        rebuildSearchResults()
+        remoteResults = []
+        fileResults = []
+        searchTruncated = false
         tableView.tableHeaderView = searchBar
         updateRightBarButton()
         tableView.reloadData()
@@ -140,6 +145,7 @@ final class InspectorViewController: UIViewController {
     }
 
     private func endSearch() {
+        searchDebounce?.cancel()
         isSearching = false
         searchQuery = ""
         searchBar.text = ""
@@ -147,30 +153,43 @@ final class InspectorViewController: UIViewController {
         tableView.tableHeaderView = nil
         remoteResults = []
         fileResults = []
+        searchTruncated = false
         updateRightBarButton()
         tableView.reloadData()
     }
 
-    /// Filter every loaded node (ignoring expansion) down to files whose name
-    /// contains the query — directories aren't openable results yet.
-    private func rebuildSearchResults() {
-        let query = searchQuery.trimmingCharacters(in: .whitespaces).lowercased()
+    /// Live search runs on the Mac; debounce so each keystroke doesn't fire a
+    /// whole-repo walk. The reply echoes its query so a stale batch is dropped.
+    private func scheduleRemoteSearch() {
+        searchDebounce?.cancel()
+        let query = searchQuery.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else {
             remoteResults = []
-            fileResults = []
+            searchTruncated = false
+            tableView.reloadData()
             return
         }
-        if isLive {
-            remoteResults = Self.flatten(remoteRoots)
-                .filter { !$0.isDir && $0.name.lowercased().contains(query) }
-        } else {
-            fileResults = Self.flatten(FileNode.sampleRoot)
-                .filter { !$0.isDirectory && $0.name.lowercased().contains(query) }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let projectID = session.projectRosterID else { return }
+            setLoading(true)
+            client?.send(.searchFiles(projectID: projectID, query: query))
         }
+        searchDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
     }
 
-    private static func flatten(_ nodes: [RemoteNode]) -> [RemoteNode] {
-        nodes.flatMap { [$0] + flatten($0.children ?? []) }
+    private func receiveSearchResults(query: String, paths: [String], truncated: Bool) {
+        guard isSearching, query == searchQuery.trimmingCharacters(in: .whitespaces) else { return }
+        setLoading(false)
+        remoteResults = paths
+        searchTruncated = truncated
+        tableView.reloadData()
+    }
+
+    private func rebuildOfflineResults() {
+        let query = searchQuery.trimmingCharacters(in: .whitespaces).lowercased()
+        fileResults = query.isEmpty ? [] : Self.flatten(FileNode.sampleRoot)
+            .filter { !$0.isDirectory && $0.name.lowercased().contains(query) }
     }
 
     private static func flatten(_ nodes: [FileNode]) -> [FileNode] {
@@ -194,6 +213,9 @@ final class InspectorViewController: UIViewController {
         }
         client.onFile = { [weak self] file in
             self?.receiveFile(file)
+        }
+        client.onSearchResults = { [weak self] query, paths, truncated in
+            self?.receiveSearchResults(query: query, paths: paths, truncated: truncated)
         }
         client.onWritten = { [weak self] _, mtime in
             self?.activeViewer?.didSave(mtime: mtime)
@@ -290,8 +312,8 @@ final class InspectorViewController: UIViewController {
         if isSearching {
             if isLive {
                 guard indexPath.row < remoteResults.count else { return nil }
-                let node = remoteResults[indexPath.row]
-                return (node.name, node.relPath, node.isDir)
+                let path = remoteResults[indexPath.row]
+                return ((path as NSString).lastPathComponent, path, false)
             }
             guard indexPath.row < fileResults.count else { return nil }
             return (fileResults[indexPath.row].name, "", fileResults[indexPath.row].isDirectory)
@@ -330,26 +352,25 @@ extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
         }
     }
 
+    func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        guard isSearching, pane == .files, searchTruncated else { return nil }
+        return "Too many matches — showing the first batch. Refine to narrow."
+    }
+
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "cell")
             ?? UITableViewCell(style: .value1, reuseIdentifier: "cell")
         switch pane {
         case .files where isSearching:
-            let name: String, relPath: String
-            if isLive {
-                let node = remoteResults[indexPath.row]
-                (name, relPath) = (node.name, node.relPath)
-            } else {
-                (name, relPath) = (fileResults[indexPath.row].name, "")
-            }
+            guard let info = fileNode(at: indexPath) else { break }
             var config = cell.defaultContentConfiguration()
-            config.text = name
+            config.text = info.name
             config.textProperties.font = .preferredFont(forTextStyle: .subheadline)
-            let parent = (relPath as NSString).deletingLastPathComponent
+            let parent = (info.relPath as NSString).deletingLastPathComponent
             config.secondaryText = parent.isEmpty ? nil : parent
             config.secondaryTextProperties.font = .preferredFont(forTextStyle: .caption1)
             config.secondaryTextProperties.color = .secondaryLabel
-            let icon = FileIcons.icon(forFileName: name)
+            let icon = FileIcons.icon(forFileName: info.name)
             config.image = icon.image
             config.imageProperties.tintColor = icon.tint
             config.imageProperties.maximumSize = CGSize(width: 16, height: 16)
@@ -407,7 +428,7 @@ extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
         tableView.deselectRow(at: indexPath, animated: true)
         if isSearching, pane == .files {
             // Results are files only; offline mocks have no path to open.
-            if isLive { requestFile(remoteResults[indexPath.row].relPath) }
+            if isLive, let info = fileNode(at: indexPath) { requestFile(info.relPath) }
             return
         }
         switch pane {
@@ -467,8 +488,12 @@ extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
 extension InspectorViewController: UISearchBarDelegate {
     func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
         searchQuery = searchText
-        rebuildSearchResults()
-        tableView.reloadData()
+        if isLive {
+            scheduleRemoteSearch()
+        } else {
+            rebuildOfflineResults()
+            tableView.reloadData()
+        }
     }
 
     func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {

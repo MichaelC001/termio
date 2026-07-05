@@ -25,7 +25,7 @@ final class CompanionClient: NSObject {
     private var pingTimer: Timer?
 
     /// Latest roster, delivered on the main queue.
-    var onRoster: (([RosterProject]) -> Void)?
+    var onRoster: ((CompanionRoster) -> Void)?
     /// `true` once connected, `false` on drop — delivered on the main queue.
     var onConnected: ((Bool) -> Void)?
     /// A `start` we sent succeeded; the new session id is ready to attach.
@@ -38,6 +38,9 @@ final class CompanionClient: NSObject {
     var onWritten: ((String, Int) -> Void)?
     /// An upload we sent landed (reply to `.upload`): absolute Mac path.
     var onUploaded: ((String) -> Void)?
+    /// Filename-search matches (reply to `.searchFiles`): the echoed query,
+    /// repo-relative paths, and whether the batch was capped.
+    var onSearchResults: ((String, [String], Bool) -> Void)?
     /// The server rejected a request (e.g. a failed `start`).
     var onError: ((String) -> Void)?
 
@@ -167,7 +170,7 @@ final class CompanionClient: NSObject {
             case .success(let message):
                 if case .string(let text) = message {
                     if let roster = CompanionRoster.decode(text) {
-                        onRoster?(roster.projects)
+                        onRoster?(roster)
                     } else {
                         switch CompanionControl.decode(text) {
                         case .started(let sessionID): onStarted?(sessionID)
@@ -175,6 +178,8 @@ final class CompanionClient: NSObject {
                         case .file(let file): onFile?(file)
                         case .written(let path, let mtime): onWritten?(path, mtime)
                         case .uploaded(let path): onUploaded?(path)
+                        case .searchResults(let query, let paths, let truncated):
+                            onSearchResults?(query, paths, truncated)
                         case .error(let reason): onError?(reason)
                         default: break
                         }

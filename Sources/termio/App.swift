@@ -174,6 +174,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             },
             stopSession: { [weak store] sessionID in
                 store?.companionStopSession(sessionID: sessionID) ?? false
+            },
+            traceProvider: { [weak store] sessionID in
+                store?.companionTrace(for: sessionID)
             }
         )
         companionServer = companion

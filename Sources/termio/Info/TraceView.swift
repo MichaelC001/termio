@@ -34,7 +34,14 @@ struct TraceTheme {
                 isDark: chrome.isDark
             )
         }
-        return colorScheme == .dark
+        return builtin(dark: colorScheme == .dark)
+    }
+
+    /// termio's built-in light/dark defaults with no `AppSettings` dependency —
+    /// used to render a trace for the phone, which sends only its light/dark
+    /// trait (not the Mac's chrome theme) over the companion wire.
+    static func builtin(dark: Bool) -> TraceTheme {
+        dark
             ? TraceTheme(background: "#212121", panel: "#2a2a2c", foreground: "#e6e6e8",
                          secondary: "#8a8a90", accent: "#7d8cff", isDark: true)
             : TraceTheme(background: "#ffffff", panel: "#f2f2f4", foreground: "#1d1d1f",

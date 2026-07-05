@@ -64,6 +64,9 @@ final class CompanionTransport: NSObject {
     var onOutput: ((Data) -> Void)?
     /// State transitions, delivered on the main queue.
     var onState: ((State) -> Void)?
+    /// A rendered trace document arrived (reply to `requestTrace`). Delivered
+    /// on the main queue.
+    var onTrace: ((String) -> Void)?
 
     init(url: URL, attachSessionID: String? = nil) {
         self.url = url
@@ -121,6 +124,18 @@ final class CompanionTransport: NSObject {
     /// comes back to this screen (re-opening a parked session).
     func reassertGrid() {
         sendGrid()
+    }
+
+    /// Ask the Mac to render this session's agent transcript as an HTML trace;
+    /// the reply arrives on `onTrace`. `dark` is the phone's own light/dark
+    /// trait so the page matches. No-op until the socket is authed.
+    func requestTrace(dark: Bool) {
+        gridLock.lock()
+        let ready = authSent
+        gridLock.unlock()
+        guard ready, let attachSessionID else { return }
+        let control = CompanionControl.trace(sessionID: attachSessionID, dark: dark).encoded()
+        task?.send(.string(control)) { _ in }
     }
 
     private func sendGrid() {
@@ -207,6 +222,8 @@ final class CompanionTransport: NSObject {
                         finish(.closed)
                     case .error(let message):
                         finish(.failed(message))
+                    case .traceHTML(_, let html):
+                        DispatchQueue.main.async { [onTrace] in onTrace?(html) }
                     default:
                         break // roster frames and echoes are not for this link
                     }

@@ -240,10 +240,24 @@ final class TerminalViewController: UIViewController {
         back.addAction(UIAction { [weak self] _ in
             self?.goBack()
         }, for: .touchUpInside)
-        let balance = UIView()
+        // The right slot balances the back chevron (keeping the title centered)
+        // and holds an overflow menu of per-session actions — View Trace and
+        // Copy Path for a companion session. With nothing to offer (the demo
+        // shell has no Mac transcript or path) it stays an invisible spacer.
+        let overflow = UIButton(type: .system)
+        overflow.applyGlassSymbol("ellipsis", pointSize: 16)
+        overflow.accessibilityIdentifier = "terminal.overflow"
+        overflow.tintColor = .secondaryLabel
+        overflow.showsMenuAsPrimaryAction = true
+        let menu = makeOverflowMenu()
+        overflow.menu = menu
+        if menu.children.isEmpty {
+            overflow.alpha = 0
+            overflow.isUserInteractionEnabled = false
+        }
         headerBar.addArrangedSubview(back)
         headerBar.addArrangedSubview(titles)
-        headerBar.addArrangedSubview(balance)
+        headerBar.addArrangedSubview(overflow)
         headerBar.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(headerBar)
         NSLayoutConstraint.activate([
@@ -252,9 +266,41 @@ final class TerminalViewController: UIViewController {
             headerBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
             back.widthAnchor.constraint(equalToConstant: 44),
             back.heightAnchor.constraint(equalToConstant: 44),
-            balance.widthAnchor.constraint(equalToConstant: 44),
-            balance.heightAnchor.constraint(equalToConstant: 44),
+            overflow.widthAnchor.constraint(equalToConstant: 44),
+            overflow.heightAnchor.constraint(equalToConstant: 44),
         ])
+    }
+
+    /// The header overflow menu. View Trace and Copy Path appear only for a
+    /// companion session, where there is a Mac transcript and project path to
+    /// reach; the demo shell has neither, so the menu comes back empty and the
+    /// button hides itself.
+    private func makeOverflowMenu() -> UIMenu {
+        var items: [UIMenuElement] = []
+        if case .companion = backend {
+            items.append(UIAction(
+                title: "View Trace", image: UIImage(systemName: "list.bullet.rectangle")
+            ) { [weak self] _ in self?.showTrace() })
+        }
+        if let path = session.projectPath, !path.isEmpty {
+            items.append(UIAction(
+                title: "Copy Path", image: UIImage(systemName: "doc.on.doc")
+            ) { _ in UIPasteboard.general.string = path })
+        }
+        return UIMenu(children: items)
+    }
+
+    /// Present the session's agent transcript as an in-app HTML trace — the
+    /// phone counterpart of the desktop Info pane's "View Trace". The Mac
+    /// renders it (reusing `SessionTraceRenderer`) and returns the document
+    /// over the companion socket; the sheet shows a spinner until it lands.
+    private func showTrace() {
+        guard case .companion = backend, let companion else { return }
+        let trace = TraceViewController()
+        companion.onTrace = { [weak trace] html in trace?.load(html: html) }
+        let nav = UINavigationController(rootViewController: trace)
+        present(nav, animated: true)
+        companion.requestTrace(dark: traitCollection.userInterfaceStyle == .dark)
     }
 
     /// Called by RootContainerViewController when this parked screen slides

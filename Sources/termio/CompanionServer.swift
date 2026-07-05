@@ -78,6 +78,9 @@ final class CompanionServer {
     private let ptyForSession: (String) -> PTYProcess?
     private let startSession: (String, String) -> String?
     private let stopSession: (String) -> Bool
+    /// Resolves a session's transcript path and display title for a `trace`
+    /// request, or nil when the session has no readable transcript yet.
+    private let traceProvider: (String) -> (path: String, title: String)?
     private var listener: NWListener?
     private var connections: Set<ObjectIdentifier> = []
     private var connectionByID: [ObjectIdentifier: NWConnection] = [:]
@@ -99,13 +102,15 @@ final class CompanionServer {
         rosterProvider: @escaping () -> CompanionRoster,
         ptyForSession: @escaping (String) -> PTYProcess?,
         startSession: @escaping (String, String) -> String?,
-        stopSession: @escaping (String) -> Bool
+        stopSession: @escaping (String) -> Bool,
+        traceProvider: @escaping (String) -> (path: String, title: String)?
     ) {
         self.port = port
         self.rosterProvider = rosterProvider
         self.ptyForSession = ptyForSession
         self.startSession = startSession
         self.stopSession = stopSession
+        self.traceProvider = traceProvider
     }
 
     func start() {
@@ -314,9 +319,36 @@ final class CompanionServer {
             )
         case .upload(let projectID, let name, let base64):
             handleUpload(projectID: projectID, name: name, base64: base64, on: connection)
-        case .auth, .exit, .error, .started, .fileList, .file, .written, .uploaded:
+        case .searchFiles(let projectID, let query):
+            handleSearchFiles(projectID: projectID, query: query, on: connection)
+        case .trace(let sessionID, let dark):
+            handleTrace(sessionID: sessionID, dark: dark, on: connection)
+        case .auth, .exit, .error, .started, .fileList, .file, .written, .uploaded,
+             .searchResults, .traceHTML:
             break
         }
+    }
+
+    /// Render a session's agent transcript to the same HTML trace the desktop
+    /// Info pane shows, and hand it back over the socket. The heavy lifting is
+    /// `SessionTraceRenderer` (shared with the Mac UI); the phone supplies only
+    /// its light/dark trait so the page matches its appearance.
+    ///
+    /// Failures ride back as a `traceHTML` placeholder page, never a `.error`
+    /// frame: this connection is also the session's PTY bridge, and the phone
+    /// treats any `.error` there as a fatal drop of the live terminal.
+    private func handleTrace(sessionID: String, dark: Bool, on connection: NWConnection) {
+        let theme = TraceTheme.builtin(dark: dark)
+        let html: String
+        if let (path, title) = traceProvider(sessionID),
+           let rendered = try? SessionTraceRenderer.html(jsonlPath: path, title: title, theme: theme) {
+            html = rendered
+        } else {
+            html = SessionTraceRenderer.placeholder(
+                message: "No transcript yet for this session.", theme: theme
+            )
+        }
+        sendControl(.traceHTML(sessionID: sessionID, html: html), to: connection)
     }
 
     // MARK: - File plane (read-only)
@@ -342,6 +374,91 @@ final class CompanionServer {
                 self?.sendControl(.fileList(path: path, entries: entries), to: connection)
             }
         }
+    }
+
+    private func handleSearchFiles(projectID: String, query: String, on connection: NWConnection) {
+        guard let root = projectRoot(for: projectID) else {
+            sendControl(.error(message: "unknown project"), to: connection)
+            return
+        }
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let (paths, truncated) = Self.searchFilenames(root: root, query: query)
+            await MainActor.run {
+                self?.sendControl(
+                    .searchResults(query: query, paths: paths, truncated: truncated),
+                    to: connection
+                )
+            }
+        }
+    }
+
+    nonisolated private static let maxSearchResults = 200
+
+    /// Repo-wide filename search: enumerate the project once, then substring-
+    /// match by name. The enumeration prefers git's index (`ls-files` — it
+    /// respects `.gitignore` and includes new files for free) and falls back
+    /// to a pruned filesystem walk for non-git projects.
+    nonisolated private static func searchFilenames(root: String, query: String) -> (paths: [String], truncated: Bool) {
+        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !needle.isEmpty else { return ([], false) }
+        let all = gitTrackedPaths(root: root) ?? walkedPaths(root: root)
+        var matches: [String] = []
+        for path in all where (path as NSString).lastPathComponent.lowercased().contains(needle) {
+            matches.append(path)
+            if matches.count >= maxSearchResults { return (matches, true) }
+        }
+        return (matches, false)
+    }
+
+    /// Every file git knows about that isn't ignored — tracked plus untracked-
+    /// but-not-ignored, so brand-new files still surface. `nil` when this isn't
+    /// a git repo (git exits non-zero), signalling the caller to walk instead.
+    nonisolated private static func gitTrackedPaths(root: String) -> [String]? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]
+        process.currentDirectoryURL = URL(fileURLWithPath: root)
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        guard (try? process.run()) != nil else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let raw = String(data: data, encoding: .utf8) else { return nil }
+        return raw.split(separator: "\0").map(String.init)
+    }
+
+    /// Build/vendor directories a bare filesystem walk must skip so a non-git
+    /// project's search doesn't drown in generated artifacts.
+    nonisolated private static let searchPruneDirs: Set<String> = [
+        ".git", "node_modules", ".build", "build", "DerivedData",
+        ".next", "dist", "Pods", ".venv", "venv", "__pycache__", ".swiftpm",
+    ]
+
+    /// Filesystem fallback for non-git projects: a recursive walk yielding repo-
+    /// relative file paths, pruning the heavy directories above and bounded so a
+    /// pathological tree can't stall the connection.
+    nonisolated private static func walkedPaths(root: String) -> [String] {
+        let rootURL = URL(fileURLWithPath: root)
+        guard let enumerator = FileManager.default.enumerator(
+            at: rootURL, includingPropertiesForKeys: [.isDirectoryKey]
+        ) else { return [] }
+        var paths: [String] = []
+        for case let url as URL in enumerator {
+            if searchPruneDirs.contains(url.lastPathComponent) {
+                enumerator.skipDescendants()
+                continue
+            }
+            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            if isDir { continue }
+            let full = url.standardizedFileURL.path
+            if full.hasPrefix(root + "/") {
+                paths.append(String(full.dropFirst(root.count + 1)))
+            }
+            if paths.count > 20_000 { break }
+        }
+        return paths
     }
 
     private func handleReadFile(projectID: String, path: String, on connection: NWConnection) {
@@ -785,6 +902,19 @@ extension TermioStore {
         guard let (_, session) = findCompanionSession(wireID) else { return false }
         closeSession(session.id)
         return true
+    }
+
+    /// Resolve a session's transcript path and display title for a phone
+    /// `trace` request. Learns the path from disk when no hook has delivered it
+    /// yet — the same fallback the desktop Info pane uses — so the phone can
+    /// render a trace even for a session the Mac never opened. nil when the
+    /// session is unknown or has no readable transcript.
+    func companionTrace(for wireID: String) -> (path: String, title: String)? {
+        guard let (_, session) = findCompanionSession(wireID) else { return nil }
+        guard let path = transcriptPaths[session.id] ?? resolveTranscriptPath(for: session.id)
+        else { return nil }
+        transcriptPaths[session.id] = path
+        return (path, displayTitle(for: session))
     }
 
     private func findCompanionSession(_ wireID: String) -> (Project, Session)? {
