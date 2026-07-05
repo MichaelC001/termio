@@ -162,3 +162,4 @@ tunelo（自研 Rust + QUIC，quinn/rustls）**已经 80% 是 broker**——#4 �
 - [ ] 后端：`/relay-token` 签发端点（复用 Lemon Squeezy license/trial 校验）
 - [ ] termio：`TunnelManager` 可插拔 provider（cloudflared quick/named、ngrok）
 - [ ] 决策：relay 是否需要 E2EE（取决于对"relay 可读终端"的容忍度）
+
