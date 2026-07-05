@@ -26,6 +26,7 @@ companion/.build/
 
 # xcodebuild derived data for the iOS dev-run script
 ios/build/
+ios/build-sim/
 
 # Per-project termio session state
 /.termio/

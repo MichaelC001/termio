@@ -29,34 +29,16 @@ final class ComposerBar: UIView {
     private let textView = ComposerTextView()
     private let placeholder = UILabel()
     private let sendButton = UIButton(type: .system)
-    private let keyboardButton = UIButton(type: .system)
-    /// Hold-to-talk: the terminal keyboard's space bar drives this when
-    /// push-to-talk is on. Recording lives here — the composer owns the draft
-    /// the transcript lands in and the pill the HUD sits over; the space key
-    /// only forwards its hold gesture. The transcript is inserted, never
-    /// auto-sent (the same contract as the send button).
-    private let dictation = VoiceDictation()
-    private let recordingHUD = VoiceRecordingHUD()
-    private var dictationHeld = false
-    private var dictationCancelZone = false
-    /// Built on first use; staying set across focus cycles means the user's
-    /// keyboard choice survives dismiss/reopen, like any system keyboard.
-    private lazy var terminalKeyboard: TerminalKeyboardView = {
-        let keyboard = TerminalKeyboardView()
-        keyboard.onKey = { [weak self] payload in self?.onTerminalKey?(payload) }
-        keyboard.onSwitchBack = { [weak self] in self?.setTerminalKeyboardActive(false) }
-        keyboard.onDictationBegan = { [weak self] in self?.startDictation() }
-        keyboard.onDictationChanged = { [weak self] cancelling in
-            self?.updateDictationCancelZone(cancelling)
-        }
-        keyboard.onDictationEnded = { [weak self] in self?.finishDictation() }
-        keyboard.onDictationCancelled = { [weak self] in self?.cancelDictation() }
-        return keyboard
-    }()
+    /// The control-key strip docked above the system keyboard while the
+    /// composer is focused. Its keys write raw PTY bytes, so the system
+    /// keyboard keeps every letter, digit, symbol, and language — the bar
+    /// only adds what a terminal needs and the keyboard lacks.
+    private let terminalKeys = TerminalAccessoryBar()
     private let attachButton = UIButton(type: .system)
     private let attachSpinner = UIActivityIndicatorView(style: .medium)
     private let attachProgressLabel = UILabel()
     private let suggestionsPanel = UIVisualEffectView(effect: ComposerBar.fieldEffect())
+    private let suggestionsScroll = UIScrollView()
     private let suggestionsStack = UIStackView()
     private let pill = UIVisualEffectView(effect: ComposerBar.fieldEffect())
 
@@ -72,11 +54,6 @@ final class ComposerBar: UIView {
     private var textHeight: NSLayoutConstraint!
     private var pillLeadingWithAttach: NSLayoutConstraint!
     private var pillLeadingFlush: NSLayoutConstraint!
-    /// The system keyboard's height, recorded on every show while it (not
-    /// the terminal keyboard) is up. The swap hands this to the terminal
-    /// keyboard so it fills the container the system keeps at that height.
-    private var systemKeyboardHeight: CGFloat = 0
-    private var keyboardObserver: NSObjectProtocol?
 
     private static let minTextHeight: CGFloat = 36
     private static let maxTextHeight: CGFloat = 120
@@ -175,39 +152,13 @@ final class ComposerBar: UIView {
             self?.submit()
         }, for: .touchUpInside)
 
-        // A persistent toggle OUTSIDE the pill on the right, mirroring the
-        // attach "+" on the left, that swaps to the terminal keyboard the way
-        // iOS swaps to the number or handwriting keyboard (replacing the text
-        // view's inputView). Unlike send it never leaves: driving the TUI is a
-        // core loop here, so the switch stays one reachable thumb-tap away,
-        // draft or not.
-        var keyboardConfig: UIButton.Configuration = if #available(iOS 26.0, *) {
-            .glass()
-        } else {
-            .gray()
-        }
-        keyboardConfig.image = UIImage(
-            systemName: "keyboard",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)
-        )
-        keyboardConfig.cornerStyle = .capsule
-        // Color the glyph through the configuration, NOT tintColor: on a glass
-        // capsule tintColor washes the whole background, so toggling active
-        // would flip the capsule's fill — baseForegroundColor keeps the tint on
-        // the icon and the glass steady.
-        keyboardConfig.baseForegroundColor = .secondaryLabel
-        keyboardButton.configuration = keyboardConfig
-        keyboardButton.accessibilityLabel = "Terminal keyboard"
-        keyboardButton.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            setTerminalKeyboardActive(textView.inputView == nil)
-        }, for: .touchUpInside)
+        // The control keys dock above the system keyboard (not a replacement
+        // plane) so letters and languages are never lost; their bytes go
+        // straight to the PTY, alongside — not into — the draft.
+        terminalKeys.onKey = { [weak self] payload in self?.onTerminalKey?(payload) }
+        textView.inputAccessoryView = terminalKeys
 
-        // The recording HUD is purely presentational; the space bar's gesture
-        // already owns the touch while it's up.
-        recordingHUD.isUserInteractionEnabled = false
-
-        for subview in [attachButton, keyboardButton, attachSpinner, attachProgressLabel] {
+        for subview in [attachButton, attachSpinner, attachProgressLabel] {
             subview.translatesAutoresizingMaskIntoConstraints = false
             pillWrapper.addSubview(subview)
         }
@@ -215,9 +166,6 @@ final class ComposerBar: UIView {
             subview.translatesAutoresizingMaskIntoConstraints = false
             pill.contentView.addSubview(subview)
         }
-        // The recording HUD covers the pill while the mic button is held.
-        recordingHUD.translatesAutoresizingMaskIntoConstraints = false
-        pillWrapper.addSubview(recordingHUD)
 
         textHeight = textView.heightAnchor.constraint(equalToConstant: restTextHeight)
         // Trailing controls center on the rest-height strip at the pill's
@@ -247,16 +195,9 @@ final class ComposerBar: UIView {
             attachProgressLabel.centerXAnchor.constraint(equalTo: attachButton.centerXAnchor),
             attachProgressLabel.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
             pillLeadingFlush,
-            pill.trailingAnchor.constraint(equalTo: keyboardButton.leadingAnchor, constant: -8),
+            pill.trailingAnchor.constraint(equalTo: pillWrapper.trailingAnchor, constant: -8),
             pill.topAnchor.constraint(equalTo: pillWrapper.topAnchor),
             pill.bottomAnchor.constraint(equalTo: pillWrapper.bottomAnchor),
-            keyboardButton.trailingAnchor.constraint(equalTo: pillWrapper.trailingAnchor, constant: -8),
-            keyboardButton.centerYAnchor.constraint(equalTo: pill.bottomAnchor, constant: controlCenter),
-            // Sized to the pill's rest height so it reads as a peer capsule,
-            // not a dot; bottom-anchored, so it hugs the last line as the pill
-            // grows (like send and attach).
-            keyboardButton.widthAnchor.constraint(equalToConstant: restTextHeight),
-            keyboardButton.heightAnchor.constraint(equalToConstant: restTextHeight),
             textView.leadingAnchor.constraint(equalTo: pill.contentView.leadingAnchor, constant: 12),
             textView.trailingAnchor.constraint(equalTo: pill.contentView.trailingAnchor, constant: -36),
             textView.topAnchor.constraint(equalTo: pill.contentView.topAnchor),
@@ -268,36 +209,13 @@ final class ComposerBar: UIView {
             sendButton.centerYAnchor.constraint(equalTo: pill.contentView.bottomAnchor, constant: controlCenter),
             sendButton.widthAnchor.constraint(equalToConstant: 30),
             sendButton.heightAnchor.constraint(equalToConstant: 30),
-            recordingHUD.leadingAnchor.constraint(equalTo: pill.leadingAnchor),
-            recordingHUD.trailingAnchor.constraint(equalTo: pill.trailingAnchor),
-            recordingHUD.topAnchor.constraint(equalTo: pill.topAnchor),
-            recordingHUD.bottomAnchor.constraint(equalTo: pill.bottomAnchor),
         ])
 
         refreshControls()
-
-        // Every system-keyboard show refreshes the height the terminal
-        // keyboard must fill on swap (device rotations included). Shows of
-        // the terminal keyboard itself are skipped — its (possibly shorter)
-        // fallback height must never become the measurement.
-        keyboardObserver = NotificationCenter.default.addObserver(
-            forName: UIResponder.keyboardWillShowNotification, object: nil, queue: .main
-        ) { [weak self] note in
-            guard let self, textView.inputView == nil,
-                  let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue
-            else { return }
-            systemKeyboardHeight = frame.cgRectValue.height
-        }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
-
-    deinit {
-        if let keyboardObserver {
-            NotificationCenter.default.removeObserver(keyboardObserver)
-        }
-    }
 
     func focus() {
         textView.becomeFirstResponder()
@@ -305,30 +223,6 @@ final class ComposerBar: UIView {
 
     func unfocus() {
         textView.resignFirstResponder()
-    }
-
-    /// Swaps between the system keyboard and the terminal keyboard in place
-    /// (reloadInputViews animates it like a 🌐 switch). While the terminal
-    /// keyboard is up nothing can land in the draft, so the placeholder
-    /// says where the keys are going instead of inviting a prompt.
-    private func setTerminalKeyboardActive(_ active: Bool) {
-        if active {
-            terminalKeyboard.matchSystemKeyboardHeight(systemKeyboardHeight)
-        }
-        textView.inputView = active ? terminalKeyboard : nil
-        // Only the glyph changes on toggle — outline→filled, dim→full — so the
-        // capsule's glass background stays put (see baseForegroundColor above).
-        keyboardButton.configuration?.image = UIImage(
-            systemName: active ? "keyboard.fill" : "keyboard",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)
-        )
-        keyboardButton.configuration?.baseForegroundColor = active ? .label : .secondaryLabel
-        placeholder.text = active ? "Keys go to the terminal" : "Prompt"
-        if textView.isFirstResponder {
-            textView.reloadInputViews()
-        } else {
-            textView.becomeFirstResponder()
-        }
     }
 
     /// Shows the attach (+) button — only sessions with a Mac behind them
@@ -389,72 +283,6 @@ final class ComposerBar: UIView {
         onSend?(text)
     }
 
-    // MARK: - Hold-to-talk
-
-    /// Driven by the terminal keyboard's space bar when push-to-talk is on.
-    private func startDictation() {
-        dictationHeld = true
-        dictationCancelZone = false
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        dictation.start { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success:
-                // Released during the permission prompt: don't leave a mic hot.
-                guard dictationHeld else {
-                    dictation.cancel()
-                    return
-                }
-                recordingHUD.beginRecording { [weak self] in self?.dictation.currentLevel() ?? 0 }
-            case .failure(let failure):
-                recordingHUD.showError(failure.hudMessage)
-            }
-        }
-    }
-
-    private func updateDictationCancelZone(_ cancelling: Bool) {
-        guard dictation.isRecording, cancelling != dictationCancelZone else { return }
-        dictationCancelZone = cancelling
-        recordingHUD.setCancelZone(cancelling)
-        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
-    }
-
-    private func finishDictation() {
-        dictationHeld = false
-        guard dictation.isRecording else {
-            // Too fast to have started, or still awaiting permission — tidy up.
-            dictation.cancel()
-            recordingHUD.dismiss()
-            return
-        }
-        if dictationCancelZone {
-            cancelDictation()
-            return
-        }
-        recordingHUD.showTranscribing()
-        dictation.stopAndTranscribe { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success(let transcript):
-                recordingHUD.dismiss()
-                insertDraft(transcript)
-                if !textView.isFirstResponder { textView.becomeFirstResponder() }
-            case .failure(.empty):
-                // A stray tap or silence — don't scold, just clear the HUD.
-                recordingHUD.dismiss()
-            case .failure(let failure):
-                recordingHUD.showError(failure.hudMessage)
-            }
-        }
-    }
-
-    private func cancelDictation() {
-        dictationHeld = false
-        dictationCancelZone = false
-        dictation.cancel()
-        recordingHUD.dismiss()
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-    }
 
     private func refreshControls() {
         let empty = textView.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -503,18 +331,31 @@ final class ComposerBar: UIView {
         // Visibility is the WRAPPER's job (the stack collapses it); hiding
         // the panel itself here would stick — nothing ever unhides it.
 
-        // Rows sit directly in the effect view's content — matches are
-        // capped instead of scrolled, so no scroll layer is needed.
+        // Rows scroll: the panel caps at maxSuggestionsHeight, and a longer
+        // list (the full "/" catalog) scrolls inside it rather than being
+        // clipped or truncated. The stack pins to the scroll's content guide,
+        // its width locked to the frame so it only scrolls vertically.
+        suggestionsScroll.showsVerticalScrollIndicator = true
+        suggestionsScroll.alwaysBounceVertical = true
+        suggestionsScroll.translatesAutoresizingMaskIntoConstraints = false
+        suggestionsPanel.contentView.addSubview(suggestionsScroll)
+
         suggestionsStack.axis = .vertical
         suggestionsStack.translatesAutoresizingMaskIntoConstraints = false
-        suggestionsPanel.contentView.addSubview(suggestionsStack)
+        suggestionsScroll.addSubview(suggestionsStack)
 
         suggestionsHeight = suggestionsPanel.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             suggestionsHeight,
-            suggestionsStack.leadingAnchor.constraint(equalTo: suggestionsPanel.contentView.leadingAnchor),
-            suggestionsStack.trailingAnchor.constraint(equalTo: suggestionsPanel.contentView.trailingAnchor),
-            suggestionsStack.topAnchor.constraint(equalTo: suggestionsPanel.contentView.topAnchor),
+            suggestionsScroll.leadingAnchor.constraint(equalTo: suggestionsPanel.contentView.leadingAnchor),
+            suggestionsScroll.trailingAnchor.constraint(equalTo: suggestionsPanel.contentView.trailingAnchor),
+            suggestionsScroll.topAnchor.constraint(equalTo: suggestionsPanel.contentView.topAnchor),
+            suggestionsScroll.bottomAnchor.constraint(equalTo: suggestionsPanel.contentView.bottomAnchor),
+            suggestionsStack.leadingAnchor.constraint(equalTo: suggestionsScroll.contentLayoutGuide.leadingAnchor),
+            suggestionsStack.trailingAnchor.constraint(equalTo: suggestionsScroll.contentLayoutGuide.trailingAnchor),
+            suggestionsStack.topAnchor.constraint(equalTo: suggestionsScroll.contentLayoutGuide.topAnchor),
+            suggestionsStack.bottomAnchor.constraint(equalTo: suggestionsScroll.contentLayoutGuide.bottomAnchor),
+            suggestionsStack.widthAnchor.constraint(equalTo: suggestionsScroll.frameLayoutGuide.widthAnchor),
         ])
 
         // The panel hugs the pill's width, not the screen edge.
@@ -532,10 +373,11 @@ final class ComposerBar: UIView {
         if !slashCommands.isEmpty, text.hasPrefix("/"),
            !text.contains(where: \.isWhitespace) {
             let query = text.dropFirst().lowercased()
-            // Capped, not scrolled: typing another letter narrows the rest
-            // away (Telegram shows a handful and relies on the query).
+            // All matches, not a handful: the panel caps its height and scrolls
+            // the rest, so a bare "/" browses the full catalog while typing a
+            // letter still narrows it.
             let matches = slashCommands.filter { $0.name.lowercased().hasPrefix(query) }
-            setSuggestions(matches.prefix(4).map(Suggestion.slash))
+            setSuggestions(matches.map(Suggestion.slash))
         } else if text.count >= 2, !text.contains("\n") {
             // A newline means they're composing something new, not recalling.
             setSuggestions(

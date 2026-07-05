@@ -84,20 +84,28 @@ final class TermioMobileUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Prompt"].exists)
     }
 
-    func testTerminalKeyboardSwapsIn() {
+    func testSlashPanelScrolls() {
         let app = launch("terminal")
-        let toggle = app.buttons["Terminal keyboard"]
-        XCTAssertTrue(toggle.waitForExistence(timeout: 8))
-        // The real flow: the system keyboard comes up first (the swap reuses
-        // its measured height), then ⌨︎ switches planes.
-        app.textViews.firstMatch.tap()
-        toggle.tap()
-        // The swap-in keyboard: esc leads the control zone, return anchors
-        // the bottom row.
-        XCTAssertTrue(app.buttons["esc"].waitForExistence(timeout: 4))
-        XCTAssertTrue(app.buttons["return"].exists)
+        XCTAssertTrue(app.staticTexts["Prompt"].waitForExistence(timeout: 8))
+        // The composer is already first responder on screen load, so type
+        // straight into it (firstMatch would grab the terminal surface).
+        app.typeText("/")
+        XCTAssertTrue(app.buttons["Send /clear"].waitForExistence(timeout: 4))
         let shot = XCTAttachment(screenshot: app.screenshot())
-        shot.name = "terminal-keyboard"
+        shot.name = "slash-panel"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
+    func testTerminalControlBarAppearsWithKeyboard() {
+        let app = launch("terminal")
+        XCTAssertTrue(app.staticTexts["Prompt"].waitForExistence(timeout: 8))
+        // Focusing the composer brings up the system keyboard with the control
+        // bar docked above it — esc leads, the configured keys follow.
+        app.textViews.firstMatch.tap()
+        XCTAssertTrue(app.buttons["esc"].waitForExistence(timeout: 4))
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "terminal-control-bar"
         shot.lifetime = .keepAlways
         add(shot)
     }

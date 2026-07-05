@@ -79,9 +79,8 @@ final class MobileSettings {
         }
     }
 
-    /// Which catalog keys join the terminal keyboard's control zone, in
-    /// catalog order (esc, numbers, arrows, and return are fixed core, not
-    /// stored here).
+    /// Which catalog keys join the control bar above the system keyboard, in
+    /// catalog order (esc and the arrows are fixed core, not stored here).
     var terminalKeyIDs: [String] {
         didSet {
             defaults.set(terminalKeyIDs, forKey: Key.terminalKeys)

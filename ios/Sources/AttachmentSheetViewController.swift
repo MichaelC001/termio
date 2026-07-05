@@ -202,22 +202,39 @@ final class AttachmentSheetViewController: UIViewController {
 
     private func tabItem(_ symbol: String, _ title: String, tint: UIColor,
                          action: (() -> Void)?) -> UIButton {
-        var config = UIButton.Configuration.plain()
-        config.image = UIImage(
+        let button = UIButton(type: .system)
+        button.tintColor = tint
+
+        // SF Symbols have different intrinsic heights at the same point size
+        // (photo.on.rectangle.fill is taller than folder), so letting the
+        // image+title group center itself leaves one icon riding higher than
+        // the other. Pin every glyph into a fixed-height box and center that
+        // box, so Gallery and File share a vertical position.
+        let icon = UIImageView(image: UIImage(
             systemName: symbol,
             withConfiguration: UIImage.SymbolConfiguration(pointSize: 24, weight: .regular)
-        )
-        config.title = title
-        config.imagePlacement = .top
-        config.imagePadding = 4
-        config.baseForegroundColor = tint
+        ))
+        icon.contentMode = .scaleAspectFit
+        icon.tintColor = tint
+
         // Telegram's attachment tabs sit at 10pt medium (system tab bars too).
-        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
-            var attrs = attrs
-            attrs.font = UIFont.systemFont(ofSize: 10, weight: .medium)
-            return attrs
-        }
-        let button = UIButton(configuration: config)
+        let label = UILabel()
+        label.text = title
+        label.font = .systemFont(ofSize: 10, weight: .medium)
+        label.textColor = tint
+
+        let stack = UIStackView(arrangedSubviews: [icon, label])
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 4
+        stack.isUserInteractionEnabled = false
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+            icon.heightAnchor.constraint(equalToConstant: 26),
+        ])
         if let action {
             button.addAction(UIAction { _ in action() }, for: .touchUpInside)
         }

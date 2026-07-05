@@ -27,6 +27,12 @@ final class TerminalViewController: UIViewController {
     /// screen in the container's keep-alive cache.
     var onClose: (() -> Void)?
 
+    /// Set by RootContainerViewController: go back to the session list. The
+    /// container keeps this screen parked (view installed, surface alive)
+    /// rather than tearing it down — the plain nav-pop that used to do this
+    /// freed the surface and raced libghostty's render threads.
+    var onRequestBack: (() -> Void)?
+
     private lazy var terminalView = DisplayTerminalView(frame: .zero)
     private let composerBar = ComposerBar()
     /// Last size actually sent to the engine + the pending coalesced refit —
@@ -171,6 +177,14 @@ final class TerminalViewController: UIViewController {
         }
     }
 
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        // Leaving the terminal (popping back to the session list) must take the
+        // keyboard with it — otherwise the composer field stays first responder
+        // and the keyboard + terminal accessory bar linger over the list.
+        composerBar.unfocus()
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         layoutDrawer()
@@ -261,10 +275,26 @@ final class TerminalViewController: UIViewController {
         ])
     }
 
+    /// Called by RootContainerViewController when this parked screen slides
+    /// back into view. The view was only hidden (never removed from the
+    /// window), so `viewDidAppear` does not fire — re-run the parts that must
+    /// happen on every return.
+    func prepareForReappearance() {
+        if !drawerOpen { focusInput() }
+        // Re-entering a parked companion session claims the PTY's winsize back —
+        // the Mac may own it, and this view's size didn't change while parked,
+        // so no layout pass would re-send the grid.
+        if case .companion = backend { companion?.reassertGrid() }
+    }
+
     /// Back to the inbox: the screen parks in the container's keep-alive
     /// cache — the session stays live, unlike `close()`.
     private func goBack() {
-        navigationController?.popViewController(animated: true)
+        if let onRequestBack {
+            onRequestBack()
+        } else {
+            navigationController?.popViewController(animated: true)
+        }
     }
 
     /// The session is over (child exited, connection lost): tell the
@@ -796,7 +826,11 @@ extension TerminalViewController: UIGestureRecognizerDelegate {
         // scrollback. Leftward opens the drawer; rightward pops to the list,
         // so it only engages when there is a stack to pop.
         guard abs(velocity.x) > abs(velocity.y) else { return false }
-        return velocity.x < 0 || navigationController?.viewControllers.count ?? 0 > 1
+        // Leftward opens the drawer; rightward goes back to the list, which the
+        // container (or a hosting nav stack) must be able to honor.
+        let canGoBack = onRequestBack != nil
+            || (navigationController?.viewControllers.count ?? 0) > 1
+        return velocity.x < 0 || canGoBack
     }
 
     func gestureRecognizer(

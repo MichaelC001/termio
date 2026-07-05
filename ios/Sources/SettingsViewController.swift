@@ -13,14 +13,13 @@ final class SettingsViewController: UITableViewController {
     }
 
     private enum Row: Int, CaseIterable {
-        case connectivity, appearance, terminalKeyboard, voice
+        case connectivity, appearance, terminalKeyboard
 
         var title: String {
             switch self {
             case .connectivity: "Connectivity"
             case .appearance: "Appearance"
             case .terminalKeyboard: "Terminal Keyboard"
-            case .voice: "Voice"
             }
         }
 
@@ -29,7 +28,6 @@ final class SettingsViewController: UITableViewController {
             case .connectivity: "antenna.radiowaves.left.and.right"
             case .appearance: "paintbrush"
             case .terminalKeyboard: "keyboard"
-            case .voice: "mic"
             }
         }
 
@@ -38,7 +36,6 @@ final class SettingsViewController: UITableViewController {
             case .connectivity: ConnectivitySettingsViewController()
             case .appearance: AppearanceSettingsViewController()
             case .terminalKeyboard: TerminalKeyboardSettingsViewController()
-            case .voice: VoiceSettingsViewController()
             }
         }
     }
@@ -297,10 +294,10 @@ final class AppearanceSettingsViewController: UITableViewController {
 
 // MARK: - Terminal keyboard
 
-/// Which control keys the terminal keyboard carries — a toggle per catalog
+/// Which control keys the accessory bar carries — a toggle per catalog
 /// entry (curated Claude Code shortcuts), not a free-form binding editor.
-/// The keyboard itself observes `MobileSettings.didChange` and rebuilds, so
-/// a flip here is live on its next appearance.
+/// The bar itself observes `MobileSettings.didChange` and rebuilds, so a flip
+/// here is live on its next appearance.
 final class TerminalKeyboardSettingsViewController: UITableViewController {
     private let settings = MobileSettings.shared
 
@@ -329,8 +326,8 @@ final class TerminalKeyboardSettingsViewController: UITableViewController {
     }
 
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        "Keys on the terminal keyboard — the ⌨︎ in the composer. "
-            + "Esc, 1–4, the arrows, and return are always there; "
+        "Keys on the control bar above the system keyboard. "
+            + "Esc and the arrows are always there; "
             + "hold esc for esc-esc (Claude Code's rewind menu)."
     }
 
