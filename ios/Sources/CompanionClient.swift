@@ -184,7 +184,7 @@ final class CompanionClient: NSObject {
             case .failure(let error):
                 // A superseded task's death is not a drop of the current link.
                 guard task === self.task else { return }
-                NSLog("[companion] roster link dropped: %@", String(describing: error))
+                Log.companion.notice("roster link dropped: \(error.localizedDescription, privacy: .public)")
                 isConnected = false
                 onConnected?(false)
                 scheduleReconnect()
@@ -196,7 +196,7 @@ final class CompanionClient: NSObject {
 extension CompanionClient: URLSessionWebSocketDelegate {
     func urlSession(_: URLSession, webSocketTask task: URLSessionWebSocketTask, didOpenWithProtocol _: String?) {
         guard task === self.task else { return }
-        NSLog("[companion] roster link connected to %@", url.host ?? "?")
+        Log.companion.notice("roster link connected to \(self.url.host ?? "?", privacy: .public)")
         // Auth rides first on every connect; the roster is the server's reply.
         if let token = CompanionLink.token(of: url) {
             task.send(.string(CompanionControl.auth(token: token).encoded())) { _ in }
@@ -204,7 +204,7 @@ extension CompanionClient: URLSessionWebSocketDelegate {
             // No `?t=` on the paired URL: the socket opens, but the Mac refuses
             // it after its ~10s auth grace window, so the link loops
             // connect→unauthorized→reconnect with no visible cause. Say so.
-            NSLog("[companion] roster URL has no pairing token (?t=…) — the Mac will refuse this socket after ~10s. Re-pair via Settings ▸ Mobile.")
+            Log.companion.error("roster URL has no pairing token (?t=…) — the Mac will refuse this socket after ~10s. Re-pair via Settings ▸ Mobile.")
         }
         isConnected = true
         policy.reset()

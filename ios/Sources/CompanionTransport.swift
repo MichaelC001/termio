@@ -244,7 +244,7 @@ extension CompanionTransport: URLSessionWebSocketDelegate {
             // No `?t=` on the URL: the Mac drops this socket after its ~10s
             // auth grace window, so the session just churns "Reconnecting…"
             // with no visible cause. Say so.
-            NSLog("[companion] session URL has no pairing token (?t=…) — the Mac will refuse this socket after ~10s. Re-pair via Settings ▸ Mobile.")
+            Log.companion.error("session URL has no pairing token (?t=…) — the Mac will refuse this socket after ~10s. Re-pair via Settings ▸ Mobile.")
         }
         // Auth is now queued ahead of everything else, so grid/keystroke frames
         // may flow. `URLSessionWebSocketTask` preserves send-call order, so the
