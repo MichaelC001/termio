@@ -97,7 +97,7 @@ final class PTYProcess: @unchecked Sendable {
         var win = winsize(ws_row: UInt16(rows), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)
         var nameBuf = [CChar](repeating: 0, count: 128)
         guard openpty(&master, &slave, &nameBuf, nil, &win) == 0 else {
-            NSLog("[pty] openpty failed")
+            Log.pty.error("openpty failed")
             return nil
         }
         masterFD = master
@@ -133,7 +133,7 @@ final class PTYProcess: @unchecked Sendable {
         let rc = posix_spawn(&childPID, argv[0], &fileActions, &attr, argvC, envpC)
         close(slave)
         guard rc == 0 else {
-            NSLog("[pty] posix_spawn failed rc=\(rc)")
+            Log.pty.error("posix_spawn failed rc=\(rc, privacy: .public)")
             close(master)
             return nil
         }
@@ -194,10 +194,20 @@ final class PTYProcess: @unchecked Sendable {
     ///     delivered to this sink first, so a late-attaching client paints the
     ///     current screen instead of joining blind. Enqueued under the same
     ///     lock as live delivery, so replay/live ordering is preserved.
+    ///   - replayCap: when set, only the last `replayCap` bytes of the ring
+    ///     buffer are replayed to this sink. The local surface passes nil (it
+    ///     wants the full history); a memory-constrained network viewer (the
+    ///     phone) caps it so the cold-attach reflow at its narrow grid can't
+    ///     spike libghostty's allocator into its "non-functional" panic. Only
+    ///     the leading bytes are dropped, so the worst case is a clipped top
+    ///     line — and a mode change inside that dropped prefix isn't re-asserted,
+    ///     which is why the cap is only used on the plain-shell path (alt-screen
+    ///     TUIs skip the byte replay entirely and resync modes explicitly).
     @discardableResult
     func addSink(
         on queue: DispatchQueue? = nil,
         replayingBuffer: Bool = false,
+        replayCap: Int? = nil,
         _ handler: @escaping (Data) -> Void
     ) -> UUID {
         let id = UUID()
@@ -207,7 +217,7 @@ final class PTYProcess: @unchecked Sendable {
             // have already been evicted from the ring buffer — the client's
             // terminal must agree with the child about alternate screen and
             // mouse reporting, or its scroll input goes nowhere.
-            var replay = replayBuffer
+            var replay = replayCap.map { Data(replayBuffer.suffix($0)) } ?? replayBuffer
             replay.append(modeCatchUpPreambleLocked())
             if !replay.isEmpty {
                 if let queue {

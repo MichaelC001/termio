@@ -121,7 +121,7 @@ final class CompanionServer {
         params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
 
         guard let listener = try? NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!) else {
-            NSLog("[companion] failed to bind port \(port)")
+            Log.companion.error("failed to bind port \(self.port, privacy: .public)")
             return
         }
         listener.newConnectionHandler = { [weak self] connection in
@@ -130,11 +130,11 @@ final class CompanionServer {
         listener.stateUpdateHandler = { state in
             switch state {
             case .ready:
-                NSLog("[companion] listening on ws://localhost:\(self.port)")
+                Log.companion.notice("listening on ws://localhost:\(self.port, privacy: .public)")
             case .failed(let error):
-                NSLog("[companion] listener FAILED: \(error)")
+                Log.companion.error("listener failed: \(error.localizedDescription, privacy: .public)")
             case .waiting(let error):
-                NSLog("[companion] listener waiting: \(error)")
+                Log.companion.notice("listener waiting: \(error.localizedDescription, privacy: .public)")
             default:
                 break
             }
@@ -613,6 +613,10 @@ private final class PTYBridge: @unchecked Sendable {
     private var repaintRequested = false
     private static let highWater = 1 << 20   // start dropping above 1 MB in flight
     private static let lowWater = 128 << 10  // recovered once under 128 KB
+    /// Cap on the plain-shell replay sent to a phone on attach — a few
+    /// screenfuls, enough to paint the current screen without reflowing the
+    /// whole ring at the phone's narrow grid (the allocator-panic trigger).
+    private static let phoneReplayCap = 128 << 10  // 128 KB
     /// Clears glyphs and scrollback but not modes — alt-screen and mouse
     /// reporting survive, where a full RIS would knock the TUI out of them.
     private static let wipe = Data("\u{1B}[2J\u{1B}[3J\u{1B}[H".utf8)
@@ -633,7 +637,21 @@ private final class PTYBridge: @unchecked Sendable {
         // clean full repaint. A plain shell has no such repaint, so it still
         // replays — its history is the screen.
         let altScreen = pty.isAlternateScreenActive
-        sinkToken = pty.addSink(on: queue, replayingBuffer: !altScreen) { [weak self] data in
+        // The panic-hunt datapoint: which attach path ran. An alt-screen TUI
+        // skips the byte replay (no reflow spike); a plain shell replays up to
+        // `phoneReplayCap`. Filter with:
+        //   log stream --predicate 'category == "companion"' --info
+        Log.companion.notice("attach altScreen=\(altScreen, privacy: .public) replayCapBytes=\(altScreen ? 0 : Self.phoneReplayCap, privacy: .public)")
+        sinkToken = pty.addSink(
+            on: queue,
+            replayingBuffer: !altScreen,
+            // The phone is a viewer, not the scrollback of record — the Mac keeps
+            // full history. Replaying the whole 1 MB ring reflows at the phone's
+            // narrow grid all at once and can tip libghostty's allocator into its
+            // panic screen on the cold attach. A few screenfuls is all a viewer
+            // needs to paint "where you are"; the rest is the Mac's to hold.
+            replayCap: Self.phoneReplayCap
+        ) { [weak self] data in
             self?.send(data)
         }
         // When the replay is skipped nothing carries the mode switches, so the
