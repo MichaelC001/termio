@@ -66,6 +66,35 @@ final class ComposerBar: UIView {
     /// 4.5 rows: the half row signals there is more to scroll (Telegram's trick).
     private static let maxSuggestionsHeight: CGFloat = 198
 
+    /// Telegram's command-insert glyph (chatCommandPanelArrowImage): a thin
+    /// corner arrow whose L-bracket head points DOWN-LEFT, toward the draft
+    /// field below — "drop this into the input," not "send it." Drawn, not an
+    /// SF symbol: `arrow.up.left` points away from the field and reads as
+    /// "expand"; reproducing Telegram's exact path keeps the affordance right.
+    private static let commandInsertArrow: UIImage = {
+        let box: CGFloat = 11        // Telegram's reference box
+        let side: CGFloat = 13
+        let scale = side / box
+        let image = UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { rendererContext in
+            let context = rendererContext.cgContext
+            context.scaleBy(x: scale, y: scale)
+            context.setStrokeColor(UIColor.black.cgColor)
+            context.setLineCap(.round)
+            context.setLineJoin(.round)
+            context.setLineWidth(1.8 / scale)   // ~1.8pt on screen regardless of box scale
+            context.beginPath()
+            context.move(to: CGPoint(x: 1, y: 2))
+            context.addLine(to: CGPoint(x: 1, y: 10))
+            context.addLine(to: CGPoint(x: 9, y: 10))
+            context.strokePath()
+            context.beginPath()
+            context.move(to: CGPoint(x: 1, y: 10))
+            context.addLine(to: CGPoint(x: 10, y: 1))
+            context.strokePath()
+        }
+        return image.withRenderingMode(.alwaysTemplate)
+    }()
+
     init() {
         super.init(frame: .zero)
 
@@ -337,6 +366,12 @@ final class ComposerBar: UIView {
         // its width locked to the frame so it only scrolls vertically.
         suggestionsScroll.showsVerticalScrollIndicator = true
         suggestionsScroll.alwaysBounceVertical = true
+        // Each row is a full-width UIButton. With the scroll view's default
+        // delaysContentTouches, a tap with the slightest finger movement is
+        // swallowed as a pan and the button's touchUpInside never fires — the
+        // "tap a skill does nothing" bug. Hand touches straight to the row so
+        // taps always register; a real drag still scrolls (cancel stays on).
+        suggestionsScroll.delaysContentTouches = false
         suggestionsScroll.translatesAutoresizingMaskIntoConstraints = false
         suggestionsPanel.contentView.addSubview(suggestionsScroll)
 
@@ -440,6 +475,9 @@ final class ComposerBar: UIView {
         labels.spacing = 1
         labels.isUserInteractionEnabled = false
 
+        // Telegram's bot-command UX: tapping the row fires the command now,
+        // while the arrow on the right inserts "/name " so you can type
+        // arguments before sending.
         let main = UIButton(type: .custom)
         main.accessibilityLabel = "Send /\(command.name)"
         main.addAction(UIAction { [weak self] _ in
@@ -451,8 +489,8 @@ final class ComposerBar: UIView {
         }, for: .touchUpInside)
 
         let insert = UIButton(type: .system)
-        insert.setImage(UIImage(systemName: "arrow.up.left"), for: .normal)
-        insert.tintColor = .tertiaryLabel
+        insert.setImage(Self.commandInsertArrow, for: .normal)
+        insert.tintColor = .secondaryLabel
         insert.accessibilityLabel = "Insert /\(command.name)"
         insert.addAction(UIAction { [weak self] _ in
             guard let self else { return }
