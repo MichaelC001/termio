@@ -148,12 +148,17 @@ final class TermioStore: ObservableObject {
     @Published var transcriptPaths: [Session.ID: String] = [:]
 
     /// When each currently-working session last reported activity, used to recover
-    /// a session whose agent died mid-turn (see `sweepStaleWorking`).
+    /// a session whose turn ended without a `done` hook (see `sweepStaleWorking`).
+    /// Refreshed both by working hooks and by PTY output (`noteOutputActivity`).
     var lastWorkingAt: [Session.ID: Date] = [:]
     var staleWorkingSweep: Timer?
-    /// Must outlast the longest real tool run: nothing refreshes `lastWorkingAt`
-    /// between the start and end of a single tool call.
-    let staleWorkingTimeout: TimeInterval = 900
+    /// How long a `.working` session may go with *no PTY output and no working
+    /// hook* before the sweep flips it back to idle. A working agent's TUI repaints
+    /// its spinner sub-second (`noteOutputActivity` keeps refreshing the timestamp),
+    /// so this only elapses once the terminal has genuinely gone quiet — recovering
+    /// the many turns that end without a `Stop` hook (a cancelled `/resume` or
+    /// `/compact`, an esc-interrupt) instead of spinning until they time out.
+    let staleWorkingTimeout: TimeInterval = 12
 
     init(projects: [Project], settings: AppSettings) {
         self.settings = settings

@@ -13,9 +13,10 @@ extension TermioStore {
         installedHooksEnabled = settings.agentHooksEnabled
         syncHooksInstallation()
 
-        // A coarse 30s tick is plenty: the timeout it enforces is measured in
-        // minutes, so this just needs to notice eventually.
-        staleWorkingSweep = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        // The timeout it enforces is a handful of seconds (a quiet terminal is the
+        // "turn ended" signal), so the sweep has to tick at that granularity to
+        // clear a stuck spinner promptly. A 2s repeating timer is negligible.
+        staleWorkingSweep = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.sweepStaleWorking() }
         }
     }
@@ -112,6 +113,18 @@ extension TermioStore {
     private func clearWorking(_ id: Session.ID) {
         currentTool[id] = nil
         lastWorkingAt[id] = nil
+    }
+
+    /// Refreshes a working session's activity timestamp on PTY output. A genuinely
+    /// working agent repaints its spinner every second, so output flowing means the
+    /// turn is still live; the moment it stops (the agent is back at its prompt),
+    /// the timestamp stops advancing and `sweepStaleWorking` can clear the spinner.
+    /// This is what closes the gap for turns that never send a `done` hook. No-op
+    /// unless the session is actually spinning, so idle sessions cost nothing. Fed
+    /// by a throttled tap on the PTY stream (see `surface(for:in:)`).
+    func noteOutputActivity(_ id: Session.ID) {
+        guard statuses[id] == .working else { return }
+        lastWorkingAt[id] = Date()
     }
 
     /// Resolves a session's transcript file from disk when its hook hasn't handed

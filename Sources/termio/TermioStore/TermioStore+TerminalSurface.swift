@@ -102,6 +102,21 @@ extension TermioStore {
         )
         if let pty {
             pty.addSink { [weak inMemory] data in inMemory?.receive(data) }
+            // Tap the same stream as a working-liveness signal: while an agent is
+            // mid-turn its TUI repaints the spinner sub-second, so output flowing
+            // keeps `lastWorkingAt` fresh and the moment it stops lets the stale
+            // sweep clear the spinner — the recovery path for a turn that ends
+            // without a `Stop` hook. Throttled to once a second (a streaming build
+            // must not flood the main actor) and cheap when the session isn't
+            // spinning (`noteOutputActivity` no-ops). The read pump calls sinks
+            // serially, so the captured `lastPoke` needs no lock.
+            var lastPoke = Date.distantPast
+            pty.addSink { [weak self] _ in
+                let now = Date()
+                guard now.timeIntervalSince(lastPoke) >= 1 else { return }
+                lastPoke = now
+                DispatchQueue.main.async { self?.noteOutputActivity(session.id) }
+            }
             pty.onExit = { [weak self, weak inMemory] code in
                 inMemory?.finish(exitCode: UInt32(bitPattern: code), runtimeMilliseconds: 0)
                 self?.ptyProcesses[session.id] = nil
