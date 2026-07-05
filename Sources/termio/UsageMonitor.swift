@@ -473,8 +473,9 @@ struct DateWindows: Sendable {
 /// Per-token prices for the models termio can price, in dollars. Cache-write is
 /// the 5-minute ephemeral rate (1.25× input); cache-read is 0.1× input — the
 /// economics the prompt-caching docs specify. Source: the claude-api skill's
-/// current pricing table (Opus 4.8 $5/$25, Sonnet 4.6 $3/$15, Haiku 4.5 $1/$5
-/// per million). Kept in one place so a price change is a one-line edit.
+/// current pricing table (Fable 5 $10/$50, Opus 4.8 $5/$25, Sonnet 4.6 $3/$15,
+/// Haiku 4.5 $1/$5 per million). Kept in one place so a price change is a
+/// one-line edit.
 private struct ModelPrice {
     let input: Double
     let output: Double
@@ -491,10 +492,14 @@ private struct ModelPrice {
     }
 
     /// Matches a Claude model id (e.g. `claude-opus-4-8`) to its tier by family
-    /// name, so a new dated snapshot still prices correctly. Falls back to Opus —
-    /// the costliest, so an unknown model never silently under-counts spend.
+    /// name, so a new dated snapshot still prices correctly. An unknown model
+    /// falls back to Opus — not the top of the range (Fable is costlier), so a
+    /// genuinely unrecognised premium model can under-count; the named tiers
+    /// below keep every model termio actually sees priced exactly. (CodexBar's
+    /// answer to this is a live models.dev catalog; termio stays a flat table.)
     static func forClaudeModel(_ model: String) -> ModelPrice {
         let lowered = model.lowercased()
+        if lowered.contains("fable") { return .perMillion(input: 10, output: 50) }
         if lowered.contains("haiku") { return .perMillion(input: 1, output: 5) }
         if lowered.contains("sonnet") { return .perMillion(input: 3, output: 15) }
         return .perMillion(input: 5, output: 25)
