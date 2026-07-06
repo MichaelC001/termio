@@ -54,6 +54,8 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
     case pi
     case amp
     case cursor
+    case droid
+    case gemini
 
     var id: String { rawValue }
 
@@ -66,6 +68,8 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         case .pi: return "Pi"
         case .amp: return "Amp"
         case .cursor: return "Cursor"
+        case .droid: return "Droid"
+        case .gemini: return "Gemini"
         }
     }
 
@@ -83,6 +87,8 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         // Cursor's headless CLI binary is `cursor-agent`, distinct from the `cursor`
         // GUI launcher, so name it explicitly.
         case .cursor: return "cursor-agent"
+        case .droid: return "droid"
+        case .gemini: return "gemini"
         }
     }
 
@@ -97,9 +103,9 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         switch self {
         case .claudeCode: return "--dangerously-skip-permissions"
         case .codex: return "--dangerously-bypass-approvals-and-sandbox"
-        // Amp and Cursor have no bypass flag stable enough to wire to a one-click
-        // toggle; they still accept any flag through the free-text command override.
-        case .terminal, .opencode, .pi, .amp, .cursor: return nil
+        // These have no bypass flag stable enough to wire to a one-click toggle;
+        // they still accept any flag through the free-text command override.
+        case .terminal, .opencode, .pi, .amp, .cursor, .droid, .gemini: return nil
         }
     }
 
@@ -113,7 +119,7 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         switch self {
         case .claudeCode: return "--settings '{\"sandbox\":{\"enabled\":false}}'"
         case .codex: return "--sandbox danger-full-access"
-        case .terminal, .opencode, .pi, .amp, .cursor: return nil
+        case .terminal, .opencode, .pi, .amp, .cursor, .droid, .gemini: return nil
         }
     }
 
@@ -147,9 +153,9 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
     /// the others continue the most recent session in the working directory.
     func resumeArguments(_ context: ResumeContext) -> String? {
         switch self {
-        // Amp and Cursor aren't wired for resume yet, so they launch a fresh session
-        // each time, like the plain terminal.
-        case .terminal, .amp, .cursor:
+        // These aren't wired for resume yet, so they launch a fresh session each
+        // time, like the plain terminal.
+        case .terminal, .amp, .cursor, .droid, .gemini:
             return nil
         case .claudeCode:
             // `--session-id` creates a session with our id (and errors if it already
@@ -191,6 +197,8 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         // rather than a washed-out brand approximation.
         case .amp: return .systemSymbol("bolt.fill")
         case .cursor: return .systemSymbol("cursorarrow")
+        case .droid: return .systemSymbol("hammer.fill")
+        case .gemini: return .systemSymbol("sparkles")
         }
     }
 
@@ -206,6 +214,8 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         case .pi: return URL(string: "https://pi.dev")
         case .amp: return URL(string: "https://ampcode.com/manual")
         case .cursor: return URL(string: "https://cursor.com/docs/cli")
+        case .droid: return URL(string: "https://docs.factory.ai/cli")
+        case .gemini: return URL(string: "https://geminicli.com/docs/hooks")
         }
     }
 }

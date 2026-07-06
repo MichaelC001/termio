@@ -93,7 +93,7 @@ extension AgentPreset {
         switch self {
         case .claudeCode: return BrandLogo.claude.tint
         case .codex: return BrandLogo.codex.tint
-        case .terminal, .opencode, .pi, .amp, .cursor: return .monochromeInk
+        case .terminal, .opencode, .pi, .amp, .cursor, .droid, .gemini: return .monochromeInk
         }
     }
 }

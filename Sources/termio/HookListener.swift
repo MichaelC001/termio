@@ -214,6 +214,8 @@ enum AgentStatusHooks {
             JSONHookFile.claude,
             JSONHookFile.codex,
             JSONHookFile.cursor,
+            JSONHookFile.droid,
+            JSONHookFile.gemini,
             PluginFile.openCode,
             PluginFile.pi,
             PluginFile.amp,
@@ -228,11 +230,11 @@ enum AgentStatusHooks {
         state: String, withTranscript: Bool = false, dialect: HookDialect = .claudeNested
     ) -> String {
         let socket = HookListener.socketURL.path
-        // Cursor spawns each hook as a process and reads its stdout as the hook's
-        // JSON reply, so the report must reach the socket silently and then print a
-        // benign empty object — any stray byte on stdout is parsed as a malformed
-        // reply. (Claude/Codex ignore hook stdout, so they don't need this.)
-        if dialect == .cursorFlat {
+        // Some agents (Cursor, Gemini) read the hook's stdout as its JSON reply, so
+        // the report must reach the socket silently and then print a benign empty
+        // object — any stray byte on stdout is parsed as a malformed reply.
+        // (Claude/Codex/Droid ignore hook stdout, so they don't need this.)
+        if dialect.readsStdoutAsReply {
             let json = #"{"termio_session":"%s","state":"\#(state)","cwd":"%s"}"#
             return "printf '\(json)' \"$TERMIO_SESSION\" \"$PWD\" | nc -w 1 -U \"\(socket)\" >/dev/null 2>&1; printf '{}'"
         }
@@ -266,15 +268,29 @@ private protocol AgentStatusInstaller {
     func uninstall()
 }
 
-/// The on-disk shape of a JSON hook file. Two agents that both configure hooks via
-/// a JSON file still disagree on structure, so the installer branches on this.
+/// The on-disk shape of a JSON hook file. Agents that all configure hooks via a
+/// JSON file still disagree on two independent axes — the entry structure and
+/// whether the agent reads the hook's stdout as a reply — so the installer branches
+/// on these computed aspects rather than special-casing each agent.
 enum HookDialect {
-    /// Claude Code / Codex: `{ "hooks": { "<Event>": [ { "matcher"?, "hooks": [ {type,command} ] } ] } }`.
+    /// Claude Code / Codex / Droid: `{ "hooks": { "<Event>": [ { "matcher"?, "hooks": [ {type,command} ] } ] } }`,
+    /// and the agent ignores the hook's stdout.
     case claudeNested
     /// Cursor: `{ "version": 1, "hooks": { "<Event>": [ { "command" } ] } }` — a
-    /// required top-level `version`, and flat one-key entries instead of Claude's
-    /// nested `hooks` array.
+    /// required top-level `version`, flat one-key entries, and the hook's stdout is
+    /// read back as its JSON reply.
     case cursorFlat
+    /// Gemini CLI: Claude's nested structure, but the hook's stdout is read back as
+    /// its JSON reply (so the report must print a clean empty object).
+    case geminiNested
+
+    /// Entries are flat `{command}` (Cursor) rather than Claude's nested `{hooks:[…]}`.
+    var isFlat: Bool { self == .cursorFlat }
+    /// The agent reads the hook's stdout as its JSON reply, so the report must reach
+    /// the socket silently and then print a benign empty object.
+    var readsStdoutAsReply: Bool { self == .cursorFlat || self == .geminiNested }
+    /// The file requires a top-level schema `version` (Cursor only, currently).
+    var needsVersion: Bool { self == .cursorFlat }
 }
 
 /// Installs hooks for agents whose config is a JSON file with the Claude-Code
@@ -352,6 +368,39 @@ private struct JSONHookFile: AgentStatusInstaller {
             dialect: .cursorFlat)
     }
 
+    /// Factory's Droid uses `~/.factory/hooks.json` in the exact Claude-Code nested
+    /// shape and ignores hook stdout, so it needs only the standard report command.
+    /// No permission event maps to `attention` (Droid's generic `Notification` also
+    /// fires on idle, like Claude's, which would wrongly flip a just-finished turn).
+    static var droid: JSONHookFile {
+        JSONHookFile(
+            url: home(".factory", "hooks.json"),
+            events: [
+                ("UserPromptSubmit", "working", nil),
+                ("PreToolUse", "working", "*"),
+                ("PostToolUse", "working", "*"),
+                ("SubagentStop", "working", nil),
+                ("Stop", "done", nil),
+            ],
+            label: "droid")
+    }
+
+    /// Gemini CLI hooks live under the `hooks` object in `~/.gemini/settings.json`,
+    /// in Claude's nested structure, but Gemini reads each hook's stdout as its JSON
+    /// reply (hence `.geminiNested`). `BeforeAgent` fires after prompt submit / before
+    /// planning, `AfterAgent` once per turn after the final response.
+    static var gemini: JSONHookFile {
+        JSONHookFile(
+            url: home(".gemini", "settings.json"),
+            events: [
+                ("BeforeAgent", "working", nil),
+                ("BeforeTool", "working", ".*"),
+                ("AfterAgent", "done", nil),
+            ],
+            label: "gemini",
+            dialect: .geminiNested)
+    }
+
     private static func home(_ components: String...) -> URL {
         components.reduce(FileManager.default.homeDirectoryForCurrentUser) {
             $0.appendingPathComponent($1)
@@ -377,7 +426,7 @@ private struct JSONHookFile: AgentStatusInstaller {
         var settings = root
         // Cursor requires a top-level schema version; add it only when the user's
         // file doesn't already carry one, so we never overwrite their choice.
-        if dialect == .cursorFlat, settings["version"] == nil { settings["version"] = 1 }
+        if dialect.needsVersion, settings["version"] == nil { settings["version"] = 1 }
         var hooks = settings["hooks"] as? [String: Any] ?? [:]
         // Strip every prior termio entry first — across all events, not just the
         // ones we're about to re-add — so an event we no longer manage (e.g. a
@@ -388,10 +437,9 @@ private struct JSONHookFile: AgentStatusInstaller {
             let command = AgentStatusHooks.reportCommand(
                 state: event.state, withTranscript: capturesTranscript, dialect: dialect)
             let group: [String: Any]
-            switch dialect {
-            case .cursorFlat:
+            if dialect.isFlat {
                 group = ["command": command]
-            case .claudeNested:
+            } else {
                 var nested: [String: Any] = ["hooks": [["type": "command", "command": command]]]
                 if let matcher = event.matcher { nested["matcher"] = matcher }
                 group = nested
