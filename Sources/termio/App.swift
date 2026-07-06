@@ -61,6 +61,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // The trailing file-browser inspector item, retained so the toolbar button and the
     // View menu can collapse/expand it. Starts collapsed (see `makeContentSplitViewController`).
     private var filesInspectorItem: NSSplitViewItem?
+    // The leading sidebar item, retained so the sidebar's own toolbar actions (sort + new-terminal)
+    // can ride with it — inserted when the navigator opens, stripped when it collapses.
+    private weak var sidebarSplitItem: NSSplitViewItem?
+    // KVO on the sidebar's collapse state, so every collapse path (toolbar toggle, View menu,
+    // divider drag) empties/refills the sidebar's toolbar region (see `setNavigatorItemsVisible`).
+    private var sidebarCollapseObserver: NSKeyValueObservation?
     // The window's real toolbar delegate (must be retained); it carries the native
     // sidebar toggle (see `installToolbar`).
     private var toolbarDelegate: MainToolbarDelegate?
@@ -118,9 +124,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         applyWindowTransparency()
         applyChromeAppearance()
         installToolbar()
+        // Empty the sidebar's toolbar region (sort + new-terminal) whenever the navigator collapses
+        // and restore it when it reopens — the sidebar's own buttons ride with the sidebar, the way
+        // Finder/Xcode drop theirs. KVO catches every collapse path (toolbar toggle, View menu,
+        // divider drag). No `.initial`: the launch-time sync below runs after the autosave restore.
+        sidebarCollapseObserver = sidebarSplitItem?.observe(\.isCollapsed, options: [.new]) { [weak self] item, _ in
+            MainActor.assumeIsolated { self?.setNavigatorItemsVisible(!item.isCollapsed) }
+        }
         // After the split view has restored its autosaved collapse state, match the toolbar pane
-        // switch to whether the inspector actually came up open or closed.
-        DispatchQueue.main.async { [weak self] in self?.syncInspectorSwitch() }
+        // switch to whether the inspector actually came up open or closed, and the sidebar region to
+        // whether the navigator came up open or collapsed.
+        DispatchQueue.main.async { [weak self] in
+            self?.syncInspectorSwitch()
+            self?.syncNavigatorItems()
+        }
         updateWindowTitle()
         // Keep the native title/subtitle in step with the selected session and its live branch.
         titleObserver = store.objectWillChange
@@ -260,6 +277,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         sidebarItem.maximumThickness = 400
         sidebarItem.canCollapse = true
         sidebarItem.allowsFullHeightLayout = true
+        self.sidebarSplitItem = sidebarItem
         // CodeEdit's recipe: the divider hairline under the toolbar is owned per split item,
         // not by the window. Pre-macOS 26, the sidebar needs `.none` to stop the sidebar
         // tracking separator from rendering its line as a black bar in fullscreen; on macOS 26
@@ -588,6 +606,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    /// Matches the sidebar's toolbar region to the navigator's *actual* collapse state — called once
+    /// at launch after the split view has restored from autosave, the navigator twin of
+    /// `syncInspectorSwitch` (so a restored-collapsed sidebar shows no sort/new buttons, a
+    /// restored-open one shows them, with no stale mirror state to desync).
+    func syncNavigatorItems() {
+        guard let item = sidebarSplitItem else { return }
+        setNavigatorItemsVisible(!item.isCollapsed)
+    }
+
+    /// Inserts or removes the sidebar's own toolbar actions (the sort pull-down and the `+`
+    /// new-terminal button) as the navigator opens/closes, so the sidebar's toolbar region empties
+    /// when the sidebar is collapsed — matching Finder/Xcode, which drop their sidebar buttons with
+    /// the sidebar, and freeing the horizontal room that otherwise forces NSToolbar's `»` overflow.
+    /// The paired flexible space (which right-aligns the two against the sidebar divider) is inserted
+    /// and removed *with* them. When open the region reads `toggleNavigator, flex, sortProjects,
+    /// newTerminal | sidebarTrackingSeparator`. Mirrors `setInspectorSwitchVisible`.
+    private func setNavigatorItemsVisible(_ visible: Bool) {
+        guard let toolbar = window?.toolbar else { return }
+        func index(of id: NSToolbarItem.Identifier) -> Int? {
+            toolbar.items.firstIndex { $0.itemIdentifier == id }
+        }
+        // Mutate with animation off, matching the inspector switch: the buttons simply present for
+        // the sidebar's slide rather than running NSToolbar's own pop on an independent clock.
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        defer { NSAnimationContext.endGrouping() }
+        if visible {
+            guard index(of: .sortProjects) == nil, let sep = index(of: .sidebarTrackingSeparator) else { return }
+            // Insert in reverse at the separator's index so the final order is flex, sortProjects, newTerminal.
+            toolbar.insertItem(withItemIdentifier: .newTerminal, at: sep)
+            toolbar.insertItem(withItemIdentifier: .sortProjects, at: sep)
+            toolbar.insertItem(withItemIdentifier: .flexibleSpace, at: sep)
+        } else {
+            // Only clean up when the buttons are actually present (nothing to remove at launch with
+            // the sidebar already collapsed). Re-find each id after every removal — indices shift.
+            guard let sortIdx = index(of: .sortProjects) else { return }
+            toolbar.removeItem(at: sortIdx)
+            if let i = index(of: .newTerminal) { toolbar.removeItem(at: i) }
+            // Drop the flexible space that right-aligned them (the one just before the sidebar separator).
+            if let sep = index(of: .sidebarTrackingSeparator), sep > 0,
+               toolbar.items[sep - 1].itemIdentifier == .flexibleSpace {
+                toolbar.removeItem(at: sep - 1)
+            }
+        }
+    }
+
     /// The toolbar's overlay-close button — dismisses whichever content overlay (file editor, diff,
     /// or preview) covers the terminal. Routed through a notification so `TerminalPane` runs the
     /// same teardown (clear the store, return focus to the terminal) the overlays' own Esc / close
@@ -691,9 +755,13 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     // switch AND its tracking separator are inserted by the app delegate only while the inspector is
     // open (see `setInspectorSwitchVisible`) — keeping the separator in the default set would draw a
     // stray divider line in the toolbar while the panel is collapsed.
+    // Sidebar-collapsed baseline: just the navigator toggle, the branch title, and the inspector
+    // toggle. The sidebar's own actions (`sortProjects` + `newTerminal`) and their right-aligning
+    // flexible space are inserted by the app delegate only while the navigator is open (see
+    // `setNavigatorItemsVisible`) — keeping them in the default set is what over-packed the row and
+    // forced NSToolbar's `»` overflow when the sidebar was collapsed.
     private let defaultIdentifiers: [NSToolbarItem.Identifier] = [
-        .toggleNavigator, .flexibleSpace, .sortProjects, .newTerminal, .sidebarTrackingSeparator, .branchPicker,
-        .flexibleSpace, .toggleInspector,
+        .toggleNavigator, .sidebarTrackingSeparator, .branchPicker, .flexibleSpace, .toggleInspector,
     ]
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -701,7 +769,7 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        defaultIdentifiers + [.inspectorTrackingSeparator, .inspectorTabs, .closeOverlay]
+        defaultIdentifiers + [.sortProjects, .newTerminal, .inspectorTrackingSeparator, .inspectorTabs, .closeOverlay]
     }
 
     func toolbar(
@@ -897,6 +965,15 @@ private func buildMainMenu() -> NSMenu {
     let fileItem = NSMenuItem()
     mainMenu.addItem(fileItem)
     let fileMenu = NSMenu(title: "File")
+    // Keeps the `+` new-terminal action reachable when the navigator is collapsed and its toolbar
+    // button is hidden (see `setNavigatorItemsVisible`). ⌘T is safe: TUI programs drive off Ctrl,
+    // never Cmd, so it can't shadow a key a terminal app wants.
+    fileMenu.addItem(
+        withTitle: "New Terminal",
+        action: #selector(AppDelegate.newScratchTerminal(_:)),
+        keyEquivalent: "t"
+    )
+    fileMenu.addItem(.separator())
     fileMenu.addItem(
         withTitle: "Open Project…",
         action: #selector(AppDelegate.openProject(_:)),

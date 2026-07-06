@@ -77,6 +77,14 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     /// it into a `WKWebView` overlay. Large, so it rides the 8 MB-capped socket.
     case traceHTML(sessionID: String, html: String)
 
+    /// Phone → Mac: list the hosts in the Mac's `~/.ssh/config`. The phone is
+    /// sandboxed and has no `~/.ssh`, so the Mac reads it and the phone imports
+    /// the results into its own SSH manager.
+    case sshConfigHosts
+
+    /// Mac → phone: the parsed `~/.ssh/config` host blocks.
+    case sshConfigList(hosts: [WireSSHHost])
+
     case error(message: String)
 
     public func encoded() -> String {
@@ -134,6 +142,15 @@ public enum CompanionControl: Codable, Sendable, Equatable {
             return Self.json(["t": "trace", "session": sessionID, "dark": dark])
         case .traceHTML(let sessionID, let html):
             return Self.json(["t": "traceHTML", "session": sessionID, "html": html])
+        case .sshConfigHosts:
+            return #"{"t":"sshConfigHosts"}"#
+        case .sshConfigList(let hosts):
+            return Self.json([
+                "t": "sshConfigList",
+                "hosts": hosts.map {
+                    ["alias": $0.alias, "hostName": $0.hostName, "user": $0.user, "port": $0.port]
+                },
+            ])
         case .error(let message):
             let escaped = message
                 .replacingOccurrences(of: "\\", with: "\\\\")
@@ -239,6 +256,20 @@ public enum CompanionControl: Codable, Sendable, Equatable {
             guard let sessionID = obj["session"] as? String,
                   let html = obj["html"] as? String else { return nil }
             return .traceHTML(sessionID: sessionID, html: html)
+        case "sshConfigHosts":
+            return .sshConfigHosts
+        case "sshConfigList":
+            let raw = obj["hosts"] as? [[String: Any]] ?? []
+            let hosts = raw.compactMap { entry -> WireSSHHost? in
+                guard let alias = entry["alias"] as? String else { return nil }
+                return WireSSHHost(
+                    alias: alias,
+                    hostName: entry["hostName"] as? String ?? alias,
+                    user: entry["user"] as? String ?? "",
+                    port: entry["port"] as? Int ?? 22
+                )
+            }
+            return .sshConfigList(hosts: hosts)
         case "error":
             guard let message = obj["message"] as? String else { return nil }
             return .error(message: message)
@@ -266,6 +297,23 @@ public struct WireFileEntry: Codable, Sendable, Equatable {
         self.name = name
         self.isDir = isDir
         self.changed = changed
+    }
+}
+
+/// One `Host` block from the Mac's `~/.ssh/config`, flattened for the phone's
+/// SSH import: the alias the user typed, the resolved `HostName`, and the
+/// `User`/`Port` if the config set them (else empty/22).
+public struct WireSSHHost: Codable, Sendable, Equatable {
+    public let alias: String
+    public let hostName: String
+    public let user: String
+    public let port: Int
+
+    public init(alias: String, hostName: String, user: String, port: Int) {
+        self.alias = alias
+        self.hostName = hostName
+        self.user = user
+        self.port = port
     }
 }
 

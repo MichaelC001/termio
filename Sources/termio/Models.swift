@@ -394,28 +394,23 @@ struct Session: Identifiable, Hashable, Codable {
 }
 
 extension Project {
-    /// Seed data pointing at directories that exist, so the `.exec` backend has
-    /// a valid working directory to launch the shell in.
-    static func sampleProjects() -> [Project] {
+    /// First-run state for a fresh install: a single Home project with one shell
+    /// session rooted at the user's home directory, so a new user lands in a
+    /// working terminal instead of dev-machine placeholders.
+    ///
+    /// The working directory must be the home directory — never
+    /// `currentDirectoryPath`, which is `/` when the app is launched from Finder
+    /// (that is what left the shell sitting at `/ %` on first launch).
+    static func firstRunProjects() -> [Project] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let repo = FileManager.default.currentDirectoryPath
 
         return [
-            Project(
-                name: "termio",
-                path: repo,
-                branch: "main",
-                sessions: [
-                    Session(title: "shell"),
-                    Session(title: "build & run"),
-                ]
-            ),
             Project(
                 name: "home",
                 path: home,
                 branch: "—",
                 sessions: [
-                    Session(title: "scratch"),
+                    Session(title: "shell"),
                 ]
             ),
         ]
