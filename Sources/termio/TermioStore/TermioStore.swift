@@ -120,6 +120,19 @@ final class TermioStore: ObservableObject {
     /// The termio-owned PTY behind each host-managed session — the byte stream
     /// the surface renders and the companion server taps for a phone.
     var ptyProcesses: [Session.ID: PTYProcess] = [:]
+
+    /// The most recent host-owned terminal grid, persisted across launches. A
+    /// PTY is created *before* its surface lays out, so without a good initial
+    /// size the shell prints its first prompt at a placeholder 80×24 and the
+    /// window's real width then reflows it — and zsh's `PROMPT_SP` filler line
+    /// mangles under that reflow (a stray `%` with the prompt shoved to the
+    /// right edge). Seeding new PTYs with the last real grid makes the first
+    /// resize a no-op in the common case (the window is the size it was last
+    /// run), so the first prompt is drawn at the right width and never reflows.
+    private static let hostGridColumnsKey = "termio.lastHostGridColumns"
+    private static let hostGridRowsKey = "termio.lastHostGridRows"
+    private(set) var lastHostGridColumns: Int
+    private(set) var lastHostGridRows: Int
     private var settingsObserver: AnyCancellable?
     private var branchObserver: AnyCancellable?
     private var linkObserver: AnyCancellable?
@@ -160,10 +173,27 @@ final class TermioStore: ObservableObject {
     /// `/compact`, an esc-interrupt) instead of spinning until they time out.
     let staleWorkingTimeout: TimeInterval = 12
 
+    /// Records the host surface's live grid so the next session's PTY is spawned
+    /// at a size that matches the window, avoiding the first-prompt reflow. Only
+    /// meaningful sizes are kept, and only when they change, so this is cheap to
+    /// call from every resize.
+    func rememberHostGrid(columns: Int, rows: Int) {
+        guard columns > 0, rows > 0,
+              columns != lastHostGridColumns || rows != lastHostGridRows else { return }
+        lastHostGridColumns = columns
+        lastHostGridRows = rows
+        UserDefaults.standard.set(columns, forKey: Self.hostGridColumnsKey)
+        UserDefaults.standard.set(rows, forKey: Self.hostGridRowsKey)
+    }
+
     init(projects: [Project], settings: AppSettings) {
         self.settings = settings
         self.projects = projects
         self.selectedSessionID = projects.first?.sessions.first?.id
+        let storedColumns = UserDefaults.standard.integer(forKey: Self.hostGridColumnsKey)
+        let storedRows = UserDefaults.standard.integer(forKey: Self.hostGridRowsKey)
+        self.lastHostGridColumns = storedColumns > 0 ? storedColumns : 80
+        self.lastHostGridRows = storedRows > 0 ? storedRows : 24
 
         // Re-style already-open terminals whenever appearance settings change.
         // `objectWillChange` fires *before* the new value lands, so we hop to the
@@ -241,7 +271,7 @@ final class TermioStore: ObservableObject {
     /// fresh in its project directory the first time it is opened again.
     static func restored(settings: AppSettings) -> TermioStore {
         guard let snapshot = StateFile().load(), !snapshot.projects.isEmpty else {
-            return TermioStore(projects: Project.sampleProjects(), settings: settings)
+            return TermioStore(projects: Project.firstRunProjects(), settings: settings)
         }
 
         let store = TermioStore(projects: normalizingAgentTitles(snapshot.projects), settings: settings)

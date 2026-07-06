@@ -727,7 +727,6 @@ private final class PTYBridge: @unchecked Sendable {
     /// client's screen holds wrong-width layout that the next repaint must
     /// not draw over.
     private var ptyIsForeignSized = false
-    private var repaintRequested = false
     private static let highWater = 1 << 20   // start dropping above 1 MB in flight
     private static let lowWater = 128 << 10  // recovered once under 128 KB
     /// Cap on the plain-shell replay sent to a phone on attach — a few
@@ -803,19 +802,19 @@ private final class PTYBridge: @unchecked Sendable {
     }
 
     /// A resize control from this client: record its grid and claim the size
-    /// for it. When the winsize didn't actually change there is no SIGWINCH,
-    /// so the first claim after attach jiggles instead — the reconnect-at-
-    /// the-same-size case, where the screen was just wiped and would
-    /// otherwise stay blank until the next output.
+    /// for it. When the winsize actually changes, the SIGWINCH makes the child
+    /// redraw (and the resize observer wipes any wrong-width layout). When it
+    /// does *not* change — a cold attach at the same size, or a re-entry that
+    /// reasserts the grid to reclaim ownership from the Mac — no SIGWINCH fires,
+    /// so jiggle to force the redraw ourselves. The current prompt is then
+    /// reprinted cleanly over any `PROMPT_SP` line the phone had rendered
+    /// reflowed at the Mac's width; scrollback is left intact (no wipe).
     func applyClientResize(cols: Int, rows: Int) {
         lock.lock()
         clientCols = cols
         clientRows = rows
-        let firstClaim = !repaintRequested
-        repaintRequested = true
         lock.unlock()
-        let changed = pty.resizeFromCompanion(cols: cols, rows: rows)
-        if firstClaim, !changed {
+        if !pty.resizeFromCompanion(cols: cols, rows: rows) {
             pty.jiggleResize()
         }
     }

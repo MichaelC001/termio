@@ -88,7 +88,12 @@ extension TermioStore {
         // The PTY is created first so the surface's `@Sendable` write/resize
         // callbacks can capture it directly (it is thread-safe: fd writes and
         // ioctl are atomic, sinks are lock-guarded).
-        let pty = PTYProcess(argv: argv, cwd: workspacePath, env: env, cols: 80, rows: 24)
+        // Spawn at the last real host grid rather than a fixed 80×24, so the
+        // shell's first prompt is drawn at (usually) the window's actual width
+        // and the first layout pass doesn't reflow it — the reflow that mangles
+        // zsh's `PROMPT_SP` line into a stray `%` (see `lastHostGridColumns`).
+        let pty = PTYProcess(argv: argv, cwd: workspacePath, env: env,
+                             cols: lastHostGridColumns, rows: lastHostGridRows)
         let inMemory = InMemoryTerminalSession(
             write: { data in
                 // Typing on the Mac reclaims the winsize from an attached
@@ -96,8 +101,12 @@ extension TermioStore {
                 pty?.claimHostOwnership()
                 pty?.write(data)
             },
-            resize: { viewport in
-                pty?.resizeFromHost(cols: Int(viewport.columns), rows: Int(viewport.rows))
+            resize: { [weak self] viewport in
+                let columns = Int(viewport.columns)
+                let rows = Int(viewport.rows)
+                pty?.resizeFromHost(cols: columns, rows: rows)
+                // Remember the host grid for the next session's initial size.
+                DispatchQueue.main.async { self?.rememberHostGrid(columns: columns, rows: rows) }
             }
         )
         if let pty {
