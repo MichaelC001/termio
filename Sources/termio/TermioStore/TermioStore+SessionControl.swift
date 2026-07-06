@@ -1,5 +1,4 @@
 import Foundation
-import GhosttyKit
 import GhosttyTerminal
 
 /// Handles `termio sessions …` requests from `SessionControlListener`. Every
@@ -70,7 +69,7 @@ extension TermioStore {
                 selectedSessionID = session.id
                 try? await Task.sleep(for: .milliseconds(400))
             }
-            guard let surfaceHandle = Self.rawSurface(from: state) else {
+            guard let surface = state.surface else {
                 return controlError(request, "not_live",
                     "\(displayTitle(for: session)) has no live terminal yet — open it once in termio.")
             }
@@ -78,12 +77,12 @@ extension TermioStore {
             // Type the prompt through the text path (fine for the body), then submit
             // with a real Return *key event*. A trailing "\r" in the text is delivered
             // as a bracketed paste, which an agent TUI (Claude Code) reads as a newline
-            // — never a submit. `ghostty_surface_key` drives the surface directly, with
-            // no focus or first-responder needed; this is exactly how Ghostty's own
+            // — never a submit. `submitReturn()` drives the surface directly, with no
+            // focus or first-responder needed; this is exactly how Ghostty's own
             // AppleScript `send key` submits Enter.
             _ = state.send(payload)
             try? await Task.sleep(for: .milliseconds(40))
-            Self.pressReturn(on: surfaceHandle)
+            surface.submitReturn()
             return sentReply(request, session)
         case .notFound:
             return controlError(request, "not_found", targetNotFoundMessage(request.target))
@@ -91,36 +90,6 @@ extension TermioStore {
             return controlError(request, "ambiguous",
                 "'\(request.target ?? "")' matches more than one session; use a longer id.")
         }
-    }
-
-    /// The raw `ghostty_surface_t` behind a session's surface. `TerminalSurface`
-    /// exposes only `sendText` publicly and keeps the C handle in a private stored
-    /// property, so reach it by reflection — the only way to call `ghostty_surface_key`
-    /// (the key-event C entry point, whose Swift wrapper the package marks `internal`).
-    private static func rawSurface(from state: TerminalViewState) -> ghostty_surface_t? {
-        guard let terminalSurface = state.surface else { return nil }
-        for child in Mirror(reflecting: terminalSurface).children where child.label == "surface" {
-            if let handle = child.value as? ghostty_surface_t { return handle }
-        }
-        return nil
-    }
-
-    /// Sends a Return key press (and release) to the surface — the submit a user makes
-    /// by pressing Enter. `keycode` is the native macOS virtual key for Return
-    /// (`kVK_Return`, 0x24) and `text` is left nil so Ghostty's own key encoder emits
-    /// the correct bytes for whatever keyboard mode the program negotiated.
-    private static func pressReturn(on surface: ghostty_surface_t) {
-        var event = ghostty_input_key_s()
-        event.action = GHOSTTY_ACTION_PRESS
-        event.mods = GHOSTTY_MODS_NONE
-        event.consumed_mods = GHOSTTY_MODS_NONE
-        event.keycode = 0x24
-        event.text = nil
-        event.unshifted_codepoint = 0
-        event.composing = false
-        _ = ghostty_surface_key(surface, event)
-        event.action = GHOSTTY_ACTION_RELEASE
-        _ = ghostty_surface_key(surface, event)
     }
 
     /// The success reply for a send/answer. Beyond confirming delivery, it hands back

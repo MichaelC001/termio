@@ -22,14 +22,17 @@ public final class TerminalSurface {
         self.surface = surface
     }
 
-    var rawValue: ghostty_surface_t? {
+    /// The underlying `ghostty_surface_t`. Exposed as an escape hatch for callers
+    /// that need the raw C handle (mirrors Ghostty's own `Surface.unsafeCValue`);
+    /// prefer the typed methods below.
+    public var rawValue: ghostty_surface_t? {
         surface
     }
 
     // MARK: - Input
 
     @discardableResult
-    func sendKeyEvent(_ event: ghostty_input_key_s) -> Bool {
+    public func sendKeyEvent(_ event: ghostty_input_key_s) -> Bool {
         guard let s = surface else {
             TerminalDebugLog.log(.input, "surface key ignored: missing surface")
             return false
@@ -40,6 +43,28 @@ public final class TerminalSurface {
             "surface key action=\(TerminalDebugLog.describe(event.action)) keycode=\(event.keycode) mods=0x\(String(event.mods.rawValue, radix: 16)) consumed=0x\(String(event.consumed_mods.rawValue, radix: 16)) text=\(terminalKeyText(event)) composing=\(event.composing) result=\(result)"
         )
         return result
+    }
+
+    /// Submits a Return key press+release, exactly as if the user pressed Enter.
+    /// Drives the surface directly — no focus or first-responder needed. `keycode`
+    /// is the native macOS virtual key for Return (`kVK_Return`, 0x24) and `text`
+    /// is left nil so Ghostty's own key encoder emits the correct bytes for whatever
+    /// keyboard mode the program negotiated. This is *not* the same as sending "\r"
+    /// through ``sendText(_:)``, which an agent TUI reads as pasted text, never a submit.
+    @discardableResult
+    public func submitReturn() -> Bool {
+        var event = ghostty_input_key_s()
+        event.mods = GHOSTTY_MODS_NONE
+        event.consumed_mods = GHOSTTY_MODS_NONE
+        event.keycode = 0x24
+        event.text = nil
+        event.unshifted_codepoint = 0
+        event.composing = false
+        event.action = GHOSTTY_ACTION_PRESS
+        let pressed = sendKeyEvent(event)
+        event.action = GHOSTTY_ACTION_RELEASE
+        let released = sendKeyEvent(event)
+        return pressed && released
     }
 
     @discardableResult

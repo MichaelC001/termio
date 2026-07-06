@@ -5,9 +5,13 @@ let package = Package(
     name: "termio",
     platforms: [.macOS(.v14)],
     dependencies: [
-        // Prebuilt libghostty (Ghostty's terminal core) packaged for Apple platforms.
-        // Ships a GhosttyKit.xcframework binary target, so no zig toolchain is needed.
-        .package(url: "https://github.com/Lakr233/libghostty-spm.git", from: "1.2.0"),
+        // libghostty (Ghostty's terminal core) via our own fork at
+        // github.com/jiweiyuan/libghostty-swift. It ships a prebuilt GhosttyKit.xcframework
+        // (built by the fork's CI from a chosen ghostty ref + our patches, so no zig here)
+        // that we consume by URL+checksum. The fork is ours to edit — e.g. the public key
+        // API TermioStore+SessionControl relies on — and its weekly CI keeps the binary
+        // current with upstream ghostty. See docs and project_termio_libghostty_swift.
+        .package(url: "https://github.com/jiweiyuan/libghostty-swift", from: "1.0.0"),
         // Sparkle powers in-app auto-update (the "Check for Updates…" menu item and
         // background update checks). It reads the appcast published with each GitHub
         // release; the matching EdDSA public key is embedded in packaging/Info.plist.
@@ -30,14 +34,10 @@ let package = Package(
         .executableTarget(
             name: "termio",
             dependencies: [
-                .product(name: "GhosttyTerminal", package: "libghostty-spm"),
-                // The raw libghostty C API. Used by session control to deliver a real
-                // Return key event (`ghostty_surface_key`) when driving a sibling — the
-                // Swift wrapper for it is `internal`, but the C symbol is public.
-                .product(name: "GhosttyKit", package: "libghostty-spm"),
+                .product(name: "GhosttyTerminal", package: "libghostty-swift"),
                 // Bundled color-scheme catalog (Ghostty's built-in themes), used by
                 // the appearance settings to offer a theme picker.
-                .product(name: "GhosttyTheme", package: "libghostty-spm"),
+                .product(name: "GhosttyTheme", package: "libghostty-swift"),
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Highlightr", package: "Highlightr"),
                 .product(name: "Markdown", package: "swift-markdown"),

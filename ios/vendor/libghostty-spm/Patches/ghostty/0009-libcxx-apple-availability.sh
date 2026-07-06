@@ -65,24 +65,27 @@ import sys
 path = Path(sys.argv[1])
 text = path.read_text()
 
-old_flags = """            .flags = if (target.result.cpu.arch == .x86_64) &.{
-                b.fmt("-DHWY_DISABLED_TARGETS={}", .{HWY_DISABLED_TARGETS}),
-            } else &.{},"""
+# Upstream (ghostty 2da015c+) builds the src/simd C++ flags into a runtime
+# `flags` ArrayList instead of a static per-arch array literal, so we inject
+# our two flags right after that list is initialized — this covers every
+# architecture, matching the old both-branches patch.
+anchor = "        var flags: std.ArrayListUnmanaged([]const u8) = .empty;\n"
 
-new_flags = """            .flags = if (target.result.cpu.arch == .x86_64) &.{
-                "-D_LIBCPP_HAS_VENDOR_AVAILABILITY_ANNOTATIONS=1",
-                "-Wno-macro-redefined",
-                b.fmt("-DHWY_DISABLED_TARGETS={}", .{HWY_DISABLED_TARGETS}),
-            } else &.{
-                "-D_LIBCPP_HAS_VENDOR_AVAILABILITY_ANNOTATIONS=1",
-                "-Wno-macro-redefined",
-            },"""
+inject = (
+    "        // libghostty-spm: honor Apple libc++ vendor availability annotations\n"
+    "        // so the C++ SIMD sources degrade gracefully below our deployment\n"
+    "        // floors instead of dyld-crashing on a too-new symbol.\n"
+    '        try flags.appendSlice(b.allocator, &.{\n'
+    '            "-D_LIBCPP_HAS_VENDOR_AVAILABILITY_ANNOTATIONS=1",\n'
+    '            "-Wno-macro-redefined",\n'
+    "        });\n"
+)
 
-if old_flags not in text:
-    print("[-] src/simd flags block not found; upstream changed, update this patch")
+if anchor not in text:
+    print("[-] src/simd flags anchor not found; upstream changed, update this patch")
     sys.exit(1)
 
-path.write_text(text.replace(old_flags, new_flags))
+path.write_text(text.replace(anchor, anchor + inject, 1))
 print("[+] patched: src/simd libc++ availability annotations")
 PY
 else

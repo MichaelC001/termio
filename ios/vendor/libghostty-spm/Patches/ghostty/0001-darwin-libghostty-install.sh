@@ -27,11 +27,11 @@ sed -i '' \
         // libghostty static install for Darwin:\
         // upstream only wires this for non-Darwin today, but we need the\
         // static archive for our own XCFramework assembly pipeline.\
-        libghostty_shared.installHeader(); // Only need one header\
+        lib_shared.installHeader(); // Only need one header\
         if (!config.target.result.os.tag.isDarwin()) {\
-            libghostty_shared.install("libghostty.so");\
+            lib_shared.install("libghostty.so");\
         }\
-        libghostty_static.install("libghostty.a");' \
+        lib_static.install("libghostty.a");' \
     "$BUILD_ZIG"
 
 if ! grep -Fq "$MARKER" "$BUILD_ZIG"; then
