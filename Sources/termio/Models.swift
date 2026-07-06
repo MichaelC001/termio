@@ -54,8 +54,7 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
     case pi
     case amp
     case cursor
-    case droid
-    case gemini
+    case kimi
 
     var id: String { rawValue }
 
@@ -68,8 +67,7 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         case .pi: return "Pi"
         case .amp: return "Amp"
         case .cursor: return "Cursor"
-        case .droid: return "Droid"
-        case .gemini: return "Gemini"
+        case .kimi: return "Kimi"
         }
     }
 
@@ -87,8 +85,7 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         // Cursor's headless CLI binary is `cursor-agent`, distinct from the `cursor`
         // GUI launcher, so name it explicitly.
         case .cursor: return "cursor-agent"
-        case .droid: return "droid"
-        case .gemini: return "gemini"
+        case .kimi: return "kimi"
         }
     }
 
@@ -105,7 +102,7 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         case .codex: return "--dangerously-bypass-approvals-and-sandbox"
         // These have no bypass flag stable enough to wire to a one-click toggle;
         // they still accept any flag through the free-text command override.
-        case .terminal, .opencode, .pi, .amp, .cursor, .droid, .gemini: return nil
+        case .terminal, .opencode, .pi, .amp, .cursor, .kimi: return nil
         }
     }
 
@@ -119,7 +116,7 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         switch self {
         case .claudeCode: return "--settings '{\"sandbox\":{\"enabled\":false}}'"
         case .codex: return "--sandbox danger-full-access"
-        case .terminal, .opencode, .pi, .amp, .cursor, .droid, .gemini: return nil
+        case .terminal, .opencode, .pi, .amp, .cursor, .kimi: return nil
         }
     }
 
@@ -155,7 +152,7 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         switch self {
         // These aren't wired for resume yet, so they launch a fresh session each
         // time, like the plain terminal.
-        case .terminal, .amp, .cursor, .droid, .gemini:
+        case .terminal, .amp, .cursor, .kimi:
             return nil
         case .claudeCode:
             // `--session-id` creates a session with our id (and errors if it already
@@ -193,12 +190,9 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         case .codex: return .brand(.codex)
         case .opencode: return .brandImage(.openCode)
         case .pi: return .brandImage(.pi)
-        // No bundled vector mark for these yet, so use a representative SF Symbol
-        // rather than a washed-out brand approximation.
-        case .amp: return .systemSymbol("bolt.fill")
-        case .cursor: return .systemSymbol("cursorarrow")
-        case .droid: return .systemSymbol("hammer.fill")
-        case .gemini: return .systemSymbol("sparkles")
+        case .amp: return .brandImage(.amp)
+        case .cursor: return .brandImage(.cursor)
+        case .kimi: return .brandImage(.kimi)
         }
     }
 
@@ -214,8 +208,7 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         case .pi: return URL(string: "https://pi.dev")
         case .amp: return URL(string: "https://ampcode.com/manual")
         case .cursor: return URL(string: "https://cursor.com/docs/cli")
-        case .droid: return URL(string: "https://docs.factory.ai/cli")
-        case .gemini: return URL(string: "https://geminicli.com/docs/hooks")
+        case .kimi: return URL(string: "https://moonshotai.github.io/kimi-code")
         }
     }
 }
@@ -236,26 +229,35 @@ enum AgentIcon: Hashable {
 
 /// A vendor brand mark carried as its real favicon image, bundled under
 /// `Resources` and rendered by `BrandImageView`. Downloaded from each vendor's
-/// site: Pi from `pi.dev/favicon.svg`, OpenCode from `opencode.ai`'s favicon.
-/// Both are opaque dark app-icon tiles, so they read as small branded tiles.
+/// site: Pi from `pi.dev/favicon.svg`, OpenCode from `opencode.ai`'s favicon,
+/// Cursor from `cursor.com/favicon.svg`, Amp from its WorkOS-hosted brand icon,
+/// Kimi from `kimi.com/favicon.ico`. Pi, Cursor, OpenCode, and Kimi are opaque
+/// dark app-icon tiles; Amp's mark is its red chevrons on a transparent field, so
+/// the rounded-tile clip simply leaves the corners bare.
 enum BrandImageAsset: Hashable {
     case pi
     case openCode
+    case amp
+    case cursor
+    case kimi
 
     /// Base name of the bundled resource file (without extension).
     var resourceName: String {
         switch self {
         case .pi: return "pi-favicon"
         case .openCode: return "opencode-favicon"
+        case .amp: return "amp-favicon"
+        case .cursor: return "cursor-favicon"
+        case .kimi: return "kimi-favicon"
         }
     }
 
-    /// File extension of the bundled resource: Pi ships as a vector SVG, OpenCode
-    /// only publishes a raster favicon.
+    /// File extension of the bundled resource: Pi and Cursor ship as vector SVGs,
+    /// OpenCode, Amp, and Kimi only publish raster favicons.
     var fileExtension: String {
         switch self {
-        case .pi: return "svg"
-        case .openCode: return "png"
+        case .pi, .cursor: return "svg"
+        case .openCode, .amp, .kimi: return "png"
         }
     }
 }

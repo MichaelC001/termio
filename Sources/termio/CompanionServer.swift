@@ -939,8 +939,7 @@ extension TermioStore {
         case "pi": .pi
         case "amp": .amp
         case "cursor": .cursor
-        case "droid": .droid
-        case "gemini": .gemini
+        case "kimi": .kimi
         default: .terminal
         }
         addSession(to: project.id, agent: preset)
@@ -1024,8 +1023,7 @@ extension TermioStore {
         case .pi: "pi"
         case .amp: "amp"
         case .cursor: "cursor"
-        case .droid: "droid"
-        case .gemini: "gemini"
+        case .kimi: "kimi"
         }
     }
 

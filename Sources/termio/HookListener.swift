@@ -214,8 +214,7 @@ enum AgentStatusHooks {
             JSONHookFile.claude,
             JSONHookFile.codex,
             JSONHookFile.cursor,
-            JSONHookFile.droid,
-            JSONHookFile.gemini,
+            TOMLHookBlock.kimi,
             PluginFile.openCode,
             PluginFile.pi,
             PluginFile.amp,
@@ -230,11 +229,11 @@ enum AgentStatusHooks {
         state: String, withTranscript: Bool = false, dialect: HookDialect = .claudeNested
     ) -> String {
         let socket = HookListener.socketURL.path
-        // Some agents (Cursor, Gemini) read the hook's stdout as its JSON reply, so
-        // the report must reach the socket silently and then print a benign empty
-        // object — any stray byte on stdout is parsed as a malformed reply.
-        // (Claude/Codex/Droid ignore hook stdout, so they don't need this.)
-        if dialect.readsStdoutAsReply {
+        // Cursor spawns each hook as a process and reads its stdout as the hook's
+        // JSON reply, so the report must reach the socket silently and then print a
+        // benign empty object — any stray byte on stdout is parsed as a malformed
+        // reply. (Claude/Codex ignore hook stdout, so they don't need this.)
+        if dialect == .cursorFlat {
             let json = #"{"termio_session":"%s","state":"\#(state)","cwd":"%s"}"#
             return "printf '\(json)' \"$TERMIO_SESSION\" \"$PWD\" | nc -w 1 -U \"\(socket)\" >/dev/null 2>&1; printf '{}'"
         }
@@ -268,29 +267,16 @@ private protocol AgentStatusInstaller {
     func uninstall()
 }
 
-/// The on-disk shape of a JSON hook file. Agents that all configure hooks via a
-/// JSON file still disagree on two independent axes — the entry structure and
-/// whether the agent reads the hook's stdout as a reply — so the installer branches
-/// on these computed aspects rather than special-casing each agent.
+/// The on-disk shape of a JSON hook file. Agents that configure hooks via a JSON
+/// file still disagree on structure, so the installer branches on this.
 enum HookDialect {
-    /// Claude Code / Codex / Droid: `{ "hooks": { "<Event>": [ { "matcher"?, "hooks": [ {type,command} ] } ] } }`,
+    /// Claude Code / Codex: `{ "hooks": { "<Event>": [ { "matcher"?, "hooks": [ {type,command} ] } ] } }`,
     /// and the agent ignores the hook's stdout.
     case claudeNested
     /// Cursor: `{ "version": 1, "hooks": { "<Event>": [ { "command" } ] } }` — a
     /// required top-level `version`, flat one-key entries, and the hook's stdout is
-    /// read back as its JSON reply.
+    /// read back as its JSON reply (so the report prints a clean empty object).
     case cursorFlat
-    /// Gemini CLI: Claude's nested structure, but the hook's stdout is read back as
-    /// its JSON reply (so the report must print a clean empty object).
-    case geminiNested
-
-    /// Entries are flat `{command}` (Cursor) rather than Claude's nested `{hooks:[…]}`.
-    var isFlat: Bool { self == .cursorFlat }
-    /// The agent reads the hook's stdout as its JSON reply, so the report must reach
-    /// the socket silently and then print a benign empty object.
-    var readsStdoutAsReply: Bool { self == .cursorFlat || self == .geminiNested }
-    /// The file requires a top-level schema `version` (Cursor only, currently).
-    var needsVersion: Bool { self == .cursorFlat }
 }
 
 /// Installs hooks for agents whose config is a JSON file with the Claude-Code
@@ -368,39 +354,6 @@ private struct JSONHookFile: AgentStatusInstaller {
             dialect: .cursorFlat)
     }
 
-    /// Factory's Droid uses `~/.factory/hooks.json` in the exact Claude-Code nested
-    /// shape and ignores hook stdout, so it needs only the standard report command.
-    /// No permission event maps to `attention` (Droid's generic `Notification` also
-    /// fires on idle, like Claude's, which would wrongly flip a just-finished turn).
-    static var droid: JSONHookFile {
-        JSONHookFile(
-            url: home(".factory", "hooks.json"),
-            events: [
-                ("UserPromptSubmit", "working", nil),
-                ("PreToolUse", "working", "*"),
-                ("PostToolUse", "working", "*"),
-                ("SubagentStop", "working", nil),
-                ("Stop", "done", nil),
-            ],
-            label: "droid")
-    }
-
-    /// Gemini CLI hooks live under the `hooks` object in `~/.gemini/settings.json`,
-    /// in Claude's nested structure, but Gemini reads each hook's stdout as its JSON
-    /// reply (hence `.geminiNested`). `BeforeAgent` fires after prompt submit / before
-    /// planning, `AfterAgent` once per turn after the final response.
-    static var gemini: JSONHookFile {
-        JSONHookFile(
-            url: home(".gemini", "settings.json"),
-            events: [
-                ("BeforeAgent", "working", nil),
-                ("BeforeTool", "working", ".*"),
-                ("AfterAgent", "done", nil),
-            ],
-            label: "gemini",
-            dialect: .geminiNested)
-    }
-
     private static func home(_ components: String...) -> URL {
         components.reduce(FileManager.default.homeDirectoryForCurrentUser) {
             $0.appendingPathComponent($1)
@@ -426,7 +379,7 @@ private struct JSONHookFile: AgentStatusInstaller {
         var settings = root
         // Cursor requires a top-level schema version; add it only when the user's
         // file doesn't already carry one, so we never overwrite their choice.
-        if dialect.needsVersion, settings["version"] == nil { settings["version"] = 1 }
+        if dialect == .cursorFlat, settings["version"] == nil { settings["version"] = 1 }
         var hooks = settings["hooks"] as? [String: Any] ?? [:]
         // Strip every prior termio entry first — across all events, not just the
         // ones we're about to re-add — so an event we no longer manage (e.g. a
@@ -437,7 +390,7 @@ private struct JSONHookFile: AgentStatusInstaller {
             let command = AgentStatusHooks.reportCommand(
                 state: event.state, withTranscript: capturesTranscript, dialect: dialect)
             let group: [String: Any]
-            if dialect.isFlat {
+            if dialect == .cursorFlat {
                 group = ["command": command]
             } else {
                 var nested: [String: Any] = ["hooks": [["type": "command", "command": command]]]
@@ -641,5 +594,97 @@ private struct PluginFile: AgentStatusInstaller {
         let data = (try? JSONSerialization.data(withJSONObject: [value])) ?? Data("[\"\"]".utf8)
         let array = String(data: data, encoding: .utf8) ?? "[\"\"]"
         return String(array.dropFirst().dropLast())
+    }
+}
+
+/// Installs hooks for agents that declare them as TOML `[[hooks]]` tables inside
+/// their main config file — currently just Kimi Code (`~/.kimi/config.toml`).
+///
+/// There's no structured merge like the JSON agents get: TOML arrays of tables may
+/// be non-contiguous, so termio appends one marker-delimited block at the end of the
+/// file and strips it back out by its markers on reinstall/uninstall. Only bytes
+/// between the markers are ever touched, so the user's providers, keys, and their own
+/// `[[hooks]]` are never disturbed — the same conservative contract as `JSONHookFile`,
+/// but without needing a TOML parser. Kimi reads a hook's exit code (0 = allow), and
+/// the shared report command ends in `|| true`, so the standard command is safe on
+/// Kimi's blockable events — no clean-stdout handling is required.
+private struct TOMLHookBlock: AgentStatusInstaller {
+    let url: URL
+    let events: [(name: String, state: String, matcher: String?)]
+
+    private static let blockBegin = "# >>> termio agent-status hooks (managed — do not edit) >>>"
+    private static let blockEnd = "# <<< termio agent-status hooks <<<"
+
+    /// Kimi Code hooks in `~/.kimi/config.toml`. `UserPromptSubmit` opens a turn,
+    /// `Stop` closes it, and `Interrupt` (Esc) closes an aborted one so the spinner
+    /// doesn't stick. All three are non-tool events, so none needs a `matcher`.
+    static var kimi: TOMLHookBlock {
+        TOMLHookBlock(
+            url: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".kimi/config.toml"),
+            events: [
+                ("UserPromptSubmit", "working", nil),
+                ("Stop", "done", nil),
+                ("Interrupt", "done", nil),
+            ])
+    }
+
+    func install() {
+        let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        let base = Self.stripBlock(from: existing).trimmingCharacters(in: .newlines)
+        let block = Self.render(events: events)
+        let updated = base.isEmpty ? block + "\n" : base + "\n\n" + block + "\n"
+        Self.write(updated, to: url)
+    }
+
+    func uninstall() {
+        guard let existing = try? String(contentsOf: url, encoding: .utf8) else { return }
+        let base = Self.stripBlock(from: existing).trimmingCharacters(in: .newlines)
+        Self.write(base.isEmpty ? "" : base + "\n", to: url)
+    }
+
+    /// The termio-managed block: a comment banner around one `[[hooks]]` table per
+    /// event. The command is embedded as a TOML multi-line literal string (`'''…'''`)
+    /// so the shell one-liner's single and double quotes need no escaping — it never
+    /// contains three consecutive single quotes.
+    private static func render(events: [(name: String, state: String, matcher: String?)]) -> String {
+        var lines = [blockBegin]
+        for event in events {
+            let command = AgentStatusHooks.reportCommand(state: event.state)
+            lines.append("[[hooks]]")
+            lines.append("event = \"\(event.name)\"")
+            if let matcher = event.matcher { lines.append("matcher = \"\(matcher)\"") }
+            lines.append("command = '''\(command)'''")
+            lines.append("timeout = 5")
+            lines.append("")
+        }
+        if lines.last == "" { lines.removeLast() }
+        lines.append(blockEnd)
+        return lines.joined(separator: "\n")
+    }
+
+    /// Removes a previously written termio block (markers inclusive). If both markers
+    /// aren't present the text is returned unchanged, so a hand-edited file is never
+    /// mangled.
+    private static func stripBlock(from text: String) -> String {
+        guard let begin = text.range(of: blockBegin),
+              let end = text.range(of: blockEnd, range: begin.upperBound..<text.endIndex)
+        else { return text }
+        var result = text
+        result.removeSubrange(begin.lowerBound..<end.upperBound)
+        return result
+    }
+
+    private static func write(_ contents: String, to url: URL) {
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let data = Data(contents.utf8)
+            // No-op when the result is byte-identical (the common case each launch).
+            if (try? Data(contentsOf: url)) == data { return }
+            try data.write(to: url, options: .atomic)
+        } catch {
+            AgentStatusHooks.log("could not write \(url.path): \(error)")
+        }
     }
 }
