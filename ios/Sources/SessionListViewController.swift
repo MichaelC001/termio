@@ -38,8 +38,8 @@ final class SessionListViewController: UIViewController {
     /// Projects the user has collapsed, keyed by `collapseKey` (path — stable
     /// across reconnects, since the Mac's `rosterID` churns on rebuild). A
     /// collapsed project keeps its header but shows no session rows. Persisted
-    /// so the list reopens the way it was left. Only honored with ≥2 projects —
-    /// a lone project has no disclosure and always shows its sessions.
+    /// so the list reopens the way it was left. Every project folds, including
+    /// a lone one.
     private var collapsed: Set<String> = Set(
         UserDefaults.standard.stringArray(forKey: "sessions.collapsedProjects") ?? []
     )
@@ -297,11 +297,9 @@ final class SessionListViewController: UIViewController {
         project.path.isEmpty ? project.name : project.path
     }
 
-    /// Whether a section is collapsed *and* collapse is offered here. A single
-    /// project has no disclosure, so its sessions always show.
+    /// Whether a section is collapsed. Every project folds, including a lone one.
     private func isCollapsed(_ section: Int) -> Bool {
-        guard visible.count > 1 else { return false }
-        return collapsed.contains(collapseKey(visible[section]))
+        collapsed.contains(collapseKey(visible[section]))
     }
 
     /// Toggle a project's disclosure: flip and persist the state, spin the
@@ -543,12 +541,9 @@ extension SessionListViewController: UITableViewDataSource, UITableViewDelegate 
             withIdentifier: ProjectHeaderView.reuseID
         ) as! ProjectHeaderView
         let project = visible[section]
-        // Collapse is only offered with ≥2 projects; a lone project reads
-        // cleaner with no disclosure and always shows its sessions.
-        let canCollapse = visible.count > 1
         header.configure(
             title: project.name,
-            canCollapse: canCollapse,
+            canCollapse: true,
             collapsed: isCollapsed(section)
         )
         header.onToggle = { [weak self, weak header] in
@@ -771,7 +766,6 @@ private final class ProjectHeaderView: UITableViewHeaderFooterView {
         discloseButton.isAccessibilityElement = true
         discloseButton.accessibilityTraits = canCollapse ? .button : .header
         discloseButton.accessibilityLabel = title
-        // A lone project can't fold, so it always shows an open folder.
         setCollapsed(canCollapse ? collapsed : false, animated: false)
     }
 
