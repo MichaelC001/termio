@@ -80,6 +80,8 @@ final class PTYProcess: @unchecked Sendable {
     private var resizeObservers: [UUID: (Int, Int) -> Void] = [:]
     private var exitObservers: [(Int32) -> Void] = []
     private var terminated = false
+    /// Pending coalesced host SIGWINCH (see `resizeFromHost`). Lock-guarded.
+    private var hostApplyWork: DispatchWorkItem?
     private let lock = NSLock()
 
     /// Fired (on the main queue) when the child exits.
@@ -356,7 +358,29 @@ final class PTYProcess: @unchecked Sendable {
             lock.unlock()
             return
         }
-        applyWindowSizeAndUnlock(cols: cols, rows: rows)
+        // Coalesce the burst of *distinct* grid sizes a Mac layout pass emits
+        // (window open, split-view settle, live drag) into a single SIGWINCH once
+        // the size stops changing. Applying each intermediate size makes zsh redraw
+        // its prompt per step, and ghostty reflowing the previous PROMPT_SP line
+        // strands its `%` end-of-line mark — the stack of stray `%` at startup. The
+        // size is recorded above regardless, so a companion claim still restores the
+        // true host grid; typing (`claimHostOwnership`) snaps immediately.
+        hostApplyWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.applyPendingHostSize() }
+        hostApplyWork = work
+        lock.unlock()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+    }
+
+    /// Applies the latest recorded host grid after the coalescing delay, unless the
+    /// process died or a companion took ownership in the meantime.
+    private func applyPendingHostSize() {
+        lock.lock()
+        guard !terminated, sizeOwner == .host else {
+            lock.unlock()
+            return
+        }
+        applyWindowSizeAndUnlock(cols: hostCols, rows: hostRows)
     }
 
     /// A phone reported its grid; a companion resize always claims the size
