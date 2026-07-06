@@ -10,6 +10,15 @@
       }
     },
     {
+      "identity" : "libghostty-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jiweiyuan/libghostty-swift",
+      "state" : {
+        "revision" : "fdef62c04a10c8c01148ead3e17d13cde376994f",
+        "version" : "1.0.0"
+      }
+    },
+    {
       "identity" : "msdisplaylink",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Lakr233/MSDisplayLink.git",

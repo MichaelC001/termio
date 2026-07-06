@@ -177,7 +177,7 @@
 			mainGroup = 600AAD319D9C4100B4D7E969;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				E76CADD6045BA4FE33901492 /* XCLocalSwiftPackageReference "vendor/libghostty-spm" */,
+				E76CADD6045BA4FE33901492 /* XCRemoteSwiftPackageReference "libghostty-swift" */,
 				5F40B625E9606DFCDE974E1D /* XCLocalSwiftPackageReference "../Shared" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -462,21 +462,28 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../Shared;
 		};
-		E76CADD6045BA4FE33901492 /* XCLocalSwiftPackageReference "vendor/libghostty-spm" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = vendor/libghostty-spm;
-		};
 /* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		E76CADD6045BA4FE33901492 /* XCRemoteSwiftPackageReference "libghostty-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/jiweiyuan/libghostty-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		7743B90C65830591DC83DD03 /* ShellCraftKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = E76CADD6045BA4FE33901492 /* XCLocalSwiftPackageReference "vendor/libghostty-spm" */;
+			package = E76CADD6045BA4FE33901492 /* XCRemoteSwiftPackageReference "libghostty-swift" */;
 			productName = ShellCraftKit;
 		};
 		A216EACFB50B587F23FC6423 /* GhosttyTheme */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = E76CADD6045BA4FE33901492 /* XCLocalSwiftPackageReference "vendor/libghostty-spm" */;
+			package = E76CADD6045BA4FE33901492 /* XCRemoteSwiftPackageReference "libghostty-swift" */;
 			productName = GhosttyTheme;
 		};
 		A617B1EB94E221554B6224A4 /* TermioShared */ = {
@@ -489,7 +496,7 @@
 		};
 		FAA1FBE1ACA056BF5D4F20E8 /* GhosttyTerminal */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = E76CADD6045BA4FE33901492 /* XCLocalSwiftPackageReference "vendor/libghostty-spm" */;
+			package = E76CADD6045BA4FE33901492 /* XCRemoteSwiftPackageReference "libghostty-swift" */;
 			productName = GhosttyTerminal;
 		};
 /* End XCSwiftPackageProductDependency section */
