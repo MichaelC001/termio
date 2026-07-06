@@ -272,6 +272,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let detail = NSHostingController(rootView: TerminalPane()
             .environmentObject(store)
             .environmentObject(settings))
+        // Fill the split pane; don't size the window to the SwiftUI content. `NSHostingController`
+        // defaults `sizingOptions` to `.preferredContentSize`, which publishes the tree's *ideal*
+        // size as `preferredContentSize`; `NSSplitViewController` propagates that to the window. So
+        // with no session the compact `ContentUnavailableView` empty state pinned the window height
+        // (width stayed free because the sidebar/split governs it). Clearing the options lets the
+        // pane stretch and leaves the window frame to `contentMinSize` — same fix as
+        // `FileBrowserHostingController`.
+        detail.sizingOptions = []
         let detailItem = NSSplitViewItem(viewController: detail)
         // `.line` only over the terminal: a clean hairline that starts at the sidebar divider
         // and bounds the title strip like Xcode, without bleeding across the sidebar.
