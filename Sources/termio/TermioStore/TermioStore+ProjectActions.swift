@@ -15,6 +15,98 @@ extension TermioStore {
         selectedSessionID = session.id
     }
 
+    /// Creates a fresh *detached* git worktree of the project and adds it to the sidebar
+    /// as its own top-level entry — no session is started (you add those yourself, the
+    /// same way any project offers "New … Session"). The worktree lives at
+    /// `~/.termio/worktrees/<repo>-worktree-<id>`, checked out detached at the project's
+    /// current `HEAD` so a throwaway checkout never locks a branch out of the primary
+    /// one; a branch is materialized later on intent (see
+    /// `docs/design/worktree-creation-lifecycle.md`). Files the repo lists in
+    /// `.worktreeinclude` (`.env` and friends) are copied in so the checkout can run. On
+    /// failure (not a repo, git error) nothing is added and the user is told why.
+    func addWorktree(from projectID: Project.ID) {
+        guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
+        let project = projects[index]
+
+        let shortID = UUID().uuidString.prefix(8).lowercased()
+        let repoName = (project.path as NSString).lastPathComponent
+        let dirName = "\(repoName)-worktree-\(shortID)"
+        let worktreeRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".termio/worktrees", isDirectory: true)
+        let worktreePath = worktreeRoot.appendingPathComponent(dirName, isDirectory: true).path
+
+        do {
+            try FileManager.default.createDirectory(at: worktreeRoot, withIntermediateDirectories: true)
+        } catch {
+            presentWorktreeFailure("Couldn't create the worktrees folder: \(error.localizedDescription)")
+            return
+        }
+        guard runGit(["worktree", "add", "--detach", worktreePath, "HEAD"], in: project.path) != nil else {
+            presentWorktreeFailure("git couldn't create a worktree for “\(project.name)”. Is it a git repository with at least one commit?")
+            return
+        }
+
+        copyWorktreeIncludes(from: project.path, to: worktreePath)
+
+        // Surface the worktree as its own top-level sidebar entry: a plain project
+        // rooted at the worktree folder, with no sessions yet. `currentBranch` reports
+        // "HEAD" for a detached checkout, so fall back to the short SHA for a readable
+        // label (the live branch is tracked by BranchModel once it's watched anyway). It
+        // inherits the repo's sandbox posture so a sandboxed project's worktree isn't a
+        // way around the sandbox.
+        let branchLabel = currentBranch(in: worktreePath).flatMap { ref in
+            ref == "HEAD" ? runGit(["rev-parse", "--short", "HEAD"], in: worktreePath) : ref
+        } ?? "—"
+        let worktreeProject = Project(
+            name: dirName,
+            path: worktreePath,
+            branch: branchLabel,
+            sessions: [],
+            sandbox: project.sandbox
+        )
+        projects.append(worktreeProject)
+    }
+
+    /// Copies the git-ignored files a repo lists in `.worktreeinclude` into a freshly
+    /// created worktree — the same manifest (gitignore-style globs) Codex and Claude
+    /// Code read, so a repo already set up for them works here unchanged. A fresh
+    /// worktree only has tracked files, so without this its `.env`/secrets are missing
+    /// and the agent's dev server won't boot. Only files that are *both* ignored and
+    /// match a pattern are copied (git resolves that for us); a missing manifest is a
+    /// no-op. Copy failures are logged, not fatal — a partial env beats no worktree.
+    private func copyWorktreeIncludes(from repoPath: String, to worktreePath: String) {
+        let manifest = (repoPath as NSString).appendingPathComponent(".worktreeinclude")
+        guard FileManager.default.fileExists(atPath: manifest) else { return }
+        guard let listing = runGit(
+            ["ls-files", "--others", "--ignored", "--exclude-from=\(manifest)"],
+            in: repoPath
+        ), !listing.isEmpty else { return }
+        for relative in listing.split(separator: "\n").map(String.init) {
+            let source = (repoPath as NSString).appendingPathComponent(relative)
+            let destination = (worktreePath as NSString).appendingPathComponent(relative)
+            guard !FileManager.default.fileExists(atPath: destination) else { continue }
+            do {
+                try FileManager.default.createDirectory(
+                    at: URL(fileURLWithPath: destination).deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try FileManager.default.copyItem(atPath: source, toPath: destination)
+            } catch {
+                FileHandle.standardError.write(Data("termio: .worktreeinclude copy failed for \(relative): \(error)\n".utf8))
+            }
+        }
+    }
+
+    /// Reports a worktree-creation failure as a simple warning alert. Kept here so both
+    /// the failure paths above surface the reason rather than silently doing nothing.
+    private func presentWorktreeFailure(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Couldn't create worktree session"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+
     /// Opens a fresh scratch terminal — a plain login shell in the user's home
     /// directory, the way launching a new iTerm2 window drops you at `~`. Loose
     /// terminals aren't tied to a real project, so they're gathered under a single

@@ -124,6 +124,12 @@ private struct ProjectHeader: View {
                 store.addSession(to: project.id, agent: preset)
             }
         }
+        // Create a fresh detached git worktree of this repo and add it to the sidebar
+        // as its own top-level entry — no session is started; you add those yourself.
+        // Only for git repositories (a worktree needs one; "—" marks a non-repo folder).
+        if project.branch != "—" {
+            items.append(.action("New Worktree") { store.addWorktree(from: project.id) })
+        }
         items.append(.separator)
         items.append(.action(project.pinned ? "Unpin" : "Pin to Top") {
             store.togglePinned(project.id)
