@@ -737,6 +737,21 @@ final class TerminalViewController: UIViewController {
         case .connected:
             statusLabel.isHidden = true
             contextLabel.isHidden = contextLabel.text?.isEmpty ?? true
+            // The Mac wipes this screen on attach and only repaints once our
+            // grid claim lands (it jiggles the PTY so the shell reprints its
+            // prompt). But libghostty dedupes the resize callback at two layers
+            // — the surface coordinator and the in-memory session both drop an
+            // unchanged size — so on a cold attach or a reconnect no fresh
+            // resize fires, and the `sendGrid` at socket-open can race the very
+            // first dispatch. The result is a blank grid under a correct title.
+            // Re-assert the cached grid now that the socket is definitively up,
+            // and once more after the attach wipe has drained, so the last frame
+            // on the wire is our repaint and never a stray wipe.
+            companion?.reassertGrid()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                guard let self, case .companion = backend else { return }
+                companion?.reassertGrid()
+            }
         case .failed(let reason):
             statusLabel.text = "Connection failed"
             let alert = UIAlertController(title: "Companion connection failed", message: reason, preferredStyle: .alert)
