@@ -13,11 +13,12 @@ final class SettingsViewController: UITableViewController {
     }
 
     private enum Row: Int, CaseIterable {
-        case connectivity, appearance, terminalKeyboard
+        case connectivity, ssh, appearance, terminalKeyboard
 
         var title: String {
             switch self {
             case .connectivity: "Connectivity"
+            case .ssh: "SSH"
             case .appearance: "Appearance"
             case .terminalKeyboard: "Terminal Keyboard"
             }
@@ -26,6 +27,7 @@ final class SettingsViewController: UITableViewController {
         var icon: String {
             switch self {
             case .connectivity: "antenna.radiowaves.left.and.right"
+            case .ssh: "terminal"
             case .appearance: "paintbrush"
             case .terminalKeyboard: "keyboard"
             }
@@ -34,6 +36,7 @@ final class SettingsViewController: UITableViewController {
         func makePage() -> UIViewController {
             switch self {
             case .connectivity: ConnectivitySettingsViewController()
+            case .ssh: SSHHostListViewController()
             case .appearance: AppearanceSettingsViewController()
             case .terminalKeyboard: TerminalKeyboardSettingsViewController()
             }

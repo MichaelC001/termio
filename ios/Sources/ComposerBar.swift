@@ -305,7 +305,6 @@ final class ComposerBar: UIView {
     private func submit() {
         let text = textView.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        PromptHistory.shared.record(text)
         textView.text = ""
         refreshControls()
         refreshSuggestions()
@@ -345,13 +344,6 @@ final class ComposerBar: UIView {
     }
 
     // MARK: - Suggestions
-
-    /// What the panel above the pill can offer: the "/" command catalog, or
-    /// a previously sent prompt recalled from history.
-    private enum Suggestion {
-        case slash(SlashCommand)
-        case history(String)
-    }
 
     private func configureSuggestionsPanel() {
         suggestionsPanel.clipsToBounds = true
@@ -399,10 +391,7 @@ final class ComposerBar: UIView {
 
     /// Telegram's trigger rule for "/": the query lives while the draft
     /// starts with "/" and contains no whitespace yet; it filters by prefix
-    /// and dies the moment a space lands (arguments are free text). Any other
-    /// single-line draft of 2+ characters recalls prompt history instead —
-    /// the highest-hit-rate source on mobile (people re-send yesterday's
-    /// prompts), and fully local so typing never waits on a lookup.
+    /// and dies the moment a space lands (arguments are free text).
     private func refreshSuggestions() {
         let text = textView.text ?? ""
         if !slashCommands.isEmpty, text.hasPrefix("/"),
@@ -411,37 +400,24 @@ final class ComposerBar: UIView {
             // All matches, not a handful: the panel caps its height and scrolls
             // the rest, so a bare "/" browses the full catalog while typing a
             // letter still narrows it.
-            let matches = slashCommands.filter { $0.name.lowercased().hasPrefix(query) }
-            setSuggestions(matches.map(Suggestion.slash))
-        } else if text.count >= 2, !text.contains("\n") {
-            // A newline means they're composing something new, not recalling.
-            setSuggestions(
-                PromptHistory.shared.matches(for: text, limit: 3).map(Suggestion.history)
-            )
+            setSuggestions(slashCommands.filter { $0.name.lowercased().hasPrefix(query) })
         } else {
             setSuggestions([])
         }
     }
 
-    private func setSuggestions(_ suggestions: [Suggestion]) {
+    private func setSuggestions(_ suggestions: [SlashCommand]) {
         suggestionsStack.arrangedSubviews.forEach { view in
             suggestionsStack.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
-        for (index, suggestion) in suggestions.enumerated() {
+        for (index, command) in suggestions.enumerated() {
             // Hairlines separate rows; the last row ends at the panel's own
             // edge, so a line there would just underline the panel.
             let separated = index < suggestions.count - 1
-            switch suggestion {
-            case .slash(let command):
-                suggestionsStack.addArrangedSubview(
-                    makeSuggestionRow(command, showsHairline: separated)
-                )
-            case .history(let text):
-                suggestionsStack.addArrangedSubview(
-                    makeHistoryRow(text, showsHairline: separated)
-                )
-            }
+            suggestionsStack.addArrangedSubview(
+                makeSuggestionRow(command, showsHairline: separated)
+            )
         }
         // The wrapper (the stack's arranged view) is what collapses.
         suggestionsPanel.superview?.isHidden = suggestions.isEmpty
@@ -526,83 +502,6 @@ final class ComposerBar: UIView {
             hairline.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
         ])
         return row
-    }
-
-    /// One history row: a recall glyph and the past prompt on a single line.
-    /// Tap fills the draft — never sends; recall shouldn't fire a prompt —
-    /// and long-press forgets the entry.
-    private func makeHistoryRow(_ text: String, showsHairline: Bool) -> UIView {
-        let row = UIView()
-
-        // The plain clock — Apple's own "recents" glyph (Spotlight, App
-        // Store searches), quieter than the arrowed variant.
-        let icon = UIImageView(image: UIImage(systemName: "clock"))
-        icon.tintColor = .tertiaryLabel
-        icon.preferredSymbolConfiguration = .init(pointSize: 13)
-
-        let label = UILabel()
-        label.text = text.replacingOccurrences(of: "\n", with: " ")
-        label.font = .systemFont(ofSize: 15)
-        label.textColor = .label
-        label.lineBreakMode = .byTruncatingTail
-
-        let main = UIButton(type: .custom)
-        main.accessibilityLabel = "Fill draft with \(text)"
-        main.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            textView.text = text
-            refreshControls()
-            // Not refreshSuggestions(): re-matching the filled draft would
-            // only re-open the panel with the row that was just tapped.
-            setSuggestions([])
-        }, for: .touchUpInside)
-        // Recognition cancels the button's touch, so a forget never fills.
-        main.addGestureRecognizer(ClosureLongPress { [weak self] in
-            PromptHistory.shared.remove(text)
-            self?.refreshSuggestions()
-        })
-
-        let hairline = UIView()
-        hairline.backgroundColor = .separator.withAlphaComponent(0.4)
-        hairline.isHidden = !showsHairline
-
-        for subview in [main, icon, label, hairline] {
-            subview.translatesAutoresizingMaskIntoConstraints = false
-            row.addSubview(subview)
-        }
-        NSLayoutConstraint.activate([
-            row.heightAnchor.constraint(equalToConstant: Self.suggestionRowHeight),
-            icon.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 14),
-            icon.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: row.trailingAnchor, constant: -14),
-            label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            main.leadingAnchor.constraint(equalTo: row.leadingAnchor),
-            main.trailingAnchor.constraint(equalTo: row.trailingAnchor),
-            main.topAnchor.constraint(equalTo: row.topAnchor),
-            main.bottomAnchor.constraint(equalTo: row.bottomAnchor),
-            hairline.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 14),
-            hairline.trailingAnchor.constraint(equalTo: row.trailingAnchor),
-            hairline.bottomAnchor.constraint(equalTo: row.bottomAnchor),
-            hairline.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
-        ])
-        return row
-    }
-}
-
-/// A long-press recognizer carrying a closure — target/action can't capture
-/// the row's text.
-private final class ClosureLongPress: UILongPressGestureRecognizer {
-    private let handler: () -> Void
-
-    init(handler: @escaping () -> Void) {
-        self.handler = handler
-        super.init(target: nil, action: nil)
-        addTarget(self, action: #selector(fire))
-    }
-
-    @objc private func fire() {
-        if state == .began { handler() }
     }
 }
 

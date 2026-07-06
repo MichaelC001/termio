@@ -215,6 +215,71 @@ final class SessionListViewController: UIViewController {
             gear.widthAnchor.constraint(equalTo: puck.widthAnchor),
             gear.heightAnchor.constraint(equalTo: puck.heightAnchor),
         ])
+
+        // A second glass puck left of the gear: the SSH quick-connect palette
+        // (⌘K opens it too). Its own fast path into a saved host, so an SSH
+        // session is two taps from the inbox.
+        let bolt = UIButton(type: .system)
+        bolt.setImage(
+            UIImage(systemName: "terminal", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .medium)),
+            for: .normal
+        )
+        bolt.tintColor = .label
+        bolt.accessibilityLabel = "Quick Connect"
+        bolt.addAction(UIAction { [weak self] _ in self?.presentQuickConnect() }, for: .touchUpInside)
+        let boltPuck = Self.makeGlassView(interactive: true)
+        bolt.translatesAutoresizingMaskIntoConstraints = false
+        boltPuck.contentView.addSubview(bolt)
+        boltPuck.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(boltPuck)
+        boltPuck.layer.cornerRadius = puckSize / 2
+        boltPuck.clipsToBounds = true
+        NSLayoutConstraint.activate([
+            boltPuck.trailingAnchor.constraint(equalTo: puck.leadingAnchor, constant: -10),
+            boltPuck.centerYAnchor.constraint(equalTo: puck.centerYAnchor),
+            boltPuck.widthAnchor.constraint(equalToConstant: puckSize),
+            boltPuck.heightAnchor.constraint(equalToConstant: puckSize),
+            bolt.centerXAnchor.constraint(equalTo: boltPuck.contentView.centerXAnchor),
+            bolt.centerYAnchor.constraint(equalTo: boltPuck.contentView.centerYAnchor),
+            bolt.widthAnchor.constraint(equalTo: boltPuck.widthAnchor),
+            bolt.heightAnchor.constraint(equalTo: boltPuck.heightAnchor),
+        ])
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        [UIKeyCommand(title: "Quick Connect", action: #selector(quickConnectCommand),
+                      input: "k", modifierFlags: .command)]
+    }
+
+    @objc private func quickConnectCommand() { presentQuickConnect() }
+
+    /// The SSH quick-connect palette: a searchable sheet of saved hosts. Empty
+    /// store → a nudge to Settings rather than a blank sheet.
+    private func presentQuickConnect() {
+        guard !SSHStore.shared.hosts.isEmpty else {
+            let a = UIAlertController(
+                title: "No SSH Hosts", message: "Add a host in Settings ▸ SSH first.",
+                preferredStyle: .alert
+            )
+            a.addAction(UIAlertAction(title: "OK", style: .default))
+            present(a, animated: true)
+            return
+        }
+        // The SwiftUI palette owns its NavigationStack + presentation detents;
+        // selecting a host dismisses the sheet first, then opens the terminal
+        // (presenting mid-dismiss would be rejected).
+        let palette = SSHQuickConnectViewController { [weak self] host in
+            self?.dismiss(animated: true) { self?.openSSH(host) }
+        }
+        present(palette, animated: true)
+    }
+
+    private func openSSH(_ host: SSHHost) {
+        let terminal = TerminalViewController(sshHost: host)
+        terminal.modalPresentationStyle = .fullScreen
+        terminal.onRequestBack = { [weak terminal] in terminal?.dismiss(animated: true) }
+        terminal.onClose = { [weak terminal] in terminal?.dismiss(animated: true) }
+        present(terminal, animated: true)
     }
 
     /// A Liquid Glass surface. On iOS 26 it's a real interactive `UIGlassEffect`

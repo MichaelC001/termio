@@ -3,18 +3,20 @@ import GhosttyTheme
 import Photos
 import PhotosUI
 import ShellCraftKit
+import TermioSSH
 import TermioShared
 import UIKit
 import UniformTypeIdentifiers
 
 /// Full-screen terminal for one session — the bundled demo sandbox shell for
-/// mock sessions, or a live companion connection to a Mac session. The right
-/// screen edge slides in the inspector drawer (file tree + changes); the
-/// terminal keeps rendering, dimmed, behind it.
+/// mock sessions, a live companion connection to a Mac session, or a direct
+/// SSH session to a saved host. The right screen edge slides in the inspector
+/// drawer (file tree + changes); the terminal keeps rendering, dimmed, behind it.
 final class TerminalViewController: UIViewController {
     private enum Backend {
         case demoShell
         case companion(URL)
+        case ssh(SSHHost)
     }
 
     private let session: MockSession
@@ -40,12 +42,28 @@ final class TerminalViewController: UIViewController {
     private lazy var shellSession = ShellSession(shell: defaultSandboxShell)
     private var companion: CompanionTransport?
     private var companionSession: InMemoryTerminalSession?
+    private var sshClient: SSHTerminalClient?
+    private var sshSession: InMemoryTerminalSession?
     private let headerBar = UIStackView()
     private let contextLabel = UILabel()
     private let titleLabel = UILabel()
     private let statusLabel = UILabel()
     private var surfaceConfigured = false
     private var backendStarted = false
+    /// Timestamp of the last renderer-death surface rebuild, to debounce a
+    /// scroll that re-trips libghostty's health failsafe many times in a row.
+    private var lastRendererRecovery: Date?
+    /// Opaque backdrop-colored cover pinned over the surface. libghostty paints
+    /// its "non-functional" panel INTO the surface a frame or two before we can
+    /// react, so we mask it during the rebuild — the user sees a plain
+    /// background blink (like a repaint), never the alarming error text.
+    private let rendererCoverView: UIView = {
+        let v = UIView()
+        v.isHidden = true
+        v.isUserInteractionEnabled = false
+        v.translatesAutoresizingMaskIntoConstraints = false
+        return v
+    }()
     private var settingsObserver: NSObjectProtocol?
     private var uploadClient: CompanionClient?
     private var uploadQueue: [(name: String, data: Data)] = []
@@ -94,8 +112,22 @@ final class TerminalViewController: UIViewController {
         hidesBottomBarWhenPushed = true
     }
 
+    /// A direct SSH terminal to a saved host (Settings ▸ SSH). Secrets are read
+    /// from the Keychain when the session is built (see makeTerminalSession).
+    init(sshHost: SSHHost) {
+        session = MockSession(
+            title: sshHost.displayName,
+            project: "ssh", agent: .terminal, status: .idle,
+            subtitle: "", time: ""
+        )
+        backend = .ssh(sshHost)
+        super.init(nibName: nil, bundle: nil)
+        hidesBottomBarWhenPushed = true
+    }
+
     deinit {
         companion?.stop()
+        sshClient?.stop()
         uploadClient?.stop()
         restylePump?.invalidate()
         if let settingsObserver {
@@ -150,6 +182,8 @@ final class TerminalViewController: UIViewController {
                 shellSession.start()
             case .companion:
                 companion?.start()
+            case .ssh:
+                sshClient?.start()
             }
         } else if case .companion = backend {
             // Re-entering a parked session claims the PTY's winsize back —
@@ -212,10 +246,11 @@ final class TerminalViewController: UIViewController {
         statusLabel.text = switch backend {
         case .demoShell: "\(session.agent.rawValue) · \(session.time)"
         case .companion: "Connecting…"
+        case .ssh(let host): "Connecting to \(host.host)…"
         }
         contextLabel.isHidden = contextLabel.text?.isEmpty ?? true
         switch backend {
-        case .companion: contextLabel.isHidden = true // until connected
+        case .companion, .ssh: contextLabel.isHidden = true // until connected
         case .demoShell: break
         }
 
@@ -361,6 +396,17 @@ final class TerminalViewController: UIViewController {
         terminalView.isOpaque = false
         terminalView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(terminalView)
+
+        // Sits directly above the surface (below the composer/drawer added
+        // later), so unhiding it masks libghostty's panel during a rebuild.
+        rendererCoverView.backgroundColor = Self.backdropColor()
+        view.addSubview(rendererCoverView)
+        NSLayoutConstraint.activate([
+            rendererCoverView.topAnchor.constraint(equalTo: terminalView.topAnchor),
+            rendererCoverView.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor),
+            rendererCoverView.trailingAnchor.constraint(equalTo: terminalView.trailingAnchor),
+            rendererCoverView.bottomAnchor.constraint(equalTo: terminalView.bottomAnchor),
+        ])
 
         composerBar.onSend = { [weak self] text in self?.sendComposedPrompt(text) }
         composerBar.onTerminalKey = { [weak self] payload in self?.terminalView.send(payload) }
@@ -636,6 +682,45 @@ final class TerminalViewController: UIViewController {
             companion = transport
             companionSession = terminalSession
             return terminalSession
+        case .ssh(let host):
+            var config = SSHConfig(host: host.host, port: host.port, username: host.username)
+            switch host.auth {
+            case .password: config.password = SSHKeychain.password(for: host.id)
+            case .key(let keyID): config.privateKey = SSHKeychain.privateKey(for: keyID)
+            }
+            let client = SSHTerminalClient(config: config)
+            let terminalSession = InMemoryTerminalSession(
+                write: { [weak client] data in client?.send(data) },
+                resize: { [weak client] viewport in
+                    client?.resize(cols: Int(viewport.columns), rows: Int(viewport.rows))
+                }
+            )
+            client.onOutput = { [weak terminalSession] data in terminalSession?.receive(data) }
+            client.onState = { [weak self] state in self?.sshStateChanged(state) }
+            sshClient = client
+            sshSession = terminalSession
+            return terminalSession
+        }
+    }
+
+    private func sshStateChanged(_ state: SSHClientState) {
+        statusLabel.isHidden = false
+        contextLabel.isHidden = true
+        switch state {
+        case .idle, .connecting:
+            statusLabel.text = "Connecting…"
+        case .connected:
+            statusLabel.isHidden = true
+        case .failed(let reason):
+            statusLabel.text = "Connection failed"
+            let alert = UIAlertController(title: "SSH connection failed", message: reason, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
+                self?.close()
+            })
+            present(alert, animated: true)
+        case .closed:
+            statusLabel.text = "Disconnected"
+            sshSession?.finish(exitCode: 0, runtimeMilliseconds: 0)
         }
     }
 
@@ -699,12 +784,15 @@ final class TerminalViewController: UIViewController {
             builder.withFontSize(Float(MobileSettings.shared.fontSize))
             builder.withWindowPaddingX(8)
             // The phone is a viewer, not the scrollback of record — the Mac keeps
-            // the full history. libghostty's default limit is large, and with up
-            // to a few surfaces parked live (RootContainer's keep-alive cache) plus
-            // the attach replay reflowing at this narrow grid, the allocator can tip
-            // over and paint its own "out of memory / non-functional" panic screen.
-            // Cap it low so a session-hopping run stays inside the phone's budget.
-            builder.withCustom("scrollback-limit", "2000000")
+            // the full history. libghostty's renderer paints its "non-functional"
+            // panel when it exhausts a GPU/allocator resource reflowing scrollback
+            // at this narrow grid during a drag-scroll — a purely internal Zig
+            // failure it never reports to us (verified via device logs: it emits
+            // no RENDERER_HEALTH action and exposes no health getter). We can't
+            // catch it, only reduce what it must build: cap scrollback hard so a
+            // drag can't reflow enough rows to tip the renderer over. 256 KB is
+            // still ~thousands of lines — plenty for a phone viewer.
+            builder.withCustom("scrollback-limit", "256000")
         }
     }
 
@@ -979,6 +1067,64 @@ extension TerminalViewController: TerminalSurfaceTitleDelegate, TerminalSurfaceC
     }
 }
 
+extension TerminalViewController: TerminalSurfaceRendererHealthDelegate {
+    /// libghostty flipped its renderer health. `healthy == false` means it just
+    /// tripped the failsafe that paints the "This terminal is non-functional"
+    /// panel INTO the surface — the exact bug we're chasing. Our forked wrapper
+    /// forwards this (upstream drops it); log it so the moment is visible in the
+    /// unified log, then rebuild the surface so the dead panel doesn't linger.
+    func terminalDidChangeRendererHealth(_ healthy: Bool) {
+        // NOTE: device logs proved libghostty's embedded build never dispatches
+        // GHOSTTY_ACTION_RENDERER_HEALTH, so this never fires — kept only so the
+        // wiring is ready if a Zig-source build starts emitting it. The real
+        // mitigation is prevention (scrollback + parked-surface caps).
+        Log.terminal.error("renderer health changed: healthy=\(healthy, privacy: .public)")
+        guard !healthy else { return }
+        recoverFromRendererDeath()
+    }
+
+    /// Rebuild the surface in place, reusing the SAME in-memory session so the
+    /// companion/SSH byte stream is never dropped — only the dead Metal surface
+    /// is replaced. Debounced: if a single scroll re-trips health repeatedly we
+    /// must not loop-flicker, so we rebuild at most once every couple seconds.
+    private func recoverFromRendererDeath() {
+        let now = Date()
+        if let last = lastRendererRecovery, now.timeIntervalSince(last) < 2 {
+            Log.terminal.error("renderer recovery skipped (debounced)")
+            return
+        }
+        lastRendererRecovery = now
+
+        let existing: InMemoryTerminalSession?
+        switch backend {
+        case .demoShell: existing = shellSession.terminalSession
+        case .companion: existing = companionSession
+        case .ssh: existing = sshSession
+        }
+        guard surfaceConfigured, let session = existing else { return }
+
+        Log.terminal.error("rebuilding surface after renderer death")
+        // Mask first, synchronously, so the panel libghostty already painted is
+        // hidden by the backdrop before the next screen commit shows it.
+        rendererCoverView.backgroundColor = Self.backdropColor()
+        rendererCoverView.isHidden = false
+        // Drop the freed surface's orphaned Metal layer before the rebuild adds
+        // a fresh one, else the dead panel's layer stays composited underneath.
+        detachOrphanedSurfaceLayers()
+        terminalView.configuration = TerminalSurfaceOptions(backend: .inMemory(session))
+        terminalView.fitToSize()
+        lastFittedSize = terminalView.bounds.size
+        // A rebuilt surface starts blank; the stream won't repaint until the
+        // next byte. Reclaim the grid so the Mac re-sends current content.
+        if case .companion = backend { companion?.reassertGrid() }
+        // Reveal once the rebuilt surface has had a beat to repaint (companion
+        // content arrives over the network) so we don't uncover a blank grid.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+            self?.rendererCoverView.isHidden = true
+        }
+    }
+}
+
 // MARK: - Display-only surface
 
 /// The terminal renders, scrolls, and selects — it never takes the keyboard.
@@ -1000,11 +1146,27 @@ private final class DisplayTerminalView: UITerminalView {
     /// sample rate (up to 120 Hz on ProMotion).
     private var scrollSurfaceHandle: UnsafeMutableRawPointer?
 
-    /// Vsync-aligned draw pump that covers the momentum glide after the finger
-    /// lifts — the wrapper runs its own momentum recognizer but still paints
-    /// through `DispatchQueue.main.async`, off the vsync boundary.
-    private var momentumPump: CADisplayLink?
-    private var momentumPumpDeadline: CFTimeInterval = 0
+    /// Vsync-aligned draw pump that owns the whole scroll interaction — the
+    /// active finger drag AND the momentum glide after it lifts. The wrapper
+    /// paints through `DispatchQueue.main.async` (its `startDisplayLink` is a
+    /// stub), off the vsync boundary, so we drive the draws ourselves.
+    ///
+    /// Crucially the pump draws *at most once per vsync*. The active drag used
+    /// to draw synchronously on every pan `.changed`, which fires several times
+    /// per frame — each `ghostty_surface_draw` grabs a `CAMetalDrawable`, and
+    /// the layer's pool is only ~3 deep. Faster-than-vsync draws starve it, the
+    /// next drawable comes back nil, libghostty logs a Metal error, and after a
+    /// few it trips its renderer-health failsafe — the "This terminal is
+    /// non-functional" panel painted straight into the surface. Coalescing the
+    /// drag onto this link caps us at one drawable per frame, so the pool never
+    /// empties. See docs/design/ios-scroll-renderer-health.md.
+    private var scrollPump: CADisplayLink?
+    /// Set by pan `.changed`; the pump consumes it once per frame during a drag.
+    private var needsScrollDraw = false
+    /// True once the finger lifts: the pump paints every frame through the
+    /// deceleration tail instead of waiting on `needsScrollDraw`.
+    private var scrollCoasting = false
+    private var scrollCoastDeadline: CFTimeInterval = 0
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
@@ -1034,53 +1196,67 @@ private final class DisplayTerminalView: UITerminalView {
     /// scroll lands a beat behind the gesture: the viewport is already moved
     /// but the GPU draw slips past the CA commit deadline. We ride the same
     /// pan recognizer — our target is added after the wrapper's, so by the
-    /// time `.changed` reaches us the viewport is current — and draw it
-    /// synchronously, in-frame. The momentum tail keeps painting at vsync
-    /// until the wrapper's glide decelerates.
+    /// time `.changed` reaches us the viewport is current — and hand the draw
+    /// to the vsync pump, which coalesces it to one frame. The pump keeps
+    /// painting through the momentum tail until the wrapper's glide decelerates.
     @objc private func scrollGestureChanged(_ gesture: UIPanGestureRecognizer) {
         switch gesture.state {
         case .began:
-            stopMomentumPump()
             onScrollGesture?()
             scrollSurfaceHandle = ghosttySurfaceHandle()
+            scrollCoasting = false
+            needsScrollDraw = true
+            startScrollPump()
         case .changed:
-            drawScrollFrameNow()
+            // Mark the frame dirty; the pump draws it once at the next vsync.
+            // Never draw synchronously here — see `scrollPump` for why that
+            // starves the drawable pool and trips libghostty's failsafe.
+            needsScrollDraw = true
         case .ended, .cancelled, .failed:
-            startMomentumPump()
+            // Enter the momentum tail; the already-running pump keeps painting.
+            scrollCoasting = true
+            scrollCoastDeadline = 0 // armed from the first coasting frame
         default:
             break
         }
     }
 
     /// Mirror the coordinator's proven per-tick sequence (refresh then draw),
-    /// but synchronously and on the vsync-aligned call path instead of a
-    /// deferred main-queue block.
+    /// on the vsync-aligned call path instead of a deferred main-queue block.
     private func drawScrollFrameNow() {
         guard let handle = scrollSurfaceHandle ?? ghosttySurfaceHandle() else { return }
         termio_ghostty_surface_refresh(handle)
         termio_ghostty_surface_draw(handle)
     }
 
-    private func startMomentumPump() {
-        momentumPumpDeadline = 0 // armed from the first frame's own timestamp
-        guard momentumPump == nil else { return }
-        let link = CADisplayLink(target: self, selector: #selector(momentumPumpFrame(_:)))
+    private func startScrollPump() {
+        guard scrollPump == nil else { return }
+        let link = CADisplayLink(target: self, selector: #selector(scrollPumpFrame(_:)))
         link.add(to: .main, forMode: .common)
-        momentumPump = link
+        scrollPump = link
     }
 
-    @objc private func momentumPumpFrame(_ link: CADisplayLink) {
-        // 0.92-per-frame decel from a hard fling reaches the wrapper's <50 px/s
-        // cutoff well inside 1.2 s; past that the surface is idle and the pump
-        // is pure waste, so it stops itself.
-        if momentumPumpDeadline == 0 { momentumPumpDeadline = link.timestamp + 1.2 }
-        if link.timestamp >= momentumPumpDeadline { stopMomentumPump(); return }
-        drawScrollFrameNow()
+    @objc private func scrollPumpFrame(_ link: CADisplayLink) {
+        if scrollCoasting {
+            // 0.92-per-frame decel from a hard fling reaches the wrapper's
+            // <50 px/s cutoff well inside 1.2 s; past that the surface is idle
+            // and the pump is pure waste, so it stops itself.
+            if scrollCoastDeadline == 0 { scrollCoastDeadline = link.timestamp + 1.2 }
+            if link.timestamp >= scrollCoastDeadline { stopScrollPump(); return }
+            drawScrollFrameNow()
+        } else if needsScrollDraw {
+            // One drawable per vsync, no matter how many `.changed` events the
+            // pan delivered this frame — that cap is the whole fix.
+            needsScrollDraw = false
+            drawScrollFrameNow()
+        }
     }
 
-    private func stopMomentumPump() {
-        momentumPump?.invalidate()
-        momentumPump = nil
+    private func stopScrollPump() {
+        scrollPump?.invalidate()
+        scrollPump = nil
+        scrollCoasting = false
+        needsScrollDraw = false
         scrollSurfaceHandle = nil
     }
 

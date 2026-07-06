@@ -41,6 +41,8 @@ final class CompanionClient: NSObject {
     /// Filename-search matches (reply to `.searchFiles`): the echoed query,
     /// repo-relative paths, and whether the batch was capped.
     var onSearchResults: ((String, [String], Bool) -> Void)?
+    /// The Mac's `~/.ssh/config` hosts arrived (reply to `.sshConfigHosts`).
+    var onSSHConfig: (([WireSSHHost]) -> Void)?
     /// The server rejected a request (e.g. a failed `start`).
     var onError: ((String) -> Void)?
 
@@ -180,6 +182,7 @@ final class CompanionClient: NSObject {
                         case .uploaded(let path): onUploaded?(path)
                         case .searchResults(let query, let paths, let truncated):
                             onSearchResults?(query, paths, truncated)
+                        case .sshConfigList(let hosts): onSSHConfig?(hosts)
                         case .error(let reason): onError?(reason)
                         default: break
                         }

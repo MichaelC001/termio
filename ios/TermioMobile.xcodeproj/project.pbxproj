@@ -11,6 +11,7 @@
 		8D1FBA366F9B1F691BE5B80C /* ShellCraftKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7743B90C65830591DC83DD03 /* ShellCraftKit */; };
 		9389ADCADEBF1062AFF14D26 /* GhosttyTheme in Frameworks */ = {isa = PBXBuildFile; productRef = A216EACFB50B587F23FC6423 /* GhosttyTheme */; };
 		D4416179E3F5BCC68FFCCB09 /* TermioShared in Frameworks */ = {isa = PBXBuildFile; productRef = A617B1EB94E221554B6224A4 /* TermioShared */; };
+		E5A1C3D4B2F6478890AB12CD /* TermioSSH in Frameworks */ = {isa = PBXBuildFile; productRef = C7D2E4F5A3B6512278CD34EF /* TermioSSH */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -67,6 +68,7 @@
 				9389ADCADEBF1062AFF14D26 /* GhosttyTheme in Frameworks */,
 				8D1FBA366F9B1F691BE5B80C /* ShellCraftKit in Frameworks */,
 				D4416179E3F5BCC68FFCCB09 /* TermioShared in Frameworks */,
+				E5A1C3D4B2F6478890AB12CD /* TermioSSH in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -124,6 +126,7 @@
 				A216EACFB50B587F23FC6423 /* GhosttyTheme */,
 				7743B90C65830591DC83DD03 /* ShellCraftKit */,
 				A617B1EB94E221554B6224A4 /* TermioShared */,
+				C7D2E4F5A3B6512278CD34EF /* TermioSSH */,
 			);
 			productName = TermioMobile;
 			productReference = C4B834BC028171A141441B55 /* TermioMobile.app */;
@@ -174,7 +177,7 @@
 			mainGroup = 600AAD319D9C4100B4D7E969;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				E76CADD6045BA4FE33901492 /* XCRemoteSwiftPackageReference "libghostty-spm" */,
+				E76CADD6045BA4FE33901492 /* XCLocalSwiftPackageReference "vendor/libghostty-spm" */,
 				5F40B625E9606DFCDE974E1D /* XCLocalSwiftPackageReference "../Shared" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -459,37 +462,34 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../Shared;
 		};
-/* End XCLocalSwiftPackageReference section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		E76CADD6045BA4FE33901492 /* XCRemoteSwiftPackageReference "libghostty-spm" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Lakr233/libghostty-spm";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.2.8;
-			};
+		E76CADD6045BA4FE33901492 /* XCLocalSwiftPackageReference "vendor/libghostty-spm" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = vendor/libghostty-spm;
 		};
-/* End XCRemoteSwiftPackageReference section */
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		7743B90C65830591DC83DD03 /* ShellCraftKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = E76CADD6045BA4FE33901492 /* XCRemoteSwiftPackageReference "libghostty-spm" */;
+			package = E76CADD6045BA4FE33901492 /* XCLocalSwiftPackageReference "vendor/libghostty-spm" */;
 			productName = ShellCraftKit;
 		};
 		A216EACFB50B587F23FC6423 /* GhosttyTheme */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = E76CADD6045BA4FE33901492 /* XCRemoteSwiftPackageReference "libghostty-spm" */;
+			package = E76CADD6045BA4FE33901492 /* XCLocalSwiftPackageReference "vendor/libghostty-spm" */;
 			productName = GhosttyTheme;
 		};
 		A617B1EB94E221554B6224A4 /* TermioShared */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = TermioShared;
 		};
+		C7D2E4F5A3B6512278CD34EF /* TermioSSH */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TermioSSH;
+		};
 		FAA1FBE1ACA056BF5D4F20E8 /* GhosttyTerminal */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = E76CADD6045BA4FE33901492 /* XCRemoteSwiftPackageReference "libghostty-spm" */;
+			package = E76CADD6045BA4FE33901492 /* XCLocalSwiftPackageReference "vendor/libghostty-spm" */;
 			productName = GhosttyTerminal;
 		};
 /* End XCSwiftPackageProductDependency section */
