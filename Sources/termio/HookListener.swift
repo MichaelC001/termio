@@ -213,8 +213,10 @@ enum AgentStatusHooks {
         [
             JSONHookFile.claude,
             JSONHookFile.codex,
+            JSONHookFile.cursor,
             PluginFile.openCode,
             PluginFile.pi,
+            PluginFile.amp,
         ]
     }
 
@@ -222,8 +224,18 @@ enum AgentStatusHooks {
     /// session id the PTY carries and the agent's `$PWD` as a fallback) and pipe it
     /// into the socket. `nc` and `printf` both ship with macOS. Used by the
     /// shell-hook agents; the plugin agents emit the same JSON from JavaScript.
-    static func reportCommand(state: String, withTranscript: Bool = false) -> String {
+    static func reportCommand(
+        state: String, withTranscript: Bool = false, dialect: HookDialect = .claudeNested
+    ) -> String {
         let socket = HookListener.socketURL.path
+        // Cursor spawns each hook as a process and reads its stdout as the hook's
+        // JSON reply, so the report must reach the socket silently and then print a
+        // benign empty object — any stray byte on stdout is parsed as a malformed
+        // reply. (Claude/Codex ignore hook stdout, so they don't need this.)
+        if dialect == .cursorFlat {
+            let json = #"{"termio_session":"%s","state":"\#(state)","cwd":"%s"}"#
+            return "printf '\(json)' \"$TERMIO_SESSION\" \"$PWD\" | nc -w 1 -U \"\(socket)\" >/dev/null 2>&1; printf '{}'"
+        }
         // `|| true` and `2>/dev/null` keep the hook a silent no-op when termio
         // isn't running to accept the connection — otherwise `nc`'s exit 1 surfaces
         // in the agent as a "hook failed (non-blocking)" error on every tool call.
@@ -254,6 +266,17 @@ private protocol AgentStatusInstaller {
     func uninstall()
 }
 
+/// The on-disk shape of a JSON hook file. Two agents that both configure hooks via
+/// a JSON file still disagree on structure, so the installer branches on this.
+enum HookDialect {
+    /// Claude Code / Codex: `{ "hooks": { "<Event>": [ { "matcher"?, "hooks": [ {type,command} ] } ] } }`.
+    case claudeNested
+    /// Cursor: `{ "version": 1, "hooks": { "<Event>": [ { "command" } ] } }` — a
+    /// required top-level `version`, and flat one-key entries instead of Claude's
+    /// nested `hooks` array.
+    case cursorFlat
+}
+
 /// Installs hooks for agents whose config is a JSON file with the Claude-Code
 /// shape — `{ "hooks": { "<Event>": [ { "matcher"?, "hooks": [ {type,command} ] } ] } }`.
 /// Claude Code (`~/.claude/settings.json`) and Codex (`~/.codex/hooks.json`) both
@@ -269,6 +292,9 @@ private struct JSONHookFile: AgentStatusInstaller {
     /// session's `transcript_path`. Only Claude Code is known to (and to always
     /// supply stdin, so the capturing `cat` can't block); others stay off.
     var capturesTranscript: Bool = false
+    /// The file's structural shape (see `HookDialect`). Defaults to Claude's, which
+    /// Codex also uses; Cursor overrides it.
+    var dialect: HookDialect = .claudeNested
 
     static var claude: JSONHookFile {
         JSONHookFile(
@@ -305,6 +331,27 @@ private struct JSONHookFile: AgentStatusInstaller {
             label: "codex")
     }
 
+    /// Cursor's agent hooks live in `~/.cursor/hooks.json`. Only the informational
+    /// lifecycle events are mapped: a prompt/tool starting is `working`, `stop` is
+    /// `done`. Cursor's permission gating happens through a hook's *return value*
+    /// (a `beforeShellExecution` returning `"ask"`), not a lifecycle event, so there
+    /// is no `attention` mapping — and termio deliberately does not hook the gating
+    /// events, to avoid interfering with Cursor's own approval flow. The zero-config
+    /// bell/OSC layer still catches any "needs you" the agent raises.
+    static var cursor: JSONHookFile {
+        JSONHookFile(
+            url: home(".cursor", "hooks.json"),
+            events: [
+                ("beforeSubmitPrompt", "working", nil),
+                ("preToolUse", "working", nil),
+                ("postToolUse", "working", nil),
+                ("subagentStop", "working", nil),
+                ("stop", "done", nil),
+            ],
+            label: "cursor",
+            dialect: .cursorFlat)
+    }
+
     private static func home(_ components: String...) -> URL {
         components.reduce(FileManager.default.homeDirectoryForCurrentUser) {
             $0.appendingPathComponent($1)
@@ -328,6 +375,9 @@ private struct JSONHookFile: AgentStatusInstaller {
         }
 
         var settings = root
+        // Cursor requires a top-level schema version; add it only when the user's
+        // file doesn't already carry one, so we never overwrite their choice.
+        if dialect == .cursorFlat, settings["version"] == nil { settings["version"] = 1 }
         var hooks = settings["hooks"] as? [String: Any] ?? [:]
         // Strip every prior termio entry first — across all events, not just the
         // ones we're about to re-add — so an event we no longer manage (e.g. a
@@ -336,9 +386,16 @@ private struct JSONHookFile: AgentStatusInstaller {
         for event in events {
             var groups = hooks[event.name] as? [[String: Any]] ?? []
             let command = AgentStatusHooks.reportCommand(
-                state: event.state, withTranscript: capturesTranscript)
-            var group: [String: Any] = ["hooks": [["type": "command", "command": command]]]
-            if let matcher = event.matcher { group["matcher"] = matcher }
+                state: event.state, withTranscript: capturesTranscript, dialect: dialect)
+            let group: [String: Any]
+            switch dialect {
+            case .cursorFlat:
+                group = ["command": command]
+            case .claudeNested:
+                var nested: [String: Any] = ["hooks": [["type": "command", "command": command]]]
+                if let matcher = event.matcher { nested["matcher"] = matcher }
+                group = nested
+            }
             groups.append(group)
             hooks[event.name] = groups
         }
@@ -376,6 +433,10 @@ private struct JSONHookFile: AgentStatusInstaller {
     }
 
     private func isTermioGroup(_ group: [String: Any]) -> Bool {
+        // Cursor's flat entry carries the command directly; Claude/Codex nest it.
+        if let command = group["command"] as? String {
+            return command.contains(AgentStatusHooks.marker)
+        }
         guard let hooks = group["hooks"] as? [[String: Any]] else { return false }
         return hooks.contains { ($0["command"] as? String)?.contains(AgentStatusHooks.marker) == true }
     }
@@ -428,6 +489,12 @@ private struct PluginFile: AgentStatusInstaller {
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".pi/agent/extensions/termio-status.js")
         return PluginFile(url: url, contents: piSource)
+    }
+
+    static var amp: PluginFile {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/amp/plugins/termio-status.ts")
+        return PluginFile(url: url, contents: ampSource)
     }
 
     func install() {
@@ -494,6 +561,29 @@ private struct PluginFile: AgentStatusInstaller {
         export default (pi) => {
           pi.on("agent_start", () => pi.exec("sh", ["-c", \(jsString(working))]));
           pi.on("agent_end", () => pi.exec("sh", ["-c", \(jsString(done))]));
+        };
+        """
+    }
+
+    /// Amp plugin: `agent.start` fires when the user submits a prompt, `agent.end`
+    /// when the agent finishes handling it. Amp auto-loads any plugin under
+    /// `~/.config/amp/plugins/` (a default-exported function receiving the plugin
+    /// API), runs on Bun, and exposes Bun's `$` shell as `amp.$`; the session id
+    /// rides in on `TERMIO_SESSION` from the PTY. `.quiet().nothrow()` keeps it a
+    /// silent no-op when termio isn't listening.
+    private static var ampSource: String {
+        """
+        // termio agent status — reports Amp turn lifecycle to termio.
+        // Socket marker: \(AgentStatusHooks.marker)
+        export default (amp) => {
+          const socket = \(jsString(socketPath));
+          const report = (state) => {
+            const id = process.env.TERMIO_SESSION || "";
+            const payload = JSON.stringify({ termio_session: id, state });
+            return amp.$`printf %s ${payload} | nc -w 1 -U ${socket}`.quiet().nothrow();
+          };
+          amp.on("agent.start", () => report("working"));
+          amp.on("agent.end", () => report("done"));
         };
         """
     }

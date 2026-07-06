@@ -937,6 +937,8 @@ extension TermioStore {
         case "codex": .codex
         case "opencode": .opencode
         case "pi": .pi
+        case "amp": .amp
+        case "cursor": .cursor
         default: .terminal
         }
         addSession(to: project.id, agent: preset)
@@ -1018,6 +1020,8 @@ extension TermioStore {
         case .opencode: "opencode"
         case .terminal: "terminal"
         case .pi: "pi"
+        case .amp: "amp"
+        case .cursor: "cursor"
         }
     }
 

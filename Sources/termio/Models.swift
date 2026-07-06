@@ -52,6 +52,8 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
     case codex
     case opencode
     case pi
+    case amp
+    case cursor
 
     var id: String { rawValue }
 
@@ -62,6 +64,8 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         case .codex: return "Codex"
         case .opencode: return "OpenCode"
         case .pi: return "Pi"
+        case .amp: return "Amp"
+        case .cursor: return "Cursor"
         }
     }
 
@@ -75,6 +79,10 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         case .codex: return "codex"
         case .opencode: return "opencode"
         case .pi: return "pi"
+        case .amp: return "amp"
+        // Cursor's headless CLI binary is `cursor-agent`, distinct from the `cursor`
+        // GUI launcher, so name it explicitly.
+        case .cursor: return "cursor-agent"
         }
     }
 
@@ -89,7 +97,9 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         switch self {
         case .claudeCode: return "--dangerously-skip-permissions"
         case .codex: return "--dangerously-bypass-approvals-and-sandbox"
-        case .terminal, .opencode, .pi: return nil
+        // Amp and Cursor have no bypass flag stable enough to wire to a one-click
+        // toggle; they still accept any flag through the free-text command override.
+        case .terminal, .opencode, .pi, .amp, .cursor: return nil
         }
     }
 
@@ -103,7 +113,7 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         switch self {
         case .claudeCode: return "--settings '{\"sandbox\":{\"enabled\":false}}'"
         case .codex: return "--sandbox danger-full-access"
-        case .terminal, .opencode, .pi: return nil
+        case .terminal, .opencode, .pi, .amp, .cursor: return nil
         }
     }
 
@@ -137,7 +147,9 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
     /// the others continue the most recent session in the working directory.
     func resumeArguments(_ context: ResumeContext) -> String? {
         switch self {
-        case .terminal:
+        // Amp and Cursor aren't wired for resume yet, so they launch a fresh session
+        // each time, like the plain terminal.
+        case .terminal, .amp, .cursor:
             return nil
         case .claudeCode:
             // `--session-id` creates a session with our id (and errors if it already
@@ -175,6 +187,25 @@ enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
         case .codex: return .brand(.codex)
         case .opencode: return .brandImage(.openCode)
         case .pi: return .brandImage(.pi)
+        // No bundled vector mark for these yet, so use a representative SF Symbol
+        // rather than a washed-out brand approximation.
+        case .amp: return .systemSymbol("bolt.fill")
+        case .cursor: return .systemSymbol("cursorarrow")
+        }
+    }
+
+    /// The vendor's official page for installing this agent's CLI, opened from the
+    /// Settings row when its binary isn't found on the user's PATH. `nil` for the
+    /// plain terminal (nothing to install — it's the login shell).
+    var installURL: URL? {
+        switch self {
+        case .terminal: return nil
+        case .claudeCode: return URL(string: "https://claude.com/claude-code")
+        case .codex: return URL(string: "https://developers.openai.com/codex/cli")
+        case .opencode: return URL(string: "https://opencode.ai")
+        case .pi: return URL(string: "https://pi.dev")
+        case .amp: return URL(string: "https://ampcode.com/manual")
+        case .cursor: return URL(string: "https://cursor.com/docs/cli")
         }
     }
 }
