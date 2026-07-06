@@ -1,0 +1,270 @@
+---
+title: macOS release runbook — cut, notarize, publish termio.dmg
+status: active
+type: design
+created: 2026-07-06
+updated: 2026-07-06
+related:
+  - ../RELEASING.md
+---
+
+# macOS release runbook — cut, notarize, publish termio.dmg
+
+> Operational runbook for shipping the macOS app: the one-time credential setup,
+> the per-release "push a tag" flow, how to verify a release went out, and how to
+> roll back or debug when it doesn't. `docs/RELEASING.md` is the conceptual
+> overview; this is the checklist you actually execute against.
+
+## What a release does
+
+Pushing a `vX.Y.Z` tag fires `.github/workflows/release.yml` on a `macos-26`
+runner, which:
+
+1. Derives the version from the tag and the build number from
+   `git rev-list --count HEAD` (monotonic → Sparkle always sees a higher
+   `CFBundleVersion`).
+2. Imports the Developer ID cert into a throwaway keychain and runs
+   `scripts/build-app.sh` (embeds + signs Sparkle, Developer-ID-signs the bundle
+   with the hardened runtime + secure timestamp).
+3. Packages a `.dmg` with `create-dmg`.
+4. Notarizes + staples the DMG with `notarytool`.
+5. Signs the DMG's EdDSA appcast entry and **merges** it into the existing
+   `appcast.xml` (pulled from R2 first, so history survives).
+6. Uploads to Cloudflare R2: immutable `v<version>/termio.dmg`, stable
+   `termio.dmg`, and `appcast.xml`.
+7. Purges the stable DMG + appcast from Cloudflare's edge (if the purge token is
+   set — otherwise skips with a notice).
+8. Records a GitHub Release for the tag + auto-generated changelog.
+
+Result: `https://downloads.termio.sh/termio.dmg` serves the notarized build (the
+website Download button), and existing installs auto-update via Sparkle from
+`https://downloads.termio.sh/appcast.xml` (the app's `SUFeedURL`).
+
+## Fixed facts (this project)
+
+| Thing | Value |
+| --- | --- |
+| Repo | `jiweiyuan/termio` (private) |
+| Apple Team ID | `5Y27G7B6D8` (Jiwei Yuan) |
+| Developer ID Application | `Jiwei Yuan (5Y27G7B6D8)` — SHA-1 `7E3F98DC984CE82B7F58A71AC4548F6C766F2657` |
+| ASC API key (Team key "termio") | Key ID `YC4MR9DW4Q`, Issuer ID `5242c966-78e9-46ac-96f4-c90f9117c419`, role **Developer** |
+| ASC `.p8` backup | `~/.appstoreconnect/private_keys/AuthKey_YC4MR9DW4Q.p8` (also `~/credentials/`) |
+| Sparkle public key | `SUPublicEDKey = zm3UpFrDf8tFcctK2vkEhrms6oFTp50AUb824lP9BAw=` (shared with oakreader) |
+| Cloudflare account ID | `a22b80fa365fb7cf04d194272379b669` |
+| R2 bucket | `termio-downloads` (custom domain `downloads.termio.sh`) |
+| R2 S3 endpoint | `https://a22b80fa365fb7cf04d194272379b669.r2.cloudflarestorage.com` |
+
+These are identifiers, not secrets — the real secrets (the `.p8` bytes, the cert
+password, the R2 secret access key) live only in GitHub Secrets and your vault.
+
+> **termio needs no provisioning profile.** Unlike oakreader (which declares a
+> restricted `keychain-access-groups` entitlement and therefore embeds a
+> Developer ID profile), termio has no restricted entitlements, so plain
+> Developer-ID signing + notarization is enough. Don't copy oakreader's
+> `PROVISIONING_PROFILE` step.
+
+## GitHub secrets inventory
+
+The workflow reads these ten secrets. **None is a GitHub token** — Actions
+injects `GITHUB_TOKEN` automatically. Check state with
+`gh secret list --repo jiweiyuan/termio`.
+
+| Secret | Purpose | Required |
+| --- | --- | --- |
+| `DEVELOPER_ID_CERT_P12` | base64 of the Developer ID `.p12` (cert + key) | ✅ |
+| `DEVELOPER_ID_CERT_PASSWORD` | that `.p12`'s password | ✅ |
+| `ASC_API_KEY` | base64 of the App Store Connect `.p8` | ✅ |
+| `ASC_KEY_ID` | 10-char key ID (`YC4MR9DW4Q`) | ✅ |
+| `ASC_ISSUER_ID` | account issuer UUID | ✅ |
+| `SPARKLE_ED_KEY` | Sparkle EdDSA private key (shared w/ oakreader) | ✅ |
+| `R2_ACCESS_KEY_ID` | R2 S3 access key ID | ✅ |
+| `R2_SECRET_ACCESS_KEY` | R2 S3 secret access key | ✅ |
+| `R2_ENDPOINT` | `https://<accountid>.r2.cloudflarestorage.com` | ✅ |
+| `CLOUDFLARE_ZONE_ID` | termio.sh zone ID (for cache purge) | ⚪ |
+| `CLOUDFLARE_API_TOKEN` | Zone→Cache Purge token | ⚪ |
+
+⚪ = optional. Without the two Cloudflare cache secrets the release still
+succeeds; the purge step just skips. The stable copies are uploaded with
+`Cache-Control: no-cache`, so they mostly aren't edge-cached anyway.
+
+### Gotcha: setting secret values from the shell
+
+`gh secret set NAME` with **no piped value** prompts `? Paste your secret:` and
+reads it without echoing — use this. Do **not** paste a `!printf ... | gh ...`
+one-liner into a normal terminal: zsh treats the leading `!` as history
+expansion and dies with `zsh: event not found`. (The `!` prefix only means
+"run in the termio session"; it isn't part of the command.)
+
+```sh
+gh secret set R2_SECRET_ACCESS_KEY --repo jiweiyuan/termio   # prompts, no echo
+```
+
+## One-time setup
+
+Do these once. Most are shared with oakreader (same Apple account, same R2
+account, same Sparkle key), but GitHub secrets are write-only, so each value must
+be set on termio's repo directly — you can't copy them across repos.
+
+### 1. Cloudflare R2 bucket + domain (required)
+
+The `termio-downloads` bucket and `downloads.termio.sh` custom domain already
+exist. To recreate from scratch: R2 → create bucket **`termio-downloads`** →
+Settings → Custom Domains → add `downloads.termio.sh`. Verify:
+
+```sh
+wrangler r2 bucket list | grep termio-downloads
+curl -sI https://downloads.termio.sh/appcast.xml   # 404 before first release is fine
+```
+
+### 2. R2 S3 token → `R2_ACCESS_KEY_ID` + `R2_SECRET_ACCESS_KEY` (required)
+
+**Dashboard (recommended):** R2 → **Manage R2 API Tokens** → Create API Token →
+permission **Object Read & Write**, scoped to `termio-downloads`. The result page
+shows an **Access Key ID** and a **Secret Access Key** (secret shown once — copy
+now). Ignore the Bearer "Token value"; the workflow uses the S3 API only.
+
+```sh
+gh secret set R2_ACCESS_KEY_ID     --repo jiweiyuan/termio
+gh secret set R2_SECRET_ACCESS_KEY --repo jiweiyuan/termio
+gh secret set R2_ENDPOINT          --repo jiweiyuan/termio   # https://<accountid>.r2.cloudflarestorage.com
+```
+
+**CLI derivation (alternative):** an R2 S3 credential is derived from a normal
+account API token — `AccessKeyID = token id`, `SecretAccessKey = sha256(token
+value)`. Only works if you POST to `/accounts/{id}/tokens` with a credential that
+has **API Tokens → Write** (or the Global API Key). The wrangler OAuth session
+**cannot** do this — it returns `9109 Unauthorized` — so the dashboard is the
+path of least resistance.
+
+### 3. Developer ID certificate → `DEVELOPER_ID_CERT_P12` + `_PASSWORD` (required)
+
+If the identity is already in your login keychain (`security find-identity -v -p
+codesigning | grep "Developer ID"`), export it non-interactively:
+
+```sh
+P12="$TMPDIR/devid.p12"; PW="$(openssl rand -hex 12)"
+security export -t identities -f pkcs12 -P "$PW" -o "$P12"
+base64 -i "$P12" | gh secret set DEVELOPER_ID_CERT_P12 --repo jiweiyuan/termio
+printf '%s' "$PW" | gh secret set DEVELOPER_ID_CERT_PASSWORD --repo jiweiyuan/termio
+rm -f "$P12"
+```
+
+(macOS may pop a keychain "allow access to the private key" dialog — approve it.)
+
+### 4. App Store Connect API key → `ASC_API_KEY` + `ASC_KEY_ID` + `ASC_ISSUER_ID` (required)
+
+App Store Connect → Users and Access → Integrations → App Store Connect API →
+**Team Keys** → Generate. Name it `termio`, role **Developer** (minimum for
+notarization). Download the `.p8` **once** (`AuthKey_<KEYID>.p8`). The **Issuer
+ID** is shown above the key list — one per account, shared across all keys.
+
+```sh
+KEYID=YC4MR9DW4Q                                  # filename = AuthKey_<KEYID>.p8
+base64 -i ~/Downloads/AuthKey_$KEYID.p8 | gh secret set ASC_API_KEY --repo jiweiyuan/termio
+printf '%s' "$KEYID"                              | gh secret set ASC_KEY_ID    --repo jiweiyuan/termio
+gh secret set ASC_ISSUER_ID --repo jiweiyuan/termio   # prompts; paste the issuer UUID
+# Back up the .p8 — it can never be re-downloaded:
+mkdir -p ~/.appstoreconnect/private_keys && cp ~/Downloads/AuthKey_$KEYID.p8 ~/.appstoreconnect/private_keys/
+chmod 700 ~/.appstoreconnect ~/.appstoreconnect/private_keys && chmod 600 ~/.appstoreconnect/private_keys/*.p8
+```
+
+### 5. Sparkle signing key → `SPARKLE_ED_KEY` (required)
+
+The same EdDSA key oakreader uses (one key signs any number of apps).
+`scripts/setup-release.sh` verifies the keychain key matches
+`packaging/Info.plist`'s `SUPublicEDKey` and sets the secret:
+
+```sh
+./scripts/setup-release.sh
+```
+
+The public key must stay `zm3UpFrDf8tFcctK2vkEhrms6oFTp50AUb824lP9BAw=`. If the
+keychain key ever differs, the appcast signatures won't validate and updates will
+silently fail.
+
+### 6. Cache-purge token → `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ZONE_ID` (optional)
+
+My Profile → **API Tokens** → Create Custom Token:
+
+- Permission: **`Zone` → `Cache Purge` → `Purge`** (a *zone* permission — an
+  account-scoped token cannot purge; delete any empty extra permission rows).
+- **Zone Resources:** Include → **termio.sh** (least privilege; "All zones" also
+  works).
+- Do **not** use the Global API Key.
+
+```sh
+gh secret set CLOUDFLARE_API_TOKEN --repo jiweiyuan/termio   # the token value
+gh secret set CLOUDFLARE_ZONE_ID   --repo jiweiyuan/termio   # the termio.sh zone ID
+```
+
+Once set, the purge is fully automatic on every tag — there is no per-release
+cache step to run by hand.
+
+## Per-release runbook
+
+1. Land all changes on `main`; make sure CI is green.
+2. Pick the next version (semver), e.g. `0.1.0`. Nothing in the repo needs
+   editing — the tag *is* the version.
+3. Cut it:
+
+   ```sh
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+
+4. Watch the **Release** workflow:
+
+   ```sh
+   gh run watch --repo jiweiyuan/termio $(gh run list --repo jiweiyuan/termio -w Release -L1 --json databaseId -q '.[0].databaseId')
+   ```
+
+5. When it's green, run the verification below.
+
+To re-run a failed release after fixing a secret, delete + re-push the tag
+(`git push --delete origin v0.1.0 && git tag -d v0.1.0`, then re-tag) — the
+version must not go backwards.
+
+## Verify a release
+
+```sh
+V=0.1.0
+# Stable + versioned DMG resolve (200) and are non-trivial in size:
+curl -sI https://downloads.termio.sh/termio.dmg        | head -1
+curl -sI https://downloads.termio.sh/v$V/termio.dmg    | head -1
+# Appcast advertises the new version:
+curl -s  https://downloads.termio.sh/appcast.xml | grep -i "sparkle:version\|shortVersionString" | tail -4
+# Download + validate notarization/signature locally:
+curl -sL https://downloads.termio.sh/v$V/termio.dmg -o /tmp/termio.dmg
+spctl -a -t open --context context:primary-signature -v /tmp/termio.dmg   # → accepted, source=Notarized
+xcrun stapler validate /tmp/termio.dmg                                    # → The validate action worked!
+```
+
+Then confirm auto-update end-to-end: launch an older build and check that Sparkle
+offers the new version (Settings → check for updates).
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+| --- | --- | --- |
+| Build/sign step fails "no identity found" | `DEVELOPER_ID_CERT_P12`/`_PASSWORD` missing or wrong | Re-export the `.p12` (§3); confirm password |
+| Notarize step: "invalid" / "not signed with a valid Developer ID" | hardened runtime or timestamp missing | `build-app.sh` adds `--options runtime --timestamp` only with a real `SIGN_IDENTITY`; ensure the workflow passes it |
+| Notarize step: auth error | `ASC_*` secret wrong, or key role too low | Verify Key ID/Issuer/`.p8`; role must be ≥ Developer |
+| Upload step: 403 / SignatureDoesNotMatch | `R2_ACCESS_KEY_ID`/`SECRET`/`ENDPOINT` wrong or token lacks write | Recreate the R2 Object R/W token (§2) |
+| Appcast has only the newest item | previous `appcast.xml` not pulled from R2 before `generate_appcast` | it's pulled automatically; check the R2 read didn't 403 |
+| Users don't see the update | `SUPublicEDKey` ≠ `SPARKLE_ED_KEY`, or edge still cached | verify keys match (§5); set the purge token (§6) or wait out the TTL |
+| Purge step prints a skip notice | `CLOUDFLARE_API_TOKEN`/`ZONE_ID` unset | optional — set them (§6) for instant updates |
+| `zsh: event not found` setting a secret | leading `!` history expansion | use the interactive `gh secret set NAME` prompt |
+
+## Rollback
+
+Artifacts are immutable per version, so "rollback" = re-point the stable copies
+at a known-good build and drop the bad appcast item.
+
+1. Re-upload the last good DMG as the stable copy and regenerate the appcast so
+   its newest item points at that version (simplest: re-run the release workflow
+   on the last good tag).
+2. Purge the edge (`CLOUDFLARE_API_TOKEN` set) or wait out the TTL.
+3. Delete the bad GitHub Release + tag if the build was never fit to ship.
+
+Because `CFBundleVersion` is the commit count, a genuine fix must ship as a
+*newer* tag — never try to re-publish a lower version to "undo" one.
