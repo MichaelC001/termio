@@ -63,7 +63,7 @@ extension BrandImageAsset {
     /// Loads the bundled favicon as an `NSImage`, or `nil` if it is missing.
     /// `NSImage` renders both the SVG (Pi) and PNG (OpenCode) sources natively.
     func loadImage() -> NSImage? {
-        guard let url = Bundle.module.url(forResource: resourceName, withExtension: fileExtension)
+        guard let url = Bundle.termioResources.url(forResource: resourceName, withExtension: fileExtension)
         else { return nil }
         return NSImage(contentsOf: url)
     }

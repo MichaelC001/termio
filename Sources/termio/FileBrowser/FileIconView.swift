@@ -54,7 +54,7 @@ final class LangIconLoader {
 
     func image(named name: String) -> NSImage? {
         if let hit = cache[name] { return hit }
-        guard let url = Bundle.module.url(
+        guard let url = Bundle.termioResources.url(
             forResource: name, withExtension: "svg", subdirectory: "LangIcons"
         ), let image = NSImage(contentsOf: url) else { return nil }
         cache[name] = image
