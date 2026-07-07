@@ -3,20 +3,18 @@ import GhosttyTheme
 import Photos
 import PhotosUI
 import ShellCraftKit
-import TermioSSH
 import TermioShared
 import UIKit
 import UniformTypeIdentifiers
 
 /// Full-screen terminal for one session — the bundled demo sandbox shell for
-/// mock sessions, a live companion connection to a Mac session, or a direct
-/// SSH session to a saved host. The right screen edge slides in the inspector
-/// drawer (file tree + changes); the terminal keeps rendering, dimmed, behind it.
+/// mock sessions, or a live companion connection to a Mac session. The right
+/// screen edge slides in the inspector drawer (file tree + changes); the
+/// terminal keeps rendering, dimmed, behind it.
 final class TerminalViewController: UIViewController {
     private enum Backend {
         case demoShell
         case companion(URL)
-        case ssh(SSHHost)
     }
 
     private let session: MockSession
@@ -42,8 +40,6 @@ final class TerminalViewController: UIViewController {
     private lazy var shellSession = ShellSession(shell: defaultSandboxShell)
     private var companion: CompanionTransport?
     private var companionSession: InMemoryTerminalSession?
-    private var sshClient: SSHTerminalClient?
-    private var sshSession: InMemoryTerminalSession?
     private let headerBar = UIStackView()
     private let contextLabel = UILabel()
     private let titleLabel = UILabel()
@@ -112,22 +108,8 @@ final class TerminalViewController: UIViewController {
         hidesBottomBarWhenPushed = true
     }
 
-    /// A direct SSH terminal to a saved host (Settings ▸ SSH). Secrets are read
-    /// from the Keychain when the session is built (see makeTerminalSession).
-    init(sshHost: SSHHost) {
-        session = MockSession(
-            title: sshHost.displayName,
-            project: "ssh", agent: .terminal, status: .idle,
-            subtitle: "", time: ""
-        )
-        backend = .ssh(sshHost)
-        super.init(nibName: nil, bundle: nil)
-        hidesBottomBarWhenPushed = true
-    }
-
     deinit {
         companion?.stop()
-        sshClient?.stop()
         uploadClient?.stop()
         restylePump?.invalidate()
         if let settingsObserver {
@@ -182,8 +164,6 @@ final class TerminalViewController: UIViewController {
                 shellSession.start()
             case .companion:
                 companion?.start()
-            case .ssh:
-                sshClient?.start()
             }
         } else if case .companion = backend {
             // Re-entering a parked session claims the PTY's winsize back —
@@ -246,11 +226,10 @@ final class TerminalViewController: UIViewController {
         statusLabel.text = switch backend {
         case .demoShell: "\(session.agent.rawValue) · \(session.time)"
         case .companion: "Connecting…"
-        case .ssh(let host): "Connecting to \(host.host)…"
         }
         contextLabel.isHidden = contextLabel.text?.isEmpty ?? true
         switch backend {
-        case .companion, .ssh: contextLabel.isHidden = true // until connected
+        case .companion: contextLabel.isHidden = true // until connected
         case .demoShell: break
         }
 
@@ -682,45 +661,6 @@ final class TerminalViewController: UIViewController {
             companion = transport
             companionSession = terminalSession
             return terminalSession
-        case .ssh(let host):
-            var config = SSHConfig(host: host.host, port: host.port, username: host.username)
-            switch host.auth {
-            case .password: config.password = SSHKeychain.password(for: host.id)
-            case .key(let keyID): config.privateKey = SSHKeychain.privateKey(for: keyID)
-            }
-            let client = SSHTerminalClient(config: config)
-            let terminalSession = InMemoryTerminalSession(
-                write: { [weak client] data in client?.send(data) },
-                resize: { [weak client] viewport in
-                    client?.resize(cols: Int(viewport.columns), rows: Int(viewport.rows))
-                }
-            )
-            client.onOutput = { [weak terminalSession] data in terminalSession?.receive(data) }
-            client.onState = { [weak self] state in self?.sshStateChanged(state) }
-            sshClient = client
-            sshSession = terminalSession
-            return terminalSession
-        }
-    }
-
-    private func sshStateChanged(_ state: SSHClientState) {
-        statusLabel.isHidden = false
-        contextLabel.isHidden = true
-        switch state {
-        case .idle, .connecting:
-            statusLabel.text = "Connecting…"
-        case .connected:
-            statusLabel.isHidden = true
-        case .failed(let reason):
-            statusLabel.text = "Connection failed"
-            let alert = UIAlertController(title: "SSH connection failed", message: reason, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
-                self?.close()
-            })
-            present(alert, animated: true)
-        case .closed:
-            statusLabel.text = "Disconnected"
-            sshSession?.finish(exitCode: 0, runtimeMilliseconds: 0)
         }
     }
 
@@ -1099,7 +1039,7 @@ extension TerminalViewController: TerminalSurfaceRendererHealthDelegate {
     }
 
     /// Rebuild the surface in place, reusing the SAME in-memory session so the
-    /// companion/SSH byte stream is never dropped — only the dead Metal surface
+    /// companion byte stream is never dropped — only the dead Metal surface
     /// is replaced. Debounced: if a single scroll re-trips health repeatedly we
     /// must not loop-flicker, so we rebuild at most once every couple seconds.
     private func recoverFromRendererDeath() {
@@ -1114,7 +1054,6 @@ extension TerminalViewController: TerminalSurfaceRendererHealthDelegate {
         switch backend {
         case .demoShell: existing = shellSession.terminalSession
         case .companion: existing = companionSession
-        case .ssh: existing = sshSession
         }
         guard surfaceConfigured, let session = existing else { return }
 
