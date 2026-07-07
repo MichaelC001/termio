@@ -17,22 +17,32 @@ extension TermioStore {
 
     /// Creates a fresh *detached* git worktree of the project and adds it to the sidebar
     /// as its own top-level entry — no session is started (you add those yourself, the
-    /// same way any project offers "New … Session"). The worktree lives at
-    /// `~/.termio/worktrees/<repo>-worktree-<id>`, checked out detached at the project's
-    /// current `HEAD` so a throwaway checkout never locks a branch out of the primary
-    /// one; a branch is materialized later on intent (see
+    /// same way any project offers "New … Session"). The user names it first (a prompt
+    /// pre-filled with the next free `<repo>-worktree-N`); that name becomes both the
+    /// folder under `~/.termio/worktrees/` and the sidebar label, so worktrees stay
+    /// identifiable instead of reading as opaque hashes. The checkout is detached at the
+    /// project's current `HEAD` so a throwaway checkout never locks a branch out of the
+    /// primary one; a branch is materialized later on intent (see
     /// `docs/design/worktree-creation-lifecycle.md`). Files the repo lists in
     /// `.worktreeinclude` (`.env` and friends) are copied in so the checkout can run. On
-    /// failure (not a repo, git error) nothing is added and the user is told why.
+    /// cancel nothing happens; on failure (not a repo, git error) nothing is added and
+    /// the user is told why.
     func addWorktree(from projectID: Project.ID) {
         guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
         let project = projects[index]
 
-        let shortID = UUID().uuidString.prefix(8).lowercased()
         let repoName = (project.path as NSString).lastPathComponent
-        let dirName = "\(repoName)-worktree-\(shortID)"
         let worktreeRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".termio/worktrees", isDirectory: true)
+
+        // Let the user name the worktree, defaulting to the next free `<repo>-worktree-N`.
+        // Bailing out of the prompt leaves the tree untouched.
+        let suggestion = uniqueWorktreeDirName(from: "\(repoName)-worktree", root: worktreeRoot)
+        guard let entered = promptForWorktreeName(defaultName: suggestion) else { return }
+
+        // A hand-typed name can be non-filesystem-safe or collide with an existing
+        // worktree; sanitize it and bump a counter so the path is always fresh.
+        let dirName = uniqueWorktreeDirName(from: entered, root: worktreeRoot)
         let worktreePath = worktreeRoot.appendingPathComponent(dirName, isDirectory: true).path
 
         do {
@@ -95,6 +105,49 @@ extension TermioStore {
                 FileHandle.standardError.write(Data("termio: .worktreeinclude copy failed for \(relative): \(error)\n".utf8))
             }
         }
+    }
+
+    /// A modal name prompt for a new worktree — one text field in an `NSAlert`,
+    /// pre-filled with `defaultName` and pre-selected so the user can accept it with a
+    /// single Return or type over it. Returns the trimmed entry, or `nil` if cancelled
+    /// or emptied. Mirrors the file-browser rename prompt so both feel the same.
+    private func promptForWorktreeName(defaultName: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = "New Worktree"
+        alert.informativeText = "Name the worktree. It's created from HEAD and added to the sidebar as its own project until you remove it."
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = defaultName
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        field.selectText(nil)
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+
+    /// Turns a proposed worktree name into a folder name that is safe on disk and free
+    /// of any existing worktree directory. Path separators and whitespace collapse to
+    /// hyphens (so "my feature/x" → "my-feature-x"); if that name is already taken under
+    /// `root`, a `-2`, `-3`, … suffix is appended until the path is unused. Doubles as
+    /// the default-name generator (pass the bare `<repo>-worktree` base).
+    private func uniqueWorktreeDirName(from proposed: String, root: URL) -> String {
+        let base = proposed
+            .components(separatedBy: CharacterSet(charactersIn: "/\\").union(.whitespacesAndNewlines))
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+        let safeBase = base.isEmpty ? "worktree" : base
+
+        var candidate = safeBase
+        var counter = 2
+        while FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(candidate, isDirectory: true).path
+        ) {
+            candidate = "\(safeBase)-\(counter)"
+            counter += 1
+        }
+        return candidate
     }
 
     /// Reports a worktree-creation failure as a simple warning alert. Kept here so both
