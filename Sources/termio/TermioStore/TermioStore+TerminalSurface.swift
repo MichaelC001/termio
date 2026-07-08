@@ -232,11 +232,33 @@ extension TermioStore {
     /// exactly as under libghostty's `.exec`; `exec` keeps the shell from lingering
     /// as an extra process. A `nil` command is the plain interactive login shell.
     private static func launchArgv(command: String?) -> [String] {
+        let shell = loginShell
         if let command, !command.isEmpty {
-            return ["/bin/sh", "-c", "exec \(command)"]
+            // Run through an interactive *login* shell (`-i -l`) so the user's real PATH is
+            // sourced from BOTH `~/.zprofile` (login — e.g. Homebrew's `brew shellenv`) and
+            // `~/.zshrc` (interactive — where nvm/fnm/pyenv and npm-global bins usually land).
+            // A Finder/Dock-launched app inherits only the minimal
+            // `/usr/bin:/bin:/usr/sbin:/sbin` LaunchServices PATH, so a bare `sh -c` can't
+            // find agent CLIs under /opt/homebrew/bin, ~/.local/bin, … — they die at 0 ms
+            // with "Ghostty failed to launch the requested command". `exec` keeps the login
+            // shell from lingering (so quoting/args still parse as under `.exec`).
+            return [shell, "-ilc", "exec \(command)"]
         }
-        let loginShell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        return [loginShell, "-il"]
+        return [shell, "-il"]
+    }
+
+    /// The user's real login shell, read from the password database rather than the
+    /// ambient `SHELL` env var. A GUI app inherits whatever `SHELL` launchd or `open`
+    /// happened to pass — often unset, and sometimes `/bin/sh`, whose `-lc` sources NONE
+    /// of the user's zsh PATH config, so `codex`/`claude` die at 0 ms with "not found".
+    /// `getpwuid` returns the shell the user actually logs in with (`/bin/zsh` by default
+    /// on modern macOS), matching how native terminals (Ghostty, kitty, iTerm2) resolve it.
+    private static var loginShell: String {
+        if let entry = getpwuid(getuid()), let cString = entry.pointee.pw_shell {
+            let path = String(cString: cString)
+            if !path.isEmpty { return path }
+        }
+        return ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
     }
 
     /// The launch command for a session, with resume arguments folded in, plus the
