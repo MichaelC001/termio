@@ -53,6 +53,8 @@ from the real front matter).
 | done | research | ["Competitive analysis: container-use (dagger)"](competitive-analysis/06-container-use.md) |
 | done | research | ["termio differentiation, gaps, and risks"](competitive-analysis/09-differentiation-and-gaps.md) |
 | draft | design | [Git worktree creation & lifecycle (Codex-aligned)](design/worktree-creation-lifecycle.md) |
+| draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/remote-projects.md) |
+| draft | design | [Session Daemon Architecture (termiod — one model for local, remote, mobile)](design/session-daemon-architecture.md) |
 | draft | design | [Vibe Island 式 Agent 状态层（Claude Code hooks）](design/vibe-island-status.md) |
 | draft | design | [分享 Agent 会话（带密码的实时分享链接）](design/session-share.md) |
 | draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/remote-access-relay-strategy.md) |
@@ -61,8 +63,8 @@ from the real front matter).
 | draft | rfc | [Automation — scheduled agent runs](rfcs/automation-scheduled-agent-runs.md) |
 | draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](rfcs/fork-libghostty-spm.md) |
 | draft | rfc | [Onboarding —— 首次启动体验设计](design/onboarding.md) |
-| draft | rfc | [可扩展 Agent —— 配置化定义 + 配置化 Hook](design/agent-extensibility.md) |
 | implemented (phase 1) | design | [Worktree information architecture](design/worktree-information-architecture.md) |
+| in-progress | rfc | [可扩展 Agent —— 配置化定义 + 配置化 Hook](design/agent-extensibility.md) |
 | in-review | rfc | [Split panes — Ghostty-style splits in the terminal column](rfcs/split-panes.md) |
 | resolved | bug | [iOS terminal fails "unauthorized" while the session list works (companion over tunnel)](bug/companion-terminal-unauthorized-over-tunnel.md) |
 <!-- END docs-index -->

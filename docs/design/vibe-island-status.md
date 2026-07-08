@@ -2,7 +2,7 @@
 title: Vibe Island 式 Agent 状态层（Claude Code hooks）
 status: draft
 type: design
-updated: 2026-06-28
+updated: 2026-07-07
 ---
 
 # 设计：Vibe Island 式 Agent 状态层（Claude Code hooks）
@@ -81,6 +81,24 @@ TermioStore.applyHookEvent(_:)  (reducer)  ──写──▶  statuses[id]
 > **stale-`.working` 清扫**（`lastWorkingAt` + 30s Timer，>300s 无活动且仍 working → idle，
 > 救回中途崩溃的 agent——正是 cmux issue #3749 缺的兜底）。安装器修了一个 bug：`install` 现在跨
 > *所有* hook 事件清除 termio 旧条目，删掉某事件映射时不会留孤儿。
+>
+> **更新（2026-07-07，screen-change 兜底，对标 herdr 调研）**：stale-`.working` 清扫的活性判据
+> 从"有没有 PTY 字节流动"改成"**渲染出来的屏幕有没有变化**"。原判据的漏洞：agent 跑完停在 idle
+> 输入框时，终端仍会零星吐字节（重绘、光标闪烁），`noteOutputActivity` 把这些当成"还在忙"不断刷新
+> `lastWorkingAt`，于是 12s 清扫永远等不到"安静"，spinner 卡死不停（实拍复现：选中的 Claude 会话
+> 已停在 `❯` 提示符仍转圈）。修法：在 PTY sink 里调 `InMemoryTerminalSession.readViewportText()`
+> 取当前视口文本、哈希比对，**只有内容变了才刷新时间戳**；正在思考的一轮会逐秒重绘变化内容（滴答的
+> 计时 spinner、流式 token）→ 保持 working，停在静止提示符 → 屏幕不变 → 清扫在 ~12s 内清掉。纯通用
+> 判据，无需 per-agent 正则。`readViewportText` 自带锁、线程安全，哈希比对在读泵线程上跑，只把
+> changed 标志 hop 回主 actor（`noteOutputActivity(_:screenChanged:)`）。
+>
+> 这是从 [herdr](https://github.com/ogulcancelik/herdr) 借来的**唯一**高价值点：herdr 全程用
+> **屏幕刮取 + per-agent manifest 正则**（`❯` 提示框=idle、OSC 标题盲文 spinner=working、
+> 未知即 idle 兜底）当唯一真相源，天然不会卡死——但代价是要养 18 家 agent 的 manifest（脆、需远程
+> 更新）。termio 的 hook 层是**精确**信号（工具名、transcript 路径），不该丢；只把 herdr 的
+> "屏幕内容才是活性真相"用作 hook 缺失时的**通用兜底**，不引入 manifest。这也部分回答了
+> `agent-extensibility.md` §八 #3 那个"tier-3 死感 / 轻量推断"的待定问题——recovery 方向已解，
+> "无 hook 的 agent 从不转圈"那半仍待办。
 >
 > 以下 §1 原 cwd 方案保留作背景。
 
