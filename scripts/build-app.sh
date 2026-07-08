@@ -13,6 +13,10 @@
 #   open ./termio.app                 # launch it
 #
 # Environment overrides (used by the release workflow; all optional):
+#   TERMIO_CHANNEL   "dev" builds a side-by-side termio-dev.app (bundle id ….dev,
+#                    its own ~/.termio-dev state + companion port 8788, Sparkle
+#                    stripped) so it runs beside an installed release build. Default
+#                    is the release channel (./termio.app).
 #   TERMIO_VERSION   CFBundleShortVersionString to stamp (default: keep Info.plist's)
 #   TERMIO_BUILD     CFBundleVersion to stamp; must increase across shipped builds
 #                    because Sparkle compares it (default: keep Info.plist's)
@@ -27,7 +31,17 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 configuration="release"
-app_name="termio"
+# The SPM product / CFBundleExecutable name is always "termio"; only the bundle
+# wrapper and identity change per channel.
+product_name="termio"
+# TERMIO_CHANNEL=dev builds a side-by-side dev app (termio-dev.app, id ….dev, its
+# own state dir + port, Sparkle stripped) so it can run beside an installed release.
+channel="${TERMIO_CHANNEL:-release}"
+if [[ "$channel" == "dev" ]]; then
+    app_name="termio-dev"
+else
+    app_name="termio"
+fi
 app_dir="$repo_root/${app_name}.app"
 contents_dir="$app_dir/Contents"
 macos_dir="$contents_dir/MacOS"
@@ -40,7 +54,7 @@ echo "==> Building $app_name ($configuration)"
 swift build -c "$configuration"
 
 bin_path="$(swift build -c "$configuration" --show-bin-path)"
-binary_path="$bin_path/$app_name"
+binary_path="$bin_path/$product_name"
 if [[ ! -x "$binary_path" ]]; then
     echo "error: built binary not found at $binary_path" >&2
     exit 1
@@ -55,7 +69,7 @@ fi
 echo "==> Assembling bundle at $app_dir"
 rm -rf "$app_dir"
 mkdir -p "$macos_dir" "$resources_dir" "$frameworks_dir"
-cp "$binary_path" "$macos_dir/$app_name"
+cp "$binary_path" "$macos_dir/$product_name"
 cp "$repo_root/packaging/Info.plist" "$contents_dir/Info.plist"
 
 # Ship every SwiftPM resource bundle (termio's own assets, plus any dependency that
@@ -69,11 +83,21 @@ for resource_bundle in "$bin_path"/*.bundle; do
 done
 shopt -u nullglob
 
-# Ship the `termio` command-line tool inside the bundle. The app installs it onto
-# the user's PATH by symlinking to this copy, so it version-updates with the app.
-echo "==> Bundling termio command-line tool"
-cp "$repo_root/scripts/termio" "$resources_dir/termio"
-chmod +x "$resources_dir/termio"
+# Ship the command-line tool inside the bundle. The app installs it onto the user's
+# PATH by symlinking to this copy, so it version-updates with the app. A dev build
+# ships it as `termio-dev`, rebound to the dev socket + bundle id, so it drives the
+# dev app without clobbering the release `termio`.
+cli_name="termio"
+[[ "$channel" == "dev" ]] && cli_name="termio-dev"
+echo "==> Bundling $cli_name command-line tool"
+cp "$repo_root/scripts/termio" "$resources_dir/$cli_name"
+if [[ "$channel" == "dev" ]]; then
+    /usr/bin/sed -i '' \
+        -e 's/^SUPPORT_DIR_NAME="termio"/SUPPORT_DIR_NAME="termio-dev"/' \
+        -e 's/^BUNDLE_ID="sh.termio.app"/BUNDLE_ID="sh.termio.app.dev"/' \
+        "$resources_dir/$cli_name"
+fi
+chmod +x "$resources_dir/$cli_name"
 
 # Stamp version / build number when the release workflow supplies them. The
 # binary's rpath already resolves @rpath/Sparkle.framework via @executable_path
@@ -88,12 +112,25 @@ if [[ -n "${TERMIO_BUILD:-}" ]]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $TERMIO_BUILD" "$plist"
 fi
 
+# Dev channel: suffix the bundle id (so LaunchServices, UserDefaults, and
+# AppChannel's paths/port all diverge from the release build), rename it, and strip
+# Sparkle so the dev app can never auto-update itself onto the release channel.
+if [[ "$channel" == "dev" ]]; then
+    base_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")"
+    echo "==> Dev channel: bundle id ${base_id}.dev, Sparkle stripped"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${base_id}.dev" "$plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleName termio dev" "$plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName termio dev" "$plist"
+    /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$plist" 2>/dev/null || true
+    /usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks false" "$plist" 2>/dev/null || true
+fi
+
 echo "==> Embedding Sparkle.framework"
 cp -R "$sparkle_src" "$frameworks_dir/"
 # SwiftPM links @rpath/Sparkle.framework with only an @loader_path rpath, which
 # would look beside the binary. Point @rpath at Contents/Frameworks so the
 # embedded copy is found at runtime. (Harmless if the entry already exists.)
-install_name_tool -add_rpath "@executable_path/../Frameworks" "$macos_dir/$app_name" 2>/dev/null || true
+install_name_tool -add_rpath "@executable_path/../Frameworks" "$macos_dir/$product_name" 2>/dev/null || true
 
 if [[ -f "$source_icon" ]]; then
     echo "==> Generating AppIcon.icns from packaging/AppIcon.png"

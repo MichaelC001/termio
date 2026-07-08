@@ -44,16 +44,24 @@ struct AgentDefinition: Identifiable {
     /// Screen-scrape rules that classify this agent's rendered viewport into
     /// working / needs-attention, for agents that ship no hook system. `nil` for the
     /// built-ins (they use the precise hook layer) and for user agents that declared
-    /// no `status` block. See `AgentStatusRules`.
+    /// no `status` block (or that declared `hooks`, which take authority). See
+    /// `AgentStatusRules`.
     let statusRules: AgentStatusRules?
+    /// A user agent's declarative JSON-hook-file integration (Claude/Codex/Cursor
+    /// shape): the path to the agent's own hook file plus its event→state mapping.
+    /// When present it is installed by `AgentStatusHooks` and becomes the session's
+    /// status authority — so `statusRules` is left `nil` and screen-scrape is skipped,
+    /// keeping one source of truth per pane. `nil` for built-ins (installed in code)
+    /// and for user agents that declared no `hooks` block. See `AgentHookSpec`.
+    let hookSpec: AgentHookSpec?
 
-    /// All fields except `statusRules` are required; it defaults to `nil` so the
-    /// built-in roster and the fallback don't each have to spell it out.
+    /// All fields after `wireName` are optional so the built-in roster and the
+    /// fallback don't each have to spell them out.
     init(
         id: String, displayName: String, command: String?, permissionBypassFlag: String?,
         sandboxStandDownArguments: String?, resumeStyle: ResumeStyle, icon: AgentIcon,
         tint: Color, installURL: URL?, wireName: String,
-        statusRules: AgentStatusRules? = nil
+        statusRules: AgentStatusRules? = nil, hookSpec: AgentHookSpec? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -66,6 +74,7 @@ struct AgentDefinition: Identifiable {
         self.installURL = installURL
         self.wireName = wireName
         self.statusRules = statusRules
+        self.hookSpec = hookSpec
     }
 
     /// Compatibility shim for the many call sites and settings dictionaries that
@@ -345,6 +354,26 @@ struct AgentStatusRules {
     }
 }
 
+// MARK: - JSON-hook-file integration (config-driven, no plugin code)
+
+/// A user agent's declarative hook integration for the Claude/Codex/Cursor family:
+/// agents whose status hooks are just a JSON file mapping lifecycle events to shell
+/// commands. termio writes the report commands itself (`AgentStatusHooks.reportCommand`),
+/// so the user supplies only *data* — the file path and which event means what — never
+/// any code. Installed/removed by `AgentStatusHooks` alongside the built-ins. Agents
+/// with a different (plugin-API) hook mechanism can't be expressed here; they either
+/// post to the socket from their own plugin or fall back to screen-scrape `status`.
+struct AgentHookSpec {
+    /// The agent's own hook file, e.g. `~/.myagent/settings.json`. `~` is expanded.
+    let file: String
+    /// The file's structural shape — `.claudeNested` (Claude/Codex) or `.cursorFlat`
+    /// (Cursor's flat, stdout-as-reply dialect). See `HookDialect`.
+    let dialect: HookDialect
+    /// `(event name, normalized state, optional matcher)`, in the agent's own event
+    /// vocabulary. State is `working` / `attention` / `done` / `idle`.
+    let events: [(name: String, state: String, matcher: String?)]
+}
+
 // MARK: - Catalog (built-ins + user agents from disk)
 
 /// Owns the merged set of agent definitions for the running app: the built-ins plus
@@ -375,8 +404,7 @@ final class AgentCatalog {
     /// holding an `agent.json`. Mirrors the home-dir `~/.termio/worktrees` layout so
     /// the whole termio-owned tree is discoverable in one place.
     private static var agentsDirectory: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".termio/agents", isDirectory: true)
+        AppChannel.homeConfigDirectory.appendingPathComponent("agents", isDirectory: true)
     }
 
     /// Scans the agents directory and returns the user definitions, skipping any that
@@ -430,6 +458,7 @@ struct UserAgentManifest: Decodable {
     var installURL: String?
     var icon: IconSpec?
     var status: StatusSpec?
+    var hooks: HookSpec?
 
     /// Either an SF Symbol (with an optional tint hex) or a path to an image file on
     /// disk (PNG/SVG, absolute or relative to the agent's folder).
@@ -447,6 +476,27 @@ struct UserAgentManifest: Decodable {
         var attention: [String]?
     }
 
+    /// A JSON-hook-file integration (Claude/Codex/Cursor shape) — the precise,
+    /// no-code alternative to `status` screen-scrape for agents that ship such a file.
+    /// When present it wins: it becomes the status authority and `status` is ignored.
+    struct HookSpec: Decodable {
+        var file: String
+        var dialect: String?
+        var events: [Event]
+        struct Event: Decodable {
+            var event: String
+            var state: String
+            var matcher: String?
+        }
+    }
+
+    private func resolvedHookSpec() -> AgentHookSpec? {
+        guard let hooks else { return nil }
+        let dialect: HookDialect = hooks.dialect?.lowercased() == "cursor" ? .cursorFlat : .claudeNested
+        let events = hooks.events.map { (name: $0.event, state: $0.state, matcher: $0.matcher) }
+        return AgentHookSpec(file: hooks.file, dialect: dialect, events: events)
+    }
+
     func definition(directory: URL) -> AgentDefinition {
         let resolvedTint = icon?.tint.flatMap(Color.init(hex:)) ?? .monochromeInk
         let resolvedIcon: AgentIcon
@@ -458,14 +508,19 @@ struct UserAgentManifest: Decodable {
         } else {
             resolvedIcon = .systemSymbol(icon?.symbol ?? "terminal")
         }
+        // Hooks are the status authority when declared: skip screen-scrape so a pane
+        // never has two competing sources of truth (herdr's "one authority per pane").
+        let hookSpec = resolvedHookSpec()
+        let statusRules = hookSpec == nil
+            ? AgentStatusRules.from(working: status?.working, attention: status?.attention, label: id)
+            : nil
         return AgentDefinition(
             id: id, displayName: name, command: command,
             permissionBypassFlag: permissionBypassFlag,
             sandboxStandDownArguments: sandboxStandDownArguments,
             resumeStyle: .none, icon: resolvedIcon, tint: resolvedTint,
             installURL: installURL.flatMap(URL.init(string:)), wireName: id,
-            statusRules: AgentStatusRules.from(
-                working: status?.working, attention: status?.attention, label: id))
+            statusRules: statusRules, hookSpec: hookSpec)
     }
 }
 

@@ -323,8 +323,7 @@ final class TunnelManager: ObservableObject {
     }
 
     nonisolated private static var installDirectory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("termio/bin", isDirectory: true)
+        AppChannel.supportDirectory.appendingPathComponent("bin", isDirectory: true)
     }
 
     /// One-time fetch from the provider's GitHub release. tunelo ships a bare

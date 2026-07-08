@@ -1,0 +1,44 @@
+import Foundation
+
+/// Distinguishes a shipped release from a side-by-side **dev** build so the two
+/// can run at once without fighting over on-disk state, control sockets, or the
+/// companion port.
+///
+/// Everything keys off the bundle identifier: a dev build ships an id ending in
+/// `.dev` (`sh.termio.app.dev`), and that single fact fans out here into every
+/// termio-owned path and port. A release build (`sh.termio.app`) is unsuffixed and
+/// behaves exactly as before. UserDefaults and LaunchServices already isolate by
+/// bundle id for free; this type covers the paths that don't.
+///
+/// Note: a *project's* own `<project>/.termio/…` sidecar (phone uploads, etc.) is
+/// deliberately NOT routed through here — it's relative to the user's repo, not to
+/// termio's config, so both channels share it.
+enum AppChannel {
+    /// `"-dev"` for a `*.dev` bundle id, `""` for a release build.
+    static let suffix: String =
+        (Bundle.main.bundleIdentifier?.hasSuffix(".dev") ?? false) ? "-dev" : ""
+
+    /// Internal state — control/status sockets, `state.json`, custom themes, and
+    /// downloaded tunnel binaries: `~/Library/Application Support/termio[-dev]`.
+    /// Falls back to a home dotfolder if Application Support can't be resolved.
+    static var supportDirectory: URL {
+        let name = "termio" + suffix
+        if let base = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            return base.appendingPathComponent(name, isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("." + name, isDirectory: true)
+    }
+
+    /// User-facing config the user drops files into (agent definitions, worktrees):
+    /// `~/.termio[-dev]`.
+    static var homeConfigDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".termio" + suffix, isDirectory: true)
+    }
+
+    /// Companion (phone) server port: 8787 for release, 8788 for dev, so both can
+    /// bind at once.
+    static var companionPort: UInt16 { suffix.isEmpty ? 8787 : 8788 }
+}

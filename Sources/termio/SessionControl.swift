@@ -48,12 +48,7 @@ final class SessionControlListener {
     /// termio's Application Support directory. Deliberately a *different* file from
     /// `HookListener.socketURL`: this one accepts drive commands, not status pings.
     static var socketURL: URL {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            .map { $0.appendingPathComponent("termio", isDirectory: true) }
-            ?? FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".termio", isDirectory: true)
-        return base.appendingPathComponent("session-control.sock")
+        AppChannel.supportDirectory.appendingPathComponent("session-control.sock")
     }
 
     private let onRequest: @MainActor (ControlRequest) async -> Data
@@ -303,10 +298,15 @@ enum SessionSkillInstaller {
 /// the binary lives inside the app bundle, so the symlink keeps pointing at the
 /// current version across updates, and the audit surfaces a moved/old install.
 enum CommandLineTool {
+    /// The tool's name on PATH and inside the bundle: `termio` for a release build,
+    /// `termio-dev` for the side-by-side dev channel, so the dev app links its own
+    /// CLI instead of clobbering the release one.
+    static var toolName: String { "termio" + AppChannel.suffix }
+
     /// Where the tool is linked onto PATH. `/usr/local/bin` is on the default PATH
     /// and is user-writable on Homebrew Macs; otherwise install falls back to a
     /// one-time admin prompt.
-    static let installURL = URL(fileURLWithPath: "/usr/local/bin/termio")
+    static var installURL: URL { URL(fileURLWithPath: "/usr/local/bin/\(toolName)") }
 
     enum Status: Equatable {
         /// Linked to this build's bundled tool — nothing to do.
@@ -325,7 +325,7 @@ enum CommandLineTool {
     /// The bundled tool inside the running `.app`, or `nil` when running as a bare
     /// SwiftPM binary (`swift run`) where there is no Resources directory.
     static var bundledURL: URL? {
-        Bundle.main.url(forResource: "termio", withExtension: nil)
+        Bundle.main.url(forResource: toolName, withExtension: nil)
     }
 
     static func audit() -> Status {
@@ -342,7 +342,7 @@ enum CommandLineTool {
         }
         let resolved = URL(fileURLWithPath: destination).standardizedFileURL.path
         if resolved == bundled.standardizedFileURL.path { return .installed }
-        if resolved.hasSuffix("/termio.app/Contents/Resources/termio") { return .stale(resolved) }
+        if resolved.hasSuffix("/Contents/Resources/\(toolName)") { return .stale(resolved) }
         return .conflict
     }
 

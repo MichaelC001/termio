@@ -32,8 +32,8 @@ extension TermioStore {
         let project = projects[index]
 
         let repoName = (project.path as NSString).lastPathComponent
-        let worktreeRoot = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".termio/worktrees", isDirectory: true)
+        let worktreeRoot = AppChannel.homeConfigDirectory
+            .appendingPathComponent("worktrees", isDirectory: true)
 
         // Let the user name the worktree, defaulting to the next free `<repo>-worktree-N`.
         // Bailing out of the prompt leaves the tree untouched.

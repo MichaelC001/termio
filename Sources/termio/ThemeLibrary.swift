@@ -18,12 +18,7 @@ enum ThemeLibrary {
     /// Where users drop custom theme files, alongside termio's other support data
     /// (`~/Library/Application Support/termio/Themes`).
     static var directory: URL {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            .map { $0.appendingPathComponent("termio", isDirectory: true) }
-            ?? FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".termio", isDirectory: true)
-        return base.appendingPathComponent("Themes", isDirectory: true)
+        AppChannel.supportDirectory.appendingPathComponent("Themes", isDirectory: true)
     }
 
     /// Custom themes parsed from `directory`, cached after the first load. Call

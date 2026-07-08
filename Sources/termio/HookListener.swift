@@ -45,12 +45,7 @@ final class HookListener {
     /// The socket file, under termio's Application Support directory — the same
     /// place the session tree is saved.
     static var socketURL: URL {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            .map { $0.appendingPathComponent("termio", isDirectory: true) }
-            ?? FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".termio", isDirectory: true)
-        return base.appendingPathComponent("agent-status.sock")
+        AppChannel.supportDirectory.appendingPathComponent("agent-status.sock")
     }
 
     private let onReport: @MainActor (StatusReport) -> Void
@@ -210,7 +205,7 @@ enum AgentStatusHooks {
     }
 
     private static var installers: [AgentStatusInstaller] {
-        [
+        var installers: [AgentStatusInstaller] = [
             JSONHookFile.claude,
             JSONHookFile.codex,
             JSONHookFile.cursor,
@@ -219,6 +214,16 @@ enum AgentStatusHooks {
             PluginFile.pi,
             PluginFile.amp,
         ]
+        // User agents that declared a JSON-hook-file integration in `agent.json` get
+        // the exact same installer as the built-ins — the config supplies only the file
+        // path and event→state map, and termio writes the report commands. Plugin-API
+        // agents can't be expressed this way and simply carry no `hookSpec`.
+        for agent in AgentCatalog.shared.all {
+            if let spec = agent.hookSpec {
+                installers.append(JSONHookFile.userAgent(id: agent.id, spec: spec))
+            }
+        }
+        return installers
     }
 
     /// The shell command a hook runs: emit the normalized report (stamped with the
@@ -352,6 +357,21 @@ private struct JSONHookFile: AgentStatusInstaller {
             ],
             label: "cursor",
             dialect: .cursorFlat)
+    }
+
+    /// Builds an installer from a user agent's declarative `hooks` block. Same shape
+    /// as the built-ins — only the file path, events, and dialect vary, exactly the
+    /// per-agent knowledge the config carries. Never captures a transcript (only Claude
+    /// reliably provides one on stdin), so a user agent's hooks just report state. A
+    /// `static func` (not an `init`) so the memberwise initializer the built-in
+    /// factories rely on is preserved.
+    static func userAgent(id: String, spec: AgentHookSpec) -> JSONHookFile {
+        JSONHookFile(
+            url: URL(fileURLWithPath: (spec.file as NSString).expandingTildeInPath),
+            events: spec.events,
+            label: id,
+            capturesTranscript: false,
+            dialect: spec.dialect)
     }
 
     private static func home(_ components: String...) -> URL {

@@ -9,7 +9,7 @@
     <key>CFBundleExecutable</key>
     <string>termio</string>
     <key>CFBundleIdentifier</key>
-    <string>com.termio.app</string>
+    <string>sh.termio.app</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundlePackageType</key>

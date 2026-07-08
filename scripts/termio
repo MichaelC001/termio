@@ -17,7 +17,13 @@
 # The plain `termio [DIR]` form routes a folder to the app via LaunchServices.
 set -eu
 
-SOCKET="$HOME/Library/Application Support/termio/session-control.sock"
+# Channel binding. These two lines are the release defaults; `build-app.sh` rewrites
+# them in the copy it bundles into a dev-channel app so `termio-dev` drives the dev
+# build (its own socket + bundle id) instead of the release one.
+SUPPORT_DIR_NAME="termio"
+BUNDLE_ID="sh.termio.app"
+
+SOCKET="$HOME/Library/Application Support/$SUPPORT_DIR_NAME/session-control.sock"
 
 # JSON-escape a string for embedding in a request: backslashes, double quotes, and
 # newlines (which would otherwise break the single-line JSON object).
@@ -86,4 +92,4 @@ fi
 # same canonical path it stores, avoiding duplicate sidebar entries.
 abs=$(cd "$target" && pwd -P)
 
-exec open -b com.termio.app "$abs"
+exec open -b "$BUNDLE_ID" "$abs"

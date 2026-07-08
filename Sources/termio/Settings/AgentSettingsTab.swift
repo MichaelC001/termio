@@ -144,15 +144,16 @@ private struct CommandLineToolRow: View {
     }
 
     private var description: String {
+        let tool = CommandLineTool.toolName
         switch status {
         case .installed:
-            return "`termio` is on your PATH. Run `termio sessions …` to drive sibling sessions, or `termio .` to open a folder."
+            return "`\(tool)` is on your PATH. Run `\(tool) sessions …` to drive sibling sessions, or `\(tool) .` to open a folder."
         case .stale(let path):
             return "An older install points at \(path). Update it to this version of termio."
         case .notInstalled:
-            return "Install `termio` so you (and agents) can run `termio sessions …` from any shell. Links to /usr/local/bin."
+            return "Install `\(tool)` so you (and agents) can run `\(tool) sessions …` from any shell. Links to /usr/local/bin."
         case .conflict:
-            return "A different `termio` already exists at \(CommandLineTool.installURL.path). Remove it first — termio won't overwrite a file it didn't create."
+            return "A different `\(tool)` already exists at \(CommandLineTool.installURL.path). Remove it first — termio won't overwrite a file it didn't create."
         case .unavailable:
             return "Available when termio runs from the built app bundle."
         }

@@ -94,8 +94,9 @@ final class CompanionServer {
     private var ticks = 0
 
     /// The one port everything agrees on: the app serves here, dev-run.sh
-    /// points the phone here, and the Settings ▸ Mobile QR encodes it.
-    static let defaultPort: UInt16 = 8787
+    /// points the phone here, and the Settings ▸ Mobile QR encodes it. A dev-channel
+    /// build serves on 8788 (see `AppChannel`) so it can run beside a release build.
+    nonisolated static var defaultPort: UInt16 { AppChannel.companionPort }
 
     init(
         port: UInt16 = CompanionServer.defaultPort,

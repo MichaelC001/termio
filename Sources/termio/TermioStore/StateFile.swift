@@ -10,11 +10,7 @@ struct StateFile {
         var selectedSessionID: Session.ID?
     }
 
-    let url = FileManager.default
-        .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        .map { $0.appendingPathComponent("termio", isDirectory: true) }
-        ?? FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".termio", isDirectory: true)
+    let url = AppChannel.supportDirectory
 
     private var stateURL: URL { url.appendingPathComponent("state.json") }
 

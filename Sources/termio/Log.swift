@@ -3,13 +3,12 @@ import OSLog
 /// Unified-logging categories for the Mac app. One `Logger` per subsystem area,
 /// so Console.app and the `log` CLI can filter first-class:
 ///
-///     log stream --predicate 'subsystem == "com.termio.app" && category == "companion"'
+///     log stream --predicate 'subsystem == "sh.termio.app" && category == "companion"'
 ///
-/// The subsystem is taken from the bundle id at runtime rather than hardcoded,
-/// so it always matches the app's real identity — and it auto-follows a future
-/// bundle-id rename (the id is `com.termio.app` today; the brand domain is
-/// termio.sh, so a deliberate rename to `sh.termio.app` is owed, with a
-/// defaults-migration shim) without touching this file.
+/// The subsystem is taken from the bundle id at runtime rather than hardcoded, so
+/// it always matches the app's real identity — release (`sh.termio.app`) or the
+/// side-by-side dev build (`sh.termio.app.dev`), which lets `log stream` filter to
+/// one channel.
 ///
 /// Levels carry persistence semantics: `.debug` is memory-only (free in
 /// release), `.info`/`.notice` are the default operational trail, and

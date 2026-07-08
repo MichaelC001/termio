@@ -50,7 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let updaterController = SPUStandardUpdaterController(
         startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
     #endif
-    // Folders handed to us by the `termio` CLI (via `open -b com.termio.app <dir>`)
+    // Folders handed to us by the `termio` CLI (via `open -b sh.termio.app <dir>`)
     // before the window exists, replayed once it does. macOS may deliver the open
     // event during a cold launch, ahead of `applicationDidFinishLaunching`.
     private var pendingOpenURLs: [URL] = []
@@ -353,7 +353,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     /// Entry point for the `termio` CLI: macOS delivers the folder passed to
-    /// `open -b com.termio.app <dir>` here. Because termio is single-instance, an
+    /// `open -b sh.termio.app <dir>` here. Because termio is single-instance, an
     /// already-running app receives this in place, so the project opens in the
     /// existing window rather than spawning a second one.
     func application(_ application: NSApplication, open urls: [URL]) {

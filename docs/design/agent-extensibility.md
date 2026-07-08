@@ -75,9 +75,25 @@ related:
 > **故作为上游 ask 记录，不在本仓做不安全的绕路**。影响面小且自愈（仅"有 status 规则的用户 agent"+"滚离底部"时
 > 侧栏状态点短暂错，无误动作）。
 >
-> **未做（后续 Cut）**：tier-1 的 JSON-hook-file 配置化（比刮屏更精确，但只覆盖有 Claude 形状 hook 文件的
-> agent）、Settings 里增删改 agent 的 UI 与 "live 状态/仅完成" 徽标、file-watch 热加载（当前需重启）、
-> 给用户 agent 接 resume（当前一律 `.none`）。
+> **更新（2026-07-08，hook 配置化 = Cut 2 tier-1 已落地）**：用户 agent 现在也能声明 `hooks` 块拿到
+> **精确**状态（不止刮屏）。三档"侧栏怎么知道状态"的阶梯，从便宜到精确：
+> 1. **`status` 刮屏正则**——任何 agent，零代码（上面那节）。
+> 2. **`hooks` JSON-hook-file**——仍是**纯数据、无需写任何 JS**，给"自带 Claude/Codex/Cursor 形状 hook
+>    文件"的 agent 用。termio 自己写 report 命令（`reportCommand`），用户只声明 `file` + `dialect` +
+>    `events:[{event,state,matcher?}]`。装/卸随全局 hooks 开关（`AgentStatusHooks.installers` 现在 =
+>    内置 + 每个带 `hookSpec` 的用户 agent，复用 `JSONHookFile.userAgent(id:spec:)`，零新 installer 代码）。
+> 3. **plugin-API agent（Pi/Amp/OpenCode 式）**——**没有 hook 文件，只有各自的插件 API**，事件名/接口都不同，
+>    termio 无法替未知 API 生成插件。这类**只能有人手写插件 JS**。但因为 socket 收任何来源的报文，用户的插件
+>    直接往 socket 发 `{termio_session,state,cwd}` 即可（wire 契约文档化），**无需 termio 配置**；若不想写插件，
+>    退回第 1 档刮屏即可。故本仓**不做 pluginFile 配置**（RFC §5.3 早已判定：为未知插件 API 背代码不值当）。
+>
+> **权威唯一（对标 herdr "one authority per pane"）**：一个 agent 同时声明 `hooks` 和 `status` 时，
+> **hooks 胜**——`UserAgentManifest.definition` 里 `hookSpec != nil` 就把 `statusRules` 置 nil，刮屏这条
+> 完全不跑，避免两个真相源打架。`AgentHookSpec`（file/dialect/events）+ `HookSpec` DTO。`dialect` 取
+> `"cursor"→.cursorFlat`，否则 `.claudeNested`。
+>
+> **未做（后续 Cut）**：Settings 里增删改 agent 的 UI 与 "live 状态/仅完成" 徽标、file-watch 热加载
+> （当前需重启）、给用户 agent 接 resume（当前一律 `.none`）、pluginFile 配置（见上，判定不做）。
 
 # RFC：可扩展 Agent —— 配置化定义 + 配置化 Hook
 
