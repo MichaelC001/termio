@@ -65,7 +65,7 @@ When invoked, execute these steps sequentially:
    # window, so the roster URL MUST carry the pairing token (?t=…) or the app
    # loops "connected → unauthorized → reconnect" forever. Token lives in the
    # Mac app's defaults (readable by design), same as dev-run.sh.
-   TOKEN=$(defaults read com.termio.app companion.pairingToken 2>/dev/null || true)
+   TOKEN=$(defaults read sh.termio.app companion.pairingToken 2>/dev/null || true)
    xcrun simctl launch --terminate-running-process "$SIM" sh.termio.mobile \
        -roster-url "ws://127.0.0.1:8787${TOKEN:+/?t=${TOKEN}}"
    ```

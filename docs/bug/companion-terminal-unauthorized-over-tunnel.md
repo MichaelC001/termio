@@ -146,7 +146,7 @@ to read the JSON, or just count/size the client frames: `auth`â‰ˆ50B, `attach`â‰
 
 ```sh
 # Current pairing token and tunnel URL (values rotate on each app relaunch):
-defaults read com.termio.app companion.pairingToken
+defaults read sh.termio.app companion.pairingToken
 grep -iE "\[tunnel\] up at" /tmp/termio-dev.log | tail -1
 
 # Live connections to the companion port (roster vs terminal vs tunnel vs sim):
