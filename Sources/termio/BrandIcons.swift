@@ -15,9 +15,14 @@ struct AgentIconView: View {
     var body: some View {
         switch agent.icon {
         case .systemSymbol(let name):
+            // No built-in uses an SF Symbol (the terminal uses a Hugeicons mark), so
+            // this is the user-agent / fallback path: paint it in the agent's own tint
+            // rather than a fixed grey, matching how its spinner reads.
             Image(systemName: name)
                 .font(.system(size: size, weight: weight))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(agent.tintColor)
+        case .imageFile(let url):
+            UserAgentIconView(url: url, size: size)
         case .hugeIcon(let icon):
             // A thin stroke already reads lighter than the filled brand tiles, so
             // paint it at full label strength (`.primary`) — anything less looks
@@ -59,6 +64,27 @@ struct BrandImageView: View {
     }
 }
 
+/// Renders a user agent's own icon file (from its `agent.json` `icon.path`) as a
+/// small rounded tile, mirroring `BrandImageView` but reading from an arbitrary path
+/// on disk instead of the bundle. Falls back to blank space if the file can't be
+/// loaded rather than trapping — a bad path should never crash the sidebar.
+struct UserAgentIconView: View {
+    let url: URL
+    var size: CGFloat
+
+    var body: some View {
+        if let image = NSImage(contentsOf: url) {
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+        } else {
+            Color.clear.frame(width: size, height: size)
+        }
+    }
+}
+
 extension BrandImageAsset {
     /// Loads the bundled favicon as an `NSImage`, or `nil` if it is missing.
     /// `NSImage` renders both the SVG (Pi) and PNG (OpenCode) sources natively.
@@ -84,19 +110,6 @@ extension BrandLogo {
     }
 }
 
-extension AgentPreset {
-    /// The agent's representative color, used to tint the "working" spinner so a
-    /// busy session pulses in its own brand color rather than a neutral grey.
-    /// Marks without a single brand color (and the plain terminal) fall back to
-    /// adaptive ink — near-black on light, near-white on dark.
-    var tintColor: Color {
-        switch self {
-        case .claudeCode: return BrandLogo.claude.tint
-        case .codex: return BrandLogo.codex.tint
-        case .terminal, .opencode, .pi, .amp, .cursor, .kimi: return .monochromeInk
-        }
-    }
-}
 
 extension Color {
     /// Pure black in light mode, pure white in dark mode, at full opacity. Unlike

@@ -162,15 +162,21 @@ final class TermioStore: ObservableObject {
 
     /// When each currently-working session last reported activity, used to recover
     /// a session whose turn ended without a `done` hook (see `sweepStaleWorking`).
-    /// Refreshed both by working hooks and by PTY output (`noteOutputActivity`).
+    /// Refreshed both by working hooks and by a *changed* rendered screen
+    /// (`noteOutputActivity`).
     var lastWorkingAt: [Session.ID: Date] = [:]
+    /// The last activity a screen-scrape-configured agent's viewport was classified
+    /// into (see `AgentStatusRules` / `applyScreenDetectedActivity`), so status is only
+    /// re-driven on a transition — not re-emitted every tick the screen sits idle.
+    var lastScreenActivity: [Session.ID: AgentStatusRules.Activity] = [:]
     var staleWorkingSweep: Timer?
-    /// How long a `.working` session may go with *no PTY output and no working
+    /// How long a `.working` session may go with *no screen change and no working
     /// hook* before the sweep flips it back to idle. A working agent's TUI repaints
-    /// its spinner sub-second (`noteOutputActivity` keeps refreshing the timestamp),
-    /// so this only elapses once the terminal has genuinely gone quiet — recovering
-    /// the many turns that end without a `Stop` hook (a cancelled `/resume` or
-    /// `/compact`, an esc-interrupt) instead of spinning until they time out.
+    /// changing content sub-second (`noteOutputActivity` keeps refreshing the
+    /// timestamp while the viewport keeps changing), so this only elapses once the
+    /// screen has genuinely gone static — recovering the many turns that end
+    /// without a `Stop` hook (a cancelled `/resume` or `/compact`, an esc-interrupt,
+    /// or a hook that never correlated) instead of spinning forever.
     let staleWorkingTimeout: TimeInterval = 12
 
     /// Records the host surface's live grid so the next session's PTY is spawned

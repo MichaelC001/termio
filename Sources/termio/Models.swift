@@ -43,175 +43,8 @@ extension Project {
     }
 }
 
-/// What a new session launches: a plain login shell, or a coding agent CLI.
-/// The `command` is fed to libghostty's `command` config (run instead of the
-/// shell); the `icon` is shown in the new-session picker and the sidebar row.
-enum AgentPreset: String, CaseIterable, Identifiable, Hashable, Codable {
-    case terminal
-    case claudeCode
-    case codex
-    case opencode
-    case pi
-    case amp
-    case cursor
-    case kimi
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .terminal: return "Terminal"
-        case .claudeCode: return "Claude Code"
-        case .codex: return "Codex"
-        case .opencode: return "OpenCode"
-        case .pi: return "Pi"
-        case .amp: return "Amp"
-        case .cursor: return "Cursor"
-        case .kimi: return "Kimi"
-        }
-    }
-
-    /// Program launched in the session, or `nil` for the user's login shell.
-    /// The agent CLIs are expected on `PATH`; if missing, the terminal shows
-    /// the shell's "command not found", which is the right place to surface it.
-    var command: String? {
-        switch self {
-        case .terminal: return nil
-        case .claudeCode: return "claude"
-        case .codex: return "codex"
-        case .opencode: return "opencode"
-        case .pi: return "pi"
-        case .amp: return "amp"
-        // Cursor's headless CLI binary is `cursor-agent`, distinct from the `cursor`
-        // GUI launcher, so name it explicitly.
-        case .cursor: return "cursor-agent"
-        case .kimi: return "kimi"
-        }
-    }
-
-    /// The flag that makes this agent bypass its own permission/approval prompts —
-    /// the "YOLO" switch. Each CLI spells it differently, so it lives on the preset
-    /// rather than being hardcoded in the UI. `nil` for the plain shell and for
-    /// agents whose bypass flag isn't stable enough to wire to a one-click toggle
-    /// (OpenCode's is still in flight, Pi has none documented); those still accept
-    /// any flag through the free-text command override. Composed onto the resolved
-    /// command by `AppSettings.command(for:)` when the user flips the switch.
-    var permissionBypassFlag: String? {
-        switch self {
-        case .claudeCode: return "--dangerously-skip-permissions"
-        case .codex: return "--dangerously-bypass-approvals-and-sandbox"
-        // These have no bypass flag stable enough to wire to a one-click toggle;
-        // they still accept any flag through the free-text command override.
-        case .terminal, .opencode, .pi, .amp, .cursor, .kimi: return nil
-        }
-    }
-
-    /// Arguments (a shell-ready fragment) that tell this agent to NOT run its own
-    /// Seatbelt sandbox, because termio's per-project profile is the single enforcement
-    /// layer wrapping the whole session. This is *required*, not an optimization: macOS
-    /// forbids applying a second sandbox inside an existing one, so an agent's inner
-    /// `sandbox-exec` would fail to initialize once termio has already sandboxed the
-    /// session. `nil` for agents with no internal sandbox. Appended by `SandboxLauncher`.
-    var sandboxStandDownArguments: String? {
-        switch self {
-        case .claudeCode: return "--settings '{\"sandbox\":{\"enabled\":false}}'"
-        case .codex: return "--sandbox danger-full-access"
-        case .terminal, .opencode, .pi, .amp, .cursor, .kimi: return nil
-        }
-    }
-
-    /// Whether this agent lets termio pin its conversation id *up front*, so a relaunch
-    /// resumes the exact prior session: Claude Code via `--session-id` (create) /
-    /// `--resume` (resume), Pi via its idempotent `--session-id`.
-    var usesPinnedResumeID: Bool { self == .claudeCode || self == .pi }
-
-    /// Whether this agent's id can't be set up front but *can* be discovered afterward
-    /// from its own session store and then resumed by id (Codex `resume <id>`, OpenCode
-    /// `--session <id>`). See `AgentSessionStore.discover`. Until the id is discovered,
-    /// `resumeArguments` falls back to "continue the most recent session in the dir".
-    var usesDiscoveredResumeID: Bool { self == .codex || self == .opencode }
-
-    /// Inputs the resume decision needs that only `TermioStore` can supply.
-    struct ResumeContext {
-        /// The stable id termio pinned for this session (meaningful only when
-        /// `usesPinnedResumeID`).
-        var resumeID: String
-        /// Whether this session's agent has been launched in a prior app run.
-        var launchedBefore: Bool
-        /// Whether Claude Code already has a saved conversation under `resumeID`.
-        /// Resuming one that doesn't exist errors ("No conversation found"), so a
-        /// pinned-but-never-used session is (re)created with `--session-id` instead.
-        var pinnedConversationExists: Bool
-    }
-
-    /// The argument fragment to append to the resolved base command so this session
-    /// continues its prior conversation on relaunch, or `nil` to launch fresh. Two
-    /// families (see `usesPinnedResumeID`): id-pinning agents resume an exact session,
-    /// the others continue the most recent session in the working directory.
-    func resumeArguments(_ context: ResumeContext) -> String? {
-        switch self {
-        // These aren't wired for resume yet, so they launch a fresh session each
-        // time, like the plain terminal.
-        case .terminal, .amp, .cursor, .kimi:
-            return nil
-        case .claudeCode:
-            // `--session-id` creates a session with our id (and errors if it already
-            // exists); `--resume` resumes it (and errors if it doesn't). So create on
-            // the first launch / while no conversation has been saved, and resume once
-            // one exists — handling a session that was opened but never used.
-            return context.pinnedConversationExists
-                ? "--resume \(context.resumeID)"
-                : "--session-id \(context.resumeID)"
-        case .pi:
-            // Pi's `--session-id` creates the session when missing and resumes it
-            // otherwise, so the same flag is correct on every launch.
-            return "--session-id \(context.resumeID)"
-        case .codex:
-            // Resume the exact session once its id has been discovered (see
-            // `usesDiscoveredResumeID`); until then continue the most recent recorded
-            // session in this directory (`--last` filters by cwd by default).
-            if !context.resumeID.isEmpty { return "resume \(context.resumeID)" }
-            return context.launchedBefore ? "resume --last" : nil
-        case .opencode:
-            // As Codex: resume by id when known, else continue this directory's last session.
-            if !context.resumeID.isEmpty { return "--session \(context.resumeID)" }
-            return context.launchedBefore ? "--continue" : nil
-        }
-    }
-
-    /// The glyph for this preset. The plain terminal uses a Hugeicons stroke mark
-    /// (more refined than SF Symbols' terminal glyph); the coding agents use their
-    /// vendor's real brand mark, which SF Symbols has no equivalent for — see
-    /// `BrandLogo`.
-    var icon: AgentIcon {
-        switch self {
-        case .terminal: return .hugeIcon(.terminal)
-        case .claudeCode: return .brand(.claude)
-        case .codex: return .brand(.codex)
-        case .opencode: return .brandImage(.openCode)
-        case .pi: return .brandImage(.pi)
-        case .amp: return .brandImage(.amp)
-        case .cursor: return .brandImage(.cursor)
-        case .kimi: return .brandImage(.kimi)
-        }
-    }
-
-    /// The vendor's official page for installing this agent's CLI, opened from the
-    /// Settings row when its binary isn't found on the user's PATH. `nil` for the
-    /// plain terminal (nothing to install — it's the login shell).
-    var installURL: URL? {
-        switch self {
-        case .terminal: return nil
-        case .claudeCode: return URL(string: "https://claude.com/claude-code")
-        case .codex: return URL(string: "https://developers.openai.com/codex/cli")
-        case .opencode: return URL(string: "https://opencode.ai")
-        case .pi: return URL(string: "https://pi.dev")
-        case .amp: return URL(string: "https://ampcode.com/manual")
-        case .cursor: return URL(string: "https://cursor.com/docs/cli")
-        case .kimi: return URL(string: "https://moonshotai.github.io/kimi-code")
-        }
-    }
-}
+/// The agent model — `AgentDefinition` (aliased `AgentPreset`) plus the built-in
+/// roster and the user-agent catalog — lives in `AgentDefinition.swift`.
 
 /// How an agent's glyph is drawn: a built-in SF Symbol, a Hugeicons stroke mark,
 /// a vector brand logo, or a vendor's real favicon image. SF Symbols ships no
@@ -225,6 +58,9 @@ enum AgentIcon: Hashable {
     case hugeIcon(HugeIcon)
     case brand(BrandLogo)
     case brandImage(BrandImageAsset)
+    /// A user agent's own icon file (PNG/SVG) on disk, from its `agent.json`. Loaded
+    /// by `AgentIconView` as an `NSImage`; a missing file degrades to blank space.
+    case imageFile(URL)
 }
 
 /// A vendor brand mark carried as its real favicon image, bundled under

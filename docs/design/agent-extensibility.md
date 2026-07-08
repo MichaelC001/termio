@@ -1,11 +1,83 @@
 ---
 title: 可扩展 Agent —— 配置化定义 + 配置化 Hook
-status: draft
+status: in-progress
 type: rfc
-updated: 2026-06-28
+updated: 2026-07-07
 related:
   - vibe-island-status.md
 ---
+
+> **as-built（2026-07-07，Cut 1 已落地）**：`enum AgentPreset` → `struct AgentDefinition`
+> 已完成（`Sources/termio/AgentDefinition.swift`）。要点与本 RFC 一致，实现上做了一个降churn的选择：
+> - **保留类型名与 case 值**：`typealias AgentPreset = AgentDefinition` + 每个内置 agent 一个
+>   `static let`（`.claudeCode` / `.codex` …），并让 `AgentDefinition` **按 `id` 判等/哈希**。于是
+>   ~154 处旧调用里绝大多数（`agent == .claudeCode`、`[AgentPreset: T]` 字典键、`.allCases`、
+>   `agent.rawValue`、`agent.command/.icon/.displayName`、`agent: .terminal` 默认参数）**零改动**编译通过。
+>   真正需要重写的只有 4 处 value-`switch`（`AgentSessionStore.match`、`UsageMonitor.fetch`、
+>   `CompanionServer.wireAgent` 正反向）——都改成 `if agent == …` 或按 `wireName` 查表。
+> - **持久化零迁移**：`AgentDefinition` 的 `Codable` 用 `singleValueContainer` **只编解码 `id` 字符串**，
+>   与旧 `String`-backed enum 的线格式逐字节一致；`Session.agent` 存储字段与其 `init(from:)` 都不用动。
+>   实测现存 `state.json` 里 `agent` 就是 `"claudeCode"`/`"codex"`/`"terminal"` 裸串，原样反序列化。
+> - **用户 agent 加载**：`AgentCatalog.shared` = 内置数组 + 扫 `~/.termio/agents/<id>/agent.json` 合并
+>   （懒加载，首次在 Session 解码时触发，故 `state.json` 加载时用户 agent 必已可解析）。内置 id 冲突时
+>   内置胜出；解析失败的 `agent.json` 记日志跳过、不拖垮其余；session 引用了已删除的用户 agent →
+>   `AgentDefinition.fallback(id:)` 退化为纯 shell 且以 id 作标题，不丢会话。
+> - **图标**：`AgentIcon` 新增 `.imageFile(URL)`（`UserAgentIconView` 从磁盘任意路径加载 NSImage，
+>   圆角 tile，加载失败留白）。用户 agent 的 SF Symbol 用其 `tint` 上色（内置无一使用 `.systemSymbol`，
+>   无回归）。
+> - **本 Cut 不含 hook 配置**（Cut 2）：用户 agent 无 live-status hook，退化到铃/OSC "done" 信号 +
+>   [`vibe-island-status.md`](./vibe-island-status.md) 的屏幕变化清扫（screen-change 兜底）。对绝大多数
+>   本就没有 hook 系统的长尾 agent 这是诚实的表现。
+>
+> **用户写的 `agent.json`（Cut 1 + 状态检测）**：
+> ```json
+> {
+>   "id": "aider",
+>   "name": "Aider",
+>   "command": "aider",
+>   "permissionBypassFlag": "--yes-always",
+>   "installURL": "https://aider.chat",
+>   "icon": { "path": "logo.svg" },
+>   "status": {
+>     "working": ["esc to interrupt", "\\bthinking\\b"],
+>     "attention": ["\\(y/n\\)", "do you want to (proceed|apply)"]
+>   }
+> }
+> ```
+> `icon` 二选一：`{ "symbol": "<SF Symbol 名>", "tint": "#RRGGBB" }` 或
+> `{ "path": "logo.svg" }`（相对该 agent 文件夹，或绝对/`~` 路径）。**SVG 已支持**——`NSImage` 原生
+> 用 `_NSSVGImageRep` 渲染 SVG（内置 Pi 图标就是 SVG），`.imageFile(URL)` 路径通吃 PNG/SVG。`command`
+> 省略 = 纯 shell；`sandboxStandDownArguments` 可选。放到 `~/.termio/agents/aider/agent.json`，重启即出现。
+>
+> **状态检测（"忙 / 需要你" 如何测）**：内置 agent 走 hook（精确），但用户的任意 CLI 大多**没有 hook 系统**，
+> 唯一通用信号是**渲染出来的屏幕**——这正是 herdr 的路线。所以 `status` 块用正则刮屏（复用我们为
+> stale-working sweep 已经在读的 `readViewportText()`，每秒多一次正则）：
+> - `status.working`：任一命中 → `.working`（spinner 转起来）。
+> - `status.attention`：任一命中 → `.needsAttention`（侧栏标"需要你"，即权限/需人工输入）。**优先级高于
+>   working**（提示框可能压在还在转的 header 下）。
+> - 两者都不中 → 静止（idle / done：刚从 working/attention 跌落且未选中 = 绿点 done，否则 idle）。
+>
+> 实现：`AgentStatusRules`（预编译 `NSRegularExpression`，大小写不敏感，整屏匹配，优先级
+> `attention > working > idle`）；`TermioStore.applyScreenDetectedActivity` 只在**状态跳变**时改
+> `statuses`（idle 屏不会每秒重发 done），working 每 tick 刷 `lastWorkingAt`（静止的 working 屏不会被
+> sweep 误清）。**刻意不抄** herdr 的 regions / priorities / 远程 manifest 引擎——两条正则数组足够，表面积最小。
+> 无效正则记日志跳过；不写 `status` = 退回零配置铃/OSC。误报靠用户调正则（整屏匹配的固有取舍，已在文档说明）。
+>
+> **调试（借 herdr 的 `agent explain`）**：设 `TERMIO_STATUS_TRACE=1` 启动 termio，每次分类往
+> `/tmp/termio-status.log` 追一行 `[sess] <agent> → working /matched-pattern/`，用户调 `status` 正则时
+> 能直接看到活屏命中了哪条规则（没命中 → idle）。零成本（env 只查一次）。
+>
+> **已知限制（对标 herdr "live bottom-buffer" 的差距）**：分类读的是 `readViewportText()` = **当前显示的
+> 视口**，会跟随用户的 scrollback——把内联渲染的 agent 面板往上滚，分类器就读到过期的行，直到滚回底部自愈。
+> herdr 专门读**活跃底部缓冲**规避此问题。这里的干净修法需要 libghostty wrapper 上一个 `readActiveText()`
+> （用 `GHOSTTY_POINT_ACTIVE`）——其 blessed 读在私有锁下与 PTY 写串行，而从读泵线程直接发无锁
+> `GHOSTTY_POINT_ACTIVE` 读会和 `inMemory.receive` 抢，正是 termio 栽过的 libghostty 线程 UAF 雷区。
+> **故作为上游 ask 记录，不在本仓做不安全的绕路**。影响面小且自愈（仅"有 status 规则的用户 agent"+"滚离底部"时
+> 侧栏状态点短暂错，无误动作）。
+>
+> **未做（后续 Cut）**：tier-1 的 JSON-hook-file 配置化（比刮屏更精确，但只覆盖有 Claude 形状 hook 文件的
+> agent）、Settings 里增删改 agent 的 UI 与 "live 状态/仅完成" 徽标、file-watch 热加载（当前需重启）、
+> 给用户 agent 接 resume（当前一律 `.none`）。
 
 # RFC：可扩展 Agent —— 配置化定义 + 配置化 Hook
 

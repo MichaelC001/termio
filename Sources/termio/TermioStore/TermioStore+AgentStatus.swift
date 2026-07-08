@@ -115,16 +115,51 @@ extension TermioStore {
         lastWorkingAt[id] = nil
     }
 
-    /// Refreshes a working session's activity timestamp on PTY output. A genuinely
-    /// working agent repaints its spinner every second, so output flowing means the
-    /// turn is still live; the moment it stops (the agent is back at its prompt),
-    /// the timestamp stops advancing and `sweepStaleWorking` can clear the spinner.
-    /// This is what closes the gap for turns that never send a `done` hook. No-op
-    /// unless the session is actually spinning, so idle sessions cost nothing. Fed
-    /// by a throttled tap on the PTY stream (see `surface(for:in:)`).
-    func noteOutputActivity(_ id: Session.ID) {
+    /// Refreshes a working session's activity timestamp when the rendered screen
+    /// changed. A genuinely working agent repaints changing content (its ticking
+    /// spinner, streaming tokens) every second, so a changing viewport means the
+    /// turn is still live; the moment the screen goes static (the agent is back at
+    /// its prompt), the timestamp stops advancing and `sweepStaleWorking` can clear
+    /// the spinner. Keying on the *screen* rather than raw bytes is what closes the
+    /// gap for a finished agent that keeps dribbling output at an idle prompt (a
+    /// redraw, a blinking cursor) — the stuck-spinner failure. No-op unless the
+    /// session is actually spinning, so idle sessions cost nothing. Fed by a
+    /// throttled tap on the PTY stream (see `surface(for:in:)`).
+    func noteOutputActivity(_ id: Session.ID, screenChanged: Bool) {
         guard statuses[id] == .working else { return }
+        guard screenChanged else { return }
         lastWorkingAt[id] = Date()
+    }
+
+    /// Drives status from an agent's own screen when it ships no hook system — the path
+    /// for user agents whose `agent.json` declared `status` regex rules (see
+    /// `AgentStatusRules`). Called each throttled viewport tick with the freshly
+    /// classified activity. Status is only rewritten on a *transition*, so an idle
+    /// screen doesn't re-emit `done` every second; a working screen refreshes the
+    /// liveness timestamp every tick so the stale sweep can't clear a live turn whose
+    /// screen briefly stopped changing. Mirrors `applyStatusReport`'s state mapping —
+    /// `attention` only flags a session the user isn't already looking at; a turn that
+    /// just ended reads `done` when unselected, `idle` when selected or merely calm.
+    func applyScreenDetectedActivity(_ activity: AgentStatusRules.Activity, for id: Session.ID) {
+        if activity == .working { lastWorkingAt[id] = Date() }
+        guard lastScreenActivity[id] != activity else { return }
+        let previous = lastScreenActivity[id]
+        lastScreenActivity[id] = activity
+        switch activity {
+        case .working:
+            statuses[id] = .working
+            if let pid = project(for: id)?.id { liveActivity[pid] = Date() }
+        case .attention:
+            clearWorking(id)
+            if selectedSessionID != id { statuses[id] = .needsAttention }
+        case .idle:
+            clearWorking(id)
+            if previous == .working || previous == .attention {
+                statuses[id] = (selectedSessionID == id) ? .idle : .done
+            } else {
+                statuses[id] = .idle
+            }
+        }
     }
 
     /// Resolves a session's transcript file from disk when its hook hasn't handed

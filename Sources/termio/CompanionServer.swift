@@ -932,16 +932,10 @@ extension TermioStore {
                   $0.id.uuidString.lowercased().hasPrefix(prefix)
               })
         else { return nil }
-        let preset: AgentPreset = switch wireAgent {
-        case "claude": .claudeCode
-        case "codex": .codex
-        case "opencode": .opencode
-        case "pi": .pi
-        case "amp": .amp
-        case "cursor": .cursor
-        case "kimi": .kimi
-        default: .terminal
-        }
+        // Reverse of `wireAgent`: resolve the phone's token back to a definition by
+        // its wire name (so user agents, whose wire name is their id, resolve too);
+        // an unknown token falls back to a plain terminal.
+        let preset = AgentPreset.allCases.first { $0.wireName == wireAgent } ?? .terminal
         addSession(to: project.id, agent: preset)
         return selectedSessionID?.uuidString
     }
@@ -1015,16 +1009,7 @@ extension TermioStore {
     }
 
     private static func wireAgent(_ agent: AgentPreset) -> String {
-        switch agent {
-        case .claudeCode: "claude"
-        case .codex: "codex"
-        case .opencode: "opencode"
-        case .terminal: "terminal"
-        case .pi: "pi"
-        case .amp: "amp"
-        case .cursor: "cursor"
-        case .kimi: "kimi"
-        }
+        agent.wireName
     }
 
     private static func wireStatus(_ status: SessionStatus) -> String {

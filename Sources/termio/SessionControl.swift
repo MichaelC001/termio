@@ -393,23 +393,3 @@ enum CommandLineTool {
     }
 }
 
-extension AgentPreset {
-    /// Resolves a free-text agent name from the CLI (`termio sessions start claude`)
-    /// to a preset, accepting the raw case, the display name, and common aliases.
-    /// `nil` when nothing matches, so the caller can report it rather than guess.
-    static func resolve(_ raw: String?) -> AgentPreset? {
-        guard let raw = raw?.trimmingCharacters(in: .whitespaces).lowercased(), !raw.isEmpty else {
-            return nil
-        }
-        for preset in allCases
-        where preset.rawValue.lowercased() == raw || preset.displayName.lowercased() == raw {
-            return preset
-        }
-        switch raw {
-        case "claude", "claude-code", "claudecode", "cc": return .claudeCode
-        case "oc": return .opencode
-        case "shell", "term": return .terminal
-        default: return nil
-        }
-    }
-}

@@ -112,23 +112,76 @@ extension TermioStore {
         if let pty {
             pty.addSink { [weak inMemory] data in inMemory?.receive(data) }
             // Tap the same stream as a working-liveness signal: while an agent is
-            // mid-turn its TUI repaints the spinner sub-second, so output flowing
-            // keeps `lastWorkingAt` fresh and the moment it stops lets the stale
-            // sweep clear the spinner — the recovery path for a turn that ends
-            // without a `Stop` hook. Throttled to once a second (a streaming build
-            // must not flood the main actor) and cheap when the session isn't
-            // spinning (`noteOutputActivity` no-ops). The read pump calls sinks
-            // serially, so the captured `lastPoke` needs no lock.
+            // mid-turn its TUI repaints changing content (a ticking spinner,
+            // streaming tokens), so a *changing* screen keeps `lastWorkingAt`
+            // fresh and a screen that goes static lets the stale sweep clear the
+            // spinner — the recovery path for a turn that ends without a `Stop`
+            // hook. Liveness is judged on the rendered viewport, not raw bytes:
+            // an agent parked at an idle prompt still dribbles output (a redraw, a
+            // blinking cursor) that the byte stream alone reads as activity, which
+            // is what pins a finished agent's spinner on forever. `readViewportText`
+            // is thread-safe (its own lock), so the compare runs on the read pump;
+            // only the changed-flag hops to the main actor. Throttled to once a
+            // second and cheap when the session isn't spinning
+            // (`noteOutputActivity` no-ops). The read pump calls sinks serially, so
+            // the captured `lastPoke` / `lastScreenSignature` need no lock.
+            // A user agent may declare `status` regex rules in its `agent.json`; the
+            // same viewport read that feeds the liveness sweep is classified against
+            // them to drive working / needs-attention / done for agents that ship no
+            // hook system (see `AgentStatusRules`). Built-ins carry no rules (they use
+            // hooks), so this is `nil` for them and the classify step is skipped.
+            //
+            // Caveat: `readViewportText` returns the *displayed* viewport, which follows
+            // the user's scrollback — so scrolling an inline agent's pane up feeds stale
+            // rows to the classifier until it snaps back to the bottom (self-healing).
+            // herdr avoids this by reading the live bottom (active) buffer; the clean fix
+            // here needs a `readActiveText()` on the libghostty wrapper (its blessed read
+            // serializes against the PTY write under a private lock we can't hold, and a
+            // raw unsynchronized `GHOSTTY_POINT_ACTIVE` read from this pump thread would
+            // race `inMemory.receive` — the exact libghostty threading hazard termio has
+            // been bitten by). Tracked as an upstream ask, not worked around unsafely.
+            let statusRules = session.agent.statusRules
+            let agentID = session.agent.id
+            let statusTrace = ProcessInfo.processInfo.environment["TERMIO_STATUS_TRACE"] != nil
             var lastPoke = Date.distantPast
-            pty.addSink { [weak self] _ in
+            var lastScreenSignature: Int?
+            pty.addSink { [weak self, weak inMemory] _ in
                 let now = Date()
                 guard now.timeIntervalSince(lastPoke) >= 1 else { return }
                 lastPoke = now
-                DispatchQueue.main.async { self?.noteOutputActivity(session.id) }
+                let text = inMemory?.readViewportText()
+                let screenChanged: Bool
+                if let text {
+                    let signature = text.hashValue
+                    screenChanged = signature != lastScreenSignature
+                    lastScreenSignature = signature
+                } else {
+                    // No surface to read (e.g. detached) — fall back to treating
+                    // output as activity rather than risk clearing a live turn.
+                    screenChanged = true
+                }
+                let detected: AgentStatusRules.Activity?
+                if let statusRules {
+                    let (activity, matched) = statusRules.explain(text ?? "")
+                    detected = activity
+                    if statusTrace {
+                        AgentStatusRules.trace(
+                            agent: agentID, session: session.id, activity: activity, matched: matched)
+                    }
+                } else {
+                    detected = nil
+                }
+                DispatchQueue.main.async {
+                    self?.noteOutputActivity(session.id, screenChanged: screenChanged)
+                    if let detected {
+                        self?.applyScreenDetectedActivity(detected, for: session.id)
+                    }
+                }
             }
             pty.onExit = { [weak self, weak inMemory] code in
                 inMemory?.finish(exitCode: UInt32(bitPattern: code), runtimeMilliseconds: 0)
                 self?.ptyProcesses[session.id] = nil
+                self?.lastScreenActivity[session.id] = nil
             }
             ptyProcesses[session.id] = pty
         }

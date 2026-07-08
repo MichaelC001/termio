@@ -168,11 +168,9 @@ final class UsageMonitor: ObservableObject {
     // MARK: - Fetching
 
     private nonisolated static func fetch(_ agent: AgentPreset) async -> AgentUsage? {
-        switch agent {
-        case .claudeCode: return await fetchClaude()
-        case .codex: return await fetchCodex()
-        default: return nil
-        }
+        if agent == .claudeCode { return await fetchClaude() }
+        if agent == .codex { return await fetchCodex() }
+        return nil
     }
 
     /// Claude Code: OAuth bearer from `~/.claude/.credentials.json` (no prompt) or,

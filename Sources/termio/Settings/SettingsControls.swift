@@ -30,6 +30,8 @@ struct IconBadge: View {
                 .frame(width: 13, height: 13)
         case .brandImage(let asset):
             BrandImageView(asset: asset, size: 18)
+        case .imageFile(let url):
+            UserAgentIconView(url: url, size: 18)
         }
     }
 }

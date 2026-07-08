@@ -38,14 +38,13 @@ enum AgentSessionStore {
     private static func match(agent: AgentPreset, directory: String, after launchedAt: Date?)
         -> (url: URL, id: String)? {
         guard let launchedAt else { return nil }
-        switch agent {
-        case .codex:
+        if agent == .codex {
             return matchCodex(directory: directory, after: launchedAt)
-        case .opencode:
-            return matchOpenCode(directory: directory, after: launchedAt)
-        default:
-            return nil
         }
+        if agent == .opencode {
+            return matchOpenCode(directory: directory, after: launchedAt)
+        }
+        return nil
     }
 
     /// A small negative tolerance: the agent writes its record just after we launch it,
