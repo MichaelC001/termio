@@ -23,9 +23,11 @@ clarity over cleverness. Do not add features that were not requested.
 
 - The package ships a prebuilt `GhosttyKit.xcframework`. **Do not** try to build
   Ghostty from source — `zig` is not installed.
-- Terminal backends: `.exec` runs a real PTY (login shell, or a `command` set on
-  the `TerminalController` builder); `.inMemory` is host-managed/sandboxed. termio
-  is not sandboxed, so it uses `.exec`.
+- Terminal backends: `.exec` runs a real PTY inside ghostty; `.inMemory` is
+  host-managed. termio uses **`.inMemory`**: it owns the PTY itself via
+  `Sources/termio/PTYProcess.swift` (spawned with `forkpty` — login_tty shape;
+  do NOT switch to `posix_spawn`, that shape breaks agents' resize repaint, see
+  `docs/bug/terminal-resize-no-reflow-HANDOFF.md`), and the surface only renders.
 - One `TerminalViewState` owns one terminal surface via its `TerminalController`.
   Keep it alive (see `TermioStore` SurfaceCache) to keep the shell running across
   view rebuilds — `configureView` reattaches the same controller's surface.

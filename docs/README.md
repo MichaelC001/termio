@@ -43,6 +43,9 @@ from the real front matter).
 | approved | design | [会话历史 · 搜索 · 恢复（Session History / Search / Resume）](design/session-history-search-resume.md) |
 | archived | design | [Sandbox VM —— 原生 per-project 容器（Apple Containerization）](design/sandbox-vm.md) |
 | archived | design | [iOS scroll-draw coalescing (vsync-capped surface draws)](design/ios-scroll-renderer-health.md) |
+| archived | plan | [Fix — defer the PTY spawn to the first real layout size so the agent banner boots at pane width](plan/terminal-narrow-grid-frozen-banner-fix.md) |
+| done | bug | ["HANDOFF: terminal content does not reflow on window resize"](bug/terminal-resize-no-reflow-HANDOFF.md) |
+| done | bug | [Agent welcome banner frozen into a narrow column when a session opens in a wide window](bug/terminal-narrow-grid-frozen-banner-on-open.md) |
 | done | research | ["Competitive analysis: Conductor"](competitive-analysis/03-conductor.md) |
 | done | research | ["Competitive analysis: Crystal / Nimbalyst"](competitive-analysis/04-crystal.md) |
 | done | research | ["Competitive analysis: Unpeel"](competitive-analysis/01-unpeel.md) |
