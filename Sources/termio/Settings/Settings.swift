@@ -274,6 +274,17 @@ final class AppSettings: ObservableObject {
             defaults.set(legacyTheme, forKey: Key.darkThemeName)
         }
 
+        // First-run default: ship focused. Only Claude Code and Codex (plus the plain
+        // Terminal) are enabled out of the box; the long tail of agents is hidden from
+        // the new-session picker until the user opts in from Settings. Keyed on the
+        // setting never having been written, so it's a one-time default that never
+        // overrides a returning user's own choices.
+        if defaults.object(forKey: Key.disabledAgents) == nil {
+            let enabledByDefault: Set<String> = ["terminal", "claudeCode", "codex"]
+            let hidden = AgentDefinition.builtins.map(\.id).filter { !enabledByDefault.contains($0) }
+            defaults.set(hidden, forKey: Key.disabledAgents)
+        }
+
         defaults.register(defaults: [
             Key.fontFamily: "SF Mono",
             Key.fontSize: 13.0,

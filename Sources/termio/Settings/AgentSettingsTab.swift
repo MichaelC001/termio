@@ -52,70 +52,105 @@ struct AgentSettingsTab: View {
             }
             ForEach(AgentPreset.allCases) { preset in
                 Section {
-                    // The Dia "Sync row": a badge + title + subtitle on the left,
-                    // its switch on the right. The switch controls whether the
-                    // agent appears in the sidebar's new-session quick-add row.
-                    Toggle(isOn: Binding(
-                        get: { settings.isAgentEnabled(preset) },
-                        set: { settings.setAgent(preset, enabled: $0) }
-                    )) {
-                        HStack(spacing: 10) {
-                            IconBadge(preset.icon)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(preset.displayName)
-                                    .font(.headline)
-                                Text(subtitle(for: preset))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    .toggleStyle(.switch)
-
-                    // The plain terminal launches the login shell — there is no
-                    // command to override, so only agent presets get a field.
-                    if preset != .terminal {
-                        TextField(
-                            "Command",
-                            text: Binding(
-                                get: { settings.agentCommandOverrides[preset.rawValue] ?? "" },
-                                set: { settings.agentCommandOverrides[preset.rawValue] = $0 }
-                            ),
-                            prompt: Text(preset.command ?? "")
-                        )
-                    }
-
-                    // One-click bypass for the agent's permission/approval prompts,
-                    // for agents that have a stable flag for it. Appends the flag to
-                    // the command above rather than replacing it, so it composes with
-                    // a custom override.
-                    if let flag = preset.permissionBypassFlag {
-                        Toggle(isOn: Binding(
-                            get: { settings.bypassesPermissions(preset) },
-                            set: { settings.setBypassPermissions(preset, enabled: $0) }
-                        )) {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("Skip permission prompts")
-                                Text("Runs with `\(flag)`. The agent won't ask before editing files or running commands.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                        .toggleStyle(.switch)
-                    }
+                    AgentRow(settings: settings, preset: preset)
                 }
             }
         }
         .formStyle(.grouped)
     }
+}
 
-    /// Subtitle under each agent name: the effective command it runs (override and
-    /// bypass flag included), so the row stays self-describing without reading the
-    /// fields below it.
-    private func subtitle(for preset: AgentPreset) -> String {
-        settings.command(for: preset) ?? "Login shell"
+/// One agent's settings block: enable switch, command/path override, an install
+/// link when its CLI can't be resolved, and the permission-bypass toggle.
+private struct AgentRow: View {
+    @ObservedObject var settings: AppSettings
+    let preset: AgentPreset
+
+    /// `nil` while the PATH probe is still running (show nothing rather than a
+    /// premature warning); `false` once we've confirmed the command isn't resolvable.
+    @State private var available: Bool?
+
+    var body: some View {
+        // `Group` is transparent inside a Form (its children each become a row), so it
+        // just gives the several rows one place to hang the availability probe.
+        Group {
+            // The Dia "Sync row": a badge + title + subtitle on the left, its switch on
+            // the right. The switch controls whether the agent appears in the sidebar's
+            // new-session quick-add row.
+            Toggle(isOn: Binding(
+                get: { settings.isAgentEnabled(preset) },
+                set: { settings.setAgent(preset, enabled: $0) }
+            )) {
+                HStack(spacing: 10) {
+                    IconBadge(preset.icon)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(preset.displayName)
+                            .font(.headline)
+                        Text(settings.command(for: preset) ?? "Login shell")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .toggleStyle(.switch)
+
+            // The plain terminal launches the login shell — there is no command to
+            // override, so only agent presets get a field.
+            if preset != .terminal {
+                TextField(
+                    "Command",
+                    text: Binding(
+                        get: { settings.agentCommandOverrides[preset.rawValue] ?? "" },
+                        set: { settings.agentCommandOverrides[preset.rawValue] = $0 }
+                    ),
+                    prompt: Text(preset.command ?? "")
+                )
+
+                // When the CLI can't be resolved on PATH, quietly offer a jump to its
+                // install page — no alarm. Not every agent is meant to be installed, so
+                // this only appears for agents that carry an install link.
+                if available == false, let url = preset.installURL {
+                    Link(destination: url) {
+                        Label("Install \(preset.displayName)", systemImage: "arrow.down.circle")
+                    }
+                }
+            }
+
+            // One-click bypass for the agent's permission/approval prompts, for agents
+            // that have a stable flag for it. Appends the flag to the command above
+            // rather than replacing it, so it composes with a custom override.
+            if let flag = preset.permissionBypassFlag {
+                Toggle(isOn: Binding(
+                    get: { settings.bypassesPermissions(preset) },
+                    set: { settings.setBypassPermissions(preset, enabled: $0) }
+                )) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Skip permission prompts")
+                        Text("Runs with `\(flag)`. The agent won't ask before editing files or running commands.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(.switch)
+            }
+        }
+        // Re-checks whenever the effective command changes, so typing a valid path
+        // clears the warning. The PATH probe runs once (cached); each row does an
+        // in-memory lookup. SwiftUI cancels and restarts this on every id change, so
+        // the leading sleep debounces per-keystroke edits into one probe once the
+        // user pauses. The plain terminal has no command to resolve, so it never probes.
+        .task(id: effectiveCommand) {
+            guard preset != .terminal else { return }
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            available = await AgentAvailability.isCommandAvailable(effectiveCommand)
+        }
     }
+
+    /// The effective command whose binary availability we probe (override + bypass
+    /// flag folded in), matching what a session actually launches.
+    private var effectiveCommand: String { settings.command(for: preset) ?? "" }
 }
 
 /// Installs and reports the `termio` command-line tool. It audits on appear so the
