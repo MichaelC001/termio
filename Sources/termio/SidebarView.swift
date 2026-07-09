@@ -257,7 +257,7 @@ private struct ProjectHeader: View {
 /// The agents a project header offers as new sessions: every preset the user has
 /// left enabled, in preset order.
 @MainActor
-private func enabledAgentPresets(_ settings: AppSettings) -> [AgentPreset] {
+func enabledAgentPresets(_ settings: AppSettings) -> [AgentPreset] {
     AgentPreset.allCases.filter(settings.isAgentEnabled)
 }
 

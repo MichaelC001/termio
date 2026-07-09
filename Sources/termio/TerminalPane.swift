@@ -41,7 +41,7 @@ struct TerminalPane: View {
     var body: some View {
         ZStack {
             if mounted.isEmpty {
-                ContentUnavailableView("No session selected", systemImage: "terminal")
+                WelcomeView()
             }
             ForEach(mounted, id: \.session.id) { item in
                 let isSelected = store.selectedSessionID == item.session.id

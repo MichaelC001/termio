@@ -99,6 +99,7 @@ final class AppSettings: ObservableObject {
         static let sessionControlEnabled = "agents.sessionControlEnabled"
         static let sessionControlPrompted = "agents.sessionControlPrompted"
         static let projectSortOrder = "sidebar.projectSortOrder"
+        static let recentProjects = "welcome.recentProjects"
     }
 
     // MARK: Appearance
@@ -131,6 +132,33 @@ final class AppSettings: ObservableObject {
     /// Driven by the sort menu in the sidebar's toolbar.
     @Published var projectSortOrder: ProjectSortOrder {
         didSet { defaults.set(projectSortOrder.rawValue, forKey: Key.projectSortOrder) }
+    }
+
+    /// Folders the user has opened, most-recent first, so the welcome page's
+    /// "Recent" column reopens with one click. Persisted as JSON so it survives the
+    /// fully-empty state (every project closed), which is precisely when the welcome
+    /// page needs it. Maintained by `noteRecentProject(name:path:)`, which dedups by
+    /// path and caps the list; the store calls it whenever a project is opened.
+    @Published var recentProjects: [RecentProject] {
+        didSet {
+            defaults.set(try? JSONEncoder().encode(recentProjects), forKey: Key.recentProjects)
+        }
+    }
+
+    /// The most a project can be opened is capped so the Recent column stays a
+    /// short, scannable list rather than an ever-growing log.
+    private static let recentProjectsLimit = 8
+
+    /// Records `path` as the most recently opened project, moving it to the front
+    /// (deduped by path) and trimming to `recentProjectsLimit`. A no-op mutation is
+    /// avoided so an already-front project doesn't churn `UserDefaults`.
+    func noteRecentProject(name: String, path: String) {
+        var updated = recentProjects.filter { $0.path != path }
+        updated.insert(RecentProject(name: name, path: path), at: 0)
+        if updated.count > Self.recentProjectsLimit {
+            updated.removeLast(updated.count - Self.recentProjectsLimit)
+        }
+        if updated != recentProjects { recentProjects = updated }
     }
 
     /// Name of the Ghostty bundled theme used while macOS is in light mode, or
@@ -329,6 +357,8 @@ final class AppSettings: ObservableObject {
         agentHooksEnabled = defaults.bool(forKey: Key.agentHooksEnabled)
         sessionControlEnabled = defaults.bool(forKey: Key.sessionControlEnabled)
         projectSortOrder = defaults.string(forKey: Key.projectSortOrder).flatMap(ProjectSortOrder.init) ?? .recentActivity
+        recentProjects = defaults.data(forKey: Key.recentProjects)
+            .flatMap { try? JSONDecoder().decode([RecentProject].self, from: $0) } ?? []
     }
 
     /// Effective command for an agent: the user's override if it's non-empty,

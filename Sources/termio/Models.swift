@@ -1,5 +1,15 @@
 import Foundation
 
+/// A folder the user has opened as a project, remembered for the welcome page's
+/// "Recent" column so it survives the fully-empty state (every project closed).
+/// Persisted in `AppSettings.recentProjects`; keyed by `path` so the same folder
+/// never appears twice.
+struct RecentProject: Identifiable, Hashable, Codable {
+    var name: String
+    var path: String
+    var id: String { path }
+}
+
 /// A project is a working directory (typically a git repo) that groups one or
 /// more agent/terminal sessions, mirroring the sidebar grouping in unpeel.
 struct Project: Identifiable, Hashable, Codable {
