@@ -5,14 +5,15 @@ let package = Package(
     name: "termio",
     platforms: [.macOS(.v14)],
     dependencies: [
-        // libghostty (Ghostty's terminal core) for the macOS app via Lakr233's
-        // upstream github.com/Lakr233/libghostty-spm. It ships a prebuilt
-        // GhosttyKit.xcframework binary target plus the `GhosttyTerminal` Swift
-        // wrapper (including the host-managed `.inMemory` backend PTYProcess drives),
-        // so there is no zig toolchain here. The Mac app tracks upstream directly
-        // rather than a fork; the iOS app keeps using our own fork (which carries the
-        // iOS-specific patches) via ios/. See project_termio_libghostty_swift.
-        .package(url: "https://github.com/Lakr233/libghostty-spm", from: "1.2.9"),
+        // libghostty (Ghostty's terminal core), via our jiweiyuan/libghostty-swift
+        // fork of Lakr233/libghostty-spm (ships the `GhosttyTerminal` Swift wrapper —
+        // incl. the host-managed `.inMemory` backend PTYProcess drives — plus a prebuilt
+        // GhosttyKit.xcframework, so no zig toolchain here). Same package the iOS app
+        // uses, so both platforms track one dependency. The 2026-07 "fork regressed
+        // live resize" suspicion that briefly rolled this back to Lakr233 was a
+        // misdiagnosis — the real bug was termio's own PTY spawn shape (see
+        // docs/bug/terminal-resize-no-reflow-HANDOFF.md §0).
+        .package(url: "https://github.com/jiweiyuan/libghostty-swift", from: "1.0.5"),
         // Sparkle powers in-app auto-update (the "Check for Updates…" menu item and
         // background update checks). It reads the appcast published with each GitHub
         // release; the matching EdDSA public key is embedded in packaging/Info.plist.
@@ -35,13 +36,13 @@ let package = Package(
         .executableTarget(
             name: "termio",
             dependencies: [
-                .product(name: "GhosttyTerminal", package: "libghostty-spm"),
+                .product(name: "GhosttyTerminal", package: "libghostty-swift"),
                 // The raw libghostty C API. Used by session control to deliver a real
                 // Return key event (`ghostty_surface_key`) when driving a sibling.
-                .product(name: "GhosttyKit", package: "libghostty-spm"),
+                .product(name: "GhosttyKit", package: "libghostty-swift"),
                 // Bundled color-scheme catalog (Ghostty's built-in themes), used by
                 // the appearance settings to offer a theme picker.
-                .product(name: "GhosttyTheme", package: "libghostty-spm"),
+                .product(name: "GhosttyTheme", package: "libghostty-swift"),
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Highlightr", package: "Highlightr"),
                 .product(name: "Markdown", package: "swift-markdown"),
