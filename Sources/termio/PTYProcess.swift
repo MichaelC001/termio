@@ -6,9 +6,10 @@ import Foundation
 /// stream itself: PTY output fans out to every attached sink (the local surface,
 /// and — later — a phone), and input from any of them is written back.
 ///
-/// The child is spawned as a session leader with the slave as its controlling
-/// terminal (`POSIX_SPAWN_SETSID` + opening the pts inside the child), so job
-/// control and signals (Ctrl-C → SIGINT to the foreground group) work exactly
+/// The child is spawned via `forkpty` — the shape every terminal uses
+/// (node-pty, iTerm2, kitty): the child does `setsid` + `TIOCSCTTY`
+/// explicitly, so the pts is a fully-wired controlling terminal and job
+/// control and signals (Ctrl-C → SIGINT, SIGWINCH on resize) work exactly
 /// as under a real terminal.
 final class PTYProcess: @unchecked Sendable {
     /// Which device's grid the PTY is sized for. One PTY has one winsize and
@@ -94,51 +95,49 @@ final class PTYProcess: @unchecked Sendable {
         lastRows = rows
         hostCols = cols
         hostRows = rows
-        var master: Int32 = 0
-        var slave: Int32 = 0
         var win = winsize(ws_row: UInt16(rows), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)
-        var nameBuf = [CChar](repeating: 0, count: 128)
-        guard openpty(&master, &slave, &nameBuf, nil, &win) == 0 else {
-            Log.pty.error("openpty failed")
+
+        // Spawn with `forkpty`, NOT posix_spawn. The old shape —
+        // `POSIX_SPAWN_SETSID` plus opening the pts in the child's file
+        // actions — produced a controlling terminal that *looked* wired
+        // (`/dev/tty` resolved, shell WINCH traps fired) but under which
+        // Claude Code's resize detection never triggered: the TUI simply
+        // never repainted on a window resize, in termio or in a minimal
+        // repro harness (docs/bug/terminal-resize-no-reflow-HANDOFF.md).
+        // `forkpty` runs `setsid` + `TIOCSCTTY` explicitly in the child —
+        // the login_tty shape under which the same agent binary reflows
+        // correctly. Everything between fork and exec must be
+        // async-signal-safe, so the argv/env C arrays are built up front
+        // and the child only calls chdir + execve + _exit.
+        let pathC = strdup(argv[0])
+        let argvC: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) } + [nil]
+        let envpC: [UnsafeMutablePointer<CChar>?] =
+            env.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        let cwdC = strdup(cwd)
+        var master: Int32 = -1
+        var childPID: pid_t = -1
+        argvC.withUnsafeBufferPointer { argvBuffer in
+            envpC.withUnsafeBufferPointer { envpBuffer in
+                childPID = forkpty(&master, nil, nil, &win)
+                if childPID == 0 {
+                    if let cwdC { _ = chdir(cwdC) }
+                    if let pathC {
+                        _ = execve(pathC, argvBuffer.baseAddress, envpBuffer.baseAddress)
+                    }
+                    _exit(127)
+                }
+            }
+        }
+        argvC.forEach { free($0) }
+        envpC.forEach { free($0) }
+        free(pathC)
+        free(cwdC)
+        guard childPID > 0 else {
+            Log.pty.error("forkpty failed errno=\(errno, privacy: .public)")
+            if master >= 0 { close(master) }
             return nil
         }
         masterFD = master
-        let slavePath = String(cString: nameBuf)
-
-        // Build the child's file actions and attributes: new session, and open
-        // the pts as fd 0 inside the child (as session leader, no O_NOCTTY →
-        // it becomes the controlling terminal), then dup onto stdout/stderr.
-        var fileActions = posix_spawn_file_actions_t(nil as OpaquePointer?)
-        posix_spawn_file_actions_init(&fileActions)
-        // Run the child in the session's working directory.
-        posix_spawn_file_actions_addchdir_np(&fileActions, cwd)
-        posix_spawn_file_actions_addopen(&fileActions, 0, slavePath, O_RDWR, 0)
-        posix_spawn_file_actions_adddup2(&fileActions, 0, 1)
-        posix_spawn_file_actions_adddup2(&fileActions, 0, 2)
-
-        var attr = posix_spawnattr_t(nil as OpaquePointer?)
-        posix_spawnattr_init(&attr)
-        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSID))
-
-        // argv / envp as C string arrays.
-        let argvC = argv.map { strdup($0) } + [nil]
-        let envp = env.map { "\($0.key)=\($0.value)" }
-        let envpC = envp.map { strdup($0) } + [nil]
-        defer {
-            argvC.forEach { free($0) }
-            envpC.forEach { free($0) }
-            posix_spawn_file_actions_destroy(&fileActions)
-            posix_spawnattr_destroy(&attr)
-        }
-
-        var childPID: pid_t = 0
-        let rc = posix_spawn(&childPID, argv[0], &fileActions, &attr, argvC, envpC)
-        close(slave)
-        guard rc == 0 else {
-            Log.pty.error("posix_spawn failed rc=\(rc, privacy: .public)")
-            close(master)
-            return nil
-        }
         pid = childPID
 
         // Reap the child asynchronously to fire onExit + observers.
@@ -178,12 +177,42 @@ final class PTYProcess: @unchecked Sendable {
                         sink.handler(data)
                     }
                 }
-            } else if n <= 0 {
+            } else if n == 0 || (errno != EINTR && errno != EAGAIN) {
+                // EOF (the child and every slave fd are gone) or a hard read
+                // error ends the pump for good; a transient EINTR/EAGAIN just
+                // waits for the next readability event. Cancelling fires the
+                // cancel handler below — the one place the master fd is closed.
+                if n < 0 {
+                    Log.pty.error("pty read failed errno=\(errno, privacy: .public)")
+                }
+                self.markTerminated()
                 self.readSource?.cancel()
             }
         }
+        // Dispatch's documented pattern: release the fd in the cancellation
+        // handler, which runs exactly once after the source can no longer
+        // fire — whether the pump ended itself (EOF above), `terminate()`
+        // cancelled it, or deinit did. Captures the fd by value so the close
+        // still happens if the handler runs after this object is gone.
+        source.setCancelHandler { [masterFD] in
+            close(masterFD)
+        }
         source.resume()
         readSource = source
+    }
+
+    deinit {
+        // Cancelling is idempotent; without this, dropping the last reference
+        // before the EOF event fires would strand the master fd open forever.
+        readSource?.cancel()
+    }
+
+    /// Marks the PTY dead so late writers and resizers become no-ops instead
+    /// of touching a closed (and possibly recycled) file descriptor.
+    private func markTerminated() {
+        lock.lock()
+        terminated = true
+        lock.unlock()
     }
 
     /// Register an output sink; returns a token to remove it later.
@@ -341,8 +370,25 @@ final class PTYProcess: @unchecked Sendable {
     }
 
     func write(_ data: Data) {
+        lock.lock()
+        let dead = terminated
+        lock.unlock()
+        guard !dead else { return }
         data.withUnsafeBytes { raw in
-            _ = Darwin.write(masterFD, raw.baseAddress, raw.count)
+            guard var cursor = raw.baseAddress else { return }
+            // A single write(2) may accept fewer bytes than offered (a large
+            // paste against a full kernel buffer), so loop until drained.
+            var remaining = raw.count
+            while remaining > 0 {
+                let written = Darwin.write(masterFD, cursor, remaining)
+                if written < 0 {
+                    if errno == EINTR { continue }
+                    Log.pty.error("pty write failed errno=\(errno, privacy: .public)")
+                    return
+                }
+                cursor += written
+                remaining -= written
+            }
         }
     }
 
@@ -449,7 +495,7 @@ final class PTYProcess: @unchecked Sendable {
     /// resize observers. Must be entered with `lock` held; always unlocks.
     @discardableResult
     private func applyWindowSizeAndUnlock(cols: Int, rows: Int) -> Bool {
-        guard cols != lastCols || rows != lastRows else {
+        guard !terminated, cols != lastCols || rows != lastRows else {
             lock.unlock()
             return false
         }
@@ -458,7 +504,9 @@ final class PTYProcess: @unchecked Sendable {
         let observers = Array(resizeObservers.values)
         lock.unlock()
         var win = winsize(ws_row: UInt16(rows), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)
-        _ = ioctl(masterFD, TIOCSWINSZ, &win)
+        if ioctl(masterFD, TIOCSWINSZ, &win) != 0 {
+            Log.pty.error("TIOCSWINSZ failed errno=\(errno, privacy: .public)")
+        }
         for observer in observers { observer(cols, rows) }
         return true
     }
@@ -468,9 +516,11 @@ final class PTYProcess: @unchecked Sendable {
     /// slow client dropped frames, so the child redraws its current state.
     func jiggleResize() {
         lock.lock()
+        let dead = terminated
         let cols = lastCols
         let rows = lastRows
         lock.unlock()
+        guard !dead else { return }
         var shrunk = winsize(ws_row: UInt16(max(rows - 1, 1)), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)
         _ = ioctl(masterFD, TIOCSWINSZ, &shrunk)
         // A beat between the two so the child observes both changes. The size
@@ -494,8 +544,9 @@ final class PTYProcess: @unchecked Sendable {
         lock.lock()
         terminated = true
         lock.unlock()
+        // The read source's cancel handler owns closing the master fd; closing
+        // it here as well would double-close (and could hit a recycled fd).
         readSource?.cancel()
         if pid > 0 { kill(pid, SIGTERM) }
-        close(masterFD)
     }
 }
