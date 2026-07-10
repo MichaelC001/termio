@@ -1,6 +1,5 @@
 import { SiteNav } from "@/components/site-nav";
 import { Hero } from "@/components/sections/hero";
-import { Features } from "@/components/sections/features";
 import { AgentShowcase } from "@/components/sections/agent-showcase";
 import { Faq } from "@/components/sections/faq";
 import { CtaBand } from "@/components/sections/cta-band";
@@ -34,7 +33,6 @@ export default function Home() {
       <SiteNav />
       <main className="flex-1">
         <Hero />
-        <Features />
         <AgentShowcase />
         <Faq />
       </main>
