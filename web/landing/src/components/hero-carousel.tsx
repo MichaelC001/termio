@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { useInView } from "@/lib/use-in-view";
 
 export type HeroSlide = {
   src: string;
@@ -20,6 +21,7 @@ export function HeroCarousel({ slides }: { slides: readonly HeroSlide[] }) {
   const [active, setActive] = useState(0);
   const [paused, setPaused] = useState(false);
   const reducedMotion = useRef(false);
+  const { ref: viewRef, inView } = useInView<HTMLDivElement>();
 
   const goTo = useCallback(
     (index: number) => setActive((index + slides.length) % slides.length),
@@ -33,19 +35,20 @@ export function HeroCarousel({ slides }: { slides: readonly HeroSlide[] }) {
   }, []);
 
   useEffect(() => {
-    if (paused || slides.length < 2 || reducedMotion.current) return;
+    if (paused || !inView || slides.length < 2 || reducedMotion.current) return;
     const timer = setInterval(
       () => setActive((i) => (i + 1) % slides.length),
       AUTOPLAY_MS,
     );
     return () => clearInterval(timer);
-  }, [paused, slides.length]);
+  }, [paused, inView, slides.length]);
 
   if (slides.length === 0) return null;
   const { width, height } = slides[0];
 
   return (
     <div
+      ref={viewRef}
       role="region"
       aria-roledescription="carousel"
       aria-label="Termio screenshots"
@@ -110,7 +113,7 @@ export function HeroCarousel({ slides }: { slides: readonly HeroSlide[] }) {
   );
 }
 
-function CarouselArrow({
+export function CarouselArrow({
   dir,
   onClick,
 }: {
