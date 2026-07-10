@@ -1,4 +1,4 @@
-import { GitBranch, EyeOff } from "lucide-react";
+import { GitBranch } from "lucide-react";
 import { Reveal } from "@/components/reveal";
 import { cn } from "@/lib/utils";
 
@@ -54,26 +54,6 @@ function WorktreeVisual() {
   );
 }
 
-function LocalOnlyVisual() {
-  const rows = ["Telemetry", "Cloud sync", "Account to start"];
-  return (
-    <div className="space-y-2.5">
-      {rows.map((row) => (
-        <div
-          key={row}
-          className="flex items-center justify-between rounded-xl bg-background px-4 py-3 text-sm"
-        >
-          <span className="text-foreground">{row}</span>
-          <span className="inline-flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
-            <EyeOff className="h-3.5 w-3.5" aria-hidden="true" />
-            off
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 type Bento = {
   heading: string;
   intro: string;
@@ -95,13 +75,6 @@ const cards: Bento[] = [
       "Termio groups every git worktree under its project and shows each branch live in the sidebar — so parallel agents never blur together.",
     visual: <WorktreeVisual />,
     wide: false,
-  },
-  {
-    heading: "Local-only, by design",
-    intro:
-      "No telemetry, no cloud sync, no account. Your code and your agents never leave your Mac.",
-    visual: <LocalOnlyVisual />,
-    wide: true,
   },
 ];
 
