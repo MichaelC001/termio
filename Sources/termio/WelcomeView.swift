@@ -5,15 +5,10 @@ import SwiftUI
 /// — the state a returning user lands in after closing everything (the seeded
 /// first-run `home` project means this is never the very first launch). It replaces
 /// the old dead-end `ContentUnavailableView("No session selected")` with an
-/// Xcode-welcome-style two-column start page: a **Start** column of full-width
-/// action rows (open a project, a new terminal, then one row per enabled agent) on
-/// the left, a one-click **Recent** projects list on the right.
-///
-/// Every action is the same full-width row — no pill/capsule chips. On the Mac a
-/// filled capsule reads as a *tag or filter*, not an action; Xcode's own welcome
-/// window lists "Create New Project…", "Clone…", etc. as rows with a leading glyph
-/// and a hover highlight, which is the language mirrored here so a new session and
-/// "open a project" feel like the same kind of thing.
+/// Xcode-welcome-style **centered** start page: a large app icon stacked *over* the
+/// wordmark and tagline (a hero), then a single centered column of full-rounded
+/// action buttons (open a project, a new terminal, then one per enabled agent), with
+/// a one-click **Recent** projects list beneath.
 ///
 /// Everything here reuses existing store entry points — `presentOpenProjectPanel`,
 /// `addScratchTerminal`/`addScratchSession`, `addProject` — so the welcome adds no
@@ -22,103 +17,78 @@ struct WelcomeView: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
 
+    /// The whole page is one narrow, centered column — hero, actions, recents — so it
+    /// reads like Xcode's welcome window rather than a document spread across a wide
+    /// pane. 400pt keeps the full-rounded buttons a comfortable, tappable width.
+    private let columnWidth: CGFloat = 400
+
     var body: some View {
-        // A header (wordmark + tagline) spanning the full card width, then the two
-        // columns beneath it. Lifting the wordmark out of the Start column is what
-        // lets the `START` and `RECENT` labels sit on the same baseline — the old
-        // layout pushed `START` down by the wordmark's height while `RECENT` hugged
-        // the top, so the columns read as unrelated.
-        VStack(alignment: .leading, spacing: 34) {
-            header
-            HStack(alignment: .top, spacing: 40) {
+        ScrollView {
+            VStack(spacing: 28) {
+                hero
                 startColumn
-                    .frame(width: 300, alignment: .leading)
                 recentColumn
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(width: columnWidth)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 48)
         }
-        .padding(40)
-        // A fixed working width keeps the two columns a tidy, balanced card on a wide
-        // window instead of letting Recent drift to the far edge of a full-screen pane.
-        .frame(maxWidth: 620)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 11) {
-                // The real app icon (the rounded macOS icon), not a generic terminal
-                // glyph — this is the app introducing itself, so it wears its own face.
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 36, height: 36)
-                    // The macOS app icon carries ~7% transparent bleed on each side, so
-                    // its visible edge sits ~2.5pt inside the 36pt frame (measured). Pull
-                    // it left by that much so the icon's visible left edge lines up with
-                    // the tagline and the START / NEW SESSION labels below, not a hair
-                    // to their right.
-                    .padding(.leading, -2.5)
+    /// The hero: the real app icon, big and centered, with the wordmark and tagline
+    /// stacked directly beneath — the app introducing itself face-first, the way
+    /// Xcode's welcome leads with its hammer icon over "Xcode".
+    private var hero: some View {
+        VStack(spacing: 10) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 96, height: 96)
+            VStack(spacing: 4) {
                 Text("termio")
-                    .font(.system(size: 26, weight: .semibold))
+                    .font(.system(size: 32, weight: .bold))
+                Text("Start an agent in a project.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
             }
-            Text("Start an agent in a project.")
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
         }
-        // Inset to the same 8pt as the section labels and row content below, so the
-        // wordmark, tagline, and the START / NEW SESSION labels share one left edge.
-        .padding(.leading, 8)
     }
 
     // MARK: Start
 
     private var startColumn: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 2) {
-                sectionLabel("Start")
-                WelcomeActionRow(
-                    icon: HugeIconView(icon: .folder, size: 15, color: .secondary),
-                    title: "Open Project…",
-                    shortcut: "⌘O"
-                ) { store.presentOpenProjectPanel() }
-                WelcomeActionRow(
-                    icon: HugeIconView(icon: .terminal, size: 15, color: .secondary),
-                    title: "New Terminal",
-                    shortcut: "⌘T"
-                ) { store.addScratchTerminal() }
-            }
+        VStack(spacing: 8) {
+            WelcomeActionRow(
+                icon: HugeIconView(icon: .folder, size: 16, color: .secondary),
+                title: "Open Project…",
+                shortcut: "⌘O"
+            ) { store.presentOpenProjectPanel() }
+            WelcomeActionRow(
+                icon: HugeIconView(icon: .terminal, size: 16, color: .secondary),
+                title: "New Terminal",
+                shortcut: "⌘T"
+            ) { store.addScratchTerminal() }
 
-            // Agents only — a plain terminal already has its own "New Terminal" row
-            // above (⌘T). Each agent is the same row as Start, just with its brand
-            // icon, so a new session reads as one more thing you can start here.
+            // Agents only — a plain terminal already has its own "New Terminal" button
+            // above (⌘T). Each agent is the same full-rounded button, just with its
+            // brand icon, so a new session reads as one more thing you can start here.
             let agents = enabledAgentPresets(settings).filter { $0 != .terminal }
-            if !agents.isEmpty {
-                VStack(alignment: .leading, spacing: 2) {
-                    sectionLabel("New session")
-                    ForEach(agents) { preset in
-                        WelcomeActionRow(
-                            icon: AgentIconView(agent: preset, size: 16),
-                            title: preset.displayName
-                        ) { store.addScratchSession(agent: preset) }
-                    }
-                }
+            ForEach(agents) { preset in
+                WelcomeActionRow(
+                    icon: AgentIconView(agent: preset, size: 17),
+                    title: preset.displayName
+                ) { store.addScratchSession(agent: preset) }
             }
         }
     }
 
     // MARK: Recent
 
+    @ViewBuilder
     private var recentColumn: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            sectionLabel("Recent")
-            if recentEntries.isEmpty {
-                Text("Projects you open show up here.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 8)
-                    .padding(.top, 4)
-            } else {
+        if !recentEntries.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                sectionLabel("Recent")
                 ForEach(recentEntries) { entry in
                     WelcomeRecentRow(entry: entry) {
                         store.addProject(at: URL(fileURLWithPath: entry.path))
@@ -179,11 +149,11 @@ private struct WelcomeActionRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 icon
-                    .frame(width: 18)
+                    .frame(width: 20)
                 Text(title)
-                    .font(.system(size: 13))
+                    .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(.primary)
                 Spacer(minLength: 12)
                 if let shortcut {
@@ -192,14 +162,16 @@ private struct WelcomeActionRow: View {
                         .foregroundStyle(.tertiary)
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 13)
             .frame(maxWidth: .infinity, alignment: .leading)
+            // A full-rounded filled pill (Xcode's welcome buttons): a subtle fill at
+            // rest so it reads as a button even without a cursor, brightening on hover.
             .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.primary.opacity(isHovering ? 0.08 : 0))
+                Capsule(style: .continuous)
+                    .fill(Color.primary.opacity(isHovering ? 0.12 : 0.06))
             )
-            .contentShape(Rectangle())
+            .contentShape(Capsule(style: .continuous))
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
@@ -240,7 +212,7 @@ private struct WelcomeRecentRow: View {
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(Color.primary.opacity(isHovering ? 0.08 : 0))
             )
             .contentShape(Rectangle())
