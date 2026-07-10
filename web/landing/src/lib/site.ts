@@ -23,16 +23,16 @@ export const navLinks = [
 export const downloadUrl = "https://downloads.termio.sh/termio.dmg";
 
 // Real app captures for the hero carousel (public/screenshots/hero*.png, all
-// 2288×1298 @2x). The hero cross-fades through these; the first one is the LCP
+// 3024×1898 @2x). The hero cross-fades through these; the first one is the LCP
 // image, so lead with the strongest shot.
 export const heroSlides = [
   {
-    src: "/screenshots/hero2.png",
+    src: "/screenshots/hero1.png",
     alt: "Termio in dark mode: a live Claude Code session next to the project sidebar.",
   },
   {
-    src: "/screenshots/hero1.png",
-    alt: "A Codex session running in Termio beside the session sidebar.",
+    src: "/screenshots/hero2.png",
+    alt: "Termio in light mode: a Codex session running beside the session sidebar.",
   },
   {
     src: "/screenshots/hero3.png",
@@ -44,6 +44,6 @@ export const heroSlides = [
   },
   {
     src: "/screenshots/hero5.png",
-    alt: "A plain zsh terminal session in Termio.",
+    alt: "Split panes in Termio: a Claude Code session alongside a dev server and a shell terminal.",
   },
-].map((slide) => ({ ...slide, width: 2288, height: 1298 }));
+].map((slide) => ({ ...slide, width: 3024, height: 1898 }));

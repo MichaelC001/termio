@@ -37,7 +37,7 @@ export const metadata: Metadata = {
         type: "image/webp",
         width: 2400,
         height: 1260,
-        alt: "Termio — a native Mac workspace for running multiple AI coding agents, shown beside a live Claude Code session.",
+        alt: "Termio — orchestrate your fleet of agents. A real Termio window with a sidebar of agent sessions beside a live Codex session.",
       },
     ],
   },
