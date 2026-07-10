@@ -2,7 +2,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Reveal } from "@/components/reveal";
 import { AppleMark } from "@/components/section-label";
-import { CtaDither } from "@/components/cta-dither";
+import { CtaRays } from "@/components/cta-rays";
 import { downloadUrl } from "@/lib/site";
 
 export function CtaBand() {
@@ -11,12 +11,12 @@ export function CtaBand() {
       <div className="mx-auto w-full max-w-6xl px-5 py-32 sm:py-40 sm:px-8">
         <Reveal>
           <div className="brand-wash shadow-soft relative isolate overflow-hidden rounded-[2rem] border border-white/10 bg-card px-8 py-20 text-center sm:px-16">
-            {/* Frozen 1-bit dither texture, masked to bloom behind the heading. */}
+            {/* Soft god rays fanning down from behind the heading. */}
             <div
               aria-hidden="true"
-              className="pointer-events-none absolute inset-0 -z-10 opacity-90 [mask-image:radial-gradient(70%_65%_at_50%_38%,#000_0%,transparent_78%)]"
+              className="pointer-events-none absolute inset-0 -z-10"
             >
-              <CtaDither />
+              <CtaRays />
             </div>
             <h2
               id="cta-heading"
