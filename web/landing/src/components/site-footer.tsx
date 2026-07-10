@@ -31,7 +31,7 @@ export function SiteFooter() {
           </nav>
         </div>
         <p className="font-mono text-xs text-muted-foreground/80">
-          Built for Apple Silicon. Local-only by design.
+          Built for AI Builders by AI Builders.
         </p>
       </div>
     </footer>
