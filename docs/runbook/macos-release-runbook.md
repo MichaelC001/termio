@@ -3,7 +3,7 @@ title: macOS release runbook — cut, notarize, publish termio.dmg
 status: active
 type: design
 created: 2026-07-06
-updated: 2026-07-06
+updated: 2026-07-10
 related:
   - ../RELEASING.md
 ---
@@ -231,12 +231,20 @@ V=0.1.0
 # Stable + versioned DMG resolve (200) and are non-trivial in size:
 curl -sI https://downloads.termio.sh/termio.dmg        | head -1
 curl -sI https://downloads.termio.sh/v$V/termio.dmg    | head -1
-# Appcast advertises the new version:
-curl -s  https://downloads.termio.sh/appcast.xml | grep -i "sparkle:version\|shortVersionString" | tail -4
-# Download + validate notarization/signature locally:
+# Appcast's NEWEST item advertises the new version (items are newest-first,
+# so read the head — the tail shows the oldest surviving entries):
+curl -s  https://downloads.termio.sh/appcast.xml | grep -i "sparkle:version\|shortVersionString" | head -4
+# Download + validate the notarization ticket stapled to the DMG:
 curl -sL https://downloads.termio.sh/v$V/termio.dmg -o /tmp/termio.dmg
-spctl -a -t open --context context:primary-signature -v /tmp/termio.dmg   # → accepted, source=Notarized
-xcrun stapler validate /tmp/termio.dmg                                    # → The validate action worked!
+xcrun stapler validate /tmp/termio.dmg          # → The validate action worked!
+# Gatekeeper verdict on the app itself — mount the DMG and assess the .app.
+# Do NOT `spctl -t open` the DMG file: the DMG container is notarized+stapled
+# but never codesigned (only the .app inside is), so that check always says
+# "rejected, source=no usable signature" — on good releases too.
+hdiutil attach /tmp/termio.dmg -nobrowse -quiet -mountpoint /tmp/termio-mount
+spctl -a -vv /tmp/termio-mount/termio.app       # → accepted, source=Notarized Developer ID
+defaults read /tmp/termio-mount/termio.app/Contents/Info.plist CFBundleShortVersionString  # → $V
+hdiutil detach /tmp/termio-mount -quiet
 ```
 
 Then confirm auto-update end-to-end: launch an older build and check that Sparkle
