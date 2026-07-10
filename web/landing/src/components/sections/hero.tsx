@@ -27,10 +27,10 @@ export function Hero() {
       />
       <div className="relative mx-auto flex w-full max-w-6xl flex-1 flex-col items-center justify-center px-5 pb-20 pt-36 text-center sm:px-8 sm:pt-40">
         <Reveal>
-          {/* Category line: quiet sentence-case medium text, not an
+          {/* Category line: quiet title-case medium text, not an
               uppercase letterspaced label. */}
           <p className="text-base font-medium text-muted-foreground sm:text-xl">
-            The terminal-first agentic development environment
+            Terminal-first Agentic Development Environment
           </p>
         </Reveal>
         <Reveal delayMs={40}>
