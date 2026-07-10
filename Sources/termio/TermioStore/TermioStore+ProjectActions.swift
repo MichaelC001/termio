@@ -364,6 +364,33 @@ extension TermioStore {
         }
     }
 
+    /// Renames a session via a one-field prompt (the same `NSAlert` shape the
+    /// worktree and file-browser prompts use), pre-filled with the current label
+    /// and pre-selected so a new name can just be typed over it. The entry becomes
+    /// the stored `title`, which `displayTitle(for:)` treats as user-chosen and
+    /// shows verbatim from then on; renaming an agent session back to its agent's
+    /// plain name hands the label back to the live terminal title.
+    func renameSession(_ id: Session.ID) {
+        guard let projectIndex = projects.firstIndex(where: { $0.sessions.contains { $0.id == id } }),
+              let sessionIndex = projects[projectIndex].sessions.firstIndex(where: { $0.id == id })
+        else { return }
+        let session = projects[projectIndex].sessions[sessionIndex]
+
+        let alert = NSAlert()
+        alert.messageText = "Rename Session"
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = displayTitle(for: session)
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        field.selectText(nil)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        projects[projectIndex].sessions[sessionIndex].title = name
+    }
+
     /// Closes a session: drops its cached surface (which tears down the PTY) and
     /// moves the selection to a neighbouring session if the closed one was active.
     /// Any git worktree created for the session is deliberately left on disk — it

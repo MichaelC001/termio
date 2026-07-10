@@ -516,6 +516,8 @@ private struct SessionRow: View {
         // NSMenu rather than SwiftUI's `.contextMenu` so right-click leaves no blue
         // accent ring on the row (see `SidebarRowContextMenu`).
         .background(SidebarRowContextMenu(items: [
+            .action("Rename Session…") { store.renameSession(session.id) },
+            .separator,
             .action("Close Session") { store.closeSession(session.id) }
         ]))
         .listRowBackground(
