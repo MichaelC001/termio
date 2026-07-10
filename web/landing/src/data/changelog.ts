@@ -17,58 +17,101 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
-    version: "0.8.0",
-    date: "2026-06-30",
-    title: "Termio is now free",
+    version: "0.3.0",
+    date: "2026-07-10",
+    title: "Split panes and command palettes",
     changes: {
       new: [
-        "Termio is now free to use — no trial clock, no license key, no account, no card. Just download it and go.",
-      ],
-    },
-  },
-  {
-    version: "0.7.0",
-    date: "2026-06-29",
-    title: "Per-project sandbox",
-    changes: {
-      new: [
-        "Opt a project into running its sessions inside an Apple Seatbelt sandbox, contained from the rest of your Mac.",
-      ],
-      improved: [
-        "Window chrome is now driven by a native toolbar, showing the active project and session as a title and subtitle.",
-        "Window content is hosted in a native split-view controller for a full-height sidebar behind the traffic lights.",
+        "Split panes: split a session vertically or horizontally and work in multiple terminals side by side.",
+        "Command palette: drive splits, sessions and terminal actions from the keyboard, alongside a new Terminal menu.",
+        "Rename a session from its right-click menu in the sidebar.",
       ],
       fixed: [
-        "The project name in the sidebar now fades under the hover icons instead of overlapping them.",
+        "Opening a file in the editor no longer crashes downloaded builds.",
+        "Closing a session now ends its entire process tree, so no stray agent processes are left behind.",
       ],
     },
   },
   {
-    version: "0.6.0",
-    date: "2026-06-20",
-    title: "Worktree folders and a command-line tool",
+    version: "0.2.4",
+    date: "2026-07-09",
+    title: "A welcome start page",
     changes: {
       new: [
-        "Git worktrees are promoted to top-level sidebar folders, so your worktrees are grouped under their project.",
-        "A bundled command-line tool lets you open projects and launch sessions from your shell.",
+        "A welcome page greets you when nothing is open — start a session, pick an agent, or jump back into a recent project.",
       ],
       improved: [
-        "Reorder projects by drag and drop in the sidebar.",
+        "Settings now flags agents whose command-line tool isn't installed, and fresh installs start with a focused default lineup.",
       ],
     },
   },
   {
-    version: "0.5.0",
-    date: "2026-06-08",
-    title: "Menu-bar session roster",
+    version: "0.2.3",
+    date: "2026-07-09",
+    title: "Agents repaint on resize",
+    changes: {
+      fixed: [
+        "Agents now redraw correctly when you resize the window, instead of freezing at their old layout.",
+      ],
+    },
+  },
+  {
+    version: "0.2.2",
+    date: "2026-07-08",
+    title: "The right login shell",
+    changes: {
+      fixed: [
+        "Sessions now resolve your login shell from the system's user directory instead of the ambient environment, so they launch with the right shell every time.",
+      ],
+    },
+  },
+  {
+    version: "0.2.1",
+    date: "2026-07-08",
+    title: "A new app identity",
+    changes: {
+      improved: [
+        "The app's bundle identifier is now sh.termio.app. If auto-update doesn't offer this release, download it once from the site — updates continue normally afterwards.",
+      ],
+    },
+  },
+  {
+    version: "0.2.0",
+    date: "2026-07-08",
+    title: "Four new agents and named worktrees",
     changes: {
       new: [
+        "Amp, Cursor, Droid and Kimi Code join the built-in agent lineup, each with live status and its real brand icon.",
+        "New Worktree: create a named git worktree straight from a project's right-click menu.",
+      ],
+      fixed: [
+        "The first prompt no longer appears shoved to the right after launch.",
+        "The window resizes freely again when no session is selected.",
+      ],
+    },
+  },
+  {
+    version: "0.1.1",
+    date: "2026-07-06",
+    title: "Launch fix for downloaded builds",
+    changes: {
+      fixed: [
+        "Downloaded builds now launch reliably — 0.1.0 could crash on first open on some Macs.",
+      ],
+    },
+  },
+  {
+    version: "0.1.0",
+    date: "2026-07-06",
+    title: "Hello, Termio",
+    changes: {
+      new: [
+        "Termio's first public release — a native Mac terminal built for running AI coding agents, free to download.",
+        "Projects and sessions live in a full-height sidebar, with live working / idle / attention status for every agent.",
+        "Git worktrees are grouped as folders under their project, and each folder shows its live branch.",
+        "Sandbox: opt a project into running its sessions inside an Apple Seatbelt sandbox, contained from the rest of your Mac.",
         "A menu-bar roster lists your live agent sessions for quick switching.",
-      ],
-      improved: [
-        "Every open session stays mounted and keeps running as you switch between them.",
-        "Each folder shows its live git branch in the sidebar and title bar.",
-        "Sessions auto-title themselves from the agent's live terminal title.",
+        "A bundled command-line tool opens projects and launches sessions from your shell.",
       ],
     },
   },
