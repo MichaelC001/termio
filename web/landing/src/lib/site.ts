@@ -15,7 +15,6 @@ export const supportedAgents = [
 
 export const navLinks = [
   { label: "Changelog", href: "/changelog" },
-  { label: "Docs", href: "/#faq" },
 ] as const;
 
 // The desktop build download — the stable Cloudflare R2 URL (behind
