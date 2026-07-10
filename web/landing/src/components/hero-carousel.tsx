@@ -13,15 +13,31 @@ export type HeroSlide = {
 };
 
 const AUTOPLAY_MS = 5000;
+const SWIPE_THRESHOLD_PX = 40;
 
 // Cross-fade hero carousel (otty.sh-style): slides are stacked absolutely and
 // fade between each other instead of sliding, so the window "changes content"
-// in place. Autoplays, pauses on hover/focus, and respects reduced motion.
+// in place. Autoplays, pauses on hover/focus, respects reduced motion, and
+// supports touch swipe on mobile (where the side arrows are hidden).
 export function HeroCarousel({ slides }: { slides: readonly HeroSlide[] }) {
   const [active, setActive] = useState(0);
   const [paused, setPaused] = useState(false);
+  // Slides are stacked absolutely inside the viewport, so `loading="lazy"`
+  // alone doesn't defer anything — the browser fetches all of them on first
+  // paint. Instead, only mount slides the user has seen plus the upcoming one
+  // (mounted a full autoplay interval early, so it's loaded before it fades in).
+  const [visited, setVisited] = useState<ReadonlySet<number>>(
+    () => new Set([0]),
+  );
   const reducedMotion = useRef(false);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
   const { ref: viewRef, inView } = useInView<HTMLDivElement>();
+
+  useEffect(() => {
+    setVisited((prev) =>
+      prev.has(active) ? prev : new Set(prev).add(active),
+    );
+  }, [active]);
 
   const goTo = useCallback(
     (index: number) => setActive((index + slides.length) % slides.length),
@@ -45,6 +61,7 @@ export function HeroCarousel({ slides }: { slides: readonly HeroSlide[] }) {
 
   if (slides.length === 0) return null;
   const { width, height } = slides[0];
+  const upNext = (active + 1) % slides.length;
 
   return (
     <div
@@ -52,8 +69,7 @@ export function HeroCarousel({ slides }: { slides: readonly HeroSlide[] }) {
       role="region"
       aria-roledescription="carousel"
       aria-label="Termio screenshots"
-      className="group relative w-full overflow-hidden rounded-2xl shadow-soft"
-      style={{ aspectRatio: `${width} / ${height}` }}
+      className="group @container relative w-full"
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
       onFocus={() => setPaused(true)}
@@ -62,31 +78,57 @@ export function HeroCarousel({ slides }: { slides: readonly HeroSlide[] }) {
         if (e.key === "ArrowLeft") goTo(active - 1);
         if (e.key === "ArrowRight") goTo(active + 1);
       }}
+      onTouchStart={(e) => {
+        setPaused(true);
+        touchStart.current = {
+          x: e.touches[0].clientX,
+          y: e.touches[0].clientY,
+        };
+      }}
+      onTouchEnd={(e) => {
+        setPaused(false);
+        if (!touchStart.current) return;
+        const dx = e.changedTouches[0].clientX - touchStart.current.x;
+        const dy = e.changedTouches[0].clientY - touchStart.current.y;
+        touchStart.current = null;
+        // Only a mostly-horizontal drag counts, so vertical page scrolling
+        // over the carousel doesn't change slides.
+        if (Math.abs(dx) > SWIPE_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy)) {
+          goTo(active + (dx < 0 ? 1 : -1));
+        }
+      }}
     >
-      {slides.map((slide, i) => (
-        <Image
-          key={slide.src}
-          src={slide.src}
-          width={slide.width}
-          height={slide.height}
-          alt={slide.alt}
-          priority={i === 0}
-          draggable={false}
-          aria-hidden={i !== active}
-          className={cn(
-            "absolute inset-0 h-full w-full object-cover transition-[opacity,transform] duration-700 ease-out",
-            i === active
-              ? "opacity-100 scale-100"
-              : "pointer-events-none opacity-0 scale-[1.012]",
-          )}
-        />
-      ))}
+      {/* The screenshot frame. Corner radius scales with the rendered image
+          width (cqw of the @container wrapper) so it matches at every size. */}
+      <div
+        className="relative w-full overflow-hidden rounded-[clamp(6px,1cqw,12px)] shadow-soft"
+        style={{ aspectRatio: `${width} / ${height}` }}
+      >
+        {slides.map((slide, i) =>
+          visited.has(i) || i === upNext ? (
+            <Image
+              key={slide.src}
+              src={slide.src}
+              width={slide.width}
+              height={slide.height}
+              alt={slide.alt}
+              priority={i === 0}
+              // The captures are 3024px wide but render in a max-w-5xl (64rem)
+              // column; without `sizes` the browser downloads the 3840px rendition.
+              sizes="(max-width: 68rem) 100vw, 64rem"
+              draggable={false}
+              aria-hidden={i !== active}
+              className={cn(
+                "absolute inset-0 h-full w-full object-cover transition-[opacity,transform] duration-700 ease-out",
+                i === active
+                  ? "opacity-100 scale-100"
+                  : "pointer-events-none opacity-0 scale-[1.012]",
+              )}
+            />
+          ) : null,
+        )}
 
-      {slides.length > 1 && (
-        <>
-          <CarouselArrow dir="prev" onClick={() => goTo(active - 1)} />
-          <CarouselArrow dir="next" onClick={() => goTo(active + 1)} />
-
+        {slides.length > 1 && (
           <div
             aria-label="Choose screenshot"
             className="absolute bottom-3 left-1/2 z-10 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-black/40 px-2 py-1.5 backdrop-blur-md"
@@ -107,6 +149,23 @@ export function HeroCarousel({ slides }: { slides: readonly HeroSlide[] }) {
               />
             ))}
           </div>
+        )}
+      </div>
+
+      {/* Arrows flank the image instead of overlapping it; they only show on
+          screens wide enough to have room beside it (mobile swipes instead). */}
+      {slides.length > 1 && (
+        <>
+          <CarouselArrow
+            dir="prev"
+            placement="outside"
+            onClick={() => goTo(active - 1)}
+          />
+          <CarouselArrow
+            dir="next"
+            placement="outside"
+            onClick={() => goTo(active + 1)}
+          />
         </>
       )}
     </div>
@@ -116,9 +175,11 @@ export function HeroCarousel({ slides }: { slides: readonly HeroSlide[] }) {
 export function CarouselArrow({
   dir,
   onClick,
+  placement = "overlay",
 }: {
   dir: "prev" | "next";
   onClick: () => void;
+  placement?: "overlay" | "outside";
 }) {
   return (
     <button
@@ -131,7 +192,14 @@ export function CarouselArrow({
         "opacity-0 transition-[opacity,background-color] duration-200",
         "hover:bg-white active:scale-95",
         "group-hover:opacity-100 group-focus-within:opacity-100",
-        dir === "prev" ? "left-4" : "right-4",
+        placement === "overlay"
+          ? dir === "prev"
+            ? "left-4"
+            : "right-4"
+          : cn(
+              "hidden xl:grid",
+              dir === "prev" ? "right-full mr-5" : "left-full ml-5",
+            ),
       )}
     >
       <svg
