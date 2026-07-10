@@ -121,6 +121,20 @@ final class TermioStore: ObservableObject {
     /// the surface renders and the companion server taps for a phone.
     var ptyProcesses: [Session.ID: PTYProcess] = [:]
 
+    /// App-quit teardown: without this, session children outlive the app - the
+    /// closing PTY's SIGHUP is swallowed by agent TUIs, and they pile up as
+    /// launchd orphans across restarts. Graceful signals first, a short
+    /// synchronous grace so plain shells exit cleanly, then SIGKILL whatever
+    /// remains - the quit path can't rely on `terminate()`'s dispatched
+    /// escalation timer, because the process dies before it fires.
+    func terminateAllSessions() {
+        let ptys = Array(ptyProcesses.values)
+        guard !ptys.isEmpty else { return }
+        for pty in ptys { pty.terminate() }
+        usleep(300_000)
+        for pty in ptys { pty.forceKillIfAlive() }
+    }
+
     /// The most recent host-owned terminal grid, persisted across launches. A
     /// PTY is created *before* its surface lays out, so without a good initial
     /// size the shell prints its first prompt at a placeholder 80×24 and the

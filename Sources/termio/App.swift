@@ -81,6 +81,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var closeOverlayShown = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Sweep up session processes a previous instance stranded (crash,
+        // force-quit, dev rebuild's kill -9) before this run adds its own.
+        PTYProcess.reapStrayOrphans()
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -260,6 +263,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    /// Closing the app closes its sessions' processes. Without this there is
+    /// no teardown path at all on quit - the PTYs die with the process and
+    /// agent children that ignore the resulting SIGHUP live on as orphans.
+    func applicationWillTerminate(_ notification: Notification) {
+        store.terminateAllSessions()
     }
 
     /// Builds the window's content: an `NSSplitViewController` with a native sidebar item

@@ -81,6 +81,10 @@ final class PTYProcess: @unchecked Sendable {
     private var resizeObservers: [UUID: (Int, Int) -> Void] = [:]
     private var exitObservers: [(Int32) -> Void] = []
     private var terminated = false
+    /// Set (under `lock`) the moment `waitpid` reaps the child, after which its
+    /// pid may be recycled — the escalation kill checks this so a delayed
+    /// SIGKILL can never hit an innocent reused pid/pgid.
+    private var childExited = false
     /// Pending coalesced host SIGWINCH (see `resizeFromHost`). Lock-guarded.
     private var hostApplyWork: DispatchWorkItem?
     private let lock = NSLock()
@@ -144,6 +148,7 @@ final class PTYProcess: @unchecked Sendable {
         DispatchQueue.global().async { [weak self] in
             var status: Int32 = 0
             waitpid(childPID, &status, 0)
+            self?.markChildExited()
             let code = (status & 0x7F) == 0 ? (status >> 8) & 0xFF : 128 + (status & 0x7F)
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -212,6 +217,12 @@ final class PTYProcess: @unchecked Sendable {
     private func markTerminated() {
         lock.lock()
         terminated = true
+        lock.unlock()
+    }
+
+    private func markChildExited() {
+        lock.lock()
+        childExited = true
         lock.unlock()
     }
 
@@ -547,6 +558,79 @@ final class PTYProcess: @unchecked Sendable {
         // The read source's cancel handler owns closing the master fd; closing
         // it here as well would double-close (and could hit a recycled fd).
         readSource?.cancel()
-        if pid > 0 { kill(pid, SIGTERM) }
+        guard pid > 0 else { return }
+        // Signal the whole process *group*, not just the direct child: the
+        // forkpty child is the session leader (pgid == pid), and agents spawn
+        // their own subprocess trees (tool shells, MCP servers) that a
+        // single-pid SIGTERM strands. SIGHUP first — the "terminal went away"
+        // signal a plain shell exits on — then SIGTERM for everything else.
+        killpg(pid, SIGHUP)
+        killpg(pid, SIGTERM)
+        // Agent TUIs (Claude Code) install handlers for BOTH and keep running —
+        // the source of the orphaned `claude` swarm that survives app restarts
+        // for days. Escalate to SIGKILL after a grace period unless waitpid has
+        // already reaped the child. Captures self strongly on purpose: the
+        // store drops its reference right after terminate(), and a dealloc'd
+        // PTYProcess can't follow through on the kill (the fds are already
+        // closed, so the lingering reference holds nothing else open).
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { self.forceKillIfAlive() }
+    }
+
+    /// SIGKILLs the child's process group if it hasn't been reaped yet.
+    /// Idempotent; safe after the pid is reaped (the `childExited` check keeps
+    /// the kill off a recycled pid). The app-quit path calls this directly
+    /// after a short synchronous grace, since a dying app can't rely on a
+    /// dispatched escalation timer.
+    func forceKillIfAlive() {
+        lock.lock()
+        let exited = childExited
+        lock.unlock()
+        guard !exited, pid > 0 else { return }
+        killpg(pid, SIGKILL)
+    }
+
+    /// Kills sessions a previous termio left behind when it died without
+    /// running any teardown (a crash, a force-quit, the dev rebuild's
+    /// `kill -9`). Those children re-parent to launchd and — because agent
+    /// TUIs swallow the SIGHUP the closing PTY delivers — idle forever,
+    /// accumulating into a memory-pressure swarm. Matched by the env termio
+    /// stamps into every PTY (`TERMIO_SESSION` plus `TERM_PROGRAM=termio` —
+    /// the session id alone leaks into unrelated processes when an editor is
+    /// launched from a termio pane, but such descendants overwrite
+    /// TERM_PROGRAM) and `ppid == 1` (parent gone). A live termio's sessions
+    /// have that termio as their parent, so a dev and a prod instance never
+    /// reap each other's running sessions.
+    static func reapStrayOrphans() {
+        DispatchQueue.global(qos: .utility).async {
+            let ps = Process()
+            ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+            // -E appends each process's environment to the command column
+            // (own-user processes only, which is exactly the scope wanted).
+            ps.arguments = ["-axEww", "-o", "pid=,ppid=,command="]
+            let out = Pipe()
+            ps.standardOutput = out
+            do { try ps.run() } catch {
+                Log.pty.error("reap: ps failed to launch: \(error.localizedDescription, privacy: .public)")
+                return
+            }
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            ps.waitUntilExit()
+            guard let text = String(data: data, encoding: .utf8) else { return }
+            for line in text.split(separator: "\n") {
+                guard line.contains("TERMIO_SESSION="),
+                      line.contains("TERM_PROGRAM=termio") else { continue }
+                let fields = line.split(separator: " ", omittingEmptySubsequences: true)
+                guard fields.count >= 2,
+                      let pid = pid_t(fields[0]), let ppid = pid_t(fields[1]),
+                      ppid == 1, pid != getpid()
+                else { continue }
+                Log.pty.info("reaping stray session process pid=\(pid, privacy: .public)")
+                // The group first (the leader's tree), then the pid itself —
+                // an orphaned *grandchild* isn't a group leader, so killpg
+                // alone would miss it.
+                killpg(pid, SIGKILL)
+                kill(pid, SIGKILL)
+            }
+        }
     }
 }
