@@ -1,0 +1,234 @@
+import CoreGraphics
+import Foundation
+
+/// How a split arranges its two children: `.horizontal` places them side by side
+/// (the "Split Right" action, divider running vertically), `.vertical` stacks
+/// them (the "Split Down" action).
+enum SplitDirection: String, Codable, Hashable {
+    case horizontal
+    case vertical
+}
+
+/// A direction the user can move pane focus in (⌥⌘ arrows). Separate from
+/// `SplitDirection` because focus moves along an edge, not along a split axis.
+enum PaneFocusDirection {
+    case left, right, up, down
+}
+
+/// A branch of the split tree: two subtrees separated by a draggable divider.
+/// `ratio` is the fraction of the branch's span given to `first`; it is clamped
+/// so neither side can be dragged into an unusable sliver.
+struct SplitBranch: Codable, Hashable {
+    var id = UUID()
+    var direction: SplitDirection
+    var ratio: Double
+    var first: SplitNode
+    var second: SplitNode
+
+    /// The narrowest either side may be dragged to. Matches the floor terminal
+    /// panes need to stay readable; applied on every ratio write so a persisted
+    /// tree can never restore into a degenerate layout either.
+    static let ratioRange: ClosedRange<Double> = 0.15...0.85
+}
+
+/// The split layout of the terminal area: a binary tree whose leaves are
+/// sessions and whose branches are draggable dividers. The tree is a pure value
+/// — every mutation returns a new tree — so `TermioStore` can hold it as one
+/// `@Published` property and persistence is plain `Codable`.
+///
+/// There is deliberately no "tabs inside a pane" layer (the sidebar already
+/// plays that role): a leaf *is* a session, which keeps the whole model to one
+/// enum and a handful of recursions.
+indirect enum SplitNode: Codable, Hashable {
+    case leaf(Session.ID)
+    case split(SplitBranch)
+
+    /// The sessions shown by this tree, in visual order (left-to-right,
+    /// top-to-bottom).
+    var leafIDs: [Session.ID] {
+        switch self {
+        case .leaf(let id): return [id]
+        case .split(let branch): return branch.first.leafIDs + branch.second.leafIDs
+        }
+    }
+
+    func contains(_ id: Session.ID) -> Bool {
+        switch self {
+        case .leaf(let leaf): return leaf == id
+        case .split(let branch): return branch.first.contains(id) || branch.second.contains(id)
+        }
+    }
+
+    /// Replaces the `target` leaf with a split of it and `newLeaf` (the new pane
+    /// takes the second/trailing slot, matching "Split Right"/"Split Down").
+    /// A miss returns the tree unchanged.
+    func splitting(leaf target: Session.ID, direction: SplitDirection,
+                   adding newLeaf: Session.ID) -> SplitNode {
+        switch self {
+        case .leaf(let id) where id == target:
+            return .split(SplitBranch(direction: direction, ratio: 0.5,
+                                      first: .leaf(id), second: .leaf(newLeaf)))
+        case .leaf:
+            return self
+        case .split(var branch):
+            branch.first = branch.first.splitting(leaf: target, direction: direction, adding: newLeaf)
+            branch.second = branch.second.splitting(leaf: target, direction: direction, adding: newLeaf)
+            return .split(branch)
+        }
+    }
+
+    /// Removes a leaf, collapsing its parent branch into the surviving sibling
+    /// (muxy's unwrap-one-level close). Returns `nil` when the removal consumes
+    /// the whole tree.
+    func removing(leaf target: Session.ID) -> SplitNode? {
+        switch self {
+        case .leaf(let id):
+            return id == target ? nil : self
+        case .split(var branch):
+            let first = branch.first.removing(leaf: target)
+            let second = branch.second.removing(leaf: target)
+            switch (first, second) {
+            case (nil, nil): return nil
+            case (nil, let survivor?), (let survivor?, nil): return survivor
+            case (let first?, let second?):
+                branch.first = first
+                branch.second = second
+                return .split(branch)
+            }
+        }
+    }
+
+    /// Writes a divider's ratio (clamped), leaving the rest of the tree intact.
+    func updatingRatio(branchID: UUID, to ratio: Double) -> SplitNode {
+        switch self {
+        case .leaf:
+            return self
+        case .split(var branch):
+            if branch.id == branchID {
+                branch.ratio = min(max(ratio, SplitBranch.ratioRange.lowerBound),
+                                   SplitBranch.ratioRange.upperBound)
+            } else {
+                branch.first = branch.first.updatingRatio(branchID: branchID, to: ratio)
+                branch.second = branch.second.updatingRatio(branchID: branchID, to: ratio)
+            }
+            return .split(branch)
+        }
+    }
+
+    // MARK: - Layout
+
+    /// One divider the view should draw and make draggable, in the same
+    /// coordinate space `layout(in:)` was given.
+    struct DividerSpec: Identifiable, Hashable {
+        /// The owning branch's id — what `updatingRatio` is keyed by.
+        let id: UUID
+        let direction: SplitDirection
+        /// The visible divider line (thickness `dividerThickness`).
+        let frame: CGRect
+        /// The branch's full span along its axis, for translating a drag delta
+        /// into a ratio delta.
+        let span: CGFloat
+        /// The ratio at layout time — the drag's anchor value.
+        let ratio: Double
+    }
+
+    struct PaneLayout {
+        var frames: [Session.ID: CGRect] = [:]
+        var dividers: [DividerSpec] = []
+    }
+
+    /// Computes every pane's rect and every divider from the tree — the muxy
+    /// `areaFrames` idea, extended to also emit the dividers. The view layer
+    /// stays a flat ZStack (termio's surfaces must never be structurally
+    /// re-parented), so this is the *only* place split geometry exists.
+    /// `dividerThickness: 0` yields normalized frames for focus scoring.
+    func layout(in rect: CGRect, dividerThickness: CGFloat = 1) -> PaneLayout {
+        var result = PaneLayout()
+        accumulateLayout(in: rect, dividerThickness: dividerThickness, into: &result)
+        return result
+    }
+
+    private func accumulateLayout(in rect: CGRect, dividerThickness: CGFloat,
+                                  into result: inout PaneLayout) {
+        switch self {
+        case .leaf(let id):
+            result.frames[id] = rect
+        case .split(let branch):
+            let horizontal = branch.direction == .horizontal
+            let span = horizontal ? rect.width : rect.height
+            let usable = max(0, span - dividerThickness)
+            let firstSpan = usable * CGFloat(branch.ratio)
+            let secondSpan = usable - firstSpan
+
+            let firstRect: CGRect
+            let dividerRect: CGRect
+            let secondRect: CGRect
+            if horizontal {
+                firstRect = CGRect(x: rect.minX, y: rect.minY, width: firstSpan, height: rect.height)
+                dividerRect = CGRect(x: rect.minX + firstSpan, y: rect.minY,
+                                     width: dividerThickness, height: rect.height)
+                secondRect = CGRect(x: dividerRect.maxX, y: rect.minY,
+                                    width: secondSpan, height: rect.height)
+            } else {
+                firstRect = CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: firstSpan)
+                dividerRect = CGRect(x: rect.minX, y: rect.minY + firstSpan,
+                                     width: rect.width, height: dividerThickness)
+                secondRect = CGRect(x: rect.minX, y: dividerRect.maxY,
+                                    width: rect.width, height: secondSpan)
+            }
+            if dividerThickness > 0 {
+                result.dividers.append(DividerSpec(id: branch.id, direction: branch.direction,
+                                                   frame: dividerRect, span: span, ratio: branch.ratio))
+            }
+            branch.first.accumulateLayout(in: firstRect, dividerThickness: dividerThickness, into: &result)
+            branch.second.accumulateLayout(in: secondRect, dividerThickness: dividerThickness, into: &result)
+        }
+    }
+
+    // MARK: - Directional focus
+
+    /// The best pane to move focus to from `focused` in `direction`, judged on
+    /// normalized frames (muxy's scoring: candidates strictly on that side,
+    /// preferring cross-axis overlap, then the smallest gap, then the nearest
+    /// center). `nil` when there is nothing that way.
+    func pane(_ direction: PaneFocusDirection, of focused: Session.ID) -> Session.ID? {
+        let frames = layout(in: CGRect(x: 0, y: 0, width: 1, height: 1), dividerThickness: 0).frames
+        guard let from = frames[focused] else { return nil }
+
+        var best: (id: Session.ID, score: (Int, CGFloat, CGFloat))?
+        for (id, frame) in frames where id != focused {
+            guard isCandidate(frame, from: from, direction: direction) else { continue }
+            let score = score(frame, from: from, direction: direction)
+            if best == nil || score < best!.score { best = (id, score) }
+        }
+        return best?.id
+    }
+
+    private func isCandidate(_ candidate: CGRect, from: CGRect,
+                             direction: PaneFocusDirection) -> Bool {
+        let epsilon: CGFloat = 0.001
+        switch direction {
+        case .left: return candidate.maxX <= from.minX + epsilon
+        case .right: return candidate.minX >= from.maxX - epsilon
+        case .up: return candidate.maxY <= from.minY + epsilon
+        case .down: return candidate.minY >= from.maxY - epsilon
+        }
+    }
+
+    private func score(_ candidate: CGRect, from: CGRect,
+                       direction: PaneFocusDirection) -> (Int, CGFloat, CGFloat) {
+        let horizontal = direction == .left || direction == .right
+        let overlap = horizontal
+            ? min(candidate.maxY, from.maxY) - max(candidate.minY, from.minY)
+            : min(candidate.maxX, from.maxX) - max(candidate.minX, from.minX)
+        let gap: CGFloat
+        switch direction {
+        case .left: gap = from.minX - candidate.maxX
+        case .right: gap = candidate.minX - from.maxX
+        case .up: gap = from.minY - candidate.maxY
+        case .down: gap = candidate.minY - from.maxY
+        }
+        let centerDistance = hypot(candidate.midX - from.midX, candidate.midY - from.midY)
+        return (overlap > 0 ? 0 : 1, max(0, gap), centerDistance)
+    }
+}

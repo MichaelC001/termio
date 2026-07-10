@@ -357,6 +357,10 @@ extension TermioStore {
         }
         projects.remove(at: projectIndex)
 
+        // Drop the removed sessions out of any split layout first — the prune
+        // may already have moved the selection onto a surviving pane.
+        pruneSessionsFromSplit(removedSessionIDs)
+
         // If the active session lived in the removed project, fall back to the first
         // session of whatever project remains (nil when the sidebar is now empty).
         if let selected = selectedSessionID, removedSessionIDs.contains(selected) {
@@ -410,6 +414,11 @@ extension TermioStore {
         currentTool[id] = nil
         liveTitles[id] = nil
         lastWorkingAt[id] = nil
+
+        // If the session held a split pane, collapse that pane; when it was also
+        // the focused pane the prune moves the selection to its layout neighbor,
+        // which then wins over the sidebar-order fallback below.
+        pruneSessionsFromSplit([id])
 
         if selectedSessionID == id {
             let remaining = projects[projectIndex].sessions

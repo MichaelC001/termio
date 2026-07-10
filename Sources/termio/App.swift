@@ -79,6 +79,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // Whether the close button is currently in the toolbar, so the observer only mutates the
     // toolbar on an actual open↔closed transition rather than on every store change.
     private var closeOverlayShown = false
+    // The floating panel shared by ⌘⇧O Open Quickly and ⌘⇧P Command Palette.
+    // Presented as a child window (Xcode Open-Quickly style) because the
+    // terminal surfaces are NSViews that draw above any SwiftUI overlay in the
+    // hosting view — an in-tree palette is covered by the very terminals it
+    // commands. `store.paletteMode` stays the single source of truth; this
+    // observer materializes it.
+    private var palettePanel: NSPanel?
+    private var paletteObserver: AnyCancellable?
+    private var paletteResignObserver: NSObjectProtocol?
+    // The ghostty-style right-click menu over the terminal surfaces (Copy/Paste + splits);
+    // owns the rightMouseDown monitor for the app's lifetime.
+    private var terminalContextMenu: TerminalContextMenu?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Sweep up session processes a previous instance stranded (crash,
@@ -171,6 +183,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.applyWindowTransparency()
                 self?.applyChromeAppearance()
             }
+
+        // Materialize the palette mode as a floating panel. Mapping to shown/
+        // hidden lets a mode *switch* (⌘⇧O while the ⌘⇧P palette is up) reuse
+        // the live panel — the SwiftUI view tracks `paletteMode` itself; the
+        // dedupe keeps the dismiss-path (panel close → nil → sink) from
+        // re-entering.
+        paletteObserver = store.$paletteMode
+            .map { $0 != nil }
+            .removeDuplicates()
+            .sink { [weak self] shown in
+                MainActor.assumeIsolated {
+                    if shown { self?.presentCommandPalette() } else { self?.dismissCommandPalette() }
+                }
+            }
+
+        terminalContextMenu = TerminalContextMenu(store: store)
 
         menuBar = MenuBarController(store: store) { [weak self] id in
             self?.store.selectedSessionID = id
@@ -266,7 +294,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     /// Closing the app closes its sessions' processes. Without this there is
-    /// no teardown path at all on quit - the PTYs die with the process and
+    /// no teardown path at all on quit — the PTYs die with the process and
     /// agent children that ignore the resulting SIGHUP live on as orphans.
     func applicationWillTerminate(_ notification: Notification) {
         store.terminateAllSessions()
@@ -706,6 +734,158 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func checkForUpdates(_ sender: Any?) {
         updaterController.checkForUpdates(sender)
     }
+
+    // MARK: - Split panes & palettes (View menu / ⌘⇧O / ⌘⇧P)
+
+    /// View ▸ Open Quickly… (⌘⇧O) — the *things* palette: jump to any session.
+    /// Pressing it while the Command Palette is up switches modes in place.
+    @objc func toggleOpenQuickly(_ sender: Any?) {
+        store.paletteMode = store.paletteMode == .openQuickly ? nil : .openQuickly
+    }
+
+    /// View ▸ Command Palette… (⌘⇧P) — the *verbs* palette: run an app action
+    /// (see `presentCommandPalette`).
+    @objc func toggleCommandPalette(_ sender: Any?) {
+        store.paletteMode = store.paletteMode == .commands ? nil : .commands
+    }
+
+    /// Floats the palette as a borderless key panel, top-centered over the main
+    /// window and attached as a child so it rides window moves. No backdrop —
+    /// the panel just floats, Spotlight-style. Clicking anywhere else (the
+    /// panel resigning key) dismisses it.
+    private func presentCommandPalette() {
+        guard palettePanel == nil, let window else { return }
+        let size = CommandPaletteView.panelSize
+        let panel = KeyBorderlessPanel(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.isMovable = false
+        let hosting = NSHostingView(rootView: CommandPaletteView(onClose: { [weak self] in
+            self?.store.paletteMode = nil
+        }).environmentObject(store))
+        panel.contentView = Self.paletteBackdrop(around: hosting)
+
+        let frame = window.frame
+        panel.setFrameOrigin(NSPoint(
+            x: frame.midX - size.width / 2,
+            y: frame.maxY - 140 - size.height
+        ))
+        window.addChildWindow(panel, ordered: .above)
+        panel.makeKeyAndOrderFront(nil)
+        // The shadow shape is computed before the masked backdrop renders,
+        // leaving a square shadow slab poking out at the corners; recompute
+        // it after the first frame.
+        DispatchQueue.main.async { panel.invalidateShadow() }
+        palettePanel = panel
+
+        // Click-away/⌘-tab dismissal: losing key closes the palette. The store
+        // flag is the source of truth, so route through it (the observer then
+        // calls `dismissCommandPalette` exactly once).
+        paletteResignObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification, object: panel, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.store.paletteMode = nil }
+        }
+    }
+
+    /// The palette's translucent backdrop. It must live here in AppKit:
+    /// SwiftUI materials only sample content *within their own window*, and
+    /// the palette panel contains nothing but the palette, so they render as
+    /// an opaque grey slab.
+    ///
+    /// Liquid Glass on macOS 26: `cornerRadius` alone only rounds the glass
+    /// "lens" — the window-server backdrop stays a square slab poking out at
+    /// the corners; `clipsToBounds = true` is what actually clips it.
+    /// Pre-26 fallback: `NSVisualEffectView`, where `maskImage` (not layer
+    /// corner rounding) is the one mechanism that clips the backdrop region
+    /// and the window shadow to the rounded shape.
+    private static func paletteBackdrop(around hosting: NSView) -> NSView {
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.cornerRadius = 18
+            glass.clipsToBounds = true
+            glass.contentView = hosting
+            return glass
+        }
+        let effect = NSVisualEffectView()
+        effect.material = .popover
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.maskImage = roundedRectMask(cornerRadius: 18)
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+        effect.addSubview(hosting)
+        NSLayoutConstraint.activate([
+            hosting.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
+            hosting.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
+            hosting.topAnchor.constraint(equalTo: effect.topAnchor),
+            hosting.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
+        ])
+        return effect
+    }
+
+    /// A stretchable rounded-rect alpha mask for `NSVisualEffectView.maskImage`.
+    /// Cap insets keep the corners pixel-exact at any panel size.
+    private static func roundedRectMask(cornerRadius: CGFloat) -> NSImage {
+        let edge = cornerRadius * 2 + 1
+        let image = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(
+            top: cornerRadius, left: cornerRadius, bottom: cornerRadius, right: cornerRadius)
+        image.resizingMode = .stretch
+        return image
+    }
+
+    private func dismissCommandPalette() {
+        guard let panel = palettePanel else { return }
+        if let observer = paletteResignObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        paletteResignObserver = nil
+        window?.removeChildWindow(panel)
+        panel.orderOut(nil)
+        palettePanel = nil
+        // Hand key back to the main window — but not when the palette closed
+        // because the whole app deactivated (a ⌘-tab away must not be undone).
+        if NSApp.isActive { window?.makeKeyAndOrderFront(nil) }
+    }
+
+    /// View ▸ Split Right (⌘D) — splits the focused pane side-by-side, opening a
+    /// fresh terminal in the same project.
+    @objc func splitPaneRight(_ sender: Any?) {
+        store.splitSelectedPane(.horizontal)
+    }
+
+    /// View ▸ Split Down (⌘⇧D) — splits the focused pane stacked.
+    @objc func splitPaneDown(_ sender: Any?) {
+        store.splitSelectedPane(.vertical)
+    }
+
+    /// View ▸ Close Pane (⌥⌘W) — collapses the focused pane out of the layout.
+    /// The session itself stays alive in the sidebar; killing it remains the
+    /// sidebar's explicit close.
+    @objc func closeSplitPane(_ sender: Any?) {
+        store.closeSelectedPane()
+    }
+
+    @objc func focusPaneLeft(_ sender: Any?) { store.focusPane(.left) }
+    @objc func focusPaneRight(_ sender: Any?) { store.focusPane(.right) }
+    @objc func focusPaneUp(_ sender: Any?) { store.focusPane(.up) }
+    @objc func focusPaneDown(_ sender: Any?) { store.focusPane(.down) }
+}
+
+/// A borderless window can't become key by default, but the palette's search
+/// field needs key status to type into — hence the one-line subclass.
+private final class KeyBorderlessPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
 }
 
 /// Delegate for the window's real toolbar, mirroring CodeEdit's chrome. It declares a leading
@@ -941,7 +1121,9 @@ private struct BranchPickerToolbarView: View {
                 }
             }
         }
-        .padding(.leading, 4)
+        // Pull left so the title/branch left edge lines up with the terminal's
+        // first column (window padding), not the toolbar's default item inset.
+        .padding(.leading, -13)
         .frame(minWidth: 80)
     }
 }
@@ -1003,6 +1185,62 @@ private func buildMainMenu() -> NSMenu {
     let viewItem = NSMenuItem()
     mainMenu.addItem(viewItem)
     let viewMenu = NSMenu(title: "View")
+    // otty/Xcode's split: ⌘⇧O Open Quickly jumps to things (sessions), ⌘⇧P
+    // Command Palette runs verbs (actions). ⌘⇧P is the VS Code convention; not
+    // ⌘K: ghostty binds super+k to clear_screen and performs it inside the
+    // surface, so the key never reaches the menu. Both shortcuts are
+    // additionally unbound in the surface config (see `applyAppearance`) so
+    // they can't be swallowed either.
+    let openQuickly = viewMenu.addItem(
+        withTitle: "Open Quickly…",
+        action: #selector(AppDelegate.toggleOpenQuickly(_:)),
+        keyEquivalent: "o"
+    )
+    openQuickly.keyEquivalentModifierMask = [.command, .shift]
+    let palette = viewMenu.addItem(
+        withTitle: "Command Palette…",
+        action: #selector(AppDelegate.toggleCommandPalette(_:)),
+        keyEquivalent: "p"
+    )
+    palette.keyEquivalentModifierMask = [.command, .shift]
+    viewMenu.addItem(.separator())
+    // iTerm2's split shortcuts: ⌘D right, ⌘⇧D down. The new pane opens a plain
+    // terminal in the focused session's project (see `splitSelectedPane`).
+    viewMenu.addItem(
+        withTitle: "Split Right",
+        action: #selector(AppDelegate.splitPaneRight(_:)),
+        keyEquivalent: "d"
+    )
+    let splitDown = viewMenu.addItem(
+        withTitle: "Split Down",
+        action: #selector(AppDelegate.splitPaneDown(_:)),
+        keyEquivalent: "d"
+    )
+    splitDown.keyEquivalentModifierMask = [.command, .shift]
+    // ⌥⌘W: closes the *pane* (the layout slot), not the session — ⌘W stays
+    // unbound so the window's own close keeps its meaning.
+    let closePane = viewMenu.addItem(
+        withTitle: "Close Pane",
+        action: #selector(AppDelegate.closeSplitPane(_:)),
+        keyEquivalent: "w"
+    )
+    closePane.keyEquivalentModifierMask = [.command, .option]
+    viewMenu.addItem(.separator())
+    // ⌥⌘ arrows move focus between panes, scored on the split geometry.
+    for (title, action, key) in [
+        ("Focus Pane Left", #selector(AppDelegate.focusPaneLeft(_:)), NSLeftArrowFunctionKey),
+        ("Focus Pane Right", #selector(AppDelegate.focusPaneRight(_:)), NSRightArrowFunctionKey),
+        ("Focus Pane Up", #selector(AppDelegate.focusPaneUp(_:)), NSUpArrowFunctionKey),
+        ("Focus Pane Down", #selector(AppDelegate.focusPaneDown(_:)), NSDownArrowFunctionKey),
+    ] {
+        let item = viewMenu.addItem(
+            withTitle: title,
+            action: action,
+            keyEquivalent: String(UnicodeScalar(UInt16(key))!)
+        )
+        item.keyEquivalentModifierMask = [.command, .option]
+    }
+    viewMenu.addItem(.separator())
     // Mirrors Xcode's inspector shortcut (⌥⌘0) for the trailing file-tree panel.
     let toggleFiles = viewMenu.addItem(
         withTitle: "Show Project Files",

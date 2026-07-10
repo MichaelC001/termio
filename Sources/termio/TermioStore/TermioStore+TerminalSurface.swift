@@ -419,6 +419,14 @@ extension TermioStore {
         // selection copy-free (Ghostty's own default uses the X11 selection, which
         // is meaningless on macOS).
         builder.withCustom("copy-on-select", settings.copyOnSelect ? "clipboard" : "false")
+
+        // termio's palettes live on ⌘⇧P (Command Palette) and ⌘⇧O (Open
+        // Quickly, see `buildMainMenu`); ghostty binds keys like these to its
+        // own actions, and a surface-handled keybind is consumed before the
+        // menu bar ever sees the event. Unbind them inside the surface so the
+        // shortcuts always reach termio's menu.
+        builder.withCustom("keybind", "super+shift+p=unbind")
+        builder.withCustom("keybind", "super+shift+o=unbind")
     }
 
     /// The light/dark theme pair libghostty switches between as the system

@@ -21,6 +21,9 @@ extension Notification.Name {
 /// surface mounted and only toggling visibility means the view is never
 /// reparented or resized, so the shell never repaints and switching is instant.
 struct TerminalPane: View {
+    /// The pane area's named coordinate space — the fixed frame the split
+    /// dividers' drags are measured in (see the ZStack's `coordinateSpace`).
+    static let splitCoordinateSpace = "termio.splitPane"
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
     @Environment(\.colorScheme) private var colorScheme
@@ -39,17 +42,50 @@ struct TerminalPane: View {
     }
 
     var body: some View {
-        ZStack {
-            if mounted.isEmpty {
-                WelcomeView()
+        GeometryReader { geo in
+            let bounds = CGRect(origin: .zero, size: geo.size)
+            // The split tree only ever computes *geometry* — the surfaces below
+            // stay flat, permanently-mounted siblings in this one ZStack (never
+            // re-parented into a recursive split view), so creating or removing
+            // splits can't tear down a running shell. Muxy gets the same
+            // guarantee with an NSView registry; termio's surface cache plus
+            // frame-driven layout is the equivalent with the existing pattern.
+            let layout = store.splitRoot?.layout(in: bounds)
+            ZStack {
+                if mounted.isEmpty {
+                    WelcomeView()
+                }
+                ForEach(mounted, id: \.session.id) { item in
+                    let id = item.session.id
+                    let paneFrame = layout?.frames[id]
+                    let isVisible = paneFrame != nil
+                        || (layout == nil && store.selectedSessionID == id)
+                    // Hidden sessions keep the full pane size, so returning to
+                    // them single-pane is still resize-free.
+                    let rect = paneFrame ?? bounds
+                    TerminalSurfaceView(context: store.surface(for: item.session, in: item.project))
+                        .terminalFocused($focusedSession, equals: id)
+                        .frame(width: rect.width, height: rect.height)
+                        .position(x: rect.midX, y: rect.midY)
+                        .opacity(isVisible ? 1 : 0)
+                        .allowsHitTesting(isVisible)
+                }
+                if let layout {
+                    // Identified by the (stable) branch id, so a divider keeps its
+                    // view identity — and its in-flight drag anchor — while its own
+                    // drag rewrites the ratio underneath it.
+                    ForEach(layout.dividers) { divider in
+                        SplitDividerHandle(spec: divider) { ratio in
+                            store.updateSplitRatio(branchID: divider.id, ratio: ratio)
+                        }
+                    }
+                }
             }
-            ForEach(mounted, id: \.session.id) { item in
-                let isSelected = store.selectedSessionID == item.session.id
-                TerminalSurfaceView(context: store.surface(for: item.session, in: item.project))
-                    .terminalFocused($focusedSession, equals: item.session.id)
-                    .opacity(isSelected ? 1 : 0)
-                    .allowsHitTesting(isSelected)
-            }
+            .frame(width: geo.size.width, height: geo.size.height)
+            // The dividers' drag gestures measure in this fixed space: a handle
+            // moves *with* its own drag, so a local-space translation chases its
+            // own coordinate origin and the divider oscillates under the cursor.
+            .coordinateSpace(name: Self.splitCoordinateSpace)
         }
         // Paint the terminal's own background behind the pane, extending up under the toolbar so
         // the system toolbar material picks up a terminal tint instead of a flat grey band.
@@ -115,6 +151,13 @@ struct TerminalPane: View {
             }
         }
         .animation(.easeOut(duration: 0.12), value: store.openTrace)
+        // The ⌘⇧O/⌘⇧P palette lives in its own floating NSPanel (owned by
+        // the app delegate — a SwiftUI overlay would render *under* the NSView
+        // terminal surfaces); this only hands focus back to the terminal when
+        // it closes.
+        .onChange(of: store.paletteMode) { _, mode in
+            if mode == nil { focusedSession = store.selectedSessionID }
+        }
         // Dropping a file (dragged from the file-tree inspector or the Finder) inserts
         // its shell-quoted path at the prompt — the prebuilt libghostty surface does not
         // register for file drops itself, so the pane catches them and feeds the path to
@@ -123,6 +166,21 @@ struct TerminalPane: View {
         .dropDestination(for: URL.self) { urls, _ in
             sendPaths(urls)
         } isTargeted: { isDropTargeted = $0 }
+        // Every visible pane must be mounted — with splits that is all the
+        // tree's leaves, not just the selection.
+        .onChange(of: store.visiblePaneIDs, initial: true) { _, ids in
+            for id in ids where !activated.contains(id) {
+                activated.append(id)
+            }
+        }
+        // Clicking a split pane makes its surface first responder; follow that
+        // with the selection so the sidebar highlight, title bar, and split
+        // focus all agree on which pane is active.
+        .onChange(of: focusedSession) { _, id in
+            guard let id, id != store.selectedSessionID,
+                  store.visiblePaneIDs.contains(id) else { return }
+            store.selectedSessionID = id
+        }
         .onChange(of: store.selectedSessionID, initial: true) { _, id in
             if let id, !activated.contains(id) {
                 activated.append(id)
@@ -220,5 +278,50 @@ struct TerminalPane: View {
     /// window stay see-through.
     private var paneBackground: Color {
         isTranslucent ? .clear : Color(nsColor: settings.terminalBackgroundColor)
+    }
+}
+
+/// The draggable divider between two split panes: a hairline with a wider
+/// invisible hit area (muxy's 1pt-line / ~10pt-grab pattern). Dragging writes
+/// the branch ratio through `onRatioChange`; the anchor is captured on the
+/// first tick so the delta is always relative to where the drag began, not to
+/// the live (already-moved) ratio.
+private struct SplitDividerHandle: View {
+    let spec: SplitNode.DividerSpec
+    let onRatioChange: (Double) -> Void
+    @State private var anchorRatio: Double?
+
+    /// Whether the divider line runs vertically (panes side by side).
+    private var verticalLine: Bool { spec.direction == .horizontal }
+    private static let hitThickness: CGFloat = 9
+
+    var body: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor))
+            .frame(width: verticalLine ? spec.frame.width : nil,
+                   height: verticalLine ? nil : spec.frame.height)
+            .frame(width: verticalLine ? Self.hitThickness : spec.frame.width,
+                   height: verticalLine ? spec.frame.height : Self.hitThickness)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside {
+                    (verticalLine ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 0,
+                            coordinateSpace: .named(TerminalPane.splitCoordinateSpace))
+                    .onChanged { value in
+                        let start = anchorRatio ?? spec.ratio
+                        if anchorRatio == nil { anchorRatio = start }
+                        guard spec.span > 0 else { return }
+                        let delta = verticalLine ? value.translation.width : value.translation.height
+                        onRatioChange(start + Double(delta / spec.span))
+                    }
+                    .onEnded { _ in anchorRatio = nil }
+            )
+            .position(x: spec.frame.midX, y: spec.frame.midY)
     }
 }

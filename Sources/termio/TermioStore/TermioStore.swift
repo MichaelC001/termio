@@ -37,6 +37,40 @@ final class TermioStore: ObservableObject {
         }
     }
 
+    /// The split groups: each tree binds two or more sessions that share the
+    /// screen whenever any of them is selected (VS Code's *terminal group*, not
+    /// its editor group — selecting a session outside the visible group switches
+    /// the whole terminal area to that session's own group, or its lone pane,
+    /// rather than pulling the session into the current layout). A session
+    /// belongs to at most one group; a user who never splits carries no extra
+    /// state. Ratio drags write here at gesture rate, so persistence is
+    /// debounced rather than inline.
+    @Published var splitGroups: [SplitNode] = [] {
+        didSet {
+            guard oldValue != splitGroups else { return }
+            persistDebounce?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated { self?.persist() }
+            }
+            persistDebounce = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+        }
+    }
+
+    /// The split layout on screen: the group the selected session belongs to,
+    /// or `nil` when it is ungrouped — then the selected session fills the
+    /// terminal area as a single pane. Derived, so switching the selection is
+    /// what swaps layouts; nothing ever edits a tree to follow the sidebar.
+    var splitRoot: SplitNode? {
+        guard let selected = selectedSessionID else { return nil }
+        return splitGroups.first { $0.contains(selected) }
+    }
+
+    /// Which palette panel is up, or `nil` for none: ⌘⇧O Open Quickly (jump to
+    /// a session) vs ⌘⇧P Command Palette (run an action). Transient UI state
+    /// (not persisted), toggled by the View menu and cleared by the palette.
+    @Published var paletteMode: PaletteMode?
+
     /// When each project was last active — the moment one of its agents last reported
     /// work, or the user last switched to one of its sessions. Drives the sidebar's
     /// "Recent Activity" sort (see `orderedProjects`). In-memory and `@Published` so a
@@ -121,11 +155,11 @@ final class TermioStore: ObservableObject {
     /// the surface renders and the companion server taps for a phone.
     var ptyProcesses: [Session.ID: PTYProcess] = [:]
 
-    /// App-quit teardown: without this, session children outlive the app - the
+    /// App-quit teardown: without this, session children outlive the app — the
     /// closing PTY's SIGHUP is swallowed by agent TUIs, and they pile up as
     /// launchd orphans across restarts. Graceful signals first, a short
     /// synchronous grace so plain shells exit cleanly, then SIGKILL whatever
-    /// remains - the quit path can't rely on `terminate()`'s dispatched
+    /// remains — the quit path can't rely on `terminate()`'s dispatched
     /// escalation timer, because the process dies before it fires.
     func terminateAllSessions() {
         let ptys = Array(ptyProcesses.values)
@@ -152,6 +186,8 @@ final class TermioStore: ObservableObject {
     private var linkObserver: AnyCancellable?
     private var linkClickMonitor: Any?
     private let stateFile = StateFile()
+    /// Coalesces the ratio-drag flood of `splitGroups` writes into one save.
+    private var persistDebounce: DispatchWorkItem?
 
     /// The socket Claude Code's hooks report into. Runs for the app's lifetime; the
     /// `~/.claude/settings.json` side is what the setting toggles on and off.
@@ -298,6 +334,14 @@ final class TermioStore: ObservableObject {
         if let id = snapshot.selectedSessionID, store.session(id) != nil {
             store.selectedSessionID = id
         }
+        // Restore the split groups, keeping only those whose panes all still
+        // resolve to live sessions (a stale group is dropped whole rather than
+        // patched — the user just re-splits). State files from before groups
+        // existed persisted a single `splitRoot` layout; it migrates as one group.
+        let savedGroups = snapshot.splitGroups ?? snapshot.splitRoot.map { [$0] } ?? []
+        store.splitGroups = savedGroups.filter { group in
+            group.leafIDs.count >= 2 && group.leafIDs.allSatisfy { store.session($0) != nil }
+        }
         return store
     }
 
@@ -329,7 +373,8 @@ final class TermioStore: ObservableObject {
     private func persist() {
         stateFile.save(.init(
             projects: projects,
-            selectedSessionID: selectedSessionID
+            selectedSessionID: selectedSessionID,
+            splitGroups: splitGroups
         ))
     }
 

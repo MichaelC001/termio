@@ -52,8 +52,10 @@ struct SidebarView: View {
                     chrome: chrome
                 )
                 if !collapsedProjects.contains(project.id) {
+                    let splitMarks = splitLinkMarks(for: project)
                     ForEach(project.sessions) { session in
-                        SessionRow(session: session, chrome: chrome)
+                        SessionRow(session: session, chrome: chrome,
+                                   splitLink: splitMarks[session.id])
                     }
                 }
             }
@@ -86,6 +88,81 @@ struct SidebarView: View {
             } else {
                 collapsedProjects.insert(id)
             }
+        }
+    }
+
+    /// Which sessions of `project` get a split-group bracket, and which segment of
+    /// it (VS Code's ┌/├/└ decoration on grouped terminal tabs). Every split group
+    /// gets its bracket — visible on screen or not — because groups are persistent:
+    /// the bracket is what tells you which sessions will come up together when you
+    /// select one of them. A bracket joins a *run* of adjacent same-group rows —
+    /// `splitSelectedPane` inserts its companion right below the session it splits,
+    /// so groups always start out as such runs. A member whose row sits alone
+    /// (its group mates live in another project) gets no bracket: a floating
+    /// corner with nothing to connect to would just be noise.
+    private func splitLinkMarks(for project: Project) -> [Session.ID: SplitLinkMark] {
+        guard !store.splitGroups.isEmpty else { return [:] }
+        var groupOf: [Session.ID: Int] = [:]
+        for (index, group) in store.splitGroups.enumerated() {
+            for id in group.leafIDs { groupOf[id] = index }
+        }
+        var marks: [Session.ID: SplitLinkMark] = [:]
+        var run: [Session.ID] = []
+        var runGroup: Int?
+        func closeRun() {
+            if run.count > 1 {
+                marks[run.first!] = .top
+                for id in run.dropFirst().dropLast() { marks[id] = .middle }
+                marks[run.last!] = .bottom
+            }
+            run.removeAll()
+        }
+        for session in project.sessions {
+            let group = groupOf[session.id]
+            // Two different groups' rows may touch; the bracket must not fuse them.
+            if group != runGroup { closeRun() }
+            runGroup = group
+            if group != nil { run.append(session.id) }
+        }
+        closeRun()
+        return marks
+    }
+}
+
+/// A session row's segment of the split-group bracket: the corner opening the
+/// group, a tee continuing it, or the corner closing it.
+enum SplitLinkMark {
+    case top, middle, bottom
+}
+
+/// The bracket segment itself, drawn as a hairline path down the row's leading
+/// gutter — a vertical spine toward the neighbouring group members plus a short
+/// tick pointing at this row's icon. Drawn (not the ┌ text glyph VS Code uses)
+/// so consecutive rows meet the row boundary exactly and the spine reads as one
+/// continuous bracket.
+private struct SplitLinkGlyph: View {
+    let mark: SplitLinkMark
+    let chrome: ChromeTheme?
+
+    var body: some View {
+        GeometryReader { geo in
+            Path { path in
+                let x = geo.size.width * 0.5
+                let midY = geo.size.height / 2
+                let top = CGPoint(x: x, y: 0)
+                let mid = CGPoint(x: x, y: midY)
+                let bottom = CGPoint(x: x, y: geo.size.height)
+                switch mark {
+                case .top: path.move(to: mid); path.addLine(to: bottom)
+                case .middle: path.move(to: top); path.addLine(to: bottom)
+                case .bottom: path.move(to: top); path.addLine(to: mid)
+                }
+                path.move(to: mid)
+                path.addLine(to: CGPoint(x: x + 5, y: midY))
+            }
+            .stroke(lineWidth: 1)
+            .foregroundStyle(chrome.map { AnyShapeStyle($0.foreground.opacity(0.35)) }
+                ?? AnyShapeStyle(.tertiary))
         }
     }
 }
@@ -447,6 +524,9 @@ private struct SessionRow: View {
     /// Leading inset for the row's content. Sessions sit at 16 under a project, or a
     /// step deeper (32) when nested under a worktree folder node.
     var leadingIndent: CGFloat = 16
+    /// This row's segment of the split-group bracket, or `nil` when the session
+    /// isn't part of an adjacent run of on-screen panes (see `splitLinkMarks`).
+    var splitLink: SplitLinkMark?
     @State private var isHovering = false
 
     private var isSelected: Bool { store.selectedSessionID == session.id }
@@ -505,6 +585,14 @@ private struct SessionRow: View {
         // standard macOS source-list look where children inset but the lift spans
         // the row.
         .padding(.leading, leadingIndent)
+        // The split-group bracket lives in the indent gutter the padding above just
+        // opened, so it marks grouped rows without shifting any row content.
+        .overlay(alignment: .leading) {
+            if let splitLink {
+                SplitLinkGlyph(mark: splitLink, chrome: chrome)
+                    .frame(width: leadingIndent)
+            }
+        }
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .onTapGesture {

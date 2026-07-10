@@ -8,6 +8,13 @@ struct StateFile {
     struct Snapshot: Codable {
         var projects: [Project]
         var selectedSessionID: Session.ID?
+        /// The single split layout builds before split *groups* used to write.
+        /// Never written anymore, only decoded — `TermioStore.restored` migrates
+        /// it into `splitGroups` as one group.
+        var splitRoot: SplitNode?
+        /// The split groups (see `TermioStore.splitGroups`). Optional so state
+        /// files written before groups existed still decode.
+        var splitGroups: [SplitNode]?
     }
 
     let url = AppChannel.supportDirectory
