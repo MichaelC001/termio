@@ -60,7 +60,9 @@ export function Faq() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(faqJsonLd) }}
       />
-      <div className="mx-auto w-full max-w-2xl px-5 py-32 sm:py-40 sm:px-8">
+      {/* Light top padding — the section above already ends with pb-32/40, so a
+          full py-32 here would double the gap. */}
+      <div className="mx-auto w-full max-w-2xl px-5 pb-32 pt-8 sm:pb-40 sm:pt-10 sm:px-8">
         <Reveal className="flex flex-col items-center text-center">
           <SectionLabel accent="muted">Support</SectionLabel>
           <h2 className="mt-4 text-balance text-3xl font-medium leading-[1.1] tracking-tight text-foreground sm:text-[44px]">
