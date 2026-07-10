@@ -23,10 +23,28 @@ export const navLinks = [
 // workflow (.github/workflows/release.yml) overwrites this object on every tag.
 export const downloadUrl = "https://downloads.termio.sh/termio.dmg";
 
-// Real app screenshot for the hero. Drop a polished capture at
-// public/screenshots/hero.png (or .webp) — the Termio window, dark, ~2× the
-// window size (≈1996×1210) showing the sidebar + a live agent session — then set
-// this to its path and its real pixel dimensions. While null, the hero shows the
-// hand-built CSS mock instead, so nothing breaks and nothing false ships.
-export const heroScreenshot: { src: string; width: number; height: number } | null =
-  null;
+// Real app captures for the hero carousel (public/screenshots/hero*.png, all
+// 2288×1298 @2x). The hero cross-fades through these; the first one is the LCP
+// image, so lead with the strongest shot.
+export const heroSlides = [
+  {
+    src: "/screenshots/hero2.png",
+    alt: "Termio in dark mode: a live Claude Code session next to the project sidebar.",
+  },
+  {
+    src: "/screenshots/hero1.png",
+    alt: "A Codex session running in Termio beside the session sidebar.",
+  },
+  {
+    src: "/screenshots/hero3.png",
+    alt: "Termio's built-in file editor showing a Markdown file next to the project file tree.",
+  },
+  {
+    src: "/screenshots/hero4.png",
+    alt: "The inspector panel with working-directory and agent actions beside a Claude Code session.",
+  },
+  {
+    src: "/screenshots/hero5.png",
+    alt: "A plain zsh terminal session in Termio.",
+  },
+].map((slide) => ({ ...slide, width: 2288, height: 1298 }));

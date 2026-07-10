@@ -1,12 +1,11 @@
-import Image from "next/image";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Reveal } from "@/components/reveal";
 import { HeroGradient } from "@/components/hero-gradient";
-import { TermioWindow } from "@/components/termio-window";
+import { HeroCarousel } from "@/components/hero-carousel";
 import { AppleMark } from "@/components/section-label";
 import { AgentMarquee } from "@/components/agent-icons";
-import { downloadUrl, heroScreenshot, supportedAgents } from "@/lib/site";
+import { downloadUrl, heroSlides, supportedAgents } from "@/lib/site";
 
 export function Hero() {
   return (
@@ -28,10 +27,10 @@ export function Hero() {
       />
       <div className="relative mx-auto flex w-full max-w-6xl flex-1 flex-col items-center justify-center px-5 pb-20 pt-36 text-center sm:px-8 sm:pt-40">
         <Reveal>
-          {/* Glaze-style eyebrow: quiet sentence-case medium text, not an
+          {/* Category line: quiet sentence-case medium text, not an
               uppercase letterspaced label. */}
-          <p className="text-sm font-medium text-muted-foreground sm:text-base">
-            Modern agentic workspace
+          <p className="text-base font-medium text-muted-foreground sm:text-xl">
+            The terminal-first agentic development environment
           </p>
         </Reveal>
         <Reveal delayMs={40}>
@@ -39,16 +38,18 @@ export function Hero() {
             Orchestrate your fleet of agents.
           </h1>
         </Reveal>
-        <Reveal delayMs={120}>
-          <p className="mx-auto mt-5 max-w-md text-pretty text-base leading-relaxed text-muted-foreground sm:text-lg">
-            Each in its own real terminal. One native Mac window, and nothing
-            ever leaves your machine.
-          </p>
+        <Reveal delayMs={160} className="mt-12 w-full">
+          <div className="mx-auto max-w-5xl [perspective:2400px]">
+            <div className="origin-bottom [transform:rotateX(7deg)]">
+              <HeroCarousel slides={heroSlides} />
+            </div>
+          </div>
         </Reveal>
-        <Reveal delayMs={170} className="mt-9 w-full max-w-3xl">
+
+        <Reveal delayMs={200} className="mt-14 w-full max-w-3xl">
           <AgentMarquee agents={supportedAgents} />
         </Reveal>
-        <Reveal delayMs={200}>
+        <Reveal delayMs={240}>
           <div className="mt-10 flex flex-col items-center justify-center gap-x-8 gap-y-3 sm:flex-row">
             <a
               href={downloadUrl}
@@ -61,25 +62,6 @@ export function Hero() {
               <AppleMark />
               Download for Mac
             </a>
-          </div>
-        </Reveal>
-
-        <Reveal delayMs={160} className="mt-auto w-full pt-20">
-          <div className="mx-auto max-w-5xl [perspective:2400px]">
-            <div className="origin-bottom [transform:rotateX(7deg)]">
-              {heroScreenshot ? (
-                <Image
-                  src={heroScreenshot.src}
-                  width={heroScreenshot.width}
-                  height={heroScreenshot.height}
-                  alt="The Termio app: a sidebar of AI coding-agent sessions beside a live terminal pane."
-                  className="shadow-soft h-auto w-full rounded-2xl"
-                  priority
-                />
-              ) : (
-                <TermioWindow />
-              )}
-            </div>
           </div>
         </Reveal>
       </div>

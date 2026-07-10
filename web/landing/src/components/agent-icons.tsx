@@ -8,6 +8,7 @@ import {
   OpenCode,
   GithubCopilot,
   Cursor,
+  Kimi,
 } from "@lobehub/icons";
 import { cn } from "@/lib/utils";
 
@@ -26,6 +27,7 @@ const glyphByAgent: Record<string, React.ComponentType<GlyphProps>> = {
   OpenCode: OpenCode,
   Copilot: GithubCopilot,
   Cursor: Cursor,
+  Kimi: Kimi,
 };
 
 function PiGlyph({ size = 20 }: GlyphProps) {
