@@ -17,13 +17,18 @@ let package = Package(
         .library(name: "TermioShared", targets: ["TermioShared"]),
     ],
     dependencies: [
-        // Highlightr — the same highlight.js wrapper the macOS editor uses;
-        // shared here so the iOS file viewer colors code identically.
+        // Highlightr — the highlight.js wrapper the iOS file viewer uses, so a
+        // file opened on the phone colors like the Mac editor. iOS-ONLY: the
+        // macOS app vendors these classes instead (Sources/termio/Editor/
+        // Highlightr), because with plain `swift build` the dependency's
+        // generated `Bundle.module` only checks the .app root + a hardcoded
+        // build-machine path and fatalErrors in a packaged release (the v0.2.4
+        // open-a-file crash). Xcode-built iOS gets the safe accessor variant.
         .package(url: "https://github.com/raspu/Highlightr.git", from: "2.3.0"),
     ],
     targets: [
         .target(name: "TermioShared", dependencies: [
-            .product(name: "Highlightr", package: "Highlightr"),
+            .product(name: "Highlightr", package: "Highlightr", condition: .when(platforms: [.iOS])),
         ]),
     ]
 )

@@ -1,5 +1,7 @@
 import Foundation
-import Highlightr
+#if canImport(Highlightr)
+    import Highlightr
+#endif
 
 #if canImport(UIKit)
     import UIKit
@@ -10,7 +12,12 @@ import Highlightr
 /// Syntax highlighting shared by both platforms: the same Highlightr
 /// (highlight.js) engine and xcode/xcode-dark themes the macOS editor uses,
 /// so a file opened on the phone reads like the same file on the Mac.
+///
+/// The Highlightr package is an iOS-only dependency here (the macOS app
+/// vendors it — see Shared/Package.swift), so `highlight` is compiled out on
+/// macOS; only the pure `language(forFileNamed:)` sniffing is cross-platform.
 public enum CodeHighlighter {
+    #if canImport(Highlightr)
     /// Highlight `code` into an attributed string with a monospaced font.
     /// `language` nil lets highlight.js auto-detect. Heavy-ish (spins up a
     /// JavaScriptCore context) — call off the main thread and once per open,
@@ -23,13 +30,10 @@ public enum CodeHighlighter {
     ) -> NSAttributedString? {
         guard let highlightr = Highlightr() else { return nil }
         highlightr.setTheme(to: dark ? "xcode-dark" : "xcode")
-        #if canImport(UIKit)
-            highlightr.theme.setCodeFont(.monospacedSystemFont(ofSize: fontSize, weight: .regular))
-        #elseif canImport(AppKit)
-            highlightr.theme.setCodeFont(.monospacedSystemFont(ofSize: fontSize, weight: .regular))
-        #endif
+        highlightr.theme.setCodeFont(.monospacedSystemFont(ofSize: fontSize, weight: .regular))
         return highlightr.highlight(code, as: language)
     }
+    #endif
 
     /// The highlight.js language id for a file name — extension-based with a
     /// carve-out for specially-named extension-less files (Dockerfile,

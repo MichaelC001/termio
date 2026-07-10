@@ -18,12 +18,11 @@ let package = Package(
         // background update checks). It reads the appcast published with each GitHub
         // release; the matching EdDSA public key is embedded in packaging/Info.plist.
         .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.6.0"),
-        // Highlightr — a small highlight.js wrapper that syntax-highlights an
-        // `NSTextStorage` (`CodeAttributedString`). It powers the file editor that covers
-        // the terminal: a plain native `NSTextView` with 180+ languages and built-in
-        // themes, and it builds with plain `swift build` (its resources are declared, so
-        // no vendoring or Xcode-only steps).
-        .package(url: "https://github.com/raspu/Highlightr.git", from: "2.3.0"),
+        // Highlightr (the highlight.js wrapper powering the file editor) is VENDORED
+        // at Sources/termio/Editor/Highlightr, not a dependency: `swift build` bakes a
+        // dependency's `Bundle.module` accessor with only the .app root + a build-machine
+        // path, so CI-built releases crashed on `Highlightr.init` (v0.2.4). See the
+        // vendor README.
         // swift-markdown — Apple's cmark-gfm wrapper (the parser behind DocC). Parses
         // agent messages for the session trace; `TraceMarkdown` walks the AST and emits
         // escaped HTML. Apache-2.0.
@@ -44,7 +43,6 @@ let package = Package(
                 // the appearance settings to offer a theme picker.
                 .product(name: "GhosttyTheme", package: "libghostty-swift"),
                 .product(name: "Sparkle", package: "Sparkle"),
-                .product(name: "Highlightr", package: "Highlightr"),
                 .product(name: "Markdown", package: "swift-markdown"),
                 .product(name: "TermioShared", package: "Shared"),
             ],

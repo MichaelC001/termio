@@ -72,10 +72,12 @@ mkdir -p "$macos_dir" "$resources_dir" "$frameworks_dir"
 cp "$binary_path" "$macos_dir/$product_name"
 cp "$repo_root/packaging/Info.plist" "$contents_dir/Info.plist"
 
-# Ship every SwiftPM resource bundle (termio's own assets, plus any dependency that
-# carries resources — e.g. Highlightr's highlight.js + theme CSS) into the app's
-# Resources, where each package's `Bundle.module` resolves it at runtime. Without
-# this, code paths that force-load their bundle (Highlightr's `Highlightr()!`) crash.
+# Ship every SwiftPM resource bundle into the app's Resources. NOTE: this alone is
+# NOT enough for a dependency that reads its own `Bundle.module` — `swift build`
+# bakes that accessor with only the .app ROOT + a hardcoded build-machine path, so
+# it never looks in Contents/Resources and a CI-built release crashes (the v0.2.4
+# Highlightr editor crash; Highlightr is vendored now for exactly this reason).
+# termio's own lookups go through `Bundle.termioResources`, which resolves here.
 echo "==> Bundling SwiftPM resource bundles"
 shopt -s nullglob
 for resource_bundle in "$bin_path"/*.bundle; do

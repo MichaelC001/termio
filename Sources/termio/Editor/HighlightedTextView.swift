@@ -1,5 +1,4 @@
 import AppKit
-import Highlightr
 import SwiftUI
 
 /// A soft-wrapped, monospaced `NSTextView` whose backing store is Highlightr's `CodeAttributedString`
