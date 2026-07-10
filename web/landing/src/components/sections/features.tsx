@@ -1,27 +1,9 @@
 import { GitBranch, EyeOff } from "lucide-react";
 import { Reveal } from "@/components/reveal";
-import { AgentIcon } from "@/components/agent-icons";
-import { supportedAgents } from "@/lib/site";
 import { cn } from "@/lib/utils";
 
 // Compact mockups that pair with each bento card — pure JSX so they stay crisp
 // at any size, no screenshots.
-
-function MultiAgentVisual() {
-  return (
-    <div className="grid grid-cols-2 gap-2.5">
-      {supportedAgents.map((agent) => (
-        <div
-          key={agent}
-          className="flex items-center gap-2.5 rounded-xl bg-background px-3.5 py-3"
-        >
-          <AgentIcon name={agent} size={16} className="text-foreground" />
-          <span className="font-mono text-xs text-foreground">{agent}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 function SessionsVisual() {
   const live = [
@@ -100,13 +82,6 @@ type Bento = {
 };
 
 const cards: Bento[] = [
-  {
-    heading: "Every agent, first-class",
-    intro:
-      "Claude Code, Codex, OpenCode, Pi Agent and four more — each in a real native terminal, one tap to launch.",
-    visual: <MultiAgentVisual />,
-    wide: true,
-  },
   {
     heading: "Switch without tearing down",
     intro:
