@@ -1,6 +1,5 @@
 import GhosttyTerminal
 import GhosttyTheme
-import Photos
 import PhotosUI
 import ShellCraftKit
 import TermioShared
@@ -32,7 +31,6 @@ final class TerminalViewController: UIViewController {
     var onRequestBack: (() -> Void)?
 
     private lazy var terminalView = DisplayTerminalView(frame: .zero)
-    private let composerBar = ComposerBar()
     /// Last size actually sent to the engine + the pending coalesced refit —
     /// see viewDidLayoutSubviews for why resizes are rationed.
     private var lastFittedSize: CGSize = .zero
@@ -176,16 +174,16 @@ final class TerminalViewController: UIViewController {
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         // Leaving the terminal (popping back to the session list) must take the
-        // keyboard with it — otherwise the composer field stays first responder
-        // and the keyboard + terminal accessory bar linger over the list.
-        composerBar.unfocus()
+        // keyboard with it — otherwise the surface stays first responder and
+        // the keyboard + key bar linger over the list.
+        terminalView.resignFirstResponder()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         layoutDrawer()
         // Refit only when the surface's size actually changed, and coalesce
-        // the per-frame passes of keyboard/composer animations into one call
+        // the per-frame passes of keyboard animations into one call
         // after the size settles. Every `setSize` can deadlock against the
         // byte stream inside libghostty-spm 1.2.8 (`receive` holds the
         // session lock across a blocking write while the io thread's resize
@@ -332,6 +330,10 @@ final class TerminalViewController: UIViewController {
     /// Back to the inbox: the screen parks in the container's keep-alive
     /// cache — the session stays live, unlike `close()`.
     private func goBack() {
+        // The container PARKS this screen (the view slides away, no pop), so
+        // viewWillDisappear never fires — drop the keyboard here or it and
+        // the key bar linger over the session list.
+        terminalView.resignFirstResponder()
         if let onRequestBack {
             onRequestBack()
         } else {
@@ -351,13 +353,15 @@ final class TerminalViewController: UIViewController {
         if focused {
             focusInput()
         } else {
-            composerBar.unfocus()
+            terminalView.resignFirstResponder()
         }
     }
 
-    /// The composer is the app's single input.
+    /// The terminal is the app's single input — first responder brings the
+    /// system keyboard (typing straight into the PTY) with the key bar docked
+    /// above it.
     private func focusInput() {
-        composerBar.focus()
+        terminalView.becomeFirstResponder()
     }
 
     // MARK: - Terminal
@@ -365,9 +369,11 @@ final class TerminalViewController: UIViewController {
     private func configureTerminal() {
         terminalView.delegate = self
         // Scrolling the terminal is reading; give the rows back to content.
-        // The draft survives — unfocus only drops the keyboard, and tapping
-        // the composer field refocuses natively.
-        terminalView.onScrollGesture = { [weak self] in self?.composerBar.unfocus() }
+        // Dropping first responder only hides the keyboard — tapping the
+        // surface refocuses (the wrapper's touch path takes it back).
+        terminalView.onScrollGesture = { [weak self] in
+            self?.terminalView.resignFirstResponder()
+        }
         // configuration (and thus the surface) is deliberately deferred to
         // viewDidAppear — see the display-scale note there.
         terminalView.controller = controller
@@ -376,8 +382,8 @@ final class TerminalViewController: UIViewController {
         terminalView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(terminalView)
 
-        // Sits directly above the surface (below the composer/drawer added
-        // later), so unhiding it masks libghostty's panel during a rebuild.
+        // Sits directly above the surface (below the drawer added later),
+        // so unhiding it masks libghostty's panel during a rebuild.
         rendererCoverView.backgroundColor = Self.backdropColor()
         view.addSubview(rendererCoverView)
         NSLayoutConstraint.activate([
@@ -387,31 +393,52 @@ final class TerminalViewController: UIViewController {
             rendererCoverView.bottomAnchor.constraint(equalTo: terminalView.bottomAnchor),
         ])
 
-        composerBar.onSend = { [weak self] text in self?.sendComposedPrompt(text) }
-        composerBar.onTerminalKey = { [weak self] payload in self?.terminalView.send(payload) }
-        composerBar.onAttach = { [weak self] in self?.presentAttachOptions() }
-        composerBar.slashCommands = Self.slashCatalog(for: session.agent)
-        if case .companion = backend, session.projectRosterID != nil {
-            composerBar.setAttachAvailable(true)
+        // The key bar lives on the terminal (its inputAccessoryView); the
+        // controller only wires its callbacks. Sticky ctrl/alt toggle the
+        // view's state machine, which reports every transition back so the
+        // keycaps repaint (armed = tinted, locked = filled).
+        let keyBar = terminalView.keyBar
+        keyBar.onKey = { [weak self] payload in self?.terminalView.send(payload) }
+        keyBar.onSticky = { [weak self] key in
+            self?.terminalView.toggleStickyModifier(key == .ctrl ? .ctrl : .alt)
         }
-        composerBar.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(composerBar)
+        keyBar.onAttach = { [weak self] source in
+            switch source {
+            case .camera: self?.presentCamera()
+            case .photos: self?.presentPhotoPicker()
+            case .files: self?.presentDocumentPicker()
+            }
+        }
+        terminalView.setStickyModifierChangeHandler { [weak self] in
+            guard let self else { return }
+            keyBar.setStickyVisual(.ctrl, Self.stickyVisual(terminalView.stickyActivation(for: .ctrl)))
+            keyBar.setStickyVisual(.alt, Self.stickyVisual(terminalView.stickyActivation(for: .alt)))
+        }
+        if case .companion = backend, session.projectRosterID != nil {
+            keyBar.setAttachAvailable(true)
+        }
 
         activateTerminalConstraints()
-        NSLayoutConstraint.activate([
-            composerBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            composerBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            composerBar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
-        ])
     }
 
-    /// Pins the surface into the header/composer sandwich.
+    private static func stickyVisual(
+        _ activation: TerminalPublicStickyActivation
+    ) -> TerminalStickyVisual {
+        switch activation {
+        case .inactive: .off
+        case .armed: .armed
+        case .locked: .locked
+        }
+    }
+
+    /// Pins the surface between the header and the keyboard guide (the
+    /// safe-area bottom while the keyboard is down).
     private func activateTerminalConstraints() {
         NSLayoutConstraint.activate([
             terminalView.topAnchor.constraint(equalTo: headerBar.bottomAnchor),
             terminalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             terminalView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            terminalView.bottomAnchor.constraint(equalTo: composerBar.topAnchor),
+            terminalView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
         ])
     }
 
@@ -441,69 +468,9 @@ final class TerminalViewController: UIViewController {
         }
     }
 
-    // MARK: - Composer
-
-    /// One atomic PTY write per prompt. Multiline drafts ride inside a
-    /// bracketed paste so the agent's TUI treats embedded newlines as part
-    /// of the text, not as early submits; the trailing CR is the send.
-    private func sendComposedPrompt(_ text: String) {
-        var payload = text
-        if payload.contains("\n") {
-            payload = "\u{1B}[200~" + payload + "\u{1B}[201~"
-        }
-        terminalView.send(Data((payload + "\r").utf8))
-    }
-
     // MARK: - Attachments
 
     private static let uploadByteCap = 8 << 20
-
-    private func presentAttachOptions() {
-        let sheet = AttachmentSheetViewController()
-        sheet.onPickAssets = { [weak self] assets in self?.uploadAssets(assets) }
-        sheet.onCamera = { [weak self] in self?.presentCamera() }
-        sheet.onPhotoLibrary = { [weak self] in self?.presentPhotoPicker() }
-        sheet.onFiles = { [weak self] in self?.presentDocumentPicker() }
-        if let presentation = sheet.sheetPresentationController {
-            presentation.detents = [.medium(), .large()]
-            presentation.prefersGrabberVisible = true
-        }
-        present(sheet, animated: true)
-    }
-
-    /// Exports the sheet's PHAsset selection through the same downscale +
-    /// queue path as the system pickers; original filenames survive the
-    /// JPEG re-encode.
-    private func uploadAssets(_ assets: [PHAsset]) {
-        guard !assets.isEmpty else { return }
-        var payloads = [(name: String, data: Data)?](repeating: nil, count: assets.count)
-        let group = DispatchGroup()
-        let options = PHImageRequestOptions()
-        options.deliveryMode = .highQualityFormat
-        options.isNetworkAccessAllowed = true
-        for (index, asset) in assets.enumerated() {
-            group.enter()
-            PHImageManager.default().requestImage(
-                for: asset,
-                targetSize: CGSize(width: 2048, height: 2048),
-                contentMode: .aspectFit,
-                options: options
-            ) { image, info in
-                let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-                guard !degraded else { return }
-                defer { group.leave() }
-                guard let image, let data = Self.jpegPayload(from: image) else { return }
-                let original = PHAssetResource.assetResources(for: asset)
-                    .first(where: { $0.type == .photo })?.originalFilename
-                let base = original.map { ($0 as NSString).deletingPathExtension }
-                    ?? "photo-\(index + 1)"
-                payloads[index] = (base + ".jpg", data)
-            }
-        }
-        group.notify(queue: .main) { [weak self] in
-            self?.enqueueUploads(payloads.compactMap { $0 })
-        }
-    }
 
     private func presentPhotoPicker() {
         var config = PHPickerConfiguration()
@@ -535,9 +502,10 @@ final class TerminalViewController: UIViewController {
     }
 
     /// Pushes picked bytes to the Mac one file at a time; each reply's
-    /// absolute path lands in the draft — Moshi's flow (agents take file
-    /// paths), but over the companion link instead of SCP. Uploads run
-    /// sequentially because .uploaded replies carry no correlation id.
+    /// absolute path is typed into the TUI's own input line — the desktop
+    /// drag-a-file-into-terminal semantic, over the companion link instead
+    /// of SCP. Uploads run sequentially because .uploaded replies carry no
+    /// correlation id.
     private func enqueueUploads(_ items: [(name: String, data: Data)]) {
         guard case .companion = backend, session.projectRosterID != nil else { return }
         let oversized = items.filter { $0.data.count > Self.uploadByteCap }
@@ -554,19 +522,19 @@ final class TerminalViewController: UIViewController {
         guard let item = uploadQueue.first else {
             uploadTotal = 0
             uploadDone = 0
-            composerBar.setAttachBusy(false)
+            terminalView.keyBar.setAttachBusy(false)
             return
         }
         guard case .companion(let url) = backend,
               let projectID = session.projectRosterID else { return }
         uploadQueue.removeFirst()
         uploadInFlight = true
-        composerBar.setAttachBusy(true, progress: (done: uploadDone, total: uploadTotal))
+        terminalView.keyBar.setAttachBusy(true, progress: (done: uploadDone, total: uploadTotal))
         if uploadClient == nil {
             let client = CompanionClient(url: url)
             client.onUploaded = { [weak self] path in
                 guard let self else { return }
-                self.composerBar.insertDraft(path)
+                self.typeUploadedPath(path)
                 self.uploadDone += 1
                 self.uploadInFlight = false
                 self.sendNextUpload()
@@ -577,7 +545,7 @@ final class TerminalViewController: UIViewController {
                 self.uploadInFlight = false
                 self.uploadTotal = 0
                 self.uploadDone = 0
-                self.composerBar.setAttachBusy(false)
+                self.terminalView.keyBar.setAttachBusy(false)
                 self.presentAlert("Upload failed", message)
             }
             client.start()
@@ -586,6 +554,14 @@ final class TerminalViewController: UIViewController {
         uploadClient?.send(
             .upload(projectID: projectID, name: item.name, base64: item.data.base64EncodedString())
         )
+    }
+
+    /// Types the uploaded file's Mac path into the TUI's input line, where it
+    /// stays editable and submits with the TUI's own Return. Bracketed paste
+    /// keeps a name with spaces one literal insert; the trailing space
+    /// separates it from whatever gets typed next.
+    private func typeUploadedPath(_ path: String) {
+        terminalView.send(Data(("\u{1B}[200~" + path + " \u{1B}[201~").utf8))
     }
 
     private func reportSkipped(oversized: [String], unreadable: [String] = []) {
@@ -604,37 +580,6 @@ final class TerminalViewController: UIViewController {
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
-    }
-
-    /// The "/" panel's catalog — curated per agent CLI, prefix-filtered as
-    /// the user types (the full lists live in each CLI's /help).
-    private static func slashCatalog(for agent: AgentKind) -> [SlashCommand] {
-        switch agent {
-        case .claude:
-            return [
-                SlashCommand(name: "clear", detail: "Start a fresh conversation"),
-                SlashCommand(name: "compact", detail: "Compact the context window"),
-                SlashCommand(name: "resume", detail: "Resume a past session"),
-                SlashCommand(name: "model", detail: "Switch the model"),
-                SlashCommand(name: "permissions", detail: "View or change permissions"),
-                SlashCommand(name: "memory", detail: "Edit memory files"),
-                SlashCommand(name: "status", detail: "Session status and context"),
-                SlashCommand(name: "cost", detail: "Token usage for this session"),
-                SlashCommand(name: "init", detail: "Generate CLAUDE.md"),
-                SlashCommand(name: "help", detail: "All commands"),
-            ]
-        case .codex:
-            return [
-                SlashCommand(name: "model", detail: "Switch the model"),
-                SlashCommand(name: "review", detail: "Review current changes"),
-                SlashCommand(name: "compact", detail: "Compact the context window"),
-                SlashCommand(name: "new", detail: "Start a fresh conversation"),
-                SlashCommand(name: "diff", detail: "Show the working diff"),
-                SlashCommand(name: "status", detail: "Session status"),
-            ]
-        default:
-            return []
-        }
     }
 
     /// Demo sessions use ShellCraftKit's sandbox shell; companion sessions
@@ -797,7 +742,7 @@ final class TerminalViewController: UIViewController {
 
         // A leftward drag anywhere on the surface pulls the drawer out
         // (ChatGPT's sidebar gesture, mirrored). The delegate keeps drags
-        // that belong to controls, scrollers, and the composer out of it,
+        // that belong to controls and scrollers out of it,
         // and the direction check leaves vertical scrollback alone.
         let openPan = UIPanGestureRecognizer(target: self, action: #selector(handleOpenPan(_:)))
         openPan.delegate = self
@@ -899,12 +844,12 @@ extension TerminalViewController: UIGestureRecognizerDelegate {
         _ gesture: UIGestureRecognizer, shouldReceive touch: UITouch
     ) -> Bool {
         guard gesture.view === view else { return true }
-        // Horizontal drags inside controls, scrollers (the composer's text
-        // view), or the drawer itself mean something else.
+        // Horizontal drags inside controls, scrollers, or the drawer itself
+        // mean something else.
         var candidate = touch.view
         while let current = candidate, current !== view {
             if current is UIControl || current is UIScrollView { return false }
-            if current === composerBar || current === inspectorNav.view { return false }
+            if current === inspectorNav.view { return false }
             candidate = current.superview
         }
         return true
@@ -1079,19 +1024,40 @@ extension TerminalViewController: TerminalSurfaceRendererHealthDelegate {
     }
 }
 
-// MARK: - Display-only surface
+// MARK: - Direct-input surface
 
-/// The terminal renders, scrolls, and selects — it never takes the keyboard.
-/// The composer is the app's single input (the Moshi shape): prompts and
-/// menu answers are whole atomic writes, not keystroke streams, so there is
-/// no second input UI to learn and no raw-keys mode to toggle.
+/// The terminal IS the app's input (the iSH shape): it takes first responder,
+/// the system keyboard types straight into the PTY — the agent's TUI already
+/// has the composer, slash menu, history, and @-completion, so the phone adds
+/// no second input line to learn. The key bar above the keyboard carries what
+/// QWERTY lacks (esc, sticky ctrl/alt, arrows, the configured control keys)
+/// and the attach (+), whose uploaded Mac paths are typed into the TUI.
 private final class DisplayTerminalView: UITerminalView {
-    override var canBecomeFirstResponder: Bool { false }
+    /// termio's own key bar replaces the wrapper's bundled accessory — the
+    /// sticky ctrl/alt state machine stays the view's (via the public sticky
+    /// API), the bar only reflects it.
+    let keyBar = TerminalAccessoryBar()
+    override var inputAccessoryView: UIView? { keyBar }
+
+    /// The software keyboard's Return arrives as `insertText("\n")`, and the
+    /// wrapper routes it through `sendText` — which rides inside bracketed
+    /// paste once the TUI enabled mode 2004, so Claude Code reads a pasted
+    /// newline instead of a submit. iSH's rule at the byte level: a bare
+    /// Return is a raw CR straight into the PTY. (The same fix sits in the
+    /// vendored fork's UITerminalView+UITextInput for upstreaming; the app
+    /// resolves the package from the remote, so it must live here too.)
+    override func insertText(_ text: String) {
+        if text == "\n" {
+            send(Data([0x0D]))
+            return
+        }
+        super.insertText(text)
+    }
 
     /// Fired when a finger scroll begins on the surface. The controller uses
-    /// it to dismiss the composer keyboard — the chat convention (ChatGPT,
-    /// Messages): scrolling back through output means reading, so the screen
-    /// yields to content; tapping the composer brings the keyboard back.
+    /// it to drop the keyboard — scrolling back through output means
+    /// reading, so the screen yields to content; tapping the surface brings
+    /// the keyboard back (the wrapper's touch path retakes first responder).
     var onScrollGesture: (() -> Void)?
     private var scrollHookInstalled = false
 

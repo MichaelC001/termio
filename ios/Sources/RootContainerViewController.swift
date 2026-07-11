@@ -49,8 +49,8 @@ final class RootContainerViewController: UIViewController {
             guard let self else { return }
             // Coming back to a parked session reuses its screen: same surface,
             // scrollback and connection intact — no surface teardown/rebuild.
-            // Every session is the terminal + composer (the Moshi pattern): the
-            // agent's TUI is already the conversation UI.
+            // Every session is the terminal itself (the iSH pattern): the
+            // agent's TUI is already the conversation UI, keys go straight in.
             let screen: UIViewController
             if let parked = recentTerminals[session.key] {
                 screen = parked

@@ -77,30 +77,63 @@ enum TerminalKeyCatalog {
     }
 }
 
-/// The control-key strip docked above the system keyboard while the composer
-/// is focused — the Blink/Termux pattern. The system keyboard keeps every
-/// letter, digit, symbol, and language; this bar only carries what a terminal
-/// needs and the keyboard lacks: esc, the configured control keys, and the
-/// arrows. Keys write raw PTY bytes through `onKey`; the draft is untouched,
-/// so typing still composes a prompt and the bar drives the TUI alongside it.
+/// A sticky modifier on the bar — tap to arm for the next QWERTY key,
+/// double-tap to lock (the Termux/iSH state machine, which lives in the
+/// terminal view; the bar only reflects it).
+enum TerminalStickyKey {
+    case ctrl
+    case alt
+}
+
+/// Where an attachment comes from — the three options of the (+) menu.
+enum TerminalAttachSource {
+    case camera
+    case photos
+    case files
+}
+
+/// The visual face of a sticky key, mirrored from the terminal view's
+/// activation state so the two can never drift.
+enum TerminalStickyVisual {
+    case off
+    case armed
+    case locked
+}
+
+/// The control-key plane docked above the system keyboard while the terminal
+/// is focused — two fixed rows, no scrolling (the iSH bar's shape). The
+/// system keyboard keeps every letter, digit, symbol, and language; this bar
+/// only carries what a terminal needs and the keyboard lacks, in a stable
+/// grid so every key is always in the same place:
 ///
-/// esc holds for esc-esc (Claude Code's rewind menu); arrows auto-repeat for
-/// walking long menus. Which control keys appear comes from Settings ▸
-/// Terminal Keyboard, so the bar rebuilds on `MobileSettings.didChange`.
+///   esc  ⇧⇥  tab  home  ↑  end  pgup
+///    +   ctrl alt   ←   ↓   →   pgdn
+///
+/// Two conventions get their corner: esc holds the terminal's top-left, and
+/// attach (+) sits bottom-left — where Telegram/WhatsApp put it, the thumb's
+/// landing spot beside the QWERTY. The arrows form an inverted T (↑ over ↓,
+/// ← → flanking), the desktop muscle-memory layout. ctrl/alt are sticky:
+/// tap to arm, then a QWERTY letter forms the combo (ctrl → c = ^C),
+/// double-tap locks — so the old configurable ^C/^O keycaps are redundant
+/// and gone. esc holds for esc-esc (Claude Code's rewind menu); arrows and
+/// page keys auto-repeat.
 final class TerminalAccessoryBar: UIInputView {
     /// Raw bytes for the PTY — the owner writes them to the terminal.
     var onKey: ((Data) -> Void)?
+    /// A sticky modifier was tapped — the owner toggles the terminal view's
+    /// state machine, which reports back through `setStickyVisual`.
+    var onSticky: ((TerminalStickyKey) -> Void)?
+    /// The attach (+) slot picked a source — photos/files land on the Mac,
+    /// their path is typed into the TUI.
+    var onAttach: ((TerminalAttachSource) -> Void)?
 
-    /// One slim strip, not a second keyboard — a compact keycap centered in
-    /// the bar so the terminal keeps as many rows as possible.
-    static let barHeight: CGFloat = 44
-    private static let keyHeight: CGFloat = 30
+    static let barHeight: CGFloat = 82
+    private static let keyHeight: CGFloat = 32
     private static let keySpacing: CGFloat = 6
 
-    private let scroll = UIScrollView()
-    private let row = UIStackView()
     private let haptic = UIImpactFeedbackGenerator(style: .light)
-    private var settingsObserver: NSObjectProtocol?
+    private var stickyButtons: [TerminalStickyKey: UIButton] = [:]
+    private let attachButton = UIButton(type: .system)
 
     init() {
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.barHeight),
@@ -108,88 +141,279 @@ final class TerminalAccessoryBar: UIInputView {
         allowsSelfSizing = true
         autoresizingMask = .flexibleWidth
 
-        scroll.showsHorizontalScrollIndicator = false
-        scroll.alwaysBounceHorizontal = true
-        scroll.keyboardDismissMode = .none
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(scroll)
+        configureAttachButton()
 
-        row.axis = .horizontal
-        row.spacing = Self.keySpacing
-        // Center the fixed-height keys in the taller bar — filling would fight
-        // the height constraint and stretch the keys edge to edge.
-        row.alignment = .center
-        row.translatesAutoresizingMaskIntoConstraints = false
-        scroll.addSubview(row)
-
-        NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
-            row.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 8),
-            row.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -8),
-            row.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
-            row.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-            row.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
+        // Equal-width columns keep the two rows aligned into a grid — the
+        // inverted-T arrows only read as one cluster if ↑ sits exactly over ↓.
+        let top = makeRow([
+            makeEscButton(),
+            makeKeyButton(title: "⇧⇥", payload: Data("\u{1B}[Z".utf8)),
+            makeKeyButton(title: "tab", payload: Data([0x09])),
+            makeKeyButton(title: "home", payload: Data("\u{1B}[H".utf8)),
+            makeKeyButton(title: "↑", payload: Data("\u{1B}[A".utf8), repeats: true),
+            makeKeyButton(title: "end", payload: Data("\u{1B}[F".utf8)),
+            makeKeyButton(title: "pgup", payload: Data("\u{1B}[5~".utf8), repeats: true),
+        ])
+        let bottom = makeRow([
+            attachButton,
+            makeStickyButton(title: "ctrl", key: .ctrl),
+            makeStickyButton(title: "alt", key: .alt),
+            makeKeyButton(title: "←", payload: Data("\u{1B}[D".utf8), repeats: true),
+            makeKeyButton(title: "↓", payload: Data("\u{1B}[B".utf8), repeats: true),
+            makeKeyButton(title: "→", payload: Data("\u{1B}[C".utf8), repeats: true),
+            makeKeyButton(title: "pgdn", payload: Data("\u{1B}[6~".utf8), repeats: true),
         ])
 
-        rebuild()
-        settingsObserver = NotificationCenter.default.addObserver(
-            forName: MobileSettings.didChange, object: nil, queue: .main
-        ) { [weak self] _ in
-            self?.rebuild()
-        }
+        let plane = UIStackView(arrangedSubviews: [top, bottom])
+        plane.axis = .vertical
+        plane.spacing = Self.keySpacing
+        plane.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(plane)
+        NSLayoutConstraint.activate([
+            plane.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            plane.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            plane.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            plane.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+        ])
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    deinit {
-        if let settingsObserver {
-            NotificationCenter.default.removeObserver(settingsObserver)
-        }
-    }
-
     override var intrinsicContentSize: CGSize {
         CGSize(width: UIView.noIntrinsicMetric, height: Self.barHeight)
     }
 
-    // MARK: - Layout
+    private func makeRow(_ keys: [UIView]) -> UIStackView {
+        let row = UIStackView(arrangedSubviews: keys)
+        row.axis = .horizontal
+        row.spacing = Self.keySpacing
+        row.distribution = .fillEqually
+        return row
+    }
 
-    private func rebuild() {
-        row.arrangedSubviews.forEach { view in
-            row.removeArrangedSubview(view)
-            view.removeFromSuperview()
+    // MARK: - Attach slot
+
+    private func configureAttachButton() {
+        var config: UIButton.Configuration = if #available(iOS 26.0, *) {
+            .glass()
+        } else {
+            .gray()
         }
+        config.image = UIImage(
+            systemName: "plus",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+        )
+        config.cornerStyle = .medium
+        attachButton.configuration = config
+        attachButton.accessibilityLabel = "Attach"
+        attachButton.tintColor = .label
+        // Invisible until the owner reports an upload backend, but never
+        // removed — the grid must not reflow around it.
+        attachButton.alpha = 0
+        attachButton.isEnabled = false
+        attachButton.heightAnchor.constraint(equalToConstant: Self.keyHeight).isActive = true
+        // The messenger interaction: + pops a light source menu hugging the
+        // key bar's top edge, then hands off to the matching SYSTEM picker.
+        // Hand-rolled and anchored by frame math: UIMenu decides its own
+        // placement and floats way above the keyboard when its anchor lives
+        // in the keyboard window.
+        attachButton.addAction(UIAction { [weak self] _ in
+            self?.haptic.impactOccurred()
+            self?.toggleAttachMenu()
+        }, for: .touchUpInside)
+    }
 
-        // esc and ⏎ anchor the left, both always visible while the bar scrolls:
-        // esc cancels, Return confirms. The system keyboard's own return edits
-        // the draft by contract, so this raw carriage return is the only way to
-        // fire a menu choice or run a prompt in the TUI. Then the keys the user
-        // picked in Settings, with the arrows riding right after tab so they
-        // stay visible too; if tab is off they lead, right after Return.
-        row.addArrangedSubview(makeEscButton())
-        row.addArrangedSubview(makeKeyButton(title: "⏎", payload: Data([0x0D])))
-        let configured = TerminalKeyCatalog.keys(for: MobileSettings.shared.terminalKeyIDs)
-        if !configured.contains(where: { $0.id == "tab" }) { addArrows() }
-        for key in configured {
-            row.addArrangedSubview(makeKeyButton(title: key.title, payload: key.payload))
-            if key.id == "tab" { addArrows() }
+    // MARK: - Attach source menu
+
+    private var attachMenuScrim: UIControl?
+
+    private func toggleAttachMenu() {
+        if attachMenuScrim != nil {
+            dismissAttachMenu()
+        } else {
+            presentAttachMenu()
         }
     }
 
-    private func addArrows() {
-        for arrow in [
-            (title: "←", bytes: "\u{1B}[D"),
-            (title: "↓", bytes: "\u{1B}[B"),
-            (title: "↑", bytes: "\u{1B}[A"),
-            (title: "→", bytes: "\u{1B}[C"),
-        ] {
-            row.addArrangedSubview(
-                makeKeyButton(title: arrow.title, payload: Data(arrow.bytes.utf8), repeats: true)
+    /// The floating source card, placed directly above the (+) key in the
+    /// keyboard's own window — same window, so no cross-window z-order can
+    /// clip it and the keyboard never occludes it.
+    private func presentAttachMenu() {
+        guard let window, attachMenuScrim == nil else { return }
+
+        let scrim = UIControl(frame: window.bounds)
+        scrim.addAction(UIAction { [weak self] _ in self?.dismissAttachMenu() }, for: .touchUpInside)
+        window.addSubview(scrim)
+        attachMenuScrim = scrim
+
+        // The native menu look: Liquid Glass on iOS 26 (the same material a
+        // real UIMenu wears), the classic thick blur before it, wrapped in a
+        // shadowed container because the glass view must clip its rows.
+        let effect: UIVisualEffect = if #available(iOS 26, *) {
+            UIGlassEffect(style: .regular)
+        } else {
+            UIBlurEffect(style: .systemThickMaterial)
+        }
+        let glass = UIVisualEffectView(effect: effect)
+        glass.clipsToBounds = true
+        glass.layer.cornerRadius = 26
+        glass.layer.cornerCurve = .continuous
+
+        let rows = UIStackView(arrangedSubviews: [
+            makeAttachRow(title: "Camera", symbol: "camera", source: .camera),
+            makeAttachRow(title: "Photos", symbol: "photo.on.rectangle", source: .photos),
+            makeAttachRow(title: "Files", symbol: "folder", source: .files),
+        ])
+        rows.axis = .vertical
+        rows.translatesAutoresizingMaskIntoConstraints = false
+        glass.contentView.addSubview(rows)
+
+        // Bottom-left corner of the card sits just above the (+) key.
+        let anchor = attachButton.convert(attachButton.bounds, to: window)
+        let size = CGSize(width: 250, height: 3 * 46 + 12)
+        let card = UIView(frame: CGRect(
+            x: max(8, anchor.minX),
+            y: anchor.minY - size.height - 8,
+            width: size.width, height: size.height
+        ))
+        card.layer.shadowColor = UIColor.black.cgColor
+        card.layer.shadowOpacity = 0.18
+        card.layer.shadowRadius = 34
+        card.layer.shadowOffset = CGSize(width: 0, height: 12)
+        card.layer.shadowPath = UIBezierPath(
+            roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 26
+        ).cgPath
+        glass.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(glass)
+        NSLayoutConstraint.activate([
+            glass.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            glass.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            glass.topAnchor.constraint(equalTo: card.topAnchor),
+            glass.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+            rows.leadingAnchor.constraint(equalTo: glass.contentView.leadingAnchor),
+            rows.trailingAnchor.constraint(equalTo: glass.contentView.trailingAnchor),
+            rows.topAnchor.constraint(equalTo: glass.contentView.topAnchor, constant: 6),
+            rows.bottomAnchor.constraint(equalTo: glass.contentView.bottomAnchor, constant: -6),
+        ])
+        scrim.addSubview(card)
+
+        // UIMenu's entrance: grow from the anchor corner with a soft spring.
+        card.alpha = 0
+        card.transform = CGAffineTransform(scaleX: 0.4, y: 0.4)
+            .translatedBy(x: -size.width * 0.5, y: size.height * 0.5)
+        UIView.animate(withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.8,
+                       initialSpringVelocity: 0) {
+            card.alpha = 1
+            card.transform = .identity
+        }
+    }
+
+    private func dismissAttachMenu() {
+        attachMenuScrim?.removeFromSuperview()
+        attachMenuScrim = nil
+    }
+
+    /// One native-menu row: 17pt title leading, SF symbol trailing — the
+    /// layout a real UIMenu row uses (icons ride the right edge on iOS).
+    /// No separators: iMessage/WhatsApp source menus are clean rows.
+    private func makeAttachRow(
+        title: String, symbol: String, source: TerminalAttachSource
+    ) -> UIView {
+        var config = UIButton.Configuration.plain()
+        config.title = title
+        config.image = UIImage(
+            systemName: symbol,
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+        )
+        config.imagePlacement = .trailing
+        config.baseForegroundColor = .label
+        config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 18, bottom: 0, trailing: 18)
+        config.titleTextAttributesTransformer = .init { attributes in
+            var attributes = attributes
+            attributes.font = .systemFont(ofSize: 17)
+            return attributes
+        }
+        let button = UIButton(configuration: config)
+        // .fill spreads title and trailing image to opposite edges.
+        button.contentHorizontalAlignment = .fill
+        button.heightAnchor.constraint(equalToConstant: 46).isActive = true
+        button.addAction(UIAction { [weak self] _ in
+            self?.dismissAttachMenu()
+            self?.onAttach?(source)
+        }, for: .touchUpInside)
+        return button
+    }
+
+    /// Shows the attach (+) — only sessions with a Mac behind them can
+    /// receive uploads. The slot stays in the grid either way.
+    func setAttachAvailable(_ available: Bool) {
+        attachButton.alpha = available ? 1 : 0
+        attachButton.isEnabled = available
+    }
+
+    /// Dims the attach slot while an upload is in flight; a batch shows its
+    /// "n/m" position in place of the plus.
+    func setAttachBusy(_ busy: Bool, progress: (done: Int, total: Int)? = nil) {
+        attachButton.isEnabled = !busy
+        var config = attachButton.configuration
+        if busy, let progress, progress.total > 1 {
+            config?.image = nil
+            config?.title = "\(progress.done + 1)/\(progress.total)"
+        } else {
+            config?.title = nil
+            config?.image = UIImage(
+                systemName: "plus",
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .medium)
             )
         }
+        attachButton.configuration = config
+    }
+
+    // MARK: - Sticky modifiers
+
+    /// The terminal view's state machine reported a transition — repaint the
+    /// key so armed/locked are visible (armed = tinted, locked = filled).
+    func setStickyVisual(_ key: TerminalStickyKey, _ visual: TerminalStickyVisual) {
+        guard let button = stickyButtons[key] else { return }
+        var config = button.configuration
+        switch visual {
+        case .off:
+            config?.baseBackgroundColor = nil
+            config?.baseForegroundColor = .label
+        case .armed:
+            config?.baseBackgroundColor = UIColor.tintColor.withAlphaComponent(0.3)
+            config?.baseForegroundColor = .label
+        case .locked:
+            config?.baseBackgroundColor = .tintColor
+            config?.baseForegroundColor = .white
+        }
+        button.configuration = config
+    }
+
+    private func makeStickyButton(title: String, key: TerminalStickyKey) -> UIButton {
+        // .gray() (not glass) on every OS: the armed/locked repaint needs a
+        // background the configuration owns — the iOS 26 glass background
+        // ignores baseBackgroundColor.
+        var config: UIButton.Configuration = .gray()
+        config.title = title
+        config.baseForegroundColor = .label
+        config.cornerStyle = .medium
+        config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 2, bottom: 4, trailing: 2)
+        config.titleTextAttributesTransformer = .init { attributes in
+            var attributes = attributes
+            attributes.font = .systemFont(ofSize: 14)
+            return attributes
+        }
+        let button = UIButton(configuration: config)
+        button.accessibilityLabel = title
+        button.heightAnchor.constraint(equalToConstant: Self.keyHeight).isActive = true
+        button.addAction(UIAction { [weak self] _ in
+            self?.haptic.impactOccurred()
+            self?.onSticky?(key)
+        }, for: .touchUpInside)
+        stickyButtons[key] = button
+        return button
     }
 
     // MARK: - Keys
@@ -203,10 +427,12 @@ final class TerminalAccessoryBar: UIInputView {
         config.title = title
         config.baseForegroundColor = .label
         config.cornerStyle = .medium
-        config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 9, bottom: 4, trailing: 9)
+        // Slim insets: the grid fixes each cell's width, so word keys like
+        // "home" need every point for their glyphs.
+        config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 2, bottom: 4, trailing: 2)
         config.titleTextAttributesTransformer = .init { attributes in
             var attributes = attributes
-            attributes.font = .systemFont(ofSize: 15)
+            attributes.font = .systemFont(ofSize: 14)
             return attributes
         }
 
@@ -226,11 +452,6 @@ final class TerminalAccessoryBar: UIInputView {
         button.accessibilityLabel = title
         button.titleLabel?.numberOfLines = 1
         button.heightAnchor.constraint(equalToConstant: Self.keyHeight).isActive = true
-        // Keep each key at its natural width so the row overflows and the strip
-        // scrolls — without required resistance the scroll view compresses the
-        // keys to fit and short titles like "tab" wrap character-by-character.
-        button.setContentHuggingPriority(.required, for: .horizontal)
-        button.setContentCompressionResistancePriority(.required, for: .horizontal)
         return button
     }
 

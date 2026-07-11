@@ -58,6 +58,25 @@
             }
 
             #if !targetEnvironment(macCatalyst)
+                // A bare "\n" is the software keyboard's Return key (a hardware
+                // Return arrives via pressesBegan and is suppressed above). It
+                // must never go through `sendText`: that output is wrapped in
+                // bracketed-paste markers when the program enabled mode 2004,
+                // so a TUI would read it as a pasted newline, never a submit.
+                // iSH's rule, applied at the byte level: write a raw CR
+                // straight into the in-memory session's input stream. Multi-
+                // character strings (paste, dictation) keep their embedded
+                // newlines as text.
+                if text == "\n", !inputHandler.hasMarkedText {
+                    _ = stickyModifiers.consumeForNextKey()
+                    if case let .inMemory(session) = configuration.backend {
+                        session.sendInput(Data([0x0D]))
+                    } else {
+                        sendSyntheticKey(usage: 0x28)
+                    }
+                    return
+                }
+
                 if inputHandler.hasMarkedText {
                     inputHandler.insertText(text)
                     return

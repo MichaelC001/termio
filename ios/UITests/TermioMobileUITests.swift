@@ -3,8 +3,8 @@ import XCTest
 /// Smoke suite over the app's deterministic demo states (`-demo …` launch
 /// arguments), so every screen is reachable without a Mac companion link:
 /// the session list (the iMessage-style inbox root), the terminal session
-/// screen (the Moshi shape: PTY + composer, no separate chat UI), and the
-/// file viewer.
+/// screen (the iSH shape: the keyboard types straight into the PTY, no
+/// separate prompt field), and the file viewer.
 final class TermioMobileUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -42,21 +42,22 @@ final class TermioMobileUITests: XCTestCase {
         app.buttons["Recent Activity"].tap()
     }
 
-    // MARK: - Session screen (terminal + composer)
+    // MARK: - Session screen (direct terminal input)
 
     func testOpenSessionFromListPushesTerminal() {
         let app = launch("list")
         let row = app.staticTexts["fix-sidebar"]
         XCTAssertTrue(row.waitForExistence(timeout: 8))
         row.tap()
-        // The terminal pushes over the list: back chevron + composer.
+        // The terminal pushes over the list: back chevron, and the surface
+        // takes first responder so the key bar rides up with the keyboard.
         XCTAssertTrue(app.buttons["terminal.back"].waitForExistence(timeout: 8))
-        XCTAssertTrue(app.staticTexts["Prompt"].exists)
+        XCTAssertTrue(app.buttons["esc"].waitForExistence(timeout: 4))
     }
 
     func testTerminalSwipeRightPopsToList() {
         let app = launch("terminal")
-        XCTAssertTrue(app.staticTexts["Prompt"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["terminal.back"].waitForExistence(timeout: 8))
         // A rightward pan anywhere on the surface goes back to the inbox,
         // the same swipe Messages answers with a pop.
         app.swipeRight()
@@ -75,37 +76,40 @@ final class TermioMobileUITests: XCTestCase {
 
     func testTerminalFingerScrollDoesNotCrash() {
         let app = launch("terminal")
-        XCTAssertTrue(app.staticTexts["Prompt"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["terminal.back"].waitForExistence(timeout: 8))
         // Vertical pan over the terminal surface — the scroll path seeds the
         // ghostty mouse position via reflection into the wrapper's internals,
         // so this guards that chain against wrapper updates breaking it.
         app.swipeUp()
         app.swipeDown()
-        XCTAssertTrue(app.staticTexts["Prompt"].exists)
+        XCTAssertTrue(app.buttons["terminal.back"].exists)
     }
 
-    func testSlashPanelScrolls() {
+    func testTypingReachesTerminalDirectly() {
         let app = launch("terminal")
-        XCTAssertTrue(app.staticTexts["Prompt"].waitForExistence(timeout: 8))
-        // The composer is already first responder on screen load, so type
-        // straight into it (firstMatch would grab the terminal surface).
-        app.typeText("/")
-        XCTAssertTrue(app.buttons["Send /clear"].waitForExistence(timeout: 4))
-        let shot = XCTAttachment(screenshot: app.screenshot())
-        shot.name = "slash-panel"
-        shot.lifetime = .keepAlways
-        add(shot)
-    }
-
-    func testTerminalControlBarAppearsWithKeyboard() {
-        let app = launch("terminal")
-        XCTAssertTrue(app.staticTexts["Prompt"].waitForExistence(timeout: 8))
-        // Focusing the composer brings up the system keyboard with the control
-        // bar docked above it — esc leads, the configured keys follow.
-        app.textViews.firstMatch.tap()
+        XCTAssertTrue(app.buttons["terminal.back"].waitForExistence(timeout: 8))
+        // The surface is first responder on load — keystrokes go straight to
+        // the PTY (the demo sandbox shell). No prompt field exists to grab
+        // them, and the app must survive the round trip.
         XCTAssertTrue(app.buttons["esc"].waitForExistence(timeout: 4))
+        app.typeText("echo hi\n")
+        XCTAssertTrue(app.buttons["terminal.back"].exists)
+    }
+
+    func testTerminalKeyBarShowsStickyModifiers() {
+        let app = launch("terminal")
+        // The surface auto-focuses, so the key bar is already docked above
+        // the keyboard: esc leads, then the sticky ctrl/alt pair.
+        XCTAssertTrue(app.buttons["esc"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["ctrl"].exists)
+        XCTAssertTrue(app.buttons["alt"].exists)
+        // Arm ctrl — the state machine consumes it on the next QWERTY key;
+        // this only asserts the tap round-trips without wedging the bar.
+        app.buttons["ctrl"].tap()
+        app.typeText("c")
+        XCTAssertTrue(app.buttons["esc"].exists)
         let shot = XCTAttachment(screenshot: app.screenshot())
-        shot.name = "terminal-control-bar"
+        shot.name = "terminal-key-bar"
         shot.lifetime = .keepAlways
         add(shot)
     }
@@ -114,7 +118,7 @@ final class TermioMobileUITests: XCTestCase {
 
     func testInspectorFileTreeShowsLanguageIcons() {
         let app = launch("terminal")
-        XCTAssertTrue(app.staticTexts["Prompt"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["terminal.back"].waitForExistence(timeout: 8))
         // A leftward pan on the surface pulls the inspector drawer out.
         app.swipeLeft()
         // The mock tree's rows come up; files draw their language marks.
@@ -129,10 +133,11 @@ final class TermioMobileUITests: XCTestCase {
 
     // MARK: - Attachments (live companion only)
 
-    /// End-to-end over a REAL companion link: multi-select two photos, watch
-    /// the queue upload them, and expect both Mac-side paths in the draft.
-    /// Skips itself when no Mac companion server is reachable, so the demo
-    /// suite stays green without one.
+    /// End-to-end over a REAL companion link: multi-select two photos and
+    /// watch the queue upload them; the Mac-side paths are typed into the
+    /// TUI itself, so the assertable signal is the attach slot going busy
+    /// and coming back. Skips itself when no Mac companion server is
+    /// reachable, so the demo suite stays green without one.
     func testAttachPhotoBatchUploadsToCompanion() throws {
         let app = XCUIApplication()
         app.launchArguments = ["-roster-url", "ws://127.0.0.1:8787"]
@@ -143,38 +148,27 @@ final class TermioMobileUITests: XCTestCase {
         row.tap()
         let attach = app.buttons["Attach"]
         try XCTSkipUnless(attach.waitForExistence(timeout: 10), "session has no upload backend")
+        // The (+) pops a source menu (Camera / Photos / Files); Photos hands
+        // off to the system PHPicker.
         attach.tap()
-        // The attachment sheet: ✕ / "Recents ⌄" header, edge-to-edge recents
-        // grid with a camera tile up front, Gallery·File tab bar. The grid is
-        // our own collection view, so a11y queries are safe here (unlike
-        // PHPicker's remote tree, which SIGKILLs the runner).
-        XCTAssertTrue(app.buttons["Recents"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["File"].exists)
-        XCTAssertTrue(app.buttons["Close"].exists)
-        // First open asks for photo access (each test run resets TCC and
-        // XCTest's implicit interruption monitor would deny it) — answer the
-        // system alert explicitly.
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let allow = springboard.buttons["Allow Full Access"]
-        if allow.waitForExistence(timeout: 4) { allow.tap() }
-        sleep(2)
-        attachShot(app, "sheet-open")
-        // Cell 0 is the camera tile (the iOS 26 simulator reports a camera),
-        // so the photos start at index 1.
-        let cells = app.collectionViews["attach.grid"].cells
-        XCTAssertTrue(cells.element(boundBy: 2).waitForExistence(timeout: 8))
-        cells.element(boundBy: 1).tap()
-        cells.element(boundBy: 2).tap()
-        attachShot(app, "sheet-selected")
-        let addButton = app.buttons
-            .matching(NSPredicate(format: "label BEGINSWITH 'Add'")).firstMatch
-        XCTAssertTrue(addButton.waitForExistence(timeout: 5))
-        addButton.tap()
-        // Both uploads land as absolute Mac paths in the draft.
-        let uploaded = app.textViews.matching(
-            NSPredicate(format: "value CONTAINS '.termio/uploads/'")).firstMatch
-        XCTAssertTrue(uploaded.waitForExistence(timeout: 30), "no upload path in draft")
-        attachShot(app, "attach-upload-draft")
+        let photos = app.buttons["Photos"]
+        XCTAssertTrue(photos.waitForExistence(timeout: 4))
+        photos.tap()
+        sleep(3)
+        attachShot(app, "picker-open")
+        // PHPicker is a REMOTE view: any element query into its tree kills
+        // the runner with SIGKILL — drive it by screen coordinates only
+        // (grid row 1 at y≈0.63, columns 0.17/0.50/0.83; Add at 0.91,0.167).
+        tapNormalized(app, 0.17, 0.63)
+        tapNormalized(app, 0.50, 0.63)
+        attachShot(app, "picker-selected")
+        tapNormalized(app, 0.91, 0.167)
+        // The queue dims the attach slot while uploading and re-enables it
+        // once every path has been typed into the TUI.
+        let reEnabled = NSPredicate(format: "isEnabled == true")
+        expectation(for: reEnabled, evaluatedWith: attach)
+        waitForExpectations(timeout: 30)
+        attachShot(app, "attach-upload-done")
     }
 
     private func tapNormalized(_ app: XCUIApplication, _ dx: Double, _ dy: Double) {

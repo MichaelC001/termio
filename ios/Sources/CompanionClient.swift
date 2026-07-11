@@ -44,8 +44,19 @@ final class CompanionClient: NSObject {
     /// The server rejected a request (e.g. a failed `start`).
     var onError: ((String) -> Void)?
 
-    /// Send a control message (e.g. `.start`) over the roster link.
+    /// Controls sent before the socket is open wait here — auth must ride
+    /// the wire first on every connect, so a `.upload` fired right after
+    /// `start()` would otherwise reach the server ahead of the auth frame
+    /// and be refused as unauthorized.
+    private var pendingControls: [CompanionControl] = []
+
+    /// Send a control message (e.g. `.start`) over the roster link. Queued
+    /// until the connect + auth handshake if the link isn't up yet.
     func send(_ control: CompanionControl) {
+        guard isConnected else {
+            pendingControls.append(control)
+            return
+        }
         task?.send(.string(control.encoded())) { _ in }
     }
 
@@ -213,6 +224,12 @@ extension CompanionClient: URLSessionWebSocketDelegate {
         }
         isConnected = true
         policy.reset()
+        // Auth is on the wire; anything queued behind it follows in order.
+        let queued = pendingControls
+        pendingControls = []
+        for control in queued {
+            task.send(.string(control.encoded())) { _ in }
+        }
         onConnected?(true)
     }
 
