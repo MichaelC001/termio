@@ -67,6 +67,10 @@ final class CompanionTransport: NSObject {
     /// A rendered trace document arrived (reply to `requestTrace`). Delivered
     /// on the main queue.
     var onTrace: ((String) -> Void)?
+    /// A structured-plane event for the attached session (reply stream to
+    /// `subscribeUpdates`) — what the chat lens renders. Delivered on the
+    /// main queue.
+    var onSessionUpdate: ((SessionUpdate) -> Void)?
 
     init(url: URL, attachSessionID: String? = nil) {
         self.url = url
@@ -135,6 +139,22 @@ final class CompanionTransport: NSObject {
         gridLock.unlock()
         guard ready, let attachSessionID else { return }
         let control = CompanionControl.trace(sessionID: attachSessionID, dark: dark).encoded()
+        task?.send(.string(control)) { _ in }
+    }
+
+    /// Subscribe (or re-subscribe) this socket to the attached session's
+    /// structured plane. `replay: true` replays the whole transcript first —
+    /// the same catch-up that heals any events missed across a dropped
+    /// socket, which is why the owner re-sends this on every connect.
+    /// No-op until the socket is authed.
+    func subscribeUpdates(replay: Bool) {
+        gridLock.lock()
+        let ready = authSent
+        gridLock.unlock()
+        guard ready, let attachSessionID else { return }
+        let control = CompanionControl.subscribeUpdates(
+            sessionID: attachSessionID, replay: replay
+        ).encoded()
         task?.send(.string(control)) { _ in }
     }
 
@@ -224,6 +244,9 @@ final class CompanionTransport: NSObject {
                         finish(.failed(message))
                     case .traceHTML(_, let html):
                         DispatchQueue.main.async { [onTrace] in onTrace?(html) }
+                    case .sessionUpdate(let sessionID, let update)
+                        where sessionID == attachSessionID:
+                        DispatchQueue.main.async { [onSessionUpdate] in onSessionUpdate?(update) }
                     default:
                         break // roster frames and echoes are not for this link
                     }

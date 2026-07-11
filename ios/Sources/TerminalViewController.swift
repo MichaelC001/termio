@@ -33,6 +33,16 @@ final class TerminalViewController: UIViewController {
 
     private lazy var terminalView = DisplayTerminalView(frame: .zero)
     private let composerBar = ComposerBar()
+    /// The chat lens over the same session — installed only for a companion
+    /// Claude session (the one agent with a structured-plane adapter today).
+    /// Both lenses stay alive; the toggle just decides which one is visible.
+    /// No adapter → no chat lens → this stays nil and the screen is exactly
+    /// the plain terminal (the emergent fallback, not a mode).
+    private var chatController: ChatViewController?
+    private let lensButton = UIButton(type: .system)
+    /// The visible lens; chat is the default when it exists — on a phone the
+    /// conversation is the primary surface and the raw TUI the escape hatch.
+    private var showingChat = false
     /// Last size actually sent to the engine + the pending coalesced refit —
     /// see viewDidLayoutSubviews for why resizes are rationed.
     private var lastFittedSize: CGSize = .zero
@@ -129,6 +139,7 @@ final class TerminalViewController: UIViewController {
         view.backgroundColor = Self.backdropColor()
         configureHeader()
         configureTerminal()
+        configureChatLens()
         configureDrawer()
         settingsObserver = NotificationCenter.default.addObserver(
             forName: MobileSettings.didChange, object: nil, queue: .main
@@ -271,10 +282,24 @@ final class TerminalViewController: UIViewController {
         }
         headerBar.addArrangedSubview(back)
         headerBar.addArrangedSubview(titles)
+        var constraints: [NSLayoutConstraint] = []
+        // The lens toggle earns a header slot only when a chat lens exists
+        // for this session; every other session keeps today's exact header.
+        if chatLensAvailable {
+            lensButton.accessibilityIdentifier = "terminal.lens"
+            lensButton.tintColor = .label
+            lensButton.addAction(UIAction { [weak self] _ in
+                guard let self else { return }
+                setLens(chat: !showingChat)
+            }, for: .touchUpInside)
+            headerBar.addArrangedSubview(lensButton)
+            constraints.append(lensButton.widthAnchor.constraint(equalToConstant: 44))
+            constraints.append(lensButton.heightAnchor.constraint(equalToConstant: 44))
+        }
         headerBar.addArrangedSubview(overflow)
         headerBar.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(headerBar)
-        NSLayoutConstraint.activate([
+        NSLayoutConstraint.activate(constraints + [
             headerBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             headerBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             headerBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
@@ -439,6 +464,48 @@ final class TerminalViewController: UIViewController {
             layer.delegate = nil
             layer.removeFromSuperlayer()
         }
+    }
+
+    // MARK: - Chat lens
+
+    /// Whether this session gets the chat lens: a live Mac session whose
+    /// agent has a structured-plane adapter (Claude today). Everything else —
+    /// bare shells, agents without adapters, the demo shell — is terminal-only
+    /// by construction.
+    private var chatLensAvailable: Bool {
+        guard case .companion = backend else { return false }
+        return session.agent == .claude && session.rosterID != nil
+    }
+
+    /// Installs the chat lens between the header and the composer, covering
+    /// the terminal surface (which keeps rendering and streaming beneath it —
+    /// switching lenses is a z-order change, never a reconnect). Chat is the
+    /// default lens: on the phone the conversation is the primary surface and
+    /// the raw TUI the ground-truth escape hatch.
+    private func configureChatLens() {
+        guard chatLensAvailable else { return }
+        let chat = ChatViewController()
+        addChild(chat)
+        chat.view.translatesAutoresizingMaskIntoConstraints = false
+        view.insertSubview(chat.view, aboveSubview: rendererCoverView)
+        chat.didMove(toParent: self)
+        NSLayoutConstraint.activate([
+            chat.view.topAnchor.constraint(equalTo: headerBar.bottomAnchor),
+            chat.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            chat.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            chat.view.bottomAnchor.constraint(equalTo: composerBar.topAnchor),
+        ])
+        chatController = chat
+        setLens(chat: true)
+    }
+
+    private func setLens(chat: Bool) {
+        guard let chatController else { return }
+        showingChat = chat
+        chatController.view.isHidden = !chat
+        // The button advertises the lens a tap switches TO.
+        lensButton.applyGlassSymbol(chat ? "apple.terminal" : "text.bubble", pointSize: 16)
+        lensButton.accessibilityLabel = chat ? "Show terminal" : "Show chat"
     }
 
     // MARK: - Composer
@@ -658,6 +725,9 @@ final class TerminalViewController: UIViewController {
             transport.onState = { [weak self] state in
                 self?.companionStateChanged(state)
             }
+            transport.onSessionUpdate = { [weak self] update in
+                self?.chatController?.apply(update)
+            }
             companion = transport
             companionSession = terminalSession
             return terminalSession
@@ -691,6 +761,14 @@ final class TerminalViewController: UIViewController {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
                 guard let self, case .companion = backend else { return }
                 companion?.reassertGrid()
+            }
+            // (Re)subscribe the chat lens on every connect, always with a
+            // full replay: the reset-then-replay pair is what heals whatever
+            // the lens missed while the socket was down — no cursors, no
+            // dedup, the transcript is the single source of truth.
+            if let chatController {
+                chatController.resetForReplay()
+                companion?.subscribeUpdates(replay: true)
             }
         case .failed(let reason):
             statusLabel.text = "Connection failed"
