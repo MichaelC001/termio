@@ -17,6 +17,9 @@ struct HighlightedTextView: NSViewRepresentable {
     /// When false the text stays selectable (copyable) but cannot be typed into — the read-only
     /// preview path. Defaults to editable so the inspector's own opens are unchanged.
     var isEditable: Bool = true
+    /// A 1-based line to scroll to and flash (a content-search hit). Applied once on creation and
+    /// again whenever the value changes — clicking a different hit in the same file re-scrolls.
+    var jumpToLine: Int? = nil
     /// Invoked when the user presses ⌘S — flushes the buffer to disk immediately.
     let onSave: () -> Void
 
@@ -90,6 +93,16 @@ struct HighlightedTextView: NSViewRepresentable {
         scrollView.contentView.postsBoundsChangedNotifications = true
         context.coordinator.observeScroll(of: scrollView)
 
+        // Reveal the requested line once the view has a real frame — at make time it hasn't been
+        // laid out, so scrolling now would land nowhere.
+        if let jumpToLine {
+            context.coordinator.appliedJumpLine = jumpToLine
+            DispatchQueue.main.async { [weak textView] in
+                guard let textView else { return }
+                Self.reveal(line: jumpToLine, in: textView)
+            }
+        }
+
         return scrollView
     }
 
@@ -131,12 +144,35 @@ struct HighlightedTextView: NSViewRepresentable {
         scrollView.backgroundColor = backgroundColor
         scrollView.contentView.backgroundColor = backgroundColor
         coordinator.ruler?.restyle(editorFont: font, numberColor: lineNumberColor, gutterColor: backgroundColor)
+
+        // A new jump target while the same file stays open (the user clicked another search hit).
+        if jumpToLine != coordinator.appliedJumpLine {
+            coordinator.appliedJumpLine = jumpToLine
+            if let jumpToLine { Self.reveal(line: jumpToLine, in: textView) }
+        }
     }
 
     private func apply(to textView: NSTextView) {
         textView.font = font
         textView.backgroundColor = backgroundColor
         textView.insertionPointColor = caretColor
+    }
+
+    /// Scrolls the 1-based `line` into view, parks the caret at its start, and flashes the find
+    /// indicator over it — Xcode's jump-to-line gesture. The caret is placed with a zero-length
+    /// selection (not the whole line) so a keystroke in an editable buffer can't wipe the line.
+    private static func reveal(line: Int, in textView: NSTextView) {
+        let full = textView.string as NSString
+        guard full.length > 0 else { return }
+        var location = 0, current = 1
+        while current < line, location < full.length {
+            location = NSMaxRange(full.lineRange(for: NSRange(location: location, length: 0)))
+            current += 1
+        }
+        let lineRange = full.lineRange(for: NSRange(location: min(location, full.length - 1), length: 0))
+        textView.setSelectedRange(NSRange(location: lineRange.location, length: 0))
+        textView.scrollRangeToVisible(lineRange)
+        textView.showFindIndicator(for: lineRange)
     }
 
     @MainActor
@@ -147,6 +183,8 @@ struct HighlightedTextView: NSViewRepresentable {
         var appliedTheme: String?
         var appliedFont: NSFont?
         var appliedLanguage: String?
+        /// The last jump target acted on, so `updateNSView` only re-scrolls on a genuine new hit.
+        var appliedJumpLine: Int?
         weak var ruler: LineNumberRulerView?
         private let text: Binding<String>
         private let cursor: Binding<EditorCursor?>

@@ -115,7 +115,8 @@ struct TerminalPane: View {
                         FilePreviewView(url: url, settings: settings, onClose: onClose)
                     } else {
                         FileEditorView(url: url, settings: settings,
-                                       readOnly: store.openFileReadOnly, onClose: onClose)
+                                       readOnly: store.openFileReadOnly,
+                                       jumpLine: store.openFileLine, onClose: onClose)
                     }
                 }
                 .id(url)

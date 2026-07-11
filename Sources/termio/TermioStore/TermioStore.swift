@@ -91,10 +91,18 @@ final class TermioStore: ObservableObject {
         didSet {
             if openFileURL != nil { openDiff = nil; openTrace = nil }
             // Closing always returns to the editable default; a read-only open re-asserts the flag
-            // immediately before setting the URL (see `openTerminalLink`).
-            else { openFileReadOnly = false }
+            // immediately before setting the URL (see `openTerminalLink`). The jump line clears too,
+            // so a later plain open of the same file doesn't scroll to a stale hit.
+            else {
+                openFileReadOnly = false
+                openFileLine = nil
+            }
         }
     }
+
+    /// The 1-based line the editor should reveal when it opens `openFileURL` — set by a
+    /// content-search hit (see `FileSearchView`); `nil` for a plain open (top of file).
+    @Published var openFileLine: Int?
 
     /// Whether the open file should be shown read-only (no editing, no auto-save). Set when the file
     /// was opened by cmd-clicking a link in the terminal — a peek at the source, not an invitation to
@@ -450,8 +458,9 @@ final class TermioStore: ObservableObject {
     /// file-tree click path. Pairs with `openTerminalLink`, which opens read-only; routing through
     /// these two methods (rather than assigning `openFileURL` directly) keeps the read-only flag and
     /// the URL in step.
-    func openFileInEditor(_ url: URL) {
+    func openFileInEditor(_ url: URL, at line: Int? = nil) {
         openFileReadOnly = false
+        openFileLine = line
         openFileURL = url
     }
 

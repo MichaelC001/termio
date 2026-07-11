@@ -15,6 +15,9 @@ struct FileEditorView: View {
     /// "peek at the source" path, so a stray click on a file link can't change it. The inspector's
     /// own opens leave this false (fully editable).
     let readOnly: Bool
+    /// The 1-based line to scroll to and flash on open — a content-search hit. `nil` opens at the
+    /// top as always. Changing it while the same file is open re-scrolls (clicking another hit).
+    let jumpLine: Int?
     /// Dismisses the overlay (clears `store.openFileURL`) and hands focus back to the terminal.
     let onClose: () -> Void
 
@@ -36,10 +39,12 @@ struct FileEditorView: View {
     /// (`GitDiffView`), so the two overlays read the same. `nil` outside a repo.
     private let relativePath: String?
 
-    init(url: URL, settings: AppSettings, readOnly: Bool = false, onClose: @escaping () -> Void) {
+    init(url: URL, settings: AppSettings, readOnly: Bool = false, jumpLine: Int? = nil,
+         onClose: @escaping () -> Void) {
         self.url = url
         self.settings = settings
         self.readOnly = readOnly
+        self.jumpLine = jumpLine
         self.onClose = onClose
         let contents = try? String(contentsOf: url, encoding: .utf8)
         _text = State(initialValue: contents ?? "")
@@ -112,6 +117,7 @@ struct FileEditorView: View {
                         caretColor: caretColor,
                         lineNumberColor: lineNumberColor,
                         isEditable: !readOnly,
+                        jumpToLine: jumpLine,
                         onSave: saveNow
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

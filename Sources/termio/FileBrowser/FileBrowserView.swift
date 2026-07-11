@@ -35,6 +35,20 @@ struct FileBrowserView: View {
             case .files:
                 if let root { header(root: root) }
                 content
+            case .search:
+                if let root {
+                    FileSearchView(
+                        rootURL: root.url,
+                        font: settings.interfaceFont,
+                        onDismiss: { store.inspectorTab = .files },
+                        onOpen: { url, line in store.openFileInEditor(url, at: line) }
+                    )
+                    // Fresh identity per project, so a stale query/result set
+                    // doesn't carry over when the root moves.
+                    .id(root.url)
+                } else {
+                    noProject
+                }
             case .changes:
                 if let repoRoot = projectPath {
                     GitChangesView(repoRoot: repoRoot, changeCount: $store.gitChangeCount)
@@ -115,12 +129,17 @@ struct FileBrowserView: View {
             // Collapse All rebuilds the list by changing its identity (see `treeGeneration`).
             .id(treeGeneration)
         } else {
-            ContentUnavailableView(
-                "No Project",
-                systemImage: "folder",
-                description: Text("Select a session to browse its files.")
-            )
+            noProject
         }
+    }
+
+    /// The empty state the Files and Search panes share when no session is selected.
+    private var noProject: some View {
+        ContentUnavailableView(
+            "No Project",
+            systemImage: "folder",
+            description: Text("Select a session to browse its files.")
+        )
     }
 
     /// The VS Code-style explorer header: the root folder's name, and trailing action
