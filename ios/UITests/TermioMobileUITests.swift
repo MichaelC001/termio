@@ -21,12 +21,11 @@ final class TermioMobileUITests: XCTestCase {
 
     func testSidebarListsMockSessionsGroupedByProject() {
         let app = launch("list")
-        // Mock roster: project headers + session rows. Headers are collapse
-        // buttons (the whole name row toggles the group), not static texts.
+        // Mock roster: project headers + session rows.
         XCTAssertTrue(app.staticTexts["fix-sidebar"].waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts["landing-hero"].exists)
-        XCTAssertTrue(app.buttons["termio"].exists)      // project header
-        XCTAssertTrue(app.buttons["vibewizard"].exists)  // second project
+        XCTAssertTrue(app.staticTexts["termio"].exists)      // project header
+        XCTAssertTrue(app.staticTexts["vibewizard"].exists)  // second project
     }
 
     func testSidebarSortMenuReordersProjects() {
@@ -37,7 +36,7 @@ final class TermioMobileUITests: XCTestCase {
         // The Mac sidebar's two orders, mirrored.
         XCTAssertTrue(app.buttons["Name"].waitForExistence(timeout: 3))
         app.buttons["Name"].tap()
-        XCTAssertTrue(app.buttons["termio"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["termio"].waitForExistence(timeout: 3))
         // Restore the default so this test doesn't leak state.
         sort.tap()
         app.buttons["Recent Activity"].tap()
@@ -176,162 +175,6 @@ final class TermioMobileUITests: XCTestCase {
             NSPredicate(format: "value CONTAINS '.termio/uploads/'")).firstMatch
         XCTAssertTrue(uploaded.waitForExistence(timeout: 30), "no upload path in draft")
         attachShot(app, "attach-upload-draft")
-    }
-
-    // MARK: - Chat lens (live companion only)
-
-    /// End-to-end over a REAL companion link: a Claude session opens as the
-    /// chat view (user bubble, agent reply, tool-call group with an
-    /// expandable diff) — for an adapted agent the conversation IS the
-    /// session UI, with no terminal toggle. Needs a Mac whose roster holds
-    /// a Claude session with at least one edit turn — skips itself
-    /// otherwise, so the demo suite stays green without one.
-    func testChatLensRendersStructuredConversation() throws {
-        let app = XCUIApplication()
-        // A dev-channel Mac serves on 8788 with a pairing token; pass its URL
-        // via TEST_RUNNER_CHATLENS_ROSTER_URL. Default matches the release port.
-        let roster = ProcessInfo.processInfo.environment["CHATLENS_ROSTER_URL"]
-            ?? "ws://127.0.0.1:8787"
-        app.launchArguments = ["-roster-url", roster]
-        app.launch()
-        let row = app.staticTexts
-            .matching(NSPredicate(format: "label CONTAINS 'Create and edit'")).firstMatch
-        try XCTSkipUnless(row.waitForExistence(timeout: 15), "no live claude session in roster")
-        row.tap()
-
-        // Chat is the default lens for a Claude session: the transcript's
-        // user prompt renders as a bubble without any lens switching.
-        let bubble = app.staticTexts
-            .matching(NSPredicate(format: "label CONTAINS 'Use the Write tool'")).firstMatch
-        XCTAssertTrue(bubble.waitForExistence(timeout: 20), "user bubble did not render")
-        attachShot(app, "chat-default")
-
-        // The Write + Edit calls fold behind one humanized summary line;
-        // expanding it discloses the per-call rows (same phrasing, so the
-        // summary is match 0 and the calls are matches 1 and 2).
-        let toolRows = app.staticTexts
-            .matching(NSPredicate(format: "label CONTAINS 'Edited chatlens-test.txt'"))
-        XCTAssertTrue(toolRows.firstMatch.waitForExistence(timeout: 10), "tool summary missing")
-        toolRows.firstMatch.tap()
-        XCTAssertTrue(toolRows.element(boundBy: 2).waitForExistence(timeout: 5), "call rows missing")
-        attachShot(app, "chat-tools-expanded")
-
-        // Opening the Edit call (the second disclosed row) shows its diff.
-        toolRows.element(boundBy: 2).tap()
-        let diffLine = app.staticTexts
-            .matching(NSPredicate(format: "label CONTAINS 'BETA'")).firstMatch
-        XCTAssertTrue(diffLine.waitForExistence(timeout: 5), "diff lines missing")
-        attachShot(app, "chat-diff")
-
-        // The conversation is the whole session UI: no terminal toggle.
-        XCTAssertFalse(app.buttons["terminal.lens"].exists)
-
-        // Sending from the composer shows the typing indicator immediately
-        // (the optimistic window) — the chat is never a dead screen while
-        // the agent works. The chat opens reading-first (no auto-focus), so
-        // the composer needs a tap and a settled focus before typing.
-        let composer = app.textViews["composer.field"]
-        XCTAssertTrue(composer.waitForExistence(timeout: 5))
-        composer.tap()
-        if (composer.value(forKey: "hasKeyboardFocus") as? Bool) != true {
-            sleep(1)
-            composer.tap()
-        }
-        composer.typeText("Reply with exactly: pong")
-        app.buttons["Send"].tap()
-        let typing = app.otherElements["chat.typing"]
-        XCTAssertTrue(typing.waitForExistence(timeout: 5), "typing indicator missing after send")
-        attachShot(app, "chat-typing")
-        // The reply's arrival depends on a possibly just-resumed agent and
-        // model latency; the indicator above was the assertion — the reply
-        // shot is best-effort evidence, not a gate.
-        _ = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'pong'"))
-            .firstMatch.waitForExistence(timeout: 60)
-        attachShot(app, "chat-reply")
-    }
-
-    /// End-to-end over a REAL companion link: a Codex session opens as the
-    /// same chat view — the roster's `chat` capability bit lights the lens,
-    /// not a client-side agent list. Needs a Mac whose roster holds a Codex
-    /// session seeded with the chatlens drive (a shell command + an
-    /// apply_patch turn, see /tmp/chatlens-codex-e2e.py) — skips itself
-    /// otherwise, so the demo suite stays green without one.
-    func testCodexChatLensRendersStructuredConversation() throws {
-        let app = XCUIApplication()
-        let roster = ProcessInfo.processInfo.environment["CHATLENS_ROSTER_URL"]
-            ?? "ws://127.0.0.1:8787"
-        app.launchArguments = ["-roster-url", roster]
-        app.launch()
-        let row = app.staticTexts
-            .matching(NSPredicate(format: "label CONTAINS 'Codex'")).firstMatch
-        try XCTSkipUnless(row.waitForExistence(timeout: 15), "no live codex session in roster")
-        row.tap()
-
-        // Chat is the default lens for a Codex session too: the seeded user
-        // prompt renders as a bubble without any lens switching. A codex row
-        // holding some other conversation is a skip, not a failure.
-        let bubble = app.staticTexts
-            .matching(NSPredicate(format: "label CONTAINS 'codex-lens'")).firstMatch
-        try XCTSkipUnless(bubble.waitForExistence(timeout: 20), "codex session lacks the seeded drive")
-        attachShot(app, "codex-chat-default")
-
-        // The apply_patch call folds behind the humanized edit summary;
-        // expanding it discloses the call row, and the call row its diff.
-        let toolRows = app.staticTexts
-            .matching(NSPredicate(format: "label CONTAINS 'Edited codex-lens.txt'"))
-        XCTAssertTrue(toolRows.firstMatch.waitForExistence(timeout: 10), "tool summary missing")
-        toolRows.firstMatch.tap()
-        XCTAssertTrue(toolRows.element(boundBy: 1).waitForExistence(timeout: 5), "call row missing")
-        attachShot(app, "codex-chat-tools-expanded")
-        toolRows.element(boundBy: 1).tap()
-        let diffLine = app.staticTexts
-            .matching(NSPredicate(format: "label CONTAINS 'gamma'")).firstMatch
-        XCTAssertTrue(diffLine.waitForExistence(timeout: 5), "diff lines missing")
-        attachShot(app, "codex-chat-diff")
-
-        // The conversation is the whole session UI: no terminal toggle, no
-        // terminal key strip.
-        XCTAssertFalse(app.buttons["terminal.lens"].exists)
-        XCTAssertFalse(app.buttons["esc"].exists)
-    }
-
-    /// Regression: a parked terminal screen keeps its composer as first
-    /// responder (hiding a view fires no appearance callbacks), so its
-    /// keyboard AND terminal key strip used to float over the chat opened
-    /// next. `RootContainerViewController` now ends editing on every screen
-    /// switch. Needs the same live roster as the chat test; skips without one.
-    func testTerminalStripDoesNotLeakIntoChat() throws {
-        let app = XCUIApplication()
-        let roster = ProcessInfo.processInfo.environment["CHATLENS_ROSTER_URL"]
-            ?? "ws://127.0.0.1:8787"
-        app.launchArguments = ["-roster-url", roster]
-        app.launch()
-
-        // A terminal session first: its composer auto-focuses and docks the
-        // terminal strip above the keyboard. (A bare shell — Codex now opens
-        // as the chat lens like Claude, so it can't play the terminal here.)
-        let terminal = app.staticTexts
-            .matching(NSPredicate(format: "label CONTAINS 'Terminal'")).firstMatch
-        try XCTSkipUnless(terminal.waitForExistence(timeout: 15), "no live terminal session in roster")
-        terminal.tap()
-        XCTAssertTrue(app.buttons["esc"].waitForExistence(timeout: 10), "terminal strip missing on terminal session")
-        app.buttons["terminal.back"].tap()
-        XCTAssertTrue(app.staticTexts["Sessions"].waitForExistence(timeout: 5))
-
-        // The chat session opens reading-first: no keyboard, and above all
-        // not the PARKED terminal's keyboard.
-        let claude = app.staticTexts
-            .matching(NSPredicate(format: "label CONTAINS 'Create and edit'")).firstMatch
-        try XCTSkipUnless(claude.waitForExistence(timeout: 10), "no live claude session")
-        claude.tap()
-        let composer = app.textViews["composer.field"]
-        XCTAssertTrue(composer.waitForExistence(timeout: 10))
-        sleep(2)
-        XCTAssertFalse(app.buttons["esc"].exists, "parked terminal's strip floats over the chat")
-        // And the chat's own keyboard stays a plain system keyboard.
-        composer.tap()
-        sleep(2)
-        XCTAssertFalse(app.buttons["esc"].exists, "terminal strip attached to the chat composer")
     }
 
     private func tapNormalized(_ app: XCUIApplication, _ dx: Double, _ dy: Double) {

@@ -225,14 +225,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             },
             traceProvider: { [weak store] sessionID in
                 store?.companionTrace(for: sessionID)
-            },
-            subscribeUpdates: { [weak store] sessionID, replay, handler in
-                store?.companionSubscribeUpdates(
-                    sessionID: sessionID, replay: replay, handler: handler
-                )
-            },
-            unsubscribeUpdates: { [weak store] token in
-                store?.companionUnsubscribeUpdates(token)
             }
         )
         companionServer = companion

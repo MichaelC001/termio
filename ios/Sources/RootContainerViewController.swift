@@ -87,12 +87,6 @@ final class RootContainerViewController: UIViewController {
     func open(_ screen: UIViewController, sessionKey: String? = nil, animated: Bool = true) {
         loadViewIfNeeded()
         guard activeScreen !== screen else { return }
-        // A parked screen is hidden, not dismissed, so no appearance callback
-        // ever resigns its composer — its keyboard (and terminal key strip)
-        // would float over whatever opens next. Drop any lingering first
-        // responder before switching; the incoming screen decides its own
-        // focus (terminals refocus in viewDidAppear, chats stay reading-first).
-        view.window?.endEditing(true)
 
         if let sessionKey {
             recentTerminals[sessionKey] = screen
@@ -148,9 +142,6 @@ final class RootContainerViewController: UIViewController {
     /// otherwise it is torn down.
     private func goHome(animated: Bool = true) {
         guard let screen = activeScreen else { return }
-        // Same lingering-responder guard as `open`: parking skips
-        // viewWillDisappear, so take the keyboard down explicitly.
-        view.window?.endEditing(true)
         activeScreen = nil
         list.currentSessionKey = nil
         list.refresh()

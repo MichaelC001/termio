@@ -33,21 +33,6 @@ final class TerminalViewController: UIViewController {
 
     private lazy var terminalView = DisplayTerminalView(frame: .zero)
     private let composerBar = ComposerBar()
-    /// The chat view over the same session — installed only for a companion
-    /// session whose roster row carries the chat capability (its agent has a
-    /// structured-plane adapter on the Mac), where it IS the session UI: on
-    /// the phone the conversation is the surface, not the raw TUI. No adapter
-    /// → this stays nil and the screen is exactly the plain terminal (the
-    /// emergent fallback, not a mode).
-    private var chatController: ChatViewController?
-    /// The chat's typing indicator has two feeders: the roster's working
-    /// status (authoritative, hook-driven) and a short optimistic window
-    /// after the composer sends — so the chat reacts the moment the user
-    /// hits send instead of waiting for the first transcript flush.
-    private var rosterSaysWorking = false
-    private var optimisticWorking = false
-    private var optimisticWorkingExpiry: DispatchWorkItem?
-    private var statusObserver: NSObjectProtocol?
     /// Last size actually sent to the engine + the pending coalesced refit —
     /// see viewDidLayoutSubviews for why resizes are rationed.
     private var lastFittedSize: CGSize = .zero
@@ -130,9 +115,6 @@ final class TerminalViewController: UIViewController {
         if let settingsObserver {
             NotificationCenter.default.removeObserver(settingsObserver)
         }
-        if let statusObserver {
-            NotificationCenter.default.removeObserver(statusObserver)
-        }
     }
 
     @available(*, unavailable)
@@ -147,7 +129,6 @@ final class TerminalViewController: UIViewController {
         view.backgroundColor = Self.backdropColor()
         configureHeader()
         configureTerminal()
-        configureChatLens()
         configureDrawer()
         settingsObserver = NotificationCenter.default.addObserver(
             forName: MobileSettings.didChange, object: nil, queue: .main
@@ -374,12 +355,8 @@ final class TerminalViewController: UIViewController {
         }
     }
 
-    /// The composer is the app's single input. Terminal sessions focus it
-    /// eagerly (the keyboard is the terminal's whole input story); a chat
-    /// session opens reading-first — the keyboard waits for a composer tap,
-    /// the chat convention.
+    /// The composer is the app's single input.
     private func focusInput() {
-        guard chatController == nil else { return }
         composerBar.focus()
     }
 
@@ -464,90 +441,6 @@ final class TerminalViewController: UIViewController {
         }
     }
 
-    // MARK: - Chat lens
-
-    /// Whether this session gets the chat lens: a live Mac session whose
-    /// roster row carries the `chat` capability bit (its agent has a
-    /// structured-plane adapter on the Mac). Everything else — bare shells,
-    /// agents without adapters, the demo shell — is terminal-only by
-    /// construction, and the phone never keeps an agent list of its own.
-    private var chatLensAvailable: Bool {
-        guard case .companion = backend else { return false }
-        return session.chat && session.rosterID != nil
-    }
-
-    /// Installs the chat view between the header and the composer, covering
-    /// the terminal surface. The surface stays alive beneath it — it is still
-    /// the byte plane the composer writes into and the PTY's screen of record
-    /// on this device — but for an adapted agent the phone never shows it:
-    /// the conversation is the session UI.
-    private func configureChatLens() {
-        guard chatLensAvailable else { return }
-        // The chat is a system-styled screen: its chrome (header band, the
-        // strip behind the composer) must match the chat body's background,
-        // not the terminal theme's backdrop — the mismatch reads as a stray
-        // colored band above and below the conversation.
-        view.backgroundColor = .systemBackground
-        let chat = ChatViewController()
-        addChild(chat)
-        chat.view.translatesAutoresizingMaskIntoConstraints = false
-        view.insertSubview(chat.view, aboveSubview: rendererCoverView)
-        chat.didMove(toParent: self)
-        NSLayoutConstraint.activate([
-            chat.view.topAnchor.constraint(equalTo: headerBar.bottomAnchor),
-            chat.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            chat.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            chat.view.bottomAnchor.constraint(equalTo: composerBar.topAnchor),
-        ])
-        chatController = chat
-        composerBar.setTerminalKeysVisible(false)
-        // The list's roster socket is the app's only status feed; it posts
-        // every push. Working ⇄ calm drives the chat's typing indicator.
-        statusObserver = NotificationCenter.default.addObserver(
-            forName: .sessionStatusesDidChange, object: nil, queue: .main
-        ) { [weak self] note in
-            MainActor.assumeIsolated { self?.applySessionStatuses(note) }
-        }
-    }
-
-    private func applySessionStatuses(_ note: Notification) {
-        guard let id = session.rosterID,
-              let statuses = note.userInfo?["statuses"] as? [String: SessionStatus],
-              let status = statuses[id] else { return }
-        rosterSaysWorking = status == .working
-        // The roster confirmed the turn is live; the optimistic window has
-        // done its job and the hook-driven status owns the indicator now.
-        if rosterSaysWorking { endOptimisticWorking() }
-        refreshWorkingIndicator()
-    }
-
-    /// A prompt just left the composer: show the typing indicator right away
-    /// (the hooks' working status follows within a push or two, and clears
-    /// it if the turn never actually starts). Self-expires as a backstop for
-    /// setups where no hook status ever arrives.
-    private func beginOptimisticWorking() {
-        guard chatController != nil else { return }
-        optimisticWorking = true
-        optimisticWorkingExpiry?.cancel()
-        let expiry = DispatchWorkItem { [weak self] in
-            self?.optimisticWorking = false
-            self?.refreshWorkingIndicator()
-        }
-        optimisticWorkingExpiry = expiry
-        DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: expiry)
-        refreshWorkingIndicator()
-    }
-
-    private func endOptimisticWorking() {
-        optimisticWorkingExpiry?.cancel()
-        optimisticWorkingExpiry = nil
-        optimisticWorking = false
-    }
-
-    private func refreshWorkingIndicator() {
-        chatController?.setWorking(rosterSaysWorking || optimisticWorking)
-    }
-
     // MARK: - Composer
 
     /// One atomic PTY write per prompt. Multiline drafts ride inside a
@@ -559,7 +452,6 @@ final class TerminalViewController: UIViewController {
             payload = "\u{1B}[200~" + payload + "\u{1B}[201~"
         }
         terminalView.send(Data((payload + "\r").utf8))
-        beginOptimisticWorking()
     }
 
     // MARK: - Attachments
@@ -766,17 +658,6 @@ final class TerminalViewController: UIViewController {
             transport.onState = { [weak self] state in
                 self?.companionStateChanged(state)
             }
-            transport.onSessionUpdate = { [weak self] update in
-                guard let self else { return }
-                // Reply text arriving is the turn winding down as far as the
-                // optimistic window is concerned; the roster's working status
-                // keeps the indicator up through multi-part turns.
-                if case .agentMessageChunk = update {
-                    endOptimisticWorking()
-                    refreshWorkingIndicator()
-                }
-                chatController?.apply(update)
-            }
             companion = transport
             companionSession = terminalSession
             return terminalSession
@@ -810,14 +691,6 @@ final class TerminalViewController: UIViewController {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
                 guard let self, case .companion = backend else { return }
                 companion?.reassertGrid()
-            }
-            // (Re)subscribe the chat lens on every connect, always with a
-            // full replay: the reset-then-replay pair is what heals whatever
-            // the lens missed while the socket was down — no cursors, no
-            // dedup, the transcript is the single source of truth.
-            if let chatController {
-                chatController.resetForReplay()
-                companion?.subscribeUpdates(replay: true)
             }
         case .failed(let reason):
             statusLabel.text = "Connection failed"
@@ -884,10 +757,8 @@ final class TerminalViewController: UIViewController {
     /// byte to arrive.
     private func applyAppearanceSettings() {
         // Re-assigned (not just relied on as dynamic) so a theme-name change
-        // busts UIKit's resolved-color cache without a trait flip. A chat
-        // session keeps its system background — the terminal theme is never
-        // visible there.
-        view.backgroundColor = chatController == nil ? Self.backdropColor() : .systemBackground
+        // busts UIKit's resolved-color cache without a trait flip.
+        view.backgroundColor = Self.backdropColor()
         guard surfaceConfigured else { return }
         controller.setTheme(Self.terminalTheme())
         controller.setTerminalConfiguration(Self.appearanceConfiguration())

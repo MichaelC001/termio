@@ -12,20 +12,13 @@ import Foundation
 /// grows — so the record created right when we launched is the one we bind to.
 ///
 /// This reads each agent's *private* on-disk layout (Codex's `~/.codex/sessions`
-/// rollout files, OpenCode's `~/.local/share/opencode/opencode.db` SQLite store),
-/// which is undocumented and can change between agent versions. Every read is
-/// therefore best-effort: any miss returns `nil`, and the caller falls back to
-/// continuing the most recent session in the directory.
+/// rollout files, OpenCode's `~/.local/share/opencode/storage/session` records), which
+/// is undocumented and can change between agent versions. Every read is therefore
+/// best-effort: any miss returns `nil`, and the caller falls back to continuing the
+/// most recent session in the directory.
 enum AgentSessionStore {
     static func discover(agent: AgentPreset, directory: String, after launchedAt: Date?) -> String? {
-        guard let launchedAt else { return nil }
-        if agent == .codex {
-            return matchCodex(directory: directory, after: launchedAt)?.id
-        }
-        if agent == .opencode {
-            return matchOpenCode(directory: directory, after: launchedAt, newest: false)
-        }
-        return nil
+        match(agent: agent, directory: directory, after: launchedAt)?.id
     }
 
     /// The on-disk conversation transcript for an agent that doesn't hand termio a
@@ -33,29 +26,25 @@ enum AgentSessionStore {
     /// rollout JSONL per session under `~/.codex/sessions`; that file *is* the
     /// transcript, so the Info pane can render a trace from it. Returns the file path,
     /// or `nil` when none matches (yet) or the agent has no readable transcript.
-    ///
-    /// Only Codex is supported. OpenCode deliberately stays nil: its conversation
-    /// lives in SQLite, and this function's result feeds `transcriptPaths` — a cache
-    /// whose other consumers (the Info pane's trace, the phone's trace HTML, the
-    /// `sessions send` transcript/cursor reply) all read the value as a JSONL *file*.
-    /// The structured plane addresses OpenCode through
-    /// `opencodeStructuredAddress` instead, which never enters that cache.
+    /// Only Codex is supported: OpenCode's session record is metadata, not a transcript.
     static func discoverTranscript(agent: AgentPreset, directory: String, after launchedAt: Date?) -> String? {
-        guard agent == .codex, let launchedAt else { return nil }
-        return matchCodex(directory: directory, after: launchedAt)?.url.path
+        guard agent == .codex else { return nil }
+        return match(agent: agent, directory: directory, after: launchedAt)?.url.path
     }
 
-    /// The structured-plane address for an OpenCode session: the SQLite database
-    /// path and the session row's id, joined as a `db-path#session-id` pseudo-path
-    /// (`OpenCodeAdapter.events` splits it back apart). NOT a readable file — see
-    /// `discoverTranscript` for why it must be kept out of `transcriptPaths`.
-    /// Unlike `discover`, which binds to the record born when termio launched the
-    /// agent, this takes the *newest* matching session: the OpenCode TUI can start
-    /// fresh sessions in place, and the phone lens should follow the live one.
-    static func opencodeStructuredAddress(directory: String, after launchedAt: Date?) -> String? {
+    /// The session file for this agent — its URL (the transcript) and the session id
+    /// parsed from it. Both `discover` (id, for resume) and `discoverTranscript` (path,
+    /// for the trace viewer) read from the same scan.
+    private static func match(agent: AgentPreset, directory: String, after launchedAt: Date?)
+        -> (url: URL, id: String)? {
         guard let launchedAt else { return nil }
-        return matchOpenCode(directory: directory, after: launchedAt, newest: true)
-            .map { OpenCodeStore.databasePath + "#" + $0 }
+        if agent == .codex {
+            return matchCodex(directory: directory, after: launchedAt)
+        }
+        if agent == .opencode {
+            return matchOpenCode(directory: directory, after: launchedAt)
+        }
+        return nil
     }
 
     /// A small negative tolerance: the agent writes its record just after we launch it,
@@ -81,22 +70,22 @@ enum AgentSessionStore {
         }
     }
 
-    /// OpenCode (v1.17+) keeps its sessions in SQLite — the `session` table carries
-    /// the `id`, the absolute `directory` the session ran in, and `time_created` in
-    /// ms since epoch. (The old per-record JSON tree under `storage/session` is dead
-    /// data, unwritten since 2026-01, so it is no longer consulted.) `newest: false`
-    /// binds to the earliest record created after launch — the session born when we
-    /// launched this one, the same semantics as `bestMatch` — while `newest: true`
-    /// follows the most recently started match.
-    private static func matchOpenCode(directory: String, after launchedAt: Date, newest: Bool) -> String? {
+    /// OpenCode stores one JSON record per session under
+    /// `~/.local/share/opencode/storage/session/<projectID>/<id>.json`, carrying the
+    /// `id` and the absolute `directory` the session ran in.
+    private static func matchOpenCode(directory: String, after launchedAt: Date) -> (url: URL, id: String)? {
+        let root = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/share/opencode/storage/session", isDirectory: true)
         let target = canonical(directory)
-        let threshold = Int64((launchedAt.timeIntervalSince1970 - tolerance) * 1000)
-        let matches = OpenCodeStore.sessions(createdAtOrAfter: threshold)
-            .filter { canonical($0.directory) == target }
-        let match = newest
-            ? matches.max { $0.created < $1.created }
-            : matches.min { $0.created < $1.created }
-        return match?.id
+        return bestMatch(in: root, ext: "json", after: launchedAt) { url in
+            guard let data = try? Data(contentsOf: url),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let id = object["id"] as? String,
+                  let dir = object["directory"] as? String,
+                  canonical(dir) == target
+            else { return nil }
+            return id
+        }
     }
 
     /// Walks `root` for `ext` files created at/after `launchedAt`, runs `identify` (which

@@ -157,7 +157,6 @@ final class ComposerBar: UIView {
         attachProgressLabel.isHidden = true
 
         textView.font = .preferredFont(forTextStyle: .body)
-        textView.accessibilityIdentifier = "composer.field"
         textView.backgroundColor = .clear
         textView.textContainerInset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
         textView.delegate = self
@@ -249,13 +248,6 @@ final class ComposerBar: UIView {
 
     func focus() {
         textView.becomeFirstResponder()
-    }
-
-    /// Chat sessions hide the terminal control strip: those keys write raw
-    /// PTY bytes into a TUI the chat never shows. Terminal sessions keep it.
-    func setTerminalKeysVisible(_ visible: Bool) {
-        textView.inputAccessoryView = visible ? terminalKeys : nil
-        textView.reloadInputViews()
     }
 
     func unfocus() {

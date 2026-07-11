@@ -81,11 +81,6 @@ final class CompanionServer {
     /// Resolves a session's transcript path and display title for a `trace`
     /// request, or nil when the session has no readable transcript yet.
     private let traceProvider: (String) -> (path: String, title: String)?
-    /// Registers a structured-plane subscription for a session (the phone's
-    /// chat lens); the handler receives each `SessionUpdate` on the main
-    /// actor. nil when the session is unknown or its agent has no adapter.
-    private let subscribeUpdates: (String, Bool, @escaping @MainActor (SessionUpdate) -> Void) -> UUID?
-    private let unsubscribeUpdates: (UUID) -> Void
     private var listener: NWListener?
     private var connections: Set<ObjectIdentifier> = []
     private var connectionByID: [ObjectIdentifier: NWConnection] = [:]
@@ -94,10 +89,6 @@ final class CompanionServer {
     /// and an attach is keystroke access to a shell.
     private var authed: Set<ObjectIdentifier> = []
     private var bridges: [ObjectIdentifier: PTYBridge] = [:]
-    /// One structured-plane subscription token per connection (the chat lens
-    /// re-subscribes rather than stacking, and a dropped socket must release
-    /// its tail).
-    private var updateSubscriptions: [ObjectIdentifier: UUID] = [:]
     private var lastRoster: CompanionRoster?
     private var pollTimer: Timer?
     private var ticks = 0
@@ -113,9 +104,7 @@ final class CompanionServer {
         ptyForSession: @escaping (String) -> PTYProcess?,
         startSession: @escaping (String, String) -> String?,
         stopSession: @escaping (String) -> Bool,
-        traceProvider: @escaping (String) -> (path: String, title: String)?,
-        subscribeUpdates: @escaping (String, Bool, @escaping @MainActor (SessionUpdate) -> Void) -> UUID?,
-        unsubscribeUpdates: @escaping (UUID) -> Void
+        traceProvider: @escaping (String) -> (path: String, title: String)?
     ) {
         self.port = port
         self.rosterProvider = rosterProvider
@@ -123,8 +112,6 @@ final class CompanionServer {
         self.startSession = startSession
         self.stopSession = stopSession
         self.traceProvider = traceProvider
-        self.subscribeUpdates = subscribeUpdates
-        self.unsubscribeUpdates = unsubscribeUpdates
     }
 
     func start() {
@@ -193,8 +180,6 @@ final class CompanionServer {
             bridge.pty.claimHostOwnership()
         }
         bridges.removeAll()
-        for token in updateSubscriptions.values { unsubscribeUpdates(token) }
-        updateSubscriptions.removeAll()
         for connection in connectionByID.values { connection.cancel() }
         connectionByID.removeAll()
         connections.removeAll()
@@ -235,9 +220,6 @@ final class CompanionServer {
             if !bridges.values.contains(where: { $0.pty === bridge.pty }) {
                 bridge.pty.claimHostOwnership()
             }
-        }
-        if let token = updateSubscriptions.removeValue(forKey: id) {
-            unsubscribeUpdates(token)
         }
         connectionByID[id]?.cancel()
         connectionByID[id] = nil
@@ -342,26 +324,10 @@ final class CompanionServer {
             handleSearchFiles(projectID: projectID, query: query, on: connection)
         case .trace(let sessionID, let dark):
             handleTrace(sessionID: sessionID, dark: dark, on: connection)
-        case .subscribeUpdates(let sessionID, let replay):
-            // Re-subscribing replaces this connection's tail (the phone does
-            // so on every reconnect, with replay healing whatever it missed).
-            if let previous = updateSubscriptions.removeValue(forKey: id) {
-                unsubscribeUpdates(previous)
-            }
-            // No adapter (bare shell, unknown agent) means no structured
-            // plane. Stay silent rather than replying `.error`: this socket
-            // is usually also the session's PTY bridge, and the phone treats
-            // any `.error` there as a fatal drop of the live terminal.
-            if let token = subscribeUpdates(sessionID, replay, { [weak self, weak connection] update in
-                guard let self, let connection else { return }
-                sendControl(.sessionUpdate(sessionID: sessionID, update: update), to: connection)
-            }) {
-                updateSubscriptions[id] = token
-            }
         case .sshConfigHosts:
             sendControl(.sshConfigList(hosts: Self.parseSSHConfigHosts()), to: connection)
         case .auth, .exit, .error, .started, .fileList, .file, .written, .uploaded,
-             .searchResults, .traceHTML, .sshConfigList, .sessionUpdate:
+             .searchResults, .traceHTML, .sshConfigList:
             break
         }
     }
@@ -996,80 +962,6 @@ extension TermioStore {
         return (path, displayTitle(for: session))
     }
 
-    /// Structured-plane adapters keyed by companion wire name. A session
-    /// whose agent has no adapter simply has no structured plane — the
-    /// phone's view of it is the terminal, an emergent fallback rather than
-    /// a designed mode.
-    private static let agentAdapters: [String: AgentAdapter] = {
-        let adapters: [AgentAdapter] = [ClaudeAdapter(), CodexAdapter(), PiAdapter(), OpenCodeAdapter()]
-        return Dictionary(uniqueKeysWithValues: adapters.map { ($0.agentID, $0) })
-    }()
-
-    /// Subscribes one consumer to a session's structured plane. Multi-
-    /// subscriber by construction: every call owns an independent tailing
-    /// task (its own replay cursor, per design §8 rule 2), addressed by the
-    /// returned token. `handler` is called on the main actor, one event at a
-    /// time, replay first when asked. nil when the session is unknown or its
-    /// agent has no adapter.
-    func companionSubscribeUpdates(
-        sessionID wireID: String, replay: Bool,
-        handler: @escaping @MainActor (SessionUpdate) -> Void
-    ) -> UUID? {
-        guard let (_, session) = findCompanionSession(wireID),
-              let adapter = Self.agentAdapters[Self.wireAgent(session.agent)]
-        else { return nil }
-        let token = UUID()
-        let sessionID = session.id
-        let task = Task { [weak self] in
-            // A brand-new session has no transcript on disk yet; wait for the
-            // agent to write one (the hook usually delivers the path within
-            // the first turn) instead of failing the subscription.
-            var url = self?.companionTranscriptURL(for: sessionID, adapter: adapter)
-            while url == nil, !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                url = self?.companionTranscriptURL(for: sessionID, adapter: adapter)
-            }
-            guard let url, !Task.isCancelled else { return }
-            for await update in adapter.events(tailing: url, replay: replay) {
-                guard !Task.isCancelled else { break }
-                handler(update)
-            }
-        }
-        companionUpdateTasks[token] = task
-        return token
-    }
-
-    func companionUnsubscribeUpdates(_ token: UUID) {
-        companionUpdateTasks.removeValue(forKey: token)?.cancel()
-    }
-
-    /// A session's transcript address for the structured plane: the hook-
-    /// delivered path wins (it is authoritative the moment the agent starts),
-    /// then the adapter's own from-disk resolution, then the store's launch-
-    /// time discovery (`resolveTranscriptPath`) — the route for agents like
-    /// Codex that neither deliver a path nor take a pinned id. Caches like
-    /// `companionTrace` does.
-    private func companionTranscriptURL(for id: Session.ID, adapter: AgentAdapter) -> URL? {
-        if let path = transcriptPaths[id] { return URL(fileURLWithPath: path) }
-        guard let session = session(id) else { return nil }
-        // OpenCode's structured plane reads its SQLite store, addressed as a
-        // `db-path#session-id` pseudo-path. Checked against the other
-        // `transcriptPaths` consumers (Info-pane trace, phone trace HTML,
-        // `sessions send` transcript/cursor reply): all of them read the
-        // cached value as a JSONL file, so the pseudo-path is resolved fresh
-        // here — for the structured plane only — and never enters the cache.
-        if session.agent == .opencode {
-            guard let directory = session.worktreePath ?? project(for: id)?.path else { return nil }
-            return AgentSessionStore.opencodeStructuredAddress(
-                directory: directory, after: session.launchedAt
-            ).map { URL(fileURLWithPath: $0) }
-        }
-        guard let path = adapter.transcriptURL(for: session)?.path
-            ?? resolveTranscriptPath(for: id) else { return nil }
-        transcriptPaths[id] = path
-        return URL(fileURLWithPath: path)
-    }
-
     private func findCompanionSession(_ wireID: String) -> (Project, Session)? {
         let prefix = wireID.lowercased()
         guard !prefix.isEmpty else { return nil }
@@ -1099,17 +991,12 @@ extension TermioStore {
                     // The sidebar tooltip's activity line doubles as the
                     // phone's row preview; empty means "nothing to say".
                     let activity = statusDescription(for: session.id)
-                    let wireAgent = Self.wireAgent(session.agent)
                     return RosterSession(
                         id: session.id.uuidString,
                         title: displayTitle(for: session),
-                        agent: wireAgent,
+                        agent: Self.wireAgent(session.agent),
                         status: Self.wireStatus(status(for: session.id)),
-                        subtitle: activity.isEmpty ? nil : activity,
-                        // Derived, never declared: an agent with a structured-
-                        // plane adapter gets the chat lens, so the phone needs
-                        // no agent roster of its own.
-                        chat: Self.agentAdapters[wireAgent] != nil
+                        subtitle: activity.isEmpty ? nil : activity
                     )
                 }
             )

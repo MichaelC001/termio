@@ -77,17 +77,6 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     /// it into a `WKWebView` overlay. Large, so it rides the 8 MB-capped socket.
     case traceHTML(sessionID: String, html: String)
 
-    /// Phone → Mac: subscribe this connection to the session's structured
-    /// plane — the ACP-shaped `session/update` stream the Mac derives from the
-    /// agent's own transcript. `replay: true` first replays every event the
-    /// transcript holds (the `session/load`-style catch-up, equally valid for
-    /// a dormant session whose process is gone), then continues live.
-    /// Re-sending replaces the connection's previous subscription.
-    case subscribeUpdates(sessionID: String, replay: Bool)
-
-    /// Mac → phone: one structured-plane event for a subscribed session.
-    case sessionUpdate(sessionID: String, update: SessionUpdate)
-
     /// Phone → Mac: list the hosts in the Mac's `~/.ssh/config`. The phone is
     /// sandboxed and has no `~/.ssh`, so the Mac reads it and the phone imports
     /// the results into its own SSH manager.
@@ -153,15 +142,6 @@ public enum CompanionControl: Codable, Sendable, Equatable {
             return Self.json(["t": "trace", "session": sessionID, "dark": dark])
         case .traceHTML(let sessionID, let html):
             return Self.json(["t": "traceHTML", "session": sessionID, "html": html])
-        case .subscribeUpdates(let sessionID, let replay):
-            return Self.json(["t": "subscribeUpdates", "session": sessionID, "replay": replay])
-        case .sessionUpdate(let sessionID, let update):
-            // The update is Codable (its ACP field names come from its own
-            // coding keys); round-trip through JSONSerialization to embed it
-            // as an object inside the hand-built frame.
-            let payload = (try? JSONEncoder().encode(update))
-                .flatMap { try? JSONSerialization.jsonObject(with: $0) }
-            return Self.json(["t": "sessionUpdate", "session": sessionID, "update": payload ?? [:]])
         case .sshConfigHosts:
             return #"{"t":"sshConfigHosts"}"#
         case .sshConfigList(let hosts):
@@ -276,18 +256,6 @@ public enum CompanionControl: Codable, Sendable, Equatable {
             guard let sessionID = obj["session"] as? String,
                   let html = obj["html"] as? String else { return nil }
             return .traceHTML(sessionID: sessionID, html: html)
-        case "subscribeUpdates":
-            guard let sessionID = obj["session"] as? String else { return nil }
-            return .subscribeUpdates(
-                sessionID: sessionID, replay: obj["replay"] as? Bool ?? true
-            )
-        case "sessionUpdate":
-            guard let sessionID = obj["session"] as? String,
-                  let payload = obj["update"] as? [String: Any],
-                  let payloadData = try? JSONSerialization.data(withJSONObject: payload),
-                  let update = try? JSONDecoder().decode(SessionUpdate.self, from: payloadData)
-            else { return nil }
-            return .sessionUpdate(sessionID: sessionID, update: update)
         case "sshConfigHosts":
             return .sshConfigHosts
         case "sshConfigList":
@@ -389,23 +357,13 @@ public struct RosterSession: Codable, Sendable, Equatable {
     /// shows it as the row's preview line, Messages-style. Optional so older
     /// peers that don't send it still decode; nil when there is nothing to say.
     public let subtitle: String?
-    /// Whether this session has a structured plane (`subscribeUpdates` will
-    /// serve it), so the phone opens it as the chat lens. The server derives
-    /// it from its adapter registry — the client never hard-codes an agent
-    /// list. Optional so older peers that don't send it still decode; nil
-    /// (like false) means terminal-only.
-    public let chat: Bool?
 
-    public init(
-        id: String, title: String, agent: String, status: String,
-        subtitle: String? = nil, chat: Bool? = nil
-    ) {
+    public init(id: String, title: String, agent: String, status: String, subtitle: String? = nil) {
         self.id = id
         self.title = title
         self.agent = agent
         self.status = status
         self.subtitle = subtitle
-        self.chat = chat
     }
 }
 
