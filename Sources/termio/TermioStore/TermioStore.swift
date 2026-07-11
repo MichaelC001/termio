@@ -210,6 +210,11 @@ final class TermioStore: ObservableObject {
     /// structured log instead of scraping the terminal.
     @Published var transcriptPaths: [Session.ID: String] = [:]
 
+    /// Live structured-plane subscriptions (the phone's chat lens): each token
+    /// owns one tailing task over a session's transcript, independent of every
+    /// other subscriber's replay cursor. See `companionSubscribeUpdates`.
+    var companionUpdateTasks: [UUID: Task<Void, Never>] = [:]
+
     /// When each currently-working session last reported activity, used to recover
     /// a session whose turn ended without a `done` hook (see `sweepStaleWorking`).
     /// Refreshed both by working hooks and by a *changed* rendered screen
