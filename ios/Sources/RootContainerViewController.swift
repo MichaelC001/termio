@@ -1,10 +1,10 @@
 import UIKit
 
-/// iMessage-style shell: the session list is the root screen (the inbox);
-/// tapping a session slides its terminal in full-screen and "back" slides it
-/// away to reveal the list. Screens draw their own chrome (the list its large
-/// title + search, the terminal its compact header), so there is no navigation
-/// bar.
+/// The shell: the home stack (Projects root → a pushed project page) is the
+/// base layer; tapping a session anywhere slides its terminal in full-screen
+/// over it, and "back" slides it away to reveal the stack wherever it was.
+/// Screens draw their own chrome (large titles, glass buttons, the terminal
+/// its compact header), so the navigation bar stays hidden.
 ///
 /// **Why containment instead of a UINavigationController.** Destroying a
 /// libghostty surface races the engine's render/IO threads — the source of the
@@ -17,7 +17,14 @@ import UIKit
 /// only on eviction/close, detached and idle, with no in-flight frames to race.
 /// Keyed by `MockSession.key`; a small LRU bounds live surfaces.
 final class RootContainerViewController: UIViewController {
-    let list = SessionListViewController()
+    /// The one live roster model, shared by every home screen.
+    let store = RosterStore()
+    /// The home stack: Projects root, plus a pushed project page. Plain UIKit
+    /// views only — terminals never enter this stack (see the containment
+    /// note above), so a real navigation controller is safe here.
+    private lazy var homeNav = HomeNavigationController(
+        rootViewController: ProjectListViewController(store: store)
+    )
 
     /// Every parked terminal is a live libghostty surface (scrollback + render
     /// buffers + a streaming socket) whose view stays in the window. On the
@@ -37,15 +44,15 @@ final class RootContainerViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
 
-        // The list is the permanent base layer: added once, always behind any
-        // terminal, revealed whenever no terminal is slid in over it.
-        addChild(list)
-        list.view.frame = view.bounds
-        list.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        view.addSubview(list.view)
-        list.didMove(toParent: self)
+        // The home stack is the permanent base layer: added once, always
+        // behind any terminal, revealed whenever no terminal is slid in over it.
+        addChild(homeNav)
+        homeNav.view.frame = view.bounds
+        homeNav.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(homeNav.view)
+        homeNav.didMove(toParent: self)
 
-        list.onOpenSession = { [weak self] session, companionURL in
+        store.onOpenSession = { [weak self] session, companionURL in
             guard let self else { return }
             // Coming back to a parked session reuses its screen: same surface,
             // scrollback and connection intact — no surface teardown/rebuild.
@@ -61,6 +68,14 @@ final class RootContainerViewController: UIViewController {
             }
             open(screen, sessionKey: session.key)
         }
+        store.onStartError = { [weak self] reason in
+            let alert = UIAlertController(
+                title: "Couldn't start session", message: reason, preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            self?.present(alert, animated: true)
+        }
+        store.start()
     }
 
     /// Under memory pressure, shed every parked terminal except the one on
@@ -117,8 +132,8 @@ final class RootContainerViewController: UIViewController {
         if isReopen {
             (screen as? TerminalViewController)?.prepareForReappearance()
         }
-        list.currentSessionKey = sessionKey
-        list.refresh()
+        store.currentSessionKey = sessionKey
+        refreshHomeLists()
 
         // Start off the right edge, on top, and slide to fill.
         let offscreen = view.bounds.offsetBy(dx: view.bounds.width, dy: 0)
@@ -143,8 +158,8 @@ final class RootContainerViewController: UIViewController {
     private func goHome(animated: Bool = true) {
         guard let screen = activeScreen else { return }
         activeScreen = nil
-        list.currentSessionKey = nil
-        list.refresh()
+        store.currentSessionKey = nil
+        refreshHomeLists()
 
         let parked = recentTerminals.contains { $0.value === screen }
         let offscreen = view.bounds.offsetBy(dx: view.bounds.width, dy: 0)
@@ -181,6 +196,25 @@ final class RootContainerViewController: UIViewController {
         }
     }
 
+    /// `-demo project`: push the first mock project's page on launch, so
+    /// simctl runs can screenshot the second home level without tapping.
+    func openFirstProjectPage() {
+        loadViewIfNeeded()
+        guard let first = store.projects.first else { return }
+        homeNav.pushViewController(
+            ProjectDetailViewController(store: store, project: first),
+            animated: false
+        )
+    }
+
+    /// Repaint the current-session pill on whichever home screens are up.
+    private func refreshHomeLists() {
+        for screen in homeNav.viewControllers {
+            (screen as? ProjectListViewController)?.refresh()
+            (screen as? ProjectDetailViewController)?.refresh()
+        }
+    }
+
     // MARK: - Child lifecycle
 
     private func installIfNeeded(_ screen: UIViewController) {
@@ -202,5 +236,21 @@ final class RootContainerViewController: UIViewController {
         screen.view.removeFromSuperview()
         (screen as? TerminalViewController)?.releaseOrphanedSurfaceLayers()
         screen.removeFromParent()
+    }
+}
+
+/// The home stack's navigation controller: bar hidden (screens draw their own
+/// chrome), but the edge swipe-back kept alive — hiding the bar normally
+/// disables `interactivePopGestureRecognizer`, so it gets a delegate that
+/// re-arms it whenever there is somewhere to pop to.
+private final class HomeNavigationController: UINavigationController, UIGestureRecognizerDelegate {
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        isNavigationBarHidden = true
+        interactivePopGestureRecognizer?.delegate = self
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        viewControllers.count > 1
     }
 }

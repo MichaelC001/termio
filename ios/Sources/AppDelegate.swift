@@ -68,8 +68,14 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         if let flagIndex = args.firstIndex(of: "-demo"), args.indices.contains(flagIndex + 1) {
             let mode = args[flagIndex + 1]
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                // "list"/"sessions" is the launch state: the inbox page.
+                // "list"/"sessions" is the launch state: the Projects root.
                 guard mode != "list", mode != "sessions" else { return }
+                // "project" pushes the first project's page (the second home
+                // level) for screenshot runs.
+                if mode == "project" {
+                    root.openFirstProjectPage()
+                    return
+                }
                 let session = MockProject.samples[0].sessions[0]
                 let terminal = TerminalViewController(session: session)
                 root.open(terminal, sessionKey: session.key, animated: false)

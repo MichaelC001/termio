@@ -2,9 +2,9 @@ import XCTest
 
 /// Smoke suite over the app's deterministic demo states (`-demo …` launch
 /// arguments), so every screen is reachable without a Mac companion link:
-/// the session list (the iMessage-style inbox root), the terminal session
-/// screen (the iSH shape: the keyboard types straight into the PTY, no
-/// separate prompt field), and the file viewer.
+/// the home stack (the Projects root with its "Needs You" strip, and a pushed
+/// project page), the terminal session screen (the iSH shape: the keyboard
+/// types straight into the PTY, no separate prompt field), and the file viewer.
 final class TermioMobileUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -17,15 +17,30 @@ final class TermioMobileUITests: XCTestCase {
         return app
     }
 
-    // MARK: - Session list (the inbox root page)
+    // MARK: - Projects root (needs-you strip + project rows)
 
-    func testSidebarListsMockSessionsGroupedByProject() {
+    func testRootListsProjectsWithNeedsYouStrip() {
         let app = launch("list")
-        // Mock roster: project headers + session rows.
+        // The blocked session rides the root strip; the projects list under it.
         XCTAssertTrue(app.staticTexts["fix-sidebar"].waitForExistence(timeout: 8))
-        XCTAssertTrue(app.staticTexts["landing-hero"].exists)
-        XCTAssertTrue(app.staticTexts["termio"].exists)      // project header
+        XCTAssertTrue(app.staticTexts["termio"].exists)      // project row
         XCTAssertTrue(app.staticTexts["vibewizard"].exists)  // second project
+        // Non-blocked sessions live one level down, not on the root.
+        XCTAssertFalse(app.staticTexts["landing-hero"].exists)
+    }
+
+    func testProjectRowPushesItsSessionPage() {
+        let app = launch("list")
+        let project = app.staticTexts["termio"]
+        XCTAssertTrue(project.waitForExistence(timeout: 8))
+        project.tap()
+        // The project page: every session of that project, ready to open.
+        XCTAssertTrue(app.staticTexts["landing-hero"].waitForExistence(timeout: 4))
+        XCTAssertTrue(app.staticTexts["fix-sidebar"].exists)
+        // Back to the root.
+        app.buttons["project.back"].tap()
+        XCTAssertTrue(app.staticTexts["Projects"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.staticTexts["landing-hero"].exists)
     }
 
     func testSidebarSortMenuReordersProjects() {
@@ -44,8 +59,10 @@ final class TermioMobileUITests: XCTestCase {
 
     // MARK: - Session screen (direct terminal input)
 
-    func testOpenSessionFromListPushesTerminal() {
+    func testOpenSessionFromNeedsYouStripPushesTerminal() {
         let app = launch("list")
+        // The strip is the fast path: blocked session → terminal, one tap,
+        // no project page in between.
         let row = app.staticTexts["fix-sidebar"]
         XCTAssertTrue(row.waitForExistence(timeout: 8))
         row.tap()
@@ -58,10 +75,10 @@ final class TermioMobileUITests: XCTestCase {
     func testTerminalSwipeRightPopsToList() {
         let app = launch("terminal")
         XCTAssertTrue(app.buttons["terminal.back"].waitForExistence(timeout: 8))
-        // A rightward pan anywhere on the surface goes back to the inbox,
+        // A rightward pan anywhere on the surface goes back home,
         // the same swipe Messages answers with a pop.
         app.swipeRight()
-        XCTAssertTrue(app.staticTexts["Sessions"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Projects"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["fix-sidebar"].exists)
     }
 
@@ -70,7 +87,7 @@ final class TermioMobileUITests: XCTestCase {
         let back = app.buttons["terminal.back"]
         XCTAssertTrue(back.waitForExistence(timeout: 8))
         back.tap()
-        XCTAssertTrue(app.staticTexts["Sessions"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Projects"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["fix-sidebar"].exists)
     }
 
@@ -142,9 +159,18 @@ final class TermioMobileUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-roster-url", "ws://127.0.0.1:8787"]
         app.launch()
-        let row = app.staticTexts
+        // Sessions live one level down now: root strip first (a blocked Claude
+        // session rides it), else drill into the first project row.
+        var row = app.staticTexts
             .matching(NSPredicate(format: "label CONTAINS 'Claude Code'")).firstMatch
-        try XCTSkipUnless(row.waitForExistence(timeout: 15), "no live companion roster")
+        if !row.waitForExistence(timeout: 15) {
+            let firstProject = app.cells.firstMatch
+            try XCTSkipUnless(firstProject.exists, "no live companion roster")
+            firstProject.tap()
+            row = app.staticTexts
+                .matching(NSPredicate(format: "label CONTAINS 'Claude Code'")).firstMatch
+            try XCTSkipUnless(row.waitForExistence(timeout: 5), "no live Claude session")
+        }
         row.tap()
         let attach = app.buttons["Attach"]
         try XCTSkipUnless(attach.waitForExistence(timeout: 10), "session has no upload backend")
