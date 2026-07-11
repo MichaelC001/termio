@@ -54,24 +54,39 @@
       <rect x="0.8" y="0.8" width="78.4" height="78.4" rx="18.4"
             fill="none" stroke="url(#rim)" stroke-width="1.4"/>
     </g>
+
+    <!-- denser, near-white glass for the five tiles that spell the T; the
+         milky #glassFill tops out as light grey, too soft to carry a glyph -->
+    <linearGradient id="glassFillBright" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.98"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.94"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.88"/>
+    </linearGradient>
+    <g id="tileBright" transform="scale(0.9)">
+      <rect width="80" height="80" rx="19" fill="url(#glassFillBright)" filter="url(#cast)"/>
+      <rect width="80" height="80" rx="19" fill="url(#innerShade)"/>
+      <rect x="3" y="3" width="74" height="74" rx="16" fill="url(#sheen)" filter="url(#soften)"/>
+      <rect x="0.8" y="0.8" width="78.4" height="78.4" rx="18.4"
+            fill="none" stroke="url(#rim)" stroke-width="1.4"/>
+    </g>
   </defs>
 
   <rect x="0" y="0" width="512" height="512" rx="114" fill="url(#bg)"/>
   <rect x="0" y="0" width="512" height="512" rx="114" fill="url(#bgGlow)"/>
 
-  <!-- 九宫格. Per-tile opacity freezes the comet spinner: a full-strength leader
-       at top-left fades clockwise, so even a still icon reads as streaming.
-       Dim tiles simply look like glass catching less light. -->
+  <!-- 九宫格 spelling a T for termio: the top row, center, and bottom-center
+       glow near-white while the four leftover tiles sit dark. A faint
+       top-left-to-stem falloff keeps the light feeling like it flows. -->
   <g transform="translate(256 256) scale(0.9) translate(-256 -256)">
-    <use href="#tile" x="220" y="220" opacity="0.95"/>
+    <use href="#tileBright" x="220" y="220" opacity="1.00"/>
 
-    <use href="#tile" x="116" y="116" opacity="1.00"/>
-    <use href="#tile" x="220" y="116" opacity="0.82"/>
-    <use href="#tile" x="324" y="116" opacity="0.66"/>
-    <use href="#tile" x="324" y="220" opacity="0.53"/>
-    <use href="#tile" x="324" y="324" opacity="0.44"/>
-    <use href="#tile" x="220" y="324" opacity="0.37"/>
-    <use href="#tile" x="116" y="324" opacity="0.32"/>
-    <use href="#tile" x="116" y="220" opacity="0.29"/>
+    <use href="#tileBright" x="116" y="116" opacity="1.00"/>
+    <use href="#tileBright" x="220" y="116" opacity="1.00"/>
+    <use href="#tileBright" x="324" y="116" opacity="0.97"/>
+    <use href="#tile" x="324" y="220" opacity="0.26"/>
+    <use href="#tile" x="324" y="324" opacity="0.24"/>
+    <use href="#tileBright" x="220" y="324" opacity="0.95"/>
+    <use href="#tile" x="116" y="324" opacity="0.24"/>
+    <use href="#tile" x="116" y="220" opacity="0.26"/>
   </g>
 </svg>
