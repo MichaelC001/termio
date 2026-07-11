@@ -47,7 +47,7 @@ struct GitChangesView: View {
                 // tree (`FileTreeList`). Selection drives "open the diff", which is what lets
                 // each row be `.draggable` at the same time: a SwiftUI tap gesture would
                 // strangle the drag, but List's AppKit-level selection coexists with it.
-                List(changes, selection: selectedChange) { change in
+                List(changes, selection: selectedPath) { change in
                     GitChangeRow(
                         change: change,
                         fileURL: fileURL(for: change),
@@ -176,12 +176,16 @@ struct GitChangesView: View {
     }
 
     /// Bridges List selection to the open diff: the selected row is whichever change is
-    /// currently open, and selecting a row opens it. Deselection is ignored — closing the
-    /// diff is the overlay's own job, not a click-away.
-    private var selectedChange: Binding<GitChange?> {
+    /// currently open, and selecting a row opens it. Bound by `GitChange.ID` (the path) —
+    /// List tags rows with the element's `id`, so a selection binding of any other type
+    /// never fires (the original `Binding<GitChange?>` compiled but made rows unclickable).
+    /// Deselection is ignored — closing the diff is the overlay's own job, not a click-away.
+    private var selectedPath: Binding<String?> {
         Binding(
-            get: { changes.first { $0.path == store.openDiff?.change.path } },
-            set: { if let change = $0 { open(change) } }
+            get: { store.openDiff?.change.path },
+            set: { path in
+                if let change = changes.first(where: { $0.path == path }) { open(change) }
+            }
         )
     }
 }
