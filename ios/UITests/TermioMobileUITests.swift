@@ -21,11 +21,12 @@ final class TermioMobileUITests: XCTestCase {
 
     func testSidebarListsMockSessionsGroupedByProject() {
         let app = launch("list")
-        // Mock roster: project headers + session rows.
+        // Mock roster: project headers + session rows. Headers are collapse
+        // buttons (the whole name row toggles the group), not static texts.
         XCTAssertTrue(app.staticTexts["fix-sidebar"].waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts["landing-hero"].exists)
-        XCTAssertTrue(app.staticTexts["termio"].exists)      // project header
-        XCTAssertTrue(app.staticTexts["vibewizard"].exists)  // second project
+        XCTAssertTrue(app.buttons["termio"].exists)      // project header
+        XCTAssertTrue(app.buttons["vibewizard"].exists)  // second project
     }
 
     func testSidebarSortMenuReordersProjects() {
@@ -36,7 +37,7 @@ final class TermioMobileUITests: XCTestCase {
         // The Mac sidebar's two orders, mirrored.
         XCTAssertTrue(app.buttons["Name"].waitForExistence(timeout: 3))
         app.buttons["Name"].tap()
-        XCTAssertTrue(app.staticTexts["termio"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["termio"].waitForExistence(timeout: 3))
         // Restore the default so this test doesn't leak state.
         sort.tap()
         app.buttons["Recent Activity"].tap()
@@ -249,6 +250,51 @@ final class TermioMobileUITests: XCTestCase {
         attachShot(app, "chat-reply")
     }
 
+    /// End-to-end over a REAL companion link: a Codex session opens as the
+    /// same chat view — the roster's `chat` capability bit lights the lens,
+    /// not a client-side agent list. Needs a Mac whose roster holds a Codex
+    /// session seeded with the chatlens drive (a shell command + an
+    /// apply_patch turn, see /tmp/chatlens-codex-e2e.py) — skips itself
+    /// otherwise, so the demo suite stays green without one.
+    func testCodexChatLensRendersStructuredConversation() throws {
+        let app = XCUIApplication()
+        let roster = ProcessInfo.processInfo.environment["CHATLENS_ROSTER_URL"]
+            ?? "ws://127.0.0.1:8787"
+        app.launchArguments = ["-roster-url", roster]
+        app.launch()
+        let row = app.staticTexts
+            .matching(NSPredicate(format: "label CONTAINS 'Codex'")).firstMatch
+        try XCTSkipUnless(row.waitForExistence(timeout: 15), "no live codex session in roster")
+        row.tap()
+
+        // Chat is the default lens for a Codex session too: the seeded user
+        // prompt renders as a bubble without any lens switching. A codex row
+        // holding some other conversation is a skip, not a failure.
+        let bubble = app.staticTexts
+            .matching(NSPredicate(format: "label CONTAINS 'codex-lens'")).firstMatch
+        try XCTSkipUnless(bubble.waitForExistence(timeout: 20), "codex session lacks the seeded drive")
+        attachShot(app, "codex-chat-default")
+
+        // The apply_patch call folds behind the humanized edit summary;
+        // expanding it discloses the call row, and the call row its diff.
+        let toolRows = app.staticTexts
+            .matching(NSPredicate(format: "label CONTAINS 'Edited codex-lens.txt'"))
+        XCTAssertTrue(toolRows.firstMatch.waitForExistence(timeout: 10), "tool summary missing")
+        toolRows.firstMatch.tap()
+        XCTAssertTrue(toolRows.element(boundBy: 1).waitForExistence(timeout: 5), "call row missing")
+        attachShot(app, "codex-chat-tools-expanded")
+        toolRows.element(boundBy: 1).tap()
+        let diffLine = app.staticTexts
+            .matching(NSPredicate(format: "label CONTAINS 'gamma'")).firstMatch
+        XCTAssertTrue(diffLine.waitForExistence(timeout: 5), "diff lines missing")
+        attachShot(app, "codex-chat-diff")
+
+        // The conversation is the whole session UI: no terminal toggle, no
+        // terminal key strip.
+        XCTAssertFalse(app.buttons["terminal.lens"].exists)
+        XCTAssertFalse(app.buttons["esc"].exists)
+    }
+
     /// Regression: a parked terminal screen keeps its composer as first
     /// responder (hiding a view fires no appearance callbacks), so its
     /// keyboard AND terminal key strip used to float over the chat opened
@@ -262,11 +308,12 @@ final class TermioMobileUITests: XCTestCase {
         app.launch()
 
         // A terminal session first: its composer auto-focuses and docks the
-        // terminal strip above the keyboard.
-        let codex = app.staticTexts
-            .matching(NSPredicate(format: "label CONTAINS 'Codex'")).firstMatch
-        try XCTSkipUnless(codex.waitForExistence(timeout: 15), "no live roster")
-        codex.tap()
+        // terminal strip above the keyboard. (A bare shell — Codex now opens
+        // as the chat lens like Claude, so it can't play the terminal here.)
+        let terminal = app.staticTexts
+            .matching(NSPredicate(format: "label CONTAINS 'Terminal'")).firstMatch
+        try XCTSkipUnless(terminal.waitForExistence(timeout: 15), "no live terminal session in roster")
+        terminal.tap()
         XCTAssertTrue(app.buttons["esc"].waitForExistence(timeout: 10), "terminal strip missing on terminal session")
         app.buttons["terminal.back"].tap()
         XCTAssertTrue(app.staticTexts["Sessions"].waitForExistence(timeout: 5))

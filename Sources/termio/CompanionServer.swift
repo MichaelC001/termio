@@ -996,13 +996,13 @@ extension TermioStore {
         return (path, displayTitle(for: session))
     }
 
-    /// Structured-plane adapters keyed by companion wire name. Only Claude
-    /// speaks the plane today; a session whose agent has no adapter simply has
-    /// no structured plane — the phone's view of it is the terminal, an
-    /// emergent fallback rather than a designed mode.
+    /// Structured-plane adapters keyed by companion wire name. A session
+    /// whose agent has no adapter simply has no structured plane — the
+    /// phone's view of it is the terminal, an emergent fallback rather than
+    /// a designed mode.
     private static let agentAdapters: [String: AgentAdapter] = {
-        let claude = ClaudeAdapter()
-        return [claude.agentID: claude]
+        let adapters: [AgentAdapter] = [ClaudeAdapter(), CodexAdapter()]
+        return Dictionary(uniqueKeysWithValues: adapters.map { ($0.agentID, $0) })
     }()
 
     /// Subscribes one consumer to a session's structured plane. Multi-
@@ -1045,14 +1045,17 @@ extension TermioStore {
 
     /// A session's transcript address for the structured plane: the hook-
     /// delivered path wins (it is authoritative the moment the agent starts),
-    /// the adapter's own from-disk resolution is the fallback — the same
-    /// two-step the trace path uses. Caches like `companionTrace` does.
+    /// then the adapter's own from-disk resolution, then the store's launch-
+    /// time discovery (`resolveTranscriptPath`) — the route for agents like
+    /// Codex that neither deliver a path nor take a pinned id. Caches like
+    /// `companionTrace` does.
     private func companionTranscriptURL(for id: Session.ID, adapter: AgentAdapter) -> URL? {
         if let path = transcriptPaths[id] { return URL(fileURLWithPath: path) }
-        guard let session = session(id),
-              let url = adapter.transcriptURL(for: session) else { return nil }
-        transcriptPaths[id] = url.path
-        return url
+        guard let session = session(id) else { return nil }
+        guard let path = adapter.transcriptURL(for: session)?.path
+            ?? resolveTranscriptPath(for: id) else { return nil }
+        transcriptPaths[id] = path
+        return URL(fileURLWithPath: path)
     }
 
     private func findCompanionSession(_ wireID: String) -> (Project, Session)? {
@@ -1084,12 +1087,17 @@ extension TermioStore {
                     // The sidebar tooltip's activity line doubles as the
                     // phone's row preview; empty means "nothing to say".
                     let activity = statusDescription(for: session.id)
+                    let wireAgent = Self.wireAgent(session.agent)
                     return RosterSession(
                         id: session.id.uuidString,
                         title: displayTitle(for: session),
-                        agent: Self.wireAgent(session.agent),
+                        agent: wireAgent,
                         status: Self.wireStatus(status(for: session.id)),
-                        subtitle: activity.isEmpty ? nil : activity
+                        subtitle: activity.isEmpty ? nil : activity,
+                        // Derived, never declared: an agent with a structured-
+                        // plane adapter gets the chat lens, so the phone needs
+                        // no agent roster of its own.
+                        chat: Self.agentAdapters[wireAgent] != nil
                     )
                 }
             )

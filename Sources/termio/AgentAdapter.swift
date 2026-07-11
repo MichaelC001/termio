@@ -28,17 +28,9 @@ protocol AgentAdapter: Sendable {
 }
 
 /// Claude Code's adapter: its transcript is one JSON object per line under
-/// `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`. The parsing below is
-/// the incremental sibling of `SessionTraceRenderer`'s one-shot loop and stays
-/// just as lenient — the format is Claude's private detail, not a contract, so
-/// anything unrecognized is skipped, never fatal.
+/// `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`.
 struct ClaudeAdapter: AgentAdapter {
     let agentID = "claude"
-
-    /// How often an idle tail re-checks the file for appended lines. The
-    /// structured plane is allowed to lag the byte plane by transcript-flush
-    /// latency anyway (design §10), so sub-second polling buys nothing.
-    private static let pollNanoseconds: UInt64 = 700_000_000
 
     func transcriptURL(for session: Session) -> URL? {
         // termio pins Claude's conversation id up front (Session.resumeID),
@@ -49,9 +41,71 @@ struct ClaudeAdapter: AgentAdapter {
     }
 
     func events(tailing url: URL, replay: Bool) -> AsyncStream<SessionUpdate> {
+        TranscriptTailer.stream(path: url.path, replay: replay) {
+            ClaudeTranscriptMapper.updates(fromLine: $0)
+        }
+    }
+}
+
+/// Codex's adapter: its rollout JSONL under `~/.codex/sessions/YYYY/MM/DD/`
+/// *is* the transcript. Codex hands termio neither a hook-delivered path nor
+/// a pinnable session id, so the file is discovered store-side by launch-time
+/// match (`TermioStore.resolveTranscriptPath` → `AgentSessionStore`) — that
+/// needs store state (project directory, launch instant) an adapter doesn't
+/// hold, which is why `transcriptURL` stays nil here.
+struct CodexAdapter: AgentAdapter {
+    let agentID = "codex"
+
+    func transcriptURL(for session: Session) -> URL? { nil }
+
+    func events(tailing url: URL, replay: Bool) -> AsyncStream<SessionUpdate> {
+        TranscriptTailer.stream(path: url.path, replay: replay) {
+            CodexTranscriptMapper.updates(fromLine: $0)
+        }
+    }
+}
+
+/// Previews ride the wire capped: a tool result can be megabytes of build
+/// output, and the phone renders a card, not a pager.
+private let toolOutputCap = 2_000
+/// Diff texts cap higher — the expanded diff view wants real content —
+/// but still bounded so one whole-file write can't bloat a frame.
+private let diffTextCap = 20_000
+
+private func capped(_ text: String, at limit: Int) -> String {
+    guard text.count > limit else { return text }
+    return text.prefix(limit) + "\n… (truncated)"
+}
+
+/// Reads a JSONL transcript incrementally — newly appended complete lines
+/// since the last drain — and maps each line through `map` to zero or more
+/// `SessionUpdate`s. The offset only ever advances past a trailing newline,
+/// so a line the agent is mid-writing is re-read whole on the next tick.
+struct TranscriptTailer {
+    let path: String
+    let map: @Sendable ([String: Any]) -> [SessionUpdate]
+    private var offset: UInt64 = 0
+
+    /// How often an idle tail re-checks the file for appended lines. The
+    /// structured plane is allowed to lag the byte plane by transcript-flush
+    /// latency anyway (design §10), so sub-second polling buys nothing.
+    private static let pollNanoseconds: UInt64 = 700_000_000
+
+    init(path: String, map: @escaping @Sendable ([String: Any]) -> [SessionUpdate]) {
+        self.path = path
+        self.map = map
+    }
+
+    /// One tailer wrapped as the adapter event stream: replay parses what is
+    /// already on disk first, then appended lines keep yielding until the
+    /// consumer cancels.
+    static func stream(
+        path: String, replay: Bool,
+        map: @escaping @Sendable ([String: Any]) -> [SessionUpdate]
+    ) -> AsyncStream<SessionUpdate> {
         AsyncStream { continuation in
             let task = Task.detached(priority: .utility) {
-                var tailer = ClaudeTranscriptTailer(path: url.path)
+                var tailer = TranscriptTailer(path: path, map: map)
                 if !replay { tailer.skipToEnd() }
                 while !Task.isCancelled {
                     for update in tailer.drain() {
@@ -63,19 +117,6 @@ struct ClaudeAdapter: AgentAdapter {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
-    }
-}
-
-/// Reads a Claude transcript incrementally — newly appended complete lines
-/// since the last drain — and maps each to zero or more `SessionUpdate`s.
-/// The offset only ever advances past a trailing newline, so a line the agent
-/// is mid-writing is re-read whole on the next tick.
-struct ClaudeTranscriptTailer {
-    let path: String
-    private var offset: UInt64 = 0
-
-    init(path: String) {
-        self.path = path
     }
 
     /// Position past everything currently on disk — the no-replay start.
@@ -101,17 +142,16 @@ struct ClaudeTranscriptTailer {
             .compactMap { line -> [String: Any]? in
                 try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any]
             }
-            .flatMap(Self.updates(fromLine:))
+            .flatMap(map)
     }
+}
 
-    // MARK: - Claude JSONL line → ACP updates
+// MARK: - Claude JSONL line → ACP updates
 
-    /// Previews ride the wire capped: a tool result can be megabytes of build
-    /// output, and the phone renders a card, not a pager.
-    private static let toolOutputCap = 2_000
-    /// Diff texts cap higher — the expanded diff view wants real content —
-    /// but still bounded so one `Write` of a huge file can't bloat a frame.
-    private static let diffTextCap = 20_000
+/// The incremental sibling of `SessionTraceRenderer`'s one-shot loop and just
+/// as lenient — the format is Claude's private detail, not a contract, so
+/// anything unrecognized is skipped, never fatal.
+enum ClaudeTranscriptMapper {
     /// Claude Code's context window, for `usage_update.size`. The transcript
     /// reports consumption, not capacity, so this is the known constant.
     private static let contextWindowSize = 200_000
@@ -293,9 +333,216 @@ struct ClaudeTranscriptTailer {
         }
         return ""
     }
+}
 
-    private static func capped(_ text: String, at limit: Int) -> String {
-        guard text.count > limit else { return text }
-        return text.prefix(limit) + "\n… (truncated)"
+// MARK: - Codex rollout line → ACP updates
+
+/// The incremental sibling of `SessionTraceRenderer.analyzeCodex`, equally
+/// lenient: every rollout line is `{timestamp, type, payload}`; conversation
+/// text arrives as `event_msg`, tool activity as `response_item` correlated
+/// by `call_id`, the running token total as `token_count`. Anything else
+/// (raw protocol messages, encrypted reasoning, world state) is skipped.
+enum CodexTranscriptMapper {
+    static func updates(fromLine entry: [String: Any]) -> [SessionUpdate] {
+        guard let payload = entry["payload"] as? [String: Any] else { return [] }
+        switch entry["type"] as? String {
+        case "event_msg": return eventUpdates(payload)
+        case "response_item": return responseUpdates(payload)
+        default: return []
+        }
+    }
+
+    private static func eventUpdates(_ payload: [String: Any]) -> [SessionUpdate] {
+        switch payload["type"] as? String {
+        case "user_message":
+            guard let text = trimmed(payload["message"]) else { return [] }
+            return [.userMessageChunk(ContentChunk(content: .text(text)))]
+        case "agent_message":
+            guard let text = trimmed(payload["message"]) else { return [] }
+            return [.agentMessageChunk(ContentChunk(content: .text(text)))]
+        case "agent_reasoning":
+            guard let text = trimmed(payload["text"]) else { return [] }
+            return [.agentThoughtChunk(ContentChunk(content: .text(text)))]
+        case "token_count":
+            return usageUpdate(payload["info"] as? [String: Any])
+        default:
+            return []
+        }
+    }
+
+    private static func responseUpdates(_ payload: [String: Any]) -> [SessionUpdate] {
+        switch payload["type"] as? String {
+        // `custom_tool_call` is how apply_patch rides in current Codex builds
+        // (its `input` is the raw patch text, not JSON); both shapes share the
+        // `call_id` correlation with their `…_output` sibling.
+        case "function_call", "custom_tool_call":
+            return toolCall(payload).map { [.toolCall($0)] } ?? []
+        case "function_call_output", "custom_tool_call_output":
+            return toolCallUpdate(payload).map { [.toolCallUpdate($0)] } ?? []
+        default:
+            return []
+        }
+    }
+
+    private static func toolCall(_ payload: [String: Any]) -> ToolCallEvent? {
+        guard let callId = payload["call_id"] as? String else { return nil }
+        let name = payload["name"] as? String ?? "tool"
+        // A function call's arguments are a JSON *string*; a custom tool call
+        // carries its payload verbatim in `input` (apply_patch's patch text).
+        let arguments = decodedArguments(payload["arguments"])
+
+        if name == "apply_patch",
+           let patch = (payload["input"] as? String) ?? (arguments["input"] as? String) {
+            let diffs = patchDiffs(patch)
+            let paths = diffs.compactMap(\.path)
+            let files = paths.map { ($0 as NSString).lastPathComponent }.joined(separator: ", ")
+            return ToolCallEvent(
+                toolCallId: callId,
+                title: files.isEmpty ? name : "\(name): \(files)",
+                kind: .edit,
+                status: .inProgress,
+                // When the patch resists per-file extraction, the raw text is
+                // still an honest card body.
+                content: diffs.isEmpty ? [.text(capped(patch, at: toolOutputCap))] : diffs,
+                locations: paths.isEmpty ? nil : paths.map { ToolCallLocation(path: $0) }
+            )
+        }
+
+        let summary = toolSummary(arguments)
+        return ToolCallEvent(
+            toolCallId: callId,
+            title: summary.isEmpty ? name : "\(name): \(summary)",
+            kind: kind(forTool: name),
+            status: .inProgress
+        )
+    }
+
+    private static func toolCallUpdate(_ payload: [String: Any]) -> ToolCallUpdateEvent? {
+        guard let callId = payload["call_id"] as? String else { return nil }
+        let output = (payload["output"] as? String) ?? ""
+        return ToolCallUpdateEvent(
+            toolCallId: callId,
+            status: outputFailed(output) ? .failed : .completed,
+            content: output.isEmpty ? nil : [.text(capped(output, at: toolOutputCap))]
+        )
+    }
+
+    /// Codex tool names → ACP tool kinds, for the phone's card icons.
+    private static func kind(forTool name: String) -> ToolKind {
+        switch name {
+        case "exec_command", "shell", "local_shell", "write_stdin": .execute
+        case "apply_patch": .edit
+        case "update_plan": .think
+        case "view_image": .read
+        case "web_search": .search
+        default: .other
+        }
+    }
+
+    /// The one line that best names a tool call, from the decoded arguments —
+    /// `exec_command` carries `cmd`, older `shell` a `command` string or argv.
+    private static func toolSummary(_ arguments: [String: Any]) -> String {
+        for key in ["cmd", "command", "path", "file_path", "query", "url"] {
+            if let value = arguments[key] as? String, !value.isEmpty {
+                return String(value.prefix(160))
+            }
+            if let argv = arguments[key] as? [String], !argv.isEmpty {
+                return String(argv.joined(separator: " ").prefix(160))
+            }
+        }
+        return ""
+    }
+
+    /// Codex exec results embed the process exit line ("Process exited with
+    /// code N" / "Exit code: N"); a non-zero code marks a failed call. When
+    /// absent (non-exec tools) we don't guess and treat it as success — the
+    /// same heuristic as `SessionTraceRenderer.codexOutputFailed`.
+    private static func outputFailed(_ output: String) -> Bool {
+        for marker in ["exited with code ", "Exit code: "] {
+            guard let range = output.range(of: marker) else { continue }
+            let code = output[range.upperBound...].prefix { $0.isNumber }
+            return !code.isEmpty && code != "0"
+        }
+        return false
+    }
+
+    /// Codex reports running totals each turn rather than per-message deltas,
+    /// so every `token_count` supersedes the last. `last_token_usage` is the
+    /// most recent request — cached input is a subset of `input_tokens`, so
+    /// input + output *is* the context occupancy; the cumulative
+    /// `total_token_usage` would overshoot the window on long sessions.
+    private static func usageUpdate(_ info: [String: Any]?) -> [SessionUpdate] {
+        guard let info,
+              let size = info["model_context_window"] as? Int, size > 0,
+              let usage = (info["last_token_usage"] ?? info["total_token_usage"]) as? [String: Any]
+        else { return [] }
+        let used = ((usage["input_tokens"] as? Int) ?? 0)
+            + ((usage["output_tokens"] as? Int) ?? 0)
+        guard used > 0 else { return [] }
+        return [.usageUpdate(UsageUpdate(used: used, size: size))]
+    }
+
+    private static func decodedArguments(_ raw: Any?) -> [String: Any] {
+        guard let text = raw as? String,
+              let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [:] }
+        return object
+    }
+
+    /// Best-effort per-file diffs from an apply_patch envelope (`*** Begin
+    /// Patch` … `*** End Patch`). An Add File's body is the whole new file;
+    /// an Update File's hunks can't reconstruct the full before/after, so the
+    /// old/new texts are the hunks' context-plus-removed and context-plus-
+    /// added lines — enough for the phone's line diff to show the change.
+    private static func patchDiffs(_ patch: String) -> [ToolCallContent] {
+        var diffs: [ToolCallContent] = []
+        var path: String?
+        var isNewFile = false
+        var oldLines: [String] = []
+        var newLines: [String] = []
+
+        func flush() {
+            defer { path = nil; isNewFile = false; oldLines = []; newLines = [] }
+            guard let path, !newLines.isEmpty || !oldLines.isEmpty else { return }
+            diffs.append(.diff(
+                path: path,
+                oldText: isNewFile ? nil : capped(oldLines.joined(separator: "\n"), at: diffTextCap),
+                newText: capped(newLines.joined(separator: "\n"), at: diffTextCap)
+            ))
+        }
+
+        for line in patch.split(separator: "\n", omittingEmptySubsequences: false) {
+            if let file = marked(line, "*** Add File: ") {
+                flush(); path = file; isNewFile = true
+            } else if let file = marked(line, "*** Update File: ") {
+                flush(); path = file
+            } else if line.hasPrefix("*** Delete File: ") {
+                flush()
+            } else if line.hasPrefix("*** ") || line.hasPrefix("@@") {
+                continue
+            } else if line.hasPrefix("+") {
+                newLines.append(String(line.dropFirst()))
+            } else if line.hasPrefix("-") {
+                oldLines.append(String(line.dropFirst()))
+            } else if path != nil {
+                let context = line.hasPrefix(" ") ? String(line.dropFirst()) : String(line)
+                oldLines.append(context)
+                newLines.append(context)
+            }
+        }
+        flush()
+        return diffs
+    }
+
+    private static func marked(_ line: Substring, _ marker: String) -> String? {
+        guard line.hasPrefix(marker) else { return nil }
+        return line.dropFirst(marker.count).trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func trimmed(_ value: Any?) -> String? {
+        guard let text = value as? String else { return nil }
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : text
     }
 }

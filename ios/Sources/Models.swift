@@ -21,6 +21,11 @@ struct MockSession: Identifiable {
     var projectPath: String?
     /// The project's current git branch (nil for non-repos / mock rows).
     var branch: String?
+    /// The Mac says this session has a structured plane (its agent has an
+    /// adapter), so it opens as the chat lens. Comes from the roster's `chat`
+    /// bit — the phone holds no agent list of its own. False for mock rows
+    /// and older Macs that predate the field.
+    var chat: Bool = false
 
     static let samples: [MockSession] = [
         .init(title: "fix-sidebar", project: "termio", agent: .claude,
@@ -145,7 +150,8 @@ extension MockSession {
             rosterID: roster.id,
             projectRosterID: project.id,
             projectPath: project.path,
-            branch: branch
+            branch: branch,
+            chat: roster.chat ?? false
         )
     }
 }

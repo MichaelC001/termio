@@ -34,10 +34,11 @@ final class TerminalViewController: UIViewController {
     private lazy var terminalView = DisplayTerminalView(frame: .zero)
     private let composerBar = ComposerBar()
     /// The chat view over the same session — installed only for a companion
-    /// Claude session (the one agent with a structured-plane adapter today),
-    /// where it IS the session UI: on the phone the conversation is the
-    /// surface, not the raw TUI. No adapter → this stays nil and the screen
-    /// is exactly the plain terminal (the emergent fallback, not a mode).
+    /// session whose roster row carries the chat capability (its agent has a
+    /// structured-plane adapter on the Mac), where it IS the session UI: on
+    /// the phone the conversation is the surface, not the raw TUI. No adapter
+    /// → this stays nil and the screen is exactly the plain terminal (the
+    /// emergent fallback, not a mode).
     private var chatController: ChatViewController?
     /// The chat's typing indicator has two feeders: the roster's working
     /// status (authoritative, hook-driven) and a short optimistic window
@@ -466,12 +467,13 @@ final class TerminalViewController: UIViewController {
     // MARK: - Chat lens
 
     /// Whether this session gets the chat lens: a live Mac session whose
-    /// agent has a structured-plane adapter (Claude today). Everything else —
-    /// bare shells, agents without adapters, the demo shell — is terminal-only
-    /// by construction.
+    /// roster row carries the `chat` capability bit (its agent has a
+    /// structured-plane adapter on the Mac). Everything else — bare shells,
+    /// agents without adapters, the demo shell — is terminal-only by
+    /// construction, and the phone never keeps an agent list of its own.
     private var chatLensAvailable: Bool {
         guard case .companion = backend else { return false }
-        return session.agent == .claude && session.rosterID != nil
+        return session.chat && session.rosterID != nil
     }
 
     /// Installs the chat view between the header and the composer, covering

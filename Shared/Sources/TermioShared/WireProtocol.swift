@@ -389,13 +389,23 @@ public struct RosterSession: Codable, Sendable, Equatable {
     /// shows it as the row's preview line, Messages-style. Optional so older
     /// peers that don't send it still decode; nil when there is nothing to say.
     public let subtitle: String?
+    /// Whether this session has a structured plane (`subscribeUpdates` will
+    /// serve it), so the phone opens it as the chat lens. The server derives
+    /// it from its adapter registry — the client never hard-codes an agent
+    /// list. Optional so older peers that don't send it still decode; nil
+    /// (like false) means terminal-only.
+    public let chat: Bool?
 
-    public init(id: String, title: String, agent: String, status: String, subtitle: String? = nil) {
+    public init(
+        id: String, title: String, agent: String, status: String,
+        subtitle: String? = nil, chat: Bool? = nil
+    ) {
         self.id = id
         self.title = title
         self.agent = agent
         self.status = status
         self.subtitle = subtitle
+        self.chat = chat
     }
 }
 
