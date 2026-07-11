@@ -177,6 +177,78 @@ final class TermioMobileUITests: XCTestCase {
         attachShot(app, "attach-upload-draft")
     }
 
+    // MARK: - Chat lens (live companion only)
+
+    /// End-to-end over a REAL companion link: a Claude session opens as the
+    /// chat view (user bubble, agent reply, tool-call group with an
+    /// expandable diff) — for an adapted agent the conversation IS the
+    /// session UI, with no terminal toggle. Needs a Mac whose roster holds
+    /// a Claude session with at least one edit turn — skips itself
+    /// otherwise, so the demo suite stays green without one.
+    func testChatLensRendersStructuredConversation() throws {
+        let app = XCUIApplication()
+        // A dev-channel Mac serves on 8788 with a pairing token; pass its URL
+        // via TEST_RUNNER_CHATLENS_ROSTER_URL. Default matches the release port.
+        let roster = ProcessInfo.processInfo.environment["CHATLENS_ROSTER_URL"]
+            ?? "ws://127.0.0.1:8787"
+        app.launchArguments = ["-roster-url", roster]
+        app.launch()
+        let row = app.staticTexts
+            .matching(NSPredicate(format: "label CONTAINS 'Create and edit'")).firstMatch
+        try XCTSkipUnless(row.waitForExistence(timeout: 15), "no live claude session in roster")
+        row.tap()
+
+        // Chat is the default lens for a Claude session: the transcript's
+        // user prompt renders as a bubble without any lens switching.
+        let bubble = app.staticTexts
+            .matching(NSPredicate(format: "label CONTAINS 'Use the Write tool'")).firstMatch
+        XCTAssertTrue(bubble.waitForExistence(timeout: 20), "user bubble did not render")
+        attachShot(app, "chat-default")
+
+        // The Write + Edit calls fold behind one humanized summary line;
+        // expanding it discloses the per-call rows (same phrasing, so the
+        // summary is match 0 and the calls are matches 1 and 2).
+        let toolRows = app.staticTexts
+            .matching(NSPredicate(format: "label CONTAINS 'Edited chatlens-test.txt'"))
+        XCTAssertTrue(toolRows.firstMatch.waitForExistence(timeout: 10), "tool summary missing")
+        toolRows.firstMatch.tap()
+        XCTAssertTrue(toolRows.element(boundBy: 2).waitForExistence(timeout: 5), "call rows missing")
+        attachShot(app, "chat-tools-expanded")
+
+        // Opening the Edit call (the second disclosed row) shows its diff.
+        toolRows.element(boundBy: 2).tap()
+        let diffLine = app.staticTexts
+            .matching(NSPredicate(format: "label CONTAINS 'BETA'")).firstMatch
+        XCTAssertTrue(diffLine.waitForExistence(timeout: 5), "diff lines missing")
+        attachShot(app, "chat-diff")
+
+        // The conversation is the whole session UI: no terminal toggle.
+        XCTAssertFalse(app.buttons["terminal.lens"].exists)
+
+        // Sending from the composer shows the typing indicator immediately
+        // (the optimistic window) — the chat is never a dead screen while
+        // the agent works. The chat opens reading-first (no auto-focus), so
+        // the composer needs a tap and a settled focus before typing.
+        let composer = app.textViews["composer.field"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.tap()
+        if (composer.value(forKey: "hasKeyboardFocus") as? Bool) != true {
+            sleep(1)
+            composer.tap()
+        }
+        composer.typeText("Reply with exactly: pong")
+        app.buttons["Send"].tap()
+        let typing = app.otherElements["chat.typing"]
+        XCTAssertTrue(typing.waitForExistence(timeout: 5), "typing indicator missing after send")
+        attachShot(app, "chat-typing")
+        // The reply's arrival depends on a possibly just-resumed agent and
+        // model latency; the indicator above was the assertion — the reply
+        // shot is best-effort evidence, not a gate.
+        _ = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'pong'"))
+            .firstMatch.waitForExistence(timeout: 60)
+        attachShot(app, "chat-reply")
+    }
+
     private func tapNormalized(_ app: XCUIApplication, _ dx: Double, _ dy: Double) {
         app.coordinate(withNormalizedOffset: CGVector(dx: dx, dy: dy)).tap()
     }

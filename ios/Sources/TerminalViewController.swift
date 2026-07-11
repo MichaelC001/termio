@@ -33,16 +33,20 @@ final class TerminalViewController: UIViewController {
 
     private lazy var terminalView = DisplayTerminalView(frame: .zero)
     private let composerBar = ComposerBar()
-    /// The chat lens over the same session — installed only for a companion
-    /// Claude session (the one agent with a structured-plane adapter today).
-    /// Both lenses stay alive; the toggle just decides which one is visible.
-    /// No adapter → no chat lens → this stays nil and the screen is exactly
-    /// the plain terminal (the emergent fallback, not a mode).
+    /// The chat view over the same session — installed only for a companion
+    /// Claude session (the one agent with a structured-plane adapter today),
+    /// where it IS the session UI: on the phone the conversation is the
+    /// surface, not the raw TUI. No adapter → this stays nil and the screen
+    /// is exactly the plain terminal (the emergent fallback, not a mode).
     private var chatController: ChatViewController?
-    private let lensButton = UIButton(type: .system)
-    /// The visible lens; chat is the default when it exists — on a phone the
-    /// conversation is the primary surface and the raw TUI the escape hatch.
-    private var showingChat = false
+    /// The chat's typing indicator has two feeders: the roster's working
+    /// status (authoritative, hook-driven) and a short optimistic window
+    /// after the composer sends — so the chat reacts the moment the user
+    /// hits send instead of waiting for the first transcript flush.
+    private var rosterSaysWorking = false
+    private var optimisticWorking = false
+    private var optimisticWorkingExpiry: DispatchWorkItem?
+    private var statusObserver: NSObjectProtocol?
     /// Last size actually sent to the engine + the pending coalesced refit —
     /// see viewDidLayoutSubviews for why resizes are rationed.
     private var lastFittedSize: CGSize = .zero
@@ -124,6 +128,9 @@ final class TerminalViewController: UIViewController {
         restylePump?.invalidate()
         if let settingsObserver {
             NotificationCenter.default.removeObserver(settingsObserver)
+        }
+        if let statusObserver {
+            NotificationCenter.default.removeObserver(statusObserver)
         }
     }
 
@@ -282,24 +289,10 @@ final class TerminalViewController: UIViewController {
         }
         headerBar.addArrangedSubview(back)
         headerBar.addArrangedSubview(titles)
-        var constraints: [NSLayoutConstraint] = []
-        // The lens toggle earns a header slot only when a chat lens exists
-        // for this session; every other session keeps today's exact header.
-        if chatLensAvailable {
-            lensButton.accessibilityIdentifier = "terminal.lens"
-            lensButton.tintColor = .label
-            lensButton.addAction(UIAction { [weak self] _ in
-                guard let self else { return }
-                setLens(chat: !showingChat)
-            }, for: .touchUpInside)
-            headerBar.addArrangedSubview(lensButton)
-            constraints.append(lensButton.widthAnchor.constraint(equalToConstant: 44))
-            constraints.append(lensButton.heightAnchor.constraint(equalToConstant: 44))
-        }
         headerBar.addArrangedSubview(overflow)
         headerBar.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(headerBar)
-        NSLayoutConstraint.activate(constraints + [
+        NSLayoutConstraint.activate([
             headerBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             headerBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             headerBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
@@ -380,8 +373,12 @@ final class TerminalViewController: UIViewController {
         }
     }
 
-    /// The composer is the app's single input.
+    /// The composer is the app's single input. Terminal sessions focus it
+    /// eagerly (the keyboard is the terminal's whole input story); a chat
+    /// session opens reading-first — the keyboard waits for a composer tap,
+    /// the chat convention.
     private func focusInput() {
+        guard chatController == nil else { return }
         composerBar.focus()
     }
 
@@ -477,11 +474,11 @@ final class TerminalViewController: UIViewController {
         return session.agent == .claude && session.rosterID != nil
     }
 
-    /// Installs the chat lens between the header and the composer, covering
-    /// the terminal surface (which keeps rendering and streaming beneath it —
-    /// switching lenses is a z-order change, never a reconnect). Chat is the
-    /// default lens: on the phone the conversation is the primary surface and
-    /// the raw TUI the ground-truth escape hatch.
+    /// Installs the chat view between the header and the composer, covering
+    /// the terminal surface. The surface stays alive beneath it — it is still
+    /// the byte plane the composer writes into and the PTY's screen of record
+    /// on this device — but for an adapted agent the phone never shows it:
+    /// the conversation is the session UI.
     private func configureChatLens() {
         guard chatLensAvailable else { return }
         let chat = ChatViewController()
@@ -496,16 +493,52 @@ final class TerminalViewController: UIViewController {
             chat.view.bottomAnchor.constraint(equalTo: composerBar.topAnchor),
         ])
         chatController = chat
-        setLens(chat: true)
+        composerBar.setTerminalKeysVisible(false)
+        // The list's roster socket is the app's only status feed; it posts
+        // every push. Working ⇄ calm drives the chat's typing indicator.
+        statusObserver = NotificationCenter.default.addObserver(
+            forName: .sessionStatusesDidChange, object: nil, queue: .main
+        ) { [weak self] note in
+            MainActor.assumeIsolated { self?.applySessionStatuses(note) }
+        }
     }
 
-    private func setLens(chat: Bool) {
-        guard let chatController else { return }
-        showingChat = chat
-        chatController.view.isHidden = !chat
-        // The button advertises the lens a tap switches TO.
-        lensButton.applyGlassSymbol(chat ? "apple.terminal" : "text.bubble", pointSize: 16)
-        lensButton.accessibilityLabel = chat ? "Show terminal" : "Show chat"
+    private func applySessionStatuses(_ note: Notification) {
+        guard let id = session.rosterID,
+              let statuses = note.userInfo?["statuses"] as? [String: SessionStatus],
+              let status = statuses[id] else { return }
+        rosterSaysWorking = status == .working
+        // The roster confirmed the turn is live; the optimistic window has
+        // done its job and the hook-driven status owns the indicator now.
+        if rosterSaysWorking { endOptimisticWorking() }
+        refreshWorkingIndicator()
+    }
+
+    /// A prompt just left the composer: show the typing indicator right away
+    /// (the hooks' working status follows within a push or two, and clears
+    /// it if the turn never actually starts). Self-expires as a backstop for
+    /// setups where no hook status ever arrives.
+    private func beginOptimisticWorking() {
+        guard chatController != nil else { return }
+        optimisticWorking = true
+        optimisticWorkingExpiry?.cancel()
+        let expiry = DispatchWorkItem { [weak self] in
+            self?.optimisticWorking = false
+            self?.refreshWorkingIndicator()
+        }
+        optimisticWorkingExpiry = expiry
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: expiry)
+        refreshWorkingIndicator()
+    }
+
+    private func endOptimisticWorking() {
+        optimisticWorkingExpiry?.cancel()
+        optimisticWorkingExpiry = nil
+        optimisticWorking = false
+    }
+
+    private func refreshWorkingIndicator() {
+        chatController?.setWorking(rosterSaysWorking || optimisticWorking)
     }
 
     // MARK: - Composer
@@ -519,6 +552,7 @@ final class TerminalViewController: UIViewController {
             payload = "\u{1B}[200~" + payload + "\u{1B}[201~"
         }
         terminalView.send(Data((payload + "\r").utf8))
+        beginOptimisticWorking()
     }
 
     // MARK: - Attachments
@@ -726,7 +760,15 @@ final class TerminalViewController: UIViewController {
                 self?.companionStateChanged(state)
             }
             transport.onSessionUpdate = { [weak self] update in
-                self?.chatController?.apply(update)
+                guard let self else { return }
+                // Reply text arriving is the turn winding down as far as the
+                // optimistic window is concerned; the roster's working status
+                // keeps the indicator up through multi-part turns.
+                if case .agentMessageChunk = update {
+                    endOptimisticWorking()
+                    refreshWorkingIndicator()
+                }
+                chatController?.apply(update)
             }
             companion = transport
             companionSession = terminalSession

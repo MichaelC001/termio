@@ -57,6 +57,8 @@ final class ChatViewController: UIViewController {
     /// distance heuristic would detach on the table's own growth.
     private var pinnedToBottom = true
     private var reloadScheduled = false
+    private let typingIndicator = TypingIndicatorView()
+    private var working = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -115,6 +117,29 @@ final class ChatViewController: UIViewController {
             jumpButton.widthAnchor.constraint(equalToConstant: 38),
             jumpButton.heightAnchor.constraint(equalToConstant: 38),
         ])
+    }
+
+    /// Shows or hides the typing indicator under the last message — the
+    /// "the agent is doing something" cue between transcript flushes, since
+    /// the structured plane only speaks when a whole block lands. Driven by
+    /// the owner from the roster's working status (plus its optimistic
+    /// just-sent window); the chat itself stays a pure event renderer.
+    func setWorking(_ working: Bool) {
+        guard self.working != working else { return }
+        self.working = working
+        if working {
+            typingIndicator.frame = CGRect(
+                x: 0, y: 0, width: tableView.bounds.width, height: 40
+            )
+            tableView.tableFooterView = typingIndicator
+            typingIndicator.startAnimating()
+            emptyLabel.isHidden = true
+            if pinnedToBottom { scrollToBottom(animated: true) }
+        } else {
+            typingIndicator.stopAnimating()
+            tableView.tableFooterView = nil
+            emptyLabel.isHidden = !items.isEmpty
+        }
     }
 
     // MARK: - Event intake
@@ -245,13 +270,17 @@ final class ChatViewController: UIViewController {
         }
     }
 
+    /// Offset math instead of scroll-to-row so the typing indicator (a table
+    /// footer, not a row) is revealed too.
     private func scrollToBottom(animated: Bool) {
-        guard !items.isEmpty else { return }
+        guard !items.isEmpty || working else { return }
         tableView.layoutIfNeeded()
-        tableView.scrollToRow(
-            at: IndexPath(row: items.count - 1, section: 0),
-            at: .bottom, animated: animated
+        let bottom = max(
+            -tableView.adjustedContentInset.top,
+            tableView.contentSize.height - tableView.bounds.height
+                + tableView.adjustedContentInset.bottom
         )
+        tableView.setContentOffset(CGPoint(x: 0, y: bottom), animated: animated)
     }
 
     private func toggleThought(at index: Int) {
@@ -359,6 +388,82 @@ private extension Array {
     }
 }
 
+/// The iMessage-style "agent is working" cue: three dots in a small gray
+/// bubble, pulsing in a staggered wave. Pure UIKit so it can live as the
+/// table's footer view.
+private final class TypingIndicatorView: UIView {
+    private let bubble = UIView()
+    private let dots: [UIView] = (0 ..< 3).map { _ in UIView() }
+    private var animating = false
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isAccessibilityElement = true
+        accessibilityIdentifier = "chat.typing"
+        accessibilityLabel = "Agent is working"
+        bubble.backgroundColor = .secondarySystemFill
+        bubble.layer.cornerRadius = 16
+        bubble.layer.cornerCurve = .continuous
+        bubble.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(bubble)
+        var constraints = [
+            bubble.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            bubble.centerYAnchor.constraint(equalTo: centerYAnchor),
+            bubble.widthAnchor.constraint(equalToConstant: 58),
+            bubble.heightAnchor.constraint(equalToConstant: 32),
+        ]
+        for (index, dot) in dots.enumerated() {
+            dot.backgroundColor = .secondaryLabel
+            dot.layer.cornerRadius = 3.5
+            dot.translatesAutoresizingMaskIntoConstraints = false
+            bubble.addSubview(dot)
+            constraints += [
+                dot.widthAnchor.constraint(equalToConstant: 7),
+                dot.heightAnchor.constraint(equalToConstant: 7),
+                dot.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+                dot.leadingAnchor.constraint(
+                    equalTo: bubble.leadingAnchor, constant: 12 + CGFloat(index) * 12
+                ),
+            ]
+        }
+        NSLayoutConstraint.activate(constraints)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    func startAnimating() {
+        animating = true
+        installAnimations()
+    }
+
+    func stopAnimating() {
+        animating = false
+        dots.forEach { $0.layer.removeAllAnimations() }
+    }
+
+    /// CoreAnimation drops animations when the view leaves the window (the
+    /// lens toggle hides the chat); re-arm them on the way back.
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil, animating { installAnimations() }
+    }
+
+    private func installAnimations() {
+        for (index, dot) in dots.enumerated() {
+            dot.layer.removeAllAnimations()
+            let pulse = CAKeyframeAnimation(keyPath: "opacity")
+            pulse.values = [0.25, 1.0, 0.25]
+            pulse.keyTimes = [0, 0.4, 1]
+            pulse.duration = 1.2
+            pulse.beginTime = CACurrentMediaTime() + Double(index) * 0.18
+            pulse.repeatCount = .infinity
+            dot.layer.add(pulse, forKey: "pulse")
+            dot.layer.opacity = 0.25
+        }
+    }
+}
+
 // MARK: - Rows
 
 /// The user's prompt: right-aligned gray pill, the iMessage/ChatGPT shape.
@@ -381,20 +486,120 @@ private struct UserBubbleRow: View {
     }
 }
 
-/// The agent's reply: plain left-aligned markdown, no bubble chrome.
+/// The agent's reply: plain left-aligned rich markdown, no bubble chrome —
+/// block-level structure (headings, fenced code, lists, quotes) rendered as
+/// stacked views, since SwiftUI's `Text` only understands inline markdown.
 private struct AssistantRow: View {
     let text: String
 
     var body: some View {
-        HStack {
-            Text(Self.attributed(text))
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(MarkdownBlock.parse(text).enumerated()), id: \.offset) { _, block in
+                blockView(block)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder private func blockView(_ block: MarkdownBlock) -> some View {
+        switch block {
+        case .heading(let content, let level):
+            Text(content)
+                .font(level <= 1 ? .title3.bold() : level == 2 ? .headline : .subheadline.bold())
+                .padding(.top, 4)
+        case .paragraph(let content):
+            Text(content)
                 .font(.subheadline)
                 .textSelection(.enabled)
-            Spacer(minLength: 24)
+        case .bullets(let items):
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    HStack(alignment: .top, spacing: 6) {
+                        Text("•").font(.subheadline).foregroundStyle(.secondary)
+                        Text(item).font(.subheadline).textSelection(.enabled)
+                    }
+                }
+            }
+        case .code(let raw):
+            Text(raw)
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
+        case .quote(let content):
+            HStack(alignment: .top, spacing: 8) {
+                Rectangle().fill(Color(uiColor: .separator)).frame(width: 2)
+                Text(content).font(.subheadline).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// A deliberately small block-level markdown split: fenced code first, then
+/// paragraph-by-paragraph classification. Inline styling (bold, code spans,
+/// links) comes from Foundation's markdown parser per block; tables and
+/// anything exotic fall back to a mono code box rather than mangled prose.
+private enum MarkdownBlock {
+    case heading(AttributedString, level: Int)
+    case paragraph(AttributedString)
+    case bullets([AttributedString])
+    case code(String)
+    case quote(AttributedString)
+
+    static func parse(_ text: String) -> [MarkdownBlock] {
+        var blocks: [MarkdownBlock] = []
+        // Alternate text / fenced-code segments.
+        let segments = text.components(separatedBy: "```")
+        for (index, segment) in segments.enumerated() {
+            if index.isMultiple(of: 2) {
+                blocks += parseProse(segment)
+            } else {
+                // Drop the fence's language hint line.
+                var lines = segment.split(separator: "\n", omittingEmptySubsequences: false)
+                if let first = lines.first, !first.contains(" "), first.count < 24 {
+                    lines = Array(lines.dropFirst())
+                }
+                let code = lines.joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !code.isEmpty { blocks.append(.code(code)) }
+            }
+        }
+        return blocks
+    }
+
+    private static func parseProse(_ text: String) -> [MarkdownBlock] {
+        text.components(separatedBy: "\n\n").compactMap { rawParagraph in
+            let paragraph = rawParagraph.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !paragraph.isEmpty else { return nil }
+            let lines = paragraph.split(separator: "\n").map(String.init)
+            if paragraph.hasPrefix("#") {
+                let level = paragraph.prefix(while: { $0 == "#" }).count
+                let title = paragraph.drop(while: { $0 == "#" })
+                    .trimmingCharacters(in: .whitespaces)
+                return .heading(inline(title), level: level)
+            }
+            if lines.count > 1, lines.allSatisfy({ $0.contains("|") }) {
+                // A table: mono keeps the columns legible on a phone.
+                return .code(paragraph)
+            }
+            if lines.allSatisfy({ $0.hasPrefix("- ") || $0.hasPrefix("* ") }) {
+                return .bullets(lines.map { inline(String($0.dropFirst(2))) })
+            }
+            if lines.allSatisfy({ $0.hasPrefix(">") }) {
+                let stripped = lines.map {
+                    $0.drop(while: { $0 == ">" || $0 == " " })
+                }.joined(separator: "\n")
+                return .quote(inline(stripped))
+            }
+            return .paragraph(inline(paragraph))
         }
     }
 
-    private static func attributed(_ text: String) -> AttributedString {
+    private static func inline(_ text: String) -> AttributedString {
         (try? AttributedString(
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
@@ -425,9 +630,10 @@ private struct ThoughtRow: View {
     }
 }
 
-/// A run of consecutive tool calls, folded into one disclosure group. One
-/// call renders directly; several fold behind a "N steps" header. Each call
-/// row can open its detail: the ± diff and the result preview.
+/// A run of consecutive tool calls, folded behind one quiet summary line —
+/// "Explored 2 files · 1 search" — the reference style: activity reads as a
+/// sentence, not a log. Tapping it discloses the per-call rows; each row can
+/// open its detail (± diff, result preview).
 private struct ToolGroupRow: View {
     let calls: [ChatViewController.ToolCallState]
     let expanded: Bool
@@ -436,42 +642,38 @@ private struct ToolGroupRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if calls.count > 1 {
+            if calls.count == 1, let only = calls.first {
+                ToolCallRow(call: only) { onToggleDetail(0) }
+            } else {
                 Button(action: onToggleGroup) {
                     HStack(spacing: 6) {
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                        Text("\(calls.count) steps")
-                            .font(.caption.weight(.semibold))
+                        Text(ToolPhrasing.summary(of: calls))
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
-                        if !expanded {
-                            GroupSummaryDots(calls: calls)
+                        if let badge = DiffBadge.text(for: calls.flatMap(\.diffs)) {
+                            badge
                         }
+                        if calls.contains(where: { $0.status == .inProgress }) {
+                            ProgressView().controlSize(.mini)
+                        } else if calls.contains(where: { $0.status == .failed }) {
+                            Image(systemName: "exclamationmark.circle.fill")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.red)
+                        }
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
                         Spacer(minLength: 0)
                     }
                 }
                 .buttonStyle(.plain)
-            }
-            if calls.count == 1 || expanded {
-                ForEach(Array(calls.enumerated()), id: \.element.id) { index, call in
-                    ToolCallRow(call: call) { onToggleDetail(index) }
+                if expanded {
+                    ForEach(Array(calls.enumerated()), id: \.element.id) { index, call in
+                        ToolCallRow(call: call) { onToggleDetail(index) }
+                    }
+                    .padding(.leading, 2)
                 }
-            }
-        }
-    }
-}
-
-/// The collapsed group's at-a-glance state: one status-colored dot per call.
-private struct GroupSummaryDots: View {
-    let calls: [ChatViewController.ToolCallState]
-
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(calls.prefix(12), id: \.id) { call in
-                Circle()
-                    .fill(call.status.tint)
-                    .frame(width: 5, height: 5)
             }
         }
     }
@@ -488,12 +690,12 @@ private struct ToolCallRow: View {
             Button(action: onToggleDetail) {
                 HStack(spacing: 6) {
                     statusIcon
-                    Text(call.title)
-                        .font(.caption.monospaced())
+                    Text(ToolPhrasing.line(for: call))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    if let badge = diffBadge {
+                    if let badge = DiffBadge.text(for: call.diffs) {
                         badge
                     }
                     Spacer(minLength: 0)
@@ -532,15 +734,72 @@ private struct ToolCallRow: View {
                 .foregroundStyle(call.status.tint)
         }
     }
+}
 
-    /// The ± line-count badge an edit wears collapsed.
-    private var diffBadge: Text? {
-        guard !call.diffs.isEmpty else { return nil }
-        let lines = call.diffs.map(DiffLines.counts)
+/// The shared ± line-count badge an edit wears while collapsed.
+private enum DiffBadge {
+    static func text(for diffs: [ChatViewController.DiffChange]) -> Text? {
+        guard !diffs.isEmpty else { return nil }
+        let lines = diffs.map(DiffLines.counts)
         let additions = lines.map(\.additions).reduce(0, +)
         let deletions = lines.map(\.deletions).reduce(0, +)
         return Text("+\(additions)").font(.caption2.monospaced().weight(.semibold)).foregroundColor(.green)
             + Text(" −\(deletions)").font(.caption2.monospaced().weight(.semibold)).foregroundColor(.red)
+    }
+}
+
+/// Turns tool-call records into the sentences the chat shows: a per-call
+/// line ("Edited ComposerBar.swift", "Ran swift build") and a group summary
+/// ("Explored 2 files · 1 search"). Vocabulary keys off the ACP kind, so it
+/// works unchanged for any future agent adapter.
+private enum ToolPhrasing {
+    static func line(for call: ChatViewController.ToolCallState) -> String {
+        let object = object(of: call)
+        switch call.kind {
+        case .read: return object.isEmpty ? "Read a file" : "Read \(object)"
+        case .edit: return object.isEmpty ? "Edited a file" : "Edited \(object)"
+        case .delete: return object.isEmpty ? "Deleted a file" : "Deleted \(object)"
+        case .move: return object.isEmpty ? "Moved a file" : "Moved \(object)"
+        case .search: return object.isEmpty ? "Searched" : "Searched \(object)"
+        case .execute: return object.isEmpty ? "Ran a command" : "Ran \(object)"
+        case .fetch: return object.isEmpty ? "Fetched a page" : "Fetched \(object)"
+        case .think: return "Updated the plan"
+        case .other: return call.title
+        }
+    }
+
+    static func summary(of calls: [ChatViewController.ToolCallState]) -> String {
+        if calls.count == 1, let only = calls.first { return line(for: only) }
+        var parts: [String] = []
+        let edits = Set(calls.filter { $0.kind == .edit }.map(object(of:)))
+        if !edits.isEmpty {
+            parts.append(edits.count == 1 ? "Edited \(edits.first ?? "a file")" : "Edited \(edits.count) files")
+        }
+        let reads = Set(calls.filter { $0.kind == .read }.map(object(of:))).count
+        if reads > 0 { parts.append("Explored \(reads) file\(reads == 1 ? "" : "s")") }
+        let searches = calls.filter { $0.kind == .search }.count
+        if searches > 0 { parts.append("\(searches) search\(searches == 1 ? "" : "es")") }
+        let commands = calls.filter { $0.kind == .execute }.count
+        if commands > 0 { parts.append("Ran \(commands) command\(commands == 1 ? "" : "s")") }
+        let rest = calls.filter {
+            [.fetch, .think, .other, .delete, .move].contains($0.kind)
+        }.count
+        if rest > 0 { parts.append("\(rest) more step\(rest == 1 ? "" : "s")") }
+        return parts.isEmpty ? "\(calls.count) steps" : parts.joined(separator: " · ")
+    }
+
+    /// What the call acted on, phone-sized: a path becomes its filename, a
+    /// command keeps its head. Falls back to empty when the Mac's title had
+    /// no object part.
+    private static func object(of call: ChatViewController.ToolCallState) -> String {
+        guard let colon = call.title.firstIndex(of: ":") else { return "" }
+        let raw = call.title[call.title.index(after: colon)...]
+            .trimmingCharacters(in: .whitespaces)
+        guard !raw.isEmpty else { return "" }
+        if raw.hasPrefix("/") || raw.hasPrefix("~") {
+            return (raw as NSString).lastPathComponent
+        }
+        return String(raw.prefix(44))
     }
 }
 
