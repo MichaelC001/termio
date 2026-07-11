@@ -46,6 +46,8 @@ from the real front matter).
 | archived | plan | [Fix — defer the PTY spawn to the first real layout size so the agent banner boots at pane width](plan/terminal-narrow-grid-frozen-banner-fix.md) |
 | done | bug | ["HANDOFF: terminal content does not reflow on window resize"](bug/terminal-resize-no-reflow-HANDOFF.md) |
 | done | bug | [Agent welcome banner frozen into a narrow column when a session opens in a wide window](bug/terminal-narrow-grid-frozen-banner-on-open.md) |
+| done | marketing | [从 IDE 到 ADE：开发环境六十年，以及它为什么正在终结](maketing/blog-ide-to-ade.md) |
+| done | research | ["ADE 赛道全景表（2026-07）：开源 + 闭源一张表，termio 亮点"](competitive-analysis/10-landscape-table-2026-07.md) |
 | done | research | ["Competitive analysis: Conductor"](competitive-analysis/03-conductor.md) |
 | done | research | ["Competitive analysis: Crystal / Nimbalyst"](competitive-analysis/04-crystal.md) |
 | done | research | ["Competitive analysis: Unpeel"](competitive-analysis/01-unpeel.md) |
@@ -63,7 +65,6 @@ from the real front matter).
 | draft | design | [移动端 Agent UI 协议 —— PTY 之上的旁路结构面（ACP 词汇）](design/mobile-agent-ui-protocol.md) |
 | draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/remote-access-relay-strategy.md) |
 | draft | marketing | [OG image & landing copy](maketing/og-image-and-messaging.md) |
-| draft | marketing | [从 IDE 到 ADE：开发环境六十年，以及它为什么正在终结](maketing/blog-ide-to-ade.md) |
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/sandbox-seatbelt.md) |
 | draft | rfc | [Automation — scheduled agent runs](rfcs/automation-scheduled-agent-runs.md) |
 | draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](rfcs/fork-libghostty-spm.md) |

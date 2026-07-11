@@ -19,6 +19,7 @@ directly it competes with termio".
 | [06](06-container-use.md) | container-use | Container isolation + branch-as-environment | Too heavy (isolation ideas only) |
 | [07](07-vibe-island.md) | Vibe Island family | Notch/tray status monitors | Source of status-detection methodology |
 | [08](08-warp.md) | Warp | AI-native general-purpose terminal | Alternative paradigm |
+| [10](10-landscape-table-2026-07.md) | **Landscape table 2026-07** | Every notable open/closed product in one table + termio highlights | **Latest consolidated view** (adds herdr, muxy, vibe-kanban, JetBrains Air, GitKraken Kepler, Warp Oz, Happy, Sculptor) |
 
 > Also under "alternative paradigms": Cursor / VS Code + extensions
 > (IDE-built-in agents, diff-heavy — the opposite of termio), Ghostty /
