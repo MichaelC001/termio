@@ -249,6 +249,44 @@ final class TermioMobileUITests: XCTestCase {
         attachShot(app, "chat-reply")
     }
 
+    /// Regression: a parked terminal screen keeps its composer as first
+    /// responder (hiding a view fires no appearance callbacks), so its
+    /// keyboard AND terminal key strip used to float over the chat opened
+    /// next. `RootContainerViewController` now ends editing on every screen
+    /// switch. Needs the same live roster as the chat test; skips without one.
+    func testTerminalStripDoesNotLeakIntoChat() throws {
+        let app = XCUIApplication()
+        let roster = ProcessInfo.processInfo.environment["CHATLENS_ROSTER_URL"]
+            ?? "ws://127.0.0.1:8787"
+        app.launchArguments = ["-roster-url", roster]
+        app.launch()
+
+        // A terminal session first: its composer auto-focuses and docks the
+        // terminal strip above the keyboard.
+        let codex = app.staticTexts
+            .matching(NSPredicate(format: "label CONTAINS 'Codex'")).firstMatch
+        try XCTSkipUnless(codex.waitForExistence(timeout: 15), "no live roster")
+        codex.tap()
+        XCTAssertTrue(app.buttons["esc"].waitForExistence(timeout: 10), "terminal strip missing on terminal session")
+        app.buttons["terminal.back"].tap()
+        XCTAssertTrue(app.staticTexts["Sessions"].waitForExistence(timeout: 5))
+
+        // The chat session opens reading-first: no keyboard, and above all
+        // not the PARKED terminal's keyboard.
+        let claude = app.staticTexts
+            .matching(NSPredicate(format: "label CONTAINS 'Create and edit'")).firstMatch
+        try XCTSkipUnless(claude.waitForExistence(timeout: 10), "no live claude session")
+        claude.tap()
+        let composer = app.textViews["composer.field"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        sleep(2)
+        XCTAssertFalse(app.buttons["esc"].exists, "parked terminal's strip floats over the chat")
+        // And the chat's own keyboard stays a plain system keyboard.
+        composer.tap()
+        sleep(2)
+        XCTAssertFalse(app.buttons["esc"].exists, "terminal strip attached to the chat composer")
+    }
+
     private func tapNormalized(_ app: XCUIApplication, _ dx: Double, _ dy: Double) {
         app.coordinate(withNormalizedOffset: CGVector(dx: dx, dy: dy)).tap()
     }

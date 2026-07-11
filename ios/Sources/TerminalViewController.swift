@@ -481,6 +481,11 @@ final class TerminalViewController: UIViewController {
     /// the conversation is the session UI.
     private func configureChatLens() {
         guard chatLensAvailable else { return }
+        // The chat is a system-styled screen: its chrome (header band, the
+        // strip behind the composer) must match the chat body's background,
+        // not the terminal theme's backdrop — the mismatch reads as a stray
+        // colored band above and below the conversation.
+        view.backgroundColor = .systemBackground
         let chat = ChatViewController()
         addChild(chat)
         chat.view.translatesAutoresizingMaskIntoConstraints = false
@@ -877,8 +882,10 @@ final class TerminalViewController: UIViewController {
     /// byte to arrive.
     private func applyAppearanceSettings() {
         // Re-assigned (not just relied on as dynamic) so a theme-name change
-        // busts UIKit's resolved-color cache without a trait flip.
-        view.backgroundColor = Self.backdropColor()
+        // busts UIKit's resolved-color cache without a trait flip. A chat
+        // session keeps its system background — the terminal theme is never
+        // visible there.
+        view.backgroundColor = chatController == nil ? Self.backdropColor() : .systemBackground
         guard surfaceConfigured else { return }
         controller.setTheme(Self.terminalTheme())
         controller.setTerminalConfiguration(Self.appearanceConfiguration())
