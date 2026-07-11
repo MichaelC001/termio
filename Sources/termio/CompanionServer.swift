@@ -1001,7 +1001,7 @@ extension TermioStore {
     /// phone's view of it is the terminal, an emergent fallback rather than
     /// a designed mode.
     private static let agentAdapters: [String: AgentAdapter] = {
-        let adapters: [AgentAdapter] = [ClaudeAdapter(), CodexAdapter()]
+        let adapters: [AgentAdapter] = [ClaudeAdapter(), CodexAdapter(), PiAdapter(), OpenCodeAdapter()]
         return Dictionary(uniqueKeysWithValues: adapters.map { ($0.agentID, $0) })
     }()
 
@@ -1052,6 +1052,18 @@ extension TermioStore {
     private func companionTranscriptURL(for id: Session.ID, adapter: AgentAdapter) -> URL? {
         if let path = transcriptPaths[id] { return URL(fileURLWithPath: path) }
         guard let session = session(id) else { return nil }
+        // OpenCode's structured plane reads its SQLite store, addressed as a
+        // `db-path#session-id` pseudo-path. Checked against the other
+        // `transcriptPaths` consumers (Info-pane trace, phone trace HTML,
+        // `sessions send` transcript/cursor reply): all of them read the
+        // cached value as a JSONL file, so the pseudo-path is resolved fresh
+        // here — for the structured plane only — and never enters the cache.
+        if session.agent == .opencode {
+            guard let directory = session.worktreePath ?? project(for: id)?.path else { return nil }
+            return AgentSessionStore.opencodeStructuredAddress(
+                directory: directory, after: session.launchedAt
+            ).map { URL(fileURLWithPath: $0) }
+        }
         guard let path = adapter.transcriptURL(for: session)?.path
             ?? resolveTranscriptPath(for: id) else { return nil }
         transcriptPaths[id] = path
