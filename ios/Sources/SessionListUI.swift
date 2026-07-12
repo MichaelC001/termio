@@ -9,8 +9,8 @@ import UIKit
 // MARK: - Session row
 
 /// A session row, ChatGPT-chat-list style: mostly just the title, the agent
-/// mark (or its working spinner) leading, the status dot trailing, and the
-/// current session wrapped in a rounded pill. When the session carries live
+/// mark (or its working spinner) leading, the status dot trailing when it has
+/// something to say, and the current session wrapped in a rounded pill. When the session carries live
 /// activity text (a pending question, the running command), it appears as a
 /// gray preview line under the title — Messages' "last message", shown only
 /// when there is one, so quiet sessions stay one dense line. Cross-project
@@ -25,7 +25,7 @@ struct SessionRow: View {
     var showsSeparator = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .center, spacing: 10) {
             Group {
                 if session.status == .working {
                     WorkingIndicator(tint: session.agent.tintColor)
@@ -48,8 +48,13 @@ struct SessionRow: View {
                 }
             }
             Spacer(minLength: 4)
-            StatusDot(status: session.status)
-                .frame(height: 18)
+            // Like ProjectRow's trailing summary: the dot only enters the
+            // layout when it has something to say, so idle rows don't reserve
+            // invisible width and the title runs to the edge (no chevron —
+            // ChatGPT/Messages chat lists don't mark drill-down either).
+            if session.status == .done || session.status == .needsAttention {
+                StatusDot(status: session.status)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
@@ -57,6 +62,11 @@ struct SessionRow: View {
             isCurrent ? Color.primary.opacity(0.08) : .clear,
             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
         )
+        // Fill whatever height the hosting cell settles on (its self-sizing
+        // floor can exceed the row's ideal height), so the content centers
+        // and the separator pins to the real cell bottom — otherwise the
+        // title reads off-center between two separators.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Inset to the text's left edge (10 padding + 16 icon + 10 spacing),
         // like the system separators under Messages' conversation rows.
         .overlay(alignment: .bottom) {

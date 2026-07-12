@@ -10,6 +10,10 @@
 	-->
 	<key>CFBundleDisplayName</key>
 	<string>Termio</string>
+	<!-- Standard TLS only — exempt from export-compliance docs, and this key
+	     skips the per-build compliance questionnaire on App Store Connect. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Termio connects to the companion server running on your Mac over the local network.</string>
 	<key>NSCameraUsageDescription</key>

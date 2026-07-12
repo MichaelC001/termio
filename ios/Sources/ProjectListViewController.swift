@@ -456,10 +456,11 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
 
 // MARK: - Project row
 
-/// One project: the folder mark, the name over a branch + session-count line,
-/// and a status summary trailing — the most urgent state wins (attention count
-/// in orange, else a working spinner, else the done dot), so a glance down the
-/// list covers every project without opening one.
+/// One project: the folder mark, the name over the branch (repos only — the
+/// row collapses to one line otherwise), and a status summary trailing — the
+/// most urgent state wins (attention count in orange, else a working spinner,
+/// else the done dot), so a glance down the list covers every project without
+/// opening one.
 private struct ProjectRow: View {
     let project: MockProject
     var showsSeparator = false
@@ -474,11 +475,13 @@ private struct ProjectRow: View {
                     .font(.body)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Text(subtitle)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                if let branch = project.branch {
+                    Text(branch)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
             Spacer(minLength: 4)
             summary
@@ -488,24 +491,12 @@ private struct ProjectRow: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 10)
+        // Fill the hosting cell (see SessionRow): centers the content and
+        // pins the separator to the real cell bottom.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Inset past the folder mark (10 padding + 18 icon + 10 spacing).
         .overlay(alignment: .bottom) {
             if showsSeparator { RowSeparator(leadingInset: 38) }
-        }
-    }
-
-    private var subtitle: String {
-        var parts: [String] = []
-        if let branch = project.branch { parts.append(branch) }
-        parts.append(sessionCount)
-        return parts.joined(separator: " · ")
-    }
-
-    private var sessionCount: String {
-        switch project.sessions.count {
-        case 0: "No sessions"
-        case 1: "1 session"
-        case let n: "\(n) sessions"
         }
     }
 

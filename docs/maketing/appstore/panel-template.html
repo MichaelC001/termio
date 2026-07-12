@@ -30,26 +30,27 @@
     color: rgba(214, 220, 228, 0.62);
     max-width: 1040px;
   }
-  /* Identical geometry on every panel: the screen well is a fixed 2260px
-     window and the source screenshot covers it from the top, so mixed
-     source resolutions can never change the device's size or position. */
+  /* Identical geometry on every panel: the screen well is a fixed 922×2004
+     window — the exact 1206×2622 capture aspect, so the full screenshot
+     shows edge to edge with no crop, and the whole phone fits the canvas:
+     620 top + 2056 device + 102 margin. */
   .device {
     position: absolute;
     left: 50%;
     transform: translateX(-50%);
     top: 620px;
-    width: 1160px;
+    width: 974px;
     background: #050507;
-    border-radius: 172px;
-    padding: 26px;
+    border-radius: 152px;
+    padding: 23px;
     border: 3px solid rgba(255, 255, 255, 0.22);
     box-shadow: 0 70px 160px rgba(0, 0, 0, 0.55);
   }
   .screen {
-    border-radius: 146px;
+    border-radius: 130px;
     overflow: hidden;
     background: #000;
-    height: 2260px;
+    height: 2004px;
   }
   .screen img {
     display: block;
@@ -62,14 +63,14 @@
     position: absolute; right: -8px; width: 8px; border-radius: 0 4px 4px 0;
     background: #3d3d41;
   }
-  .btn.power { top: 560px; height: 190px; }
+  .btn.power { top: 497px; height: 168px; }
   .btnl {
     position: absolute; left: -8px; width: 8px; border-radius: 4px 0 0 4px;
     background: #3d3d41;
   }
-  .btnl.vol1 { top: 420px; height: 110px; }
-  .btnl.vol2 { top: 560px; height: 110px; }
-  .btnl.action { top: 300px; height: 70px; }
+  .btnl.vol1 { top: 372px; height: 98px; }
+  .btnl.vol2 { top: 497px; height: 98px; }
+  .btnl.action { top: 266px; height: 62px; }
 </style>
 </head>
 <body>
