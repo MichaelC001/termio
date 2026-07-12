@@ -206,7 +206,7 @@ final class FileViewerController: UIViewController {
         let language = CodeHighlighter.language(forFileNamed: fileName)
         let dark = traitCollection.userInterfaceStyle == .dark
         storage.highlightr.setTheme(to: dark ? "xcode-dark" : "xcode")
-        storage.highlightr.theme.setCodeFont(.monospacedSystemFont(ofSize: 13, weight: .regular))
+        storage.highlightr.theme.setCodeFont(MobileSettings.shared.codeFont())
         textView.text = text
         // Setting the language kicks the initial (async) highlight pass.
         storage.language = language

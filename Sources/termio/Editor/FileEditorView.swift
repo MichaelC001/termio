@@ -74,11 +74,7 @@ struct FileEditorView: View {
     /// The editor font, borrowed from the terminal so an opened file reads in the same face the
     /// agent's output does. Falls back to the system monospace when no family is pinned.
     private var editorFont: NSFont {
-        let size = max(11, settings.fontSize)
-        if !settings.fontFamily.isEmpty, let font = NSFont(name: settings.fontFamily, size: size) {
-            return font
-        }
-        return .monospacedSystemFont(ofSize: size, weight: .regular)
+        settings.resolvedTerminalFont()
     }
 
     /// Foreground/caret fall back to the terminal theme's colors (the rest of the chrome's source of

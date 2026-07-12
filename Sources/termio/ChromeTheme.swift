@@ -70,6 +70,20 @@ extension AppSettings {
     /// under termio's mostly-empty canvas) and Afterglow #212121 in dark. Both sides
     /// are resolved up front on the main actor so the dynamic closure captures only
     /// plain colors.
+    /// The terminal font resolved to a concrete `NSFont`, shared by every code
+    /// surface (file editor, diff view) so they all read in the same face. The
+    /// resolution must go through `NSFont(name:)` with an explicit monospace
+    /// fallback: name lookup fails for system faces like the default "SF Mono"
+    /// (Apple doesn't expose it by name to third-party apps), and SwiftUI's
+    /// `Font.custom` would paper over that by silently substituting Helvetica.
+    func resolvedTerminalFont(minSize: Double = 11) -> NSFont {
+        let size = max(minSize, fontSize)
+        if !fontFamily.isEmpty, let font = NSFont(name: fontFamily, size: size) {
+            return font
+        }
+        return .monospacedSystemFont(ofSize: size, weight: .regular)
+    }
+
     var terminalBackgroundColor: NSColor {
         let lightBackground = chromeTheme(for: .light)?.background
         let darkBackground = chromeTheme(for: .dark)?.background
