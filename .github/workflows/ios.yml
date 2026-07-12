@@ -5,7 +5,7 @@ name: iOS
 # macOS app has its own pipeline in release.yml.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - "ios/**"
       - "Shared/**"
