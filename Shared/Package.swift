@@ -27,8 +27,15 @@ let package = Package(
         .package(url: "https://github.com/raspu/Highlightr.git", from: "2.3.0"),
     ],
     targets: [
-        .target(name: "TermioShared", dependencies: [
-            .product(name: "Highlightr", package: "Highlightr", condition: .when(platforms: [.iOS])),
-        ]),
+        .target(
+            name: "TermioShared",
+            dependencies: [
+                .product(name: "Highlightr", package: "Highlightr", condition: .when(platforms: [.iOS])),
+            ],
+            // Vendor favicon tiles for the agents whose marks aren't vector paths
+            // (see BrandImageAsset). All PNG: iOS's UIImage can't decode SVG files,
+            // so Pi's and Cursor's vector favicons are pre-rasterized at 256px.
+            resources: [.process("Resources")]
+        ),
     ]
 )

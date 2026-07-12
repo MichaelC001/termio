@@ -18,6 +18,9 @@ public enum AgentKind: String, Sendable {
     case codex
     case opencode
     case pi
+    case amp
+    case cursor
+    case kimi
     case terminal
 
     /// The agent's representative color — tints the "working" spinner so a busy
@@ -26,7 +29,20 @@ public enum AgentKind: String, Sendable {
         switch self {
         case .claude: BrandLogo.claude.tint
         case .codex: BrandLogo.codex.tint
-        case .opencode, .pi, .terminal: .monochromeInk
+        case .opencode, .pi, .amp, .cursor, .kimi, .terminal: .monochromeInk
+        }
+    }
+
+    /// The agent's real favicon tile, for the kinds whose marks aren't carried
+    /// as vector paths — nil for the vector-drawn kinds and the plain terminal.
+    public var brandImage: BrandImageAsset? {
+        switch self {
+        case .opencode: .openCode
+        case .pi: .pi
+        case .amp: .amp
+        case .cursor: .cursor
+        case .kimi: .kimi
+        case .claude, .codex, .terminal: nil
         }
     }
 }
@@ -71,9 +87,88 @@ public struct AgentIconView: View {
             BrandLogoShape(logo: .codex)
                 .fill(BrandLogo.codex.tint, style: FillStyle(eoFill: true))
                 .frame(width: size, height: size)
-        case .opencode, .pi, .terminal:
+        case .opencode, .pi, .amp, .cursor, .kimi:
+            BrandImageView(asset: agent.brandImage!, size: size)
+        case .terminal:
             HugeIconView(icon: .terminal, size: size, color: .monochromeInk)
         }
+    }
+}
+
+// MARK: - Brand favicon tiles
+
+/// A vendor brand mark carried as its real favicon image (the marks whose
+/// detail — Pi's monochrome glyph, OpenCode's two-tone box, Cursor's shaded
+/// cube — a single-fill vector path can't reproduce), bundled under this
+/// package's `Resources`. All PNG: iOS's `UIImage` can't decode SVG files, so
+/// Pi's and Cursor's vector favicons are pre-rasterized at 256px. The desktop
+/// app still renders its own copies from its app bundle (see the macOS
+/// `BrandImageAsset`); these exist so the iOS session list shows the same
+/// marks as the macOS sidebar.
+public enum BrandImageAsset: Hashable, Sendable {
+    case pi
+    case openCode
+    case amp
+    case cursor
+    case kimi
+
+    /// Base name of the bundled resource file (without extension).
+    var resourceName: String {
+        switch self {
+        case .pi: "pi-favicon"
+        case .openCode: "opencode-favicon"
+        case .amp: "amp-favicon"
+        case .cursor: "cursor-favicon"
+        case .kimi: "kimi-favicon"
+        }
+    }
+}
+
+/// Renders a vendor's favicon as a small rounded tile — the favicons carry
+/// their own dark backgrounds, so the rounded clip makes them read like the
+/// app icons they are at list sizes. Falls back to empty space if the
+/// resource can't be loaded rather than trapping.
+public struct BrandImageView: View {
+    let asset: BrandImageAsset
+    let size: CGFloat
+
+    public init(asset: BrandImageAsset, size: CGFloat) {
+        self.asset = asset
+        self.size = size
+    }
+
+    public var body: some View {
+        if let image = asset.loadImage() {
+            image
+                .resizable()
+                .interpolation(.high)
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+        } else {
+            Color.clear.frame(width: size, height: size)
+        }
+    }
+}
+
+extension BrandImageAsset {
+    /// Loads the bundled favicon, or `nil` if it is missing.
+    ///
+    /// iOS-ONLY on purpose: `Bundle.module` is safe there because the app is
+    /// built by Xcode, whose generated accessor resolves the resource bundle
+    /// correctly. The macOS app is built with plain `swift build`, where the
+    /// generated accessor checks only the .app root plus a hardcoded
+    /// build-machine path and fatalErrors in a packaged release (the v0.2.4
+    /// crash) — so the desktop must never reach this and keeps loading its own
+    /// favicon copies from `Bundle.termioResources`.
+    func loadImage() -> Image? {
+        #if canImport(UIKit)
+        guard let url = Bundle.module.url(forResource: resourceName, withExtension: "png"),
+              let image = UIImage(contentsOfFile: url.path)
+        else { return nil }
+        return Image(uiImage: image)
+        #else
+        return nil
+        #endif
     }
 }
 

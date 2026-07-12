@@ -83,6 +83,9 @@ extension AgentKind {
         case "codex": self = .codex
         case "opencode": self = .opencode
         case "pi": self = .pi
+        case "amp": self = .amp
+        case "cursor": self = .cursor
+        case "kimi": self = .kimi
         default: self = .terminal
         }
     }
@@ -92,30 +95,38 @@ extension AgentKind {
     /// The agent's real brand mark as a `UIImage`, for UIKit spots (UIMenu
     /// rows) that can't host the SwiftUI `AgentIconView` the session rows use —
     /// so the menus show the same marks as the macOS sidebar, not SF Symbol
-    /// stand-ins. Claude keeps its brand orange via `.alwaysOriginal`; the
-    /// monochrome marks render as templates so the menu tints them with the
-    /// current label color.
+    /// stand-ins. Claude's orange and the favicon tiles keep their own colors
+    /// via `.alwaysOriginal`; the monochrome vector marks render as templates
+    /// so the menu tints them with the current label color.
     @MainActor
     func menuIcon(pointSize: CGFloat = 18) -> UIImage? {
-        let mark: AnyView = switch self {
+        let isTemplate: Bool
+        let mark: AnyView
+        switch self {
         case .claude:
-            AnyView(BrandLogoShape(logo: .claude).fill(BrandLogo.claude.tint))
+            mark = AnyView(BrandLogoShape(logo: .claude).fill(BrandLogo.claude.tint))
+            isTemplate = false
         case .codex:
-            AnyView(BrandLogoShape(logo: .codex).fill(.black, style: FillStyle(eoFill: true)))
-        case .opencode, .pi, .terminal:
+            mark = AnyView(BrandLogoShape(logo: .codex).fill(.black, style: FillStyle(eoFill: true)))
+            isTemplate = true
+        case .opencode, .pi, .amp, .cursor, .kimi:
+            mark = AnyView(BrandImageView(asset: brandImage!, size: pointSize))
+            isTemplate = false
+        case .terminal:
             // Hugeicons' native 1.5px-on-24 stroke ratio, same as HugeIconView.
-            AnyView(HugeIconShape(icon: .terminal).stroke(
+            mark = AnyView(HugeIconShape(icon: .terminal).stroke(
                 .black,
                 style: StrokeStyle(
                     lineWidth: max(1.1, pointSize * 1.5 / 24),
                     lineCap: .round, lineJoin: .round
                 )
             ))
+            isTemplate = true
         }
         let renderer = ImageRenderer(content: mark.frame(width: pointSize, height: pointSize))
         renderer.scale = 3
         guard let image = renderer.uiImage else { return nil }
-        return image.withRenderingMode(self == .claude ? .alwaysOriginal : .alwaysTemplate)
+        return image.withRenderingMode(isTemplate ? .alwaysTemplate : .alwaysOriginal)
     }
 }
 
