@@ -59,6 +59,9 @@ final class TerminalViewController: UIViewController {
         return v
     }()
     private var settingsObserver: NSObjectProtocol?
+    /// Bottom pin of the surface — its constant tracks the keyboard overlap
+    /// (0 when the keyboard is away), see keyboardFrameWillChange.
+    private var terminalBottomConstraint: NSLayoutConstraint?
     /// Main-thread only — fed from the companion byte stream, read on key taps.
     private var altScreenSniffer = AlternateScreenSniffer()
     private var uploadClient: CompanionClient?
@@ -448,21 +451,48 @@ final class TerminalViewController: UIViewController {
         }
     }
 
-    /// Pins the surface between the header and the keyboard guide (the very
-    /// bottom of the screen while the keyboard is down).
+    /// Pins the surface between the header and the top of the keyboard — the
+    /// very bottom of the screen while the keyboard is away.
+    ///
+    /// Driven by keyboardWillChangeFrame, not `keyboardLayoutGuide`: on
+    /// device the guide kept a keyboard-shaped band reserved after the
+    /// keyboard dismissed (even with `usesBottomSafeArea = false`), leaving
+    /// ~5 rows of dead space under bottom-anchored TUIs. The notification's
+    /// end frame is unambiguous — overlap is what it says, zero when hidden.
     private func activateTerminalConstraints() {
-        // Keyboard down used to park the guide at the safe-area bottom,
-        // stacking ~34pt of dead band under a bottom-anchored TUI (on top of
-        // the grid's cell-rounding remainder and the TUI's own trailing blank
-        // row). Track the real keyboard instead: full-height terminal when
-        // it's away, and the TUI's blank row clears the home indicator.
-        view.keyboardLayoutGuide.usesBottomSafeArea = false
+        let bottom = terminalView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        terminalBottomConstraint = bottom
         NSLayoutConstraint.activate([
             terminalView.topAnchor.constraint(equalTo: headerBar.bottomAnchor),
             terminalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             terminalView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            terminalView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
+            bottom,
         ])
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(keyboardFrameWillChange(_:)),
+            name: UIResponder.keyboardWillChangeFrameNotification, object: nil
+        )
+    }
+
+    @objc private func keyboardFrameWillChange(_ note: Notification) {
+        // Parked terminals (the container's keep-alive cache) have no window;
+        // converting the frame there is meaningless, and the constraint gets
+        // refreshed by the next real keyboard event once re-presented.
+        guard view.window != nil,
+              let endValue = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue
+        else { return }
+        let endFrame = view.convert(endValue.cgRectValue, from: nil)
+        let overlap = max(0, view.bounds.maxY - endFrame.minY)
+        guard let constraint = terminalBottomConstraint, constraint.constant != -overlap else { return }
+        constraint.constant = -overlap
+        let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
+        let curve = note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int ?? 7
+        UIView.animate(
+            withDuration: duration, delay: 0,
+            options: UIView.AnimationOptions(rawValue: UInt(curve) << 16)
+        ) {
+            self.view.layoutIfNeeded()
+        }
     }
 
     /// Called by the container right after it removes this screen from the view
