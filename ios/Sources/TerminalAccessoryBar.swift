@@ -92,9 +92,10 @@ enum TerminalAttachSource {
     case files
 }
 
-/// Where a viewport jump lands — the bar's two scroll keys. These move the
-/// terminal's own scrollback view; they never write to the PTY, so they work
-/// the same under Claude Code, a shell prompt, or anything else.
+/// Where a viewport jump lands — the bar's two scroll keys. The owner picks
+/// the strategy per tap: on the primary screen it jumps the terminal's own
+/// scrollback view; under an alternate-screen TUI (Claude Code) there is no
+/// scrollback, so it falls back to page keys the app parses itself.
 enum TerminalScrollEdge {
     case top
     case bottom
@@ -123,9 +124,9 @@ enum TerminalStickyVisual {
 /// ← → flanking), the desktop muscle-memory layout. ctrl/alt are sticky:
 /// tap to arm, then a QWERTY letter forms the combo (ctrl → c = ^C),
 /// double-tap locks — so the old configurable ^C/^O keycaps are redundant
-/// and gone. esc holds for esc-esc (Claude Code's rewind menu); arrows
-/// auto-repeat. ⤒/⤓ jump the viewport through scrollback (agent TUIs ignore
-/// the pgup/pgdn escape sequences that used to sit there).
+/// and gone. esc holds for esc-esc (Claude Code's rewind menu); arrows and
+/// ⤒/⤓ auto-repeat. ⤒/⤓ jump the viewport through scrollback on the primary
+/// screen and degrade to pgup/pgdn under alternate-screen TUIs.
 final class TerminalAccessoryBar: UIInputView {
     /// Raw bytes for the PTY — the owner writes them to the terminal.
     var onKey: ((Data) -> Void)?
@@ -470,17 +471,17 @@ final class TerminalAccessoryBar: UIInputView {
         return button
     }
 
-    /// A viewport jump key (⤒/⤓) — fires `onScrollEdge` instead of writing
-    /// bytes, because moving through scrollback is the terminal view's job,
-    /// not the PTY's.
+    /// A viewport jump key (⤒/⤓) — fires `onScrollEdge` instead of a fixed
+    /// payload so the owner can pick scrollback jump vs page key. Repeats on
+    /// hold: paging an alternate-screen TUI takes one fire per page.
     private func makeScrollEdgeButton(title: String, edge: TerminalScrollEdge) -> UIButton {
-        let button = UIButton(configuration: makeKeyConfiguration(title: title))
-        button.accessibilityLabel = edge == .top ? "Scroll to top" : "Scroll to bottom"
-        button.heightAnchor.constraint(equalToConstant: Self.keyHeight).isActive = true
-        button.addAction(UIAction { [weak self] _ in
+        let button = RepeatingKeyButton(configuration: makeKeyConfiguration(title: title))
+        button.onFire = { [weak self] in
             self?.haptic.impactOccurred()
             self?.onScrollEdge?(edge)
-        }, for: .touchUpInside)
+        }
+        button.accessibilityLabel = edge == .top ? "Scroll to top" : "Scroll to bottom"
+        button.heightAnchor.constraint(equalToConstant: Self.keyHeight).isActive = true
         return button
     }
 

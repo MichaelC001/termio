@@ -59,6 +59,8 @@ final class TerminalViewController: UIViewController {
         return v
     }()
     private var settingsObserver: NSObjectProtocol?
+    /// Main-thread only — fed from the companion byte stream, read on key taps.
+    private var altScreenSniffer = AlternateScreenSniffer()
     private var uploadClient: CompanionClient?
     private var uploadQueue: [(name: String, data: Data)] = []
     private var uploadInFlight = false
@@ -403,9 +405,18 @@ final class TerminalViewController: UIViewController {
             self?.terminalView.toggleStickyModifier(key == .ctrl ? .ctrl : .alt)
         }
         keyBar.onScrollEdge = { [weak self] edge in
-            switch edge {
-            case .top: self?.terminalView.scrollToTop()
-            case .bottom: self?.terminalView.scrollToBottom()
+            guard let self else { return }
+            // Full-screen TUIs (Claude Code holds the alternate screen) have
+            // no scrollback for the viewport to jump through — libghostty's
+            // scroll actions are primary-screen no-ops there. Fall back to
+            // page keys, which those apps parse for their own history.
+            if altScreenSniffer.isAlternate {
+                terminalView.send(Data((edge == .top ? "\u{1B}[5~" : "\u{1B}[6~").utf8))
+            } else {
+                switch edge {
+                case .top: terminalView.scrollToTop()
+                case .bottom: terminalView.scrollToBottom()
+                }
             }
         }
         keyBar.onAttach = { [weak self] source in
@@ -603,8 +614,9 @@ final class TerminalViewController: UIViewController {
                     transport?.resize(cols: Int(viewport.columns), rows: Int(viewport.rows))
                 }
             )
-            transport.onOutput = { [weak terminalSession] data in
+            transport.onOutput = { [weak terminalSession, weak self] data in
                 terminalSession?.receive(data)
+                DispatchQueue.main.async { self?.altScreenSniffer.consume(data) }
             }
             transport.onState = { [weak self] state in
                 self?.companionStateChanged(state)
@@ -1254,3 +1266,80 @@ private func termio_ghostty_surface_refresh(_ surface: UnsafeMutableRawPointer)
 
 @_silgen_name("ghostty_surface_draw")
 private func termio_ghostty_surface_draw(_ surface: UnsafeMutableRawPointer)
+
+/// Tracks whether the app behind the PTY holds the alternate screen, by
+/// watching the output stream for DECSET/DECRST of modes 1049/1047/47 (and
+/// RIS, which resets to the primary screen). The terminal core knows this,
+/// but libghostty exposes no query for it — and the key bar's viewport jumps
+/// must pick a strategy per tap: scrollback jumps on the primary screen,
+/// page keys on the alternate one.
+private struct AlternateScreenSniffer {
+    private(set) var isAlternate = false
+    /// Unfinished escape sequence at a chunk's tail, re-parsed with the next
+    /// chunk — a mode switch can split across WebSocket frames.
+    private var carry = Data()
+
+    mutating func consume(_ chunk: Data) {
+        var bytes = [UInt8](carry)
+        bytes.append(contentsOf: chunk)
+        carry.removeAll(keepingCapacity: true)
+
+        var index = 0
+        while index < bytes.count {
+            guard bytes[index] == 0x1B else { index += 1; continue }
+            switch parseEscape(bytes, at: index) {
+            case .incomplete:
+                // A real mode switch is short; anything longer is content
+                // that happens to contain ESC — don't carry it forever.
+                if bytes.count - index <= 40 { carry = Data(bytes[index...]) }
+                return
+            case .altScreen(let entered):
+                isAlternate = entered
+                index += 1
+            case .reset:
+                isAlternate = false
+                index += 1
+            case .other:
+                index += 1
+            }
+        }
+    }
+
+    private enum Parse {
+        case incomplete
+        case altScreen(Bool)
+        case reset
+        case other
+    }
+
+    /// Parses the escape at `start` just far enough to classify it: RIS
+    /// (`ESC c`) or a private mode set/reset (`ESC [ ? params h|l`) naming
+    /// an alternate-screen mode.
+    private func parseEscape(_ bytes: [UInt8], at start: Int) -> Parse {
+        var index = start + 1
+        guard index < bytes.count else { return .incomplete }
+        if bytes[index] == UInt8(ascii: "c") { return .reset }
+        guard bytes[index] == UInt8(ascii: "[") else { return .other }
+        index += 1
+        guard index < bytes.count else { return .incomplete }
+        guard bytes[index] == UInt8(ascii: "?") else { return .other }
+        index += 1
+
+        var parameters = ""
+        while index < bytes.count, parameters.utf8.count <= 32 {
+            let byte = bytes[index]
+            if (0x30 ... 0x39).contains(byte) || byte == UInt8(ascii: ";") {
+                parameters.append(Character(Unicode.Scalar(byte)))
+                index += 1
+                continue
+            }
+            guard byte == UInt8(ascii: "h") || byte == UInt8(ascii: "l") else { return .other }
+            let names = parameters.split(separator: ";")
+            guard names.contains(where: { $0 == "1049" || $0 == "1047" || $0 == "47" }) else {
+                return .other
+            }
+            return .altScreen(byte == UInt8(ascii: "h"))
+        }
+        return parameters.utf8.count > 32 ? .other : .incomplete
+    }
+}
