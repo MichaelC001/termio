@@ -6,46 +6,58 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 1284px; height: 2778px; overflow: hidden; }
   body {
-    background: linear-gradient(180deg, #F2F1EB 0%, #EDECE5 100%);
+    background: #0a0f16 url("src/aurora-bg.png") center / cover no-repeat;
     font-family: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif;
     position: relative;
   }
   .caption {
-    padding: 130px 118px 0;
+    position: absolute;
+    top: 130px;
+    left: 118px;
+    right: 118px;
     letter-spacing: -0.6px;
   }
   .caption h1 {
     font-size: 88px;
     line-height: 1.18;
     font-weight: 700;
-    color: #16150F;
+    color: #F4F5F4;
   }
   .caption p {
     font-size: 88px;
     line-height: 1.18;
     font-weight: 500;
-    color: #98968A;
-    max-width: 1060px;
+    color: rgba(214, 220, 228, 0.62);
+    max-width: 1040px;
   }
+  /* Identical geometry on every panel: the screen well is a fixed 2260px
+     window and the source screenshot covers it from the top, so mixed
+     source resolutions can never change the device's size or position. */
   .device {
     position: absolute;
     left: 50%;
     transform: translateX(-50%);
-    top: __DEVICETOP__px;
+    top: 620px;
     width: 1160px;
-    background: #0d0d0f;
+    background: #050507;
     border-radius: 172px;
     padding: 26px;
-    border: 3px solid #4a4a4e;
-    box-shadow: 0 60px 140px rgba(20, 18, 8, 0.28);
+    border: 3px solid rgba(255, 255, 255, 0.22);
+    box-shadow: 0 70px 160px rgba(0, 0, 0, 0.55);
   }
   .screen {
     border-radius: 146px;
     overflow: hidden;
     background: #000;
+    height: 2260px;
   }
-  .screen img { display: block; width: 100%; }
-  /* side buttons, titanium-style */
+  .screen img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: top;
+  }
   .btn {
     position: absolute; right: -8px; width: 8px; border-radius: 0 4px 4px 0;
     background: #3d3d41;
@@ -70,7 +82,7 @@
     <div class="btnl vol1"></div>
     <div class="btnl vol2"></div>
     <div class="btn power"></div>
-    <div class="screen"><img src="__IMAGE__"></div>
+    <div class="screen"><img src="src/__IMAGE__"></div>
   </div>
 </body>
 </html>
