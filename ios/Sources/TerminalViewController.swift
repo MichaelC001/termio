@@ -59,6 +59,11 @@ final class TerminalViewController: UIViewController {
         return v
     }()
     private var settingsObserver: NSObjectProtocol?
+    /// Bottom pin of the surface — its constant tracks the keyboard overlap
+    /// (0 when the keyboard is away), see keyboardFrameWillChange.
+    private var terminalBottomConstraint: NSLayoutConstraint?
+    /// Main-thread only — fed from the companion byte stream, read on key taps.
+    private var altScreenSniffer = AlternateScreenSniffer()
     private var uploadClient: CompanionClient?
     private var uploadQueue: [(name: String, data: Data)] = []
     private var uploadInFlight = false
@@ -402,6 +407,21 @@ final class TerminalViewController: UIViewController {
         keyBar.onSticky = { [weak self] key in
             self?.terminalView.toggleStickyModifier(key == .ctrl ? .ctrl : .alt)
         }
+        keyBar.onScrollEdge = { [weak self] edge in
+            guard let self else { return }
+            // Full-screen TUIs (Claude Code holds the alternate screen) have
+            // no scrollback for the viewport to jump through — libghostty's
+            // scroll actions are primary-screen no-ops there. Fall back to
+            // page keys, which those apps parse for their own history.
+            if altScreenSniffer.isAlternate {
+                terminalView.send(Data((edge == .top ? "\u{1B}[5~" : "\u{1B}[6~").utf8))
+            } else {
+                switch edge {
+                case .top: terminalView.scrollToTop()
+                case .bottom: terminalView.scrollToBottom()
+                }
+            }
+        }
         keyBar.onAttach = { [weak self] source in
             switch source {
             case .camera: self?.presentCamera()
@@ -431,15 +451,48 @@ final class TerminalViewController: UIViewController {
         }
     }
 
-    /// Pins the surface between the header and the keyboard guide (the
-    /// safe-area bottom while the keyboard is down).
+    /// Pins the surface between the header and the top of the keyboard — the
+    /// very bottom of the screen while the keyboard is away.
+    ///
+    /// Driven by keyboardWillChangeFrame, not `keyboardLayoutGuide`: on
+    /// device the guide kept a keyboard-shaped band reserved after the
+    /// keyboard dismissed (even with `usesBottomSafeArea = false`), leaving
+    /// ~5 rows of dead space under bottom-anchored TUIs. The notification's
+    /// end frame is unambiguous — overlap is what it says, zero when hidden.
     private func activateTerminalConstraints() {
+        let bottom = terminalView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        terminalBottomConstraint = bottom
         NSLayoutConstraint.activate([
             terminalView.topAnchor.constraint(equalTo: headerBar.bottomAnchor),
             terminalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             terminalView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            terminalView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
+            bottom,
         ])
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(keyboardFrameWillChange(_:)),
+            name: UIResponder.keyboardWillChangeFrameNotification, object: nil
+        )
+    }
+
+    @objc private func keyboardFrameWillChange(_ note: Notification) {
+        // Parked terminals (the container's keep-alive cache) have no window;
+        // converting the frame there is meaningless, and the constraint gets
+        // refreshed by the next real keyboard event once re-presented.
+        guard view.window != nil,
+              let endValue = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue
+        else { return }
+        let endFrame = view.convert(endValue.cgRectValue, from: nil)
+        let overlap = max(0, view.bounds.maxY - endFrame.minY)
+        guard let constraint = terminalBottomConstraint, constraint.constant != -overlap else { return }
+        constraint.constant = -overlap
+        let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
+        let curve = note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int ?? 7
+        UIView.animate(
+            withDuration: duration, delay: 0,
+            options: UIView.AnimationOptions(rawValue: UInt(curve) << 16)
+        ) {
+            self.view.layoutIfNeeded()
+        }
     }
 
     /// Called by the container right after it removes this screen from the view
@@ -597,8 +650,9 @@ final class TerminalViewController: UIViewController {
                     transport?.resize(cols: Int(viewport.columns), rows: Int(viewport.rows))
                 }
             )
-            transport.onOutput = { [weak terminalSession] data in
+            transport.onOutput = { [weak terminalSession, weak self] data in
                 terminalSession?.receive(data)
+                DispatchQueue.main.async { self?.altScreenSniffer.consume(data) }
             }
             transport.onState = { [weak self] state in
                 self?.companionStateChanged(state)
@@ -1046,20 +1100,63 @@ private final class DisplayTerminalView: UITerminalView {
     /// Return is a raw CR straight into the PTY. (The same fix sits in the
     /// vendored fork's UITerminalView+UITextInput for upstreaming; the app
     /// resolves the package from the remote, so it must live here too.)
+    ///
+    /// The same rule extends to every typed character: a single grapheme from
+    /// the keyboard is a KEYSTROKE, and paste-wrapping it breaks TUIs that
+    /// treat pastes literally — pi's editor deliberately never opens its
+    /// slash/@ autocomplete from a paste (pi-tui `handlePaste`), so "/" typed
+    /// on the phone never showed the command menu, while the same key on the
+    /// Mac (a real key event, no paste markers) worked. Termux/iSH/Blink all
+    /// send soft-keyboard keys as raw bytes; matching them fixes pi and
+    /// anything else that distinguishes typing from pasting. Multi-character
+    /// inserts (real pastes, IME phrase commits, autocorrect replacements)
+    /// keep the bracketed-paste path — that wrapping is what stops a pasted
+    /// newline from auto-submitting. A char with a sticky ctrl/alt armed also
+    /// stays on the wrapper path, which applies the modifier.
     override func insertText(_ text: String) {
         if text == "\n" {
             send(Data([0x0D]))
             return
         }
+        if text.count == 1, !stickyModifierArmed,
+           let scalar = text.unicodeScalars.first, scalar.value >= 0x20 {
+            send(Data(text.utf8))
+            return
+        }
         super.insertText(text)
+    }
+
+    /// Whether any sticky modifier (key bar's ctrl/alt/cmd chips) is armed or
+    /// locked — those keystrokes must go through the wrapper's `insertText`,
+    /// whose state machine folds the modifier into the byte (ctrl-c → 0x03).
+    private var stickyModifierArmed: Bool {
+        [TerminalPublicStickyModifier.ctrl, .alt, .command]
+            .contains { stickyActivation(for: $0) != .inactive }
     }
 
     /// Fired when a finger scroll begins on the surface. The controller uses
     /// it to drop the keyboard — scrolling back through output means
-    /// reading, so the screen yields to content; tapping the surface brings
-    /// the keyboard back (the wrapper's touch path retakes first responder).
+    /// reading, so the screen yields to content; a completed tap (see
+    /// `touchesEnded`) brings the keyboard back.
     var onScrollGesture: (() -> Void)?
     private var scrollHookInstalled = false
+
+    /// The wrapper retakes first responder at touch-DOWN whenever the software
+    /// keyboard is hidden (`UITerminalView+Interaction.touchesBegan`). After a
+    /// scroll has dropped the keyboard, the next finger that lands to keep
+    /// scrolling pops the keyboard up, and the pan's scroll-begin immediately
+    /// dismisses it again — the keyboard bounces on every swipe. True only for
+    /// the synchronous span of `super.touchesBegan`, so the wrapper's retake is
+    /// the one `becomeFirstResponder` call that gets refused; presentation
+    /// moves to touch-UP, and only for a touch that never scrolled.
+    private var suppressTouchDownKeyboardRetake = false
+    /// Whether the current direct-touch sequence scrolled — set by the pan
+    /// hook's `.began`, or from birth when the finger lands mid-glide (that
+    /// touch stops the fling; it is part of the scroll, not a keyboard tap).
+    private var touchSequenceScrolled = false
+    /// First-responder state at touch-down. A tap while the keyboard is up is
+    /// the wrapper's dismiss-toggle — don't re-present over its resign.
+    private var wasFirstResponderAtTouchDown = false
 
     /// The wrapper's `ghostty_surface_t`, resolved once per scroll interaction
     /// so the per-frame draw path never re-walks its private mirror at touch-
@@ -1122,6 +1219,7 @@ private final class DisplayTerminalView: UITerminalView {
     @objc private func scrollGestureChanged(_ gesture: UIPanGestureRecognizer) {
         switch gesture.state {
         case .began:
+            touchSequenceScrolled = true
             onScrollGesture?()
             scrollSurfaceHandle = ghosttySurfaceHandle()
             scrollCoasting = false
@@ -1197,12 +1295,51 @@ private final class DisplayTerminalView: UITerminalView {
     /// makes the wrapper's own pan-to-scroll reporting work. Remove once the
     /// wrapper sends positions itself (or once we hold a fork of it).
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if let touch = touches.first(where: { $0.type == .direct }),
+        let hasDirectTouch = touches.contains { $0.type == .direct }
+        if hasDirectTouch, let touch = touches.first(where: { $0.type == .direct }),
            let handle = ghosttySurfaceHandle() {
             let location = touch.location(in: self)
             termio_ghostty_surface_mouse_pos(handle, location.x, location.y, 0)
         }
+        if hasDirectTouch {
+            // A finger that lands while the fling pump is alive is stopping or
+            // continuing the scroll — never a keyboard tap.
+            touchSequenceScrolled = scrollPump != nil
+            wasFirstResponderAtTouchDown = isFirstResponder
+            suppressTouchDownKeyboardRetake = true
+        }
         super.touchesBegan(touches, with: event)
+        suppressTouchDownKeyboardRetake = false
+    }
+
+    /// Refuses only the wrapper's touch-down retake (see
+    /// `suppressTouchDownKeyboardRetake`); every other caller — the
+    /// controller's focus handoffs, the wrapper's selection copy menu —
+    /// passes straight through.
+    override func becomeFirstResponder() -> Bool {
+        if suppressTouchDownKeyboardRetake { return false }
+        return super.becomeFirstResponder()
+    }
+
+    /// The keyboard-presenting half of the tap: the touch ran to completion
+    /// without ever scrolling, and the keyboard was down when it landed.
+    /// (When the pan recognizer wins it usually cancels the touch instead,
+    /// which lands in `touchesCancelled` and presents nothing.)
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesEnded(touches, with: event)
+        guard touches.contains(where: { $0.type == .direct }) else { return }
+        let wasTap = !touchSequenceScrolled
+        touchSequenceScrolled = false
+        if wasTap, !wasFirstResponderAtTouchDown, window != nil {
+            _ = becomeFirstResponder()
+        }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesCancelled(touches, with: event)
+        if touches.contains(where: { $0.type == .direct }) {
+            touchSequenceScrolled = false
+        }
     }
 
     /// The `ghostty_surface_t` behind this view, via the wrapper's stored
@@ -1248,3 +1385,80 @@ private func termio_ghostty_surface_refresh(_ surface: UnsafeMutableRawPointer)
 
 @_silgen_name("ghostty_surface_draw")
 private func termio_ghostty_surface_draw(_ surface: UnsafeMutableRawPointer)
+
+/// Tracks whether the app behind the PTY holds the alternate screen, by
+/// watching the output stream for DECSET/DECRST of modes 1049/1047/47 (and
+/// RIS, which resets to the primary screen). The terminal core knows this,
+/// but libghostty exposes no query for it — and the key bar's viewport jumps
+/// must pick a strategy per tap: scrollback jumps on the primary screen,
+/// page keys on the alternate one.
+private struct AlternateScreenSniffer {
+    private(set) var isAlternate = false
+    /// Unfinished escape sequence at a chunk's tail, re-parsed with the next
+    /// chunk — a mode switch can split across WebSocket frames.
+    private var carry = Data()
+
+    mutating func consume(_ chunk: Data) {
+        var bytes = [UInt8](carry)
+        bytes.append(contentsOf: chunk)
+        carry.removeAll(keepingCapacity: true)
+
+        var index = 0
+        while index < bytes.count {
+            guard bytes[index] == 0x1B else { index += 1; continue }
+            switch parseEscape(bytes, at: index) {
+            case .incomplete:
+                // A real mode switch is short; anything longer is content
+                // that happens to contain ESC — don't carry it forever.
+                if bytes.count - index <= 40 { carry = Data(bytes[index...]) }
+                return
+            case .altScreen(let entered):
+                isAlternate = entered
+                index += 1
+            case .reset:
+                isAlternate = false
+                index += 1
+            case .other:
+                index += 1
+            }
+        }
+    }
+
+    private enum Parse {
+        case incomplete
+        case altScreen(Bool)
+        case reset
+        case other
+    }
+
+    /// Parses the escape at `start` just far enough to classify it: RIS
+    /// (`ESC c`) or a private mode set/reset (`ESC [ ? params h|l`) naming
+    /// an alternate-screen mode.
+    private func parseEscape(_ bytes: [UInt8], at start: Int) -> Parse {
+        var index = start + 1
+        guard index < bytes.count else { return .incomplete }
+        if bytes[index] == UInt8(ascii: "c") { return .reset }
+        guard bytes[index] == UInt8(ascii: "[") else { return .other }
+        index += 1
+        guard index < bytes.count else { return .incomplete }
+        guard bytes[index] == UInt8(ascii: "?") else { return .other }
+        index += 1
+
+        var parameters = ""
+        while index < bytes.count, parameters.utf8.count <= 32 {
+            let byte = bytes[index]
+            if (0x30 ... 0x39).contains(byte) || byte == UInt8(ascii: ";") {
+                parameters.append(Character(Unicode.Scalar(byte)))
+                index += 1
+                continue
+            }
+            guard byte == UInt8(ascii: "h") || byte == UInt8(ascii: "l") else { return .other }
+            let names = parameters.split(separator: ";")
+            guard names.contains(where: { $0 == "1049" || $0 == "1047" || $0 == "47" }) else {
+                return .other
+            }
+            return .altScreen(byte == UInt8(ascii: "h"))
+        }
+        return parameters.utf8.count > 32 ? .other : .incomplete
+    }
+}

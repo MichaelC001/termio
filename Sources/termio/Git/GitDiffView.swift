@@ -82,7 +82,7 @@ struct GitDiffView: View {
             ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(rows) { row in
-                        DiffLineRow(row: row, font: diffFont,
+                        DiffLineRow(row: row, font: diffFont, gutterFont: gutterFont,
                                     showOldGutter: hasOldLines, showNewGutter: hasNewLines)
                     }
                 }
@@ -97,12 +97,16 @@ struct GitDiffView: View {
     private var hasOldLines: Bool { rows.contains { $0.oldLine != nil } }
     private var hasNewLines: Bool { rows.contains { $0.newLine != nil } }
 
-    /// The terminal font, so the diff reads in the same face as the agent's output.
+    /// The terminal font, so the diff reads in the same face as the agent's output
+    /// and the file editor.
     private var diffFont: Font {
-        let size = max(11, settings.fontSize)
-        return settings.fontFamily.isEmpty
-            ? .system(size: size, design: .monospaced)
-            : .custom(settings.fontFamily, size: size)
+        Font(settings.resolvedTerminalFont())
+    }
+
+    /// Line numbers step down from the code the same way the editor's gutter does.
+    private var gutterFont: Font {
+        let size = max(9, settings.resolvedTerminalFont().pointSize - 1.5)
+        return Font(NSFont.monospacedDigitSystemFont(ofSize: size, weight: .regular))
     }
 
     private func load() async {
@@ -119,6 +123,7 @@ struct GitDiffView: View {
 private struct DiffLineRow: View {
     let row: DiffRow
     let font: Font
+    let gutterFont: Font
     var showOldGutter = true
     var showNewGutter = true
 
@@ -155,7 +160,7 @@ private struct DiffLineRow: View {
 
     private func gutter(_ number: Int?) -> some View {
         Text(number.map(String.init) ?? "")
-            .font(.system(size: 10.5, design: .monospaced))
+            .font(gutterFont)
             .foregroundStyle(.tertiary)
             .frame(width: 36, alignment: .trailing)
             .padding(.trailing, 6)

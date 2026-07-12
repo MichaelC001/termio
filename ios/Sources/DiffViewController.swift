@@ -19,7 +19,7 @@ final class DiffViewController: UIViewController {
         view.backgroundColor = .systemBackground
 
         let summary = UILabel()
-        summary.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        summary.font = MobileSettings.shared.codeFont()
         summary.textColor = .secondaryLabel
         summary.text = "+\(change.additions) −\(change.deletions)"
         navigationItem.rightBarButtonItem = UIBarButtonItem(customView: summary)
@@ -36,7 +36,7 @@ final class DiffViewController: UIViewController {
 
     private static func render(diff: String) -> NSAttributedString {
         let result = NSMutableAttributedString()
-        let font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let font = MobileSettings.shared.codeFont()
         let paragraph = NSMutableParagraphStyle()
         paragraph.headIndent = 14 // hanging indent keeps wrapped lines aligned
         for line in diff.components(separatedBy: "\n") {
@@ -47,7 +47,7 @@ final class DiffViewController: UIViewController {
             ]
             if line.hasPrefix("@@") {
                 attrs[.foregroundColor] = UIColor.systemPurple
-                attrs[.font] = UIFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
+                attrs[.font] = MobileSettings.shared.codeFont(weight: .semibold)
             } else if line.hasPrefix("+") {
                 attrs[.foregroundColor] = UIColor.systemGreen
             } else if line.hasPrefix("-") {

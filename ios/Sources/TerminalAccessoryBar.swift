@@ -92,6 +92,15 @@ enum TerminalAttachSource {
     case files
 }
 
+/// Where a viewport jump lands — the bar's two scroll keys. The owner picks
+/// the strategy per tap: on the primary screen it jumps the terminal's own
+/// scrollback view; under an alternate-screen TUI (Claude Code) there is no
+/// scrollback, so it falls back to page keys the app parses itself.
+enum TerminalScrollEdge {
+    case top
+    case bottom
+}
+
 /// The visual face of a sticky key, mirrored from the terminal view's
 /// activation state so the two can never drift.
 enum TerminalStickyVisual {
@@ -106,8 +115,8 @@ enum TerminalStickyVisual {
 /// only carries what a terminal needs and the keyboard lacks, in a stable
 /// grid so every key is always in the same place:
 ///
-///   esc  ⇧⇥  tab  home  ↑  end  pgup
-///    +   ctrl alt   ←   ↓   →   pgdn
+///   esc  ⇧⇥  tab  home  ↑  end  ⤒
+///    +   ctrl alt   ←   ↓   →   ⤓
 ///
 /// Two conventions get their corner: esc holds the terminal's top-left, and
 /// attach (+) sits bottom-left — where Telegram/WhatsApp put it, the thumb's
@@ -116,7 +125,8 @@ enum TerminalStickyVisual {
 /// tap to arm, then a QWERTY letter forms the combo (ctrl → c = ^C),
 /// double-tap locks — so the old configurable ^C/^O keycaps are redundant
 /// and gone. esc holds for esc-esc (Claude Code's rewind menu); arrows and
-/// page keys auto-repeat.
+/// ⤒/⤓ auto-repeat. ⤒/⤓ jump the viewport through scrollback on the primary
+/// screen and degrade to pgup/pgdn under alternate-screen TUIs.
 final class TerminalAccessoryBar: UIInputView {
     /// Raw bytes for the PTY — the owner writes them to the terminal.
     var onKey: ((Data) -> Void)?
@@ -126,6 +136,8 @@ final class TerminalAccessoryBar: UIInputView {
     /// The attach (+) slot picked a source — photos/files land on the Mac,
     /// their path is typed into the TUI.
     var onAttach: ((TerminalAttachSource) -> Void)?
+    /// A viewport jump key was tapped — the owner scrolls the terminal view.
+    var onScrollEdge: ((TerminalScrollEdge) -> Void)?
 
     static let barHeight: CGFloat = 82
     private static let keyHeight: CGFloat = 32
@@ -152,7 +164,7 @@ final class TerminalAccessoryBar: UIInputView {
             makeKeyButton(title: "home", payload: Data("\u{1B}[H".utf8)),
             makeKeyButton(title: "↑", payload: Data("\u{1B}[A".utf8), repeats: true),
             makeKeyButton(title: "end", payload: Data("\u{1B}[F".utf8)),
-            makeKeyButton(title: "pgup", payload: Data("\u{1B}[5~".utf8), repeats: true),
+            makeScrollEdgeButton(title: "⤒", edge: .top),
         ])
         let bottom = makeRow([
             attachButton,
@@ -161,7 +173,7 @@ final class TerminalAccessoryBar: UIInputView {
             makeKeyButton(title: "←", payload: Data("\u{1B}[D".utf8), repeats: true),
             makeKeyButton(title: "↓", payload: Data("\u{1B}[B".utf8), repeats: true),
             makeKeyButton(title: "→", payload: Data("\u{1B}[C".utf8), repeats: true),
-            makeKeyButton(title: "pgdn", payload: Data("\u{1B}[6~".utf8), repeats: true),
+            makeScrollEdgeButton(title: "⤓", edge: .bottom),
         ])
 
         let plane = UIStackView(arrangedSubviews: [top, bottom])
@@ -418,7 +430,7 @@ final class TerminalAccessoryBar: UIInputView {
 
     // MARK: - Keys
 
-    private func makeKeyButton(title: String, payload: Data, repeats: Bool = false) -> UIButton {
+    private func makeKeyConfiguration(title: String) -> UIButton.Configuration {
         var config: UIButton.Configuration = if #available(iOS 26.0, *) {
             .glass()
         } else {
@@ -435,7 +447,11 @@ final class TerminalAccessoryBar: UIInputView {
             attributes.font = .systemFont(ofSize: 14)
             return attributes
         }
+        return config
+    }
 
+    private func makeKeyButton(title: String, payload: Data, repeats: Bool = false) -> UIButton {
+        let config = makeKeyConfiguration(title: title)
         let fire: () -> Void = { [weak self] in
             self?.haptic.impactOccurred()
             self?.onKey?(payload)
@@ -451,6 +467,20 @@ final class TerminalAccessoryBar: UIInputView {
         }
         button.accessibilityLabel = title
         button.titleLabel?.numberOfLines = 1
+        button.heightAnchor.constraint(equalToConstant: Self.keyHeight).isActive = true
+        return button
+    }
+
+    /// A viewport jump key (⤒/⤓) — fires `onScrollEdge` instead of a fixed
+    /// payload so the owner can pick scrollback jump vs page key. Repeats on
+    /// hold: paging an alternate-screen TUI takes one fire per page.
+    private func makeScrollEdgeButton(title: String, edge: TerminalScrollEdge) -> UIButton {
+        let button = RepeatingKeyButton(configuration: makeKeyConfiguration(title: title))
+        button.onFire = { [weak self] in
+            self?.haptic.impactOccurred()
+            self?.onScrollEdge?(edge)
+        }
+        button.accessibilityLabel = edge == .top ? "Scroll to top" : "Scroll to bottom"
         button.heightAnchor.constraint(equalToConstant: Self.keyHeight).isActive = true
         return button
     }

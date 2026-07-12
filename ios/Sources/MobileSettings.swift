@@ -79,6 +79,13 @@ final class MobileSettings {
         }
     }
 
+    /// The code face every non-terminal code surface (file viewer, diff view)
+    /// renders in — the terminal's font-size setting applied to the system
+    /// monospace, so code reads in one size across the app.
+    func codeFont(weight: UIFont.Weight = .regular) -> UIFont {
+        .monospacedSystemFont(ofSize: fontSize, weight: weight)
+    }
+
     /// Which catalog keys join the control bar above the system keyboard, in
     /// catalog order (esc and the arrows are fixed core, not stored here).
     var terminalKeyIDs: [String] {
