@@ -1070,20 +1070,63 @@ private final class DisplayTerminalView: UITerminalView {
     /// Return is a raw CR straight into the PTY. (The same fix sits in the
     /// vendored fork's UITerminalView+UITextInput for upstreaming; the app
     /// resolves the package from the remote, so it must live here too.)
+    ///
+    /// The same rule extends to every typed character: a single grapheme from
+    /// the keyboard is a KEYSTROKE, and paste-wrapping it breaks TUIs that
+    /// treat pastes literally — pi's editor deliberately never opens its
+    /// slash/@ autocomplete from a paste (pi-tui `handlePaste`), so "/" typed
+    /// on the phone never showed the command menu, while the same key on the
+    /// Mac (a real key event, no paste markers) worked. Termux/iSH/Blink all
+    /// send soft-keyboard keys as raw bytes; matching them fixes pi and
+    /// anything else that distinguishes typing from pasting. Multi-character
+    /// inserts (real pastes, IME phrase commits, autocorrect replacements)
+    /// keep the bracketed-paste path — that wrapping is what stops a pasted
+    /// newline from auto-submitting. A char with a sticky ctrl/alt armed also
+    /// stays on the wrapper path, which applies the modifier.
     override func insertText(_ text: String) {
         if text == "\n" {
             send(Data([0x0D]))
             return
         }
+        if text.count == 1, !stickyModifierArmed,
+           let scalar = text.unicodeScalars.first, scalar.value >= 0x20 {
+            send(Data(text.utf8))
+            return
+        }
         super.insertText(text)
+    }
+
+    /// Whether any sticky modifier (key bar's ctrl/alt/cmd chips) is armed or
+    /// locked — those keystrokes must go through the wrapper's `insertText`,
+    /// whose state machine folds the modifier into the byte (ctrl-c → 0x03).
+    private var stickyModifierArmed: Bool {
+        [TerminalPublicStickyModifier.ctrl, .alt, .command]
+            .contains { stickyActivation(for: $0) != .inactive }
     }
 
     /// Fired when a finger scroll begins on the surface. The controller uses
     /// it to drop the keyboard — scrolling back through output means
-    /// reading, so the screen yields to content; tapping the surface brings
-    /// the keyboard back (the wrapper's touch path retakes first responder).
+    /// reading, so the screen yields to content; a completed tap (see
+    /// `touchesEnded`) brings the keyboard back.
     var onScrollGesture: (() -> Void)?
     private var scrollHookInstalled = false
+
+    /// The wrapper retakes first responder at touch-DOWN whenever the software
+    /// keyboard is hidden (`UITerminalView+Interaction.touchesBegan`). After a
+    /// scroll has dropped the keyboard, the next finger that lands to keep
+    /// scrolling pops the keyboard up, and the pan's scroll-begin immediately
+    /// dismisses it again — the keyboard bounces on every swipe. True only for
+    /// the synchronous span of `super.touchesBegan`, so the wrapper's retake is
+    /// the one `becomeFirstResponder` call that gets refused; presentation
+    /// moves to touch-UP, and only for a touch that never scrolled.
+    private var suppressTouchDownKeyboardRetake = false
+    /// Whether the current direct-touch sequence scrolled — set by the pan
+    /// hook's `.began`, or from birth when the finger lands mid-glide (that
+    /// touch stops the fling; it is part of the scroll, not a keyboard tap).
+    private var touchSequenceScrolled = false
+    /// First-responder state at touch-down. A tap while the keyboard is up is
+    /// the wrapper's dismiss-toggle — don't re-present over its resign.
+    private var wasFirstResponderAtTouchDown = false
 
     /// The wrapper's `ghostty_surface_t`, resolved once per scroll interaction
     /// so the per-frame draw path never re-walks its private mirror at touch-
@@ -1146,6 +1189,7 @@ private final class DisplayTerminalView: UITerminalView {
     @objc private func scrollGestureChanged(_ gesture: UIPanGestureRecognizer) {
         switch gesture.state {
         case .began:
+            touchSequenceScrolled = true
             onScrollGesture?()
             scrollSurfaceHandle = ghosttySurfaceHandle()
             scrollCoasting = false
@@ -1221,12 +1265,51 @@ private final class DisplayTerminalView: UITerminalView {
     /// makes the wrapper's own pan-to-scroll reporting work. Remove once the
     /// wrapper sends positions itself (or once we hold a fork of it).
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if let touch = touches.first(where: { $0.type == .direct }),
+        let hasDirectTouch = touches.contains { $0.type == .direct }
+        if hasDirectTouch, let touch = touches.first(where: { $0.type == .direct }),
            let handle = ghosttySurfaceHandle() {
             let location = touch.location(in: self)
             termio_ghostty_surface_mouse_pos(handle, location.x, location.y, 0)
         }
+        if hasDirectTouch {
+            // A finger that lands while the fling pump is alive is stopping or
+            // continuing the scroll — never a keyboard tap.
+            touchSequenceScrolled = scrollPump != nil
+            wasFirstResponderAtTouchDown = isFirstResponder
+            suppressTouchDownKeyboardRetake = true
+        }
         super.touchesBegan(touches, with: event)
+        suppressTouchDownKeyboardRetake = false
+    }
+
+    /// Refuses only the wrapper's touch-down retake (see
+    /// `suppressTouchDownKeyboardRetake`); every other caller — the
+    /// controller's focus handoffs, the wrapper's selection copy menu —
+    /// passes straight through.
+    override func becomeFirstResponder() -> Bool {
+        if suppressTouchDownKeyboardRetake { return false }
+        return super.becomeFirstResponder()
+    }
+
+    /// The keyboard-presenting half of the tap: the touch ran to completion
+    /// without ever scrolling, and the keyboard was down when it landed.
+    /// (When the pan recognizer wins it usually cancels the touch instead,
+    /// which lands in `touchesCancelled` and presents nothing.)
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesEnded(touches, with: event)
+        guard touches.contains(where: { $0.type == .direct }) else { return }
+        let wasTap = !touchSequenceScrolled
+        touchSequenceScrolled = false
+        if wasTap, !wasFirstResponderAtTouchDown, window != nil {
+            _ = becomeFirstResponder()
+        }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesCancelled(touches, with: event)
+        if touches.contains(where: { $0.type == .direct }) {
+            touchSequenceScrolled = false
+        }
     }
 
     /// The `ghostty_surface_t` behind this view, via the wrapper's stored
