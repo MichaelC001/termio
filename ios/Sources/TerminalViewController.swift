@@ -448,9 +448,15 @@ final class TerminalViewController: UIViewController {
         }
     }
 
-    /// Pins the surface between the header and the keyboard guide (the
-    /// safe-area bottom while the keyboard is down).
+    /// Pins the surface between the header and the keyboard guide (the very
+    /// bottom of the screen while the keyboard is down).
     private func activateTerminalConstraints() {
+        // Keyboard down used to park the guide at the safe-area bottom,
+        // stacking ~34pt of dead band under a bottom-anchored TUI (on top of
+        // the grid's cell-rounding remainder and the TUI's own trailing blank
+        // row). Track the real keyboard instead: full-height terminal when
+        // it's away, and the TUI's blank row clears the home indicator.
+        view.keyboardLayoutGuide.usesBottomSafeArea = false
         NSLayoutConstraint.activate([
             terminalView.topAnchor.constraint(equalTo: headerBar.bottomAnchor),
             terminalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
