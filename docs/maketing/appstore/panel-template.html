@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1284px; height: 2778px; overflow: hidden; }
+  body {
+    background: linear-gradient(180deg, #F2F1EB 0%, #EDECE5 100%);
+    font-family: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif;
+    position: relative;
+  }
+  .caption {
+    padding: 130px 118px 0;
+    letter-spacing: -0.6px;
+  }
+  .caption h1 {
+    font-size: 88px;
+    line-height: 1.18;
+    font-weight: 700;
+    color: #16150F;
+  }
+  .caption p {
+    font-size: 88px;
+    line-height: 1.18;
+    font-weight: 500;
+    color: #98968A;
+    max-width: 1060px;
+  }
+  .device {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    top: __DEVICETOP__px;
+    width: 1160px;
+    background: #0d0d0f;
+    border-radius: 172px;
+    padding: 26px;
+    border: 3px solid #4a4a4e;
+    box-shadow: 0 60px 140px rgba(20, 18, 8, 0.28);
+  }
+  .screen {
+    border-radius: 146px;
+    overflow: hidden;
+    background: #000;
+  }
+  .screen img { display: block; width: 100%; }
+  /* side buttons, titanium-style */
+  .btn {
+    position: absolute; right: -8px; width: 8px; border-radius: 0 4px 4px 0;
+    background: #3d3d41;
+  }
+  .btn.power { top: 560px; height: 190px; }
+  .btnl {
+    position: absolute; left: -8px; width: 8px; border-radius: 4px 0 0 4px;
+    background: #3d3d41;
+  }
+  .btnl.vol1 { top: 420px; height: 110px; }
+  .btnl.vol2 { top: 560px; height: 110px; }
+  .btnl.action { top: 300px; height: 70px; }
+</style>
+</head>
+<body>
+  <div class="caption">
+    <h1>__HEADLINE__</h1>
+    <p>__SUBLINE__</p>
+  </div>
+  <div class="device">
+    <div class="btnl action"></div>
+    <div class="btnl vol1"></div>
+    <div class="btnl vol2"></div>
+    <div class="btn power"></div>
+    <div class="screen"><img src="__IMAGE__"></div>
+  </div>
+</body>
+</html>
