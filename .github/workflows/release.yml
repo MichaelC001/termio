@@ -18,6 +18,11 @@ concurrency:
 env:
   APP_NAME: termio
   SPARKLE_VERSION: "2.9.3"
+  # Pin the toolchain to the macOS 26.4 SDK. AppKit keys titlebar/sidebar chrome off
+  # the SDK the app links against, and 26.5-linked builds drop the floating sidebar
+  # inset — the window title lands flush against the sidebar divider. Keep this in
+  # step with the local dev toolchain until the toolbar is adapted to the 26.5 chrome.
+  DEVELOPER_DIR: /Applications/Xcode_26.4.app/Contents/Developer
   # The DMG lives at $DOWNLOAD_BASE_URL/v<version>/termio.dmg (immutable) with a
   # stable $DOWNLOAD_BASE_URL/termio.dmg copy; the appcast at $DOWNLOAD_BASE_URL/
   # appcast.xml (matches SUFeedURL in packaging/Info.plist).
