@@ -207,6 +207,18 @@ final class RootContainerViewController: UIViewController {
         )
     }
 
+    /// `-open-project <name>`: same, but for a live roster project once it
+    /// arrives. Returns false while the project isn't in the roster yet.
+    func openProjectPage(named name: String) -> Bool {
+        loadViewIfNeeded()
+        guard let project = store.projects.first(where: { $0.name == name }) else { return false }
+        homeNav.pushViewController(
+            ProjectDetailViewController(store: store, project: project),
+            animated: false
+        )
+        return true
+    }
+
     /// Repaint the current-session pill on whichever home screens are up.
     private func refreshHomeLists() {
         for screen in homeNav.viewControllers {

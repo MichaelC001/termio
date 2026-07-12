@@ -65,6 +65,20 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             return true
         }
 
+        // `-open-project <name>`: push a live project's page once the roster
+        // delivers it — the live-data counterpart of `-demo project`, so
+        // simctl runs can screenshot the second home level against the real
+        // companion server.
+        if let name = Self.argument("-open-project", in: args) {
+            var ticks = 0
+            Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
+                MainActor.assumeIsolated {
+                    ticks += 1
+                    if root.openProjectPage(named: name) || ticks > 20 { timer.invalidate() }
+                }
+            }
+        }
+
         if let flagIndex = args.firstIndex(of: "-demo"), args.indices.contains(flagIndex + 1) {
             let mode = args[flagIndex + 1]
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {

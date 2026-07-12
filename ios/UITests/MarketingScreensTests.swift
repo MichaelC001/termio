@@ -39,8 +39,46 @@ final class MarketingScreensTests: XCTestCase {
         back.tap()
     }
 
+    /// Keyboard-up shots of a few named agent sessions — the terminal opens
+    /// with the keyboard presented, so the shot is straight after the push.
+    func testAgentKeyboardShots() throws {
+        let fileURL = (try? String(contentsOfFile: "/tmp/marketing-roster-url", encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let rosterURL = ProcessInfo.processInfo.environment["ROSTER_URL"] ?? fileURL,
+              !rosterURL.isEmpty
+        else {
+            throw XCTSkip("ROSTER_URL not set — marketing capture is manual-only")
+        }
+        let app = XCUIApplication()
+        app.launchArguments = ["-roster-url", rosterURL]
+        app.launch()
+
+        let shots: [(project: String, row: String, slug: String)] = [
+            ("home", "Terminal", "terminal"),
+        ]
+        for shot in shots {
+            let project = app.staticTexts[shot.project].firstMatch
+            XCTAssertTrue(project.waitForExistence(timeout: 10), "no project \(shot.project)")
+            project.tap()
+            let row = app.staticTexts[shot.row].firstMatch
+            XCTAssertTrue(row.waitForExistence(timeout: 8), "no session row \(shot.row)")
+            row.tap()
+            let back = app.buttons["terminal.back"]
+            XCTAssertTrue(back.waitForExistence(timeout: 8))
+            shoot(app, "\(shot.slug)-keyboard")
+            back.tap()
+            let home = app.buttons["project.back"].firstMatch
+            if home.waitForExistence(timeout: 3) { home.tap() }
+        }
+    }
+
     func testMarketingScreens() throws {
-        guard let rosterURL = ProcessInfo.processInfo.environment["ROSTER_URL"],
+        // Runner env when it propagates, else a host-side file — simulator
+        // processes share the host filesystem, and TEST_RUNNER_ vars don't
+        // reliably reach the UI-test runner from xcodebuild.
+        let fileURL = (try? String(contentsOfFile: "/tmp/marketing-roster-url", encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let rosterURL = ProcessInfo.processInfo.environment["ROSTER_URL"] ?? fileURL,
               !rosterURL.isEmpty
         else {
             throw XCTSkip("ROSTER_URL not set — marketing capture is manual-only")
@@ -59,7 +97,7 @@ final class MarketingScreensTests: XCTestCase {
         shoot(app, "sessions")
 
         captureSession(app, row: "Claude Code", slug: "claude", keyboardShot: true)
-        captureSession(app, row: "Codex", slug: "codex", keyboardShot: false)
+        captureSession(app, row: "Codex", slug: "codex", keyboardShot: true)
         captureSession(app, row: "Terminal", slug: "terminal", keyboardShot: false)
     }
 }
