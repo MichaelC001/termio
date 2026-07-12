@@ -119,8 +119,12 @@ struct CommandPaletteView: View {
                            let title = item.section.title {
                             sectionHeader(title)
                         }
+                        // Identity must stay the item's id: an .id(index)
+                        // override makes row 0 "the same view" across queries,
+                        // and LazyVStack then reuses its cached content — the
+                        // list freezes on stale rows while filtering.
                         PaletteRow(item: item, isHighlighted: index == highlighted)
-                            .id(index)
+                            .id(item.id)
                             .onTapGesture { run(item) }
                             .onHover { inside in if inside { highlighted = index } }
                     }
@@ -128,7 +132,10 @@ struct CommandPaletteView: View {
                 .padding(6)
             }
             .onChange(of: highlighted) { _, index in
-                proxy.scrollTo(index, anchor: nil)
+                let items = filtered
+                if items.indices.contains(index) {
+                    proxy.scrollTo(items[index].id, anchor: nil)
+                }
             }
         }
     }
