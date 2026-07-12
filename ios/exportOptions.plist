@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- TestFlight/App Store export: `xcodebuild -exportArchive` with
+     destination=upload sends the build straight to App Store Connect,
+     authenticated by the ASC API key passed on the command line
+     (same key the macOS release workflow uses for notarization). -->
+<dict>
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>destination</key>
+	<string>upload</string>
+	<key>teamID</key>
+	<string>5Y27G7B6D8</string>
+</dict>
+</plist>
