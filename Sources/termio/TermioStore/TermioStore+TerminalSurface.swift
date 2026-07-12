@@ -31,6 +31,47 @@ enum ClaudeConversation {
     }
 }
 
+/// Pre-creates Pi's on-disk session file for a pinned id, so `--session-id` always
+/// resolves to an existing session. Pi looks the id up in its session store at
+/// startup and prints a yellow "No project session found … creating a new session"
+/// warning when no file exists yet — which, with termio minting the id up front,
+/// would be every first launch. Writing the same header-only JSONL file pi itself
+/// would create keeps that launch silent; pi appends the conversation to it. The
+/// layout mirrors pi's session-manager (verified against pi v0.80.6):
+/// `~/.pi/agent/sessions/--<encoded cwd>--/<timestamp>_<id>.jsonl`, where the first
+/// line is `{"type":"session","version":3,"id":…,"timestamp":…,"cwd":…}`. If pi ever
+/// changes the layout the lookup just misses and pi warns-and-creates as before.
+enum PiSession {
+    static func ensureExists(id: String, cwd: String) {
+        // Pi derives the folder from its *process* cwd, whose symlinks the kernel
+        // resolved at chdir — canonicalize the same way (`/tmp` → `/private/tmp`).
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        let resolved = realpath(cwd, &buffer) != nil ? String(cString: buffer) : cwd
+        var encoded = resolved
+        if encoded.hasPrefix("/") { encoded.removeFirst() }
+        encoded = "--\(String(encoded.map { "/\\:".contains($0) ? "-" : $0 }))--"
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".pi/agent/sessions", isDirectory: true)
+            .appendingPathComponent(encoded, isDirectory: true)
+        // Pi names session files `<timestamp>_<id>.jsonl`; one already carrying this
+        // id (created by pi or by us) means there is nothing to do — never overwrite.
+        if let existing = try? FileManager.default.contentsOfDirectory(atPath: dir.path),
+           existing.contains(where: { $0.hasSuffix("_\(id).jsonl") }) { return }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let timestamp = formatter.string(from: Date())
+        let header: [String: Any] = [
+            "type": "session", "version": 3, "id": id, "timestamp": timestamp, "cwd": resolved,
+        ]
+        guard var line = try? JSONSerialization.data(
+            withJSONObject: header, options: [.withoutEscapingSlashes]) else { return }
+        line.append(0x0A)
+        let name = "\(String(timestamp.map { ":.".contains($0) ? "-" : $0 }))_\(id).jsonl"
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? line.write(to: dir.appendingPathComponent(name), options: .atomic)
+    }
+}
+
 extension TermioStore {
     /// Returns the cached terminal surface for a session, creating and starting
     /// it on first access. The surface launches `session.command` (or the login
@@ -51,6 +92,12 @@ extension TermioStore {
         // and the directory-resume agents); it's written back below.
         let launch = resolveLaunch(for: session, workspacePath: workspacePath)
         let agentCommand = launch.command
+
+        // Pi checks the pinned `--session-id` against its session store at startup
+        // and warns when no file exists yet; pre-creating it keeps the launch silent.
+        if session.agent == .pi, let pinnedID = launch.resumeID {
+            PiSession.ensureExists(id: pinnedID, cwd: workspacePath)
+        }
 
         // When the project is sandboxed, the session's whole process tree runs under a
         // Seatbelt profile compiled from `project.sandbox`: `sandbox-exec` wraps the same
