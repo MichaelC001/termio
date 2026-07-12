@@ -402,6 +402,12 @@ final class TerminalViewController: UIViewController {
         keyBar.onSticky = { [weak self] key in
             self?.terminalView.toggleStickyModifier(key == .ctrl ? .ctrl : .alt)
         }
+        keyBar.onScrollEdge = { [weak self] edge in
+            switch edge {
+            case .top: self?.terminalView.scrollToTop()
+            case .bottom: self?.terminalView.scrollToBottom()
+            }
+        }
         keyBar.onAttach = { [weak self] source in
             switch source {
             case .camera: self?.presentCamera()
