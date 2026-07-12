@@ -3,7 +3,7 @@ title: macOS release runbook — cut, notarize, publish termio.dmg
 status: active
 type: design
 created: 2026-07-06
-updated: 2026-07-10
+updated: 2026-07-12
 related:
   - ../RELEASING.md
 ---
@@ -202,15 +202,27 @@ cache step to run by hand.
 
 ## Per-release runbook
 
-1. Land all changes on `main`; make sure CI is green.
+Daily work lands on `dev` (the GitHub default branch since 2026-07-12); `main`
+only advances at release time, via a full-history merge — never squash, never
+direct work commits.
+
+1. Make sure CI is green on `dev` and everything meant for the release is
+   pushed there.
 2. Pick the next version (semver), e.g. `0.1.0`. Nothing in the repo needs
    editing — the tag *is* the version.
-3. Cut it:
+3. Merge and cut it on `main`:
 
    ```sh
+   git checkout main
+   git merge --no-ff dev -m "release: v0.1.0"
+   git push origin main
    git tag v0.1.0
    git push origin v0.1.0
+   git checkout dev
    ```
+
+   The `--no-ff` merge commit is the release marker on `main`; the full `dev`
+   commit history is preserved beneath it.
 
 4. Watch the **Release** workflow:
 
