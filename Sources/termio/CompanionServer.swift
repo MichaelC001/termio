@@ -918,6 +918,16 @@ extension TermioStore {
     /// `wireID` is a full session UUID or the CLI's 8-char prefix.
     func companionPTY(for wireID: String) -> PTYProcess? {
         guard let (project, session) = findCompanionSession(wireID) else { return nil }
+        // Attaching from the phone is the mobile equivalent of selecting the
+        // session in the desktop sidebar: the user is now looking at the prompt,
+        // so a resting "needs you" / unseen "done" marker has been acknowledged.
+        // Without this, permission prompts answered through the raw PTY can stay
+        // orange forever because menu keystrokes don't necessarily produce a new
+        // agent hook event to overwrite the old attention state.
+        if statuses[session.id] == .needsAttention || statuses[session.id] == .done {
+            statuses[session.id] = .idle
+        }
+        liveActivity[project.id] = Date()
         if let pty = ptyProcesses[session.id] { return pty }
         _ = surface(for: session, in: project)
         return ptyProcesses[session.id]
