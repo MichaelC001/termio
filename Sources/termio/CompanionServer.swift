@@ -976,8 +976,11 @@ extension TermioStore {
         let prefix = wireID.lowercased()
         guard !prefix.isEmpty else { return nil }
         for project in projects {
+            // Browser panes are invisible to the phone (they're not in the roster
+            // either): a PTY attach against one would spawn a shell the session
+            // was never meant to have.
             for session in project.sessions
-            where session.id.uuidString.lowercased().hasPrefix(prefix) {
+            where !session.isBrowser && session.id.uuidString.lowercased().hasPrefix(prefix) {
                 return (project, session)
             }
         }
@@ -997,7 +1000,9 @@ extension TermioStore {
                 name: project.name,
                 path: project.path,
                 branch: branchModel.branch(for: project.path) ?? project.branch,
-                sessions: project.sessions.map { session in
+                // Browser panes stay Mac-only: the phone renders terminals over
+                // the PTY wire, and a browser session has no PTY to attach.
+                sessions: project.sessions.filter { !$0.isBrowser }.map { session in
                     // The sidebar tooltip's activity line doubles as the
                     // phone's row preview; empty means "nothing to say".
                     let activity = statusDescription(for: session.id)

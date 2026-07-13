@@ -187,7 +187,9 @@ private struct ProjectHeader: View {
 
     /// Width the trailing agent icons occupy (button frame 22 + 3 spacing each), so
     /// the hovered label can fade out exactly under them rather than guessing.
+    /// Zero for the Terminals section, which offers no agent quick-add.
     private var agentIconClusterWidth: CGFloat {
+        guard project.kind != .terminals else { return 0 }
         let count = enabledAgentPresets(settings).count
         guard count > 0 else { return 0 }
         return CGFloat(count) * 22 + CGFloat(count - 1) * 3
@@ -195,7 +197,18 @@ private struct ProjectHeader: View {
 
     /// The right-click menu: a "New … Session" entry per enabled agent, then the
     /// project's own actions. Mirrors the hover controls so both routes stay in sync.
+    /// The Terminals section is not a folder project — agents don't belong in `$HOME`
+    /// (they get a real project or the scoped scratch workspace), and worktree /
+    /// sandbox / Finder actions are about a project's directory — so its menu is
+    /// just the terminal action and Remove.
     private var projectMenuItems: [SidebarMenuItem] {
+        if project.kind == .terminals {
+            return [
+                .action("New Terminal") { store.addSession(to: project.id, agent: .terminal) },
+                .separator,
+                .action("Remove") { store.removeProject(project.id) },
+            ]
+        }
         var items: [SidebarMenuItem] = enabledAgentPresets(settings).map { preset in
             .action("New \(preset.displayName) Session") {
                 store.addSession(to: project.id, agent: preset)
@@ -227,9 +240,11 @@ private struct ProjectHeader: View {
             // header label lines up with the session titles). The folder itself is
             // the open/closed affordance — an open folder when the project's sessions
             // are showing, a closed one when folded — so no separate chevron is
-            // needed (clicking the header still toggles it).
+            // needed (clicking the header still toggles it). The Terminals section
+            // is not a folder, so it carries the terminal glyph in both states.
             HugeIconView(
-                icon: isCollapsed ? .folder : .folderOpen,
+                icon: project.kind == .terminals ? .terminal
+                    : (isCollapsed ? .folder : .folderOpen),
                 size: 15,
                 color: chrome?.foreground ?? .primary
             )
@@ -298,15 +313,19 @@ private struct ProjectHeader: View {
         // Project) live in the right-click context menu below rather than an inline
         // button, keeping the hover row to just the agent icons.
         .overlay(alignment: .trailing) {
-            HStack(spacing: 3) {
-                ForEach(enabledAgentPresets(settings)) { preset in
-                    AgentQuickAddButton(preset: preset, chrome: chrome) {
-                        store.addSession(to: project.id, agent: preset)
+            // The Terminals section gets no agent cluster — an agent loose in `$HOME`
+            // is exactly what the scoped scratch workspace exists to prevent.
+            if project.kind != .terminals {
+                HStack(spacing: 3) {
+                    ForEach(enabledAgentPresets(settings)) { preset in
+                        AgentQuickAddButton(preset: preset, chrome: chrome) {
+                            store.addSession(to: project.id, agent: preset)
+                        }
                     }
                 }
+                .opacity(isHovering ? 1 : 0)
+                .allowsHitTesting(isHovering)
             }
-            .opacity(isHovering ? 1 : 0)
-            .allowsHitTesting(isHovering)
         }
         .padding(.vertical, 3)
         .contentShape(Rectangle())
@@ -540,7 +559,13 @@ private struct SessionRow: View {
             // settings page shows), and the plain terminal symbol carries its own
             // muted grey from AgentIconView.
             Group {
-                if store.status(for: session.id) == .working {
+                if session.isBrowser {
+                    // A browser pane has no agent to badge (and never "works"),
+                    // so it carries a plain globe in the terminal glyph's grey.
+                    Image(systemName: "globe")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                } else if store.status(for: session.id) == .working {
                     WorkingIndicator(tint: session.agent.tintColor)
                 } else {
                     AgentIconView(agent: session.agent, size: 13)
@@ -716,7 +741,7 @@ private struct WorkingIndicator: View {
                 .truncatingRemainder(dividingBy: period) / period
             ZStack {
                 // A faint steady center anchors the spinning ring.
-                dot(opacity: 0.3)
+                dot(opacity: 0.45)
                 ForEach(Array(Self.ring.enumerated()), id: \.offset) { index, cell in
                     dot(opacity: opacity(at: index, phase: phase))
                         .offset(
@@ -743,7 +768,7 @@ private struct WorkingIndicator: View {
         let head = phase * count
         let raw = abs(Double(index) - head)
         let distance = min(raw, count - raw)
-        return max(0.22, 1 - distance / 3)
+        return max(0.4, 1 - distance / 3)
     }
 }
 

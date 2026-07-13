@@ -32,8 +32,8 @@ from the real front matter).
 | status | type | title |
 | --- | --- | --- |
 | active | backlog | [Backlog](backlog/backlog.md) |
-| active | bug | [Terminal randomly loses keyboard focus (hollow cursor) after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
 | active | bug | [iOS libghostty "non-functional" panel + surface-teardown crash — fix journey](bug/ios-ghostty-renderer-panic-and-teardown-uaf.md) |
+| active | bug | [Terminal randomly loses keyboard focus (hollow cursor) after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
 | active | design | ["Remote-access design lessons: sleep reachability, stable domains, identity, monetization"](design/remote-access-lessons.md) |
 | active | design | [iOS libghostty "non-functional" panel + teardown UAF — root-cause findings](design/ios-ghostty-renderer-panic-investigation-findings.md) |
 | active | design | [iOS terminal input & attachments](design/ios-terminal-input.md) |
@@ -41,33 +41,35 @@ from the real front matter).
 | active | marketing | [termio — Go-to-Market & Revenue Reality](maketing/go-to-market.md) |
 | active | rfc | [Push-to-talk voice dictation — hold the space bar (iOS shipped, OpenAI)](rfcs/push-to-talk-voice-dictation.md) |
 | approved | design | [会话历史 · 搜索 · 恢复（Session History / Search / Resume）](design/session-history-search-resume.md) |
-| archived | design | [Sandbox VM —— 原生 per-project 容器（Apple Containerization）](design/sandbox-vm.md) |
 | archived | design | [iOS scroll-draw coalescing (vsync-capped surface draws)](design/ios-scroll-renderer-health.md) |
+| archived | design | [Sandbox VM —— 原生 per-project 容器（Apple Containerization）](design/sandbox-vm.md) |
 | archived | plan | [Fix — defer the PTY spawn to the first real layout size so the agent banner boots at pane width](plan/terminal-narrow-grid-frozen-banner-fix.md) |
 | done | bug | ["HANDOFF: terminal content does not reflow on window resize"](bug/terminal-resize-no-reflow-HANDOFF.md) |
 | done | bug | [Agent welcome banner frozen into a narrow column when a session opens in a wide window](bug/terminal-narrow-grid-frozen-banner-on-open.md) |
 | done | marketing | [从 IDE 到 ADE：开发环境六十年，以及它为什么正在终结](maketing/blog-ide-to-ade.md) |
 | done | research | ["ADE 赛道全景表（2026-07）：开源 + 闭源一张表，termio 亮点"](competitive-analysis/10-landscape-table-2026-07.md) |
+| done | research | ["Competitive analysis: claude-squad"](competitive-analysis/05-claude-squad.md) |
+| done | research | ["Competitive analysis: cmux (manaflow-ai)"](competitive-analysis/02-cmux.md) |
 | done | research | ["Competitive analysis: Conductor"](competitive-analysis/03-conductor.md) |
+| done | research | ["Competitive analysis: container-use (dagger)"](competitive-analysis/06-container-use.md) |
 | done | research | ["Competitive analysis: Crystal / Nimbalyst"](competitive-analysis/04-crystal.md) |
 | done | research | ["Competitive analysis: Unpeel"](competitive-analysis/01-unpeel.md) |
 | done | research | ["Competitive analysis: Vibe Island family (status monitors)"](competitive-analysis/07-vibe-island.md) |
 | done | research | ["Competitive analysis: Warp (alternative paradigm)"](competitive-analysis/08-warp.md) |
-| done | research | ["Competitive analysis: claude-squad"](competitive-analysis/05-claude-squad.md) |
-| done | research | ["Competitive analysis: cmux (manaflow-ai)"](competitive-analysis/02-cmux.md) |
-| done | research | ["Competitive analysis: container-use (dagger)"](competitive-analysis/06-container-use.md) |
 | done | research | ["termio differentiation, gaps, and risks"](competitive-analysis/09-differentiation-and-gaps.md) |
+| draft | design | [分享 Agent 会话（带密码的实时分享链接）](design/session-share.md) |
+| draft | design | [移动端 Agent UI 协议 —— PTY 之上的旁路结构面（ACP 词汇）](design/mobile-agent-ui-protocol.md) |
+| draft | design | [调研：下一批 AgentAdapter 的落盘格式（OpenCode / Pi / Amp / Cursor / Kimi）](design/agent-transcript-survey.md) |
 | draft | design | [Git worktree creation & lifecycle (Codex-aligned)](design/worktree-creation-lifecycle.md) |
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/remote-projects.md) |
 | draft | design | [Session Daemon Architecture (termiod — one model for local, remote, mobile)](design/session-daemon-architecture.md) |
-| draft | design | [Vibe Island 式 Agent 状态层（Claude Code hooks）](design/vibe-island-status.md) |
-| draft | design | [分享 Agent 会话（带密码的实时分享链接）](design/session-share.md) |
-| draft | design | [移动端 Agent UI 协议 —— PTY 之上的旁路结构面（ACP 词汇）](design/mobile-agent-ui-protocol.md) |
 | draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/remote-access-relay-strategy.md) |
+| draft | design | [Vibe Island 式 Agent 状态层（Claude Code hooks）](design/vibe-island-status.md) |
 | draft | marketing | [OG image & landing copy](maketing/og-image-and-messaging.md) |
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/sandbox-seatbelt.md) |
 | draft | rfc | [Automation — scheduled agent runs](rfcs/automation-scheduled-agent-runs.md) |
 | draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](rfcs/fork-libghostty-spm.md) |
+| draft | rfc | [Loose terminals as first-class entities](design/loose-terminal-entity.md) |
 | draft | rfc | [Onboarding —— 首次启动体验设计](design/onboarding.md) |
 | implemented (phase 1) | design | [Worktree information architecture](design/worktree-information-architecture.md) |
 | in-progress | rfc | [可扩展 Agent —— 配置化定义 + 配置化 Hook](design/agent-extensibility.md) |

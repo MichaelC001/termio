@@ -19,6 +19,10 @@ final class TerminalContextMenu: NSObject {
     private var monitor: Any?
     /// The surface the open menu acts on, resolved at click time.
     private weak var clickedView: TerminalView?
+    /// The web link under the pointer at click time (ghostty's hover-link report,
+    /// the same state the cmd+click interceptor reads), or nil off-link. Captured
+    /// when the menu opens so the actions don't chase a moved mouse.
+    private var clickedLinkURL: URL?
 
     init(store: TermioStore) {
         self.store = store
@@ -68,12 +72,23 @@ final class TerminalContextMenu: NSObject {
             store.selectedSessionID = id
         }
         clickedView = target
+        clickedLinkURL = TerminalLinkState.hoveredURL
+            .flatMap(URL.init(string:))
+            .flatMap { ["http", "https"].contains($0.scheme?.lowercased() ?? "") ? $0 : nil }
         NSMenu.popUpContextMenu(makeMenu(), with: event, for: target)
         return true
     }
 
     private func makeMenu() -> NSMenu {
         let menu = NSMenu()
+        // Right-clicking a web link offers it externally up top (the Browser
+        // Right/Down items below pick the same link up for an in-app split).
+        // This is also the path that always works — a TUI with mouse reporting
+        // (Claude Code) swallows cmd+click, but never the right-click.
+        if clickedLinkURL != nil {
+            menu.addItem(storeItem("Open Link", action: #selector(openLink), symbol: "safari"))
+            menu.addItem(.separator())
+        }
         // Copy/Paste target the surface's own responder actions: copy is a
         // no-op without a selection, and paste routes through ghostty's
         // `paste_from_clipboard` binding so bracketed paste is preserved.
@@ -82,6 +97,10 @@ final class TerminalContextMenu: NSObject {
         menu.addItem(.separator())
         menu.addItem(storeItem("Split Right", action: #selector(splitRight), symbol: "rectangle.split.2x1"))
         menu.addItem(storeItem("Split Down", action: #selector(splitDown), symbol: "rectangle.split.1x2"))
+        // Opens a browser pane split to the right of this terminal — always
+        // present, not gated on a hovered link. With a link under the pointer the
+        // pane opens on it; otherwise it opens blank with the address bar focused.
+        menu.addItem(storeItem("Open Browser", action: #selector(openBrowser), symbol: "globe"))
         if store?.splitRoot != nil {
             menu.addItem(storeItem("Close Pane", action: #selector(closePane), symbol: "rectangle"))
         }
@@ -105,6 +124,13 @@ final class TerminalContextMenu: NSObject {
     @objc private func splitRight() { store?.splitSelectedPane(.horizontal) }
     @objc private func splitDown() { store?.splitSelectedPane(.vertical) }
     @objc private func closePane() { store?.closeSelectedPane() }
+
+    @objc private func openLink() {
+        guard let url = clickedLinkURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc private func openBrowser() { store?.openBrowserPane(url: clickedLinkURL, direction: .horizontal) }
 
     /// All terminal surface views under `root`, in tree order.
     private func terminalViews(in root: NSView) -> [TerminalView] {

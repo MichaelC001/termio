@@ -55,6 +55,39 @@ extension TermioStore {
         selectedSessionID = newSession.id
     }
 
+    /// Splits the focused pane with a **browser pane** — the "terminal left,
+    /// browser right/below" layout. The browser pane is a session like any
+    /// other (see `Session.browserURL`), so it joins the project, the sidebar,
+    /// and the split group through the exact same moves as `splitSelectedPane`;
+    /// only its leaf view differs, and no shell is ever spawned for it.
+    /// `url` nil opens a blank pane with the address bar focused (the context
+    /// menu's plain "Browser Right/Down", used with no link under the pointer).
+    func openBrowserPane(url: URL?, direction: SplitDirection) {
+        guard let focusedID = selectedSessionID,
+              let projectIndex = projects.firstIndex(where: { $0.sessions.contains { $0.id == focusedID } }),
+              let sessionIndex = projects[projectIndex].sessions.firstIndex(where: { $0.id == focusedID })
+        else { return }
+
+        // Titled by host:port — for a dev server ("localhost:5173") that is more
+        // useful in the sidebar than a page title that changes on every route.
+        let host = url?.host.map { $0 + (url?.port.map { ":\($0)" } ?? "") }
+        var newSession = Session(title: host ?? "Browser")
+        // Empty string = a browser pane with no page yet; `browserURL` must stay
+        // non-nil, since non-nil is what marks the session as a browser at all.
+        newSession.browserURL = url?.absoluteString ?? ""
+        projects[projectIndex].sessions.insert(newSession, at: sessionIndex + 1)
+
+        if let group = groupIndex(containing: focusedID) {
+            splitGroups[group] = splitGroups[group]
+                .splitting(leaf: focusedID, direction: direction, adding: newSession.id)
+        } else {
+            splitGroups.append(.split(SplitBranch(direction: direction, ratio: 0.5,
+                                                  first: .leaf(focusedID),
+                                                  second: .leaf(newSession.id))))
+        }
+        selectedSessionID = newSession.id
+    }
+
     /// Closes the focused *pane* — the layout operation, not the session one.
     /// The session stays alive in the sidebar (its shell keeps running, its
     /// surface stays cached); it just leaves its group, and focus moves to its

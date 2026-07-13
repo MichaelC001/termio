@@ -24,6 +24,15 @@
     <true/>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.developer-tools</string>
+    <!-- The browser pane (BrowserPane.swift) points at dev servers, which speak
+         plain http on loopback; ATS would refuse those loads without the local-
+         networking exemption. Non-local plain http stays blocked by design — in
+         the pane such a link just won't load, and its Safari button remains. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
     <!-- Sparkle auto-update. The feed is the appcast served from Cloudflare R2
          behind downloads.termio.sh; the release workflow uploads a fresh appcast.xml
          there on every tag. SUPublicEDKey is the (non-secret) EdDSA public key that

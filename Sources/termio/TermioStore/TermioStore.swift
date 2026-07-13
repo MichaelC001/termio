@@ -147,6 +147,13 @@ final class TermioStore: ObservableObject {
     /// distinguishable. The stored `Session.title` is never touched.
     @Published var liveTitles: [Session.ID: String] = [:]
 
+    /// The live working directory per session, from the shell's OSC 7 reports
+    /// (surfaced by `TerminalViewState.workingDirectory`, subscribed in
+    /// `monitor(_:for:)`). For loose terminals this *is* the entity's path: it
+    /// labels the sidebar row and roots the inspector (file tree / search /
+    /// changes), so the app follows a `cd` instead of staying parked at `$HOME`.
+    @Published var workingDirectories: [Session.ID: String] = [:]
+
     /// User preferences (appearance, agent commands, worktree behaviour). Held so
     /// surfaces can be configured on creation and re-styled live when settings
     /// change; also handed to the settings UI and sidebar.
@@ -158,6 +165,9 @@ final class TermioStore: ObservableObject {
     let branchModel = BranchModel()
 
     var surfaces: [Session.ID: TerminalViewState] = [:]
+    /// The live WKWebView behind each browser-pane session (see `browserPane(for:)`),
+    /// cached like `surfaces` so revisiting the pane never reloads the page.
+    var browserPanes: [Session.ID: BrowserPaneModel] = [:]
     var monitors: [Session.ID: [AnyCancellable]] = [:]
     /// The termio-owned PTY behind each host-managed session — the byte stream
     /// the surface renders and the companion server taps for a phone.
@@ -338,7 +348,10 @@ final class TermioStore: ObservableObject {
             return TermioStore(projects: Project.firstRunProjects(), settings: settings)
         }
 
-        let store = TermioStore(projects: normalizingAgentTitles(snapshot.projects), settings: settings)
+        let store = TermioStore(
+            projects: migratingHomeProject(normalizingAgentTitles(snapshot.projects)),
+            settings: settings
+        )
         if let id = snapshot.selectedSessionID, store.session(id) != nil {
             store.selectedSessionID = id
         }
@@ -372,6 +385,31 @@ final class TermioStore: ObservableObject {
                 } else if session.title == session.agent.displayName.lowercased() {
                     session.title = session.agent.displayName
                 }
+                return session
+            }
+            return project
+        }
+    }
+
+    /// State files from before the loose-terminals entity existed (see
+    /// docs/design/loose-terminal-entity.md) modeled scratch terminals as a plain
+    /// project rooted at `$HOME`. Re-tag that container as `.terminals` (with the
+    /// fixed section name) so it renders as the Terminals section rather than a
+    /// fake home project. Idempotent — an already-tagged container passes through
+    /// unchanged. The pre-entity seed also called its one shell "shell", which
+    /// isn't an auto `Terminal N` name and would block the cwd-basename label, so
+    /// it is re-numbered here.
+    private static func migratingHomeProject(_ projects: [Project]) -> [Project] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        return projects.map { project in
+            var project = project
+            guard project.kind == .terminals
+                || (project.path as NSString).standardizingPath == home else { return project }
+            project.kind = .terminals
+            project.name = "Terminals"
+            project.sessions = project.sessions.enumerated().map { index, session in
+                var session = session
+                if session.title == "shell" { session.title = "Terminal \(index + 1)" }
                 return session
             }
             return project
@@ -415,7 +453,28 @@ final class TermioStore: ObservableObject {
               Self.isAutoTerminalName(session.title) else {
             return session.title
         }
+        // A loose terminal is labeled by its live cwd's basename (`~` at home):
+        // the session owns its path, so `cd ~/code/foo` renames the row to `foo`
+        // (see docs/design/loose-terminal-entity.md). Falls back to the cwd
+        // persisted from the last run, then to a bare `Terminal` before the
+        // shell's first OSC 7 report. Project terminals keep the plain label —
+        // their place is the project, not wherever they've wandered.
+        if project(for: session.id)?.kind == .terminals,
+           let cwd = workingDirectories[session.id] ?? session.lastWorkingDirectory {
+            return Self.terminalLabel(forPath: cwd)
+        }
         return "Terminal"
+    }
+
+    /// A loose terminal's display label for a working directory: `~` at the home
+    /// directory, otherwise the folder's basename.
+    private static func terminalLabel(forPath path: String) -> String {
+        let standardized = (path as NSString).standardizingPath
+        if standardized == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path {
+            return "~"
+        }
+        let name = (standardized as NSString).lastPathComponent
+        return name.isEmpty ? standardized : name
     }
 
     /// Whether `title` is an auto-generated `Terminal N` label (as opposed to a

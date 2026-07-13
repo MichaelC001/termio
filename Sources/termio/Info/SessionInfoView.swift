@@ -18,8 +18,15 @@ struct SessionInfoView: View {
     }
 
     /// Where the session runs: its worktree if it has one, else the project root.
+    /// A loose terminal reports its live cwd (the session's own mutable path)
+    /// rather than the container's `$HOME` fallback.
     private var workingDirectory: String? {
         guard let project else { return nil }
+        if project.kind == .terminals, let id = store.selectedSessionID {
+            return store.workingDirectories[id]
+                ?? session?.lastWorkingDirectory
+                ?? project.path
+        }
         return session?.worktreePath ?? project.path
     }
 

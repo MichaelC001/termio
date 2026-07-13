@@ -30,6 +30,11 @@ struct TerminalPane: View {
     @FocusState private var focusedSession: Session.ID?
     @State private var activated: [Session.ID] = []
     @State private var isDropTargeted = false
+    /// Browser panes mid close animation. A close fades + shrinks the pane first,
+    /// then removes the session once it's invisible — so the animation runs on the
+    /// browser alone and the terminal never gets resized mid-transition (a live
+    /// terminal resize is a SIGWINCH storm that would reflow the shell every frame).
+    @State private var closingBrowsers: Set<Session.ID> = []
 
     /// The wash painted over the terminal while a file is dragged onto it. The old fill was a flat
     /// `accentColor.opacity(0.18)`, which read as a heavy, saturated blue. This is a much softer,
@@ -63,12 +68,27 @@ struct TerminalPane: View {
                     // Hidden sessions keep the full pane size, so returning to
                     // them single-pane is still resize-free.
                     let rect = paneFrame ?? bounds
-                    TerminalSurfaceView(context: store.surface(for: item.session, in: item.project))
-                        .terminalFocused($focusedSession, equals: id)
-                        .frame(width: rect.width, height: rect.height)
-                        .position(x: rect.midX, y: rect.midY)
-                        .opacity(isVisible ? 1 : 0)
-                        .allowsHitTesting(isVisible)
+                    let closing = closingBrowsers.contains(id)
+                    // A browser session mounts its web view where a terminal
+                    // session mounts its surface — the split tree only ever
+                    // computed a frame, so the two leaf kinds are interchangeable.
+                    Group {
+                        if item.session.isBrowser {
+                            BrowserPaneView(model: store.browserPane(for: item.session),
+                                            onClose: { closeBrowser(id) })
+                        } else {
+                            TerminalSurfaceView(context: store.surface(for: item.session, in: item.project))
+                                .terminalFocused($focusedSession, equals: id)
+                        }
+                    }
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+                    // The closing browser fades, shrinks, and drifts down — the
+                    // "drop away" close. Terminal panes never set `closing`.
+                    .scaleEffect(closing ? 0.92 : 1)
+                    .offset(y: closing ? 14 : 0)
+                    .opacity(closing ? 0 : (isVisible ? 1 : 0))
+                    .allowsHitTesting(isVisible && !closing)
                 }
                 if let layout {
                     // Identified by the (stable) branch id, so a divider keeps its
@@ -223,6 +243,22 @@ struct TerminalPane: View {
         }
     }
 
+    /// Closes a browser pane with a "drop away" animation: fade + shrink + a small
+    /// downward drift, then remove the session once it's invisible. The removal is
+    /// deferred (not wrapped in the same animation) so the terminal that expands to
+    /// fill the space snaps in one step instead of being resized every frame — a
+    /// live terminal resize is a SIGWINCH the shell answers by repainting, which
+    /// would flicker through the whole transition.
+    private func closeBrowser(_ id: Session.ID) {
+        withAnimation(.easeIn(duration: 0.2)) {
+            _ = closingBrowsers.insert(id)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            store.closeSession(id)
+            closingBrowsers.remove(id)
+        }
+    }
+
     /// Inserts the dropped files' paths into the selected session's terminal,
     /// space-separated and each shell-quoted so spaces and other special characters
     /// survive. Focuses the session first (VSCode's focus-on-drop), and if its shell
@@ -231,7 +267,7 @@ struct TerminalPane: View {
     private func sendPaths(_ urls: [URL]) -> Bool {
         guard !urls.isEmpty,
               let id = store.selectedSessionID,
-              let session = store.session(id),
+              let session = store.session(id), !session.isBrowser,
               let project = store.project(for: id) else { return false }
         focusedSession = id
         let text = urls.map { Self.shellQuoted($0.path) }.joined(separator: " ") + " "

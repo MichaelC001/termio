@@ -84,7 +84,18 @@ extension TermioStore {
         // An isolated worktree (if one was created for this session) wins over the
         // project's own directory, so the agent edits the branch in place — and so the
         // sandbox's writable workspace is exactly where the session actually works.
-        let workspacePath = session.worktreePath ?? project.path
+        // A loose terminal instead respawns at the cwd it last reported over OSC 7
+        // (its path is the session's own mutable property, not the container's) —
+        // so a relaunch drops the user back where they `cd`'d, not at `$HOME`.
+        // A directory deleted since then falls back to the container's `$HOME`.
+        let restoredCwd: String? = project.kind == .terminals
+            ? session.lastWorkingDirectory.flatMap { path in
+                var isDirectory: ObjCBool = false
+                let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+                return exists && isDirectory.boolValue ? path : nil
+            }
+            : nil
+        let workspacePath = session.worktreePath ?? restoredCwd ?? project.path
 
         // Resolve the launch command *with* any resume arguments, so a session that was
         // running when the app last quit picks its conversation back up instead of
@@ -223,6 +234,39 @@ extension TermioStore {
                     if let detected {
                         self?.applyScreenDetectedActivity(detected, for: session.id)
                     }
+                }
+            }
+            // A loose terminal's cwd, sampled from the kernel after output settles.
+            // Plain shells on macOS never emit OSC 7 (the stock /etc/zshrc only
+            // reports cwd under `TERM_PROGRAM=Apple_Terminal`), and the host-managed
+            // PTY injects no shell integration — so the OSC 7 subscription in
+            // `monitor(_:for:)` stays silent for them and the cwd is read from the
+            // child shell's own process instead (`currentWorkingDirectory`, iTerm2's
+            // integration-less fallback). A *trailing* debounce, not a leading-edge
+            // throttle: a `cd`'s new prompt lands a few ms after the command echo, so
+            // a leading throttle samples the echo (old cwd) then skips the prompt and
+            // the now-idle shell emits nothing more to re-poll — stranding the cwd one
+            // step behind. Debouncing polls once ~350ms after output stops, capturing
+            // the settled directory. Loose terminals only — a project session's place
+            // is its project, not where it wandered.
+            if project.kind == .terminals, session.agent == .terminal {
+                let sessionID = session.id
+                var pendingPoll: DispatchWorkItem?
+                pty.addSink { [weak self, weak pty] _ in
+                    pendingPoll?.cancel()
+                    // Resolve the cwd off the main thread. `currentWorkingDirectory`
+                    // is a `proc_pidinfo(PROC_PIDVNODEPATHINFO)` syscall that walks the
+                    // child's cwd vnode in the kernel — usually microseconds, but it
+                    // takes vnode locks and can stall on a slow/unresponsive mount or
+                    // under memory pressure, and a stall on the main thread is a
+                    // beachball. Only the `noteWorkingDirectory` write, which mutates
+                    // the @MainActor-published project tree, hops back to main.
+                    let work = DispatchWorkItem {
+                        guard let cwd = pty?.currentWorkingDirectory() else { return }
+                        DispatchQueue.main.async { self?.noteWorkingDirectory(cwd, for: sessionID) }
+                    }
+                    pendingPoll = work
+                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.35, execute: work)
                 }
             }
             pty.onExit = { [weak self, weak inMemory] code in
@@ -543,7 +587,26 @@ extension TermioStore {
                         .liveTitle = cleaned
                 }
             },
+            // The shell's OSC 7 cwd reports — the precise signal, when a shell
+            // with integration actually emits it (the kernel poll in
+            // `surface(for:in:)` covers the common integration-less shell).
+            state.$workingDirectory.compactMap { $0 }.removeDuplicates()
+                .sink { [weak self] cwd in self?.noteWorkingDirectory(cwd, for: id) },
         ]
+    }
+
+    /// Records a session's reported working directory, from either source (the
+    /// shell's OSC 7 or the kernel poll): publishes it for the sidebar row label
+    /// and the cwd-following inspector, and — for a loose terminal only — persists
+    /// it on the session itself, since the cwd is that entity's own path (the
+    /// shell respawns there next launch; see docs/design/loose-terminal-entity.md).
+    func noteWorkingDirectory(_ cwd: String, for id: Session.ID) {
+        if workingDirectories[id] != cwd { workingDirectories[id] = cwd }
+        guard let location = locate(id),
+              projects[location.project].kind == .terminals,
+              projects[location.project].sessions[location.session]
+                  .lastWorkingDirectory != cwd else { return }
+        projects[location.project].sessions[location.session].lastWorkingDirectory = cwd
     }
 
     /// Strips a leading decorative glyph from a live title before it is shown.

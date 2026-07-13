@@ -61,9 +61,32 @@ final class PTYProcess: @unchecked Sendable {
         case privateParams // saw ESC [ ? — accumulating digits and semicolons
     }
 
+    /// Upper bound on buffered-but-unwritten input. A child that has not read
+    /// this much of its stdin is wedged; dropping the excess (with a log)
+    /// beats both blocking the writer and growing without limit.
+    private static let maxWriteBacklog = 16 << 20 // 16 MB
+    /// Consumed-prefix size beyond which a partially drained backlog is
+    /// compacted (`removeFirst` is O(n), so it must not run per drain chunk).
+    private static let writeBacklogCompactThreshold = 1 << 20 // 1 MB
+
     private let masterFD: Int32
+    /// Dup of the master used by the write side, so the read source and the
+    /// write source each own — and close, in their own cancel handler — their
+    /// own descriptor.
+    private let writeFD: Int32
     private(set) var pid: pid_t = -1
     private var readSource: DispatchSourceRead?
+    private var writeSource: DispatchSourceWrite?
+    /// Input the kernel buffer had no room for, awaiting a writability event.
+    /// `pendingWriteOffset` marks how much of its prefix is already written.
+    /// Guarded by `writeLock`, as is all write-side state below.
+    private var pendingWrite = Data()
+    private var pendingWriteOffset = 0
+    /// Whether `writeSource` is currently resumed. Suspend/resume must stay
+    /// balanced, so every transition happens under `writeLock`.
+    private var writeSourceArmed = false
+    private var writerTornDown = false
+    private let writeLock = NSLock()
     private var sinks: [UUID: Sink] = [:]
     private var replayBuffer = Data()
     private var totalBytesRead = 0
@@ -141,7 +164,27 @@ final class PTYProcess: @unchecked Sendable {
             if master >= 0 { close(master) }
             return nil
         }
+        // The master must never block: `write(_:)` is called from libghostty's
+        // io thread *while it holds the surface lock*, and a blocking write(2)
+        // against a full kernel buffer (a child that stopped reading stdin)
+        // parks that lock forever — the read pump and the main thread queue up
+        // behind it and the app beachballs. The read pump already tolerates
+        // EAGAIN. O_NONBLOCK lives on the file description, which the dup'd
+        // write fd shares, so setting it once here covers both.
+        let fdFlags = fcntl(master, F_GETFL)
+        if fdFlags < 0 || fcntl(master, F_SETFL, fdFlags | O_NONBLOCK) < 0 {
+            Log.pty.error("pty O_NONBLOCK failed errno=\(errno, privacy: .public)")
+        }
+        let writer = dup(master)
+        guard writer >= 0 else {
+            Log.pty.error("pty dup failed errno=\(errno, privacy: .public)")
+            kill(childPID, SIGKILL)
+            waitpid(childPID, nil, 0)
+            close(master)
+            return nil
+        }
         masterFD = master
+        writeFD = writer
         pid = childPID
 
         // Reap the child asynchronously to fire onExit + observers.
@@ -192,6 +235,7 @@ final class PTYProcess: @unchecked Sendable {
                 }
                 self.markTerminated()
                 self.readSource?.cancel()
+                self.tearDownWriter()
             }
         }
         // Dispatch's documented pattern: release the fd in the cancellation
@@ -204,12 +248,23 @@ final class PTYProcess: @unchecked Sendable {
         }
         source.resume()
         readSource = source
+
+        // The writability twin of the read source: drains `pendingWrite` once
+        // the kernel buffer has room again. Born suspended — armed only while
+        // a backlog exists (a pty master is writable nearly always, so a
+        // permanently resumed source would spin). It owns the dup'd fd and
+        // closes it in its own cancel handler.
+        let wSource = DispatchSource.makeWriteSource(fileDescriptor: writer, queue: .global())
+        wSource.setEventHandler { [weak self] in self?.drainWriteBacklog() }
+        wSource.setCancelHandler { [writer] in close(writer) }
+        writeSource = wSource
     }
 
     deinit {
         // Cancelling is idempotent; without this, dropping the last reference
         // before the EOF event fires would strand the master fd open forever.
         readSource?.cancel()
+        tearDownWriter()
     }
 
     /// Marks the PTY dead so late writers and resizers become no-ops instead
@@ -380,27 +435,130 @@ final class PTYProcess: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Queues `data` for the child's stdin. Never blocks — callers include
+    /// libghostty's io thread, which invokes the surface write callback while
+    /// holding the surface lock: a write that waited on a full kernel buffer
+    /// (a child that stopped reading, e.g. a wedged TUI fed a large paste)
+    /// would park that lock, and the read pump and main thread deadlock
+    /// behind it. The common case is exactly one non-blocking write(2); only
+    /// a full kernel buffer diverts the remainder into the backlog, which
+    /// `writeSource` drains as the child reads.
     func write(_ data: Data) {
+        guard !data.isEmpty else { return }
         lock.lock()
         let dead = terminated
         lock.unlock()
         guard !dead else { return }
-        data.withUnsafeBytes { raw in
-            guard var cursor = raw.baseAddress else { return }
-            // A single write(2) may accept fewer bytes than offered (a large
-            // paste against a full kernel buffer), so loop until drained.
-            var remaining = raw.count
-            while remaining > 0 {
-                let written = Darwin.write(masterFD, cursor, remaining)
-                if written < 0 {
-                    if errno == EINTR { continue }
-                    Log.pty.error("pty write failed errno=\(errno, privacy: .public)")
-                    return
-                }
-                cursor += written
-                remaining -= written
-            }
+
+        writeLock.lock()
+        defer { writeLock.unlock() }
+        guard !writerTornDown else { return }
+        // Once a backlog exists every write must append behind it, or these
+        // bytes would overtake the queued remainder and reorder the stream.
+        guard pendingWrite.isEmpty else {
+            appendBacklogLocked(data)
+            return
         }
+        switch writeChunkLocked(data, from: 0) {
+        case .drained, .failed:
+            return
+        case .blocked(let resumeAt):
+            appendBacklogLocked(data.subdata(in: resumeAt ..< data.count))
+        }
+    }
+
+    /// Result of pushing bytes at the non-blocking write fd.
+    private enum WriteAttempt {
+        /// Everything through `data.count` reached the kernel.
+        case drained
+        /// The kernel buffer filled; resume from this offset when writable.
+        case blocked(resumeAt: Int)
+        /// Hard error (already logged); the rest of this data is dropped.
+        case failed
+    }
+
+    /// Writes `data[start...]` until drained, blocked, or failed. Must be
+    /// entered with `writeLock` held (the syscall is non-blocking, so holding
+    /// the lock across it costs microseconds, not a wait).
+    private func writeChunkLocked(_ data: Data, from start: Int) -> WriteAttempt {
+        var offset = start
+        let count = data.count
+        while offset < count {
+            let n = data.withUnsafeBytes { raw -> Int in
+                Darwin.write(writeFD, raw.baseAddress! + offset, count - offset)
+            }
+            if n > 0 { offset += n; continue }
+            if n < 0, errno == EINTR { continue }
+            if n < 0, errno == EAGAIN { return .blocked(resumeAt: offset) }
+            Log.pty.error("pty write failed errno=\(errno, privacy: .public)")
+            return .failed
+        }
+        return .drained
+    }
+
+    /// Appends to the backlog (bounded by `maxWriteBacklog` — excess is
+    /// dropped with a log, since a child this far behind on stdin is wedged
+    /// and blocking or unbounded growth are both worse) and arms the
+    /// writability source. Must be entered with `writeLock` held.
+    private func appendBacklogLocked(_ data: Data) {
+        let pending = pendingWrite.count - pendingWriteOffset
+        guard pending + data.count <= Self.maxWriteBacklog else {
+            Log.pty.error("""
+            pty write backlog full (\(pending) bytes pending); \
+            dropping \(data.count) bytes
+            """)
+            return
+        }
+        pendingWrite.append(data)
+        if !writeSourceArmed {
+            writeSourceArmed = true
+            writeSource?.resume()
+        }
+    }
+
+    /// Writability-source handler: pushes the backlog until it drains (then
+    /// suspends the source) or the kernel fills again (stays armed for the
+    /// next writability event).
+    private func drainWriteBacklog() {
+        writeLock.lock()
+        defer { writeLock.unlock() }
+        guard !writerTornDown, writeSourceArmed else { return }
+        switch writeChunkLocked(pendingWrite, from: pendingWriteOffset) {
+        case .blocked(let resumeAt):
+            pendingWriteOffset = resumeAt
+            // Compact occasionally so a slowly draining backlog doesn't hold
+            // its consumed prefix alive for its whole lifetime.
+            if pendingWriteOffset > Self.writeBacklogCompactThreshold {
+                pendingWrite.removeFirst(pendingWriteOffset)
+                pendingWriteOffset = 0
+            }
+        case .drained, .failed:
+            pendingWrite.removeAll(keepingCapacity: false)
+            pendingWriteOffset = 0
+            writeSourceArmed = false
+            writeSource?.suspend()
+        }
+    }
+
+    /// Stops the write side exactly once: further writes become no-ops, the
+    /// backlog is dropped, and the source is cancelled (its cancel handler
+    /// closes the write fd). Releasing a suspended source is a libdispatch
+    /// error, so an unarmed source is resumed before cancelling.
+    private func tearDownWriter() {
+        writeLock.lock()
+        guard !writerTornDown else {
+            writeLock.unlock()
+            return
+        }
+        writerTornDown = true
+        pendingWrite.removeAll(keepingCapacity: false)
+        pendingWriteOffset = 0
+        if !writeSourceArmed {
+            writeSourceArmed = true
+            writeSource?.resume()
+        }
+        writeLock.unlock()
+        writeSource?.cancel()
     }
 
     /// The Mac surface's grid changed. Applied only while the host owns the
@@ -558,6 +716,7 @@ final class PTYProcess: @unchecked Sendable {
         // The read source's cancel handler owns closing the master fd; closing
         // it here as well would double-close (and could hit a recycled fd).
         readSource?.cancel()
+        tearDownWriter()
         guard pid > 0 else { return }
         // Signal the whole process *group*, not just the direct child: the
         // forkpty child is the session leader (pgid == pid), and agents spawn
@@ -574,6 +733,31 @@ final class PTYProcess: @unchecked Sendable {
         // PTYProcess can't follow through on the kill (the fds are already
         // closed, so the lingering reference holds nothing else open).
         DispatchQueue.global().asyncAfter(deadline: .now() + 2) { self.forceKillIfAlive() }
+    }
+
+    /// The child's current working directory, read from the kernel
+    /// (`PROC_PIDVNODEPATHINFO`) — the fallback iTerm2 uses when the shell has no
+    /// integration to say so itself. macOS's stock zsh only emits OSC 7 under
+    /// `TERM_PROGRAM=Apple_Terminal`, and termio's host-managed PTY injects no
+    /// shell integration, so a plain login shell here reports nothing — but the
+    /// kernel always knows. The direct child *is* the login shell whose cwd `cd`
+    /// mutates, which is exactly what the loose-terminal cwd sink wants (see
+    /// `TermioStore.noteWorkingDirectory`). `nil` once the child has been reaped
+    /// (a recycled pid must never be queried) or if the kernel refuses.
+    func currentWorkingDirectory() -> String? {
+        lock.lock()
+        let exited = childExited
+        lock.unlock()
+        guard !exited, pid > 0 else { return nil }
+        var info = proc_vnodepathinfo()
+        let size = proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info,
+                                Int32(MemoryLayout<proc_vnodepathinfo>.size))
+        guard size > 0 else { return nil }
+        return withUnsafeBytes(of: info.pvi_cdir.vip_path) { raw -> String? in
+            guard let base = raw.baseAddress else { return nil }
+            let path = String(cString: base.assumingMemoryBound(to: CChar.self))
+            return path.isEmpty ? nil : path
+        }
     }
 
     /// SIGKILLs the child's process group if it hasn't been reaped yet.
