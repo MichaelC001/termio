@@ -19,6 +19,12 @@ import SwiftUI
 struct InspectorTabsToolbar: View {
     @EnvironmentObject var store: TermioStore
     @Namespace private var glassNamespace
+    /// Drives the fade-in that syncs the cluster with the inspector pane's slide. The toolbar
+    /// item itself is inserted with NSToolbar animation OFF (its pop runs on an independent
+    /// clock — see `setInspectorSwitchVisible`), so without this the cluster snapped in while
+    /// the pane was still sliding. A fresh hosting view is built per insertion, so `onAppear`
+    /// fires on every open.
+    @State private var appeared = false
 
     /// Outer height of the glass track, matched to the native bordered toolbar buttons either
     /// side of it so all the toolbar backgrounds line up. The track is built bottom-up as
@@ -49,6 +55,12 @@ struct InspectorTabsToolbar: View {
         // nudges the window frame) when the item is inserted, so the clamp stays.
         .frame(height: Self.toolbarControlHeight)
         .fixedSize()
+        // Fade in over the same ~0.25s the split view takes to slide the inspector open, so
+        // the cluster and the pane read as one motion instead of a snap followed by a slide.
+        .opacity(appeared ? 1 : 0)
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.25)) { appeared = true }
+        }
     }
 
     // MARK: Liquid Glass (macOS 26+)

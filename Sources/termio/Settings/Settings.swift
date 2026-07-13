@@ -98,6 +98,8 @@ final class AppSettings: ObservableObject {
         static let agentHooksEnabled = "agents.hooksEnabled"
         static let sessionControlEnabled = "agents.sessionControlEnabled"
         static let sessionControlPrompted = "agents.sessionControlPrompted"
+        static let usageAuthorizedAgents = "usage.authorizedAgents"
+        static let claudeKeychainDeclined = "usage.claudeKeychainDeclined"
         static let projectSortOrder = "sidebar.projectSortOrder"
         static let recentProjects = "welcome.recentProjects"
     }
@@ -287,6 +289,23 @@ final class AppSettings: ObservableObject {
         set { defaults.set(newValue, forKey: Key.sessionControlPrompted) }
     }
 
+    /// Agents whose usage data the user has allowed termio to read, by `rawValue`.
+    /// The Usage tab is opt-in per agent: until the user clicks Allow there, none
+    /// of that agent's data is touched — not its local session logs and not its
+    /// OAuth sign-in. Stored as the granted set, so the default (nothing stored)
+    /// means "read nothing".
+    @Published var usageAuthorizedAgents: Set<String> {
+        didSet { defaults.set(Array(usageAuthorizedAgents), forKey: Key.usageAuthorizedAgents) }
+    }
+
+    /// A remembered "Deny" from the macOS Keychain prompt for Claude Code's
+    /// credential item. Once set, termio never retries the Keychain on its own —
+    /// only an explicit "try again" click in the Usage tab clears it, so a user
+    /// who said no is never nagged on a timer.
+    @Published var claudeKeychainDeclined: Bool {
+        didSet { defaults.set(claudeKeychainDeclined, forKey: Key.claudeKeychainDeclined) }
+    }
+
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -356,6 +375,8 @@ final class AppSettings: ObservableObject {
         disabledAgents = Set(defaults.stringArray(forKey: Key.disabledAgents) ?? [])
         agentHooksEnabled = defaults.bool(forKey: Key.agentHooksEnabled)
         sessionControlEnabled = defaults.bool(forKey: Key.sessionControlEnabled)
+        usageAuthorizedAgents = Set(defaults.stringArray(forKey: Key.usageAuthorizedAgents) ?? [])
+        claudeKeychainDeclined = defaults.bool(forKey: Key.claudeKeychainDeclined)
         projectSortOrder = defaults.string(forKey: Key.projectSortOrder).flatMap(ProjectSortOrder.init) ?? .recentActivity
         recentProjects = defaults.data(forKey: Key.recentProjects)
             .flatMap { try? JSONDecoder().decode([RecentProject].self, from: $0) } ?? []
@@ -389,6 +410,18 @@ final class AppSettings: ObservableObject {
 
     func isAgentEnabled(_ agent: AgentPreset) -> Bool {
         !disabledAgents.contains(agent.rawValue)
+    }
+
+    func isUsageAuthorized(_ agent: AgentPreset) -> Bool {
+        usageAuthorizedAgents.contains(agent.rawValue)
+    }
+
+    func setUsageAuthorized(_ agent: AgentPreset, enabled: Bool) {
+        if enabled {
+            usageAuthorizedAgents.insert(agent.rawValue)
+        } else {
+            usageAuthorizedAgents.remove(agent.rawValue)
+        }
     }
 
     func setAgent(_ agent: AgentPreset, enabled: Bool) {
