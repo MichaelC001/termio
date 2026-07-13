@@ -716,7 +716,7 @@ private struct WorkingIndicator: View {
                 .truncatingRemainder(dividingBy: period) / period
             ZStack {
                 // A faint steady center anchors the spinning ring.
-                dot(opacity: 0.3)
+                dot(opacity: 0.45)
                 ForEach(Array(Self.ring.enumerated()), id: \.offset) { index, cell in
                     dot(opacity: opacity(at: index, phase: phase))
                         .offset(
@@ -743,7 +743,7 @@ private struct WorkingIndicator: View {
         let head = phase * count
         let raw = abs(Double(index) - head)
         let distance = min(raw, count - raw)
-        return max(0.22, 1 - distance / 3)
+        return max(0.4, 1 - distance / 3)
     }
 }
 
