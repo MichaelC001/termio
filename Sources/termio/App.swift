@@ -310,7 +310,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .environmentObject(store)
             .environmentObject(settings))
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
-        sidebarItem.minimumThickness = 220
+        // The sidebar's toolbar region must hold the traffic lights, the navigator toggle, and
+        // (while open) the sort pull-down + new-terminal button; below ~240 the trailing `+`
+        // falls out of the section and floats over the content.
+        sidebarItem.minimumThickness = 240
         sidebarItem.maximumThickness = 400
         sidebarItem.canCollapse = true
         sidebarItem.allowsFullHeightLayout = true
@@ -336,6 +339,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // `FileBrowserHostingController`.
         detail.sizingOptions = []
         let detailItem = NSSplitViewItem(viewController: detail)
+        // The toolbar is sectioned by tracking separators, so each pane must stay at least as
+        // wide as its toolbar items — the content section carries the branch-picker title.
+        // Without a floor here the terminal pane absorbs every squeeze and the title slides
+        // across the separators, floating over the neighbouring panes' content (the titlebar is
+        // transparent full-size-content, so overflow is painted straight onto content pixels).
+        // With a floor, shrinking the window past the sum of minimums collapses the collapsible
+        // side panes instead, the native Xcode behaviour.
+        detailItem.minimumThickness = 280
         // `.line` only over the terminal: a clean hairline that starts at the sidebar divider
         // and bounds the title strip like Xcode, without bleeding across the sidebar.
         detailItem.titlebarSeparatorStyle = .line
@@ -926,10 +937,40 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
         settings.projectSortOrder = order
     }
 
-    // NSMenuDelegate — check the active sort each time the pull-down opens.
+    /// The `.inspectorTabs` item's menu form, shown in the toolbar's `»` overflow menu when the
+    /// inspector section is too narrow to hold the glass cluster — the panes stay switchable
+    /// while the cluster itself is hidden.
+    func makeInspectorTabsMenuItem() -> NSMenuItem {
+        let menuItem = NSMenuItem(title: "Inspector Pane", action: nil, keyEquivalent: "")
+        let menu = NSMenu(title: "Inspector Pane")
+        menu.delegate = self
+        let panes: [(tab: InspectorTab, title: String)] = [
+            (.files, "Project Files"), (.search, "Search Files"), (.changes, "Changes"), (.info, "Info"),
+        ]
+        for pane in panes {
+            let item = NSMenuItem(title: pane.title, action: #selector(setInspectorTab(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = pane.tab
+            menu.addItem(item)
+        }
+        menuItem.submenu = menu
+        return menuItem
+    }
+
+    @objc private func setInspectorTab(_ sender: NSMenuItem) {
+        guard let tab = sender.representedObject as? InspectorTab else { return }
+        store.inspectorTab = tab
+    }
+
+    // NSMenuDelegate — check the active entry each time a pull-down opens. Serves both menus:
+    // sort items carry a `ProjectSortOrder` raw string, pane items an `InspectorTab`.
     func menuNeedsUpdate(_ menu: NSMenu) {
         for item in menu.items {
-            item.state = (item.representedObject as? String) == settings.projectSortOrder.rawValue ? .on : .off
+            if let raw = item.representedObject as? String {
+                item.state = raw == settings.projectSortOrder.rawValue ? .on : .off
+            } else if let tab = item.representedObject as? InspectorTab {
+                item.state = tab == store.inspectorTab ? .on : .off
+            }
         }
     }
 
@@ -1014,7 +1055,12 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             host.sizingOptions = [.intrinsicContentSize]
             item.view = host
             item.isBordered = false
-            item.visibilityPriority = .high
+            // First to overflow: the glass cluster is incompressible, so when its section (the
+            // inspector pane) gets too narrow it must yield to the `»` menu rather than slide
+            // over the divider onto the pane's content. The menu form keeps the panes switchable
+            // from the overflow menu while the cluster is hidden.
+            item.visibilityPriority = .low
+            item.menuFormRepresentation = makeInspectorTabsMenuItem()
             return item
         case .inspectorTrackingSeparator:
             // Align a tracking separator to divider 1 (terminal | inspector) so the items after it
@@ -1111,19 +1157,26 @@ private struct BranchPickerToolbarView: View {
                     .font(.headline)
                     .foregroundStyle(primaryColor)
                     .lineLimit(1)
+                    .truncationMode(.middle)
                     .help(title)
                 if let branch {
                     Text(branch)
                         .font(.subheadline)
                         .foregroundStyle(secondaryColor)
                         .lineLimit(1)
+                        .truncationMode(.middle)
                 }
             }
         }
         // Pull left so the title/branch left edge lines up with the terminal's
         // first column (window padding), not the toolbar's default item inset.
         .padding(.leading, -13)
-        .frame(minWidth: 80)
+        // Capped so a long folder name truncates (full name stays in the tooltip) instead of
+        // growing the item past its toolbar section and overlapping the neighbouring panes.
+        // Keep the default (center) alignment: a title shorter than the 80pt minimum relies on
+        // its centering inset to land on the terminal's first column once the -13 pull is
+        // applied — leading alignment drops that inset and shoves the title onto the divider.
+        .frame(minWidth: 80, maxWidth: 240)
     }
 }
 
