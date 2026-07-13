@@ -937,6 +937,25 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
         settings.projectSortOrder = order
     }
 
+    /// Builds the `+` pull-down for the `.newTerminal` toolbar item: exactly the
+    /// two ways something new enters the sidebar — a loose terminal (the Terminals
+    /// section) or a folder opened as a project. Agents are deliberately not here:
+    /// they're started *inside* a project (header buttons / context menu), and the
+    /// welcome page's chips already cover the scratch case.
+    func makeNewSessionMenu() -> NSMenu {
+        let menu = NSMenu()
+        let terminal = NSMenuItem(title: "New Terminal", action: #selector(newTerminal(_:)), keyEquivalent: "")
+        terminal.target = self
+        menu.addItem(terminal)
+        let folder = NSMenuItem(title: "Open Project…", action: #selector(openFolder(_:)), keyEquivalent: "")
+        folder.target = self
+        menu.addItem(folder)
+        return menu
+    }
+
+    @objc private func newTerminal(_ sender: Any?) { store.addScratchTerminal() }
+    @objc private func openFolder(_ sender: Any?) { store.presentOpenProjectPanel() }
+
     /// The `.inspectorTabs` item's menu form, shown in the toolbar's `»` overflow menu when the
     /// inspector section is too narrow to hold the glass cluster — the panes stay switchable
     /// while the cluster itself is hidden.
@@ -1035,15 +1054,17 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
         case .newTerminal:
             // Pinned to the trailing edge of the sidebar's toolbar region (just before the
             // tracking separator), so it reads as the navigator's own "new" action — like the
-            // `+` at the foot of Finder's sidebar. Built exactly like the navigator/inspector
-            // toggles (bordered, system glyph) so the three match. A single click opens a fresh
-            // scratch terminal at the home directory via the responder chain (`nil` target).
-            let item = NSToolbarItem(itemIdentifier: .newTerminal)
-            item.label = "New Terminal"
-            item.toolTip = "Open a new terminal in your home folder"
-            item.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New Terminal")
+            // `+` at the foot of Finder's sidebar. A pull-down (same `NSMenuToolbarItem`
+            // construction as the sort item), not a single hidden action: the two ways
+            // something new enters the sidebar — a loose terminal or a project — are each
+            // one visible click (the discoverability fix from the loose-terminal RFC).
+            let item = NSMenuToolbarItem(itemIdentifier: .newTerminal)
+            item.label = "New"
+            item.toolTip = "New terminal or project"
+            item.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New")
             item.isBordered = true
-            item.action = #selector(AppDelegate.newScratchTerminal(_:))
+            item.showsIndicator = true
+            item.menu = makeNewSessionMenu()
             return item
         case .inspectorTabs:
             // The native segmented switch (Files / Changes), pinned to the inspector's left edge by

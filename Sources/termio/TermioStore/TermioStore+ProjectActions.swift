@@ -185,18 +185,25 @@ extension TermioStore {
     /// second click just grows another row there and selects it, rather than piling
     /// up duplicate sections.
     func addScratchSession(agent: AgentPreset = .terminal) {
+        // Loose terminals gather in the `.terminals` container (matched by kind,
+        // not path — its `path` is just the `$HOME` spawn fallback); scratch
+        // agents keep matching their scoped workspace by path.
         let path = scratchWorkspacePath(for: agent)
-        if let existing = projects.first(where: { $0.path == path }) {
+        let existing = agent == .terminal
+            ? projects.first(where: { $0.kind == .terminals })
+            : projects.first(where: { $0.path == path })
+        if let existing {
             addSession(to: existing.id, agent: agent)
             return
         }
         let title = agent == .terminal ? "Terminal 1" : agent.displayName
         let session = Session(title: title, agent: agent)
         let project = Project(
-            name: (path as NSString).lastPathComponent,
+            name: agent == .terminal ? "Terminals" : (path as NSString).lastPathComponent,
             path: path,
             branch: currentBranch(in: path) ?? "—",
-            sessions: [session]
+            sessions: [session],
+            kind: agent == .terminal ? .terminals : .folder
         )
         projects.append(project)
         selectedSessionID = session.id
@@ -247,6 +254,9 @@ extension TermioStore {
     var orderedProjects: [Project] {
         let order = settings.projectSortOrder
         return projects.sorted { a, b in
+            // The Terminals section is the entry funnel, so it sits above every
+            // project — ahead even of pinned ones, whichever sort is active.
+            if (a.kind == .terminals) != (b.kind == .terminals) { return a.kind == .terminals }
             // Pinned projects always float to the top, whichever sort is active.
             if a.pinned != b.pinned { return a.pinned }
             switch order {
@@ -349,6 +359,7 @@ extension TermioStore {
             ptyProcesses[sessionID]?.terminate()
             ptyProcesses[sessionID] = nil
             surfaces[sessionID] = nil
+            browserPanes[sessionID] = nil
             monitors[sessionID] = nil
             statuses[sessionID] = nil
             currentTool[sessionID] = nil
@@ -409,6 +420,7 @@ extension TermioStore {
         ptyProcesses[id]?.terminate()
         ptyProcesses[id] = nil
         surfaces[id] = nil
+        browserPanes[id] = nil
         monitors[id] = nil
         statuses[id] = nil
         currentTool[id] = nil

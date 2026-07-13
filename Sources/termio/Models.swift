@@ -10,6 +10,16 @@ struct RecentProject: Identifiable, Hashable, Codable {
     var id: String { path }
 }
 
+/// What a sidebar section *is*. The two kinds have opposite ownership arrows
+/// (see docs/design/loose-terminal-entity.md): a `.folder` project's path is its
+/// identity and owns its sessions; the `.terminals` container is presentation
+/// only — each loose terminal session owns its *own* mutable path (the live cwd),
+/// and the container's `path` is just the spawn fallback (`$HOME`).
+enum ProjectKind: String, Codable {
+    case folder
+    case terminals
+}
+
 /// A project is a working directory (typically a git repo) that groups one or
 /// more agent/terminal sessions, mirroring the sidebar grouping in unpeel.
 struct Project: Identifiable, Hashable, Codable {
@@ -30,11 +40,15 @@ struct Project: Identifiable, Hashable, Codable {
     /// projects always sort ahead of the rest, regardless of the chosen sort order
     /// (see `TermioStore.orderedProjects`).
     var pinned: Bool = false
+
+    /// `.folder` for an opened directory, `.terminals` for the loose-terminals
+    /// container (at most one exists; it always sorts first in the sidebar).
+    var kind: ProjectKind = .folder
 }
 
 extension Project {
     private enum CodingKeys: String, CodingKey {
-        case id, name, path, branch, sessions, sandbox, pinned
+        case id, name, path, branch, sessions, sandbox, pinned, kind
     }
 
     /// Custom decoding so state files written before `pinned` existed still load: a
@@ -50,6 +64,7 @@ extension Project {
         sessions = try container.decode([Session].self, forKey: .sessions)
         sandbox = try container.decodeIfPresent(SandboxProfile.self, forKey: .sandbox)
         pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+        kind = try container.decodeIfPresent(ProjectKind.self, forKey: .kind) ?? .folder
     }
 }
 
@@ -234,6 +249,25 @@ struct Session: Identifiable, Hashable, Codable {
     /// started fresh.
     var launched = false
 
+    /// When set, this session is a **browser pane** — a WKWebView split beside the
+    /// terminals (see `BrowserPaneView`) — not a terminal: no shell is spawned and
+    /// no libghostty surface is created for it. Holds the pane's last URL, kept
+    /// current on navigation, so a persisted browser pane restores by reloading
+    /// (which is more than a shell session can say). A browser leaf stays a
+    /// `Session` on purpose: the split tree, focus arrows, sidebar grouping, and
+    /// close paths all key on `Session.ID`, so an orthogonal field costs nothing
+    /// while a second leaf type would fork all of them.
+    var browserURL: String?
+
+    var isBrowser: Bool { browserURL != nil }
+
+    /// The last working directory the shell reported over OSC 7, persisted for
+    /// sessions in the loose-terminals container only: a loose terminal's identity
+    /// is the session, its path is this mutable property — so a relaunched shell
+    /// respawns where the user last `cd`'d, not back at `$HOME`. Sessions of a
+    /// real (`.folder`) project never set it; their anchor is the project path.
+    var lastWorkingDirectory: String?
+
     /// The last meaningful terminal title (`OSC 0/2`) the session's agent reported,
     /// e.g. Claude Code's conversation topic. Persisted so the sidebar keeps the
     /// adopted label across app restarts — the agent only re-emits a title once it
@@ -261,7 +295,7 @@ struct Session: Identifiable, Hashable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, agent, createdAt, worktreePath, resumeID, launched, launchedAt,
-             liveTitle
+             liveTitle, browserURL, lastWorkingDirectory
     }
 
     /// Custom decoding so state files written before the resume fields existed still
@@ -279,13 +313,17 @@ struct Session: Identifiable, Hashable, Codable {
         launched = try container.decodeIfPresent(Bool.self, forKey: .launched) ?? false
         launchedAt = try container.decodeIfPresent(Date.self, forKey: .launchedAt)
         liveTitle = try container.decodeIfPresent(String.self, forKey: .liveTitle)
+        browserURL = try container.decodeIfPresent(String.self, forKey: .browserURL)
+        lastWorkingDirectory = try container.decodeIfPresent(String.self, forKey: .lastWorkingDirectory)
     }
 }
 
 extension Project {
-    /// First-run state for a fresh install: a single Home project with one shell
-    /// session rooted at the user's home directory, so a new user lands in a
-    /// working terminal instead of dev-machine placeholders.
+    /// First-run state for a fresh install: the loose-terminals container with one
+    /// shell session, so a new user lands in a working terminal instead of
+    /// dev-machine placeholders. The shell starts at `$HOME` (its `path`), but the
+    /// section is presented as "Terminals", not as a home *project* — the terminal
+    /// is the entity, its cwd just a property (see docs/design/loose-terminal-entity.md).
     ///
     /// The working directory must be the home directory — never
     /// `currentDirectoryPath`, which is `/` when the app is launched from Finder
@@ -295,12 +333,13 @@ extension Project {
 
         return [
             Project(
-                name: "home",
+                name: "Terminals",
                 path: home,
                 branch: "—",
                 sessions: [
-                    Session(title: "shell"),
-                ]
+                    Session(title: "Terminal 1"),
+                ],
+                kind: .terminals
             ),
         ]
     }
