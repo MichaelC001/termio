@@ -205,7 +205,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NSApp.activate(ignoringOtherApps: true)
             self?.window.makeKeyAndOrderFront(nil)
         }
-        usageMonitor.start()
 
         // Serve the iOS companion app: the live roster, plus PTY bridging for
         // any session the phone attaches to. Bound to localhost; a tunnel

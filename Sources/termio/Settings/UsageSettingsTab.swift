@@ -35,7 +35,7 @@ struct UsageSettingsTab: View {
                         selection: Binding(get: { current }, set: { selected = $0 })
                     )
                     Divider()
-                    UsageAgentDetail(agent: current, usage: usage)
+                    UsageAgentDetail(agent: current, usage: usage, settings: settings)
                 }
             }
         }
@@ -99,9 +99,12 @@ private struct UsageAgentPicker: View {
 
 /// One agent's statistics: the local token totals (today / week / month, with the
 /// API-rate cost estimate where termio can price it) and the live plan-limit lanes.
+/// Everything is behind a per-agent Allow: until the user grants it, none of the
+/// agent's data — logs or sign-in — is read, and the pane says only that.
 private struct UsageAgentDetail: View {
     let agent: AgentPreset
     @ObservedObject var usage: UsageMonitor
+    @ObservedObject var settings: AppSettings
 
     /// Yesterday's totals out of the per-day buckets — the one recent day the
     /// rolling week/month rows can't answer at a glance (and, at a week or month
@@ -115,6 +118,37 @@ private struct UsageAgentDetail: View {
     }
 
     var body: some View {
+        if settings.isUsageAuthorized(agent) {
+            statistics
+        } else {
+            authorizationOffer
+        }
+    }
+
+    /// The pre-grant pane: what would be read, and a single Allow button. The
+    /// Keychain prompt (Claude only) can then appear as the direct consequence of
+    /// this click — never from merely opening the tab.
+    private var authorizationOffer: some View {
+        Form {
+            Section {
+                Text(agent == .claudeCode
+                    ? "termio can show \(agent.displayName)'s token usage and plan limits by reading its local session logs and its sign-in from your login Keychain. Nothing is read until you allow it; macOS will ask once about the Keychain."
+                    : "termio can show \(agent.displayName)'s token usage and plan limits by reading its local session logs and its `auth.json` sign-in. Nothing is read until you allow it.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Button("Allow Usage Access") {
+                    settings.setUsageAuthorized(agent, enabled: true)
+                    if agent == .claudeCode { settings.claudeKeychainDeclined = false }
+                    usage.forceRefresh()
+                }
+            } header: {
+                SectionHeaderLabel(title: "Usage")
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var statistics: some View {
         Form {
             Section {
                 if let tokens = usage.tokenUsage[agent] {
@@ -151,12 +185,30 @@ private struct UsageAgentDetail: View {
                 } header: {
                     SectionHeaderLabel(title: "Plan limits")
                 }
+            } else if agent == .claudeCode, settings.claudeKeychainDeclined {
+                Section {
+                    Button("Allow Keychain Access…") {
+                        settings.claudeKeychainDeclined = false
+                        usage.refresh()
+                    }
+                } header: {
+                    SectionHeaderLabel(title: "Plan limits")
+                } footer: {
+                    Text("Keychain access was declined, so plan limits stay hidden. Allowing again re-shows the macOS prompt.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section {
                 Button("Refresh", action: usage.forceRefresh)
+                Button("Revoke Access") {
+                    settings.setUsageAuthorized(agent, enabled: false)
+                    usage.forceRefresh()
+                }
+                .foregroundStyle(.secondary)
             } footer: {
-                Text("Plan limits come from \(agent.displayName)'s OAuth login (no passwords stored); reading Claude's may prompt once for Keychain access.")
+                Text("Plan limits come from \(agent.displayName)'s OAuth login; no passwords are stored. Revoking stops all reading of \(agent.displayName)'s data.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

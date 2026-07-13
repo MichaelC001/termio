@@ -29,13 +29,19 @@ struct AgentUsage: Hashable, Sendable {
     }
 }
 
-/// Reads the usage limits of the coding agents termio runs and keeps them fresh.
+/// Reads the usage limits of the coding agents termio runs, on demand.
 ///
 /// The data comes for free: termio already launches `claude` and `codex`, and
 /// those CLIs leave OAuth credentials on disk. We reuse exactly those — no login
 /// flow, no stored passwords — and call each provider's usage endpoint, the same
 /// approach as steipete's CodexBar. Only the two agents with a clean local-cred
 /// endpoint are supported; the rest simply show nothing.
+///
+/// Reading another app's data is opt-in per agent (`usageAuthorizedAgents`), and
+/// nothing runs in the background: refreshes happen only when the Usage tab asks.
+/// Claude's Keychain credential is doubly gated — a Deny on the macOS prompt is
+/// remembered (`claudeKeychainDeclined`) and never retried automatically, so the
+/// system prompt can only ever appear as the direct result of a click in the tab.
 ///
 /// Every failure is swallowed into "no reading" rather than surfaced as an error:
 /// the endpoints are private and may change, and a usage strip is an ambient
@@ -54,17 +60,11 @@ final class UsageMonitor: ObservableObject {
     static let supportedAgents: [AgentPreset] = [.claudeCode, .codex]
 
     private let settings: AppSettings
-    private var timer: Timer?
     private var refreshTask: Task<Void, Never>?
     private var scanTask: Task<Void, Never>?
     /// Whether a local-log scan is currently running, so overlapping `refresh()`
     /// calls let it finish instead of cancelling and restarting it forever.
     private var isScanning = false
-
-    /// Slow on purpose: these are session/weekly/monthly windows that move over
-    /// minutes to days, and the endpoints are private — polling hard would be
-    /// rude and wasteful. A manual `refresh()` covers "I want it now".
-    private let interval: TimeInterval = 300
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -77,23 +77,6 @@ final class UsageMonitor: ObservableObject {
     /// plan-limit lanes refresh on the faster `interval`; the log scan is far
     /// heavier (it reads every session file), so it runs much less often.
     private let tokenScanMaxAge: TimeInterval = 1800
-
-    /// Begins periodic refreshes and fetches once immediately. Safe to call once
-    /// at launch; repeated calls just restart the cadence.
-    func start() {
-        refreshPlanLimits()
-        scanTokens(force: true)
-        timer?.invalidate()
-        // The recurring tick refreshes only the cheap plan-limit lanes. The log
-        // scan is deliberately *not* on this cadence — re-reading every session
-        // file every few minutes would churn the disk and the battery for almost
-        // no change; it refreshes on launch, on demand, and when it goes stale.
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshPlanLimits() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
-    }
 
     /// Refreshes both surfaces, re-scanning the logs only if the totals have gone
     /// stale. The cheap path for the Usage tab appearing.
@@ -109,21 +92,32 @@ final class UsageMonitor: ObservableObject {
         scanTokens(force: true)
     }
 
-    /// Fetches every supported, enabled agent's plan limits off the main actor and
-    /// publishes them. An agent that errors is dropped from the map (its row
-    /// disappears) rather than left showing a stale number.
+    /// Fetches every supported, enabled, *authorized* agent's plan limits off the
+    /// main actor and publishes them. An agent that errors is dropped from the map
+    /// (its row disappears) rather than left showing a stale number.
     private func refreshPlanLimits() {
-        let agents = Self.supportedAgents.filter(settings.isAgentEnabled)
+        let agents = Self.supportedAgents.filter {
+            settings.isAgentEnabled($0) && settings.isUsageAuthorized($0)
+        }
+        let allowKeychain = !settings.claudeKeychainDeclined
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
             var fetched: [AgentPreset: AgentUsage] = [:]
+            var keychainDeclined = false
             for agent in agents {
-                if let usage = await Self.fetch(agent) {
-                    fetched[agent] = usage
-                }
+                let outcome = await Self.fetch(agent, allowKeychain: allowKeychain)
+                if let usage = outcome.usage { fetched[agent] = usage }
+                if outcome.keychainDeclined { keychainDeclined = true }
             }
             guard !Task.isCancelled else { return }
-            await MainActor.run { self?.usage = fetched }
+            let declined = keychainDeclined
+            await MainActor.run {
+                guard let self else { return }
+                self.usage = fetched
+                // The user said No to the macOS Keychain prompt: remember it so
+                // nothing asks again until they explicitly retry from the tab.
+                if declined { self.settings.claudeKeychainDeclined = true }
+            }
         }
     }
 
@@ -140,7 +134,9 @@ final class UsageMonitor: ObservableObject {
             return
         }
         let claudeEnabled = settings.isAgentEnabled(.claudeCode)
+            && settings.isUsageAuthorized(.claudeCode)
         let codexEnabled = settings.isAgentEnabled(.codex)
+            && settings.isUsageAuthorized(.codex)
         isScanning = true
         scanTask = Task.detached(priority: .utility) { [weak self] in
             let windows = DateWindows()
@@ -167,22 +163,38 @@ final class UsageMonitor: ObservableObject {
 
     // MARK: - Fetching
 
-    private nonisolated static func fetch(_ agent: AgentPreset) async -> AgentUsage? {
-        if agent == .claudeCode { return await fetchClaude() }
-        if agent == .codex { return await fetchCodex() }
-        return nil
+    /// One plan-limit fetch's result: the reading (if any) plus whether the user
+    /// refused the Keychain prompt along the way, so the caller can remember the
+    /// refusal instead of silently retrying it forever.
+    private struct FetchOutcome {
+        var usage: AgentUsage?
+        var keychainDeclined = false
     }
 
-    /// Claude Code: OAuth bearer from `~/.claude/.credentials.json` (no prompt) or,
-    /// failing that, the `Claude Code-credentials` Keychain item the CLI writes on
-    /// macOS. `five_hour` → session lane, `seven_day` → weekly lane. Requires the
-    /// `user:profile` scope, which Claude Code's tokens carry.
-    private nonisolated static func fetchClaude() async -> AgentUsage? {
-        guard let token = claudeAccessToken() else { return nil }
+    private nonisolated static func fetch(
+        _ agent: AgentPreset, allowKeychain: Bool
+    ) async -> FetchOutcome {
+        if agent == .claudeCode { return await fetchClaude(allowKeychain: allowKeychain) }
+        if agent == .codex { return FetchOutcome(usage: await fetchCodex()) }
+        return FetchOutcome()
+    }
+
+    /// Claude Code: OAuth bearer from `~/.claude/.credentials.json` (a plain file,
+    /// no prompt) or, only when `allowKeychain`, the `Claude Code-credentials`
+    /// Keychain item the CLI writes on macOS. `five_hour` → session lane,
+    /// `seven_day` → weekly lane. Requires the `user:profile` scope, which Claude
+    /// Code's tokens carry.
+    private nonisolated static func fetchClaude(allowKeychain: Bool) async -> FetchOutcome {
+        let credential = claudeAccessToken(allowKeychain: allowKeychain)
+        guard case .token(let token) = credential else {
+            return FetchOutcome(keychainDeclined: credential == .keychainDeclined)
+        }
         var request = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        guard let payload: ClaudeUsageResponse = await getJSON(request) else { return nil }
+        guard let payload: ClaudeUsageResponse = await getJSON(request) else {
+            return FetchOutcome()
+        }
 
         var windows: [UsageWindow] = []
         if let lane = payload.five_hour, let window = lane.window(label: "5h") {
@@ -191,7 +203,7 @@ final class UsageMonitor: ObservableObject {
         if let lane = payload.seven_day, let window = lane.window(label: "Weekly") {
             windows.append(window)
         }
-        return windows.isEmpty ? nil : AgentUsage(windows: windows)
+        return FetchOutcome(usage: windows.isEmpty ? nil : AgentUsage(windows: windows))
     }
 
     /// Codex: OAuth bearer from `$CODEX_HOME/auth.json` (or `~/.codex/auth.json`).
@@ -212,15 +224,32 @@ final class UsageMonitor: ObservableObject {
 
     // MARK: - Credentials
 
-    private nonisolated static func claudeAccessToken() -> String? {
+    /// How a Claude credential lookup ended: a usable token, nothing readable, or
+    /// the user actively refusing the Keychain prompt (which the caller must
+    /// remember, not retry).
+    private enum ClaudeCredential: Equatable {
+        case token(String)
+        case unavailable
+        case keychainDeclined
+    }
+
+    private nonisolated static func claudeAccessToken(allowKeychain: Bool) -> ClaudeCredential {
         let file = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/.credentials.json")
         if let data = try? Data(contentsOf: file),
            let token = parseClaudeToken(data) {
-            return token
+            return .token(token)
         }
-        guard let data = keychainPassword(service: "Claude Code-credentials") else { return nil }
-        return parseClaudeToken(data)
+        guard allowKeychain else { return .unavailable }
+        switch keychainPassword(service: "Claude Code-credentials") {
+        case .success(let data):
+            guard let token = parseClaudeToken(data) else { return .unavailable }
+            return .token(token)
+        case .declined:
+            return .keychainDeclined
+        case .unavailable:
+            return .unavailable
+        }
     }
 
     private nonisolated static func parseClaudeToken(_ data: Data) -> String? {
@@ -241,10 +270,19 @@ final class UsageMonitor: ObservableObject {
         return tokens["access_token"] as? String
     }
 
+    private enum KeychainRead {
+        case success(Data)
+        /// The user refused the system's access prompt (Deny, or cancelling the
+        /// unlock dialog) — distinct from "nothing there" so it can be remembered.
+        case declined
+        case unavailable
+    }
+
     /// Reads a generic-password Keychain item by service name. This is what the
-    /// Claude CLI uses on macOS; the first read may raise the system's Keychain
-    /// access prompt, after which "Always Allow" makes it silent.
-    private nonisolated static func keychainPassword(service: String) -> Data? {
+    /// Claude CLI uses on macOS; the read may raise the system's Keychain access
+    /// prompt ("Always Allow" makes it silent), so callers must only reach here as
+    /// the direct result of a user action.
+    private nonisolated static func keychainPassword(service: String) -> KeychainRead {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -252,8 +290,15 @@ final class UsageMonitor: ObservableObject {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else { return nil }
-        return item as? Data
+        switch SecItemCopyMatching(query as CFDictionary, &item) {
+        case errSecSuccess:
+            guard let data = item as? Data else { return .unavailable }
+            return .success(data)
+        case errSecAuthFailed, errSecUserCanceled:
+            return .declined
+        default:
+            return .unavailable
+        }
     }
 
     // MARK: - Networking
