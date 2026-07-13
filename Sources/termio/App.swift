@@ -1054,16 +1054,19 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
         case .newTerminal:
             // Pinned to the trailing edge of the sidebar's toolbar region (just before the
             // tracking separator), so it reads as the navigator's own "new" action — like the
-            // `+` at the foot of Finder's sidebar. A pull-down (same `NSMenuToolbarItem`
-            // construction as the sort item), not a single hidden action: the two ways
-            // something new enters the sidebar — a loose terminal or a project — are each
-            // one visible click (the discoverability fix from the loose-terminal RFC).
+            // `+` at the foot of Finder's sidebar: a plain `+` that pops a menu on click. It
+            // still carries a pull-down (the two ways something new enters the sidebar — a loose
+            // terminal or a project), but with `showsIndicator = false` it keeps the exact width
+            // of the single-action `+` it replaced, so the sidebar's `minimumThickness` (240)
+            // stays valid and the button never grows the chevron that would push it toward the
+            // NSToolbar `»` overflow. Finder's sidebar `+` shows no chevron either — a `+` reads
+            // as "add" on its own, unlike the sort item, whose glyph does keep its indicator.
             let item = NSMenuToolbarItem(itemIdentifier: .newTerminal)
             item.label = "New"
             item.toolTip = "New terminal or project"
             item.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New")
             item.isBordered = true
-            item.showsIndicator = true
+            item.showsIndicator = false
             item.menu = makeNewSessionMenu()
             return item
         case .inspectorTabs:
