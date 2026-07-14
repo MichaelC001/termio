@@ -300,14 +300,17 @@ extension TermioStore {
     /// (a dev rebuild out of VS Code, or an agent session), the child agent would
     /// otherwise detect the *host's* terminal (`TERM_PROGRAM=vscode`) or believe it
     /// is a nested Claude Code run (`CLAUDECODE`, `CLAUDE_CODE_SSE_PORT`, …). termio
-    /// is the terminal here, so none of those claims may reach the session. A
-    /// Finder launch carries none of them — this only matters for dev relaunches.
+    /// is the terminal here, so none of those claims may reach the session. Color
+    /// policy flags are launcher policy too: Codex, CI, or a build shell commonly
+    /// sets `NO_COLOR=1`, which must not silently turn off color in every hosted
+    /// agent. A user's shell startup files can still opt back into those flags.
+    /// A Finder launch carries none of them — this only matters for dev relaunches.
     private static func sanitizedEnvironment() -> [String: String] {
         let dropped: Set<String> = [
             "CLAUDECODE", "CLAUDE_EFFORT", "TERM_SESSION_ID", "TERMINAL_EMULATOR",
             "TMUX", "TMUX_PANE", "STY", "INSIDE_EMACS", "LC_TERMINAL",
             "LC_TERMINAL_VERSION", "KONSOLE_VERSION", "GNOME_TERMINAL_SERVICE",
-            "WT_SESSION",
+            "WT_SESSION", "NO_COLOR", "FORCE_COLOR", "CLICOLOR", "CLICOLOR_FORCE",
         ]
         let droppedPrefixes = [
             "TERM_PROGRAM", "VSCODE_", "CLAUDE_CODE_", "ITERM_", "GHOSTTY_",
