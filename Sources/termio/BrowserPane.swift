@@ -177,7 +177,7 @@ struct BrowserPaneView: View {
             Divider()
             WebViewRepresentable(webView: model.webView)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Color(nsColor: settings.terminalBackgroundColor))
         // A hairline along the pane's top edge so the address bar reads as a
         // browser toolbar sitting under the window chrome, rather than floating
         // loose against the title bar (the terminal panes have no such bar, so
