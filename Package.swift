@@ -47,6 +47,9 @@ let package = Package(
                 .product(name: "TermioShared", package: "Shared"),
             ],
             path: "Sources/termio",
+            // The vendored Highlightr copy ships its own README; it's documentation, not
+            // a build input, so exclude it rather than let SwiftPM flag it as unhandled.
+            exclude: ["Editor/Highlightr/README.md"],
             resources: [
                 // Vendor favicons rendered as agent brand marks; see BrandImageAsset.
                 .process("Resources"),
