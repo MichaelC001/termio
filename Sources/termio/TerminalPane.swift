@@ -8,6 +8,11 @@ extension Notification.Name {
     /// — clear the store, hand focus back to the terminal — the overlays' own Esc / close use, so
     /// the toolbar and in-overlay close paths stay identical.
     static let termioCloseContentOverlay = Notification.Name("termio.closeContentOverlay")
+
+    /// Dev-only fault injector for the hollow-cursor focus race. The selected terminal is
+    /// made first responder, then deliberately resigned while the main window stays key.
+    /// Fired from the command palette's "Debug: Orphan Terminal Focus".
+    static let termioDebugOrphanFocus = Notification.Name("termio.debugOrphanFocus")
 }
 
 /// Right column. Every session that has been opened stays *mounted* here for the
@@ -27,7 +32,7 @@ struct TerminalPane: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
     @Environment(\.colorScheme) private var colorScheme
-    @FocusState private var focusedSession: Session.ID?
+    @State private var focusDriver = TerminalFocusDriver()
     @State private var activated: [Session.ID] = []
     @State private var isDropTargeted = false
     /// Browser panes mid close animation. A close fades + shrinks the pane first,
@@ -77,8 +82,16 @@ struct TerminalPane: View {
                             BrowserPaneView(model: store.browserPane(for: item.session),
                                             onClose: { closeBrowser(id) })
                         } else {
-                            TerminalSurfaceView(context: store.surface(for: item.session, in: item.project))
-                                .terminalFocused($focusedSession, equals: id)
+                            ManagedTerminalSurface(
+                                id: id,
+                                context: store.surface(for: item.session, in: item.project),
+                                isSelected: store.selectedSessionID == id,
+                                isVisible: isVisible,
+                                onFocused: { selectFocusedSurface(id) },
+                                requestFocus: { reason in
+                                    requestTerminalFocus(for: id, reason: reason)
+                                }
+                            )
                         }
                     }
                     .frame(width: rect.width, height: rect.height)
@@ -128,7 +141,7 @@ struct TerminalPane: View {
             if let url = store.openFileURL {
                 let onClose = {
                     store.openFileURL = nil
-                    focusedSession = store.selectedSessionID
+                    requestSelectedTerminalFocus(reason: .overlayClosed)
                 }
                 Group {
                     if FileActivation.isPreviewable(url) {
@@ -151,7 +164,7 @@ struct TerminalPane: View {
             if let request = store.openDiff {
                 GitDiffView(request: request, settings: settings, onClose: {
                     store.openDiff = nil
-                    focusedSession = store.selectedSessionID
+                    requestSelectedTerminalFocus(reason: .overlayClosed)
                 })
                 .id(request)
                 .transition(.opacity)
@@ -165,7 +178,7 @@ struct TerminalPane: View {
             if let request = store.openTrace {
                 TraceView(request: request, settings: settings, onClose: {
                     store.openTrace = nil
-                    focusedSession = store.selectedSessionID
+                    requestSelectedTerminalFocus(reason: .overlayClosed)
                 })
                 .id(request)
                 .transition(.opacity)
@@ -177,7 +190,7 @@ struct TerminalPane: View {
         // terminal surfaces); this only hands focus back to the terminal when
         // it closes.
         .onChange(of: store.paletteMode) { _, mode in
-            if mode == nil { focusedSession = store.selectedSessionID }
+            if mode == nil { requestSelectedTerminalFocus(reason: .paletteClosed) }
         }
         // Dropping a file (dragged from the file-tree inspector or the Finder) inserts
         // its shell-quoted path at the prompt — the prebuilt libghostty surface does not
@@ -194,14 +207,6 @@ struct TerminalPane: View {
                 activated.append(id)
             }
         }
-        // Clicking a split pane makes its surface first responder; follow that
-        // with the selection so the sidebar highlight, title bar, and split
-        // focus all agree on which pane is active.
-        .onChange(of: focusedSession) { _, id in
-            guard let id, id != store.selectedSessionID,
-                  store.visiblePaneIDs.contains(id) else { return }
-            store.selectedSessionID = id
-        }
         .onChange(of: store.selectedSessionID, initial: true) { _, id in
             if let id, !activated.contains(id) {
                 activated.append(id)
@@ -212,7 +217,7 @@ struct TerminalPane: View {
             store.openFileURL = nil
             store.openDiff = nil
             store.openTrace = nil
-            focusedSession = id
+            requestSelectedTerminalFocus(reason: .selectionChanged)
         }
         // The toolbar's close button posts this; tear the overlay down the same way the overlay's
         // own Esc / close does (clear the store, return focus to the selected session's terminal).
@@ -220,27 +225,82 @@ struct TerminalPane: View {
             store.openFileURL = nil
             store.openDiff = nil
             store.openTrace = nil
-            focusedSession = store.selectedSessionID
+            requestSelectedTerminalFocus(reason: .overlayClosed)
         }
-        // Refocus rescue for a libghostty-spm focus bug. When the window resigns key
-        // (Cmd-Tab, Spotlight, the tray, Settings…), the package writes "unfocused"
-        // through the SwiftUI binding, clearing `focusedSession`; if any store-driven
-        // re-render lands while the window is non-key, `synchronizeFocus` then strips
-        // the terminal's first-responder status outright (`makeFirstResponder(nil)`),
-        // and on reactivation the package only restores focus when the view is *still*
-        // first responder — so the cursor stays hollow until the user clicks. Detect
-        // exactly that orphaned state when the main window becomes key — first responder
-        // fell back to the window itself — and hand focus to the selected session. Any
-        // legitimate owner (an overlay's text view, a toolbar field) survives key-window
-        // cycles as first responder, so this can never steal focus from one.
+        // Dev-only: perform the real AppKit failure while the main window stays key.
+        // The driver focuses the selected TerminalView, resigns it to nil on the next
+        // runloop, then uses the same orphan repair as a sibling-driven surface update.
+        .onReceive(NotificationCenter.default.publisher(for: .termioDebugOrphanFocus)) { _ in
+            injectTerminalFocusOrphan()
+        }
+        // Window-key status is separate from surface focus, matching Ghostty. Becoming
+        // key asks the driver to repair an orphan; it does not mutate a FocusState.
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
             guard let window = note.object as? NSWindow,
-                  window.frameAutosaveName == AppDelegate.mainWindowFrameAutosaveName,
-                  window.firstResponder === window || window.firstResponder == nil,
-                  store.openFileURL == nil, store.openDiff == nil, store.openTrace == nil
+                  window.frameAutosaveName == AppDelegate.mainWindowFrameAutosaveName
             else { return }
-            focusedSession = store.selectedSessionID
+            requestSelectedTerminalFocus(reason: .windowBecameKey)
         }
+    }
+
+    /// A surface becoming first responder is the source of truth for split selection.
+    /// Each mounted surface owns an independent Boolean FocusState, so one surface
+    /// resigning can no longer clear the focus intent of every sibling.
+    private func selectFocusedSurface(_ id: Session.ID) {
+        guard id != store.selectedSessionID,
+              store.visiblePaneIDs.contains(id) else { return }
+        store.selectedSessionID = id
+    }
+
+    private func requestSelectedTerminalFocus(reason: TerminalFocusReason) {
+        guard let id = store.selectedSessionID else { return }
+        requestTerminalFocus(for: id, reason: reason)
+    }
+
+    /// Mirrors Ghostty's `moveFocus`: resolve the selected AppTerminalView by its
+    /// TerminalViewState delegate, retry with capped exponential backoff until it is
+    /// windowed, and explicitly resign the previously focused surface before moving.
+    private func requestTerminalFocus(for id: Session.ID, reason: TerminalFocusReason) {
+        guard let session = store.session(id), !session.isBrowser,
+              let project = store.project(for: id) else { return }
+        let state = store.surface(for: session, in: project)
+        focusDriver.moveFocus(
+            to: state,
+            sessionID: id,
+            reason: reason,
+            canFocus: { [weak store] in
+                guard let store else { return false }
+                return store.selectedSessionID == id
+                    && store.visiblePaneIDs.contains(id)
+                    && store.session(id)?.isBrowser == false
+                    && store.openFileURL == nil
+                    && store.openDiff == nil
+                    && store.openTrace == nil
+                    && store.paletteMode == nil
+            }
+        )
+    }
+
+    private func injectTerminalFocusOrphan() {
+        guard AppChannel.isDev,
+              let id = store.selectedSessionID,
+              let session = store.session(id), !session.isBrowser,
+              let project = store.project(for: id) else { return }
+        let state = store.surface(for: session, in: project)
+        focusDriver.injectOrphan(
+            in: state,
+            sessionID: id,
+            canFocus: { [weak store] in
+                guard let store else { return false }
+                return store.selectedSessionID == id
+                    && store.visiblePaneIDs.contains(id)
+                    && store.openFileURL == nil
+                    && store.openDiff == nil
+                    && store.openTrace == nil
+                    && store.paletteMode == nil
+            },
+            repair: { requestTerminalFocus(for: id, reason: .faultInjector) }
+        )
     }
 
     /// Closes a browser pane with a "drop away" animation: fade + shrink + a small
@@ -269,7 +329,7 @@ struct TerminalPane: View {
               let id = store.selectedSessionID,
               let session = store.session(id), !session.isBrowser,
               let project = store.project(for: id) else { return false }
-        focusedSession = id
+        requestTerminalFocus(for: id, reason: .fileDrop)
         let text = urls.map { Self.shellQuoted($0.path) }.joined(separator: " ") + " "
         if store.surface(for: session, in: project).send(text) { return true }
 
@@ -315,6 +375,326 @@ struct TerminalPane: View {
     /// window stay see-through.
     private var paneBackground: Color {
         isTranslucent ? .clear : Color(nsColor: settings.terminalBackgroundColor)
+    }
+}
+
+// MARK: - Terminal focus
+
+/// Why a focus request is being made. Explicit navigation may replace another
+/// responder; background reconciliation and window activation may only repair the
+/// narrow orphan shape (the main window itself, or nil, is first responder).
+private enum TerminalFocusReason {
+    case surfaceMounted
+    case selectionChanged
+    case surfaceUpdated
+    case windowBecameKey
+    case paletteClosed
+    case overlayClosed
+    case fileDrop
+    case faultInjector
+
+    var replacesCurrentResponder: Bool {
+        switch self {
+        case .surfaceMounted, .selectionChanged, .paletteClosed, .overlayClosed, .fileDrop:
+            true
+        case .surfaceUpdated, .windowBecameKey, .faultInjector:
+            false
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .surfaceMounted: "surface-mounted"
+        case .selectionChanged: "selection-changed"
+        case .surfaceUpdated: "surface-updated"
+        case .windowBecameKey: "window-became-key"
+        case .paletteClosed: "palette-closed"
+        case .overlayClosed: "overlay-closed"
+        case .fileDrop: "file-drop"
+        case .faultInjector: "fault-injector"
+        }
+    }
+}
+
+/// One focus state per terminal, matching Ghostty's SurfaceView model. The Boolean
+/// binding is retained only to report a clicked split pane back to the store; moving
+/// focus is handled from AppKit by TerminalFocusDriver, never by waiting for this value
+/// to transition through nil.
+private struct ManagedTerminalSurface: View {
+    let id: Session.ID
+    let context: TerminalViewState
+    let isSelected: Bool
+    let isVisible: Bool
+    let onFocused: () -> Void
+    let requestFocus: (TerminalFocusReason) -> Void
+
+    @FocusState private var surfaceFocus: Bool
+
+    var body: some View {
+        TerminalSurfaceView(context: context)
+            .terminalFocused($surfaceFocus)
+            .background {
+                // NSViewRepresentable.updateNSView runs after a parent/store-driven
+                // reconciliation. Re-check first responder on the following runloop,
+                // after any transient detach/resign has settled.
+                TerminalFocusRepairProbe {
+                    guard isSelected, isVisible else { return }
+                    requestFocus(.surfaceUpdated)
+                }
+            }
+            .onAppear {
+                guard isSelected else { return }
+                surfaceFocus = true
+                requestFocus(.surfaceMounted)
+            }
+            .onChange(of: isSelected, initial: true) { _, selected in
+                surfaceFocus = selected
+                if selected { requestFocus(.selectionChanged) }
+            }
+            .onChange(of: surfaceFocus) { _, focused in
+                if focused { onFocused() }
+            }
+    }
+}
+
+private struct TerminalFocusRepairProbe: NSViewRepresentable {
+    let repair: () -> Void
+
+    func makeNSView(context _: Context) -> TerminalFocusProbeView {
+        let view = TerminalFocusProbeView(frame: .zero)
+        DispatchQueue.main.async { repair() }
+        return view
+    }
+
+    func updateNSView(_: TerminalFocusProbeView, context _: Context) {
+        DispatchQueue.main.async { repair() }
+    }
+}
+
+private final class TerminalFocusProbeView: NSView {
+    override func hitTest(_: NSPoint) -> NSView? { nil }
+}
+
+/// App-side equivalent of Ghostty's `moveFocus`. It addresses both wrapper gaps:
+/// a focus request is retried until the selected TerminalView is in a window, and
+/// the previous terminal is explicitly resigned before the new one is focused.
+@MainActor
+private final class TerminalFocusDriver {
+    private enum Strength {
+        case replaceResponder
+        case repairOrphan
+    }
+
+    private weak var lastFocusedSurface: TerminalView?
+    private var replaceGeneration = 0
+    private var repairGeneration = 0
+    private var injectionGeneration = 0
+
+    func moveFocus(
+        to state: TerminalViewState,
+        sessionID: Session.ID,
+        reason: TerminalFocusReason,
+        canFocus: @escaping () -> Bool
+    ) {
+        let strength: Strength = reason.replacesCurrentResponder
+            ? .replaceResponder
+            : .repairOrphan
+        let generation: Int
+        switch strength {
+        case .replaceResponder:
+            replaceGeneration += 1
+            generation = replaceGeneration
+        case .repairOrphan:
+            repairGeneration += 1
+            generation = repairGeneration
+        }
+        scheduleMove(
+            to: state,
+            sessionID: sessionID,
+            reason: reason,
+            strength: strength,
+            generation: generation,
+            delay: 0,
+            canFocus: canFocus
+        )
+    }
+
+    private func scheduleMove(
+        to state: TerminalViewState,
+        sessionID: Session.ID,
+        reason: TerminalFocusReason,
+        strength: Strength,
+        generation: Int,
+        delay: TimeInterval,
+        canFocus: @escaping () -> Bool
+    ) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak state] in
+            guard let self, let state,
+                  isCurrent(strength, generation: generation),
+                  canFocus() else { return }
+
+            guard let window = mainWindow() else {
+                retryMove(to: state, sessionID: sessionID, reason: reason,
+                          strength: strength, generation: generation,
+                          after: delay, canFocus: canFocus)
+                return
+            }
+            // Key-window status is deliberately not focus state. Do not move focus
+            // in the background; didBecomeKey will issue a fresh repair request.
+            guard window.isKeyWindow else { return }
+            guard let root = window.contentView,
+                  let target = terminalView(matching: state, under: root),
+                  target.window === window else {
+                retryMove(to: state, sessionID: sessionID, reason: reason,
+                          strength: strength, generation: generation,
+                          after: delay, canFocus: canFocus)
+                return
+            }
+
+            let current = window.firstResponder
+            if current === target {
+                lastFocusedSurface = target
+                return
+            }
+            if strength == .repairOrphan,
+               current != nil, current !== window {
+                // A field, browser, overlay, or newly-clicked sibling owns focus.
+                // A render-driven repair must never steal from a real responder.
+                return
+            }
+
+            resignPreviousSurface(current: current, target: target)
+            if window.makeFirstResponder(target), window.firstResponder === target {
+                lastFocusedSurface = target
+                if AppChannel.isDev {
+                    if current == nil || current === window {
+                        Log.focus.info("recovered terminal focus [\(reason.label, privacy: .public)] → \(sessionID.uuidString.prefix(8), privacy: .public)")
+                    } else {
+                        Log.focus.info("moved terminal focus [\(reason.label, privacy: .public)] → \(sessionID.uuidString.prefix(8), privacy: .public)")
+                    }
+                }
+            } else {
+                retryMove(to: state, sessionID: sessionID, reason: reason,
+                          strength: strength, generation: generation,
+                          after: delay, canFocus: canFocus)
+            }
+        }
+    }
+
+    private func retryMove(
+        to state: TerminalViewState,
+        sessionID: Session.ID,
+        reason: TerminalFocusReason,
+        strength: Strength,
+        generation: Int,
+        after delay: TimeInterval,
+        canFocus: @escaping () -> Bool
+    ) {
+        let nextDelay = delay == 0 ? 0.05 : min(delay * 2, 0.5)
+        scheduleMove(to: state, sessionID: sessionID, reason: reason,
+                     strength: strength, generation: generation,
+                     delay: nextDelay, canFocus: canFocus)
+    }
+
+    /// Deterministically reproduce the production failure against the real terminal
+    /// responder. This intentionally does not mutate SwiftUI focus state directly.
+    func injectOrphan(
+        in state: TerminalViewState,
+        sessionID: Session.ID,
+        canFocus: @escaping () -> Bool,
+        repair: @escaping () -> Void
+    ) {
+        injectionGeneration += 1
+        scheduleInjection(in: state, sessionID: sessionID,
+                          generation: injectionGeneration, delay: 0,
+                          canFocus: canFocus, repair: repair)
+    }
+
+    private func scheduleInjection(
+        in state: TerminalViewState,
+        sessionID: Session.ID,
+        generation: Int,
+        delay: TimeInterval,
+        canFocus: @escaping () -> Bool,
+        repair: @escaping () -> Void
+    ) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak state] in
+            guard let self, let state,
+                  generation == injectionGeneration, canFocus() else { return }
+            guard let window = mainWindow(), window.isKeyWindow,
+                  let root = window.contentView,
+                  let target = terminalView(matching: state, under: root),
+                  target.window === window else {
+                let nextDelay = delay == 0 ? 0.05 : min(delay * 2, 0.5)
+                scheduleInjection(in: state, sessionID: sessionID,
+                                  generation: generation, delay: nextDelay,
+                                  canFocus: canFocus, repair: repair)
+                return
+            }
+
+            if window.firstResponder !== target {
+                resignPreviousSurface(current: window.firstResponder, target: target)
+                guard window.makeFirstResponder(target),
+                      window.firstResponder === target else {
+                    let nextDelay = delay == 0 ? 0.05 : min(delay * 2, 0.5)
+                    scheduleInjection(in: state, sessionID: sessionID,
+                                      generation: generation, delay: nextDelay,
+                                      canFocus: canFocus, repair: repair)
+                    return
+                }
+            }
+            lastFocusedSurface = target
+
+            DispatchQueue.main.async { [weak self, weak window, weak target] in
+                guard let self, let window, let target,
+                      generation == injectionGeneration,
+                      canFocus(), window.isKeyWindow,
+                      window.firstResponder === target else { return }
+                _ = window.makeFirstResponder(nil)
+                guard window.firstResponder !== target else { return }
+                Log.focus.info("fault injector: dropped terminal first responder while key=true session=\(sessionID.uuidString.prefix(8), privacy: .public)")
+                repair()
+            }
+        }
+    }
+
+    private func isCurrent(_ strength: Strength, generation: Int) -> Bool {
+        switch strength {
+        case .replaceResponder: generation == replaceGeneration
+        case .repairOrphan: generation == repairGeneration
+        }
+    }
+
+    private func mainWindow() -> NSWindow? {
+        NSApp.windows.first {
+            $0.frameAutosaveName == AppDelegate.mainWindowFrameAutosaveName
+        }
+    }
+
+    private func terminalView(
+        matching state: TerminalViewState,
+        under root: NSView
+    ) -> TerminalView? {
+        if let terminal = root as? TerminalView,
+           let delegate = terminal.delegate as AnyObject?,
+           delegate === state {
+            return terminal
+        }
+        for child in root.subviews {
+            if let match = terminalView(matching: state, under: child) {
+                return match
+            }
+        }
+        return nil
+    }
+
+    private func resignPreviousSurface(current: NSResponder?, target: TerminalView) {
+        let previous = (current as? TerminalView) ?? lastFocusedSurface
+        if let previous, previous !== target {
+            // Ghostty does this explicitly too: in practice the normal focus callback
+            // is occasionally skipped during SwiftUI/AppKit reconciliation.
+            _ = previous.resignFirstResponder()
+        }
     }
 }
 

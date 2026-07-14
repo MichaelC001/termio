@@ -1,5 +1,5 @@
 {
-  "originHash" : "ac9aba7dd980781f78a722c403e8f9c899bf81a6450f690e6599f53075e8995f",
+  "originHash" : "c8ac27f9b5fc2d8acbae1a08100e1cb516655f0ed4befaaaac640b743c692a01",
   "pins" : [
     {
       "identity" : "highlightr",
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/jiweiyuan/libghostty-swift",
       "state" : {
-        "revision" : "85ff0b7198b32e3c5050dd03d08f739052a85076",
-        "version" : "1.0.11"
+        "revision" : "f908f1e3b5dad822daf01e40e657914e932c6b94",
+        "version" : "1.0.12"
       }
     },
     {

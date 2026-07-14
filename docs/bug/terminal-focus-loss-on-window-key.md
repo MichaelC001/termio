@@ -1,100 +1,79 @@
 ---
-title: Terminal randomly loses keyboard focus (hollow cursor) after window deactivation
-status: active
+title: Terminal loses focus after window deactivation
+status: fixed
 type: bug
 created: 2026-07-02
-updated: 2026-07-02
+updated: 2026-07-14
+related:
+  - terminal-focus-loss-on-sibling-render.md
+  - terminal-focus-loss-on-new-session-mount.md
 ---
 
-# Terminal randomly loses keyboard focus (hollow cursor) after window deactivation
+# Terminal loses focus after window deactivation
 
-> Document the intermittent "cursor goes hollow, keystrokes go nowhere, must
-> click to refocus" bug — a libghostty-spm focus-plumbing flaw amplified by
-> termio's constant background re-renders — and the app-side rescue that fixes it.
+> Fixed on 2026-07-14. The app-side focus driver restores deterministic responder
+> loss automatically, and wrapper-level per-surface `moveFocus` behavior shipped
+> in `libghostty-swift` `1.0.12`, which termio now requires and pins.
 
 ## Symptom
 
-While using the app, the terminal sometimes drops keyboard focus on its own:
-the block cursor turns into a hollow outline (the terminal's "unfocused" state)
-and typing goes nowhere until the user clicks the terminal to refocus. It feels
-random — most window switches are fine, then one isn't.
+After Cmd-Tab, Spotlight, a settings/update panel, or another key-window change,
+the terminal cursor could remain hollow when the main window became key again.
+Keystrokes went nowhere until the user clicked the terminal.
 
-## Root cause
+## Original root cause
 
-`TerminalPane` binds terminal focus to a SwiftUI `@FocusState`
-(`focusedSession`, `TerminalPane.swift`) via the package's `.terminalFocused`
-modifier. Three pieces of **libghostty-spm** (Lakr233's package, v1.2.x)
-interact badly with that binding:
+Older `libghostty-swift` focus plumbing conflated two independent facts:
 
-1. **Window deactivation clears the SwiftUI binding.**
-   `AppTerminalView+Lifecycle.swift:109` — when the main window resigns *key*
-   (⌘-Tab, Spotlight, the menu-bar tray, Settings, a Sparkle dialog…),
-   `windowDidResignKey` fires `onFocusChange?(false)`, which writes through
-   `TerminalFocusBinding.optional` and sets `focusedSession = nil`
-   (`TerminalViewRepresentable.swift:89-91`). This conflates two different
-   things: losing key-window status is not losing in-window focus.
+- whether the terminal view is AppKit first responder; and
+- whether its window is key.
 
-2. **Any re-render while non-key strips first responder.**
-   `updateNSView` runs `synchronizeFocus` on every SwiftUI update
-   (`TerminalViewRepresentable@AppKit.swift:28`). With the binding now reading
-   false and the terminal still first responder, it calls
-   `window.makeFirstResponder(nil)` (`TerminalViewRepresentable.swift:55-57`).
-   termio re-renders constantly even when idle — `TerminalPane` observes
-   `TermioStore`, whose `statuses` / `currentTool` / `liveTitles` /
-   `liveActivity` / `gitChangeCount` update from agent hooks and git polling —
-   so a store update landing while the window is non-key strips the terminal.
+`windowDidResignKey` dimmed Ghostty's cursor and also wrote `false` through the
+SwiftUI focus binding. A host render while the app was inactive then saw a false
+binding and could call `makeFirstResponder(nil)`. On reactivation the view was no
+longer first responder, so the wrapper had nothing to restore.
 
-3. **Nothing restores focus on reactivation.**
-   `windowDidBecomeKey` (`AppTerminalView+Lifecycle.swift:102`) only re-asserts
-   focus if `window.firstResponder === self` — but first responder is now the
-   window itself, so it does nothing. termio had no window-activation handler
-   of its own; `focusedSession` was only re-set on session switch or overlay
-   close. Result: hollow cursor until the user clicks.
+The race correlated with agent activity because sibling status, live-title, and
+git updates caused the renders that completed the failure while the window was
+inactive.
 
-### Why it feels random
+## Wrapper fix (1.0.11)
 
-If no store update happens to land during the non-key interval, step 2 never
-runs: AppKit keeps the view as first responder and step 3 restores focus fine.
-The bug bites only when background activity (an agent working, git polling)
-coincides with the window being non-key — hence "sometimes", and more often
-when agents are busy.
+The fork now keeps window-key state separate. `windowDidResignKey` calls
+`core.setFocus(false)` to draw an inactive cursor but does not write to the
+SwiftUI binding. `synchronizeFocus` also refuses to surrender a terminal merely
+because a false binding is observed while the window is non-key.
 
-## Fix (app-side rescue, shipped)
+Wrapper version 1.0.12 extends that 1.0.11 fix with per-view binding intent,
+stale-work cancellation, deferred orphan detection, and Ghostty-style focus-move
+retry. Its tests also assert that a window-key callback never rewrites surface
+focus intent. See `terminal-focus-loss-on-sibling-render.md` for implementation
+and test details.
 
-`TerminalPane.swift` — a `NSWindow.didBecomeKeyNotification` observer
-re-asserts `focusedSession = store.selectedSessionID`, guarded so it fires
-**only in the exact orphaned state the bug produces**:
+## App-side hardening
 
-- the notification is for the **main window** (matched via
-  `AppDelegate.mainWindowFrameAutosaveName`, hoisted in `App.swift` so the
-  Settings window never triggers it);
-- `window.firstResponder === window` (or nil) — first responder fell back to
-  the window itself, which is what `makeFirstResponder(nil)` leaves behind and
-  which no legitimate focus owner ever exhibits across a key-window cycle;
-- no file / diff / trace overlay is open (those manage their own focus).
+`TerminalPane` no longer restores window focus by writing a shared optional
+FocusState. Its `NSWindow.didBecomeKeyNotification` handler asks
+`TerminalFocusDriver` to repair the selected surface directly.
 
-Safety property: any legitimate first responder (an overlay's text view, a
-toolbar field) survives key-window cycles, so the guard fails and the rescue is
-a no-op — it can never steal focus, and worst case degrades to the old
-click-to-refocus behavior.
+The driver resolves the actual `GhosttyTerminal.TerminalView` and only performs a
+window-activation repair when first responder is orphaned (the window itself or
+`nil`). A legitimate first responder such as an editor, command-palette field, or
+browser is left alone. If the surface has not reached a window yet, the request is
+retried with a capped backoff.
 
-### Known residual path
-
-The rescue covers the window-deactivation path (the common one). If something
-inside a *key* window momentarily grabs first responder and disappears without
-handing focus back, no key-window transition occurs and the rescue won't fire.
-Not observed in practice; revisit if focus ever drops without a window switch.
-
-### Upstream
-
-The root fix belongs in libghostty-spm: `windowDidResignKey` should dim the
-cursor (`core.setFocus(false)`) **without** writing the SwiftUI binding, so
-focus survives window deactivation. Worth a PR to
-`github.com/Lakr233/libghostty-spm`. Once that lands, the app-side rescue's
-guard never matches and it becomes dead code that won't fight the fix.
+The same driver covers the window-stays-key sibling-render race documented in
+`terminal-focus-loss-on-sibling-render.md`, but that path is triggered after
+surface reconciliation rather than by a key-window notification.
 
 ## Verification
 
-Rebuild, start an agent working (so store updates flow), ⌘-Tab away for a few
-seconds, ⌘-Tab back. Before the fix this reliably left a hollow cursor; after,
-typing lands in the terminal immediately with no click.
+With an agent producing background updates, Cmd-Tab away for several seconds and
+return. The terminal should accept typing immediately without a click. For the
+window-stays-key deterministic check, use **Debug: Orphan Terminal Focus** in the
+dev command palette and inspect the `focus` log category with `--level debug`.
+
+The 2026-07-14 verification exercised the harder window-stays-key responder loss
+and passed (see the sibling-render note). It also showed explicit focus moves
+across several session selections. A longer soak with repeated Cmd-Tab cycles is
+still useful because this document's original trigger is timing-dependent.

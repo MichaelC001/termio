@@ -127,6 +127,14 @@ extension TermioStore {
         }
         let state = TerminalViewState(controller: controller)
         state.controller.setTheme(makeTheme())
+        // Honor ghostty's close request (fired when the child has exited and the
+        // user presses a key, fulfilling the "Press any key to close" prompt) by
+        // removing the session — the same thing the sidebar's Close does. Without
+        // this the prompt is a dead end: the keypress reaches ghostty, which calls
+        // `close()`, but nothing on the termio side acts on it, so the pane never
+        // goes away. Paired with `wait-after-command` below (which keeps the pane
+        // alive to *show* that prompt) and the clean-exit auto-close in `onExit`.
+        state.onClose = { [weak self] _ in self?.closeSession(session.id) }
 
         // Host-managed backend: termio owns the PTY (rather than libghostty's
         // `.exec`), so the byte stream can be teed to a phone and read for
@@ -269,10 +277,29 @@ extension TermioStore {
                     DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.35, execute: work)
                 }
             }
-            pty.onExit = { [weak self, weak inMemory] code in
-                inMemory?.finish(exitCode: UInt32(bitPattern: code), runtimeMilliseconds: 0)
+            pty.onExit = { [weak self, weak inMemory] code, runtimeMs in
+                // Report the *real* runtime, not 0. On macOS ghostty ignores the
+                // exit code and shows its "failed to launch the requested command"
+                // overlay whenever runtime ≤ `abnormal-command-exit-runtime` (250 ms) —
+                // so a hardcoded 0 mislabeled every ordinary exit (a codex self-update
+                // that quits, an agent you `exit` out of) as a launch failure. A true
+                // runtime lets a long-lived session fall through to the neutral
+                // "process exited" message, reserving the scary banner for genuine
+                // sub-threshold launch failures (binary not found, bad argv).
+                inMemory?.finish(exitCode: UInt32(bitPattern: code), runtimeMilliseconds: runtimeMs)
                 self?.ptyProcesses[session.id] = nil
                 self?.lastScreenActivity[session.id] = nil
+                // A plain terminal that exits *cleanly* closes its tab like a
+                // native terminal (Terminal.app / iTerm2 / Ghostty all do this) —
+                // you typed `exit`, so the pane goes away with no extra keypress.
+                // A non-zero exit is left on screen so its error output stays
+                // readable, and an agent session (Claude, Codex) always persists
+                // as a resumable sidebar entry rather than silently vanishing
+                // (e.g. after a `codex` self-update that quits). ghostty can't
+                // read the exit code reliably on macOS, but our `waitpid` here can.
+                if session.agent == .terminal, code == 0 {
+                    self?.closeSession(session.id)
+                }
             }
             ptyProcesses[session.id] = pty
         }
@@ -300,14 +327,17 @@ extension TermioStore {
     /// (a dev rebuild out of VS Code, or an agent session), the child agent would
     /// otherwise detect the *host's* terminal (`TERM_PROGRAM=vscode`) or believe it
     /// is a nested Claude Code run (`CLAUDECODE`, `CLAUDE_CODE_SSE_PORT`, …). termio
-    /// is the terminal here, so none of those claims may reach the session. A
-    /// Finder launch carries none of them — this only matters for dev relaunches.
+    /// is the terminal here, so none of those claims may reach the session. Color
+    /// policy flags are launcher policy too: Codex, CI, or a build shell commonly
+    /// sets `NO_COLOR=1`, which must not silently turn off color in every hosted
+    /// agent. A user's shell startup files can still opt back into those flags.
+    /// A Finder launch carries none of them — this only matters for dev relaunches.
     private static func sanitizedEnvironment() -> [String: String] {
         let dropped: Set<String> = [
             "CLAUDECODE", "CLAUDE_EFFORT", "TERM_SESSION_ID", "TERMINAL_EMULATOR",
             "TMUX", "TMUX_PANE", "STY", "INSIDE_EMACS", "LC_TERMINAL",
             "LC_TERMINAL_VERSION", "KONSOLE_VERSION", "GNOME_TERMINAL_SERVICE",
-            "WT_SESSION",
+            "WT_SESSION", "NO_COLOR", "FORCE_COLOR", "CLICOLOR", "CLICOLOR_FORCE",
         ]
         let droppedPrefixes = [
             "TERM_PROGRAM", "VSCODE_", "CLAUDE_CODE_", "ITERM_", "GHOSTTY_",
@@ -510,6 +540,15 @@ extension TermioStore {
         // selection copy-free (Ghostty's own default uses the X11 selection, which
         // is meaningless on macOS).
         builder.withCustom("copy-on-select", settings.copyOnSelect ? "clipboard" : "false")
+
+        // Hold the pane open after the child process exits rather than letting
+        // ghostty tear it down instantly, so a non-zero exit (or an agent that
+        // quit / self-updated) stays on screen and readable, with a working
+        // "Press any key to close the terminal." prompt (the keypress routes
+        // through `state.onClose` → `closeSession`). A clean plain-terminal exit
+        // is closed proactively in `onExit`, so it never lingers on this prompt —
+        // it just vanishes like a native terminal tab.
+        builder.withCustom("wait-after-command", "true")
 
         // termio's palettes live on ⌘⇧P (Command Palette) and ⌘⇧O (Open
         // Quickly, see `buildMainMenu`); ghostty binds keys like these to its

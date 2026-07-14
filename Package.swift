@@ -13,7 +13,7 @@ let package = Package(
         // live resize" suspicion that briefly rolled this back to Lakr233 was a
         // misdiagnosis — the real bug was termio's own PTY spawn shape (see
         // docs/bug/terminal-resize-no-reflow-HANDOFF.md §0).
-        .package(url: "https://github.com/jiweiyuan/libghostty-swift", from: "1.0.11"),
+        .package(url: "https://github.com/jiweiyuan/libghostty-swift", from: "1.0.12"),
         // Sparkle powers in-app auto-update (the "Check for Updates…" menu item and
         // background update checks). It reads the appcast published with each GitHub
         // release; the matching EdDSA public key is embedded in packaging/Info.plist.
@@ -47,6 +47,9 @@ let package = Package(
                 .product(name: "TermioShared", package: "Shared"),
             ],
             path: "Sources/termio",
+            // The vendored Highlightr copy ships its own README; it's documentation, not
+            // a build input, so exclude it rather than let SwiftPM flag it as unhandled.
+            exclude: ["Editor/Highlightr/README.md"],
             resources: [
                 // Vendor favicons rendered as agent brand marks; see BrandImageAsset.
                 .process("Resources"),

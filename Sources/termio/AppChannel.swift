@@ -18,6 +18,12 @@ enum AppChannel {
     static let suffix: String =
         (Bundle.main.bundleIdentifier?.hasSuffix(".dev") ?? false) ? "-dev" : ""
 
+    /// True for the side-by-side dev build. Use this to gate diagnostics that must
+    /// survive a release-configuration compile (`build-app.sh` builds the dev bundle
+    /// in release config, so `#if DEBUG` would strip them) yet never appear in the
+    /// shipped release app.
+    static var isDev: Bool { !suffix.isEmpty }
+
     /// Internal state — control/status sockets, `state.json`, custom themes, and
     /// downloaded tunnel binaries: `~/Library/Application Support/termio[-dev]`.
     /// Falls back to a home dotfolder if Application Support can't be resolved.

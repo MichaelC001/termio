@@ -112,8 +112,19 @@ final class PTYProcess: @unchecked Sendable {
     private var hostApplyWork: DispatchWorkItem?
     private let lock = NSLock()
 
-    /// Fired (on the main queue) when the child exits.
-    var onExit: ((Int32) -> Void)?
+    /// Wall-clock instant the child was spawned. Reported (as elapsed ms) on
+    /// exit so libghostty's abnormal-exit overlay can distinguish a genuine
+    /// sub-threshold launch failure from a normal exit: on macOS ghostty
+    /// ignores the exit code and shows its scary "failed to launch the
+    /// requested command" banner purely when runtime ≤ `abnormal-command-exit-runtime`
+    /// (250 ms). Passing a hardcoded 0 tripped that on *every* exit; the real
+    /// runtime lets a long-lived session close with the neutral "process
+    /// exited" message instead.
+    private let startedAt = Date()
+
+    /// Fired (on the main queue) when the child exits, with its exit code and
+    /// how long it ran (milliseconds).
+    var onExit: ((Int32, UInt64) -> Void)?
 
     /// Spawns `argv` in `cwd` with `env` overrides at an initial `cols`×`rows`.
     /// Returns nil if the PTY or the process could not be created.
@@ -195,7 +206,8 @@ final class PTYProcess: @unchecked Sendable {
             let code = (status & 0x7F) == 0 ? (status >> 8) & 0xFF : 128 + (status & 0x7F)
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.onExit?(Int32(code))
+                let runtimeMs = UInt64(max(0, Date().timeIntervalSince(self.startedAt) * 1000))
+                self.onExit?(Int32(code), runtimeMs)
                 self.lock.lock()
                 let observers = self.exitObservers
                 self.lock.unlock()
