@@ -200,13 +200,13 @@ private struct ProjectHeader: View {
     /// The Terminals section is not a folder project — agents don't belong in `$HOME`
     /// (they get a real project or the scoped scratch workspace), and worktree /
     /// sandbox / Finder actions are about a project's directory — so its menu is
-    /// just the terminal action and Remove.
+    /// just the terminal action and Close All Terminals.
     private var projectMenuItems: [SidebarMenuItem] {
         if project.kind == .terminals {
             return [
                 .action("New Terminal") { store.addSession(to: project.id, agent: .terminal) },
                 .separator,
-                .action("Remove") { store.removeProject(project.id) },
+                .action("Close All Terminals") { store.removeProject(project.id) },
             ]
         }
         var items: [SidebarMenuItem] = enabledAgentPresets(settings).map { preset in
