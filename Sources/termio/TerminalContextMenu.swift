@@ -101,8 +101,14 @@ final class TerminalContextMenu: NSObject {
         // present, not gated on a hovered link. With a link under the pointer the
         // pane opens on it; otherwise it opens blank with the address bar focused.
         menu.addItem(storeItem("Open Browser", action: #selector(openBrowser), symbol: "globe"))
+        // A split pane leaves the layout but keeps its session alive ("Close
+        // Pane"); a lone terminal has no pane to leave, so the only close that
+        // means anything kills the session outright — same action and label as
+        // the sidebar row's "Close Session".
         if store?.splitRoot != nil {
             menu.addItem(storeItem("Close Pane", action: #selector(closePane), symbol: "rectangle"))
+        } else if clickedSessionID != nil {
+            menu.addItem(storeItem("Close Session", action: #selector(closeSession), symbol: "xmark"))
         }
         return menu
     }
@@ -121,9 +127,18 @@ final class TerminalContextMenu: NSObject {
         return item
     }
 
+    /// The session under the clicked surface, resolved live from `clickedView`.
+    private var clickedSessionID: Session.ID? {
+        clickedView.flatMap(sessionID(for:))
+    }
+
     @objc private func splitRight() { store?.splitSelectedPane(.horizontal) }
     @objc private func splitDown() { store?.splitSelectedPane(.vertical) }
     @objc private func closePane() { store?.closeSelectedPane() }
+    @objc private func closeSession() {
+        guard let id = clickedSessionID else { return }
+        store?.closeSession(id)
+    }
 
     @objc private func openLink() {
         guard let url = clickedLinkURL else { return }
