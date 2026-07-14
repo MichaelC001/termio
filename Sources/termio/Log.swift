@@ -21,4 +21,5 @@ enum Log {
     static let pty = Logger(subsystem: subsystem, category: "pty")
     static let companion = Logger(subsystem: subsystem, category: "companion")
     static let files = Logger(subsystem: subsystem, category: "files")
+    static let focus = Logger(subsystem: subsystem, category: "focus")
 }

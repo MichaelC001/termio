@@ -275,6 +275,20 @@ struct CommandPaletteView: View {
                              symbol: "arrow.triangle.2.circlepath", shortcut: nil) { _ in
             NSApp.sendAction(#selector(AppDelegate.checkForUpdates(_:)), to: nil, from: nil)
         })
+        if AppChannel.isDev {
+            // Faithful fault injector for the hollow-cursor race. Once this panel has
+            // closed, TerminalPane finds the selected terminal's real AppKit view,
+            // makes it first responder, then resigns it while the main window stays
+            // key. Fix ON → focus is reasserted on the next runloop; fix OFF → the
+            // cursor stays hollow. Watch the `focus` log category for both events.
+            actions.append(.init(id: "debug-orphan-focus", title: "Debug: Orphan Terminal Focus",
+                                 symbol: "cursorarrow.slash", shortcut: nil) { _ in
+                Log.focus.info("fault injector: invoked, posting first-responder orphan in 0.35s")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    NotificationCenter.default.post(name: .termioDebugOrphanFocus, object: nil)
+                }
+            })
+        }
         return actions
     }
 
