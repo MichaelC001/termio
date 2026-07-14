@@ -11,6 +11,10 @@ related:
 
 # Terminal loses focus after window deactivation
 
+> Fixed on 2026-07-14. The app-side focus driver restores deterministic responder
+> loss automatically, and wrapper-level per-surface `moveFocus` behavior shipped
+> in `libghostty-swift` `1.0.12`, which termio now requires and pins.
+
 ## Symptom
 
 After Cmd-Tab, Spotlight, a settings/update panel, or another key-window change,
@@ -40,6 +44,12 @@ The fork now keeps window-key state separate. `windowDidResignKey` calls
 SwiftUI binding. `synchronizeFocus` also refuses to surrender a terminal merely
 because a false binding is observed while the window is non-key.
 
+Wrapper version 1.0.12 extends that 1.0.11 fix with per-view binding intent,
+stale-work cancellation, deferred orphan detection, and Ghostty-style focus-move
+retry. Its tests also assert that a window-key callback never rewrites surface
+focus intent. See `terminal-focus-loss-on-sibling-render.md` for implementation
+and test details.
+
 ## App-side hardening
 
 `TerminalPane` no longer restores window focus by writing a shared optional
@@ -62,3 +72,8 @@ With an agent producing background updates, Cmd-Tab away for several seconds and
 return. The terminal should accept typing immediately without a click. For the
 window-stays-key deterministic check, use **Debug: Orphan Terminal Focus** in the
 dev command palette and inspect the `focus` log category with `--level debug`.
+
+The 2026-07-14 verification exercised the harder window-stays-key responder loss
+and passed (see the sibling-render note). It also showed explicit focus moves
+across several session selections. A longer soak with repeated Cmd-Tab cycles is
+still useful because this document's original trigger is timing-dependent.

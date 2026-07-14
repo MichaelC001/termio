@@ -11,6 +11,11 @@ related:
 
 # Terminal loses focus while the window stays key — sibling-render trigger
 
+> Fixed on 2026-07-14. The faithful first-responder fault injector recovered
+> without a click, typing landed, and the user confirmed the original problem is
+> no longer occurring. The reusable root fix shipped in `libghostty-swift`
+> `1.0.12`, which termio now requires and pins.
+
 ## Symptom
 
 While typing in a terminal or agent TUI, another session changing state can make
@@ -78,6 +83,29 @@ the wrapper fork:
 The sibling-render path no longer depends on a shared FocusState transition or on
 a single wrapper re-render landing at the right time.
 
+## Wrapper root fix (`libghostty-swift` 1.0.12)
+
+The `libghostty-swift` fork now moves the reusable part of the repair into
+`AppTerminalView`:
+
+- each AppKit terminal stores only its own current focus binding;
+- a focused surface retries first-responder acquisition with Ghostty's capped
+  `50ms -> 100ms -> 200ms -> 400ms` backoff while it is not windowed;
+- deferred work re-reads the current binding and uses generations so stale render
+  passes cannot steal focus;
+- a previous terminal is explicitly resigned before moving focus;
+- a transient resign to `window` / `nil` is repaired, while a real responder such
+  as a text field wins and clears the old surface's intent;
+- key-window notifications update Ghostty's visual focus but do not rewrite the
+  surface focus binding; and
+- an optional enum focus binding only clears itself if it is still the active
+  enum case, preventing a late resign from clearing a newly focused sibling.
+
+The wrapper tests cover pre-window retry, orphan recovery, legitimate responder
+handoff, and separation of window-key state. `swift test` passed all 104 tests in
+12 suites, and `Script/test.sh` compiled the full macOS, Mac Catalyst, iOS, and
+iOS Simulator matrix.
+
 ## Deterministic verification
 
 The dev command palette keeps **Debug: Orphan Terminal Focus**, but the injector
@@ -105,9 +133,45 @@ without a click. macOS Accessibility/TCC prevents the shell from synthesizing th
 verification keystroke, so the final visual/input check must be performed by a
 person.
 
-## Upstream
+### Verified result (2026-07-14)
 
-The wrapper should ultimately expose this as its own per-surface `moveFocus`
-implementation so every host gets the same behavior. The app-side driver uses
-only public wrapper APIs and the prebuilt Ghostty core, avoiding the Zig 0.15 /
-macOS Tahoe fork-rebuild deadlock on this machine.
+The dev build produced the complete expected sequence against session `831BE9B4`:
+
+```text
+13:28:19.611 fault injector: dropped terminal first responder while key=true
+13:28:19.616 recovered terminal focus [fault-injector]
+```
+
+Recovery took approximately **5 ms**. The cursor returned to solid, subsequent
+typing landed without another click, and the user reported that the real-world
+problem was basically fixed. This validates the responder drop, app-side repair,
+and input path rather than merely a SwiftUI binding transition.
+
+## Defence in depth / monitoring
+
+The current repair covers the observed orphan shape: a selected visible terminal
+should own focus, no overlay/palette owns it, and the main window's first responder
+has fallen back to the window itself or `nil`. It intentionally does not steal
+focus from another real responder.
+
+Two uncommon paths would still need upstream work or additional evidence:
+
+- Ghostty's core could theoretically become visually unfocused while AppKit still
+  reports the terminal as first responder; the orphan guard would see nothing to
+  repair.
+- A future legitimate control could disappear leaving a responder shape other
+  than `window` / `nil`; the conservative guard would leave it alone.
+
+Keep the dev injector and `Log.focus` category until the fix has had enough soak
+time across agent-state churn, split panes, window switching, and new mounts.
+
+## Release/integration status
+
+The wrapper source change is released as `libghostty-swift` `1.0.12`, and termio's
+manifest and resolved dependency both select that version. Keep the verified
+app-side guard through a soak period; then simplify only duplicated acquisition
+logic, retaining conservative host policy about which selected/visible pane
+should receive focus.
+
+This change is entirely in the Swift wrapper around the prebuilt Ghostty core, so
+it does not require rebuilding the Zig core on this machine.

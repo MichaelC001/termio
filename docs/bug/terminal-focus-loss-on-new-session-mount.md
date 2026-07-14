@@ -11,6 +11,10 @@ related:
 
 # New terminal opens unfocused (hollow cursor, beeps until clicked)
 
+> Fixed on 2026-07-14. The app-side `moveFocus` driver covers the selected surface,
+> and equivalent pre-window retry behavior shipped in `libghostty-swift` `1.0.12`,
+> which termio now requires and pins.
+
 ## Symptom
 
 A freshly created or first-mounted terminal can open without keyboard focus.
@@ -48,7 +52,20 @@ selected visible terminal.
 Once attached, the driver calls `window.makeFirstResponder(target)` and verifies
 that AppKit accepted the move. No unrelated render is needed.
 
+`libghostty-swift` 1.0.12 performs the same retry inside each
+`AppTerminalView`, so the reusable component no longer drops a focus request just
+because `updateNSView` arrived before window attachment. Its pre-window regression
+test attaches the view after the first attempt and verifies that it becomes first
+responder without another SwiftUI render. Termio's manifest and resolved dependency
+both select that release.
+
 ## Verification
 
 Rebuild and open a new idle `~` terminal. Without clicking, type immediately. The
 cursor should be solid and the keystrokes should land without a beep.
+
+During the 2026-07-14 focus verification, logs showed successful explicit
+`selection-changed` focus moves across multiple sessions and the deterministic
+orphan recovered in about 5 ms. That strongly exercises the shared driver, but it
+is not a substitute for repeatedly opening a brand-new idle terminal; keep the
+manual check above in the release regression pass.
