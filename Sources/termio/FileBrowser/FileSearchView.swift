@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The inspector's Search pane — a sibling of Files / Changes / Info on the
@@ -30,68 +31,71 @@ struct FileSearchView: View {
     @State private var isSearching = false
     /// The in-flight debounce+grep, cancelled by the next keystroke.
     @State private var searchTask: Task<Void, Never>?
-    @FocusState private var fieldFocused: Bool
+    @State private var fieldFocused = false
+    @State private var focusRequest = 0
+    @State private var isVisible = false
+    @State private var collapsedFiles: Set<String> = []
 
     var body: some View {
         VStack(spacing: 0) {
             searchField
             resultList
         }
-        .onAppear { claimFocus(attempt: 0) }
+        .onAppear {
+            isVisible = true
+            claimFocus(attempt: 0)
+        }
         .onChange(of: query) { scheduleSearch() }
-        .onDisappear { searchTask?.cancel() }
+        .onDisappear {
+            isVisible = false
+            searchTask?.cancel()
+        }
     }
 
     // MARK: - Pieces
 
     private var searchField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            TextField("Search in files", text: $query)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-                .focused($fieldFocused)
-                .onSubmit {
+        VStack(spacing: 0) {
+            NativeSearchField(
+                text: $query,
+                isFocused: $fieldFocused,
+                focusRequest: focusRequest,
+                placeholder: "Search Project",
+                onSubmit: {
                     if let first = matches.first { onOpen(first.url, first.line) }
-                }
+                },
                 // Esc clears a live query first; a second Esc (empty field)
-                // leaves the pane — VS Code's find-widget rhythm.
-                .onExitCommand {
+                // leaves the pane.
+                onExit: {
                     if query.isEmpty {
                         onDismiss()
                     } else {
                         query = ""
                     }
                 }
-            if isSearching {
-                ProgressView()
-                    .controlSize(.mini)
-            } else if !query.isEmpty {
-                Button {
-                    query = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
+            )
+            .frame(height: 24)
+            .padding(.horizontal, 8)
+            .padding(.top, 7)
+            .padding(.bottom, trimmedQuery.isEmpty ? 7 : 4)
+
+            if !trimmedQuery.isEmpty {
+                HStack(spacing: 5) {
+                    if isSearching {
+                        ProgressView()
+                            .controlSize(.mini)
+                    }
+                    Text(isSearching ? "Searching…" : summary(fileCount: groups.count))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
                 }
-                .buttonStyle(.plain)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 5)
             }
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 5)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.primary.opacity(0.06))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-                )
-        )
-        .padding(.horizontal, 8)
-        .padding(.top, 8)
-        .padding(.bottom, 6)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .overlay(alignment: .bottom) { Divider() }
     }
 
     @ViewBuilder
@@ -99,31 +103,34 @@ struct FileSearchView: View {
         let grouped = groups
         ScrollView {
             LazyVStack(spacing: 0, pinnedViews: []) {
-                if !matches.isEmpty {
-                    // VS Code's tally line, so the scale of the result set is
-                    // readable before any scrolling.
-                    Text(summary(fileCount: grouped.count))
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 14)
-                        .padding(.bottom, 4)
-                }
                 ForEach(grouped, id: \.relative) { group in
+                    let isExpanded = !collapsedFiles.contains(group.relative)
                     FileHeaderRow(
                         url: group.url,
                         relative: group.relative,
                         count: group.items.count,
+                        isExpanded: isExpanded,
                         chrome: chrome,
+                        toggleExpanded: {
+                            withAnimation(.easeInOut(duration: 0.12)) {
+                                if isExpanded {
+                                    collapsedFiles.insert(group.relative)
+                                } else {
+                                    collapsedFiles.remove(group.relative)
+                                }
+                            }
+                        },
                         open: { onOpen(group.url, group.items[0].line) }
                     )
-                    ForEach(group.items, id: \.line) { match in
-                        MatchRow(
-                            match: match,
-                            query: trimmedQuery,
-                            chrome: chrome,
-                            open: { onOpen(match.url, match.line) }
-                        )
+                    if isExpanded {
+                        ForEach(group.items, id: \.line) { match in
+                            MatchRow(
+                                match: match,
+                                query: trimmedQuery,
+                                chrome: chrome,
+                                open: { onOpen(match.url, match.line) }
+                            )
+                        }
                     }
                 }
             }
@@ -131,14 +138,24 @@ struct FileSearchView: View {
         }
         .overlay {
             if !trimmedQuery.isEmpty, matches.isEmpty, !isSearching {
-                ContentUnavailableView.search(text: trimmedQuery)
+                VStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.quaternary)
+                    Text("No Matches")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text("Try another search term.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
     }
 
     private func summary(fileCount: Int) -> String {
         let capped = matches.count >= Self.matchLimit
-        return "\(matches.count)\(capped ? "+" : "") results in \(fileCount) files"
+        return "\(matches.count)\(capped ? "+" : "") matches in \(fileCount) files"
     }
 
     private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
@@ -192,10 +209,108 @@ struct FileSearchView: View {
     /// The terminal surface fights for first responder; keep asking for a few
     /// ticks until the field actually has it (the palette's focus-retry gotcha).
     private func claimFocus(attempt: Int) {
-        guard attempt < 8 else { return }
-        fieldFocused = true
+        guard isVisible, attempt < 8 else { return }
+        focusRequest += 1
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05 * Double(attempt + 1)) {
             if !fieldFocused { claimFocus(attempt: attempt + 1) }
+        }
+    }
+}
+
+// MARK: - Native search field
+
+/// AppKit owns the search field chrome and editing behavior. Rebuilding this
+/// control from a plain SwiftUI text field misses the native bezel, focus ring,
+/// cancel button, and field-editor behavior that make it feel at home on macOS.
+private struct NativeSearchField: NSViewRepresentable {
+    @Binding var text: String
+    @Binding var isFocused: Bool
+    let focusRequest: Int
+    let placeholder: String
+    let onSubmit: () -> Void
+    let onExit: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> NSSearchField {
+        let field = NSSearchField()
+        field.delegate = context.coordinator
+        field.placeholderString = placeholder
+        field.controlSize = .small
+        field.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        field.focusRingType = .default
+        return field
+    }
+
+    func updateNSView(_ field: NSSearchField, context: Context) {
+        context.coordinator.parent = self
+
+        if field.stringValue != text {
+            field.stringValue = text
+        }
+        if field.placeholderString != placeholder {
+            field.placeholderString = placeholder
+        }
+
+        guard context.coordinator.lastFocusRequest != focusRequest else { return }
+        context.coordinator.lastFocusRequest = focusRequest
+        // The hosting view can enter the window one run-loop turn after SwiftUI
+        // asks for focus, so wait until AppKit has attached the search field.
+        DispatchQueue.main.async { [weak field] in
+            guard let field, field.window != nil, field.currentEditor() == nil else { return }
+            field.window?.makeFirstResponder(field)
+        }
+    }
+
+    final class Coordinator: NSObject, NSSearchFieldDelegate {
+        var parent: NativeSearchField
+        var lastFocusRequest = -1
+
+        init(parent: NativeSearchField) {
+            self.parent = parent
+        }
+
+        func submit(_ sender: NSSearchField) {
+            updateText(from: sender)
+            parent.onSubmit()
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSSearchField else { return }
+            updateText(from: field)
+        }
+
+        func controlTextDidBeginEditing(_ notification: Notification) {
+            if !parent.isFocused { parent.isFocused = true }
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            if parent.isFocused { parent.isFocused = false }
+        }
+
+        func control(
+            _ control: NSControl,
+            textView: NSTextView,
+            doCommandBy commandSelector: Selector
+        ) -> Bool {
+            switch commandSelector {
+            case #selector(NSResponder.insertNewline(_:)):
+                guard let field = control as? NSSearchField else { return false }
+                submit(field)
+                return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                parent.onExit()
+                return true
+            default:
+                return false
+            }
+        }
+
+        private func updateText(from field: NSSearchField) {
+            guard parent.text != field.stringValue else { return }
+            parent.text = field.stringValue
         }
     }
 }
@@ -209,36 +324,51 @@ private struct FileHeaderRow: View {
     let url: URL
     let relative: String
     let count: Int
+    let isExpanded: Bool
     let chrome: ChromeTheme?
+    let toggleExpanded: () -> Void
     let open: () -> Void
 
     @State private var isHovering = false
 
     var body: some View {
-        HStack(spacing: 5) {
-            FileIconView(url: url, size: 15, symbolSize: 13)
-                .frame(width: 16, alignment: .leading)
-            Text(url.lastPathComponent)
-                .font(.system(size: 12, weight: .medium))
-                .lineLimit(1)
-            let directory = (relative as NSString).deletingLastPathComponent
-            if !directory.isEmpty {
-                Text(directory)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
+        HStack(spacing: 4) {
+            Button(action: toggleExpanded) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .frame(width: 12, height: 18)
+                    .contentShape(Rectangle())
             }
-            Spacer(minLength: 4)
-            Text("\(count)")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 1)
-                .background(Capsule().fill(Color.primary.opacity(0.08)))
+            .buttonStyle(.plain)
+            .help(isExpanded ? "Collapse Results" : "Expand Results")
+
+            HStack(spacing: 5) {
+                FileIconView(url: url, size: 15, symbolSize: 13)
+                    .frame(width: 16, alignment: .leading)
+                Text(url.lastPathComponent)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                let directory = (relative as NSString).deletingLastPathComponent
+                if !directory.isEmpty {
+                    Text(directory)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
+                Spacer(minLength: 4)
+                Text("\(count)")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                    .frame(minWidth: 18, alignment: .trailing)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture(perform: open)
         }
-        .padding(.vertical, 3)
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 10)
+        .frame(minHeight: 24)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .background(
@@ -247,7 +377,6 @@ private struct FileHeaderRow: View {
         )
         .onHover { isHovering = $0 }
         .draggable(url)
-        .onTapGesture(perform: open)
     }
 }
 
@@ -275,8 +404,9 @@ private struct MatchRow: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 2)
-        .padding(.leading, 14)
+        .padding(.leading, 27)
         .padding(.trailing, 8)
+        .frame(minHeight: 21)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .background(
