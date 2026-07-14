@@ -67,6 +67,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // KVO on the sidebar's collapse state, so every collapse path (toolbar toggle, View menu,
     // divider drag) empties/refills the sidebar's toolbar region (see `setNavigatorItemsVisible`).
     private var sidebarCollapseObserver: NSKeyValueObservation?
+    // KVO on the window's effective appearance, so a *system-driven* light↔dark flip (macOS auto
+    // day/night, Control Center) re-resolves the window background. In `.system` appearance mode
+    // nothing else re-runs `applyWindowTransparency` on an OS flip — the settings never change —
+    // so the statically-resolved `window.backgroundColor` would stay frozen at the old side while
+    // the translucent sidebar material (which blends over it) shows the stale color and libghostty
+    // repaints the terminal to the new side. That mismatch is the light-sidebar-over-dark-terminal
+    // glitch. Re-applying here keeps the window background tracking the OS.
+    private var appearanceObserver: NSKeyValueObservation?
     // The window's real toolbar delegate (must be retained); it carries the native
     // sidebar toggle (see `installToolbar`).
     private var toolbarDelegate: MainToolbarDelegate?
@@ -145,6 +153,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // divider drag). No `.initial`: the launch-time sync below runs after the autosave restore.
         sidebarCollapseObserver = sidebarSplitItem?.observe(\.isCollapsed, options: [.new]) { [weak self] item, _ in
             MainActor.assumeIsolated { self?.setNavigatorItemsVisible(!item.isCollapsed) }
+        }
+        // Re-resolve the window background whenever the OS flips light↔dark under `.system` mode
+        // (see `appearanceObserver`). Pinned Light/Dark modes never see the effective appearance
+        // change out from under them, so this is a no-op there; re-applying is idempotent and
+        // can't loop (it changes no appearance-affecting property).
+        appearanceObserver = window.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.applyWindowTransparency() }
         }
         // After the split view has restored its autosaved collapse state, match the toolbar pane
         // switch to whether the inspector actually came up open or closed, and the sidebar region to
