@@ -909,11 +909,58 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     /// Used to build the inspector tracking separator, which pins the pane switch to the
     /// inspector's left edge (divider 1, between the terminal and the file column).
     private weak var splitViewController: NSSplitViewController?
+    private weak var branchPickerHostingView: NSView?
+    private var branchPickerWidthConstraint: NSLayoutConstraint?
+    private var terminalPaneFrameObserver: NSObjectProtocol?
 
     init(store: TermioStore, settings: AppSettings, splitViewController: NSSplitViewController?) {
         self.store = store
         self.settings = settings
         self.splitViewController = splitViewController
+    }
+
+    deinit {
+        if let terminalPaneFrameObserver {
+            NotificationCenter.default.removeObserver(terminalPaneFrameObserver)
+        }
+    }
+
+    /// Lets the title use the room its toolbar section actually has, up to a generous ceiling.
+    /// Keep a trailing reserve for the flexible space and transient overlay-close button. At the
+    /// terminal pane's 280pt minimum this yields a safe 200pt title; wider panes can show much more.
+    private var terminalPaneView: NSView? {
+        guard let items = splitViewController?.splitViewItems, items.count > 1 else { return nil }
+        return items[1].viewController.view
+    }
+
+    private func branchPickerWidthLimit() -> CGFloat {
+        guard let terminalView = terminalPaneView else {
+            return BranchPickerToolbarView.titleWidthCeiling
+        }
+        return min(
+            BranchPickerToolbarView.titleWidthCeiling,
+            max(BranchPickerToolbarView.titleWidthFloor, terminalView.bounds.width - 80)
+        )
+    }
+
+    private func observeTerminalPaneWidth() {
+        guard let terminalView = terminalPaneView else { return }
+        terminalView.postsFrameChangedNotifications = true
+        if let terminalPaneFrameObserver {
+            NotificationCenter.default.removeObserver(terminalPaneFrameObserver)
+        }
+        terminalPaneFrameObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification,
+            object: terminalView,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.branchPickerWidthConstraint?.constant = self.branchPickerWidthLimit()
+                self.branchPickerHostingView?.invalidateIntrinsicContentSize()
+                self.branchPickerHostingView?.superview?.needsLayout = true
+            }
+        }
     }
 
     /// Builds the project-sort pull-down for the `.sortProjects` toolbar item: one
@@ -1118,9 +1165,23 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             return item
         case .branchPicker:
             let item = NSToolbarItem(itemIdentifier: .branchPicker)
-            item.view = NSHostingView(rootView: BranchPickerToolbarView()
+            let hosting = NSHostingView(rootView: BranchPickerToolbarView()
                 .environmentObject(store)
                 .environmentObject(settings))
+            // Give AppKit an explicit bound for its custom toolbar view. The constant follows the
+            // terminal pane, so wide windows can use the generous ceiling while a narrow pane retains
+            // enough trailing room for the rest of its toolbar section.
+            hosting.translatesAutoresizingMaskIntoConstraints = false
+            let widthConstraint = hosting.widthAnchor.constraint(lessThanOrEqualToConstant: branchPickerWidthLimit())
+            widthConstraint.isActive = true
+            branchPickerHostingView = hosting
+            branchPickerWidthConstraint = widthConstraint
+            observeTerminalPaneWidth()
+            // A toolbar item does not clip its custom view for us. Keep the title inside this item's
+            // measured bounds even if a future SwiftUI layout regression proposes an oversized glyph
+            // run; the Text views still receive the bounded width and perform the visible ellipsis.
+            hosting.clipsToBounds = true
+            item.view = hosting
             item.isBordered = false
             return item
         default:
@@ -1148,6 +1209,12 @@ private extension NSToolbarItem.Identifier {
 private struct BranchPickerToolbarView: View {
     @EnvironmentObject var store: TermioStore
     @Environment(\.controlActiveState) private var controlActive
+
+    /// The title grows naturally with its contents, up to 460pt in a wide terminal pane. AppKit
+    /// lowers the live limit when the pane narrows (see the `.branchPicker` toolbar item), at which
+    /// point both lines use their middle ellipsis and retain the full strings in their tooltips.
+    static let titleWidthFloor: CGFloat = 80
+    static let titleWidthCeiling: CGFloat = 460
 
     /// The selected session's working directory: its worktree if it has one, else its project
     /// folder. `nil` when nothing is selected.
@@ -1189,18 +1256,15 @@ private struct BranchPickerToolbarView: View {
                         .foregroundStyle(secondaryColor)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .help(branch)
                 }
             }
         }
-        // Pull left so the title/branch left edge lines up with the terminal's
-        // first column (window padding), not the toolbar's default item inset.
-        .padding(.leading, -13)
-        // Capped so a long folder name truncates (full name stays in the tooltip) instead of
-        // growing the item past its toolbar section and overlapping the neighbouring panes.
-        // Keep the default (center) alignment: a title shorter than the 80pt minimum relies on
-        // its centering inset to land on the terminal's first column once the -13 pull is
-        // applied — leading alignment drops that inset and shoves the title onto the divider.
-        .frame(minWidth: 80, maxWidth: 240)
+        // Keep short names at the established 80pt toolbar width and propose the same hard ceiling
+        // that AppKit applies to the hosting view. Do not use negative padding here: it shrinks the
+        // measured view without shrinking or moving the Text glyphs, allowing them to paint past the
+        // toolbar item's trailing edge. Default centering preserves the existing short-title position.
+        .frame(minWidth: Self.titleWidthFloor, maxWidth: Self.titleWidthCeiling)
     }
 }
 
