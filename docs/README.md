@@ -33,6 +33,8 @@ from the real front matter).
 | --- | --- | --- |
 | active | backlog | [Backlog](backlog/backlog.md) |
 | active | bug | [iOS libghostty "non-functional" panel + surface-teardown crash — fix journey](bug/ios-ghostty-renderer-panic-and-teardown-uaf.md) |
+| active | bug | [Terminal loses focus (hollow cursor) while the window stays key — sibling-render trigger](bug/terminal-focus-loss-on-sibling-render.md) |
+| active | bug | [New terminal opens unfocused (hollow cursor, beeps until clicked)](bug/terminal-focus-loss-on-new-session-mount.md) |
 | active | bug | [Terminal randomly loses keyboard focus (hollow cursor) after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
 | active | design | ["Remote-access design lessons: sleep reachability, stable domains, identity, monetization"](design/remote-access-lessons.md) |
 | active | design | [iOS libghostty "non-functional" panel + teardown UAF — root-cause findings](design/ios-ghostty-renderer-panic-investigation-findings.md) |
