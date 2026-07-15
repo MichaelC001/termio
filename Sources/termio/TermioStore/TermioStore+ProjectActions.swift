@@ -364,6 +364,7 @@ extension TermioStore {
             statuses[sessionID] = nil
             currentTool[sessionID] = nil
             liveTitles[sessionID] = nil
+            detectedAgents[sessionID] = nil
             lastWorkingAt[sessionID] = nil
         }
         projects.remove(at: projectIndex)
@@ -425,6 +426,7 @@ extension TermioStore {
         statuses[id] = nil
         currentTool[id] = nil
         liveTitles[id] = nil
+        detectedAgents[id] = nil
         lastWorkingAt[id] = nil
 
         // If the session held a split pane, collapse that pane; when it was also

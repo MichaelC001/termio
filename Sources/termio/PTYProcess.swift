@@ -772,6 +772,56 @@ final class PTYProcess: @unchecked Sendable {
         }
     }
 
+    /// The argv of the process group currently in the *foreground* of this PTY —
+    /// the program the user is actually interacting with: the login shell until it
+    /// runs a command, then that command (a hand-started `claude`), then the shell
+    /// again once it exits. Read via `tcgetpgrp` + `KERN_PROCARGS2`, the pair iTerm2
+    /// and friends use to name a pane's running program (`tcgetpgrp` on a forkpty
+    /// master returns the tty's foreground group on macOS — verified). `nil` once the
+    /// child is reaped (a recycled pid must never be queried) or if the kernel refuses.
+    func foregroundProcessArguments() -> [String]? {
+        lock.lock()
+        let exited = childExited
+        lock.unlock()
+        guard !exited, pid > 0 else { return nil }
+        let foreground = tcgetpgrp(masterFD)
+        guard foreground > 0 else { return nil }
+        return Self.processArguments(pid: foreground)
+    }
+
+    /// Reads a process's full argument vector from the kernel (`KERN_PROCARGS2`),
+    /// whose buffer is laid out `[argc: Int32][exec path]\0…\0[argv0]\0[argv1]\0…[env]`.
+    /// Own-user processes only — exactly the scope here (the child shell and its
+    /// descendants). `nil` on any short read or refusal.
+    private static func processArguments(pid: pid_t) -> [String]? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, u_int(mib.count), nil, &size, nil, 0) == 0,
+              size > MemoryLayout<Int32>.size else { return nil }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, u_int(mib.count), &buffer, &size, nil, 0) == 0 else { return nil }
+        let argc = buffer.withUnsafeBytes { $0.load(as: Int32.self) }
+        guard argc > 0 else { return nil }
+        var index = MemoryLayout<Int32>.size
+        // Skip the executable path that precedes argv[0], then the NUL padding
+        // between it and argv[0].
+        while index < size, buffer[index] != 0 { index += 1 }
+        while index < size, buffer[index] == 0 { index += 1 }
+        var arguments: [String] = []
+        var current: [UInt8] = []
+        while index < size, arguments.count < Int(argc) {
+            let byte = buffer[index]
+            index += 1
+            if byte == 0 {
+                arguments.append(String(decoding: current, as: UTF8.self))
+                current.removeAll(keepingCapacity: true)
+            } else {
+                current.append(byte)
+            }
+        }
+        return arguments.isEmpty ? nil : arguments
+    }
+
     /// SIGKILLs the child's process group if it hasn't been reaped yet.
     /// Idempotent; safe after the pid is reaped (the `childExited` check keeps
     /// the kill off a recycled pid). The app-quit path calls this directly

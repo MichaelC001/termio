@@ -37,7 +37,10 @@ extension TermioStore {
             [
                 "id": Self.shortID(session.id),
                 "title": displayTitle(for: session),
-                "agent": session.agent.displayName,
+                // The *effective* agent, so a plain terminal running a hand-started
+                // `claude` reports as Claude to a sibling — the same upgrade the
+                // sidebar row shows (see `effectiveAgent`).
+                "agent": effectiveAgent(for: session).displayName,
                 "status": Self.statusToken(status(for: session.id)),
                 "description": statusDescription(for: session.id),
             ]
@@ -47,7 +50,7 @@ extension TermioStore {
             let description = statusDescription(for: session.id)
             let suffix = description.isEmpty ? "" : "  — \(description)"
             return "\(Self.shortID(session.id))  [\(token)]  \(displayTitle(for: session)) "
-                + "(\(session.agent.displayName))\(suffix)"
+                + "(\(effectiveAgent(for: session).displayName))\(suffix)"
         }
         let header = "\(project.name) — \(project.sessions.count) session(s)"
         let text = ([header] + lines).joined(separator: "\n")

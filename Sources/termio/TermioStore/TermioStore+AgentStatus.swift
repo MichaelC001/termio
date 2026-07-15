@@ -76,10 +76,13 @@ extension TermioStore {
         }
         switch report.state {
         case "working":
-            // A plain terminal session has no agent turn to spin for: if an agent
-            // run inside one (or a cwd-matched report from a sibling session) reports
-            // working, leave it calm so only real agent rows show the thinking spinner.
-            guard session(id)?.agent != .terminal else { break }
+            // Spin a row only when it's genuinely an agent: a declared agent session,
+            // or a plain terminal we've detected a hand-started agent running in (its
+            // hook carries `TERMIO_SESSION`, so it routes here correctly). A bare
+            // terminal with nothing detected — or a cwd-matched report from a sibling —
+            // stays calm, so only real agent rows show the thinking spinner.
+            guard let session = session(id), effectiveAgent(for: session) != .terminal
+            else { break }
             statuses[id] = .working
             currentTool[id] = report.tool
             // Remember when work was last seen, so a turn that ends abnormally
@@ -159,6 +162,26 @@ extension TermioStore {
             } else {
                 statuses[id] = .idle
             }
+        }
+    }
+
+    /// Records (or clears) the agent detected running in a plain terminal's
+    /// foreground, upgrading the row to a first-class agent while it runs (brand icon,
+    /// adopted live title, working spinner) and reverting it to a plain terminal when
+    /// it exits. Terminal-only (a declared agent session is never reclassified) and
+    /// idempotent (unchanged detection is a no-op, so the once-a-second poll is cheap).
+    /// On clear it also drops the transient agent title and any lingering spinner so
+    /// the row can't be left mid-turn once the agent is gone.
+    func noteForegroundAgent(_ detected: AgentDefinition?, for id: Session.ID) {
+        guard session(id)?.agent == .terminal else { return }
+        guard detectedAgents[id] != detected else { return }
+        if let detected {
+            detectedAgents[id] = detected
+        } else {
+            detectedAgents[id] = nil
+            liveTitles[id] = nil
+            clearWorking(id)
+            if statuses[id] == .working || statuses[id] == .done { statuses[id] = .idle }
         }
     }
 

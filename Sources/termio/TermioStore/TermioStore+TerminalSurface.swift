@@ -244,34 +244,44 @@ extension TermioStore {
                     }
                 }
             }
-            // A loose terminal's cwd, sampled from the kernel after output settles.
-            // Plain shells on macOS never emit OSC 7 (the stock /etc/zshrc only
-            // reports cwd under `TERM_PROGRAM=Apple_Terminal`), and the host-managed
-            // PTY injects no shell integration — so the OSC 7 subscription in
-            // `monitor(_:for:)` stays silent for them and the cwd is read from the
-            // child shell's own process instead (`currentWorkingDirectory`, iTerm2's
-            // integration-less fallback). A *trailing* debounce, not a leading-edge
-            // throttle: a `cd`'s new prompt lands a few ms after the command echo, so
-            // a leading throttle samples the echo (old cwd) then skips the prompt and
-            // the now-idle shell emits nothing more to re-poll — stranding the cwd one
-            // step behind. Debouncing polls once ~350ms after output stops, capturing
-            // the settled directory. Loose terminals only — a project session's place
-            // is its project, not where it wandered.
-            if project.kind == .terminals, session.agent == .terminal {
+            // A plain terminal's kernel-sampled introspection, after output settles:
+            // which agent (if any) is running in its foreground, and — for a loose
+            // terminal — the shell's cwd. Both are read from the child's own process
+            // because plain shells on macOS never emit OSC 7 (the stock /etc/zshrc
+            // reports cwd only under `TERM_PROGRAM=Apple_Terminal`) and the
+            // host-managed PTY injects no shell integration, so the OSC 7/foreground
+            // signals in `monitor(_:for:)` stay silent — the same integration-less
+            // fallback iTerm2 uses. A *trailing* debounce, not a leading-edge throttle:
+            // a `cd`'s new prompt (and an agent's first banner) land a few ms after the
+            // command echo, so a leading throttle samples the echo then skips the
+            // settled state and the now-idle shell emits nothing more to re-poll.
+            // Debouncing polls once ~350ms after output stops, catching both the launch
+            // and the exit of a hand-started agent. Detection runs for every terminal;
+            // cwd-following is for loose terminals only — a project session's place is
+            // its project, not where it wandered.
+            if session.agent == .terminal {
                 let sessionID = session.id
+                let followCwd = project.kind == .terminals
                 var pendingPoll: DispatchWorkItem?
                 pty.addSink { [weak self, weak pty] _ in
                     pendingPoll?.cancel()
-                    // Resolve the cwd off the main thread. `currentWorkingDirectory`
-                    // is a `proc_pidinfo(PROC_PIDVNODEPATHINFO)` syscall that walks the
-                    // child's cwd vnode in the kernel — usually microseconds, but it
-                    // takes vnode locks and can stall on a slow/unresponsive mount or
-                    // under memory pressure, and a stall on the main thread is a
-                    // beachball. Only the `noteWorkingDirectory` write, which mutates
-                    // the @MainActor-published project tree, hops back to main.
+                    // Resolve off the main thread: both reads are syscalls that walk
+                    // kernel structures (`KERN_PROCARGS2`, `PROC_PIDVNODEPATHINFO`) —
+                    // usually microseconds, but they take locks and can stall under
+                    // memory pressure or on a slow mount, and a main-thread stall is a
+                    // beachball. Only the @MainActor-published tree writes hop to main.
                     let work = DispatchWorkItem {
-                        guard let cwd = pty?.currentWorkingDirectory() else { return }
-                        DispatchQueue.main.async { self?.noteWorkingDirectory(cwd, for: sessionID) }
+                        guard let pty else { return }
+                        // A hand-started agent (a `claude` typed at the prompt) becomes
+                        // the foreground process; when it exits the shell returns and
+                        // this resolves to `nil`, reverting the row to a plain terminal.
+                        let detected = pty.foregroundProcessArguments()
+                            .flatMap { AgentCatalog.shared.agent(forForegroundArguments: $0) }
+                        let cwd = followCwd ? pty.currentWorkingDirectory() : nil
+                        DispatchQueue.main.async {
+                            self?.noteForegroundAgent(detected, for: sessionID)
+                            if let cwd { self?.noteWorkingDirectory(cwd, for: sessionID) }
+                        }
                     }
                     pendingPoll = work
                     DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.35, execute: work)
@@ -621,7 +631,11 @@ extension TermioStore {
                 self.liveTitles[id] = cleaned
                 // Also record it on the session itself, so the label survives an
                 // app restart (the agent won't re-emit a title until it next works).
-                if let location = self.locate(id) {
+                // Declared agent sessions only: a plain terminal's adopted title
+                // belongs to the transient hand-started agent, so it lives in
+                // `liveTitles` and is cleared when that agent exits — persisting it
+                // would strand a stale topic on a bare shell across restarts.
+                if session.agent != .terminal, let location = self.locate(id) {
                     self.projects[location.project].sessions[location.session]
                         .liveTitle = cleaned
                 }
@@ -661,20 +675,22 @@ extension TermioStore {
     }
 
     /// Whether a live terminal title is worth showing as the session's label, as
-    /// opposed to the startup noise we'd rather not flash. Only agent sessions
-    /// adopt one (plain shells keep their `Terminal N` numbering), and even then
-    /// we reject what agents/shells report before they have anything to say: an
+    /// opposed to the startup noise we'd rather not flash. Only agent sessions adopt
+    /// one — a declared agent, or a plain terminal running a *detected* hand-started
+    /// agent (see `effectiveAgent`); a bare shell keeps its `Terminal N` numbering. And
+    /// even for an agent we reject what it reports before it has anything to say: an
     /// empty string, a bare path or `user@host`, or just the program's own name.
     private func isMeaningfulLiveTitle(_ title: String, for session: Session) -> Bool {
-        guard session.agent != .terminal else { return false }
+        let agent = effectiveAgent(for: session)
+        guard agent != .terminal else { return false }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               !trimmed.hasPrefix("/"),
               !trimmed.hasPrefix("~"),
               !trimmed.contains("@") else { return false }
         let lowered = trimmed.lowercased()
-        if lowered == session.agent.displayName.lowercased() { return false }
-        if let command = session.command {
+        if lowered == agent.displayName.lowercased() { return false }
+        if let command = agent.command {
             let firstToken = command.split(separator: " ").first.map(String.init) ?? command
             if lowered == (firstToken as NSString).lastPathComponent.lowercased() { return false }
         }
