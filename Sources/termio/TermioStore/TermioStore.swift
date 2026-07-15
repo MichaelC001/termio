@@ -147,6 +147,16 @@ final class TermioStore: ObservableObject {
     /// distinguishable. The stored `Session.title` is never touched.
     @Published var liveTitles: [Session.ID: String] = [:]
 
+    /// The agent detected running in the *foreground* of a plain terminal session —
+    /// a `claude`/`codex`/… the user started by hand rather than through termio. Set
+    /// and cleared by `noteForegroundAgent` from a per-terminal poll of the PTY's
+    /// foreground process, it upgrades that row to a first-class agent (brand icon,
+    /// adopted live title, working spinner) for as long as the agent is running, then
+    /// reverts to a plain terminal when it exits. Runtime-only and terminal-only: a
+    /// declared agent session is never touched, and nothing here is persisted (the
+    /// shell respawns bare next launch). See `effectiveAgent(for:)`.
+    @Published var detectedAgents: [Session.ID: AgentDefinition] = [:]
+
     /// The live working directory per session, from the shell's OSC 7 reports
     /// (surfaced by `TerminalViewState.workingDirectory`, subscribed in
     /// `monitor(_:for:)`). For loose terminals this *is* the entity's path: it
@@ -428,6 +438,16 @@ final class TermioStore: ObservableObject {
         statuses[sessionID] ?? .idle
     }
 
+    /// The agent a session *presents* as: its declared agent, or — for a plain
+    /// terminal running a hand-started agent — the one detected in its foreground
+    /// (see `detectedAgents` / `noteForegroundAgent`). Detection only ever upgrades a
+    /// terminal; a declared agent session always presents as itself, so its icon,
+    /// resume behaviour, and hooks are never overridden by what runs inside it.
+    func effectiveAgent(for session: Session) -> AgentDefinition {
+        guard session.agent == .terminal else { return session.agent }
+        return detectedAgents[session.id] ?? .terminal
+    }
+
     /// The label to show for a session. Centralized so the sidebar and the
     /// menu-bar tray always agree on what a session is called.
     ///
@@ -449,8 +469,15 @@ final class TermioStore: ObservableObject {
             }
             return liveTitles[session.id] ?? session.liveTitle ?? session.title
         }
-        guard session.agent == .terminal,
-              Self.isAutoTerminalName(session.title) else {
+        // A plain terminal running a hand-started agent adopts that agent's live
+        // title (its conversation topic) while detected, just like a declared agent
+        // row — but only while the user hasn't manually renamed the session.
+        if detectedAgents[session.id] != nil,
+           Self.isAutoTerminalName(session.title),
+           let live = liveTitles[session.id] {
+            return live
+        }
+        guard Self.isAutoTerminalName(session.title) else {
             return session.title
         }
         // A loose terminal is labeled by its live cwd's basename (`~` at home):

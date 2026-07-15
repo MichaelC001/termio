@@ -566,9 +566,9 @@ private struct SessionRow: View {
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(.secondary)
                 } else if store.status(for: session.id) == .working {
-                    WorkingIndicator(tint: session.agent.tintColor)
+                    WorkingIndicator(tint: store.effectiveAgent(for: session).tintColor)
                 } else {
-                    AgentIconView(agent: session.agent, size: 13)
+                    AgentIconView(agent: store.effectiveAgent(for: session), size: 13)
                 }
             }
             .frame(width: 16)

@@ -385,13 +385,86 @@ final class AgentCatalog {
     static let shared = AgentCatalog()
 
     let all: [AgentDefinition]
+    /// Leaf command name → definition, e.g. `claude`, `codex`, `cursor-agent`.
+    /// Built once from the catalog so user agents participate too; the plain
+    /// terminal (no `command`) is absent, so a bare shell is never "detected".
+    /// A stored `let` (not `lazy`): `agent(forForegroundArguments:)` reads it from a
+    /// background poll, so it must be race-free the moment the singleton exists.
+    private let commandIndex: [String: AgentDefinition]
 
     private init() {
-        all = AgentDefinition.builtins + AgentCatalog.loadUserAgents()
+        let all = AgentDefinition.builtins + AgentCatalog.loadUserAgents()
+        self.all = all
+        var index: [String: AgentDefinition] = [:]
+        for definition in all {
+            guard let command = definition.command else { continue }
+            let firstToken = command.split(separator: " ").first.map(String.init) ?? command
+            index[AgentCatalog.leafName(firstToken)] = definition
+        }
+        commandIndex = index
     }
 
     func find(id: String) -> AgentDefinition? {
         all.first { $0.id == id }
+    }
+
+    /// Language runtimes an agent's CLI may be executed through, so a `node …/cli.js`
+    /// or `bun …/index.ts` invocation still resolves to the agent, not the runtime.
+    private static let runtimeCommands: Set<String> = [
+        "node", "bun", "deno", "python", "python3", "ruby", "npx", "env",
+        "sh", "bash", "zsh", "dash", "fish", "tsx", "ts-node",
+    ]
+
+    /// The characters that separate the meaningful components of a script path or
+    /// npm package spec (`…/@anthropic-ai/claude-code/cli.js` → claude), used to
+    /// recognize a wrapped agent by a directory in its path.
+    private static let pathSeparators = CharacterSet(charactersIn: "/@ .-_")
+
+    /// Resolves the argv of a terminal's foreground process to a known agent, or
+    /// `nil` for a plain shell / anything unrecognized. The mechanism herdr uses:
+    /// match the running program's own name first, and when that name is a language
+    /// runtime, identify the agent from the script it runs (by the script's own name,
+    /// then by a directory in its path — npm nests the CLI under `…/claude-code/cli.js`).
+    /// This is what lets a hand-started `claude` in a plain terminal become a
+    /// first-class agent row without termio having launched it.
+    func agent(forForegroundArguments arguments: [String]) -> AgentDefinition? {
+        let tokens = arguments.filter { !$0.isEmpty }
+        guard let first = tokens.first else { return nil }
+
+        // Direct invocation: the foreground process *is* the agent binary. (A login
+        // shell arrives as `-zsh`, whose leaf `zsh` simply isn't in the index.)
+        if let match = commandIndex[Self.leafName(first)] { return match }
+
+        // Runtime wrapper: identify the agent from the first non-flag argument (the
+        // script being run) — first by its own name, then by a path component.
+        guard Self.runtimeCommands.contains(Self.leafName(first)),
+              let script = tokens.dropFirst().first(where: { !$0.hasPrefix("-") })
+        else { return nil }
+        if let match = commandIndex[Self.scriptName(script)] { return match }
+        for component in script.lowercased().components(separatedBy: Self.pathSeparators)
+        where !component.isEmpty {
+            if let match = commandIndex[component] { return match }
+        }
+        return nil
+    }
+
+    /// A program's invocation name: its last path component, lowercased, with a login
+    /// shell's leading `-` dropped (`/bin/zsh` and `-zsh` both → `zsh`).
+    private static func leafName(_ argument: String) -> String {
+        var name = (argument as NSString).lastPathComponent.lowercased()
+        if name.hasPrefix("-") { name.removeFirst() }
+        return name
+    }
+
+    /// A script's name for matching: its leaf with a JS/TS extension stripped, so
+    /// `…/claude` and `…/claude.js` both key as `claude`.
+    private static func scriptName(_ argument: String) -> String {
+        var name = leafName(argument)
+        for ext in [".js", ".mjs", ".cjs", ".ts"] where name.hasSuffix(ext) {
+            name.removeLast(ext.count)
+            break
+        }
+        return name
     }
 
     /// The definition for an id, or a surviving fallback when nothing matches (an
