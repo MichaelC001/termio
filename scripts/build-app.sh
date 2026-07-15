@@ -23,8 +23,8 @@
 #   SIGN_IDENTITY    codesign identity, e.g. "Developer ID Application: …" for a
 #                    notarizable build (default: "-", ad-hoc, for local use)
 #
-# Drop a 1024x1024 PNG at packaging/AppIcon.png to set the icon. Without it the
-# bundle is still built (just iconless).
+# `AppIcon.png` is the shipped icon. `AppIcon-dev.png` is the inverted icon for
+# local dev builds, so the two app bundles remain distinct in the Dock.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -39,15 +39,16 @@ product_name="termio"
 channel="${TERMIO_CHANNEL:-release}"
 if [[ "$channel" == "dev" ]]; then
     app_name="termio-dev"
+    source_icon="$repo_root/packaging/AppIcon-dev.png"
 else
     app_name="termio"
+    source_icon="$repo_root/packaging/AppIcon.png"
 fi
 app_dir="$repo_root/${app_name}.app"
 contents_dir="$app_dir/Contents"
 macos_dir="$contents_dir/MacOS"
 resources_dir="$contents_dir/Resources"
 frameworks_dir="$contents_dir/Frameworks"
-source_icon="$repo_root/packaging/AppIcon.png"
 sign_identity="${SIGN_IDENTITY:--}"
 
 echo "==> Building $app_name ($configuration)"
@@ -135,7 +136,7 @@ cp -R "$sparkle_src" "$frameworks_dir/"
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$macos_dir/$product_name" 2>/dev/null || true
 
 if [[ -f "$source_icon" ]]; then
-    echo "==> Generating AppIcon.icns from packaging/AppIcon.png"
+    echo "==> Generating AppIcon.icns from ${source_icon#$repo_root/}"
     iconset_dir="$(mktemp -d)/AppIcon.iconset"
     mkdir -p "$iconset_dir"
     # macOS expects these exact names/sizes inside the .iconset directory.
@@ -149,8 +150,7 @@ if [[ -f "$source_icon" ]]; then
     iconutil -c icns "$iconset_dir" -o "$resources_dir/AppIcon.icns"
     rm -rf "$(dirname "$iconset_dir")"
 else
-    echo "==> No packaging/AppIcon.png found — building without a Dock icon."
-    echo "    Drop a 1024x1024 PNG there and re-run to add one."
+    echo "==> No icon found at ${source_icon#$repo_root/} — building without a Dock icon."
 fi
 
 # Sign inside-out. A Developer ID identity (with the hardened runtime) makes the
