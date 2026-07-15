@@ -33,9 +33,6 @@ from the real front matter).
 | --- | --- | --- |
 | active | backlog | [Backlog](backlog/backlog.md) |
 | active | bug | [iOS libghostty "non-functional" panel + surface-teardown crash — fix journey](bug/ios-ghostty-renderer-panic-and-teardown-uaf.md) |
-| active | bug | [Terminal loses focus (hollow cursor) while the window stays key — sibling-render trigger](bug/terminal-focus-loss-on-sibling-render.md) |
-| active | bug | [New terminal opens unfocused (hollow cursor, beeps until clicked)](bug/terminal-focus-loss-on-new-session-mount.md) |
-| active | bug | [Terminal randomly loses keyboard focus (hollow cursor) after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
 | active | design | ["Remote-access design lessons: sleep reachability, stable domains, identity, monetization"](design/remote-access-lessons.md) |
 | active | design | [iOS libghostty "non-functional" panel + teardown UAF — root-cause findings](design/ios-ghostty-renderer-panic-investigation-findings.md) |
 | active | design | [iOS terminal input & attachments](design/ios-terminal-input.md) |
@@ -63,6 +60,7 @@ from the real front matter).
 | draft | design | [移动端 Agent UI 协议 —— PTY 之上的旁路结构面（ACP 词汇）](design/mobile-agent-ui-protocol.md) |
 | draft | design | [调研：下一批 AgentAdapter 的落盘格式（OpenCode / Pi / Amp / Cursor / Kimi）](design/agent-transcript-survey.md) |
 | draft | design | [Git worktree creation & lifecycle (Codex-aligned)](design/worktree-creation-lifecycle.md) |
+| draft | design | [Mac retention analytics (no app changes)](design/mac-retention-analytics.md) |
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/remote-projects.md) |
 | draft | design | [Session Daemon Architecture (termiod — one model for local, remote, mobile)](design/session-daemon-architecture.md) |
 | draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/remote-access-relay-strategy.md) |
@@ -73,6 +71,9 @@ from the real front matter).
 | draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](rfcs/fork-libghostty-spm.md) |
 | draft | rfc | [Loose terminals as first-class entities](design/loose-terminal-entity.md) |
 | draft | rfc | [Onboarding —— 首次启动体验设计](design/onboarding.md) |
+| fixed | bug | [New terminal opens unfocused (hollow cursor, beeps until clicked)](bug/terminal-focus-loss-on-new-session-mount.md) |
+| fixed | bug | [Terminal loses focus after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
+| fixed | bug | [Terminal loses focus while the window stays key — sibling-render trigger](bug/terminal-focus-loss-on-sibling-render.md) |
 | implemented (phase 1) | design | [Worktree information architecture](design/worktree-information-architecture.md) |
 | in-progress | rfc | [可扩展 Agent —— 配置化定义 + 配置化 Hook](design/agent-extensibility.md) |
 | in-review | rfc | [Split panes — Ghostty-style splits in the terminal column](rfcs/split-panes.md) |
