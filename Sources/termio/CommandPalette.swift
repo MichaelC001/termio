@@ -255,6 +255,10 @@ struct CommandPaletteView: View {
                 }
             })
         }
+        actions.append(.init(id: "new-ssh", title: "New SSH Connection…",
+                             symbol: "network", shortcut: nil) {
+            $0.presentSSHConnectPanel()
+        })
         actions.append(.init(id: "open-project", title: "Open Project…",
                              symbol: "folder", shortcut: "⌘O") {
             $0.presentOpenProjectPanel()

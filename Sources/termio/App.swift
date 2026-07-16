@@ -627,6 +627,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.addScratchTerminal()
     }
 
+    /// File ▸ New SSH Connection… — prompts for a host (`~/.ssh/config` alias or
+    /// `user@host`) and opens a terminal running `ssh` to it, grouped under the same
+    /// Terminals section as loose shells. Reached via the responder chain.
+    @objc func newSSHConnection(_ sender: Any?) {
+        store.presentSSHConnectPanel()
+    }
+
     /// View ▸ Show Project Files (and the toolbar's trailing inspector button) —
     /// collapses or expands the file-tree inspector. Reached via the responder chain
     /// (the menu item and toolbar item both target `nil`), like the other app actions.
@@ -1025,6 +1032,9 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
         let terminal = NSMenuItem(title: "New Terminal", action: #selector(newTerminal(_:)), keyEquivalent: "")
         terminal.target = self
         menu.addItem(terminal)
+        let ssh = NSMenuItem(title: "New SSH Connection…", action: #selector(newSSHConnection(_:)), keyEquivalent: "")
+        ssh.target = self
+        menu.addItem(ssh)
         let folder = NSMenuItem(title: "Open Project…", action: #selector(openFolder(_:)), keyEquivalent: "")
         folder.target = self
         menu.addItem(folder)
@@ -1032,6 +1042,7 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     }
 
     @objc private func newTerminal(_ sender: Any?) { store.addScratchTerminal() }
+    @objc private func newSSHConnection(_ sender: Any?) { store.presentSSHConnectPanel() }
     @objc private func openFolder(_ sender: Any?) { store.presentOpenProjectPanel() }
 
     /// The `.inspectorTabs` item's menu form, shown in the toolbar's `»` overflow menu when the
@@ -1255,11 +1266,16 @@ private struct BranchPickerToolbarView: View {
     }
 
     private var title: String {
+        // An SSH terminal is titled by its host, not the local cwd it happens to have
+        // launched from ($HOME) — matching how the sidebar labels the same row.
+        if let host = store.selectedSessionID.flatMap(store.session)?.sshHost { return host }
         guard let folder else { return "Termio" }
         return URL(fileURLWithPath: folder).lastPathComponent
     }
 
     private var branch: String? {
+        // No local branch for a remote SSH session — its $HOME launch dir isn't the repo.
+        guard store.selectedSessionID.flatMap(store.session)?.sshHost == nil else { return nil }
         guard let folder, let branch = store.branch(forFolder: folder), !branch.isEmpty else { return nil }
         return branch
     }
@@ -1335,6 +1351,11 @@ private func buildMainMenu() -> NSMenu {
         withTitle: "New Terminal",
         action: #selector(AppDelegate.newScratchTerminal(_:)),
         keyEquivalent: "t"
+    )
+    fileMenu.addItem(
+        withTitle: "New SSH Connection…",
+        action: #selector(AppDelegate.newSSHConnection(_:)),
+        keyEquivalent: ""
     )
     fileMenu.addItem(.separator())
     fileMenu.addItem(

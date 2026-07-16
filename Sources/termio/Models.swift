@@ -261,6 +261,18 @@ struct Session: Identifiable, Hashable, Codable {
 
     var isBrowser: Bool { browserURL != nil }
 
+    /// When set, this session is an **SSH terminal** — instead of a local login
+    /// shell it launches `ssh <host>` in the PTY, dropping the user straight onto a
+    /// remote host. The value is the connection target: a `~/.ssh/config` alias
+    /// (`myserver`) or a bare `user@host`. Everything else about the session — the
+    /// PTY, the surface, the sidebar row, reconnect — is identical to a loose
+    /// terminal; only the launched program differs (see `TermioStore.surface`). The
+    /// project's local inspector panes (git, files, search) still read the *local*
+    /// filesystem, so an SSH terminal is a terminal, not a remote project.
+    var sshHost: String?
+
+    var isSSH: Bool { sshHost != nil }
+
     /// The last working directory the shell reported over OSC 7, persisted for
     /// sessions in the loose-terminals container only: a loose terminal's identity
     /// is the session, its path is this mutable property — so a relaunched shell
@@ -295,7 +307,7 @@ struct Session: Identifiable, Hashable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, agent, createdAt, worktreePath, resumeID, launched, launchedAt,
-             liveTitle, browserURL, lastWorkingDirectory
+             liveTitle, browserURL, lastWorkingDirectory, sshHost
     }
 
     /// Custom decoding so state files written before the resume fields existed still
@@ -315,6 +327,7 @@ struct Session: Identifiable, Hashable, Codable {
         liveTitle = try container.decodeIfPresent(String.self, forKey: .liveTitle)
         browserURL = try container.decodeIfPresent(String.self, forKey: .browserURL)
         lastWorkingDirectory = try container.decodeIfPresent(String.self, forKey: .lastWorkingDirectory)
+        sshHost = try container.decodeIfPresent(String.self, forKey: .sshHost)
     }
 }
 

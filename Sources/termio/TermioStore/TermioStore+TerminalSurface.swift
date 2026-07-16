@@ -101,7 +101,12 @@ extension TermioStore {
         // running when the app last quit picks its conversation back up instead of
         // starting over. `resumeID` is the id we persist for it (nil for the plain shell
         // and the directory-resume agents); it's written back below.
-        let launch = resolveLaunch(for: session, workspacePath: workspacePath)
+        // An SSH terminal launches `ssh <host>` instead of a local shell or agent —
+        // the remote host allocates its own pty over the connection. It never
+        // resumes or sandboxes (both are local-agent concepts), so it short-circuits
+        // the agent launch resolution below.
+        let launch = session.sshHost.map { (command: Self.sshCommand(host: $0), resumeID: String?.none) }
+            ?? resolveLaunch(for: session, workspacePath: workspacePath)
         let agentCommand = launch.command
 
         // Pi checks the pinned `--session-id` against its session store at startup
@@ -376,6 +381,23 @@ extension TermioStore {
             return [shell, "-ilc", "exec \(command)"]
         }
         return [shell, "-il"]
+    }
+
+    /// The command that opens an interactive SSH session to `host`. The host is a
+    /// `~/.ssh/config` alias or a bare `user@host`; it's single-quoted so an alias
+    /// with spaces or shell metacharacters can't break out of the `exec ssh …` line
+    /// that `launchArgv` wraps it in. `ssh` with a tty on stdin (the PTY) and no
+    /// remote command allocates a remote pty on its own, so the user lands at the
+    /// remote shell — no `-t` needed.
+    static func sshCommand(host: String) -> String {
+        "ssh \(shellQuoted(host))"
+    }
+
+    /// POSIX single-quote escaping: wraps `value` in `'…'`, splicing any embedded
+    /// quote as `'\''`, so the result is one literal argument no matter what it
+    /// contains. Used to make a user-supplied SSH host safe inside `exec ssh …`.
+    static func shellQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     /// The user's real login shell, read from the password database rather than the
