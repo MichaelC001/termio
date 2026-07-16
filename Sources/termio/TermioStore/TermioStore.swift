@@ -471,11 +471,13 @@ final class TermioStore: ObservableObject {
         }
         // A plain terminal running a hand-started agent adopts that agent's live
         // title (its conversation topic) while detected, just like a declared agent
-        // row — but only while the user hasn't manually renamed the session.
-        if detectedAgents[session.id] != nil,
-           Self.isAutoTerminalName(session.title),
-           let live = liveTitles[session.id] {
-            return live
+        // row — but only while the user hasn't manually renamed the session. Until
+        // the agent reports a live title (many, e.g. Claude Code, never emit OSC
+        // 0/2), fall back to the agent's display name so the row reads `Claude Code`
+        // rather than a bare `Terminal` while its brand icon is already showing.
+        if let detected = detectedAgents[session.id],
+           Self.isAutoTerminalName(session.title) {
+            return liveTitles[session.id] ?? detected.displayName
         }
         guard Self.isAutoTerminalName(session.title) else {
             return session.title
