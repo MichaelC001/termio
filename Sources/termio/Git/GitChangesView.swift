@@ -4,10 +4,10 @@ import SwiftUI
 // MARK: - Changes list
 
 /// The git "Changes" pane: the working tree's changed files plus the "ship it" footer —
-/// check the files, write a message, commit, push, and open a pull request without
-/// leaving the diff you just reviewed. The list rows match the file tree (same interface
-/// font and `SidebarRowHighlight`); clicking a row still opens its diff over the terminal.
-/// All state lives in `GitPanelModel`; `GitService`/`GHService` stay stateless.
+/// check the files, write a message, commit, and push without leaving the diff you just
+/// reviewed. (Opening a pull request is left to the terminal — `gh` / a PR skill.) The
+/// list rows match the file tree (same interface font and `SidebarRowHighlight`); clicking
+/// a row still opens its diff over the terminal. All state lives in `GitPanelModel`.
 struct GitChangesView: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
@@ -23,7 +23,6 @@ struct GitChangesView: View {
     /// The file a "Discard Changes…" action is waiting to confirm — non-nil while the
     /// destructive alert is up, so the actual `git restore`/delete only fires on "OK".
     @State private var pendingDiscard: GitChange?
-    @State private var showPRSheet = false
 
     init(repoRoot: String, changeCount: Binding<Int>) {
         self.repoRoot = repoRoot
@@ -53,9 +52,25 @@ struct GitChangesView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 changeList
-                CommitFooter(model: model, showPRSheet: $showPRSheet, chrome: chrome) { url in
-                    openURL(URL(string: url) ?? URL(fileURLWithPath: "/"))
-                }
+                CommitFooter(model: model)
+            }
+
+            // The remote bar belongs to the branch, not the working-tree diff, so it sits
+            // OUTSIDE the empty/non-empty split — it stays visible after a commit clears the
+            // tree, when there are still commits to push. Renders nothing when the branch is
+            // level with origin.
+            if !model.isLoading {
+                RemoteBar(model: model)
+            }
+
+            if let banner = model.banner {
+                Text(banner.text)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(banner.kind == .error ? Color.red : Color.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 8)
             }
         }
         .task(id: repoRoot) { await model.load() }
@@ -69,9 +84,6 @@ struct GitChangesView: View {
             Button("Cancel", role: .cancel) { pendingDiscard = nil }
         } message: { change in
             Text("All changes to “\(change.name)” will be lost. This cannot be undone.")
-        }
-        .sheet(isPresented: $showPRSheet) {
-            CreatePRSheet(model: model) { url in openURL(URL(string: url) ?? URL(fileURLWithPath: "/")) }
         }
     }
 

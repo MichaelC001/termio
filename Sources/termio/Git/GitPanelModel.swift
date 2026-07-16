@@ -3,9 +3,10 @@ import SwiftUI
 // MARK: - Changes-pane state
 
 /// Owns the mutable state of the git "Changes" pane: the change list, which files are
-/// checked for the next commit, the draft message, and the push / pull-request status.
-/// The reads in `GitService`/`GHService` stay stateless — this is the one place that
-/// holds the "ship it" workflow together.
+/// checked for the next commit, the draft message, and the push status. The reads in
+/// `GitService` stay stateless — this is the one place that holds the "ship it" workflow
+/// together. (Pull requests are deliberately not handled here — `gh`/a PR skill in the
+/// terminal owns that.)
 ///
 /// One instance lives per repo root (the view is given a fresh identity via `.id(repoRoot)`
 /// when the selected project changes), so `repoRoot` is fixed for the model's lifetime.
@@ -22,19 +23,8 @@ final class GitPanelModel: ObservableObject {
     @Published var message = ""
     @Published var isCommitting = false
 
-    /// Whether an agent CLI (claude/codex) is available to write commit messages — gates
-    /// the ✨ button, which is simply absent otherwise.
-    @Published var aiAvailable = false
-    @Published var isGenerating = false
-
     @Published var upstream: GitUpstream = .none
     @Published var isPushing = false
-
-    /// Whether `gh` is installed and authenticated. Everything PR-related is hidden when
-    /// this is false — no nag, just absent.
-    @Published var ghAvailable = false
-    @Published var pullRequest: PullRequestInfo?
-    @Published var defaultBranch = "main"
 
     /// A transient one-line status shown under the commit box — an error from a failed
     /// action, or a success note. Cleared on the next action.
@@ -63,7 +53,7 @@ final class GitPanelModel: ObservableObject {
 
     // MARK: Loading
 
-    /// Reloads the change list and, in the background, the push and PR status. Selection is
+    /// Reloads the change list and, in the background, the push status. Selection is
     /// preserved: kept boxes stay checked, vanished files drop out, and files that appeared
     /// since the last load start checked.
     func load() async {
@@ -81,22 +71,12 @@ final class GitPanelModel: ObservableObject {
         isLoading = false
 
         upstream = await GitService.upstreamState(in: repoRoot)
-        if !aiAvailable { aiAvailable = await AICommitMessage.isAvailable() }
-        let available = await GHService.isAvailable(in: repoRoot)
-        ghAvailable = available
-        guard available else { pullRequest = nil; return }
-        async let pr = GHService.pullRequest(in: repoRoot)
-        async let base = GHService.defaultBranch(in: repoRoot)
-        pullRequest = await pr
-        defaultBranch = await base
     }
 
-    /// Refreshes only the push/PR status — after a commit or push, without re-scanning the
+    /// Refreshes only the push status — after a commit or push, without re-scanning the
     /// (now-changed) working tree twice.
     func refreshRemoteState() async {
         upstream = await GitService.upstreamState(in: repoRoot)
-        guard ghAvailable else { return }
-        pullRequest = await GHService.pullRequest(in: repoRoot)
     }
 
     // MARK: Actions
@@ -115,25 +95,6 @@ final class GitPanelModel: ObservableObject {
             banner = Banner(kind: .success, text: "Committed.")
         case .failure(let error):
             banner = Banner(kind: .error, text: error)
-        }
-    }
-
-    /// Fills the message box from the checked files' diffs via the agent CLI. The result
-    /// is editable — never committed automatically.
-    func generateMessage() async {
-        guard !isGenerating, !selected.isEmpty else { return }
-        isGenerating = true
-        banner = nil
-        let picked = changes.filter { selected.contains($0.path) }
-        var parts: [String] = []
-        for change in picked {
-            parts.append(await GitService.diffText(for: change, in: repoRoot))
-        }
-        let result = await AICommitMessage.generate(diff: parts.joined(separator: "\n"))
-        isGenerating = false
-        switch result {
-        case .success(let text): message = text
-        case .failure(let error): banner = Banner(kind: .error, text: error)
         }
     }
 

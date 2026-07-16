@@ -92,27 +92,6 @@ enum GitActionResult: Sendable, Equatable {
     case failure(String)
 }
 
-/// The outcome of `gh pr create`: the new PR's URL on success (to open in the browser),
-/// or a one-line failure message for the sheet.
-enum CreatePRResult: Sendable, Equatable {
-    case success(String)
-    case failure(String)
-}
-
-/// The rolled-up CI state of a pull request, from `gh pr view … statusCheckRollup`.
-enum PRChecks: Equatable, Sendable { case none, pending, passing, failing }
-
-/// An existing GitHub pull request for the checked-out branch, as reported by
-/// `gh pr view --json`. Absent (`nil`) when the branch has no PR yet — that is when the
-/// pane offers "Create Pull Request" instead of showing this status.
-struct PullRequestInfo: Equatable, Sendable {
-    let number: Int
-    let url: String
-    let title: String
-    let state: String        // OPEN / MERGED / CLOSED
-    let checks: PRChecks
-}
-
 /// A request to show the diff of one changed file over the terminal — the git
 /// counterpart of `TermioStore.openFileURL`. Carries the repo root so the overlay
 /// can run `git diff` for the file without re-deriving it.
