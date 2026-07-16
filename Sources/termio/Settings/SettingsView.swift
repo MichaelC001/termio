@@ -1,14 +1,14 @@
 import SwiftUI
 
-/// The preferences window, opened from the app menu (⌘,). The tabs mirror the
-/// settings groups: terminal appearance, the app's own interface chrome, terminal
-/// behaviour, the agent presets, and worktree isolation. Controls bind straight to
-/// `AppSettings`, which persists on change, so there is no separate save step.
+/// The preferences window, opened from the app menu (⌘,). The groups mirror the
+/// settings model: terminal appearance, the app's own interface chrome, terminal
+/// behaviour, the agent presets, usage, and mobile pairing. Controls bind straight
+/// to `AppSettings`, which persists on change, so there is no separate save step.
 ///
-/// The visual language follows Dia's settings: a top icon-tab toolbar for the
-/// top-level groups, grouped rounded cards in the body, and Dia's signature
-/// leading colored icon badges (`IconBadge`) to give each section and feature
-/// row a distinct identity.
+/// The layout follows macOS System Settings: a left sidebar of groups and a detail
+/// pane that carries the group's title + subtitle in the toolbar with a grouped
+/// `Form` below. Window chrome (resizable, unified toolbar, saved size) is set up
+/// in `AppDelegate.openSettings`.
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var usage: UsageMonitor
@@ -25,21 +25,42 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            SettingsTabBar(selection: $selection)
-            Divider()
-            Group {
-                switch selection {
-                case .appearance: AppearanceSettingsTab(settings: settings)
-                case .interface: InterfaceSettingsTab(settings: settings)
-                case .terminal: TerminalSettingsTab(settings: settings)
-                case .agents: AgentSettingsTab(settings: settings)
-                case .usage: UsageSettingsTab(settings: settings, usage: usage)
-                case .mobile: MobileSettingsTab()
-                }
+        NavigationSplitView {
+            List(SettingsTab.allCases, selection: $selection) { tab in
+                Label(tab.title, systemImage: tab.symbol)
+                    .tag(tab)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 184, ideal: 204, max: 240)
+        } detail: {
+            NavigationStack {
+                detail
+                    .navigationTitle(selection.title)
+                    .navigationSubtitle(selection.subtitle)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .toolbar {
+                        // Without a toolbar item the NavigationStack collapses the
+                        // title + subtitle into one inline "Title – Subtitle" line
+                        // beside the traffic lights. An empty principal item forces
+                        // the full-height two-line chrome on every pane (macOS 26).
+                        ToolbarItem(placement: .principal) { Text("") }
+                    }
+                    .toolbarBackground(.regularMaterial, for: .windowToolbar)
+            }
         }
-        .frame(width: 580, height: 520)
+        .navigationSplitViewStyle(.balanced)
+        .labeledContentStyle(.settingsCentered)
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        switch selection {
+        case .appearance: AppearanceSettingsTab(settings: settings)
+        case .interface: InterfaceSettingsTab(settings: settings)
+        case .terminal: TerminalSettingsTab(settings: settings)
+        case .agents: AgentSettingsTab(settings: settings)
+        case .usage: UsageSettingsTab(settings: settings, usage: usage)
+        case .mobile: MobileSettingsTab()
+        }
     }
 }

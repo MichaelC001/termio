@@ -7,17 +7,11 @@ struct AgentSettingsTab: View {
         Form {
             Section {
                 Toggle(isOn: $settings.agentHooksEnabled) {
-                    HStack(spacing: 10) {
-                        IconBadge(symbol: "dot.radiowaves.left.and.right")
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Live agent status")
-                                .font(.headline)
-                            Text("Installs hooks for Claude Code, Codex, OpenCode, and Pi so termio can tell when an agent is working or waiting on you — shown as the spinning sidebar icon and the menu-bar pulse. Adds termio's own entries to each agent's config; turning this off removes them. (Codex needs a one-time /hooks trust.)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
+                    SettingsLabel(
+                        symbol: "dot.radiowaves.left.and.right",
+                        title: "Live agent status",
+                        subtext: "Installs hooks for Claude Code, Codex, OpenCode, and Pi so termio can tell when an agent is working or waiting on you — shown as the spinning sidebar icon and the menu-bar pulse. Adds termio's own entries to each agent's config; turning this off removes them. (Codex needs a one-time /hooks trust.)"
+                    )
                 }
                 .toggleStyle(.switch)
                 if settings.agentHooksEnabled {
@@ -31,17 +25,11 @@ struct AgentSettingsTab: View {
             Section {
                 CommandLineToolRow()
                 Toggle(isOn: $settings.sessionControlEnabled) {
-                    HStack(spacing: 10) {
-                        IconBadge(symbol: "arrow.triangle.branch")
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Session control")
-                                .font(.headline)
-                            Text("Lets an agent see and drive its sibling sessions in the same project with the `termio sessions` command (list, send a prompt, answer a menu, start, stop). Scoped to the current project. Adds a short awareness note to the agents' instruction files; turning this off removes it.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
+                    SettingsLabel(
+                        symbol: "arrow.triangle.branch",
+                        title: "Session control",
+                        subtext: "Lets an agent see and drive its sibling sessions in the same project with the `termio sessions` command (list, send a prompt, answer a menu, start, stop). Scoped to the current project. Adds a short awareness note to the agents' instruction files; turning this off removes it."
+                    )
                 }
                 .toggleStyle(.switch)
                 if settings.sessionControlEnabled {
@@ -81,16 +69,11 @@ private struct AgentRow: View {
                 get: { settings.isAgentEnabled(preset) },
                 set: { settings.setAgent(preset, enabled: $0) }
             )) {
-                HStack(spacing: 10) {
-                    IconBadge(preset.icon)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(preset.displayName)
-                            .font(.headline)
-                        Text(settings.command(for: preset) ?? "Login shell")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                SettingsLabel(
+                    preset.icon,
+                    title: preset.displayName,
+                    subtext: settings.command(for: preset) ?? "Login shell"
+                )
             }
             .toggleStyle(.switch)
 
@@ -124,13 +107,10 @@ private struct AgentRow: View {
                     get: { settings.bypassesPermissions(preset) },
                     set: { settings.setBypassPermissions(preset, enabled: $0) }
                 )) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Skip permission prompts")
-                        Text("Runs with `\(flag)`. The agent won't ask before editing files or running commands.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    SettingsLabel(
+                        title: "Skip permission prompts",
+                        subtext: "Runs with `\(flag)`. The agent won't ask before editing files or running commands."
+                    )
                 }
                 .toggleStyle(.switch)
             }
@@ -161,15 +141,7 @@ private struct CommandLineToolRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            IconBadge(symbol: "terminal")
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Command-line tool")
-                    .font(.headline)
-                Text(description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            SettingsLabel(symbol: "terminal", title: "Command-line tool", subtext: description)
             Spacer()
             if let title = buttonTitle {
                 Button(title) { status = CommandLineTool.install() }

@@ -571,27 +571,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func openSettings(initialTab: SettingsTab) {
         if settingsWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 500, height: 460),
-                styleMask: [.titled, .closable, .miniaturizable],
+                contentRect: NSRect(x: 0, y: 0, width: 720, height: 540),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                 backing: .buffered,
                 defer: false
             )
             window.title = "Settings"
-            // Drop the hairline under the title bar so the icon-tab strip reads as
-            // one continuous surface with the title bar, Dia-style. A transparent
-            // titlebar is what actually removes the separator when there is no
-            // toolbar; `.none` alone leaves a faint line.
-            window.titlebarSeparatorStyle = .none
-            window.titlebarAppearsTransparent = true
+            // System Settings–style chrome: a unified toolbar carries the sidebar
+            // separator and the detail pane's title/subtitle. The window is
+            // resizable so short panes don't force a fixed slab of empty space.
+            window.toolbarStyle = .unified
             window.isReleasedWhenClosed = false
-            window.center()
+
+            let minSize = NSSize(width: 640, height: 480)
+            window.minSize = minSize
+            window.contentMinSize = minSize
+
+            // Remember the user's size/position across launches. The restore path
+            // uses setFrame:, which ignores minSize, so clamp any stale tiny frame.
+            let restored = window.setFrameAutosaveName("TermioSettingsWindow")
+            let frame = window.frame
+            if frame.width < minSize.width || frame.height < minSize.height {
+                var clamped = frame
+                clamped.size.width = max(frame.width, minSize.width)
+                clamped.size.height = max(frame.height, minSize.height)
+                window.setFrame(clamped, display: false)
+            }
+            if !restored { window.center() }
             settingsWindow = window
         }
+        // `.frame(minWidth:minHeight:)` on the root: NSHostingView forwards the
+        // SwiftUI tree's small intrinsic minimum up into contentMinSize, which
+        // would otherwise let the window shrink below the size set above.
         settingsWindow?.contentView = NSHostingView(rootView: SettingsView(
             settings: settings,
             usage: usageMonitor,
             initialTab: initialTab
-        ))
+        ).frame(minWidth: 640, minHeight: 480))
         settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
