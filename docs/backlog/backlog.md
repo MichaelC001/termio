@@ -3,7 +3,7 @@ title: Backlog
 status: active
 type: backlog
 created: 2026-07-03
-updated: 2026-07-05
+updated: 2026-07-16
 related:
   - rfcs/fork-libghostty-spm.md
   - design/session-history-search-resume.md
@@ -80,3 +80,18 @@ until the official packages land.
   archived in [session-history-search-resume](../design/session-history-search-resume.md)
   (`status: approved`). *Trigger: after the current `session-share.md` mainline
   ships.*
+
+## Repo / infra
+
+- [ ] **Branch protection for `dev` + `main`** — decided rules: `main` = block
+  deletion **+** block force push (non-fast-forward), admin-enforced (the release
+  line must never be rewritten); `dev` = block deletion only (force push stays
+  open so amend/rebase keeps working). Blocked today: GitHub gates branch
+  protection (both rulesets and classic protection) behind a paid plan for
+  **private** repos — every API/UI path returns `403 "Upgrade to GitHub Pro or
+  make this repository public"`. Three unlock paths: (a) GitHub Pro (~$4/mo);
+  (b) make the repo public — aligns with the planned open-sourcing, then
+  protection is free; (c) a local `pre-push` hook that refuses force-push /
+  deletion of `main` (free, but only guards this one clone). *Trigger: when the
+  repo goes public (preferred — do it then for free), or sooner via a local
+  pre-push hook if a手滑 force-push scare makes it urgent.*
