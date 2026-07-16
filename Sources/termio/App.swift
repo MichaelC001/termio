@@ -1159,19 +1159,22 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             item.menu = makeNewSessionMenu()
             return item
         case .inspectorTabs:
-            // The native segmented switch (Files / Changes), pinned to the inspector's left edge by
-            // the tracking separator that precedes it in the item order.
+            // The inspector pane switch (Files / Search / Changes / Info), pinned to the inspector's
+            // left edge by the tracking separator that precedes it in the item order. It's a
+            // hand-drawn SwiftUI Liquid Glass segmented control (see `InspectorTabsToolbar`) rather
+            // than a native `NSToolbarItemGroup`: over termio's transparent-over-terminal toolbar the
+            // native control loses its track and reads as detached, selection-less glyphs, so we draw
+            // our own track + sliding pill.
             let item = NSToolbarItem(itemIdentifier: .inspectorTabs)
             item.label = "Inspector"
-            item.toolTip = "Switch between project files and changes"
+            item.toolTip = "Switch between project files, search, changes, and info"
             let host = NSHostingView(rootView: InspectorTabsToolbar().environmentObject(store))
             host.sizingOptions = [.intrinsicContentSize]
             item.view = host
             item.isBordered = false
-            // First to overflow: the glass cluster is incompressible, so when its section (the
-            // inspector pane) gets too narrow it must yield to the `»` menu rather than slide
-            // over the divider onto the pane's content. The menu form keeps the panes switchable
-            // from the overflow menu while the cluster is hidden.
+            // First to overflow: the switch is incompressible, so when its section (the inspector
+            // pane) gets too narrow it must yield to the `»` menu rather than slide over the divider
+            // onto the pane's content. The menu form keeps the panes switchable while it's hidden.
             item.visibilityPriority = .low
             item.menuFormRepresentation = makeInspectorTabsMenuItem()
             return item

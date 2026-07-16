@@ -61,7 +61,12 @@ struct SessionInfoView: View {
                         agentSection(session)
                     }
                 }
-                .padding(.horizontal, 14)
+                // Outer inset is 4, not 14: every row and section label already carries its own
+                // 10pt horizontal padding (which also insets the hover highlight), so 4 + 10 lands
+                // their text at 14pt — flush with the file-tree header (`FileBrowserView.header`,
+                // `.padding(.leading, 14)`). At 14 the whole outer inset the Info list read
+                // noticeably further right than every other pane.
+                .padding(.horizontal, 4)
                 .padding(.vertical, 16)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
