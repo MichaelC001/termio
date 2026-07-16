@@ -20,6 +20,14 @@ enum ProjectKind: String, Codable {
     case terminals
 }
 
+/// A linked git checkout owned by a project. Sessions remain flat on the parent
+/// project and point at this folder through `Session.worktreePath`.
+struct Worktree: Identifiable, Hashable, Codable {
+    var id = UUID()
+    var path: String
+    var createdAt = Date()
+}
+
 /// A project is a working directory (typically a git repo) that groups one or
 /// more agent/terminal sessions, mirroring the sidebar grouping in unpeel.
 struct Project: Identifiable, Hashable, Codable {
@@ -30,6 +38,9 @@ struct Project: Identifiable, Hashable, Codable {
     /// Current git branch, shown in each session's top bar (display only for now).
     var branch: String
     var sessions: [Session]
+    /// Linked checkout folders shown as nested session containers. Their sessions
+    /// stay in `sessions` so the control plane keeps one flat project roster.
+    var worktrees: [Worktree] = []
 
     /// Optional sandbox configuration. `nil` (the default) runs this project's
     /// sessions directly on the host; a value runs them under an Apple Seatbelt profile
@@ -48,13 +59,13 @@ struct Project: Identifiable, Hashable, Codable {
 
 extension Project {
     private enum CodingKeys: String, CodingKey {
-        case id, name, path, branch, sessions, sandbox, pinned, kind
+        case id, name, path, branch, sessions, worktrees, sandbox, pinned, kind
     }
 
-    /// Custom decoding so state files written before `pinned` existed still load: a
-    /// missing flag defaults to not-pinned. Kept in an extension (not the main body)
-    /// so the synthesized memberwise initializer survives for the call sites that
-    /// build projects directly; encoding stays synthesized.
+    /// Missing collection and flag keys take their pre-feature defaults so older
+    /// state files remain readable. Kept in an extension so the synthesized
+    /// memberwise initializer survives for call sites that build projects directly;
+    /// encoding stays synthesized.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
@@ -62,6 +73,7 @@ extension Project {
         path = try container.decode(String.self, forKey: .path)
         branch = try container.decode(String.self, forKey: .branch)
         sessions = try container.decode([Session].self, forKey: .sessions)
+        worktrees = try container.decodeIfPresent([Worktree].self, forKey: .worktrees) ?? []
         sandbox = try container.decodeIfPresent(SandboxProfile.self, forKey: .sandbox)
         pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         kind = try container.decodeIfPresent(ProjectKind.self, forKey: .kind) ?? .folder
@@ -132,6 +144,7 @@ enum HugeIcon: Hashable {
     case terminal
     case folder
     case folderOpen
+    case folderGit
 
     /// Side length of the source SVG's square viewBox (Hugeicons uses 24).
     var viewBox: CGFloat { 24 }
@@ -149,6 +162,14 @@ enum HugeIcon: Hashable {
             // because the one rounded body reads cleanly there and still pairs with
             // folder-01's angled tab for the closed state.
             return "M2.36064 15.1788C1.98502 13.2956 1.79721 12.354 2.33084 11.7159C2.36642 11.6734 2.40405 11.6323 2.44361 11.5927C3.03686 11 4.08674 11 6.1865 11H17.8135C19.9133 11 20.9631 11 21.5564 11.5927C21.5959 11.6323 21.6336 11.6734 21.6692 11.7159C22.2028 12.354 22.015 13.2956 21.6394 15.1788C21.0993 17.8865 20.8292 19.2404 19.8109 20.0721C19.7414 20.1288 19.6698 20.1833 19.5961 20.2354C18.5163 21 17.0068 21 13.9876 21H10.0124C6.99323 21 5.48367 21 4.40387 20.2354C4.33022 20.1833 4.2586 20.1288 4.18914 20.0721C3.17075 19.2404 2.90072 17.8865 2.36064 15.1788Z M4 11V5.5C4 4.11929 5.11929 3 6.5 3H8.92963C9.59834 3 10.2228 3.3342 10.5937 3.8906L12 6M12 6H8.5M12 6H17.5C18.8807 6 20 7.11929 20 8.5V11"
+        case .folderGit:
+            // Hugeicons "folder-git": the same folder-01 body as `.folder`, with a git
+            // commit node (a small circle wired left and right) inside — so a worktree
+            // reads as a folder (a container, not a leaf) that is *git-linked*, marking
+            // it apart from a plain project folder. The source `<circle cx=12 cy=14 r=2>`
+            // is expressed as two semicircular arcs (`HugeIconShape` strokes paths, not
+            // circle elements).
+            return "M8 7H16.75C18.8567 7 19.91 7 20.6667 7.50559C20.9943 7.72447 21.2755 8.00572 21.4944 8.33329C22 9.08996 22 10.1433 22 12.25C22 15.7612 22 17.5167 21.1573 18.7779C20.7926 19.3238 20.3238 19.7926 19.7779 20.1573C18.5167 21 16.7612 21 13.25 21H12C7.28595 21 4.92893 21 3.46447 19.5355C2 18.0711 2 15.714 2 11V7.94427C2 6.1278 2 5.21956 2.38032 4.53806C2.65142 4.05227 3.05227 3.65142 3.53806 3.38032C4.21956 3 5.1278 3 6.94427 3C8.10802 3 8.6899 3 9.19926 3.19101C10.3622 3.62712 10.8418 4.68358 11.3666 5.73313L12 7 M10 14A2 2 0 0 1 14 14A2 2 0 0 1 10 14Z M14 14H18M10 14H6"
         }
     }
 }
@@ -230,10 +251,9 @@ struct Session: Identifiable, Hashable, Codable {
     var createdAt: Date
 
     /// Absolute path of a git worktree this session runs in, or `nil` (the common
-    /// case) to run directly in the project's directory. termio no longer creates
-    /// worktrees itself — a worktree is just a folder the user opens as a project —
-    /// but the field is honored so any session persisted from an older build still
-    /// launches in its recorded directory.
+    /// case) to run directly in the project's directory. The parent project's
+    /// `worktrees` array owns the folder node; this path is the flat join key that
+    /// keeps session lookup and the control plane unchanged.
     var worktreePath: String?
 
     /// The stable id termio hands the agent so a relaunch resumes *this exact*

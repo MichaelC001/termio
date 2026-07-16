@@ -1,9 +1,9 @@
 ---
 title: Git worktree creation & lifecycle (Codex-aligned)
-status: draft
+status: approved
 type: design
 created: 2026-07-06
-updated: 2026-07-06
+updated: 2026-07-16
 related:
   - worktree-information-architecture.md
 ---
@@ -19,6 +19,56 @@ live branch label) and explicitly deferred "isolate-on-demand" and the
 "create-isolated entry." This doc specifies that deferred creation path, aligned to
 the **OpenAI Codex desktop** model — which has thought through the failure modes
 (branch-in-two-places, missing `.env`, unbounded disk) that a naive version hits.
+
+## ⚠️ Status vs. shipped code (2026-07-16)
+
+The **current `addWorktree(from:)`** (`TermioStore+ProjectActions.swift`) does **not**
+implement the model in either doc. It runs `git worktree add --detach` into
+`~/.termio*/worktrees/<name>`, copies `.worktreeinclude`, then
+`projects.append(worktreeProject)` — surfacing the worktree as a **flat, top-level
+`Project` with no sessions and no link to its parent repo.** That directly
+contradicts the IA doc's core rule (a worktree is a folder *under* the project, a
+derived grouping over `Session.worktreePath` — never a sibling top-level project).
+
+So `addWorktree` creates *a bare top-level project*, which is the visible symptom
+("worktrees show up as top-level entries, not indented under the repo like Codex").
+**The fix (revised 2026-07-16, see the IA doc's *Revised model*):**
+
+- Represent the worktree as a **light entity nested under its parent**, not a
+  top-level project: append to `parentProject.worktrees` (`Worktree = { id, path,
+  createdAt }`), *not* to `projects`. Sessions stay flat on `Project.sessions` and
+  attach by `worktreePath`.
+- Render it as a **folder node** (a `ProjectHeader` reused one level down) that groups
+  the parent's sessions whose `worktreePath` matches — with its own hover quick-add
+  cluster (agents + New Terminal) and right-click lifecycle menu.
+- Drop the `projects.append(worktreeProject)` branch entirely.
+
+This makes the worktree a **session container** (empty-then-fill: create the folder,
+then add terminals/agents into it) and makes the sidebar match Codex/Conductor. The
+old "must create a session at the same time" idea is dropped — the stored entity lets
+an empty worktree persist with its add-buttons.
+
+## Cross-product model check (Codex / Conductor / JetBrains Air)
+
+Surveyed 2026-07-16; all three confirm the nested "folder-under-repo" IA and add a
+few borrowables:
+
+- **Naming: hide "worktree."** Codex = "thread," Conductor = "Workspace," Air =
+  "Task." Users never type `git worktree`. termio's "New Worktree Session…" is close;
+  the noun users see should be the *session/branch*, not the git primitive.
+- **Disk: everyone moved out of the repo.** Conductor `~/conductor/workspaces/<repo>/`,
+  Air `~/Library/Caches/JetBrains/Air/tasks/`, Codex `~/.codex/worktrees/`. Conductor
+  *deprecated* its in-repo `.conductor/` layout. termio's `~/.termio/worktrees/` is on
+  the right side of this.
+- **Untracked-files gap is universal.** All three copy gitignored files in; Conductor
+  + Claude Code use the *same* `.worktreeinclude` format termio already adopted.
+- **Setup + teardown hooks are table stakes.** Conductor `[scripts]` setup/run/archive;
+  Air `.air/worktree.json` setup/cleanup. Both pair a create-time setup with a
+  **pre-delete cleanup** hook (tear down DBs/containers living outside the dir).
+- **Branch handle:** Conductor auto-generates a city-name dir handle (`warsaw`)
+  *separate* from the branch, then has the agent rename the branch from the first
+  prompt. Air names the branch `air/<task>`. termio's "repo-name + session-id" leaf is
+  a fine handle; the live branch already shows separately (IA doc rule 2).
 
 ## Guiding principle
 
@@ -49,10 +99,14 @@ plainer shape. The two justified divergences are both architectural, not aesthet
 
 ### Entry point
 
-Right-click a project in the sidebar → **"New Worktree Session…"**. A bare worktree
-is useless in termio, so the verb is *session*, not *worktree*: one action creates
-the worktree **and** launches a session in it. (This is the IA doc's deferred
-"create-isolated entry", item 2.)
+Right-click a project (or its hover cluster) → **"New Worktree"**. This creates the
+worktree **folder entity** and adds it as a nested folder node under the project; you
+then add terminals/agents into it from *the worktree node's own* quick-add cluster and
+right-click menu (it reuses `ProjectHeader` — see the IA doc's *Behavior* section). An
+accelerator for the common "start an agent isolated from t=0" case: ⌥-click one of the
+project header's agent icons = create a worktree **and** launch that agent in it in one
+gesture (the IA doc's deferred "create-isolated entry", item 2). Both routes exist; the
+plain "New Worktree" makes the empty container, the ⌥-accelerator fills it in one step.
 
 ### Location & naming
 
@@ -180,15 +234,54 @@ competitor ships this. But it was cut deliberately:
 Do **not** re-propose CoW without a concrete, measured npm/yarn pain point that pnpm
 migration can't solve.
 
+### Hand-off / merge-back (was undesigned — the real gap)
+
+Both docs covered *deleting* a worktree but never *getting the work back out*. Two
+field models:
+
+- **Conductor:** the branch is real; you `commit → push → open PR → merge`, then
+  **archive** (delete the dir + run the archive hook). Merge-back is just normal git.
+- **Air:** the isolated branch stays isolated; you pull it into your real checkout via
+  an explicit gate — **"Apply Locally"** (copies the branch's changes in as
+  *uncommitted* working-tree changes) or **"Checkout Branch Locally"** (checks the
+  branch out under a **`-copy`-suffixed** name, e.g. `air/feature-copy`, to dodge git's
+  one-branch-one-checkout rule). Air's model avoids the branch-in-two-places error *by
+  construction*.
+
+**termio recommendation:** since termio starts **detached** (no branch), the natural
+hand-off is Air-shaped — a session action **"Bring changes to <main-checkout>"** that
+either (a) `git -C <main> checkout <sha> -- .`-style applies the worktree's diff as
+uncommitted changes into the primary checkout, or (b) if a branch was materialized,
+checks it out in the main checkout (suffixing `-copy` on the one-checkout conflict).
+Full PR flow is just "commit + push from the session's terminal" — no bespoke UI
+needed; termio *is* a terminal. Ship (a) first (matches the "mostly disposable,
+occasionally graduate" reality); (b) when branch-materialization lands.
+
 ### Cleanup / retention
 
 - On session removal → ask "also remove this worktree?" (`git worktree remove`,
   refuse if dirty, then `git worktree prune`). Uncommitted work belongs to the
   folder (per the IA doc's rule 1), so never remove silently.
+- **Pre-delete cleanup hook** — Conductor's `archive` / Air's `cleanup` both run a
+  user script *before* the dir is removed, to tear down resources living outside it
+  (DBs, containers, dev servers). Pairs with the create-time `setup.sh`;
+  `<repo>/.termio/cleanup.sh` with the same `TERMIO_WORKTREE_ROOT` env. Defer, but
+  design the setup hook so its teardown twin drops in symmetrically.
 - Bounded retention (keep N most recent, pin exemptions) mirrors Codex. **Phase
   this**, and honestly: plain retention (remove old *clean* worktrees) is cheap;
   Codex's *snapshot-before-delete* of dirty ones is real engineering — ship
   retention-of-clean first, add snapshotting when the flow is trusted.
+
+### Parallel-agent hygiene: port collisions (termio's own thesis)
+
+termio's reason to exist is *many agents at once*; N worktrees each booting a dev
+server on the same port collide. **Conductor's fix:** reserve a 10-port block per
+worktree and expose it as `CONDUCTOR_PORT`..`+9`, plus a `run_mode`
+(`concurrent`/`nonconcurrent`) guard. termio's equivalent: hand the `setup.sh`/session
+env a `TERMIO_PORT` (base of a reserved block, allocated per live worktree) so a
+project's `dev` script can bind `$TERMIO_PORT` instead of a hard-coded 3000. Small,
+optional, but it's the difference between "5 agents" working and "5 agents" all
+fighting for `:3000`. Defer to when multi-worktree is actually in daily use.
 
 ## Implementation touchpoints
 
@@ -210,4 +303,28 @@ mostly UI + one git command + setting a field:
    first cut, or rely on manual "remove worktree?" on session close only.
 2. Whether `.worktreeinclude` + `setup.sh` land with the first cut or a fast-follow
    (leaning: with the first cut — without them the feature is half-broken).
-3. Readable-name cosmetics: `<repo>-worktree-<id>` vs. also folding in a title slug.
+
+### Resolved (2026-07-16)
+
+- **Row label** = the **live branch** (from `BranchModel`), which — see the branch
+  reversal below — is now always a real name, so the label is consistent with the
+  inspector chip and the shell prompt.
+- **Creation model** = **empty-then-fill** via a stored `Project.worktrees` entity, not
+  create-with-session. See the IA doc's *Storage* and *Behavior* sections.
+
+### Reversal: create on a named branch, not detached (2026-07-16, supersedes *Branch: detached HEAD first*)
+
+The *Branch* section above chose `git worktree add --detach` (materialize a branch only
+on intent). Shipping it exposed a concrete UX bug: a **detached HEAD has no name**, so
+the same worktree was labelled three different ways — the sidebar node showed the folder
+name (`feedar-worktree`), while the inspector branch chip and zsh's own prompt showed the
+commit SHA (`563b5e2`). The shell prompt is unreachable from termio (zsh reads `HEAD`
+itself), so the *only* way to make all surfaces agree is a real branch.
+
+Now: `git worktree add -b <name> <path> HEAD`, where `<name>` is the worktree's
+(collision-guarded) dir name. This costs the "no branch pollution" property the detached
+model bought, reclaimed two ways: (1) `uniqueBranchName` bumps a `-2`/`-3` suffix so a
+pre-existing branch never blocks creation; (2) `removeWorktree` best-effort `git branch
+-d` (safe delete — refuses unmerged work, so nothing is lost) tidies the branch when the
+worktree is removed. The one-branch-one-checkout lock never applies, because the branch
+is freshly created, not an existing one checked out elsewhere.

@@ -468,6 +468,25 @@ extension TermioStore {
         projects[location.project].sessions[location.session] = session
     }
 
+    /// Advances a session's pinned `resumeID` to the conversation it is *currently*
+    /// writing, so a reopened tab resumes that one rather than a conversation the
+    /// agent has since rotated away from. Claude Code's `/clear` mints a new id and
+    /// transcript and orphans the old file; the once-pinned id (`recordLaunch` writes
+    /// it only while nil) would otherwise resume the cleared conversation. A no-op
+    /// unless the live transcript names a different id than the pin, and only for
+    /// styles whose filename *is* the id — discovered-id agents advance through
+    /// re-discovery instead. Fed by the hook-carried transcript path in
+    /// `applyStatusReport`. See docs/design/agent-resume-identity.md.
+    func reconcileResumeID(_ id: Session.ID, transcriptPath: String) {
+        guard let location = locate(id) else { return }
+        var session = projects[location.project].sessions[location.session]
+        guard let liveID = session.agent.resumeStyle.conversationID(fromTranscriptPath: transcriptPath),
+              liveID != session.resumeID
+        else { return }
+        session.resumeID = liveID
+        projects[location.project].sessions[location.session] = session
+    }
+
     /// The position of a session in the project tree, for an in-place edit.
     private func locate(_ id: Session.ID) -> (project: Int, session: Int)? {
         for (p, project) in projects.enumerated() {

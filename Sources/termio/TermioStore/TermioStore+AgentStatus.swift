@@ -68,6 +68,10 @@ extension TermioStore {
         // `sessions send` can hand it back as the place to read the response.
         if let path = report.transcriptPath, !path.isEmpty {
             transcriptPaths[id] = path
+            // The hook path is the one signal that can carry a *new* conversation id
+            // (after `/clear`), so advance the resume pin to match — a no-op unless it
+            // actually rotated. See docs/design/agent-resume-identity.md.
+            reconcileResumeID(id, transcriptPath: path)
         } else if transcriptPaths[id] == nil, let path = resolveTranscriptPath(for: id) {
             // The hook didn't carry a path (Codex never does; a pre-hook Claude session
             // never will), so learn it from the agent's own on-disk transcript instead —

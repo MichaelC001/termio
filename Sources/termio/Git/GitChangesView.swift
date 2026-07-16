@@ -3,35 +3,44 @@ import SwiftUI
 
 // MARK: - Changes list
 
-/// The git "Changes" pane: a flat list of every changed file in the selected
-/// session's repo, each a status badge + name + `+`/`−` counts. Clicking a row opens
-/// its diff over the terminal (`store.openDiff`). Styled to match the file tree — the
-/// same interface font and `SidebarRowHighlight` — so the two panes read as one.
+/// The git "Changes" pane: the working tree's changed files plus the "ship it" footer —
+/// check the files, write a message, commit, push, and open a pull request without
+/// leaving the diff you just reviewed. The list rows match the file tree (same interface
+/// font and `SidebarRowHighlight`); clicking a row still opens its diff over the terminal.
+/// All state lives in `GitPanelModel`; `GitService`/`GHService` stay stateless.
 struct GitChangesView: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.openURL) private var openURL
 
     let repoRoot: String
     /// Lifted up to `FileBrowserView` so the switcher's Changes badge stays in step.
     @Binding var changeCount: Int
 
-    @State private var changes: [GitChange] = []
-    @State private var isLoading = true
+    @StateObject private var model: GitPanelModel
+
     /// The file a "Discard Changes…" action is waiting to confirm — non-nil while the
     /// destructive alert is up, so the actual `git restore`/delete only fires on "OK".
     @State private var pendingDiscard: GitChange?
+    @State private var showPRSheet = false
+
+    init(repoRoot: String, changeCount: Binding<Int>) {
+        self.repoRoot = repoRoot
+        self._changeCount = changeCount
+        self._model = StateObject(wrappedValue: GitPanelModel(repoRoot: repoRoot))
+    }
 
     private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            if isLoading {
+            if model.isLoading {
                 ProgressView()
                     .controlSize(.small)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if changes.isEmpty {
+            } else if model.changes.isEmpty {
                 // Fill the pane (like the loading state) rather than sizing to the compact empty
                 // view — otherwise the enclosing `VStack` shrinks to content height and the host
                 // centers the whole pane, dropping the "CHANGES" header into the middle of the
@@ -43,50 +52,26 @@ struct GitChangesView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                // A native `List` with a `selection:` binding — the same shape as the file
-                // tree (`FileTreeList`). Selection drives "open the diff", which is what lets
-                // each row be `.draggable` at the same time: a SwiftUI tap gesture would
-                // strangle the drag, but List's AppKit-level selection coexists with it.
-                List(changes, selection: selectedPath) { change in
-                    GitChangeRow(
-                        change: change,
-                        fileURL: fileURL(for: change),
-                        font: settings.interfaceFont,
-                        chrome: chrome,
-                        isSelected: store.openDiff?.change.path == change.path,
-                        onDiscard: { pendingDiscard = change }
-                    )
-                    .contextMenu {
-                        Button("Open in Editor") { openInEditor(change) }
-                        Button("Reveal in Finder") { revealInFinder(change) }
-                        Divider()
-                        Button("Copy Path") { copyPath(change) }
-                        Button("Copy Relative Path") { copyToPasteboard(change.path) }
-                        Button("Copy Diff") { copyDiff(change) }
-                        Divider()
-                        Button("Discard Changes…", role: .destructive) { pendingDiscard = change }
-                    }
+                changeList
+                CommitFooter(model: model, showPRSheet: $showPRSheet, chrome: chrome) { url in
+                    openURL(URL(string: url) ?? URL(fileURLWithPath: "/"))
                 }
-                // `.plain`, not `.sidebar`: the sidebar style pads every row with its own
-                // leading margin (on top of our zeroed `listRowInsets`), pushing the rows
-                // out of line with the header above. This list is flat — no disclosure
-                // chevrons to make room for — so plain keeps row text at the same 14pt
-                // leading edge as the header.
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .environment(\.defaultMinListRowHeight, 1)
             }
         }
-        .task(id: repoRoot) { await reload() }
+        .task(id: repoRoot) { await model.load() }
+        .onChange(of: model.changes.count) { _, count in changeCount = count }
         // Re-read when a diff overlay closes — the user may have just acted on it.
         .onChange(of: store.openDiff) { _, request in
-            if request == nil { Task { await reload() } }
+            if request == nil { Task { await model.load() } }
         }
         .alert("Discard Changes?", isPresented: discardAlertPresented, presenting: pendingDiscard) { change in
             Button("Discard Changes", role: .destructive) { performDiscard(change) }
             Button("Cancel", role: .cancel) { pendingDiscard = nil }
         } message: { change in
             Text("All changes to “\(change.name)” will be lost. This cannot be undone.")
+        }
+        .sheet(isPresented: $showPRSheet) {
+            CreatePRSheet(model: model) { url in openURL(URL(string: url) ?? URL(fileURLWithPath: "/")) }
         }
     }
 
@@ -106,7 +91,7 @@ struct GitChangesView: View {
                 .truncationMode(.middle)
             Spacer(minLength: 8)
             TreeHeaderButton(systemName: "arrow.clockwise", help: "Refresh") {
-                Task { await reload() }
+                Task { await model.load() }
             }
         }
         .padding(.leading, 14)
@@ -114,11 +99,37 @@ struct GitChangesView: View {
         .padding(.vertical, 6)
     }
 
-    private func reload() async {
-        let loaded = await GitService.changes(in: repoRoot)
-        changes = loaded
-        changeCount = loaded.count
-        isLoading = false
+    private var changeList: some View {
+        // A native `List` with a `selection:` binding — the same shape as the file tree
+        // (`FileTreeList`). Selection drives "open the diff", which is what lets each row be
+        // `.draggable` at the same time: a SwiftUI tap gesture would strangle the drag, but
+        // List's AppKit-level selection coexists with it. The checkbox is a `Button`, so it
+        // toggles the commit selection without also opening the diff.
+        List(model.changes, selection: selectedPath) { change in
+            GitChangeRow(
+                change: change,
+                fileURL: fileURL(for: change),
+                font: settings.interfaceFont,
+                chrome: chrome,
+                isSelected: store.openDiff?.change.path == change.path,
+                isChecked: model.isChecked(change),
+                onToggle: { model.toggle(change) },
+                onDiscard: { pendingDiscard = change }
+            )
+            .contextMenu {
+                Button("Open in Editor") { openInEditor(change) }
+                Button("Reveal in Finder") { revealInFinder(change) }
+                Divider()
+                Button("Copy Path") { copyPath(change) }
+                Button("Copy Relative Path") { copyToPasteboard(change.path) }
+                Button("Copy Diff") { copyDiff(change) }
+                Divider()
+                Button("Discard Changes…", role: .destructive) { pendingDiscard = change }
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .environment(\.defaultMinListRowHeight, 1)
     }
 
     private func open(_ change: GitChange) {
@@ -160,7 +171,7 @@ struct GitChangesView: View {
         Task {
             await GitService.discard(change, in: repoRoot)
             if store.openDiff?.change.path == change.path { store.openDiff = nil }
-            await reload()
+            await model.load()
         }
     }
 
@@ -169,8 +180,6 @@ struct GitChangesView: View {
     }
 
     /// The absolute on-disk URL for a change — `git status` paths are repo-relative.
-    /// Dragged out of a row and dropped on the terminal, which shell-quotes it at the
-    /// prompt (see `TerminalPane.sendPaths`).
     private func fileURL(for change: GitChange) -> URL {
         URL(fileURLWithPath: repoRoot).appendingPathComponent(change.path)
     }
@@ -178,29 +187,30 @@ struct GitChangesView: View {
     /// Bridges List selection to the open diff: the selected row is whichever change is
     /// currently open, and selecting a row opens it. Bound by `GitChange.ID` (the path) —
     /// List tags rows with the element's `id`, so a selection binding of any other type
-    /// never fires (the original `Binding<GitChange?>` compiled but made rows unclickable).
-    /// Deselection is ignored — closing the diff is the overlay's own job, not a click-away.
+    /// never fires. Deselection is ignored — closing the diff is the overlay's own job.
     private var selectedPath: Binding<String?> {
         Binding(
             get: { store.openDiff?.change.path },
             set: { path in
-                if let change = changes.first(where: { $0.path == path }) { open(change) }
+                if let change = model.changes.first(where: { $0.path == path }) { open(change) }
             }
         )
     }
 }
 
-/// A single row in the changes list: a colored status letter, the file name (dimmed
-/// when deleted), and right-aligned `+adds −dels`. `.draggable` out as the file's URL —
-/// dropped on the terminal it becomes a shell-quoted path (see `TerminalPane`). Opening
-/// is the List's own `selection:` binding, not a tap gesture, which is what keeps the
-/// drag immediate (a SwiftUI tap gesture on a `.draggable` row makes it sticky).
+/// A single row in the changes list: a commit checkbox, a colored status letter, the file
+/// name (dimmed when deleted), and right-aligned `+adds −dels`. `.draggable` out as the
+/// file's URL. Opening is the List's own `selection:` binding, not a tap gesture, which is
+/// what keeps the drag immediate; the checkbox and discard controls are `Button`s, so they
+/// act without triggering the row's open-diff selection.
 private struct GitChangeRow: View {
     let change: GitChange
     let fileURL: URL
     let font: Font
     let chrome: ChromeTheme?
     let isSelected: Bool
+    let isChecked: Bool
+    let onToggle: () -> Void
     /// Fires the discard confirmation for this row (owned by `GitChangesView`).
     let onDiscard: () -> Void
 
@@ -208,6 +218,14 @@ private struct GitChangeRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            Button(action: onToggle) {
+                Image(systemName: isChecked ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 12))
+                    .foregroundStyle(isChecked ? AnyShapeStyle(chrome?.accent ?? .accentColor) : AnyShapeStyle(.tertiary))
+            }
+            .buttonStyle(.plain)
+            .help(isChecked ? "Exclude from commit" : "Include in commit")
+
             Text(change.status.letter)
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                 .foregroundStyle(change.status.tint)
@@ -242,8 +260,6 @@ private struct GitChangeRow: View {
         .padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        // Strip the source list's blue selection fill at the AppKit layer, leaving our own
-        // `SidebarRowHighlight` as the sole selection cue — the file tree does the same.
         .background(OutlineSelectionStyleStripper())
         .draggable(fileURL)
         .listRowInsets(EdgeInsets())

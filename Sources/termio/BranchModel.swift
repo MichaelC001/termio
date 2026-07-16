@@ -22,6 +22,10 @@ final class BranchModel: ObservableObject {
     /// folder is in a detached HEAD). Absent when the folder is not a git repo, so
     /// callers can hide the branch chip entirely.
     @Published private(set) var branches: [String: String] = [:]
+    /// Detached state stays separate from the label because existing branch chips
+    /// still use the short SHA, while a worktree folder node uses its directory name
+    /// and keeps that SHA for the tooltip.
+    @Published private(set) var detachedFolders: Set<String> = []
 
     private let queue = DispatchQueue(label: "sh.termio.branch", qos: .utility)
     private var watchers: [String: Watcher] = [:]
@@ -40,6 +44,10 @@ final class BranchModel: ObservableObject {
         branches[Self.standardized(folder)]
     }
 
+    func isDetached(_ folder: String) -> Bool {
+        detachedFolders.contains(Self.standardized(folder))
+    }
+
     /// Reconciles the watched set with `folders`: starts watching (and resolves) any
     /// newly present folder and stops watching any that has gone. Idempotent, so the
     /// store can call it after every change to the project tree. Main-actor only.
@@ -50,6 +58,7 @@ final class BranchModel: ObservableObject {
             watcher.source.cancel()
             watchers[folder] = nil
             branches[folder] = nil
+            detachedFolders.remove(folder)
         }
         for folder in wanted where watchers[folder] == nil {
             arm(folder)
@@ -81,7 +90,7 @@ final class BranchModel: ObservableObject {
         pending[folder]?.cancel()
         let item = DispatchWorkItem { [weak self] in
             self?.pending[folder] = nil
-            self?.publish(folder, label: self?.currentBranchLabel(for: folder))
+            self?.publish(folder, state: self?.currentBranchState(for: folder))
         }
         pending[folder] = item
         queue.asyncAfter(deadline: .now() + 0.12, execute: item)
@@ -90,28 +99,42 @@ final class BranchModel: ObservableObject {
     /// Reads the branch off the main thread and publishes it.
     private func resolve(_ folder: String) {
         queue.async { [weak self] in
-            self?.publish(folder, label: self?.currentBranchLabel(for: folder))
+            self?.publish(folder, state: self?.currentBranchState(for: folder))
         }
     }
 
-    private func publish(_ folder: String, label: String?) {
+    private func publish(_ folder: String, state: BranchState?) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            if self.branches[folder] != label { self.branches[folder] = label }
+            let isDetached = state?.isDetached == true
+            if isDetached {
+                self.detachedFolders.insert(folder)
+            } else {
+                self.detachedFolders.remove(folder)
+            }
+            if self.branches[folder] != state?.label { self.branches[folder] = state?.label }
         }
     }
 
     // MARK: - Git
 
-    /// The folder's current branch name, a short SHA when on a detached HEAD, or
-    /// `nil` when it is not a git working tree.
-    private func currentBranchLabel(for folder: String) -> String? {
+    private struct BranchState {
+        var label: String
+        var isDetached: Bool
+    }
+
+    /// The folder's current branch name, or its short SHA plus detached state when
+    /// no branch owns HEAD. Returns `nil` when the folder is not a git work tree.
+    private func currentBranchState(for folder: String) -> BranchState? {
         guard git(["rev-parse", "--is-inside-work-tree"], in: folder) == "true" else { return nil }
         let head = git(["rev-parse", "--abbrev-ref", "HEAD"], in: folder)
-        if let head, head != "HEAD", !head.isEmpty { return head }
+        if let head, head != "HEAD", !head.isEmpty {
+            return BranchState(label: head, isDetached: false)
+        }
         // Detached HEAD (rebase in progress, or checked out at a bare commit): show
         // the short SHA so the node still reads as "somewhere specific".
-        return git(["rev-parse", "--short", "HEAD"], in: folder)
+        guard let commit = git(["rev-parse", "--short", "HEAD"], in: folder) else { return nil }
+        return BranchState(label: commit, isDetached: true)
     }
 
     /// The directory that contains the folder's `HEAD` file. `git-path` resolves the

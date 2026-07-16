@@ -2,31 +2,28 @@ import AppKit
 import Foundation
 
 extension TermioStore {
-    /// Adds a session to a project, running in the project's directory.
-    func addSession(to projectID: Project.ID, agent: AgentPreset = .terminal) {
+    /// Adds a session to a project, optionally running in one of its linked
+    /// worktree folders while remaining in the project's flat session roster.
+    func addSession(
+        to projectID: Project.ID,
+        agent: AgentPreset = .terminal,
+        worktreePath: String? = nil
+    ) {
         guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
         let project = projects[index]
         let terminalCount = project.sessions.filter { $0.agent == .terminal }.count
         let title = agent == .terminal
             ? "Terminal \(terminalCount + 1)"
             : agent.displayName
-        let session = Session(title: title, agent: agent)
+        var session = Session(title: title, agent: agent)
+        session.worktreePath = worktreePath
         projects[index].sessions.append(session)
         selectedSessionID = session.id
     }
 
-    /// Creates a fresh *detached* git worktree of the project and adds it to the sidebar
-    /// as its own top-level entry — no session is started (you add those yourself, the
-    /// same way any project offers "New … Session"). The user names it first (a prompt
-    /// pre-filled with the next free `<repo>-worktree-N`); that name becomes both the
-    /// folder under `~/.termio/worktrees/` and the sidebar label, so worktrees stay
-    /// identifiable instead of reading as opaque hashes. The checkout is detached at the
-    /// project's current `HEAD` so a throwaway checkout never locks a branch out of the
-    /// primary one; a branch is materialized later on intent (see
-    /// `docs/design/worktree-creation-lifecycle.md`). Files the repo lists in
-    /// `.worktreeinclude` (`.env` and friends) are copied in so the checkout can run. On
-    /// cancel nothing happens; on failure (not a repo, git error) nothing is added and
-    /// the user is told why.
+    /// Creates a fresh detached checkout and records its folder under the parent
+    /// project. No session is forced into it: the nested header remains available so
+    /// the user can add terminals or agents when ready.
     func addWorktree(from projectID: Project.ID) {
         guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
         let project = projects[index]
@@ -48,33 +45,96 @@ extension TermioStore {
         do {
             try FileManager.default.createDirectory(at: worktreeRoot, withIntermediateDirectories: true)
         } catch {
-            presentWorktreeFailure("Couldn't create the worktrees folder: \(error.localizedDescription)")
+            presentWorktreeFailure(message: "Couldn't create the worktrees folder: \(error.localizedDescription)")
             return
         }
-        guard runGit(["worktree", "add", "--detach", worktreePath, "HEAD"], in: project.path) != nil else {
-            presentWorktreeFailure("git couldn't create a worktree for “\(project.name)”. Is it a git repository with at least one commit?")
+        // Create the worktree on a fresh branch named after it, not detached. A
+        // detached HEAD has no name, so every git-aware surface improvises a different
+        // label for the same checkout — the sidebar node shows the folder name while
+        // the inspector chip and the shell's own prompt show the commit SHA. A named
+        // branch makes all three agree (and the shell prompt is only reachable this
+        // way — zsh reads HEAD itself). The dir name is already collision-free on disk;
+        // the branch needs its own guard, since a branch can exist with no worktree.
+        let branchName = uniqueBranchName(base: dirName, in: project.path)
+        guard runGit(["worktree", "add", "-b", branchName, worktreePath, "HEAD"], in: project.path) != nil else {
+            presentWorktreeFailure(message: "git couldn't create a worktree for “\(project.name)”. Is it a git repository with at least one commit?")
             return
         }
 
         copyWorktreeIncludes(from: project.path, to: worktreePath)
+        projects[index].worktrees.append(Worktree(path: worktreePath))
+    }
 
-        // Surface the worktree as its own top-level sidebar entry: a plain project
-        // rooted at the worktree folder, with no sessions yet. `currentBranch` reports
-        // "HEAD" for a detached checkout, so fall back to the short SHA for a readable
-        // label (the live branch is tracked by BranchModel once it's watched anyway). It
-        // inherits the repo's sandbox posture so a sandboxed project's worktree isn't a
-        // way around the sandbox.
-        let branchLabel = currentBranch(in: worktreePath).flatMap { ref in
-            ref == "HEAD" ? runGit(["rev-parse", "--short", "HEAD"], in: worktreePath) : ref
-        } ?? "—"
-        let worktreeProject = Project(
-            name: dirName,
-            path: worktreePath,
-            branch: branchLabel,
-            sessions: [],
-            sandbox: project.sandbox
-        )
-        projects.append(worktreeProject)
+    /// A branch name free in `repo`, starting from `base` and bumping a `-2`, `-3`, …
+    /// suffix until `git` reports no such ref. `base` is already filesystem-safe
+    /// (hyphenated by `uniqueWorktreeDirName`), which is also valid for a branch name.
+    /// `show-ref --verify --quiet` exits 0 when the ref exists, so a non-nil result
+    /// means "taken".
+    private func uniqueBranchName(base: String, in repo: String) -> String {
+        var candidate = base
+        var counter = 2
+        while runGit(["show-ref", "--verify", "--quiet", "refs/heads/\(candidate)"], in: repo) != nil {
+            candidate = "\(base)-\(counter)"
+            counter += 1
+        }
+        return candidate
+    }
+
+    /// Removes a clean linked checkout, then drops its container and matching flat
+    /// sessions from the parent project. Dirty work always stays on disk and in the
+    /// sidebar so an accidental cleanup cannot discard agent changes.
+    func removeWorktree(_ worktreeID: Worktree.ID, from projectID: Project.ID) {
+        guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }),
+              let worktree = projects[projectIndex].worktrees.first(where: { $0.id == worktreeID })
+        else { return }
+
+        guard let status = runGit(["status", "--porcelain"], in: worktree.path) else {
+            presentWorktreeFailure(
+                title: "Couldn't inspect worktree",
+                message: "git couldn't check “\((worktree.path as NSString).lastPathComponent)” for changes, so it was not removed."
+            )
+            return
+        }
+        guard status.isEmpty else {
+            presentWorktreeFailure(
+                title: "Worktree has changes",
+                message: "Commit or discard the changes in “\((worktree.path as NSString).lastPathComponent)” before removing it."
+            )
+            return
+        }
+        // The branch termio created for this worktree, captured before removal so it can
+        // be tidied afterward. A user who switched branches inside the worktree leaves a
+        // different name here — that is theirs to keep, and the safe delete below won't
+        // touch it if it carries unmerged commits.
+        let branch = runGit(["rev-parse", "--abbrev-ref", "HEAD"], in: worktree.path)
+        guard runGit(["worktree", "remove", worktree.path], in: projects[projectIndex].path) != nil else {
+            presentWorktreeFailure(
+                title: "Couldn't remove worktree",
+                message: "git couldn't remove “\((worktree.path as NSString).lastPathComponent)”."
+            )
+            return
+        }
+
+        let pruneSucceeded = runGit(["worktree", "prune"], in: projects[projectIndex].path) != nil
+        // Best-effort tidy of the auto-created branch. `-d` (not `-D`) refuses to drop a
+        // branch with unmerged commits, so real work is never lost — the branch simply
+        // stays. Skips a detached HEAD ("HEAD") and any failure is silent.
+        if let branch, branch != "HEAD" {
+            runGit(["branch", "-d", branch], in: projects[projectIndex].path)
+        }
+        let sessionIDs = projects[projectIndex].sessions
+            .filter { $0.worktreePath == worktree.path }
+            .map(\.id)
+        for sessionID in sessionIDs { closeSession(sessionID) }
+        if let updatedProjectIndex = projects.firstIndex(where: { $0.id == projectID }) {
+            projects[updatedProjectIndex].worktrees.removeAll { $0.id == worktreeID }
+        }
+        if !pruneSucceeded {
+            presentWorktreeFailure(
+                title: "Worktree removed",
+                message: "The folder was removed, but git couldn't prune its stale worktree metadata."
+            )
+        }
     }
 
     /// Copies the git-ignored files a repo lists in `.worktreeinclude` into a freshly
@@ -114,7 +174,7 @@ extension TermioStore {
     private func promptForWorktreeName(defaultName: String) -> String? {
         let alert = NSAlert()
         alert.messageText = "New Worktree"
-        alert.informativeText = "Name the worktree. It's created from HEAD and added to the sidebar as its own project until you remove it."
+        alert.informativeText = "Name the worktree. A new branch of this name is created from HEAD and nested under this project."
         alert.addButton(withTitle: "Create")
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
@@ -150,11 +210,14 @@ extension TermioStore {
         return candidate
     }
 
-    /// Reports a worktree-creation failure as a simple warning alert. Kept here so both
-    /// the failure paths above surface the reason rather than silently doing nothing.
-    private func presentWorktreeFailure(_ message: String) {
+    /// Reports a worktree lifecycle failure instead of leaving an operation's
+    /// partial or refused outcome silent.
+    private func presentWorktreeFailure(
+        title: String = "Couldn't create worktree session",
+        message: String
+    ) {
         let alert = NSAlert()
-        alert.messageText = "Couldn't create worktree session"
+        alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.runModal()

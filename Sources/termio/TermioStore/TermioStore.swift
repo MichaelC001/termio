@@ -341,13 +341,18 @@ final class TermioStore: ObservableObject {
         branchModel.branch(for: folder)
     }
 
+    func isDetachedHead(forFolder folder: String) -> Bool {
+        branchModel.isDetached(folder)
+    }
+
     /// Tells the BranchModel which folders to keep a live branch for: every project's
-    /// own directory plus every session worktree. Called once at init and after any
-    /// change to the project tree.
+    /// own directory, every stored worktree (including empty ones), and legacy
+    /// session-only worktree paths. Called once at init and after tree changes.
     private func syncWatchedFolders() {
         var folders = Set<String>()
         for project in projects {
             folders.insert(project.path)
+            for worktree in project.worktrees { folders.insert(worktree.path) }
             for session in project.sessions {
                 if let worktree = session.worktreePath { folders.insert(worktree) }
             }

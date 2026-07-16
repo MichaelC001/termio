@@ -60,7 +60,10 @@ struct FileBrowserView: View {
                 }
             case .changes:
                 if let repoRoot = projectPath {
+                    // Fresh identity per repo, so the panel model (selection, draft message,
+                    // PR status) resets cleanly when the selected project moves.
                     GitChangesView(repoRoot: repoRoot, changeCount: $store.gitChangeCount)
+                        .id(repoRoot)
                 } else {
                     content
                 }

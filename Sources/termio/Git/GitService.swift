@@ -33,6 +33,63 @@ enum GitService {
         await offMain { discardChanges(change, repoRoot) }
     }
 
+    // MARK: Mutating actions
+
+    /// Commits exactly the checked files with `message`. The paths are staged first
+    /// (`git add` registers new files and picks up deletions), then committed with an
+    /// explicit pathspec so the commit records *only* those files even if something else
+    /// was already staged from the terminal. No `Co-Authored-By` trailer — termio's
+    /// commits stay attribution-free by house rule.
+    static func commit(message: String, paths: [String], in repoRoot: String) async -> GitActionResult {
+        await offMain {
+            guard !paths.isEmpty else { return .failure("Nothing selected to commit.") }
+            let staged = runResult(["add", "--"] + paths, in: repoRoot)
+            if staged.status != 0 { return .failure(oneLine(staged.err, fallback: "Failed to stage files.")) }
+            let committed = runResult(["commit", "-m", message, "--"] + paths, in: repoRoot)
+            if committed.status != 0 { return .failure(oneLine(committed.err, fallback: "Commit failed.")) }
+            return .success
+        }
+    }
+
+    /// Pushes the current branch. A branch with no upstream gets `-u origin HEAD` so the
+    /// first push also sets tracking; otherwise a plain `git push`.
+    static func push(in repoRoot: String) async -> GitActionResult {
+        await offMain {
+            let up = upstreamStateSync(repoRoot)
+            let args = up.hasUpstream ? ["push"] : ["push", "-u", "origin", "HEAD"]
+            let r = runResult(args, in: repoRoot)
+            return r.status == 0 ? .success : .failure(oneLine(r.err, fallback: "Push failed."))
+        }
+    }
+
+    /// The current branch's ahead/behind position versus its upstream — drives the Push
+    /// button's count and enabled state.
+    static func upstreamState(in repoRoot: String) async -> GitUpstream {
+        await offMain { upstreamStateSync(repoRoot) }
+    }
+
+    /// Parses the `## branch...remote [ahead N, behind M]` header line of `git status -sb`.
+    /// No `...` means the branch has no upstream (never pushed); a missing bracket means
+    /// it is level with the remote.
+    private static func upstreamStateSync(_ repoRoot: String) -> GitUpstream {
+        guard let out = run(["status", "-sb"], in: repoRoot),
+              let header = out.split(separator: "\n", omittingEmptySubsequences: false).first
+        else { return .none }
+        let line = String(header)
+        let hasUpstream = line.contains("...")
+        var ahead = 0, behind = 0
+        if let open = line.firstIndex(of: "["), let close = line.firstIndex(of: "]"), open < close {
+            for part in line[line.index(after: open)..<close].split(separator: ",") {
+                let toks = part.split(separator: " ").map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                guard toks.count == 2, let n = Int(toks[1]) else { continue }
+                if toks[0] == "ahead" { ahead = n }
+                if toks[0] == "behind" { behind = n }
+            }
+        }
+        return GitUpstream(hasUpstream: hasUpstream, ahead: ahead, behind: behind)
+    }
+
     // MARK: Loading
 
     private static func loadChanges(_ repoRoot: String) -> [GitChange] {
@@ -228,5 +285,40 @@ enum GitService {
         process.waitUntilExit()
         if !ignoreStatus, process.terminationStatus != 0 { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    /// stdout, stderr and exit status of a `git` invocation. Used by the mutating
+    /// actions, which need the exit code (to detect failure) and stderr (to surface why).
+    private struct RunResult { let out: String; let err: String; let status: Int32 }
+
+    /// Like `run`, but also captures stderr and the exit code. The output of a commit or
+    /// push is a handful of lines — well under the pipe buffer — so reading stdout then
+    /// stderr sequentially can't deadlock here the way a large diff would.
+    private static func runResult(_ args: [String], in dir: String) -> RunResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", dir] + args
+        let out = Pipe(), err = Pipe()
+        process.standardOutput = out
+        process.standardError = err
+        do { try process.run() } catch {
+            return RunResult(out: "", err: error.localizedDescription, status: -1)
+        }
+        let outData = out.fileHandleForReading.readDataToEndOfFile()
+        let errData = err.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return RunResult(
+            out: String(data: outData, encoding: .utf8) ?? "",
+            err: String(data: errData, encoding: .utf8) ?? "",
+            status: process.terminationStatus
+        )
+    }
+
+    /// The last non-empty line of a git error blob (git puts the actionable message last,
+    /// after any `hint:` preamble), or `fallback` when stderr is empty.
+    static func oneLine(_ stderr: String, fallback: String) -> String {
+        let line = stderr.split(separator: "\n").map(String.init)
+            .last { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        return line?.trimmingCharacters(in: .whitespaces) ?? fallback
     }
 }

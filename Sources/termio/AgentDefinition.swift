@@ -100,6 +100,34 @@ struct AgentDefinition: Identifiable {
         case piStyle
         case codexStyle
         case openCodeStyle
+
+        /// The agent's conversation id read from its live transcript *path*, for
+        /// styles whose filename encodes the id. termio uses this to advance a
+        /// session's pinned `resumeID` after the agent rotates its conversation
+        /// mid-session — Claude Code's `/clear` mints a new id and transcript and
+        /// orphans the old file, which the once-pinned id would otherwise keep
+        /// resuming. Returns nil when the id is not in the filename (Codex/OpenCode
+        /// carry it *inside* the file, so advancing those is re-discovery's job, not
+        /// path parsing) or the style does not resume. See
+        /// docs/design/agent-resume-identity.md.
+        func conversationID(fromTranscriptPath path: String) -> String? {
+            switch self {
+            case .claudeStyle:
+                // Claude names the transcript exactly `<conversation-id>.jsonl`; strip
+                // the suffix directly rather than via `deletingPathExtension`, which
+                // mishandles a leading-dot name (a stray `.jsonl` would survive as an id).
+                let file = (path as NSString).lastPathComponent
+                guard file.hasSuffix(".jsonl") else { return nil }
+                let id = String(file.dropLast(".jsonl".count))
+                return id.isEmpty ? nil : id
+            case .piStyle, .codexStyle, .openCodeStyle, .none:
+                // Pi encodes the id in the filename too (`<timestamp>_<id>.jsonl`),
+                // but its transcript discovery isn't wired yet; Codex/OpenCode keep
+                // the id inside the file. All advance via re-discovery (Phase 3),
+                // not here — see the design doc.
+                return nil
+            }
+        }
     }
 
     /// Inputs the resume decision needs that only `TermioStore` can supply.
