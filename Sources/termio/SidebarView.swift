@@ -565,6 +565,13 @@ private struct SessionRow: View {
                     Image(systemName: "globe")
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(.secondary)
+                } else if session.isSSH, store.status(for: session.id) != .working {
+                    // An SSH terminal reads as a remote link — a network glyph in the
+                    // terminal grey — except while a detected remote agent is working,
+                    // when it falls through to the spinner below.
+                    Image(systemName: "network")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
                 } else if store.status(for: session.id) == .working {
                     WorkingIndicator(tint: store.effectiveAgent(for: session).tintColor)
                 } else {

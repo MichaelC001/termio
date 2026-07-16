@@ -234,6 +234,22 @@ private struct NativeSearchField: NSViewRepresentable {
         Coordinator(parent: self)
     }
 
+    /// Switching away from the Search pane tears this field down by removing it from the view
+    /// tree. If it's still first responder at that moment, AppKit plays its ~0.4s focus-ring
+    /// fade-out — the blue outline you saw hanging over the next pane. Resign first responder
+    /// with animations disabled (and drop the ring type) so the outline goes the instant the tab
+    /// changes, matching the now-instant content swap.
+    static func dismantleNSView(_ field: NSSearchField, coordinator: Coordinator) {
+        field.focusRingType = .none
+        guard let window = field.window,
+              window.firstResponder === field || window.firstResponder === field.currentEditor()
+        else { return }
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        window.makeFirstResponder(nil)
+        NSAnimationContext.endGrouping()
+    }
+
     func makeNSView(context: Context) -> NSSearchField {
         let field = NSSearchField()
         field.delegate = context.coordinator

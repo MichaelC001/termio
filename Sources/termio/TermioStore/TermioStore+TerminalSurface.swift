@@ -101,7 +101,12 @@ extension TermioStore {
         // running when the app last quit picks its conversation back up instead of
         // starting over. `resumeID` is the id we persist for it (nil for the plain shell
         // and the directory-resume agents); it's written back below.
-        let launch = resolveLaunch(for: session, workspacePath: workspacePath)
+        // An SSH terminal launches `ssh <host>` instead of a local shell or agent —
+        // the remote host allocates its own pty over the connection. It never
+        // resumes or sandboxes (both are local-agent concepts), so it short-circuits
+        // the agent launch resolution below.
+        let launch = session.sshHost.map { (command: Self.sshCommand(host: $0), resumeID: String?.none) }
+            ?? resolveLaunch(for: session, workspacePath: workspacePath)
         let agentCommand = launch.command
 
         // Pi checks the pinned `--session-id` against its session store at startup
@@ -378,6 +383,23 @@ extension TermioStore {
         return [shell, "-il"]
     }
 
+    /// The command that opens an interactive SSH session to `host`. The host is a
+    /// `~/.ssh/config` alias or a bare `user@host`; it's single-quoted so an alias
+    /// with spaces or shell metacharacters can't break out of the `exec ssh …` line
+    /// that `launchArgv` wraps it in. `ssh` with a tty on stdin (the PTY) and no
+    /// remote command allocates a remote pty on its own, so the user lands at the
+    /// remote shell — no `-t` needed.
+    static func sshCommand(host: String) -> String {
+        "ssh \(shellQuoted(host))"
+    }
+
+    /// POSIX single-quote escaping: wraps `value` in `'…'`, splicing any embedded
+    /// quote as `'\''`, so the result is one literal argument no matter what it
+    /// contains. Used to make a user-supplied SSH host safe inside `exec ssh …`.
+    static func shellQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     /// The user's real login shell, read from the password database rather than the
     /// ambient `SHELL` env var. A GUI app inherits whatever `SHELL` launchd or `open`
     /// happened to pass — often unset, and sometimes `/bin/sh`, whose `-lc` sources NONE
@@ -567,6 +589,17 @@ extension TermioStore {
         // shortcuts always reach termio's menu.
         builder.withCustom("keybind", "super+shift+p=unbind")
         builder.withCustom("keybind", "super+shift+o=unbind")
+        // Font size and split zoom are termio menu actions too: font size is
+        // driven from the persisted `fontSize` setting (so it survives relaunch
+        // and applies to every surface), and zoom is a host SplitTree operation
+        // (ghostty has no splits in embedded mode). Unbind ghostty's built-in
+        // versions so ⌘=/⌘-/⌘0 and ⌘⇧↩ reach `buildMainMenu` instead of being
+        // swallowed by the surface.
+        builder.withCustom("keybind", "super+equal=unbind")
+        builder.withCustom("keybind", "super+plus=unbind")
+        builder.withCustom("keybind", "super+minus=unbind")
+        builder.withCustom("keybind", "super+zero=unbind")
+        builder.withCustom("keybind", "super+shift+enter=unbind")
     }
 
     /// The light/dark theme pair libghostty switches between as the system

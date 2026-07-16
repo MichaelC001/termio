@@ -50,6 +50,78 @@ struct SectionHeaderLabel: View {
     }
 }
 
+/// The standard settings-row label: an optional leading icon badge, a title, and
+/// an optional wrapping caption underneath (the Xcode/System Settings two-line
+/// idiom). Every explanatory row in the settings tabs uses this so titles, caption
+/// styling, and icon spacing stay identical across tabs instead of being
+/// hand-rolled per row. Primary rows read at `.headline`; pass `titleFont: .body`
+/// for a nested sub-option that should sit visually below its parent row.
+struct SettingsLabel: View {
+    var icon: AgentIcon?
+    let title: String
+    var subtext: String?
+    var titleFont: Font = .headline
+
+    /// Icon-led row (a system symbol or agent brand mark).
+    init(_ icon: AgentIcon, title: String, subtext: String? = nil, titleFont: Font = .headline) {
+        self.icon = icon
+        self.title = title
+        self.subtext = subtext
+        self.titleFont = titleFont
+    }
+
+    /// Convenience for the common SF Symbol case, mirroring `IconBadge(symbol:)`.
+    init(symbol: String, title: String, subtext: String? = nil, titleFont: Font = .headline) {
+        self.init(.systemSymbol(symbol), title: title, subtext: subtext, titleFont: titleFont)
+    }
+
+    /// Icon-less row, for a nested sub-option that hangs under an icon-led row.
+    init(title: String, subtext: String? = nil, titleFont: Font = .body) {
+        self.icon = nil
+        self.title = title
+        self.subtext = subtext
+        self.titleFont = titleFont
+    }
+
+    var body: some View {
+        HStack(spacing: icon == nil ? 0 : 10) {
+            if let icon {
+                IconBadge(icon)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(titleFont)
+                if let subtext {
+                    Text(subtext)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+}
+
+/// Centers a `LabeledContent` row's trailing control vertically against its label,
+/// matching macOS 26 / System Settings rows. The default style anchors the control
+/// to the label's first-text baseline, which sits visibly high once a label wraps to
+/// two lines. Applied once on the settings root via `.labeledContentStyle(.settingsCentered)`.
+struct SettingsCenteredLabeledContentStyle: LabeledContentStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            configuration.label
+            Spacer(minLength: 8)
+            configuration.content
+        }
+    }
+}
+
+extension LabeledContentStyle where Self == SettingsCenteredLabeledContentStyle {
+    static var settingsCentered: SettingsCenteredLabeledContentStyle {
+        SettingsCenteredLabeledContentStyle()
+    }
+}
+
 /// The font families installed on this Mac, used to populate the font pickers.
 /// Enumerating the font manager is not free, so each list is computed once and
 /// reused for the lifetime of the process.

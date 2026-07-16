@@ -209,6 +209,53 @@ extension TermioStore {
         selectedSessionID = session.id
     }
 
+    /// Opens an **SSH terminal** to `host` — a loose terminal that launches
+    /// `ssh <host>` instead of a local shell (see `Session.sshHost`). It gathers in
+    /// the same Terminals container as scratch shells (an SSH session isn't tied to a
+    /// local project either), titled by the host so the sidebar row reads `myserver`
+    /// rather than `Terminal N`. `host` is a `~/.ssh/config` alias or a bare
+    /// `user@host`.
+    func addSSHSession(host: String) {
+        let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty else { return }
+        var session = Session(title: host, agent: .terminal)
+        session.sshHost = host
+
+        if let index = projects.firstIndex(where: { $0.kind == .terminals }) {
+            projects[index].sessions.append(session)
+        } else {
+            let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+            projects.append(Project(
+                name: "Terminals", path: home, branch: "—",
+                sessions: [session], kind: .terminals
+            ))
+        }
+        selectedSessionID = session.id
+    }
+
+    /// Prompts for an SSH destination, then opens a terminal to it. The combo box is
+    /// pre-populated with the connectable `Host` aliases from `~/.ssh/config` (the
+    /// same list the phone imports), but stays editable so a one-off `user@host` that
+    /// isn't in the config still works. Empty entry or Cancel does nothing.
+    func presentSSHConnectPanel() {
+        let alert = NSAlert()
+        alert.messageText = "New SSH Connection"
+        alert.informativeText = "Enter a host from your ~/.ssh/config, or a user@host to connect to."
+        alert.addButton(withTitle: "Connect")
+        alert.addButton(withTitle: "Cancel")
+
+        let combo = NSComboBox(frame: NSRect(x: 0, y: 0, width: 260, height: 26))
+        combo.completes = true
+        combo.addItems(withObjectValues: CompanionServer.parseSSHConfigHosts().map(\.alias))
+        alert.accessoryView = combo
+        alert.window.initialFirstResponder = combo
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let host = combo.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty else { return }
+        addSSHSession(host: host)
+    }
+
     /// The working directory for a scratch session: `~` for a plain terminal, and the
     /// scoped `~/.termio/default/` workspace for any agent (created on demand). See
     /// `addScratchSession` for why agents are kept out of `$HOME`.

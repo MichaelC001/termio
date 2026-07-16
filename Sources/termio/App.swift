@@ -34,6 +34,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private lazy var store = TermioStore.restored(settings: settings)
     private lazy var usageMonitor = UsageMonitor(settings: settings)
     private var menuBar: MenuBarController?
+    /// Rebuilds the main menu when the user rebinds a shortcut in Settings.
+    private var keybindingsObserver: NSObjectProtocol?
     private var companionServer: CompanionServer?
     private var settingsWindow: NSWindow?
     private var settingsObserver: AnyCancellable?
@@ -104,6 +106,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Sweep up session processes a previous instance stranded (crash,
         // force-quit, dev rebuild's kill -9) before this run adds its own.
         PTYProcess.reapStrayOrphans()
+        // Menu items cache their key equivalents at build time, so rebuild the
+        // whole main menu whenever a user rebinds a shortcut in Settings.
+        keybindingsObserver = NotificationCenter.default.addObserver(
+            forName: .termioKeybindingsChanged, object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { NSApp.mainMenu = buildMainMenu() }
+        }
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -571,27 +580,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func openSettings(initialTab: SettingsTab) {
         if settingsWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 500, height: 460),
-                styleMask: [.titled, .closable, .miniaturizable],
+                contentRect: NSRect(x: 0, y: 0, width: 720, height: 540),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                 backing: .buffered,
                 defer: false
             )
             window.title = "Settings"
-            // Drop the hairline under the title bar so the icon-tab strip reads as
-            // one continuous surface with the title bar, Dia-style. A transparent
-            // titlebar is what actually removes the separator when there is no
-            // toolbar; `.none` alone leaves a faint line.
-            window.titlebarSeparatorStyle = .none
-            window.titlebarAppearsTransparent = true
+            // System Settings–style chrome: a unified toolbar carries the sidebar
+            // separator and the detail pane's title/subtitle. The window is
+            // resizable so short panes don't force a fixed slab of empty space.
+            window.toolbarStyle = .unified
             window.isReleasedWhenClosed = false
-            window.center()
+
+            let minSize = NSSize(width: 640, height: 480)
+            window.minSize = minSize
+            window.contentMinSize = minSize
+
+            // Remember the user's size/position across launches. The restore path
+            // uses setFrame:, which ignores minSize, so clamp any stale tiny frame.
+            let restored = window.setFrameAutosaveName("TermioSettingsWindow")
+            let frame = window.frame
+            if frame.width < minSize.width || frame.height < minSize.height {
+                var clamped = frame
+                clamped.size.width = max(frame.width, minSize.width)
+                clamped.size.height = max(frame.height, minSize.height)
+                window.setFrame(clamped, display: false)
+            }
+            if !restored { window.center() }
             settingsWindow = window
         }
+        // `.frame(minWidth:minHeight:)` on the root: NSHostingView forwards the
+        // SwiftUI tree's small intrinsic minimum up into contentMinSize, which
+        // would otherwise let the window shrink below the size set above.
         settingsWindow?.contentView = NSHostingView(rootView: SettingsView(
             settings: settings,
             usage: usageMonitor,
             initialTab: initialTab
-        ))
+        ).frame(minWidth: 640, minHeight: 480))
         settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -609,6 +634,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// the other app actions.
     @objc func newScratchTerminal(_ sender: Any?) {
         store.addScratchTerminal()
+    }
+
+    /// File ▸ New SSH Connection… — prompts for a host (`~/.ssh/config` alias or
+    /// `user@host`) and opens a terminal running `ssh` to it, grouped under the same
+    /// Terminals section as loose shells. Reached via the responder chain.
+    @objc func newSSHConnection(_ sender: Any?) {
+        store.presentSSHConnectPanel()
     }
 
     /// View ▸ Show Project Files (and the toolbar's trailing inspector button) —
@@ -894,11 +926,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.splitSelectedPane(.vertical)
     }
 
-    /// View ▸ Close Pane (⌥⌘W) — collapses the focused pane out of the layout.
-    /// The session itself stays alive in the sidebar; killing it remains the
-    /// sidebar's explicit close.
+    /// View ▸ Close Pane (⌘W) — collapses the focused pane out of the layout,
+    /// terminal-style. The session itself stays alive in the sidebar (killing it
+    /// remains the sidebar's explicit close). With no split on screen there is no
+    /// pane to peel off, so ⌘W falls through to closing the window, matching
+    /// iTerm2 where the last pane's ⌘W closes its container.
     @objc func closeSplitPane(_ sender: Any?) {
-        store.closeSelectedPane()
+        if store.splitRoot != nil {
+            store.closeSelectedPane()
+        } else {
+            window?.performClose(sender)
+        }
+    }
+
+    /// File ▸ Close Window (⌘⇧W) — closes the whole window regardless of splits.
+    @objc func closeMainWindow(_ sender: Any?) {
+        window?.performClose(sender)
+    }
+
+    /// View ▸ Zoom Split (⌘⇧↩) — maximise the focused pane, or restore the split.
+    @objc func toggleSplitZoom(_ sender: Any?) {
+        store.toggleSelectedPaneZoom()
+    }
+
+    // Font size drives the persisted `fontSize` setting, so a bump survives
+    // relaunch and re-styles every open surface at once (the store's settings
+    // observer reapplies appearance). Clamped to the Appearance stepper's range.
+    @objc func increaseFontSize(_ sender: Any?) {
+        settings.fontSize = min(32, (settings.fontSize + 1).rounded())
+    }
+
+    @objc func decreaseFontSize(_ sender: Any?) {
+        settings.fontSize = max(8, (settings.fontSize - 1).rounded())
+    }
+
+    @objc func resetFontSize(_ sender: Any?) {
+        settings.fontSize = 13
     }
 
     @objc func focusPaneLeft(_ sender: Any?) { store.focusPane(.left) }
@@ -1009,6 +1072,9 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
         let terminal = NSMenuItem(title: "New Terminal", action: #selector(newTerminal(_:)), keyEquivalent: "")
         terminal.target = self
         menu.addItem(terminal)
+        let ssh = NSMenuItem(title: "New SSH Connection…", action: #selector(newSSHConnection(_:)), keyEquivalent: "")
+        ssh.target = self
+        menu.addItem(ssh)
         let folder = NSMenuItem(title: "Open Project…", action: #selector(openFolder(_:)), keyEquivalent: "")
         folder.target = self
         menu.addItem(folder)
@@ -1016,6 +1082,7 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     }
 
     @objc private func newTerminal(_ sender: Any?) { store.addScratchTerminal() }
+    @objc private func newSSHConnection(_ sender: Any?) { store.presentSSHConnectPanel() }
     @objc private func openFolder(_ sender: Any?) { store.presentOpenProjectPanel() }
 
     /// The `.inspectorTabs` item's menu form, shown in the toolbar's `»` overflow menu when the
@@ -1132,19 +1199,22 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             item.menu = makeNewSessionMenu()
             return item
         case .inspectorTabs:
-            // The native segmented switch (Files / Changes), pinned to the inspector's left edge by
-            // the tracking separator that precedes it in the item order.
+            // The inspector pane switch (Files / Search / Changes / Info), pinned to the inspector's
+            // left edge by the tracking separator that precedes it in the item order. It's a
+            // hand-drawn SwiftUI Liquid Glass segmented control (see `InspectorTabsToolbar`) rather
+            // than a native `NSToolbarItemGroup`: over termio's transparent-over-terminal toolbar the
+            // native control loses its track and reads as detached, selection-less glyphs, so we draw
+            // our own track + sliding pill.
             let item = NSToolbarItem(itemIdentifier: .inspectorTabs)
             item.label = "Inspector"
-            item.toolTip = "Switch between project files and changes"
+            item.toolTip = "Switch between project files, search, changes, and info"
             let host = NSHostingView(rootView: InspectorTabsToolbar().environmentObject(store))
             host.sizingOptions = [.intrinsicContentSize]
             item.view = host
             item.isBordered = false
-            // First to overflow: the glass cluster is incompressible, so when its section (the
-            // inspector pane) gets too narrow it must yield to the `»` menu rather than slide
-            // over the divider onto the pane's content. The menu form keeps the panes switchable
-            // from the overflow menu while the cluster is hidden.
+            // First to overflow: the switch is incompressible, so when its section (the inspector
+            // pane) gets too narrow it must yield to the `»` menu rather than slide over the divider
+            // onto the pane's content. The menu form keeps the panes switchable while it's hidden.
             item.visibilityPriority = .low
             item.menuFormRepresentation = makeInspectorTabsMenuItem()
             return item
@@ -1239,11 +1309,16 @@ private struct BranchPickerToolbarView: View {
     }
 
     private var title: String {
+        // An SSH terminal is titled by its host, not the local cwd it happens to have
+        // launched from ($HOME) — matching how the sidebar labels the same row.
+        if let host = store.selectedSessionID.flatMap(store.session)?.sshHost { return host }
         guard let folder else { return "Termio" }
         return URL(fileURLWithPath: folder).lastPathComponent
     }
 
     private var branch: String? {
+        // No local branch for a remote SSH session — its $HOME launch dir isn't the repo.
+        guard store.selectedSessionID.flatMap(store.session)?.sshHost == nil else { return nil }
         guard let folder, let branch = store.branch(forFolder: folder), !branch.isEmpty else { return nil }
         return branch
     }
@@ -1318,13 +1393,25 @@ private func buildMainMenu() -> NSMenu {
     fileMenu.addItem(
         withTitle: "New Terminal",
         action: #selector(AppDelegate.newScratchTerminal(_:)),
-        keyEquivalent: "t"
+        command: .newTerminal
+    )
+    fileMenu.addItem(
+        withTitle: "New SSH Connection…",
+        action: #selector(AppDelegate.newSSHConnection(_:)),
+        keyEquivalent: ""
     )
     fileMenu.addItem(.separator())
     fileMenu.addItem(
         withTitle: "Open Project…",
         action: #selector(AppDelegate.openProject(_:)),
-        keyEquivalent: "o"
+        command: .openProject
+    )
+    fileMenu.addItem(.separator())
+    // ⌘⇧W closes the whole window (⌘W is Close Pane, terminal-style — see View menu).
+    fileMenu.addItem(
+        withTitle: "Close Window",
+        action: #selector(AppDelegate.closeMainWindow(_:)),
+        command: .closeWindow
     )
     fileItem.submenu = fileMenu
 
@@ -1346,63 +1433,83 @@ private func buildMainMenu() -> NSMenu {
     // surface, so the key never reaches the menu. Both shortcuts are
     // additionally unbound in the surface config (see `applyAppearance`) so
     // they can't be swallowed either.
-    let openQuickly = viewMenu.addItem(
+    viewMenu.addItem(
         withTitle: "Open Quickly…",
         action: #selector(AppDelegate.toggleOpenQuickly(_:)),
-        keyEquivalent: "o"
+        command: .openQuickly
     )
-    openQuickly.keyEquivalentModifierMask = [.command, .shift]
-    let palette = viewMenu.addItem(
+    viewMenu.addItem(
         withTitle: "Command Palette…",
         action: #selector(AppDelegate.toggleCommandPalette(_:)),
-        keyEquivalent: "p"
+        command: .commandPalette
     )
-    palette.keyEquivalentModifierMask = [.command, .shift]
     viewMenu.addItem(.separator())
     // iTerm2's split shortcuts: ⌘D right, ⌘⇧D down. The new pane opens a plain
     // terminal in the focused session's project (see `splitSelectedPane`).
     viewMenu.addItem(
         withTitle: "Split Right",
         action: #selector(AppDelegate.splitPaneRight(_:)),
-        keyEquivalent: "d"
+        command: .splitRight
     )
-    let splitDown = viewMenu.addItem(
+    viewMenu.addItem(
         withTitle: "Split Down",
         action: #selector(AppDelegate.splitPaneDown(_:)),
-        keyEquivalent: "d"
+        command: .splitDown
     )
-    splitDown.keyEquivalentModifierMask = [.command, .shift]
-    // ⌥⌘W: closes the *pane* (the layout slot), not the session — ⌘W stays
-    // unbound so the window's own close keeps its meaning.
-    let closePane = viewMenu.addItem(
+    // ⌘⇧↩ maximises the focused pane (tmux/iTerm2 zoom), toggling back to the split.
+    viewMenu.addItem(
+        withTitle: "Zoom Split",
+        action: #selector(AppDelegate.toggleSplitZoom(_:)),
+        command: .splitZoom
+    )
+    // ⌘W closes the focused *pane* (the layout slot), not the session, matching
+    // terminal convention; the last pane's ⌘W falls through to the window. The
+    // whole window is ⌘⇧W (File ▸ Close Window).
+    viewMenu.addItem(
         withTitle: "Close Pane",
         action: #selector(AppDelegate.closeSplitPane(_:)),
-        keyEquivalent: "w"
+        command: .closePane
     )
-    closePane.keyEquivalentModifierMask = [.command, .option]
     viewMenu.addItem(.separator())
     // ⌥⌘ arrows move focus between panes, scored on the split geometry.
-    for (title, action, key) in [
-        ("Focus Pane Left", #selector(AppDelegate.focusPaneLeft(_:)), NSLeftArrowFunctionKey),
-        ("Focus Pane Right", #selector(AppDelegate.focusPaneRight(_:)), NSRightArrowFunctionKey),
-        ("Focus Pane Up", #selector(AppDelegate.focusPaneUp(_:)), NSUpArrowFunctionKey),
-        ("Focus Pane Down", #selector(AppDelegate.focusPaneDown(_:)), NSDownArrowFunctionKey),
+    for (command, action) in [
+        (KeyCommandID.focusPaneLeft, #selector(AppDelegate.focusPaneLeft(_:))),
+        (.focusPaneRight, #selector(AppDelegate.focusPaneRight(_:))),
+        (.focusPaneUp, #selector(AppDelegate.focusPaneUp(_:))),
+        (.focusPaneDown, #selector(AppDelegate.focusPaneDown(_:))),
     ] {
-        let item = viewMenu.addItem(
-            withTitle: title,
+        viewMenu.addItem(
+            withTitle: KeyCommandCatalog.info(command).title,
             action: action,
-            keyEquivalent: String(UnicodeScalar(UInt16(key))!)
+            command: command
         )
-        item.keyEquivalentModifierMask = [.command, .option]
     }
     viewMenu.addItem(.separator())
     // Mirrors Xcode's inspector shortcut (⌥⌘0) for the trailing file-tree panel.
-    let toggleFiles = viewMenu.addItem(
+    viewMenu.addItem(
         withTitle: "Show Project Files",
         action: #selector(AppDelegate.toggleFilesInspector(_:)),
-        keyEquivalent: "0"
+        command: .toggleProjectFiles
     )
-    toggleFiles.keyEquivalentModifierMask = [.command, .option]
+    viewMenu.addItem(.separator())
+    // Safari-style terminal font size: ⌘= bigger, ⌘- smaller, ⌘0 default. Drives
+    // the persisted Appearance font size (ghostty's own binds are unbound in the
+    // surface — see `applyAppearance`) so it survives relaunch and all panes match.
+    viewMenu.addItem(
+        withTitle: "Increase Font Size",
+        action: #selector(AppDelegate.increaseFontSize(_:)),
+        command: .increaseFontSize
+    )
+    viewMenu.addItem(
+        withTitle: "Decrease Font Size",
+        action: #selector(AppDelegate.decreaseFontSize(_:)),
+        command: .decreaseFontSize
+    )
+    viewMenu.addItem(
+        withTitle: "Reset Font Size",
+        action: #selector(AppDelegate.resetFontSize(_:)),
+        command: .resetFontSize
+    )
     viewItem.submenu = viewMenu
 
     return mainMenu
