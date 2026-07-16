@@ -19,6 +19,7 @@ struct Shortcut: Equatable {
     enum Key: Equatable {
         case char(String)   // a single lowercase character or punctuation ("d", ",", "]", "0")
         case left, right, up, down
+        case `return`
     }
 
     var modifiers: NSEvent.ModifierFlags
@@ -107,6 +108,7 @@ extension Shortcut {
         case 124: self.init(modifiers: mods, key: .right); return
         case 125: self.init(modifiers: mods, key: .down); return
         case 126: self.init(modifiers: mods, key: .up); return
+        case 36, 76: self.init(modifiers: mods, key: .return); return  // return / keypad enter
         default: break
         }
         guard let chars = event.charactersIgnoringModifiers, let first = chars.first else { return nil }
@@ -125,6 +127,7 @@ private extension Shortcut.Key {
         case "right": self = .right
         case "up": self = .up
         case "down": self = .down
+        case "return", "enter": self = .return
         default:
             guard token.count == 1 else { return nil }
             self = .char(token)
@@ -138,6 +141,7 @@ private extension Shortcut.Key {
         case .right: return "right"
         case .up: return "up"
         case .down: return "down"
+        case .return: return "return"
         }
     }
 
@@ -148,6 +152,7 @@ private extension Shortcut.Key {
         case .right: return "→"
         case .up: return "↑"
         case .down: return "↓"
+        case .return: return "↩"
         }
     }
 
@@ -158,6 +163,7 @@ private extension Shortcut.Key {
         case .right: return String(UnicodeScalar(UInt16(NSRightArrowFunctionKey))!)
         case .up: return String(UnicodeScalar(UInt16(NSUpArrowFunctionKey))!)
         case .down: return String(UnicodeScalar(UInt16(NSDownArrowFunctionKey))!)
+        case .return: return "\r"
         }
     }
 }

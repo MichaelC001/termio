@@ -7,6 +7,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case appearance
     case interface
     case terminal
+    case keyboard
     case agents
     case usage
     case mobile
@@ -18,6 +19,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .appearance: return "Appearance"
         case .interface: return "Interface"
         case .terminal: return "Terminal"
+        case .keyboard: return "Keyboard"
         case .agents: return "Agents"
         case .usage: return "Usage"
         case .mobile: return "Mobile"
@@ -29,6 +31,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .appearance: return "paintbrush"
         case .interface: return "sidebar.left"
         case .terminal: return "terminal"
+        case .keyboard: return "keyboard"
         case .agents: return "sparkles"
         case .usage: return "gauge.medium"
         case .mobile: return "iphone"
@@ -42,6 +45,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .appearance: return "Terminal font, theme, cursor, and window"
         case .interface: return "The app's own sidebar font and density"
         case .terminal: return "Scrollback history and text selection"
+        case .keyboard: return "Keyboard shortcuts for every command"
         case .agents: return "Agent presets, live status, and control"
         case .usage: return "Token usage for your connected agents"
         case .mobile: return "Pair your iPhone and remote access"

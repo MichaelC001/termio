@@ -13,14 +13,18 @@ enum KeyCommandID: String, CaseIterable, Identifiable {
     // Panes
     case splitRight = "pane.split-right"
     case splitDown = "pane.split-down"
+    case splitZoom = "pane.zoom"
     case closePane = "pane.close"
     case focusPaneLeft = "pane.focus-left"
     case focusPaneRight = "pane.focus-right"
     case focusPaneUp = "pane.focus-up"
     case focusPaneDown = "pane.focus-down"
-    // Tabs
-    case selectNextTab = "tab.next"
-    case selectPreviousTab = "tab.previous"
+    // Font
+    case increaseFontSize = "font.increase"
+    case decreaseFontSize = "font.decrease"
+    case resetFontSize = "font.reset"
+    // Window
+    case closeWindow = "window.close"
     // Interface
     case toggleProjectFiles = "ui.toggle-project-files"
 
@@ -63,8 +67,10 @@ enum KeyCommandCatalog {
               defaultShortcut: .init(modifiers: [.command], key: .char("d"))),
         .init(id: .splitDown, category: "Panes", title: "Split Down",
               defaultShortcut: .init(modifiers: [.command, .shift], key: .char("d"))),
+        .init(id: .splitZoom, category: "Panes", title: "Zoom Split",
+              defaultShortcut: .init(modifiers: [.command, .shift], key: .return)),
         .init(id: .closePane, category: "Panes", title: "Close Pane",
-              defaultShortcut: .init(modifiers: [.command, .option], key: .char("w"))),
+              defaultShortcut: .init(modifiers: [.command], key: .char("w"))),
         .init(id: .focusPaneLeft, category: "Panes", title: "Focus Pane Left",
               defaultShortcut: .init(modifiers: [.command, .option], key: .left)),
         .init(id: .focusPaneRight, category: "Panes", title: "Focus Pane Right",
@@ -73,11 +79,16 @@ enum KeyCommandCatalog {
               defaultShortcut: .init(modifiers: [.command, .option], key: .up)),
         .init(id: .focusPaneDown, category: "Panes", title: "Focus Pane Down",
               defaultShortcut: .init(modifiers: [.command, .option], key: .down)),
-        // Tabs
-        .init(id: .selectNextTab, category: "Tabs", title: "Select Next Tab",
-              defaultShortcut: .init(modifiers: [.command, .shift], key: .char("]"))),
-        .init(id: .selectPreviousTab, category: "Tabs", title: "Select Previous Tab",
-              defaultShortcut: .init(modifiers: [.command, .shift], key: .char("["))),
+        // Font
+        .init(id: .increaseFontSize, category: "Font", title: "Increase Font Size",
+              defaultShortcut: .init(modifiers: [.command], key: .char("="))),
+        .init(id: .decreaseFontSize, category: "Font", title: "Decrease Font Size",
+              defaultShortcut: .init(modifiers: [.command], key: .char("-"))),
+        .init(id: .resetFontSize, category: "Font", title: "Reset Font Size",
+              defaultShortcut: .init(modifiers: [.command], key: .char("0"))),
+        // Window
+        .init(id: .closeWindow, category: "Window", title: "Close Window",
+              defaultShortcut: .init(modifiers: [.command, .shift], key: .char("w"))),
         // Interface
         .init(id: .toggleProjectFiles, category: "Interface", title: "Show Project Files",
               defaultShortcut: .init(modifiers: [.command, .option], key: .char("0"))),
