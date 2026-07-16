@@ -95,7 +95,6 @@ struct FileSearchView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .overlay(alignment: .bottom) { Divider() }
     }
 
     @ViewBuilder
