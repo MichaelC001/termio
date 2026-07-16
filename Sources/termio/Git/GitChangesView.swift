@@ -12,7 +12,6 @@ struct GitChangesView: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.openURL) private var openURL
 
     let repoRoot: String
     /// Lifted up to `FileBrowserView` so the switcher's Changes badge stays in step.

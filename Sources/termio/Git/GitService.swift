@@ -287,9 +287,10 @@ enum GitService {
         return String(data: data, encoding: .utf8)
     }
 
-    /// stdout, stderr and exit status of a `git` invocation. Used by the mutating
-    /// actions, which need the exit code (to detect failure) and stderr (to surface why).
-    private struct RunResult { let out: String; let err: String; let status: Int32 }
+    /// stderr and exit status of a `git` invocation. Used by the mutating actions, which
+    /// need the exit code (to detect failure) and stderr (to surface why). stdout is
+    /// drained but discarded — none of the mutating commands' output is shown.
+    private struct RunResult { let err: String; let status: Int32 }
 
     /// Like `run`, but also captures stderr and the exit code. The output of a commit or
     /// push is a handful of lines — well under the pipe buffer — so reading stdout then
@@ -302,13 +303,14 @@ enum GitService {
         process.standardOutput = out
         process.standardError = err
         do { try process.run() } catch {
-            return RunResult(out: "", err: error.localizedDescription, status: -1)
+            return RunResult(err: error.localizedDescription, status: -1)
         }
-        let outData = out.fileHandleForReading.readDataToEndOfFile()
+        // Drain stdout so a chatty command can't block on a full pipe; its contents are
+        // unused — only stderr and the exit code matter for a commit/push.
+        _ = out.fileHandleForReading.readDataToEndOfFile()
         let errData = err.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         return RunResult(
-            out: String(data: outData, encoding: .utf8) ?? "",
             err: String(data: errData, encoding: .utf8) ?? "",
             status: process.terminationStatus
         )

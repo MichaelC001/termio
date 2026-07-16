@@ -39,7 +39,6 @@ final class GitPanelModel: ObservableObject {
 
     init(repoRoot: String) { self.repoRoot = repoRoot }
 
-    var selectedCount: Int { selected.count }
     var canCommit: Bool {
         !isCommitting && !selected.isEmpty && !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
