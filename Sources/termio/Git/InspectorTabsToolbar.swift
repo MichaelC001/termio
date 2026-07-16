@@ -30,11 +30,11 @@ struct InspectorTabsToolbar: View {
     /// sliding. A fresh hosting view is built per insertion, so `onAppear` fires on every open.
     @State private var appeared = false
 
-    /// Outer height of the glass track. Bumped a touch over the old 30 so the capsule reads at the
-    /// same height as the taller macOS 26 (Tahoe) bordered toolbar buttons flanking it (the collapse
-    /// / + / inspector items), which the old value sat visibly short of. The glyph area derives from
-    /// this as `controlHeight - 2 * trackPadding`.
-    static let controlHeight: CGFloat = 32
+    /// Outer height of the glass track, matched to the taller macOS 26 (Tahoe) bordered toolbar
+    /// buttons flanking it (the collapse / + / inspector items) so all the toolbar backgrounds line
+    /// up — the old 30 sat visibly short. 36 matches the native single-button outer frame exactly
+    /// (per PR #3). The glyph area derives from this as `controlHeight - 2 * trackPadding`.
+    static let controlHeight: CGFloat = 36
     private static let trackPadding: CGFloat = 3
     private static var glyphHeight: CGFloat { controlHeight - 2 * trackPadding }
     /// Equal per-segment width. Each glyph sits centered in its own slot, so this doubles as the
