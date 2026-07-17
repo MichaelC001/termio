@@ -182,7 +182,7 @@ struct FileBrowserView: View {
         }
         .padding(.leading, 14)
         .padding(.trailing, 8)
-        .padding(.vertical, 6)
+        .padding(.vertical, 3)
     }
 
     /// Seeds the switcher's Changes badge with the repo's dirty-file count, so it is
