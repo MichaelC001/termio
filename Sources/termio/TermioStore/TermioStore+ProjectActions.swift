@@ -232,13 +232,19 @@ extension TermioStore {
     /// it reappears on relaunch (the shells themselves restart fresh).
     func addScratchTerminal() { addScratchSession(agent: .terminal) }
 
-    /// The agent a bare **New Chat** launches: the last-used scratch-chat agent if
-    /// it is still enabled, else the first enabled coding agent. `nil` only when the
-    /// user has disabled every agent — then New Chat is a no-op (and its menu entry
-    /// hides). The per-agent picker (welcome page, command palette) is where a
-    /// *specific* agent is still chosen; the menus deliberately offer one New Chat.
+    /// The agent a bare **New Chat** launches, resolved in priority order:
+    /// 1. the agent the user pinned in Settings ▸ Agents (`defaultChatAgentID`),
+    /// 2. else "Last used" — the last agent a chat was started with,
+    /// 3. else the first enabled coding agent.
+    /// Every step is guarded by "still enabled", so a pinned or last-used agent that
+    /// is later disabled degrades gracefully instead of launching a hidden agent.
+    /// `nil` only when the user has disabled *every* agent — then New Chat is a no-op
+    /// and its menu entry hides. The per-agent picker (welcome page, command palette)
+    /// is where a *specific* agent is still chosen; the menus offer one New Chat.
     func defaultChatAgent() -> AgentPreset? {
         let enabled = enabledAgentPresets(settings).filter { $0 != .terminal }
+        if let id = settings.defaultChatAgentID,
+           let pinned = enabled.first(where: { $0.id == id }) { return pinned }
         if let id = settings.lastChatAgentID,
            let last = enabled.first(where: { $0.id == id }) { return last }
         return enabled.first

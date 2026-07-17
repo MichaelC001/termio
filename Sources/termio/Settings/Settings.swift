@@ -103,6 +103,7 @@ final class AppSettings: ObservableObject {
         static let projectSortOrder = "sidebar.projectSortOrder"
         static let recentProjects = "welcome.recentProjects"
         static let lastChatAgent = "chats.lastAgent"
+        static let defaultChatAgent = "chats.defaultAgent"
     }
 
     // MARK: Appearance
@@ -155,6 +156,14 @@ final class AppSettings: ObservableObject {
     /// back to the first enabled agent (see `TermioStore.defaultChatAgent`).
     @Published var lastChatAgentID: String? {
         didSet { defaults.set(lastChatAgentID, forKey: Key.lastChatAgent) }
+    }
+
+    /// Which agent "New Chat" launches, chosen in Settings ▸ Agents. `nil` = the
+    /// adaptive "Last used" mode (see `lastChatAgentID`); a specific agent id pins
+    /// it so ⌘N always starts that one. Resolved by `TermioStore.defaultChatAgent`,
+    /// which also falls back gracefully when the pinned agent is later disabled.
+    @Published var defaultChatAgentID: String? {
+        didSet { defaults.set(defaultChatAgentID, forKey: Key.defaultChatAgent) }
     }
 
     /// The most a project can be opened is capped so the Recent column stays a
@@ -391,6 +400,7 @@ final class AppSettings: ObservableObject {
         recentProjects = defaults.data(forKey: Key.recentProjects)
             .flatMap { try? JSONDecoder().decode([RecentProject].self, from: $0) } ?? []
         lastChatAgentID = defaults.string(forKey: Key.lastChatAgent)
+        defaultChatAgentID = defaults.string(forKey: Key.defaultChatAgent)
     }
 
     /// Effective command for an agent: the user's override if it's non-empty,
