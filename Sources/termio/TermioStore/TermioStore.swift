@@ -218,6 +218,10 @@ final class TermioStore: ObservableObject {
     private var settingsObserver: AnyCancellable?
     private var branchObserver: AnyCancellable?
     private var linkObserver: AnyCancellable?
+    private var appActiveObserver: AnyCancellable?
+    /// Debounces the worktree re-scan so a burst of git-dir events (a rebase, a fetch)
+    /// coalesces into one `git worktree list`.
+    private var worktreeReconcileWork: DispatchWorkItem?
     private var linkClickMonitor: Any?
     private let stateFile = StateFile()
     /// Coalesces the ratio-drag flood of `splitGroups` writes into one save.
@@ -330,6 +334,15 @@ final class TermioStore: ObservableObject {
         }
         syncWatchedFolders()
 
+        // Keep the worktree list honest against git, so worktrees made on the CLI show up
+        // and ones removed drop out. Re-scan when the app regains focus (covers a `git
+        // worktree add` run in another terminal) and when a watched git dir changes (covers
+        // one run inside termio). See `reconcileWorktrees`.
+        branchModel.onGitDirectoryChange = { [weak self] in self?.scheduleWorktreeReconcile() }
+        appActiveObserver = NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+            .sink { [weak self] _ in self?.scheduleWorktreeReconcile() }
+        reconcileWorktrees()
+
         startHookMonitoring()
         startSessionControl()
     }
@@ -358,6 +371,58 @@ final class TermioStore: ObservableObject {
             }
         }
         branchModel.setWatched(folders)
+    }
+
+    /// Coalesces a burst of git-directory events into a single re-scan a beat later.
+    private func scheduleWorktreeReconcile() {
+        worktreeReconcileWork?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.reconcileWorktrees() }
+        worktreeReconcileWork = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: item)
+    }
+
+    /// Reconciles every folder project's `worktrees` with what git actually reports:
+    /// worktrees created outside termio (`git worktree add` on the CLI) get added, ones
+    /// removed on the CLI drop out, and termio's own keep their id/metadata. Git is the
+    /// source of truth — the sidebar mirrors the repo rather than a private list.
+    func reconcileWorktrees() {
+        for project in projects where project.kind == .folder {
+            let id = project.id
+            let path = project.path
+            Task { [weak self] in
+                // `nil` means git errored (not a repo, transient) → leave the list untouched.
+                guard let discovered = await WorktreeService.linkedWorktrees(in: path) else { return }
+                await MainActor.run { self?.applyDiscoveredWorktrees(discovered, to: id) }
+            }
+        }
+    }
+
+    /// Merges git's linked-worktree paths into one project's `worktrees`, in git's order.
+    /// A path git no longer reports is pruned — unless a live session still points at it,
+    /// so an in-use worktree never vanishes from under its sessions. Only writes back when
+    /// something actually changed, so a stable repo doesn't churn the persisted tree.
+    private func applyDiscoveredWorktrees(_ discovered: [String], to projectID: Project.ID) {
+        guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
+        let discoveredSet = Set(discovered)
+        let existing = projects[index].worktrees
+        let byPath = Dictionary(existing.map { (Self.standardizedPath($0.path), $0) },
+                                uniquingKeysWith: { first, _ in first })
+        let sessionAnchored = Set(projects[index].sessions.compactMap { $0.worktreePath }
+            .map(Self.standardizedPath))
+
+        // Discovered worktrees first (reusing existing entries to preserve id/createdAt)…
+        var rebuilt = discovered.map { byPath[$0] ?? Worktree(path: $0) }
+        // …then any git-absent entry that still has a session, so it isn't yanked away.
+        for worktree in existing {
+            let std = Self.standardizedPath(worktree.path)
+            if !discoveredSet.contains(std), sessionAnchored.contains(std) { rebuilt.append(worktree) }
+        }
+
+        if projects[index].worktrees != rebuilt { projects[index].worktrees = rebuilt }
+    }
+
+    private static func standardizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
     /// Builds a store from the persisted session tree, falling back to the seed

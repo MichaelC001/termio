@@ -27,6 +27,11 @@ final class BranchModel: ObservableObject {
     /// and keeps that SHA for the tooltip.
     @Published private(set) var detachedFolders: Set<String> = []
 
+    /// Fired on the main thread after a watched folder's git directory changes. The store
+    /// uses it to re-scan for worktrees created/removed outside the app — a `git worktree
+    /// add` in a terminal writes into the primary checkout's `.git`, which this watch sees.
+    var onGitDirectoryChange: (() -> Void)?
+
     private let queue = DispatchQueue(label: "sh.termio.branch", qos: .utility)
     private var watchers: [String: Watcher] = [:]
     /// Pending debounce work items per folder, touched only on `queue`.
@@ -91,6 +96,9 @@ final class BranchModel: ObservableObject {
         let item = DispatchWorkItem { [weak self] in
             self?.pending[folder] = nil
             self?.publish(folder, state: self?.currentBranchState(for: folder))
+            // A ref change is often also a worktree-tree change (add/remove touches the
+            // primary checkout's .git); let the store reconcile its worktree list.
+            DispatchQueue.main.async { self?.onGitDirectoryChange?() }
         }
         pending[folder] = item
         queue.asyncAfter(deadline: .now() + 0.12, execute: item)
