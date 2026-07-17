@@ -2,31 +2,28 @@ import AppKit
 import Foundation
 
 extension TermioStore {
-    /// Adds a session to a project, running in the project's directory.
-    func addSession(to projectID: Project.ID, agent: AgentPreset = .terminal) {
+    /// Adds a session to a project, optionally running in one of its linked
+    /// worktree folders while remaining in the project's flat session roster.
+    func addSession(
+        to projectID: Project.ID,
+        agent: AgentPreset = .terminal,
+        worktreePath: String? = nil
+    ) {
         guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
         let project = projects[index]
         let terminalCount = project.sessions.filter { $0.agent == .terminal }.count
         let title = agent == .terminal
             ? "Terminal \(terminalCount + 1)"
             : agent.displayName
-        let session = Session(title: title, agent: agent)
+        var session = Session(title: title, agent: agent)
+        session.worktreePath = worktreePath
         projects[index].sessions.append(session)
         selectedSessionID = session.id
     }
 
-    /// Creates a fresh *detached* git worktree of the project and adds it to the sidebar
-    /// as its own top-level entry — no session is started (you add those yourself, the
-    /// same way any project offers "New … Session"). The user names it first (a prompt
-    /// pre-filled with the next free `<repo>-worktree-N`); that name becomes both the
-    /// folder under `~/.termio/worktrees/` and the sidebar label, so worktrees stay
-    /// identifiable instead of reading as opaque hashes. The checkout is detached at the
-    /// project's current `HEAD` so a throwaway checkout never locks a branch out of the
-    /// primary one; a branch is materialized later on intent (see
-    /// `docs/design/worktree-creation-lifecycle.md`). Files the repo lists in
-    /// `.worktreeinclude` (`.env` and friends) are copied in so the checkout can run. On
-    /// cancel nothing happens; on failure (not a repo, git error) nothing is added and
-    /// the user is told why.
+    /// Creates a fresh detached checkout and records its folder under the parent
+    /// project. No session is forced into it: the nested header remains available so
+    /// the user can add terminals or agents when ready.
     func addWorktree(from projectID: Project.ID) {
         guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
         let project = projects[index]
@@ -48,33 +45,96 @@ extension TermioStore {
         do {
             try FileManager.default.createDirectory(at: worktreeRoot, withIntermediateDirectories: true)
         } catch {
-            presentWorktreeFailure("Couldn't create the worktrees folder: \(error.localizedDescription)")
+            presentWorktreeFailure(message: "Couldn't create the worktrees folder: \(error.localizedDescription)")
             return
         }
-        guard runGit(["worktree", "add", "--detach", worktreePath, "HEAD"], in: project.path) != nil else {
-            presentWorktreeFailure("git couldn't create a worktree for “\(project.name)”. Is it a git repository with at least one commit?")
+        // Create the worktree on a fresh branch named after it, not detached. A
+        // detached HEAD has no name, so every git-aware surface improvises a different
+        // label for the same checkout — the sidebar node shows the folder name while
+        // the inspector chip and the shell's own prompt show the commit SHA. A named
+        // branch makes all three agree (and the shell prompt is only reachable this
+        // way — zsh reads HEAD itself). The dir name is already collision-free on disk;
+        // the branch needs its own guard, since a branch can exist with no worktree.
+        let branchName = uniqueBranchName(base: dirName, in: project.path)
+        guard runGit(["worktree", "add", "-b", branchName, worktreePath, "HEAD"], in: project.path) != nil else {
+            presentWorktreeFailure(message: "git couldn't create a worktree for “\(project.name)”. Is it a git repository with at least one commit?")
             return
         }
 
         copyWorktreeIncludes(from: project.path, to: worktreePath)
+        projects[index].worktrees.append(Worktree(path: worktreePath))
+    }
 
-        // Surface the worktree as its own top-level sidebar entry: a plain project
-        // rooted at the worktree folder, with no sessions yet. `currentBranch` reports
-        // "HEAD" for a detached checkout, so fall back to the short SHA for a readable
-        // label (the live branch is tracked by BranchModel once it's watched anyway). It
-        // inherits the repo's sandbox posture so a sandboxed project's worktree isn't a
-        // way around the sandbox.
-        let branchLabel = currentBranch(in: worktreePath).flatMap { ref in
-            ref == "HEAD" ? runGit(["rev-parse", "--short", "HEAD"], in: worktreePath) : ref
-        } ?? "—"
-        let worktreeProject = Project(
-            name: dirName,
-            path: worktreePath,
-            branch: branchLabel,
-            sessions: [],
-            sandbox: project.sandbox
-        )
-        projects.append(worktreeProject)
+    /// A branch name free in `repo`, starting from `base` and bumping a `-2`, `-3`, …
+    /// suffix until `git` reports no such ref. `base` is already filesystem-safe
+    /// (hyphenated by `uniqueWorktreeDirName`), which is also valid for a branch name.
+    /// `show-ref --verify --quiet` exits 0 when the ref exists, so a non-nil result
+    /// means "taken".
+    private func uniqueBranchName(base: String, in repo: String) -> String {
+        var candidate = base
+        var counter = 2
+        while runGit(["show-ref", "--verify", "--quiet", "refs/heads/\(candidate)"], in: repo) != nil {
+            candidate = "\(base)-\(counter)"
+            counter += 1
+        }
+        return candidate
+    }
+
+    /// Removes a clean linked checkout, then drops its container and matching flat
+    /// sessions from the parent project. Dirty work always stays on disk and in the
+    /// sidebar so an accidental cleanup cannot discard agent changes.
+    func removeWorktree(_ worktreeID: Worktree.ID, from projectID: Project.ID) {
+        guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }),
+              let worktree = projects[projectIndex].worktrees.first(where: { $0.id == worktreeID })
+        else { return }
+
+        guard let status = runGit(["status", "--porcelain"], in: worktree.path) else {
+            presentWorktreeFailure(
+                title: "Couldn't inspect worktree",
+                message: "git couldn't check “\((worktree.path as NSString).lastPathComponent)” for changes, so it was not removed."
+            )
+            return
+        }
+        guard status.isEmpty else {
+            presentWorktreeFailure(
+                title: "Worktree has changes",
+                message: "Commit or discard the changes in “\((worktree.path as NSString).lastPathComponent)” before removing it."
+            )
+            return
+        }
+        // The branch termio created for this worktree, captured before removal so it can
+        // be tidied afterward. A user who switched branches inside the worktree leaves a
+        // different name here — that is theirs to keep, and the safe delete below won't
+        // touch it if it carries unmerged commits.
+        let branch = runGit(["rev-parse", "--abbrev-ref", "HEAD"], in: worktree.path)
+        guard runGit(["worktree", "remove", worktree.path], in: projects[projectIndex].path) != nil else {
+            presentWorktreeFailure(
+                title: "Couldn't remove worktree",
+                message: "git couldn't remove “\((worktree.path as NSString).lastPathComponent)”."
+            )
+            return
+        }
+
+        let pruneSucceeded = runGit(["worktree", "prune"], in: projects[projectIndex].path) != nil
+        // Best-effort tidy of the auto-created branch. `-d` (not `-D`) refuses to drop a
+        // branch with unmerged commits, so real work is never lost — the branch simply
+        // stays. Skips a detached HEAD ("HEAD") and any failure is silent.
+        if let branch, branch != "HEAD" {
+            runGit(["branch", "-d", branch], in: projects[projectIndex].path)
+        }
+        let sessionIDs = projects[projectIndex].sessions
+            .filter { $0.worktreePath == worktree.path }
+            .map(\.id)
+        for sessionID in sessionIDs { closeSession(sessionID) }
+        if let updatedProjectIndex = projects.firstIndex(where: { $0.id == projectID }) {
+            projects[updatedProjectIndex].worktrees.removeAll { $0.id == worktreeID }
+        }
+        if !pruneSucceeded {
+            presentWorktreeFailure(
+                title: "Worktree removed",
+                message: "The folder was removed, but git couldn't prune its stale worktree metadata."
+            )
+        }
     }
 
     /// Copies the git-ignored files a repo lists in `.worktreeinclude` into a freshly
@@ -114,7 +174,7 @@ extension TermioStore {
     private func promptForWorktreeName(defaultName: String) -> String? {
         let alert = NSAlert()
         alert.messageText = "New Worktree"
-        alert.informativeText = "Name the worktree. It's created from HEAD and added to the sidebar as its own project until you remove it."
+        alert.informativeText = "Name the worktree. A new branch of this name is created from HEAD and nested under this project."
         alert.addButton(withTitle: "Create")
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
@@ -150,11 +210,14 @@ extension TermioStore {
         return candidate
     }
 
-    /// Reports a worktree-creation failure as a simple warning alert. Kept here so both
-    /// the failure paths above surface the reason rather than silently doing nothing.
-    private func presentWorktreeFailure(_ message: String) {
+    /// Reports a worktree lifecycle failure instead of leaving an operation's
+    /// partial or refused outcome silent.
+    private func presentWorktreeFailure(
+        title: String = "Couldn't create worktree session",
+        message: String
+    ) {
         let alert = NSAlert()
-        alert.messageText = "Couldn't create worktree session"
+        alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.runModal()
@@ -169,6 +232,31 @@ extension TermioStore {
     /// it reappears on relaunch (the shells themselves restart fresh).
     func addScratchTerminal() { addScratchSession(agent: .terminal) }
 
+    /// The agent a bare **New Chat** launches, resolved in priority order:
+    /// 1. the agent the user pinned in Settings ▸ Agents (`defaultChatAgentID`),
+    /// 2. else "Last used" — the last agent a chat was started with,
+    /// 3. else the first enabled coding agent.
+    /// Every step is guarded by "still enabled", so a pinned or last-used agent that
+    /// is later disabled degrades gracefully instead of launching a hidden agent.
+    /// `nil` only when the user has disabled *every* agent — then New Chat is a no-op
+    /// and its menu entry hides. The per-agent picker (welcome page, command palette)
+    /// is where a *specific* agent is still chosen; the menus offer one New Chat.
+    func defaultChatAgent() -> AgentPreset? {
+        let enabled = enabledAgentPresets(settings).filter { $0 != .terminal }
+        if let id = settings.defaultChatAgentID,
+           let pinned = enabled.first(where: { $0.id == id }) { return pinned }
+        if let id = settings.lastChatAgentID,
+           let last = enabled.first(where: { $0.id == id }) { return last }
+        return enabled.first
+    }
+
+    /// Starts one scratch chat with the default agent — the single action behind
+    /// File ▸ New Chat (⌘N), the `+` menu's New Chat, and the Chats section header.
+    func addDefaultChat() {
+        guard let agent = defaultChatAgent() else { return }
+        addScratchSession(agent: agent)
+    }
+
     /// Opens a fresh scratch session that isn't tied to a real project — the welcome
     /// page's agent chips and the `+` button both land here.
     ///
@@ -177,33 +265,35 @@ extension TermioStore {
     /// expected and harmless. An **agent**, though, must never be handed `$HOME` as
     /// its working directory: an autonomous agent there can read and write the user's
     /// whole home (`~/.ssh`, `~/Documents`, …). So agents get a dedicated, scoped
-    /// scratch workspace at `~/.termio/default/` (created on first use, sibling to
+    /// scratch workspace at `~/.termio/chats/` (created on first use, sibling to
     /// the existing `~/.termio/worktrees/`), a clean directory that's safe to let an
     /// agent loose in.
     ///
-    /// Each destination gathers its loose sessions under one persistent section, so a
-    /// second click just grows another row there and selects it, rather than piling
-    /// up duplicate sections.
+    /// Each destination gathers its loose sessions under one persistent section — the
+    /// `.terminals` funnel for shells, the `.chats` funnel for agents — so a second
+    /// click just grows another row there and selects it, rather than piling up
+    /// duplicate sections.
     func addScratchSession(agent: AgentPreset = .terminal) {
-        // Loose terminals gather in the `.terminals` container (matched by kind,
-        // not path — its `path` is just the `$HOME` spawn fallback); scratch
-        // agents keep matching their scoped workspace by path.
+        // Both funnels are matched by kind, not path: the `.terminals` container's
+        // `path` is just the `$HOME` spawn fallback, and the single `.chats` container
+        // gathers every agent (Claude, Codex, …) that spawns in the scratch workspace.
         let path = scratchWorkspacePath(for: agent)
-        let existing = agent == .terminal
-            ? projects.first(where: { $0.kind == .terminals })
-            : projects.first(where: { $0.path == path })
-        if let existing {
+        // Remember the agent behind a bare "New Chat", so the single ⌘N / `+` / menu
+        // action relaunches whatever you actually use (see `defaultChatAgent`).
+        if agent != .terminal { settings.lastChatAgentID = agent.rawValue }
+        let containerKind: ProjectKind = agent == .terminal ? .terminals : .chats
+        if let existing = projects.first(where: { $0.kind == containerKind }) {
             addSession(to: existing.id, agent: agent)
             return
         }
         let title = agent == .terminal ? "Terminal 1" : agent.displayName
         let session = Session(title: title, agent: agent)
         let project = Project(
-            name: agent == .terminal ? "Terminals" : (path as NSString).lastPathComponent,
+            name: agent == .terminal ? "Terminals" : "Chats",
             path: path,
             branch: currentBranch(in: path) ?? "—",
             sessions: [session],
-            kind: agent == .terminal ? .terminals : .folder
+            kind: containerKind
         )
         projects.append(project)
         selectedSessionID = session.id
@@ -257,18 +347,18 @@ extension TermioStore {
     }
 
     /// The working directory for a scratch session: `~` for a plain terminal, and the
-    /// scoped `~/.termio/default/` workspace for any agent (created on demand). See
+    /// scoped `~/.termio/chats/` workspace for any agent (created on demand). See
     /// `addScratchSession` for why agents are kept out of `$HOME`.
     private func scratchWorkspacePath(for agent: AgentPreset) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
         guard agent != .terminal else { return home.path }
-        let workspace = home.appendingPathComponent(".termio/default", isDirectory: true)
+        let workspace = home.appendingPathComponent(".termio/chats", isDirectory: true)
         try? FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         seedScratchWorkspaceDocs(at: workspace)
         return workspace.standardizedFileURL.path
     }
 
-    /// Drops a `CLAUDE.md` and an `AGENTS.md` into the default scratch workspace so an
+    /// Drops a `CLAUDE.md` and an `AGENTS.md` into the scratch workspace so an
     /// agent that spawns here reads, up front, that this is a throwaway scratchpad —
     /// not a real project to explore or a place to put anything it should keep. Both
     /// filenames are seeded because agents split on the convention (`CLAUDE.md` for
@@ -278,7 +368,7 @@ extension TermioStore {
         let guidance = """
         # termio scratch workspace
 
-        This is termio's default scratch workspace (`~/.termio/default`) — an empty,
+        This is termio's scratch workspace (`~/.termio/chats`) — an empty,
         throwaway space for quick one-off sessions that aren't tied to any project.
 
         - Treat it as a clean scratchpad: nothing important lives here, and files you
@@ -325,6 +415,30 @@ extension TermioStore {
     func togglePinned(_ id: Project.ID) {
         guard let index = projects.firstIndex(where: { $0.id == id }) else { return }
         projects[index].pinned.toggle()
+    }
+
+    /// Pins or unpins a session into the sidebar's top "Pinned" working set. The row
+    /// stays in its normal tree spot; the pin adds a shortcut up top. Persists via
+    /// `projects`' `didSet`.
+    func toggleSessionPinned(_ id: Session.ID) {
+        for pi in projects.indices {
+            if let si = projects[pi].sessions.firstIndex(where: { $0.id == id }) {
+                projects[pi].sessions[si].pinned.toggle()
+                return
+            }
+        }
+    }
+
+    /// Pins or unpins a worktree into the sidebar's top "Pinned" working set (as a
+    /// mini-block of its own sessions). The worktree stays nested under its project
+    /// too; the pin adds the top shortcut. Persists via `projects`' `didSet`.
+    func toggleWorktreePinned(_ id: Worktree.ID) {
+        for pi in projects.indices {
+            if let wi = projects[pi].worktrees.firstIndex(where: { $0.id == id }) {
+                projects[pi].worktrees[wi].pinned.toggle()
+                return
+            }
+        }
     }
 
     /// Presents a folder picker. `sandboxed` decides whether the opened project runs

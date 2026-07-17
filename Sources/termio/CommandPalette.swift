@@ -248,6 +248,14 @@ struct CommandPaletteView: View {
                              symbol: "plus.rectangle", shortcut: keys.display(for: .newTerminal)) {
             $0.addScratchTerminal()
         })
+        // The single "New Chat" verb (default agent, always the scratch Chats
+        // funnel), carrying its ⌘N shortcut — the palette twin of File ▸ New Chat.
+        if store.defaultChatAgent() != nil {
+            actions.append(.init(id: "new-chat", title: "New Chat",
+                                 symbol: "plus.bubble", shortcut: keys.display(for: .newChat)) {
+                $0.addDefaultChat()
+            })
+        }
         // One "New … Session" verb per enabled agent — in the selected
         // project when there is one, else the scratch workspace (the welcome
         // page's behaviour).

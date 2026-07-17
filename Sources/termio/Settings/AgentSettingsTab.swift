@@ -38,6 +38,11 @@ struct AgentSettingsTab: View {
             } header: {
                 SectionHeaderLabel(title: "Orchestration")
             }
+            Section {
+                DefaultChatAgentRow(settings: settings)
+            } header: {
+                SectionHeaderLabel(title: "New chat")
+            }
             ForEach(AgentPreset.allCases) { preset in
                 Section {
                     AgentRow(settings: settings, preset: preset)
@@ -45,6 +50,49 @@ struct AgentSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// The "New chat" default-agent picker: which agent the single New Chat action
+/// (⌘N, the `+` menu, the Chats header) launches. "Last used" keeps it adaptive
+/// (the last agent you started a chat with); picking a specific agent pins it.
+/// Only enabled agents are offered — a disabled one can't run a chat — and a
+/// previously-pinned agent that is now disabled reads back as "Last used".
+private struct DefaultChatAgentRow: View {
+    @ObservedObject var settings: AppSettings
+
+    /// Empty-string tag stands for "Last used" (agent ids are always non-empty),
+    /// so the picker can carry the `nil` choice as a plain `String` selection.
+    private let lastUsedTag = ""
+
+    private var chatAgents: [AgentPreset] {
+        enabledAgentPresets(settings).filter { $0 != .terminal }
+    }
+
+    var body: some View {
+        Picker(selection: selection) {
+            Text("Last used").tag(lastUsedTag)
+            ForEach(chatAgents) { Text($0.displayName).tag($0.id) }
+        } label: {
+            SettingsLabel(
+                symbol: "plus.bubble",
+                title: "Default agent",
+                subtext: "The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with."
+            )
+        }
+    }
+
+    /// Reads back the pinned id only while that agent is still enabled; otherwise
+    /// falls to "Last used" so the control never shows a stale, unlaunchable choice.
+    private var selection: Binding<String> {
+        Binding(
+            get: {
+                if let id = settings.defaultChatAgentID,
+                   chatAgents.contains(where: { $0.id == id }) { return id }
+                return lastUsedTag
+            },
+            set: { settings.defaultChatAgentID = $0 == lastUsedTag ? nil : $0 }
+        )
     }
 }
 

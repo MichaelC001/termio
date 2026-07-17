@@ -81,6 +81,41 @@ until the official packages land.
   (`status: approved`). *Trigger: after the current `session-share.md` mainline
   ships.*
 
+## Agent resume identity — non-Claude agents (Phases 2–4)
+
+Phase 1 shipped: Claude Code's resume pin (`Session.resumeID`) now advances to the
+live conversation when `/clear` rotates it, via `reconcileResumeID` fed by the hook
+transcript path. Design + phasing in
+[agent-resume-identity](../design/agent-resume-identity.md) (`status: approved`).
+The rest is gated on an audit that a first attempt couldn't complete.
+
+- [ ] **Audit Codex / OpenCode / Pi rotation (Phase 2)** — empirically confirm, per
+  agent, whether its clear/`new` command rotates the on-disk session id (and thus
+  whether the resume target goes stale), and what per-session signal termio receives
+  (hook field vs scan-only). First attempt (2026-07-16) stalled: a throwaway Codex
+  session driven via `termio sessions` never accepted input (stayed `idle`, wrote no
+  rollout — a login/trust/model gate on TUI launch), so no rotation data was
+  captured. *Trigger: when the three agents are confirmed logged-in and drivable via
+  `sessions send` — or audit each by hand (launch, run its clear, `find -newer` its
+  store dir) outside termio.*
+- [ ] **Generalize the pin advance to the confirmed agents (Phase 3)** — for
+  filename-encoded ids (Pi, `<timestamp>_<id>.jsonl`) wire its transcript discovery
+  and enable the `piStyle` case of `ResumeStyle.conversationID(fromTranscriptPath:)`.
+  For in-file ids (Codex/OpenCode), `AgentSessionStore` discovery today binds to the
+  **earliest** session after launch (`bestMatch`) to avoid grabbing a sibling
+  session's file; advancing it to the live session needs a sibling-safety guard
+  (agent-reported id, or cwd-match + single-candidate) rather than a blind
+  earliest→newest flip. *Trigger: for each agent the Phase 2 audit shows actually
+  rotates — and only those.*
+- [ ] **Reopen-before-hook safety net (Phase 4)** — if a tab is closed after `/clear`
+  but before any hook advanced the pin, `resolveLaunch` still resumes the stale id
+  (the pre-`/clear` `.jsonl` survives, so `pinnedConversationExists` stays true).
+  Razor-thin window (a hook fires on essentially every turn incl. `/clear`), and a
+  robust fix reintroduces the sibling-session ambiguity Phase 3 has to solve — so
+  deferred rather than added speculatively. *Trigger: only if the window is observed
+  in practice, and ideally after Phase 3's sibling-safe reconciliation exists to
+  reuse.*
+
 ## Repo / infra
 
 - [ ] **Branch protection for `dev` + `main`** — decided rules: `main` = block

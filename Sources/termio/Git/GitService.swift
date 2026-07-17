@@ -13,9 +13,10 @@ enum GitService {
     }
 
     /// The unified-diff rows for one changed file (staged + unstaged vs `HEAD`, or the
-    /// whole file for an untracked one).
-    static func diffRows(for change: GitChange, in repoRoot: String) async -> [DiffRow] {
-        await offMain { parseDiff(loadDiffText(change, repoRoot)) }
+    /// whole file for an untracked one). With `commit` set, the file's diff *at that
+    /// commit* instead — the History tab's per-file view.
+    static func diffRows(for change: GitChange, in repoRoot: String, commit: String? = nil) async -> [DiffRow] {
+        await offMain { parseDiff(loadDiffText(change, repoRoot, commit: commit)) }
     }
 
     /// The raw unified-diff text for one changed file — what "Copy Diff" puts on the
@@ -31,6 +32,67 @@ enum GitService {
     @discardableResult
     static func discard(_ change: GitChange, in repoRoot: String) async -> Bool {
         await offMain { discardChanges(change, repoRoot) }
+    }
+
+    // MARK: History
+
+    /// The most recent commits on the current branch (newest first), for the History tab.
+    static func log(in repoRoot: String, limit: Int = 100) async -> [GitCommit] {
+        await offMain { loadLog(repoRoot, limit) }
+    }
+
+    /// The files touched by one commit, with their status letters — the rows shown when a
+    /// history entry is expanded. Each carries the file's per-commit add/delete counts.
+    static func commitChanges(_ sha: String, in repoRoot: String) async -> [GitChange] {
+        await offMain { loadCommitChanges(sha, repoRoot) }
+    }
+
+    /// Parses `git log` into commit rows. Fields are joined by US (`\u{1f}`) and records
+    /// by RS (`\u{1e}`), so subjects with spaces/tabs survive intact.
+    private static func loadLog(_ repoRoot: String, _ limit: Int) -> [GitCommit] {
+        let format = ["%H", "%h", "%s", "%an", "%ad"].joined(separator: "\u{1f}") + "\u{1e}"
+        guard let out = run(
+            ["log", "-n", String(limit), "--date=relative", "--pretty=format:\(format)"],
+            in: repoRoot
+        ) else { return [] }
+        return out.components(separatedBy: "\u{1e}").compactMap { record in
+            let fields = record.trimmingCharacters(in: .whitespacesAndNewlines)
+                .components(separatedBy: "\u{1f}")
+            guard fields.count == 5, !fields[0].isEmpty else { return nil }
+            return GitCommit(sha: fields[0], shortSHA: fields[1], subject: fields[2],
+                             author: fields[3], relativeDate: fields[4])
+        }
+    }
+
+    /// The changed files of a single commit. `--name-status` gives the status letter and
+    /// path; `--numstat` gives the counts — merged by path. `--format=` drops the commit
+    /// header so only the file lines remain. The first-parent diff (`<sha>^!`) is used so
+    /// a merge shows a sensible file set; the root commit falls back to the empty tree.
+    private static func loadCommitChanges(_ sha: String, _ repoRoot: String) -> [GitChange] {
+        var order: [String] = []
+        var status: [String: GitFileStatus] = [:]
+        if let out = run(["show", "--name-status", "--format=", "-M", sha], in: repoRoot) {
+            for line in out.split(separator: "\n") {
+                let parts = line.split(separator: "\t")
+                guard let code = parts.first?.first, parts.count >= 2 else { continue }
+                let path = String(parts.last!)   // for renames the new path is last
+                if status[path] == nil { order.append(path) }
+                status[path] = GitFileStatus(code: code)
+            }
+        }
+        var counts: [String: (Int, Int)] = [:]
+        if let out = run(["show", "--numstat", "--format=", sha], in: repoRoot) {
+            for line in out.split(separator: "\n") {
+                let parts = line.split(separator: "\t", maxSplits: 2)
+                guard parts.count == 3 else { continue }
+                counts[String(parts[2])] = (Int(parts[0]) ?? 0, Int(parts[1]) ?? 0)
+            }
+        }
+        return order.map { path in
+            let c = counts[path] ?? (0, 0)
+            return GitChange(path: path, status: status[path] ?? .modified, isUntracked: false,
+                             additions: c.0, deletions: c.1)
+        }
     }
 
     // MARK: Loading
@@ -136,7 +198,13 @@ enum GitService {
         }
     }
 
-    private static func loadDiffText(_ change: GitChange, _ repoRoot: String) -> String {
+    private static func loadDiffText(_ change: GitChange, _ repoRoot: String, commit: String? = nil) -> String {
+        // History file row: the file's change within one commit. `--format=` strips the
+        // commit header so parseDiff sees only the unified diff.
+        if let commit {
+            return run(["show", "--format=", "-M", commit, "--", change.path],
+                       in: repoRoot, ignoreStatus: true) ?? ""
+        }
         if change.isUntracked {
             // `--no-index` exits non-zero when the files differ, which is the normal
             // case here, so the status is ignored.

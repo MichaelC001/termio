@@ -636,6 +636,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.addScratchTerminal()
     }
 
+    /// File ▸ New Chat (⌘N) — starts one scratch chat with the default agent (your
+    /// last-used, else the first enabled; see `TermioStore.addDefaultChat`), grouped
+    /// under the Chats section. Reached via the responder chain.
+    @objc func newChatDefault(_ sender: Any?) {
+        store.addDefaultChat()
+    }
+
     /// File ▸ New SSH Connection… — prompts for a host (`~/.ssh/config` alias or
     /// `user@host`) and opens a terminal running `ssh` to it, grouped under the same
     /// Terminals section as loose shells. Reached via the responder chain.
@@ -1062,16 +1069,23 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
         settings.projectSortOrder = order
     }
 
-    /// Builds the `+` pull-down for the `.newTerminal` toolbar item: exactly the
-    /// two ways something new enters the sidebar — a loose terminal (the Terminals
-    /// section) or a folder opened as a project. Agents are deliberately not here:
-    /// they're started *inside* a project (header buttons / context menu), and the
-    /// welcome page's chips already cover the scratch case.
+    /// Builds the `+` pull-down for the `.newTerminal` toolbar item: the ways something
+    /// new enters the sidebar without opening a folder — a loose terminal (Terminals
+    /// section), a loose agent chat (Chats section), an SSH terminal, or a folder opened
+    /// as a project. "New Chat" is a single action (not an agent submenu — see
+    /// `TermioStore.addDefaultChat`); the specific-agent picker lives on the welcome
+    /// page and in the command palette. Hidden when every agent is disabled.
     func makeNewSessionMenu() -> NSMenu {
         let menu = NSMenu()
         let terminal = NSMenuItem(title: "New Terminal", action: #selector(newTerminal(_:)), keyEquivalent: "")
         terminal.target = self
         menu.addItem(terminal)
+        if store.defaultChatAgent() != nil {
+            let chat = NSMenuItem(title: "New Chat", action: #selector(newChatDefault(_:)), keyEquivalent: "")
+            chat.target = self
+            chat.applyShortcut(for: .newChat)  // shows ⌘N (or the user's override) in the pull-down
+            menu.addItem(chat)
+        }
         let ssh = NSMenuItem(title: "New SSH Connection…", action: #selector(newSSHConnection(_:)), keyEquivalent: "")
         ssh.target = self
         menu.addItem(ssh)
@@ -1082,6 +1096,7 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     }
 
     @objc private func newTerminal(_ sender: Any?) { store.addScratchTerminal() }
+    @objc func newChatDefault(_ sender: Any?) { store.addDefaultChat() }
     @objc private func newSSHConnection(_ sender: Any?) { store.presentSSHConnectPanel() }
     @objc private func openFolder(_ sender: Any?) { store.presentOpenProjectPanel() }
 
@@ -1394,6 +1409,13 @@ private func buildMainMenu() -> NSMenu {
         withTitle: "New Terminal",
         action: #selector(AppDelegate.newScratchTerminal(_:)),
         command: .newTerminal
+    )
+    // New Chat (⌘N by default, rebindable in Settings ▸ Keyboard) — starts one
+    // scratch chat with your last-used agent. A single action, matching New Terminal.
+    fileMenu.addItem(
+        withTitle: "New Chat",
+        action: #selector(AppDelegate.newChatDefault(_:)),
+        command: .newChat
     )
     fileMenu.addItem(
         withTitle: "New SSH Connection…",

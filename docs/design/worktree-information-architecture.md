@@ -1,14 +1,97 @@
 ---
 title: Worktree information architecture
-status: implemented (phase 1)
+status: approved
 type: design
-updated: 2026-06-28
+created: 2026-06-28
+updated: 2026-07-16
+related:
+  - worktree-creation-lifecycle.md
 ---
 
 # Worktree information architecture
 
-How termio presents git worktrees in the sidebar, and why. Phase 1 (the IA + live
-branch) is implemented and verified; later interaction work is listed at the end.
+How termio presents git worktrees in the sidebar, and why. The revised model
+(2026-07-16) is at the top; the original derived-grouping design and its rules
+follow it for context and are partly superseded — read the revised section first.
+
+## Revised model (2026-07-16): a worktree is a folder node = a project header one level down
+
+Superseding the "derived grouping, never stored" storage decision in *Implementation*
+below. After designing the interaction and surveying Codex / Conductor / GitKraken /
+JetBrains Air / Crystal (see `worktree-creation-lifecycle.md`), the worktree settled
+into the plainest possible shape: **a Finder-style folder node under the project, and
+that node behaves exactly like a project header.**
+
+### Presentation
+
+- **Folder node, git-marked folder glyph, uppercase label.** A worktree renders as a
+  collapsible folder row carrying the **git-marked folder glyph** (`HugeIcon.folderGit`
+  — Hugeicons "folder-git": the same folder-01 body as a project, with a git commit
+  node inside). This is the settled middle of two rejected extremes (both tried
+  2026-07-16): a **git-branch fork** glyph read as a dead leaf, not a container; a
+  **plain folder** glyph was indistinguishable from a sub-project. The git-marked
+  folder reads as a *container linked to the repo* — a worktree — at a glance. Its
+  label is the **live** branch name (detached → the user-given worktree name; short
+  SHA in the tooltip), shown **verbatim** in the same 11pt medium section-header font
+  as the project — but **not uppercased** (reversed 2026-07-16 after a design-validation
+  pass): the label is a git ref, which is case-sensitive, lowercase by convention, and
+  copy-pasteable into `git checkout`, so uppercasing it (`MY-FEATURE` for `my-feature`)
+  would display a name the user cannot actually type — and no surveyed tool
+  (Conductor/GitKraken/VS Code/GitLens) uppercases branch names. The project name *is*
+  uppercased — a folder-name section label is less type-critical than a ref. A
+  worktree's container-ness is carried by the folder-git glyph + indent, not by casing.
+  termio does **not** add a `>`/`⌄` disclosure triangle; the row toggles on tap. (The
+  git-marked glyph has no open/closed variant, so unlike the project folder it doesn't
+  swap on collapse — the child rows appearing/disappearing carry that cue.)
+- **Shallow primary.** The project header *is* the primary checkout. Its sessions sit
+  directly under it at the normal indent (16); only a worktree's sessions step one
+  level deeper (`SessionRow.leadingIndent` 16 → 32). The common no-worktree project
+  never gains depth — the third level is opt-in, paid only by worktree users.
+- **Three-level tree — decided, keep it (2026-07-16).** Project → worktree → session
+  is three levels, one past Apple's HIG "avoid more than two levels in a sidebar." A
+  design-validation pass flagged this as the main HIG deviation and offered the
+  sanctioned alternative (push the 3rd level into a content-area session list). That
+  alternative was **rejected**: termio already built and dropped a content-area session
+  tab strip as redundant (see `termio-session-tabs-dropped`), and the folder-tree is
+  the one pattern every user already knows (Finder, Xcode navigator) while keeping
+  every agent one click away — which a terminal you tab between agents in needs. So the
+  depth is a **deliberate, accepted override**, held together by strong container
+  affordances (the folder-git glyph + the shallow-primary indent step). The
+  GitKraken-style **card deck** stays a *later* "Agents" triage surface for the
+  5+-worktree case (see Deferred), not the primary navigation.
+
+### Behavior — the worktree node is a session container
+
+The worktree row reuses **`ProjectHeader`**, retargeted at the worktree folder:
+
+- **Hover** → the same quick-add cluster the project header shows: one icon per
+  enabled coding agent **plus New Terminal**. One click drops that session into *this*
+  worktree (sets its `worktreePath`).
+- **Right-click** → "New {Agent} Session" / "New Terminal", then the worktree
+  lifecycle: Reveal in Finder · Bring changes to main (the Air-style hand-off, see the
+  lifecycle doc) · **Remove worktree** (refused if dirty).
+
+So a worktree holds N sessions (terminal + agents), just like a project — which is why
+it's a collapsible container, not a leaf. Implementation is literally `ProjectHeader`
+with the folder glyph swapped for the branch glyph and its add-actions pointed at the
+worktree folder; **reuse the component, don't rebuild it.**
+
+### Storage — a light worktree entity (revises the "never stored" call below)
+
+Making the worktree a **container with its own add-buttons** breaks the derived-only
+approach: an **empty** worktree (created, no session yet) must still render with its
+buttons, so it has to exist independently of any session.
+
+Minimal revision: add `Project.worktrees: [Worktree]` where `Worktree = { id, path,
+createdAt }` (branch stays a live label from `BranchModel`, never stored). **Sessions
+stay flat** on `Project.sessions` and attach by `worktreePath`, so the `termio
+sessions` control plane and every session lookup still see one flat list — the exact
+thing the derived approach was protecting. Rendering: a node per `worktrees` entry,
+sessions grouped under it by matching `worktreePath`.
+
+This resolves the creation question in favor of **empty-then-fill**: "New Worktree"
+creates the folder entity (and its `git worktree add`), and you then add terminals /
+agents into it — creation no longer has to force a session.
 
 ## The core insight: a worktree *is* a folder
 
@@ -66,7 +149,17 @@ treat worktrees as folders/roots under the repo).
 5. **Empty worktrees** (on disk, no session) belong in a future "Manage worktrees…"
    surface, not the main list — the main list answers "where are my agents."
 
-## Implementation (phase 1 — shipped)
+## Implementation (original phase-1 design — partly superseded, not currently wired)
+
+> **Status (2026-07-16).** Two corrections to what follows. (1) The storage decision
+> below (derived grouping, never stored) is replaced by the light `worktrees` entity
+> in *Revised model* above — an empty container has to persist. (2) The
+> `WorktreeHeader` / `worktreeGroups(for:)` render path described here is **not
+> present in the current `SidebarView.swift`** — only `BranchModel` and the
+> `SessionRow.leadingIndent` 16/32 scaffolding remain, and `addWorktree` currently
+> appends a flat top-level project (see `worktree-creation-lifecycle.md`). The
+> grouping render still needs building against the revised model. Kept below for the
+> BranchModel/live-branch mechanics, which stand.
 
 Storage stays **flat**: `Project { sessions: [Session] }`, `Session.worktreePath`.
 "Worktree" is a **derived grouping over sessions**, *not* a stored entity. Each
@@ -114,3 +207,31 @@ These were designed but intentionally not built in phase 1:
    `docs/maketing/` discussion — decision moved off the hot path).
 4. **Manage-worktrees view** listing all worktrees incl. empty ones, with cleanup.
 5. **Collapsible folder nodes** + ahead/behind or dirty markers, if wanted.
+
+### Deferred surfaces from the 2026-07-16 competitive survey
+
+Kept out of the sidebar to hold the "small surface" line; revisit when people
+actually run many parallel worktrees:
+
+6. **"Agents" card deck** (GitKraken Agent-Sessions / Cursor agent panel / Antigravity
+   Mission Control) — a second, HIG-sanctioned surface where one card = one
+   worktree + agent, with rich anatomy (agent · live branch · `+n/−n` · dirty · status
+   bar with a 🔔 "waiting for input" state · uzi-style dev-server URL · merged-PR pill).
+   This is the home for the third level when the sidebar tree gets crowded, and for
+   **empty worktrees** that have no session to nest.
+7. **Mac "Needs You" strip** — mirror termio's existing iOS cross-project attention
+   queue (see the iOS home design) so a blocked/done agent in *any* worktree floats to
+   the top; navigate by attention, not by tree position. Reuse the iOS pattern rather
+   than invent a Mac-specific one.
+8. **Per-worktree run hygiene** — a reserved port block exposed as `TERMIO_PORT`
+   (Conductor's `CONDUCTOR_PORT`+9) and setup/cleanup hooks, so N agents' dev servers
+   don't collide. Belongs to `worktree-creation-lifecycle.md`; noted here because it
+   surfaces in the card deck's dev-server URL.
+
+### Coexistence constraint (must not break)
+
+The sidebar already groups rows once — the split-group `┌├└` brackets in the leading
+gutter (`SidebarView.splitLinkMarks` / `SplitLinkGlyph`). Worktree folder nodes add a
+second grouping. The indent gutter and the branch node must be designed so the two
+cues read cleanly together (a worktree's sessions can also be split-grouped) rather
+than turning the gutter into competing lines.

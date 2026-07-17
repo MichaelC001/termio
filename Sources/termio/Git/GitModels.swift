@@ -10,6 +10,13 @@ enum InspectorTab: Hashable, Sendable {
     case files, search, changes, info
 }
 
+/// The git pane's own inner switch: the working-tree changes, or the commit
+/// history — GitHub Desktop's Changes / History split. Committing lives in the
+/// terminal; the GUI is for staging, reviewing diffs, and reading history.
+enum GitPaneMode: Hashable, Sendable {
+    case changes, history
+}
+
 /// One changed file in the working tree, as reported by `git status`. `path` is
 /// POSIX, relative to the repo root (so it may contain `/`); `name` is just the
 /// last component for the row label.
@@ -22,6 +29,22 @@ struct GitChange: Identifiable, Hashable, Sendable {
 
     var id: String { path }
     var name: String { (path as NSString).lastPathComponent }
+}
+
+/// One commit in the branch's history, parsed from `git log`. Shown as a row in
+/// the git pane's History tab; selecting it lists the files it touched, each of
+/// which opens that commit's diff over the terminal.
+struct GitCommit: Identifiable, Hashable, Sendable {
+    /// Full 40-char SHA — used to fetch the commit's files and per-file diff.
+    let sha: String
+    /// Abbreviated SHA for the row label.
+    let shortSHA: String
+    let subject: String
+    let author: String
+    /// Human "3 hours ago" string straight from `git log --date=relative`.
+    let relativeDate: String
+
+    var id: String { sha }
 }
 
 /// The change kind shown as a single-letter badge, colored after GitHub Desktop /
@@ -76,6 +99,10 @@ enum GitFileStatus: Hashable, Sendable {
 struct GitDiffRequest: Hashable, Sendable {
     let repoRoot: String
     let change: GitChange
+    /// When set, the overlay shows the file's diff *as of that commit*
+    /// (`git show <sha>`) rather than the working-tree diff — the History tab's
+    /// file rows carry the commit they belong to.
+    var commit: String? = nil
 
     var name: String { change.name }
 }

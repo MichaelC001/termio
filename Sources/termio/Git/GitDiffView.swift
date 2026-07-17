@@ -47,6 +47,13 @@ struct GitDiffView: View {
                     .truncationMode(.head)
             }
             Spacer(minLength: 8)
+            // For a history diff, tag the header with the commit it belongs to.
+            if let commit = request.commit {
+                Text("@ \(commit.prefix(7))")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(.trailing, 2)
+            }
             if request.change.additions > 0 {
                 Text("+\(request.change.additions)")
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
@@ -110,7 +117,7 @@ struct GitDiffView: View {
     }
 
     private func load() async {
-        let parsed = await GitService.diffRows(for: request.change, in: request.repoRoot)
+        let parsed = await GitService.diffRows(for: request.change, in: request.repoRoot, commit: request.commit)
         rows = parsed
         isLoading = false
     }
