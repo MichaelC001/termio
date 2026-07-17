@@ -9,14 +9,16 @@ import Foundation
 final class FileNode: Identifiable {
     let url: URL
     let isDirectory: Bool
+    let showHidden: Bool
     var id: URL { url }
     var name: String { url.lastPathComponent }
 
     private var loadedChildren: [FileNode]?
 
-    init(url: URL, isDirectory: Bool) {
+    init(url: URL, isDirectory: Bool, showHidden: Bool) {
         self.url = url
         self.isDirectory = isDirectory
+        self.showHidden = showHidden
     }
 
     /// `nil` for a file (so the outline draws no disclosure triangle); a folder's
@@ -25,7 +27,7 @@ final class FileNode: Identifiable {
     var children: [FileNode]? {
         guard isDirectory else { return nil }
         if let loadedChildren { return loadedChildren }
-        let contents = FileNode.readContents(of: url)
+        let contents = FileNode.readContents(of: url, showHidden: showHidden)
         loadedChildren = contents
         return contents
     }
@@ -33,25 +35,33 @@ final class FileNode: Identifiable {
     /// Directory entries, folders first then files, each alphabetized the way the
     /// Finder orders names. Hidden entries are dropped (`.git`, dotfiles), as are a
     /// few heavy build directories that would only bloat the tree.
-    private static func readContents(of url: URL) -> [FileNode] {
+    private static func readContents(of url: URL, showHidden: Bool) -> [FileNode] {
         let manager = FileManager.default
+        let options: FileManager.DirectoryEnumerationOptions = showHidden ? [] : [.skipsHiddenFiles]
         guard let entries = try? manager.contentsOfDirectory(
             at: url,
             includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
+            options: options
         ) else { return [] }
 
         return entries
-            .filter { !ignoredNames.contains($0.lastPathComponent) }
+            .filter { entry in
+                let name = entry.lastPathComponent
+                if alwaysIgnored.contains(name) { return false }
+                return !ignoredNames.contains(name)
+            }
             .map { entry in
                 let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-                return FileNode(url: entry, isDirectory: isDirectory)
+                return FileNode(url: entry, isDirectory: isDirectory, showHidden: showHidden)
             }
             .sorted { left, right in
                 if left.isDirectory != right.isDirectory { return left.isDirectory }
                 return left.name.localizedStandardCompare(right.name) == .orderedAscending
             }
     }
+
+    /// Hidden directories that are always noise and should not be shown even if showing hidden files.
+    private static let alwaysIgnored: Set<String> = [".git", ".DS_Store"]
 
     /// Non-hidden directories that are noise in a project tree (the hidden ones —
     /// `.git`, `.DS_Store` — are already excluded by `.skipsHiddenFiles`).

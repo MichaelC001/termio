@@ -25,8 +25,10 @@ struct FileTreeList: View {
         // own `SidebarRowHighlight` as the sole, left-sidebar-matching selection cue.
         List(nodes, children: \.children, selection: $selection) { node in
             FileRow(node: node, font: font, isSelected: selection == node.url, onDrop: onDrop, actions: actions)
+                .listRowSeparator(.hidden)
         }
-        .listStyle(.sidebar)
+        .listStyle(.plain)
+        .padding(.leading, 12)
         // Drop the list's own backing so the terminal-colored background behind it (see
         // `FileBrowserView.body`) shows through — the file column lives in a plain split item, not
         // a panel item, so it carries no system vibrant background of its own.
@@ -77,11 +79,10 @@ private struct FileRow: View {
         }
         // Tighten the generous default sidebar-row height into a denser tree, the
         // way the project sidebar floors its own rows.
-        .padding(.vertical, 1)
-        // Nudge the whole row off the disclosure chevron so a folder name isn't
-        // crowded against the arrow. Applied to both kinds, so folder names and file
-        // icons stay in the same column.
-        .padding(.leading, 6)
+        .padding(.vertical, 0)
+        // Tight padding (2) to minimize the gap between the folder chevron and name,
+        // aligning the child chevron at X=20 directly under the parent text.
+        .padding(.leading, 2)
         // Fill the row so the tap target — and any folder drop target — spans its
         // full width, not just the label's footprint.
         .frame(maxWidth: .infinity, alignment: .leading)

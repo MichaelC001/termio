@@ -38,6 +38,13 @@ struct FileBrowserView: View {
         return store.session(id)?.worktreePath ?? project.path
     }
 
+    private var compactFont: Font {
+        let size = max(10.0, settings.interfaceFontSize - 1.5)
+        return settings.interfaceFontFamily.isEmpty
+            ? .system(size: size)
+            : .custom(settings.interfaceFontFamily, size: size)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             switch store.inspectorTab {
@@ -111,6 +118,9 @@ struct FileBrowserView: View {
                 QLPreviewPanel.shared().reloadData()
             }
         }
+        .onChange(of: browserState.showHiddenFiles) {
+            refresh()
+        }
     }
 
     /// Whether `url` points at a directory — used to open only files on selection.
@@ -125,7 +135,7 @@ struct FileBrowserView: View {
             FileTreeList(
                 nodes: root.children ?? [],
                 selection: $browserState.selection,
-                font: settings.interfaceFont,
+                font: compactFont,
                 onDrop: { sources, destination in receive(sources, into: destination) },
                 rootURL: root.url,
                 actions: treeActions
@@ -170,6 +180,12 @@ struct FileBrowserView: View {
             TreeHeaderButton(codicon: .newFolder, help: "New Folder") {
                 createFolder(in: root.url)
             }
+            TreeHeaderButton(
+                systemName: browserState.showHiddenFiles ? "eye" : "eye.slash",
+                help: browserState.showHiddenFiles ? "Hide Hidden Files" : "Show Hidden Files"
+            ) {
+                browserState.showHiddenFiles.toggle()
+            }
             TreeHeaderButton(codicon: .refresh, help: "Refresh") {
                 refresh()
             }
@@ -179,7 +195,7 @@ struct FileBrowserView: View {
         }
         .padding(.leading, 14)
         .padding(.trailing, 8)
-        .padding(.vertical, 6)
+        .padding(.vertical, 3)
     }
 
     /// Seeds the switcher's Changes badge with the repo's dirty-file count, so it is
@@ -199,7 +215,7 @@ struct FileBrowserView: View {
             root = nil
             return
         }
-        root = FileNode(url: URL(fileURLWithPath: projectPath), isDirectory: true)
+        root = FileNode(url: URL(fileURLWithPath: projectPath), isDirectory: true, showHidden: browserState.showHiddenFiles)
     }
 
     /// Places each dropped file into `destination` (a folder inside the tree, or the
