@@ -138,6 +138,10 @@ struct HugeIconView: View {
     let icon: HugeIcon
     var size: CGFloat
     var color: Color
+    /// Overrides the size-derived stroke width. Used where a mark reads too thin at a
+    /// small size (e.g. the section disclosure chevron), so it can be bumped heavier
+    /// without also growing the glyph.
+    var lineWidthOverride: CGFloat? = nil
 
     var body: some View {
         HugeIconShape(icon: icon)
@@ -146,7 +150,7 @@ struct HugeIconView: View {
     }
 
     private var lineWidth: CGFloat {
-        max(1.1, size * 1.5 / icon.viewBox)
+        lineWidthOverride ?? max(1.1, size * 1.5 / icon.viewBox)
     }
 }
 
@@ -156,7 +160,24 @@ struct HugeIconShape: Shape {
     let icon: HugeIcon
 
     func path(in rect: CGRect) -> Path {
-        scaledVectorPath(SVGPath(icon.pathData).cgPath, viewBox: icon.viewBox, in: rect)
+        // Fit by the mark's actual ink box, not the nominal 24 viewBox: Hugeicons'
+        // marks fill their viewBox by different amounts across (the terminal glyph
+        // spans 18 of 24, a folder 20), so plain viewBox-fitting left them visibly
+        // unequal in width in the sidebar's shared icon column. Normalizing every
+        // mark's ink width to a fixed fraction of the box — the terminal mark's own
+        // 18/24 fill — keeps the terminal identical while pulling the wider folder
+        // marks in to match it, so same-`size` HugeIcons line up.
+        let glyph = SVGPath(icon.pathData).cgPath
+        let ink = glyph.boundingBoxOfPath
+        guard ink.width > 0, ink.height > 0 else { return Path(glyph) }
+        let targetWidth = rect.width * (18.0 / 24.0)
+        let scale = min(targetWidth / ink.width, rect.height / ink.height)
+        var transform = CGAffineTransform(
+            translationX: rect.midX - scale * ink.midX,
+            y: rect.midY - scale * ink.midY
+        )
+        .scaledBy(x: scale, y: scale)
+        return Path(glyph.copy(using: &transform) ?? glyph)
     }
 }
 

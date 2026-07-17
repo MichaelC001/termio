@@ -390,6 +390,30 @@ extension TermioStore {
         projects[index].pinned.toggle()
     }
 
+    /// Pins or unpins a session into the sidebar's top "Pinned" working set. The row
+    /// stays in its normal tree spot; the pin adds a shortcut up top. Persists via
+    /// `projects`' `didSet`.
+    func toggleSessionPinned(_ id: Session.ID) {
+        for pi in projects.indices {
+            if let si = projects[pi].sessions.firstIndex(where: { $0.id == id }) {
+                projects[pi].sessions[si].pinned.toggle()
+                return
+            }
+        }
+    }
+
+    /// Pins or unpins a worktree into the sidebar's top "Pinned" working set (as a
+    /// mini-block of its own sessions). The worktree stays nested under its project
+    /// too; the pin adds the top shortcut. Persists via `projects`' `didSet`.
+    func toggleWorktreePinned(_ id: Worktree.ID) {
+        for pi in projects.indices {
+            if let wi = projects[pi].worktrees.firstIndex(where: { $0.id == id }) {
+                projects[pi].worktrees[wi].pinned.toggle()
+                return
+            }
+        }
+    }
+
     /// Presents a folder picker. `sandboxed` decides whether the opened project runs
     /// its sessions under a Seatbelt sandbox (File ▸ Open Project Sandboxed…) or on the
     /// host (File ▸ Open Project…) — the sandbox is decided when the project is brought

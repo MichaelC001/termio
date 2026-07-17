@@ -14,6 +14,81 @@ extension AppSettings {
 
 /// Left column: projects, each a section containing its sessions. Hovering a
 /// project header reveals VSCode-style quick-add buttons (one per agent preset).
+/// One pinned worktree lifted into the sidebar's top working set, paired with its
+/// parent project for the origin breadcrumb. `id` is the worktree's so the mini-block
+/// keeps its identity across renders.
+private struct PinnedWorktreeEntry: Identifiable {
+    let project: Project
+    let worktree: Worktree
+    var id: Worktree.ID { worktree.id }
+}
+
+/// One pinned session lifted into the sidebar's top working set, paired with its parent
+/// project for the origin breadcrumb.
+private struct PinnedSessionEntry: Identifiable {
+    let project: Project
+    let session: Session
+    var id: Session.ID { session.id }
+}
+
+/// A muted top-level *section* header — the tier above project folders. Used for the
+/// two special groupings, Terminals and Pinned: a small leading SF Symbol in the same
+/// icon column as the rows below, plus an uppercase, tracked, grey label. Collapsible
+/// (tap the row), with an optional right-click menu (Terminals' New/Close actions).
+/// Deliberately distinct from `ProjectHeader` so a section never reads as a folder.
+private struct SidebarSectionHeader: View {
+    @EnvironmentObject var settings: AppSettings
+    let title: String
+    let chrome: ChromeTheme?
+    var isCollapsed: Bool = false
+    var toggleCollapsed: () -> Void = {}
+    var menuItems: [SidebarMenuItem] = []
+    @State private var isMenuOpen = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            // No leading glyph: the rows below already carry a column of icons, so a
+            // section icon on top of that just reads as clutter. The label alone — same
+            // interface font as the rows (size + family), set apart only by uppercase +
+            // tracking + a heavier semibold weight — is the section marker.
+            Text(title)
+                .font(settings.interfaceFont)
+                .fontWeight(.semibold)
+                .tracking(0.6)
+                .textCase(.uppercase)
+                .foregroundStyle(.secondary)
+            // Disclosure arrow right after the label: a Hugeicons chevron pointing right
+            // when the section is folded, rotated a quarter-turn down when it's open.
+            HugeIconView(icon: .chevronRight, size: 7.5, color: .secondary, lineWidthOverride: 1.75)
+                .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                .animation(.easeInOut(duration: 0.18), value: isCollapsed)
+            Spacer(minLength: 4)
+        }
+        // Generous top padding is the separator between sections — whitespace, not a
+        // rule — so each group reads as its own block without a hairline.
+        .padding(.top, 12)
+        .padding(.bottom, 2)
+        // No `listRowInsets` override — the header keeps the rows' default inset so both
+        // share one left baseline. The small leading then lands the label's left edge on
+        // the folder/terminal glyph's own inset in its 16pt slot, so they read aligned.
+        .padding(.leading, 2.5)
+        .contentShape(Rectangle())
+        .onTapGesture { toggleCollapsed() }
+        .background {
+            // Only sections that offer actions (Terminals) get a right-click menu; the
+            // Pinned label has none, so it stays a passive divider.
+            if !menuItems.isEmpty {
+                SidebarRowContextMenu(items: menuItems) { isMenuOpen = $0 }
+            }
+        }
+        .background(OutlineSelectionStyleStripper())
+        .listRowBackground(
+            SidebarRowHighlight(isSelected: false, isHovering: isMenuOpen, chrome: chrome)
+                .animation(.easeInOut(duration: 0.12), value: isMenuOpen)
+        )
+    }
+}
+
 struct SidebarView: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
@@ -25,6 +100,10 @@ struct SidebarView: View {
     // fold and omit the collapsed project's rows.
     @State private var collapsedProjects: Set<Project.ID> = []
     @State private var collapsedWorktrees: Set<Worktree.ID> = []
+    /// Whether the top "Pinned" working-set section is folded shut.
+    @State private var pinnedCollapsed = false
+    /// Whether the "Projects" section is folded shut.
+    @State private var projectsCollapsed = false
 
     // Chrome colors borrowed from the selected terminal theme; `nil` keeps the
     // default system look untouched.
@@ -37,49 +116,99 @@ struct SidebarView: View {
         // restyled without also draining the row's other accent-tinted controls.
         // A flat list rather than `Section`s: the sidebar's section spacing leaves
         // a big empty band between a collapsed project's header and the next, and
-        // macOS has no `listSectionSpacing`. The header carries its own grouping
-        // weight (small-caps label + folder mark), so folded projects stack tight.
-        List {
-            // Projects stay top-level; linked checkouts only add a nested folder layer
-            // to their own project, leaving the common no-worktree shape unchanged.
-            ForEach(store.orderedProjects) { project in
-                ProjectHeader(
-                    project: project,
-                    isCollapsed: collapsedProjects.contains(project.id),
-                    toggleCollapsed: { toggleCollapsed(project.id) },
-                    chrome: chrome
+        // macOS has no `listSectionSpacing`. So the pinned grouping is hand-rolled
+        // too — our own quiet "Pinned" label + a hairline — keeping folded rows tight.
+        //
+        // Row order: the Terminals funnel first (above everything); then, if any, a
+        // "Pinned" group; then the rest. A project's membership in the pinned group is
+        // itself the pin cue, so pinned rows carry no per-row badge. Both groups keep
+        // the user's chosen sort (already applied by `orderedProjects`, which we only
+        // partition here — never reorder).
+        let ordered = store.orderedProjects
+        let terminals = ordered.filter { $0.kind == .terminals }
+        let pinnedProjects = ordered.filter { $0.kind != .terminals && $0.pinned }
+        let others = ordered.filter { $0.kind != .terminals && !$0.pinned }
+        // Pinned worktrees are gathered only from *unpinned* projects: a pinned project
+        // already renders the worktree inside its own block, so listing it again in the
+        // working set would double it.
+        let pinnedWorktrees: [PinnedWorktreeEntry] = others.flatMap { project in
+            project.worktrees.filter(\.pinned).map { PinnedWorktreeEntry(project: project, worktree: $0) }
+        }
+        let pinnedWorktreePaths = Set(pinnedWorktrees.map { $0.worktree.path })
+        // Pinned sessions, minus any already shown inside a pinned ancestor (their
+        // project — excluded above by iterating `others` — or a pinned worktree of it),
+        // so the working set never shows the same session twice.
+        let pinnedSessions: [PinnedSessionEntry] = others.flatMap { project in
+            project.sessions.filter { session in
+                guard session.pinned else { return false }
+                if let wp = session.worktreePath, pinnedWorktreePaths.contains(wp) { return false }
+                return true
+            }.map { PinnedSessionEntry(project: project, session: $0) }
+        }
+        let hasPinned = !pinnedProjects.isEmpty || !pinnedWorktrees.isEmpty || !pinnedSessions.isEmpty
+        return List {
+            // The loose-terminals funnel, as a section (not a project folder): its
+            // header carries the New/Close actions; its sessions render below. Hidden
+            // entirely while it holds no terminals — an empty section label is just
+            // noise (a new loose terminal reappears the section, via the + / File menu).
+            ForEach(terminals.filter { !$0.sessions.isEmpty }) { term in
+                SidebarSectionHeader(
+                    title: "Terminals",
+                    chrome: chrome,
+                    isCollapsed: collapsedProjects.contains(term.id),
+                    toggleCollapsed: { toggleCollapsed(term.id) },
+                    menuItems: [
+                        .action("New Terminal") { store.addSession(to: term.id, agent: .terminal) },
+                        .separator,
+                        .action("Close All Terminals") { store.removeProject(term.id) },
+                    ]
                 )
-                if !collapsedProjects.contains(project.id) {
-                    let primarySessions = primarySessions(for: project)
-                    let primarySplitMarks = splitLinkMarks(for: primarySessions)
-                    ForEach(primarySessions) { session in
-                        SessionRow(session: session, chrome: chrome,
-                                   splitLink: primarySplitMarks[session.id])
+                if !collapsedProjects.contains(term.id) {
+                    let sessions = primarySessions(for: term)
+                    let marks = splitLinkMarks(for: sessions)
+                    ForEach(sessions) { session in
+                        SessionRow(session: session, chrome: chrome, splitLink: marks[session.id])
                     }
-                    ForEach(project.worktrees) { worktree in
-                        ProjectHeader(
-                            project: project,
-                            worktree: worktree,
-                            isCollapsed: collapsedWorktrees.contains(worktree.id),
-                            toggleCollapsed: { toggleWorktreeCollapsed(worktree.id) },
-                            chrome: chrome,
-                            leadingIndent: 16
-                        )
-                        if !collapsedWorktrees.contains(worktree.id) {
-                            let sessions = project.sessions.filter {
-                                $0.worktreePath == worktree.path
-                            }
-                            let splitMarks = splitLinkMarks(for: sessions)
-                            ForEach(sessions) { session in
-                                SessionRow(
-                                    session: session,
-                                    chrome: chrome,
-                                    leadingIndent: 32,
-                                    splitLink: splitMarks[session.id]
-                                )
-                            }
-                        }
+                }
+            }
+            // The top "Pinned" working set, under its own section header: pinned projects
+            // as full blocks, then pinned worktrees as mini-blocks (header + their
+            // sessions), then pinned sessions as shortcut rows — each nested entry tagged
+            // with its origin breadcrumb. Nested items stay in the tree below too; only
+            // whole projects move up here.
+            if hasPinned {
+                SidebarSectionHeader(
+                    title: "Pinned",
+                    chrome: chrome,
+                    isCollapsed: pinnedCollapsed,
+                    toggleCollapsed: {
+                        withAnimation(.easeInOut(duration: 0.18)) { pinnedCollapsed.toggle() }
                     }
+                )
+                if !pinnedCollapsed {
+                    ForEach(pinnedProjects) { projectBlock($0) }
+                    ForEach(pinnedWorktrees) { entry in
+                        pinnedWorktreeBlock(project: entry.project, worktree: entry.worktree)
+                    }
+                    ForEach(pinnedSessions) { entry in
+                        SessionRow(session: entry.session, chrome: chrome, leadingIndent: 16,
+                                   breadcrumb: breadcrumb(for: entry.session, in: entry.project))
+                    }
+                }
+            }
+            // The user's opened projects, under their own section header — the same
+            // section treatment as Terminals and Pinned, one tier above the folder rows.
+            if !others.isEmpty {
+                SidebarSectionHeader(
+                    title: "Projects",
+                    chrome: chrome,
+                    isCollapsed: projectsCollapsed,
+                    toggleCollapsed: {
+                        withAnimation(.easeInOut(duration: 0.18)) { projectsCollapsed.toggle() }
+                    }
+                )
+                if !projectsCollapsed {
+                    ForEach(others) { projectBlock($0) }
                 }
             }
         }
@@ -102,6 +231,87 @@ struct SidebarView: View {
                     .environmentObject(settings)
             }
         }
+    }
+
+    /// One project's rows: its header, then (unless folded) its primary-checkout
+    /// sessions and each worktree's nested header + sessions. Factored out of `body`
+    /// so the pinned and unpinned groups render identical project blocks.
+    @ViewBuilder
+    private func projectBlock(_ project: Project) -> some View {
+        ProjectHeader(
+            project: project,
+            isCollapsed: collapsedProjects.contains(project.id),
+            toggleCollapsed: { toggleCollapsed(project.id) },
+            chrome: chrome
+        )
+        if !collapsedProjects.contains(project.id) {
+            let primarySessions = primarySessions(for: project)
+            let primarySplitMarks = splitLinkMarks(for: primarySessions)
+            ForEach(primarySessions) { session in
+                SessionRow(session: session, chrome: chrome,
+                           splitLink: primarySplitMarks[session.id])
+            }
+            ForEach(project.worktrees) { worktree in
+                ProjectHeader(
+                    project: project,
+                    worktree: worktree,
+                    isCollapsed: collapsedWorktrees.contains(worktree.id),
+                    toggleCollapsed: { toggleWorktreeCollapsed(worktree.id) },
+                    chrome: chrome,
+                    leadingIndent: 16
+                )
+                if !collapsedWorktrees.contains(worktree.id) {
+                    let sessions = project.sessions.filter {
+                        $0.worktreePath == worktree.path
+                    }
+                    let splitMarks = splitLinkMarks(for: sessions)
+                    ForEach(sessions) { session in
+                        SessionRow(
+                            session: session,
+                            chrome: chrome,
+                            leadingIndent: 32,
+                            splitLink: splitMarks[session.id]
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /// A pinned worktree lifted into the top working set: its header (tagged with the
+    /// parent project's name) plus, unless folded, its own sessions. Sits at the base
+    /// indent since it's a top-level working-set entry, not nested under a project row.
+    @ViewBuilder
+    private func pinnedWorktreeBlock(project: Project, worktree: Worktree) -> some View {
+        ProjectHeader(
+            project: project,
+            worktree: worktree,
+            isCollapsed: collapsedWorktrees.contains(worktree.id),
+            toggleCollapsed: { toggleWorktreeCollapsed(worktree.id) },
+            chrome: chrome,
+            leadingIndent: 0,
+            breadcrumb: project.name
+        )
+        if !collapsedWorktrees.contains(worktree.id) {
+            let sessions = project.sessions.filter { $0.worktreePath == worktree.path }
+            let splitMarks = splitLinkMarks(for: sessions)
+            ForEach(sessions) { session in
+                SessionRow(session: session, chrome: chrome, leadingIndent: 16,
+                           splitLink: splitMarks[session.id])
+            }
+        }
+    }
+
+    /// The origin trail for a pinned session shortcut: the project name, or
+    /// "project/branch" when the session lives in one of the project's worktrees.
+    private func breadcrumb(for session: Session, in project: Project) -> String {
+        if let wp = session.worktreePath, wp != project.path,
+           let worktree = project.worktrees.first(where: { $0.path == wp }) {
+            let branch = store.branch(forFolder: worktree.path)
+                ?? (worktree.path as NSString).lastPathComponent
+            return "\(project.name)/\(branch)"
+        }
+        return project.name
     }
 
     private func toggleCollapsed(_ id: Project.ID) {
@@ -223,6 +433,9 @@ private struct ProjectHeader: View {
     let toggleCollapsed: () -> Void
     let chrome: ChromeTheme?
     var leadingIndent: CGFloat = 0
+    /// When shown as a pinned worktree mini-block in the top "Pinned" working set, the
+    /// muted origin trail (the parent project's name). `nil` in the normal tree spot.
+    var breadcrumb: String? = nil
     @State private var isHovering = false
     /// True while this header's right-click menu is open, so the row paints a light
     /// lift marking it as the menu's target.
@@ -251,11 +464,12 @@ private struct ProjectHeader: View {
         return "Detached at \(commit)"
     }
 
-    /// A worktree carries the git-marked folder glyph (a container linked to the repo);
-    /// a project swaps closed/open folders as its collapse cue; the Terminals section
-    /// keeps its own terminal glyph.
+    /// Every folder container — project or worktree — swaps closed/open folders as its
+    /// collapse cue; the Terminals section keeps its own terminal glyph. A worktree's
+    /// git-linkage is marked by a trailing branch glyph on the row (below), not a
+    /// distinct folder icon: a git node baked into the folder glyph was illegible at
+    /// sidebar size, and a plain folder keeps the two header kinds visually one family.
     private var headerIcon: HugeIcon {
-        if worktree != nil { return .folderGit }
         if isTerminalsHeader { return .terminal }
         return isCollapsed ? .folder : .folderOpen
     }
@@ -295,6 +509,9 @@ private struct ProjectHeader: View {
         }
         if let worktree {
             items.append(.separator)
+            items.append(.action(worktree.pinned ? "Unpin" : "Pin") {
+                store.toggleWorktreePinned(worktree.id)
+            })
             items.append(.action("Reveal in Finder") {
                 NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: worktree.path)
             })
@@ -326,39 +543,41 @@ private struct ProjectHeader: View {
     var body: some View {
         HStack(spacing: 6) {
             // Same 16-wide icon slot and spacing as SessionRow, so the container mark
-            // and child icons share a column. A worktree *is* a folder (a git-linked
-            // checkout on disk), so it carries a folder glyph too — but the git-marked
-            // `.folderGit` so it reads as a container that is *linked to the repo*,
-            // distinct from a plain project folder while never looking like a leaf.
-            // Projects swap closed/open folders on collapse; Terminals keeps its glyph.
+            // and child icons share a column. A project and a worktree are both folder
+            // containers, so they carry the same folder glyph (closed/open on collapse);
+            // a worktree's git-linkage is marked by the trailing branch glyph, not a
+            // different folder. Terminals keeps its own terminal glyph.
             HugeIconView(
+                // Match the session row's icon size: with `HugeIconShape` normalizing
+                // every mark to one ink width, an equal `size` makes the folder header
+                // and the child terminal icons render at the same width down the shared
+                // 16-wide column.
                 icon: headerIcon,
                 size: 15,
                 color: chrome?.foreground ?? .primary
             )
             .frame(width: 16)
-            // A section header at the standard text color; the smaller, medium-weight
-            // 11pt styling already sets it apart from the larger, regular session rows.
-            // The project name is uppercased + letter-spaced (a folder-name section
-            // label). A worktree's label is its live *branch name*, shown verbatim: git
-            // refs are case-sensitive, lowercase by convention, and copy-pasteable into
-            // `git checkout`, so uppercasing them would display a name the user can't
-            // actually type. Container-ness is carried by the folder-git glyph + indent,
-            // not by casing.
+            // A folder container header, at the standard text color and the same size
+            // and regular weight as its child session rows (both track the interface
+            // font, so they scale together). The container reads as the parent of its
+            // rows through the folder glyph and indent, not by weight or size. Both
+            // header kinds show their name verbatim, no uppercasing — load-bearing for
+            // worktrees, whose label is a live *branch name*: git refs are case-sensitive,
+            // lowercase by convention, and copy-pasteable into `git checkout`, so
+            // uppercasing would display a name the user can't type.
             Text(headerLabel)
-                .font(.system(size: 11, weight: .medium))
-                .textCase(worktree == nil ? .uppercase : nil)
-                .tracking(worktree == nil ? 0.5 : 0)
+                .font(settings.interfaceFont)
                 .foregroundStyle(chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.primary))
                 .help(headerHelp)
-            // A small pin mark when the project is pinned to the top, so the reason it
-            // floats above the sort order reads at a glance (toggled from the row's
-            // right-click menu). Muted so it sits quietly next to the name.
-            if worktree == nil && project.pinned {
-                Image(systemName: "pin.fill")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .help("Pinned to top")
+            // The origin trail on a pinned worktree's mini-block in the top working set,
+            // so the lifted worktree still says which project it belongs to. Muted.
+            if let breadcrumb {
+                Text("· \(breadcrumb)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .layoutPriority(-1)
             }
             // A quiet "Sandbox" tag when this project runs under a Seatbelt profile —
             // borrows the same soft quaternary capsule as the title-bar chips. Clicking it
@@ -380,6 +599,18 @@ private struct ProjectHeader: View {
                 .help("Sandbox settings")
             }
             Spacer(minLength: 4)
+            // A worktree's git-linkage marker, pinned to the row's right edge — its
+            // folder glyph now matches a plain project's, so this branch symbol is what
+            // marks the row as a git worktree (and echoes that its label is a live branch
+            // name). A project's pinned state carries no per-row badge: sitting under the
+            // "Pinned" group label is the cue. Muted, so it reads as quiet metadata; on
+            // hover it falls under the quick-add cluster (masked out with the label tail).
+            if worktree != nil {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .help("Git worktree")
+            }
         }
         // On hover the trailing icons would otherwise sit on top of a long project
         // name (the label takes the whole row at rest), so the name's tail reads as a
@@ -644,6 +875,10 @@ private struct SessionRow: View {
     /// This row's segment of the split-group bracket, or `nil` when the session
     /// isn't part of an adjacent run of on-screen panes (see `splitLinkMarks`).
     var splitLink: SplitLinkMark?
+    /// When shown as a pinned shortcut in the top "Pinned" working set, the muted
+    /// origin trail (e.g. "web-app" or "web-app/feat") that says where the real row
+    /// lives. `nil` for a row in its normal tree spot.
+    var breadcrumb: String? = nil
     @State private var isHovering = false
 
     private var isSelected: Bool { store.selectedSessionID == session.id }
@@ -673,7 +908,7 @@ private struct SessionRow: View {
                 } else if store.status(for: session.id) == .working {
                     WorkingIndicator(tint: store.effectiveAgent(for: session).tintColor)
                 } else {
-                    AgentIconView(agent: store.effectiveAgent(for: session), size: 13)
+                    AgentIconView(agent: store.effectiveAgent(for: session), size: 15)
                 }
             }
             .frame(width: 16)
@@ -683,6 +918,17 @@ private struct SessionRow: View {
                 .foregroundStyle(chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.primary))
                 .lineLimit(1)
                 .truncationMode(.tail)
+            // The origin trail on a pinned shortcut row, so a session lifted to the top
+            // working set still says which project/branch it belongs to. Muted and
+            // shrink-last so the title keeps priority when the row is tight.
+            if let breadcrumb {
+                Text("· \(breadcrumb)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .layoutPriority(-1)
+            }
             Spacer(minLength: 4)
             // At rest a status dot trails the title only when the session needs the
             // user (working is shown by the leading spinner instead), so the title
@@ -737,6 +983,8 @@ private struct SessionRow: View {
         // accent ring on the row (see `SidebarRowContextMenu`).
         .background(SidebarRowContextMenu(items: [
             .action("Rename Session…") { store.renameSession(session.id) },
+            .separator,
+            .action(session.pinned ? "Unpin" : "Pin") { store.toggleSessionPinned(session.id) },
             .separator,
             .action("Close Session") { store.closeSession(session.id) }
         ]))

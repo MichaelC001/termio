@@ -26,6 +26,26 @@ struct Worktree: Identifiable, Hashable, Codable {
     var id = UUID()
     var path: String
     var createdAt = Date()
+    /// Whether the user has pinned this worktree into the sidebar's top "Pinned"
+    /// working set. Persisted; survives git reconciliation because
+    /// `applyDiscoveredWorktrees` reuses the existing entry by path rather than
+    /// rebuilding it, so the flag rides along. A freshly discovered worktree is unpinned.
+    var pinned = false
+}
+
+extension Worktree {
+    private enum CodingKeys: String, CodingKey { case id, path, createdAt, pinned }
+
+    /// Custom decoding so state files written before `pinned` existed still load (it
+    /// defaults to unpinned). In an extension so the synthesized memberwise init used
+    /// at call sites (`Worktree(path:)`) survives; encoding stays synthesized.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        path = try c.decode(String.self, forKey: .path)
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+    }
 }
 
 /// A project is a working directory (typically a git repo) that groups one or
@@ -144,7 +164,7 @@ enum HugeIcon: Hashable {
     case terminal
     case folder
     case folderOpen
-    case folderGit
+    case chevronRight
 
     /// Side length of the source SVG's square viewBox (Hugeicons uses 24).
     var viewBox: CGFloat { 24 }
@@ -162,14 +182,11 @@ enum HugeIcon: Hashable {
             // because the one rounded body reads cleanly there and still pairs with
             // folder-01's angled tab for the closed state.
             return "M2.36064 15.1788C1.98502 13.2956 1.79721 12.354 2.33084 11.7159C2.36642 11.6734 2.40405 11.6323 2.44361 11.5927C3.03686 11 4.08674 11 6.1865 11H17.8135C19.9133 11 20.9631 11 21.5564 11.5927C21.5959 11.6323 21.6336 11.6734 21.6692 11.7159C22.2028 12.354 22.015 13.2956 21.6394 15.1788C21.0993 17.8865 20.8292 19.2404 19.8109 20.0721C19.7414 20.1288 19.6698 20.1833 19.5961 20.2354C18.5163 21 17.0068 21 13.9876 21H10.0124C6.99323 21 5.48367 21 4.40387 20.2354C4.33022 20.1833 4.2586 20.1288 4.18914 20.0721C3.17075 19.2404 2.90072 17.8865 2.36064 15.1788Z M4 11V5.5C4 4.11929 5.11929 3 6.5 3H8.92963C9.59834 3 10.2228 3.3342 10.5937 3.8906L12 6M12 6H8.5M12 6H17.5C18.8807 6 20 7.11929 20 8.5V11"
-        case .folderGit:
-            // Hugeicons "folder-git": the same folder-01 body as `.folder`, with a git
-            // commit node (a small circle wired left and right) inside — so a worktree
-            // reads as a folder (a container, not a leaf) that is *git-linked*, marking
-            // it apart from a plain project folder. The source `<circle cx=12 cy=14 r=2>`
-            // is expressed as two semicircular arcs (`HugeIconShape` strokes paths, not
-            // circle elements).
-            return "M8 7H16.75C18.8567 7 19.91 7 20.6667 7.50559C20.9943 7.72447 21.2755 8.00572 21.4944 8.33329C22 9.08996 22 10.1433 22 12.25C22 15.7612 22 17.5167 21.1573 18.7779C20.7926 19.3238 20.3238 19.7926 19.7779 20.1573C18.5167 21 16.7612 21 13.25 21H12C7.28595 21 4.92893 21 3.46447 19.5355C2 18.0711 2 15.714 2 11V7.94427C2 6.1278 2 5.21956 2.38032 4.53806C2.65142 4.05227 3.05227 3.65142 3.53806 3.38032C4.21956 3 5.1278 3 6.94427 3C8.10802 3 8.6899 3 9.19926 3.19101C10.3622 3.62712 10.8418 4.68358 11.3666 5.73313L12 7 M10 14A2 2 0 0 1 14 14A2 2 0 0 1 10 14Z M14 14H18M10 14H6"
+        case .chevronRight:
+            // A plain two-segment chevron (not the bulged Hugeicons arrow) — round
+            // linejoin softens the tip. The section disclosure arrow: points right when
+            // collapsed, rotated a quarter-turn down when open.
+            return "M10 6L16 12L10 18"
         }
     }
 }
@@ -269,6 +286,11 @@ struct Session: Identifiable, Hashable, Codable {
     /// started fresh.
     var launched = false
 
+    /// Whether the user has pinned this session into the sidebar's top "Pinned" working
+    /// set. Persisted. The session still shows in its normal tree spot (the pin adds a
+    /// shortcut up top, it doesn't move the row).
+    var pinned = false
+
     /// When set, this session is a **browser pane** — a WKWebView split beside the
     /// terminals (see `BrowserPaneView`) — not a terminal: no shell is spawned and
     /// no libghostty surface is created for it. Holds the pane's last URL, kept
@@ -327,7 +349,7 @@ struct Session: Identifiable, Hashable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, agent, createdAt, worktreePath, resumeID, launched, launchedAt,
-             liveTitle, browserURL, lastWorkingDirectory, sshHost
+             liveTitle, browserURL, lastWorkingDirectory, sshHost, pinned
     }
 
     /// Custom decoding so state files written before the resume fields existed still
@@ -343,6 +365,7 @@ struct Session: Identifiable, Hashable, Codable {
         worktreePath = try container.decodeIfPresent(String.self, forKey: .worktreePath)
         resumeID = try container.decodeIfPresent(String.self, forKey: .resumeID)
         launched = try container.decodeIfPresent(Bool.self, forKey: .launched) ?? false
+        pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         launchedAt = try container.decodeIfPresent(Date.self, forKey: .launchedAt)
         liveTitle = try container.decodeIfPresent(String.self, forKey: .liveTitle)
         browserURL = try container.decodeIfPresent(String.self, forKey: .browserURL)
