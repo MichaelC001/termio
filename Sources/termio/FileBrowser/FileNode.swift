@@ -31,14 +31,15 @@ final class FileNode: Identifiable {
     }
 
     /// Directory entries, folders first then files, each alphabetized the way the
-    /// Finder orders names. Hidden entries are dropped (`.git`, dotfiles), as are a
-    /// few heavy build directories that would only bloat the tree.
+    /// Finder orders names. Dotfiles are shown (the VS Code explorer default); only the
+    /// VCS/OS metadata in `ignoredNames` is dropped — matching VS Code's own default
+    /// `files.exclude`, which likewise leaves `node_modules`/build folders visible.
     private static func readContents(of url: URL) -> [FileNode] {
         let manager = FileManager.default
         guard let entries = try? manager.contentsOfDirectory(
             at: url,
             includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
+            options: []
         ) else { return [] }
 
         return entries
@@ -53,7 +54,9 @@ final class FileNode: Identifiable {
             }
     }
 
-    /// Non-hidden directories that are noise in a project tree (the hidden ones —
-    /// `.git`, `.DS_Store` — are already excluded by `.skipsHiddenFiles`).
-    private static let ignoredNames: Set<String> = ["node_modules", ".build", "DerivedData"]
+    /// VCS and OS metadata that is always noise, dropped even though dotfiles are
+    /// otherwise shown. Mirrors VS Code's default `files.exclude`
+    /// (`.git`/`.svn`/`.hg`/`.DS_Store`/`Thumbs.db`); like VS Code it does *not* hide
+    /// `node_modules` or build output — those stay visible, loaded lazily on expand.
+    private static let ignoredNames: Set<String> = [".git", ".svn", ".hg", ".DS_Store", "Thumbs.db"]
 }

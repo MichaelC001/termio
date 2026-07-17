@@ -41,6 +41,9 @@ private struct SidebarSectionHeader: View {
     let title: String
     let chrome: ChromeTheme?
     var isCollapsed: Bool = false
+    /// The first section in the list sits right under the toolbar, so its top
+    /// padding is dead space rather than a separator — it gets a tight inset.
+    var isFirstSection: Bool = false
     var toggleCollapsed: () -> Void = {}
     var menuItems: [SidebarMenuItem] = []
     @State private var isMenuOpen = false
@@ -65,8 +68,9 @@ private struct SidebarSectionHeader: View {
             Spacer(minLength: 4)
         }
         // Generous top padding is the separator between sections — whitespace, not a
-        // rule — so each group reads as its own block without a hairline.
-        .padding(.top, 12)
+        // rule — so each group reads as its own block without a hairline. The first
+        // section has no group above it to separate from, so it stays tight.
+        .padding(.top, isFirstSection ? 2 : 12)
         .padding(.bottom, 2)
         // No `listRowInsets` override — the header keeps the rows' default inset so both
         // share one left baseline. The small leading then lands the label's left edge on
@@ -149,6 +153,8 @@ struct SidebarView: View {
             }.map { PinnedSessionEntry(project: project, session: $0) }
         }
         let hasPinned = !pinnedProjects.isEmpty || !pinnedWorktrees.isEmpty || !pinnedSessions.isEmpty
+        let hasTerminals = terminals.contains { !$0.sessions.isEmpty }
+        let hasChats = chats.contains { !$0.sessions.isEmpty }
         return List {
             // The top "Pinned" working set, under its own section header: pinned projects
             // as full blocks, then pinned worktrees as mini-blocks (header + their
@@ -162,6 +168,7 @@ struct SidebarView: View {
                     title: "Pinned",
                     chrome: chrome,
                     isCollapsed: pinnedCollapsed,
+                    isFirstSection: true,
                     toggleCollapsed: {
                         withAnimation(.easeInOut(duration: 0.18)) { pinnedCollapsed.toggle() }
                     }
@@ -186,6 +193,7 @@ struct SidebarView: View {
                     title: "Terminals",
                     chrome: chrome,
                     isCollapsed: collapsedProjects.contains(term.id),
+                    isFirstSection: !hasPinned,
                     toggleCollapsed: { toggleCollapsed(term.id) },
                     menuItems: [
                         .action("New Terminal") { store.addSession(to: term.id, agent: .terminal) },
@@ -212,6 +220,7 @@ struct SidebarView: View {
                     title: "Chats",
                     chrome: chrome,
                     isCollapsed: collapsedProjects.contains(chat.id),
+                    isFirstSection: !hasPinned && !hasTerminals,
                     toggleCollapsed: { toggleCollapsed(chat.id) },
                     menuItems: [
                         .action("New Chat") { store.addDefaultChat() },
@@ -234,6 +243,7 @@ struct SidebarView: View {
                     title: "Projects",
                     chrome: chrome,
                     isCollapsed: projectsCollapsed,
+                    isFirstSection: !hasPinned && !hasTerminals && !hasChats,
                     toggleCollapsed: {
                         withAnimation(.easeInOut(duration: 0.18)) { projectsCollapsed.toggle() }
                     }
