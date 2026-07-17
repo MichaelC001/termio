@@ -13,9 +13,10 @@ enum GitService {
     }
 
     /// The unified-diff rows for one changed file (staged + unstaged vs `HEAD`, or the
-    /// whole file for an untracked one).
-    static func diffRows(for change: GitChange, in repoRoot: String) async -> [DiffRow] {
-        await offMain { parseDiff(loadDiffText(change, repoRoot)) }
+    /// whole file for an untracked one). With `commit` set, the file's diff *at that
+    /// commit* instead — the History tab's per-file view.
+    static func diffRows(for change: GitChange, in repoRoot: String, commit: String? = nil) async -> [DiffRow] {
+        await offMain { parseDiff(loadDiffText(change, repoRoot, commit: commit)) }
     }
 
     /// The raw unified-diff text for one changed file — what "Copy Diff" puts on the
@@ -33,61 +34,65 @@ enum GitService {
         await offMain { discardChanges(change, repoRoot) }
     }
 
-    // MARK: Mutating actions
+    // MARK: History
 
-    /// Commits exactly the checked files with `message`. The paths are staged first
-    /// (`git add` registers new files and picks up deletions), then committed with an
-    /// explicit pathspec so the commit records *only* those files even if something else
-    /// was already staged from the terminal. No `Co-Authored-By` trailer — termio's
-    /// commits stay attribution-free by house rule.
-    static func commit(message: String, paths: [String], in repoRoot: String) async -> GitActionResult {
-        await offMain {
-            guard !paths.isEmpty else { return .failure("Nothing selected to commit.") }
-            let staged = runResult(["add", "--"] + paths, in: repoRoot)
-            if staged.status != 0 { return .failure(oneLine(staged.err, fallback: "Failed to stage files.")) }
-            let committed = runResult(["commit", "-m", message, "--"] + paths, in: repoRoot)
-            if committed.status != 0 { return .failure(oneLine(committed.err, fallback: "Commit failed.")) }
-            return .success
+    /// The most recent commits on the current branch (newest first), for the History tab.
+    static func log(in repoRoot: String, limit: Int = 100) async -> [GitCommit] {
+        await offMain { loadLog(repoRoot, limit) }
+    }
+
+    /// The files touched by one commit, with their status letters — the rows shown when a
+    /// history entry is expanded. Each carries the file's per-commit add/delete counts.
+    static func commitChanges(_ sha: String, in repoRoot: String) async -> [GitChange] {
+        await offMain { loadCommitChanges(sha, repoRoot) }
+    }
+
+    /// Parses `git log` into commit rows. Fields are joined by US (`\u{1f}`) and records
+    /// by RS (`\u{1e}`), so subjects with spaces/tabs survive intact.
+    private static func loadLog(_ repoRoot: String, _ limit: Int) -> [GitCommit] {
+        let format = ["%H", "%h", "%s", "%an", "%ad"].joined(separator: "\u{1f}") + "\u{1e}"
+        guard let out = run(
+            ["log", "-n", String(limit), "--date=relative", "--pretty=format:\(format)"],
+            in: repoRoot
+        ) else { return [] }
+        return out.components(separatedBy: "\u{1e}").compactMap { record in
+            let fields = record.trimmingCharacters(in: .whitespacesAndNewlines)
+                .components(separatedBy: "\u{1f}")
+            guard fields.count == 5, !fields[0].isEmpty else { return nil }
+            return GitCommit(sha: fields[0], shortSHA: fields[1], subject: fields[2],
+                             author: fields[3], relativeDate: fields[4])
         }
     }
 
-    /// Pushes the current branch. A branch with no upstream gets `-u origin HEAD` so the
-    /// first push also sets tracking; otherwise a plain `git push`.
-    static func push(in repoRoot: String) async -> GitActionResult {
-        await offMain {
-            let up = upstreamStateSync(repoRoot)
-            let args = up.hasUpstream ? ["push"] : ["push", "-u", "origin", "HEAD"]
-            let r = runResult(args, in: repoRoot)
-            return r.status == 0 ? .success : .failure(oneLine(r.err, fallback: "Push failed."))
-        }
-    }
-
-    /// The current branch's ahead/behind position versus its upstream — drives the Push
-    /// button's count and enabled state.
-    static func upstreamState(in repoRoot: String) async -> GitUpstream {
-        await offMain { upstreamStateSync(repoRoot) }
-    }
-
-    /// Parses the `## branch...remote [ahead N, behind M]` header line of `git status -sb`.
-    /// No `...` means the branch has no upstream (never pushed); a missing bracket means
-    /// it is level with the remote.
-    private static func upstreamStateSync(_ repoRoot: String) -> GitUpstream {
-        guard let out = run(["status", "-sb"], in: repoRoot),
-              let header = out.split(separator: "\n", omittingEmptySubsequences: false).first
-        else { return .none }
-        let line = String(header)
-        let hasUpstream = line.contains("...")
-        var ahead = 0, behind = 0
-        if let open = line.firstIndex(of: "["), let close = line.firstIndex(of: "]"), open < close {
-            for part in line[line.index(after: open)..<close].split(separator: ",") {
-                let toks = part.split(separator: " ").map { $0.trimmingCharacters(in: .whitespaces) }
-                    .filter { !$0.isEmpty }
-                guard toks.count == 2, let n = Int(toks[1]) else { continue }
-                if toks[0] == "ahead" { ahead = n }
-                if toks[0] == "behind" { behind = n }
+    /// The changed files of a single commit. `--name-status` gives the status letter and
+    /// path; `--numstat` gives the counts — merged by path. `--format=` drops the commit
+    /// header so only the file lines remain. The first-parent diff (`<sha>^!`) is used so
+    /// a merge shows a sensible file set; the root commit falls back to the empty tree.
+    private static func loadCommitChanges(_ sha: String, _ repoRoot: String) -> [GitChange] {
+        var order: [String] = []
+        var status: [String: GitFileStatus] = [:]
+        if let out = run(["show", "--name-status", "--format=", "-M", sha], in: repoRoot) {
+            for line in out.split(separator: "\n") {
+                let parts = line.split(separator: "\t")
+                guard let code = parts.first?.first, parts.count >= 2 else { continue }
+                let path = String(parts.last!)   // for renames the new path is last
+                if status[path] == nil { order.append(path) }
+                status[path] = GitFileStatus(code: code)
             }
         }
-        return GitUpstream(hasUpstream: hasUpstream, ahead: ahead, behind: behind)
+        var counts: [String: (Int, Int)] = [:]
+        if let out = run(["show", "--numstat", "--format=", sha], in: repoRoot) {
+            for line in out.split(separator: "\n") {
+                let parts = line.split(separator: "\t", maxSplits: 2)
+                guard parts.count == 3 else { continue }
+                counts[String(parts[2])] = (Int(parts[0]) ?? 0, Int(parts[1]) ?? 0)
+            }
+        }
+        return order.map { path in
+            let c = counts[path] ?? (0, 0)
+            return GitChange(path: path, status: status[path] ?? .modified, isUntracked: false,
+                             additions: c.0, deletions: c.1)
+        }
     }
 
     // MARK: Loading
@@ -193,7 +198,13 @@ enum GitService {
         }
     }
 
-    private static func loadDiffText(_ change: GitChange, _ repoRoot: String) -> String {
+    private static func loadDiffText(_ change: GitChange, _ repoRoot: String, commit: String? = nil) -> String {
+        // History file row: the file's change within one commit. `--format=` strips the
+        // commit header so parseDiff sees only the unified diff.
+        if let commit {
+            return run(["show", "--format=", "-M", commit, "--", change.path],
+                       in: repoRoot, ignoreStatus: true) ?? ""
+        }
         if change.isUntracked {
             // `--no-index` exits non-zero when the files differ, which is the normal
             // case here, so the status is ignored.
@@ -285,42 +296,5 @@ enum GitService {
         process.waitUntilExit()
         if !ignoreStatus, process.terminationStatus != 0 { return nil }
         return String(data: data, encoding: .utf8)
-    }
-
-    /// stderr and exit status of a `git` invocation. Used by the mutating actions, which
-    /// need the exit code (to detect failure) and stderr (to surface why). stdout is
-    /// drained but discarded — none of the mutating commands' output is shown.
-    private struct RunResult { let err: String; let status: Int32 }
-
-    /// Like `run`, but also captures stderr and the exit code. The output of a commit or
-    /// push is a handful of lines — well under the pipe buffer — so reading stdout then
-    /// stderr sequentially can't deadlock here the way a large diff would.
-    private static func runResult(_ args: [String], in dir: String) -> RunResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = ["-C", dir] + args
-        let out = Pipe(), err = Pipe()
-        process.standardOutput = out
-        process.standardError = err
-        do { try process.run() } catch {
-            return RunResult(err: error.localizedDescription, status: -1)
-        }
-        // Drain stdout so a chatty command can't block on a full pipe; its contents are
-        // unused — only stderr and the exit code matter for a commit/push.
-        _ = out.fileHandleForReading.readDataToEndOfFile()
-        let errData = err.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return RunResult(
-            err: String(data: errData, encoding: .utf8) ?? "",
-            status: process.terminationStatus
-        )
-    }
-
-    /// The last non-empty line of a git error blob (git puts the actionable message last,
-    /// after any `hint:` preamble), or `fallback` when stderr is empty.
-    static func oneLine(_ stderr: String, fallback: String) -> String {
-        let line = stderr.split(separator: "\n").map(String.init)
-            .last { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        return line?.trimmingCharacters(in: .whitespaces) ?? fallback
     }
 }

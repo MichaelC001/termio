@@ -1,13 +1,14 @@
 import AppKit
 import SwiftUI
 
-// MARK: - Changes list
+// MARK: - Git pane
 
-/// The git "Changes" pane: the working tree's changed files plus the "ship it" footer —
-/// check the files, write a message, commit, and push without leaving the diff you just
-/// reviewed. (Opening a pull request is left to the terminal — `gh` / a PR skill.) The
-/// list rows match the file tree (same interface font and `SidebarRowHighlight`); clicking
-/// a row still opens its diff over the terminal. All state lives in `GitPanelModel`.
+/// The git pane, split into two tabs after GitHub Desktop: **Changes** (the working
+/// tree's files, with a checkbox that stages/unstages each one for real and a click that
+/// opens its diff over the terminal) and **History** (past commits and their diffs).
+/// Committing and pushing are deliberately left to the terminal — the GUI is for staging,
+/// reviewing, and reading, not authoring commits. The list rows match the file tree (same
+/// interface font and `SidebarRowHighlight`). All state lives in `GitPanelModel`.
 struct GitChangesView: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
@@ -18,6 +19,9 @@ struct GitChangesView: View {
     @Binding var changeCount: Int
 
     @StateObject private var model: GitPanelModel
+
+    /// Which of the two tabs is showing.
+    @State private var mode: GitPaneMode = .changes
 
     /// The file a "Discard Changes…" action is waiting to confirm — non-nil while the
     /// destructive alert is up, so the actual `git restore`/delete only fires on "OK".
@@ -33,46 +37,14 @@ struct GitChangesView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            if model.isLoading {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if model.changes.isEmpty {
-                // Fill the pane (like the loading state) rather than sizing to the compact empty
-                // view — otherwise the enclosing `VStack` shrinks to content height and the host
-                // centers the whole pane, dropping the "CHANGES" header into the middle of the
-                // inspector instead of pinning it to the top.
-                ContentUnavailableView(
-                    "No Changes",
-                    systemImage: "checkmark.circle",
-                    description: Text("The working tree is clean.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                changeList
-                CommitFooter(model: model)
+            switch mode {
+            case .changes: changesBody
+            case .history: GitHistoryView(model: model, repoRoot: repoRoot, chrome: chrome, font: settings.interfaceFont)
             }
-
-            // The remote bar belongs to the branch, not the working-tree diff, so it sits
-            // OUTSIDE the empty/non-empty split — it stays visible after a commit clears the
-            // tree, when there are still commits to push. Renders nothing when the branch is
-            // level with origin.
-            if !model.isLoading {
-                RemoteBar(model: model)
-            }
-
-            if let banner = model.banner {
-                Text(banner.text)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(banner.kind == .error ? Color.red : Color.secondary)
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 8)
-            }
+            bottomBar
         }
         .task(id: repoRoot) { await model.load() }
+        .task(id: mode) { if mode == .history { await model.loadHistory() } }
         .onChange(of: model.changes.count) { _, count in changeCount = count }
         // Re-read when a diff overlay closes — the user may have just acted on it.
         .onChange(of: store.openDiff) { _, request in
@@ -86,28 +58,64 @@ struct GitChangesView: View {
         }
     }
 
-    /// The current branch (from the live `BranchModel`) and a refresh button, mirroring
-    /// the file tree's own header.
-    private var header: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "arrow.triangle.branch")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Text(store.branchModel.branch(for: repoRoot) ?? "Changes")
-                .font(.system(size: 11, weight: .semibold))
-                .textCase(.uppercase)
-                .tracking(0.5)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+    // MARK: Changes tab
+
+    @ViewBuilder
+    private var changesBody: some View {
+        if model.isLoading {
+            ProgressView()
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if model.changes.isEmpty {
+            // Fill the pane (like the loading state) rather than sizing to the compact empty
+            // view — otherwise the enclosing `VStack` shrinks to content height and the host
+            // centers the whole pane instead of pinning the header to the top.
+            ContentUnavailableView(
+                "No Changes",
+                systemImage: "checkmark.circle",
+                description: Text("The working tree is clean.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            changeList
+        }
+    }
+
+    /// The pane's mode switch, pinned at the *bottom* (Xcode's version-editor jump bar):
+    /// `Changes | History` on the left with the active mode lit in the chrome accent, and
+    /// refresh on the right — above a full-width hairline that splits it from the content.
+    private var bottomBar: some View {
+        HStack(spacing: 8) {
+            switchButton("Changes", .changes)
+            Divider().frame(height: 12)
+            switchButton("History", .history)
             Spacer(minLength: 8)
             TreeHeaderButton(systemName: "arrow.clockwise", help: "Refresh") {
-                Task { await model.load() }
+                Task {
+                    if mode == .changes { await model.load() }
+                    else { await model.loadHistory(force: true) }
+                }
             }
         }
-        .padding(.leading, 14)
+        .padding(.leading, 12)
         .padding(.trailing, 8)
         .padding(.vertical, 6)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)
+        }
+    }
+
+    private func switchButton(_ title: String, _ value: GitPaneMode) -> some View {
+        let active = mode == value
+        return Button {
+            mode = value
+        } label: {
+            Text(title)
+                .font(.system(size: 11.5, weight: active ? .semibold : .regular))
+                .foregroundStyle(active ? AnyShapeStyle(chrome?.accent ?? Color.accentColor) : AnyShapeStyle(.secondary))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var changeList: some View {
@@ -115,16 +123,14 @@ struct GitChangesView: View {
         // (`FileTreeList`). Selection drives "open the diff", which is what lets each row be
         // `.draggable` at the same time: a SwiftUI tap gesture would strangle the drag, but
         // List's AppKit-level selection coexists with it. The checkbox is a `Button`, so it
-        // toggles the commit selection without also opening the diff.
+        // toggles staging without also opening the diff.
         List(model.changes, selection: selectedPath) { change in
             GitChangeRow(
                 change: change,
                 fileURL: fileURL(for: change),
                 font: settings.interfaceFont,
                 chrome: chrome,
-                isSelected: store.openDiff?.change.path == change.path,
-                isChecked: model.isChecked(change),
-                onToggle: { model.toggle(change) },
+                isSelected: store.openDiff?.change.path == change.path && store.openDiff?.commit == nil,
                 onDiscard: { pendingDiscard = change }
             )
             .contextMenu {
@@ -201,7 +207,7 @@ struct GitChangesView: View {
     /// never fires. Deselection is ignored — closing the diff is the overlay's own job.
     private var selectedPath: Binding<String?> {
         Binding(
-            get: { store.openDiff?.change.path },
+            get: { store.openDiff?.commit == nil ? store.openDiff?.change.path : nil },
             set: { path in
                 if let change = model.changes.first(where: { $0.path == path }) { open(change) }
             }
@@ -209,19 +215,17 @@ struct GitChangesView: View {
     }
 }
 
-/// A single row in the changes list: a commit checkbox, a colored status letter, the file
-/// name (dimmed when deleted), and right-aligned `+adds −dels`. `.draggable` out as the
-/// file's URL. Opening is the List's own `selection:` binding, not a tap gesture, which is
-/// what keeps the drag immediate; the checkbox and discard controls are `Button`s, so they
-/// act without triggering the row's open-diff selection.
+/// A single row in the changes list: a colored status letter, the file name (dimmed when
+/// deleted), and right-aligned `+adds −dels`. `.draggable` out as the file's URL. Opening
+/// is the List's own `selection:` binding, not a tap gesture, which is what keeps the drag
+/// immediate; the discard control is a `Button`, so it acts without triggering the row's
+/// open-diff selection.
 private struct GitChangeRow: View {
     let change: GitChange
     let fileURL: URL
     let font: Font
     let chrome: ChromeTheme?
     let isSelected: Bool
-    let isChecked: Bool
-    let onToggle: () -> Void
     /// Fires the discard confirmation for this row (owned by `GitChangesView`).
     let onDiscard: () -> Void
 
@@ -229,14 +233,6 @@ private struct GitChangeRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Button(action: onToggle) {
-                Image(systemName: isChecked ? "checkmark.square.fill" : "square")
-                    .font(.system(size: 12))
-                    .foregroundStyle(isChecked ? AnyShapeStyle(chrome?.accent ?? .accentColor) : AnyShapeStyle(.tertiary))
-            }
-            .buttonStyle(.plain)
-            .help(isChecked ? "Exclude from commit" : "Include in commit")
-
             Text(change.status.letter)
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                 .foregroundStyle(change.status.tint)
