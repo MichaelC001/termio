@@ -247,11 +247,11 @@ extension AgentDefinition {
         icon: .brandImage(.kimi), tint: .monochromeInk,
         installURL: URL(string: "https://moonshotai.github.io/kimi-code"), wireName: "kimi")
 
-    static let gemini = AgentDefinition(
-        id: "gemini", displayName: "Gemini", command: "gemini",
-        permissionBypassFlag: "--yolo", sandboxStandDownArguments: nil, resumeStyle: .none,
-        icon: .brandImage(.gemini), tint: .monochromeInk,
-        installURL: URL(string: "https://antigravity.google/download"), wireName: "gemini")
+    static let antigravity = AgentDefinition(
+        id: "antigravity", displayName: "Antigravity", command: "agy",
+        permissionBypassFlag: nil, sandboxStandDownArguments: nil, resumeStyle: .none,
+        icon: .brandImage(.antigravity), tint: .monochromeInk,
+        installURL: URL(string: "https://antigravity.google/product/antigravity-cli"), wireName: "antigravity")
 
     static let hermes = AgentDefinition(
         id: "hermes", displayName: "Hermes", command: "hermes",
@@ -262,7 +262,7 @@ extension AgentDefinition {
     /// The agents termio ships, in the order they appear in the picker. User agents
     /// are appended after these by `AgentCatalog`.
     static let builtins: [AgentDefinition] = [
-        terminal, claudeCode, codex, opencode, pi, amp, cursor, kimi, gemini, hermes,
+        terminal, claudeCode, codex, opencode, pi, amp, cursor, kimi, antigravity, hermes,
     ]
 
     /// A stand-in for a session that references an agent id no longer present (a user

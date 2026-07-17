@@ -21,7 +21,7 @@ public enum AgentKind: String, Sendable {
     case amp
     case cursor
     case kimi
-    case gemini
+    case antigravity
     case hermes
     case terminal
 
@@ -31,7 +31,7 @@ public enum AgentKind: String, Sendable {
         switch self {
         case .claude: BrandLogo.claude.tint
         case .codex: BrandLogo.codex.tint
-        case .opencode, .pi, .amp, .cursor, .kimi, .gemini, .hermes, .terminal: .monochromeInk
+        case .opencode, .pi, .amp, .cursor, .kimi, .antigravity, .hermes, .terminal: .monochromeInk
         }
     }
 
@@ -44,7 +44,7 @@ public enum AgentKind: String, Sendable {
         case .amp: .amp
         case .cursor: .cursor
         case .kimi: .kimi
-        case .gemini: .gemini
+        case .antigravity: .antigravity
         case .hermes: .hermes
         case .claude, .codex, .terminal: nil
         }
@@ -91,7 +91,7 @@ public struct AgentIconView: View {
             BrandLogoShape(logo: .codex)
                 .fill(BrandLogo.codex.tint, style: FillStyle(eoFill: true))
                 .frame(width: size, height: size)
-        case .opencode, .pi, .amp, .cursor, .kimi, .gemini, .hermes:
+        case .opencode, .pi, .amp, .cursor, .kimi, .antigravity, .hermes:
             BrandImageView(asset: agent.brandImage!, size: size)
         case .terminal:
             HugeIconView(icon: .terminal, size: size, color: .monochromeInk)
@@ -115,7 +115,7 @@ public enum BrandImageAsset: Hashable, Sendable {
     case amp
     case cursor
     case kimi
-    case gemini
+    case antigravity
     case hermes
 
     /// Base name of the bundled resource file (without extension).
@@ -126,7 +126,7 @@ public enum BrandImageAsset: Hashable, Sendable {
         case .amp: "amp-favicon"
         case .cursor: "cursor-favicon"
         case .kimi: "kimi-favicon"
-        case .gemini: "gemini-favicon"
+        case .antigravity: "antigravity-favicon"
         case .hermes: "hermes-favicon"
         }
     }
