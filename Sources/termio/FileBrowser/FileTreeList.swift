@@ -33,6 +33,9 @@ struct FileTreeList: View {
         // `FileBrowserView.body`) shows through — the file column lives in a plain split item, not
         // a panel item, so it carries no system vibrant background of its own.
         .scrollContentBackground(.hidden)
+        // Let each row size to its own content (icon/text + the row's vertical padding)
+        // rather than forcing a tall minimum — a large min height paints an empty
+        // highlight band above/below the label on hover/selection.
         .environment(\.defaultMinListRowHeight, 1)
         // A right-click in the empty area below the rows offers New File / New Folder
         // at the project root — the rows' own menus take the clicks that land on them.
@@ -62,9 +65,9 @@ private struct FileRow: View {
     var body: some View {
         // One explicit HStack for both kinds (not `Label`, whose internal insets shift
         // the title): a folder is just its name pulled flush to the disclosure chevron
-        // (VS Code, no glyph); a file leads with its type icon. Because both start at
-        // the HStack's leading edge, a folder's name lines up exactly under the file
-        // icons below it.
+        // (VS Code, no glyph — cleaner without a folder icon); a file leads with its
+        // type icon. Because both start at the HStack's leading edge, a folder's name
+        // lines up exactly under the file icons below it.
         let row = HStack(spacing: 5) {
             if !node.isDirectory {
                 // The file's real language/tool logo (a Devicon mark) when bundled,
@@ -77,12 +80,14 @@ private struct FileRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
-        // Tighten the generous default sidebar-row height into a denser tree, the
-        // way the project sidebar floors its own rows.
-        .padding(.vertical, 0)
-        // Tight padding (2) to minimize the gap between the folder chevron and name,
-        // aligning the child chevron at X=20 directly under the parent text.
-        .padding(.leading, 2)
+        // A denser tree than the system default, but with enough vertical breathing
+        // room that rows aren't cramped (paired with `defaultMinListRowHeight` below).
+        .padding(.vertical, 2)
+        // Pull the row left toward the disclosure chevron — SwiftUI's default
+        // chevron-to-content gap is wider than VS Code / Xcode, which sit the label
+        // tight to the arrow. Applied to both kinds so folder names and file icons
+        // share one column.
+        .padding(.leading, -6)
         // Fill the row so the tap target — and any folder drop target — spans its
         // full width, not just the label's footprint.
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -8,6 +8,4 @@ import Foundation
 @MainActor
 final class FileBrowserState: ObservableObject {
     @Published var selection: URL?
-    @Published var showHiddenFiles: Bool = false
 }
-
