@@ -608,6 +608,11 @@ extension TermioStore {
         // shortcuts always reach termio's menu.
         builder.withCustom("keybind", "super+shift+p=unbind")
         builder.withCustom("keybind", "super+shift+o=unbind")
+        // ⌘T is termio's "New Terminal" (see `buildMainMenu`). Ghostty binds it to
+        // its own `new_tab`, which is a no-op in termio's tab-less embedding — so a
+        // focused surface swallows the key and the menu action never fires ("nothing
+        // happens"). Unbind it so ⌘T always reaches termio's menu.
+        builder.withCustom("keybind", "super+t=unbind")
         // Font size and split zoom are termio menu actions too: font size is
         // driven from the persisted `fontSize` setting (so it survives relaunch
         // and applies to every surface), and zoom is a host SplitTree operation
