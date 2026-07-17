@@ -221,15 +221,15 @@ extension AgentDefinition {
 
     static let gemini = AgentDefinition(
         id: "gemini", displayName: "Gemini", command: "gemini",
-        permissionBypassFlag: nil, sandboxStandDownArguments: nil, resumeStyle: .none,
+        permissionBypassFlag: "--yolo", sandboxStandDownArguments: nil, resumeStyle: .none,
         icon: .brandImage(.gemini), tint: .monochromeInk,
-        installURL: URL(string: "https://ai.google.dev"), wireName: "gemini")
+        installURL: URL(string: "https://antigravity.google/download"), wireName: "gemini")
 
     static let hermes = AgentDefinition(
         id: "hermes", displayName: "Hermes", command: "hermes",
         permissionBypassFlag: nil, sandboxStandDownArguments: nil, resumeStyle: .none,
         icon: .brandImage(.hermes), tint: .monochromeInk,
-        installURL: URL(string: "https://github.com/NousResearch/hermes-agent"), wireName: "hermes")
+        installURL: URL(string: "https://hermes-agent.nousresearch.com/#downloads"), wireName: "hermes")
 
     /// The agents termio ships, in the order they appear in the picker. User agents
     /// are appended after these by `AgentCatalog`.
