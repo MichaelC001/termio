@@ -119,15 +119,18 @@ struct SidebarView: View {
         // macOS has no `listSectionSpacing`. So the pinned grouping is hand-rolled
         // too — our own quiet "Pinned" label + a hairline — keeping folded rows tight.
         //
-        // Row order: the Terminals funnel first (above everything); then, if any, a
-        // "Pinned" group; then the rest. A project's membership in the pinned group is
-        // itself the pin cue, so pinned rows carry no per-row badge. Both groups keep
-        // the user's chosen sort (already applied by `orderedProjects`, which we only
-        // partition here — never reorder).
+        // Row order: the "Pinned" working set first (above everything — the curated,
+        // deliberately-elevated items); then the loose Terminals and Chats funnels; then
+        // the rest. A project's membership in the pinned group is itself the pin cue, so
+        // pinned rows carry no per-row badge. Both groups keep the user's chosen sort
+        // (already applied by `orderedProjects`, which we only partition here — never reorder).
         let ordered = store.orderedProjects
         let terminals = ordered.filter { $0.kind == .terminals }
-        let pinnedProjects = ordered.filter { $0.kind != .terminals && $0.pinned }
-        let others = ordered.filter { $0.kind != .terminals && !$0.pinned }
+        let chats = ordered.filter { $0.kind == .chats }
+        // Only real `.folder` projects populate the Pinned working set and the Projects
+        // list; the two loose funnels (Terminals, Chats) render as their own sections.
+        let pinnedProjects = ordered.filter { $0.kind == .folder && $0.pinned }
+        let others = ordered.filter { $0.kind == .folder && !$0.pinned }
         // Pinned worktrees are gathered only from *unpinned* projects: a pinned project
         // already renders the worktree inside its own block, so listing it again in the
         // working set would double it.
@@ -147,6 +150,33 @@ struct SidebarView: View {
         }
         let hasPinned = !pinnedProjects.isEmpty || !pinnedWorktrees.isEmpty || !pinnedSessions.isEmpty
         return List {
+            // The top "Pinned" working set, under its own section header: pinned projects
+            // as full blocks, then pinned worktrees as mini-blocks (header + their
+            // sessions), then pinned sessions as shortcut rows — each nested entry tagged
+            // with its origin breadcrumb. Nested items stay in the tree below too; only
+            // whole projects move up here. This curated working set sits at the very top —
+            // above the ephemeral Terminals/Chats funnels — because it's the items the user
+            // deliberately elevated (mirroring the iOS "Needs You" strip at the home top).
+            if hasPinned {
+                SidebarSectionHeader(
+                    title: "Pinned",
+                    chrome: chrome,
+                    isCollapsed: pinnedCollapsed,
+                    toggleCollapsed: {
+                        withAnimation(.easeInOut(duration: 0.18)) { pinnedCollapsed.toggle() }
+                    }
+                )
+                if !pinnedCollapsed {
+                    ForEach(pinnedProjects) { projectBlock($0) }
+                    ForEach(pinnedWorktrees) { entry in
+                        pinnedWorktreeBlock(project: entry.project, worktree: entry.worktree)
+                    }
+                    ForEach(pinnedSessions) { entry in
+                        SessionRow(session: entry.session, chrome: chrome, leadingIndent: 16,
+                                   breadcrumb: breadcrumb(for: entry.session, in: entry.project))
+                    }
+                }
+            }
             // The loose-terminals funnel, as a section (not a project folder): its
             // header carries the New/Close actions; its sessions render below. Hidden
             // entirely while it holds no terminals — an empty section label is just
@@ -171,28 +201,29 @@ struct SidebarView: View {
                     }
                 }
             }
-            // The top "Pinned" working set, under its own section header: pinned projects
-            // as full blocks, then pinned worktrees as mini-blocks (header + their
-            // sessions), then pinned sessions as shortcut rows — each nested entry tagged
-            // with its origin breadcrumb. Nested items stay in the tree below too; only
-            // whole projects move up here.
-            if hasPinned {
+            // The loose-agents funnel — the agent-side twin of Terminals, paired
+            // directly above Projects (the "Chats vs Projects" split: one-off agent
+            // sessions vs. real folder-scoped work). Every scratch agent shares one
+            // `.chats` container rooted at `~/.termio/chats`; its header offers a single
+            // "New Chat" (the default agent — see `addDefaultChat`) plus a Close All,
+            // mirroring the Terminals header's "New Terminal". Hidden while empty.
+            ForEach(chats.filter { !$0.sessions.isEmpty }) { chat in
                 SidebarSectionHeader(
-                    title: "Pinned",
+                    title: "Chats",
                     chrome: chrome,
-                    isCollapsed: pinnedCollapsed,
-                    toggleCollapsed: {
-                        withAnimation(.easeInOut(duration: 0.18)) { pinnedCollapsed.toggle() }
-                    }
+                    isCollapsed: collapsedProjects.contains(chat.id),
+                    toggleCollapsed: { toggleCollapsed(chat.id) },
+                    menuItems: [
+                        .action("New Chat") { store.addDefaultChat() },
+                        .separator,
+                        .action("Close All Chats") { store.removeProject(chat.id) },
+                    ]
                 )
-                if !pinnedCollapsed {
-                    ForEach(pinnedProjects) { projectBlock($0) }
-                    ForEach(pinnedWorktrees) { entry in
-                        pinnedWorktreeBlock(project: entry.project, worktree: entry.worktree)
-                    }
-                    ForEach(pinnedSessions) { entry in
-                        SessionRow(session: entry.session, chrome: chrome, leadingIndent: 16,
-                                   breadcrumb: breadcrumb(for: entry.session, in: entry.project))
+                if !collapsedProjects.contains(chat.id) {
+                    let sessions = primarySessions(for: chat)
+                    let marks = splitLinkMarks(for: sessions)
+                    ForEach(sessions) { session in
+                        SessionRow(session: session, chrome: chrome, splitLink: marks[session.id])
                     }
                 }
             }

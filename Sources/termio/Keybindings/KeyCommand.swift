@@ -6,6 +6,7 @@ import Foundation
 enum KeyCommandID: String, CaseIterable, Identifiable {
     // File
     case newTerminal = "file.new-terminal"
+    case newChat = "file.new-chat"
     case openProject = "file.open-project"
     // Navigation
     case openQuickly = "nav.open-quickly"
@@ -55,6 +56,8 @@ enum KeyCommandCatalog {
         // File
         .init(id: .newTerminal, category: "File", title: "New Terminal",
               defaultShortcut: .init(modifiers: [.command], key: .char("t"))),
+        .init(id: .newChat, category: "File", title: "New Chat",
+              defaultShortcut: .init(modifiers: [.command], key: .char("n"))),
         .init(id: .openProject, category: "File", title: "Open Project…",
               defaultShortcut: .init(modifiers: [.command], key: .char("o"))),
         // Navigation

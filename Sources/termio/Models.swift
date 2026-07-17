@@ -10,14 +10,19 @@ struct RecentProject: Identifiable, Hashable, Codable {
     var id: String { path }
 }
 
-/// What a sidebar section *is*. The two kinds have opposite ownership arrows
+/// What a sidebar section *is*. The kinds have differing ownership arrows
 /// (see docs/design/loose-terminal-entity.md): a `.folder` project's path is its
 /// identity and owns its sessions; the `.terminals` container is presentation
 /// only — each loose terminal session owns its *own* mutable path (the live cwd),
-/// and the container's `path` is just the spawn fallback (`$HOME`).
+/// and the container's `path` is just the spawn fallback (`$HOME`). The `.chats`
+/// container is the agent-side twin of `.terminals`: loose agent sessions that
+/// aren't tied to a real project, gathered under one section rooted at the scoped
+/// scratch workspace (`~/.termio/chats`) — agents can't be turned loose in `$HOME`,
+/// which is exactly why they get their own funnel rather than joining `.terminals`.
 enum ProjectKind: String, Codable {
     case folder
     case terminals
+    case chats
 }
 
 /// A linked git checkout owned by a project. Sessions remain flat on the parent

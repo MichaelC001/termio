@@ -232,6 +232,25 @@ extension TermioStore {
     /// it reappears on relaunch (the shells themselves restart fresh).
     func addScratchTerminal() { addScratchSession(agent: .terminal) }
 
+    /// The agent a bare **New Chat** launches: the last-used scratch-chat agent if
+    /// it is still enabled, else the first enabled coding agent. `nil` only when the
+    /// user has disabled every agent — then New Chat is a no-op (and its menu entry
+    /// hides). The per-agent picker (welcome page, command palette) is where a
+    /// *specific* agent is still chosen; the menus deliberately offer one New Chat.
+    func defaultChatAgent() -> AgentPreset? {
+        let enabled = enabledAgentPresets(settings).filter { $0 != .terminal }
+        if let id = settings.lastChatAgentID,
+           let last = enabled.first(where: { $0.id == id }) { return last }
+        return enabled.first
+    }
+
+    /// Starts one scratch chat with the default agent — the single action behind
+    /// File ▸ New Chat (⌘N), the `+` menu's New Chat, and the Chats section header.
+    func addDefaultChat() {
+        guard let agent = defaultChatAgent() else { return }
+        addScratchSession(agent: agent)
+    }
+
     /// Opens a fresh scratch session that isn't tied to a real project — the welcome
     /// page's agent chips and the `+` button both land here.
     ///
@@ -240,33 +259,35 @@ extension TermioStore {
     /// expected and harmless. An **agent**, though, must never be handed `$HOME` as
     /// its working directory: an autonomous agent there can read and write the user's
     /// whole home (`~/.ssh`, `~/Documents`, …). So agents get a dedicated, scoped
-    /// scratch workspace at `~/.termio/default/` (created on first use, sibling to
+    /// scratch workspace at `~/.termio/chats/` (created on first use, sibling to
     /// the existing `~/.termio/worktrees/`), a clean directory that's safe to let an
     /// agent loose in.
     ///
-    /// Each destination gathers its loose sessions under one persistent section, so a
-    /// second click just grows another row there and selects it, rather than piling
-    /// up duplicate sections.
+    /// Each destination gathers its loose sessions under one persistent section — the
+    /// `.terminals` funnel for shells, the `.chats` funnel for agents — so a second
+    /// click just grows another row there and selects it, rather than piling up
+    /// duplicate sections.
     func addScratchSession(agent: AgentPreset = .terminal) {
-        // Loose terminals gather in the `.terminals` container (matched by kind,
-        // not path — its `path` is just the `$HOME` spawn fallback); scratch
-        // agents keep matching their scoped workspace by path.
+        // Both funnels are matched by kind, not path: the `.terminals` container's
+        // `path` is just the `$HOME` spawn fallback, and the single `.chats` container
+        // gathers every agent (Claude, Codex, …) that spawns in the scratch workspace.
         let path = scratchWorkspacePath(for: agent)
-        let existing = agent == .terminal
-            ? projects.first(where: { $0.kind == .terminals })
-            : projects.first(where: { $0.path == path })
-        if let existing {
+        // Remember the agent behind a bare "New Chat", so the single ⌘N / `+` / menu
+        // action relaunches whatever you actually use (see `defaultChatAgent`).
+        if agent != .terminal { settings.lastChatAgentID = agent.rawValue }
+        let containerKind: ProjectKind = agent == .terminal ? .terminals : .chats
+        if let existing = projects.first(where: { $0.kind == containerKind }) {
             addSession(to: existing.id, agent: agent)
             return
         }
         let title = agent == .terminal ? "Terminal 1" : agent.displayName
         let session = Session(title: title, agent: agent)
         let project = Project(
-            name: agent == .terminal ? "Terminals" : (path as NSString).lastPathComponent,
+            name: agent == .terminal ? "Terminals" : "Chats",
             path: path,
             branch: currentBranch(in: path) ?? "—",
             sessions: [session],
-            kind: agent == .terminal ? .terminals : .folder
+            kind: containerKind
         )
         projects.append(project)
         selectedSessionID = session.id
@@ -320,18 +341,18 @@ extension TermioStore {
     }
 
     /// The working directory for a scratch session: `~` for a plain terminal, and the
-    /// scoped `~/.termio/default/` workspace for any agent (created on demand). See
+    /// scoped `~/.termio/chats/` workspace for any agent (created on demand). See
     /// `addScratchSession` for why agents are kept out of `$HOME`.
     private func scratchWorkspacePath(for agent: AgentPreset) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
         guard agent != .terminal else { return home.path }
-        let workspace = home.appendingPathComponent(".termio/default", isDirectory: true)
+        let workspace = home.appendingPathComponent(".termio/chats", isDirectory: true)
         try? FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         seedScratchWorkspaceDocs(at: workspace)
         return workspace.standardizedFileURL.path
     }
 
-    /// Drops a `CLAUDE.md` and an `AGENTS.md` into the default scratch workspace so an
+    /// Drops a `CLAUDE.md` and an `AGENTS.md` into the scratch workspace so an
     /// agent that spawns here reads, up front, that this is a throwaway scratchpad —
     /// not a real project to explore or a place to put anything it should keep. Both
     /// filenames are seeded because agents split on the convention (`CLAUDE.md` for
@@ -341,7 +362,7 @@ extension TermioStore {
         let guidance = """
         # termio scratch workspace
 
-        This is termio's default scratch workspace (`~/.termio/default`) — an empty,
+        This is termio's scratch workspace (`~/.termio/chats`) — an empty,
         throwaway space for quick one-off sessions that aren't tied to any project.
 
         - Treat it as a clean scratchpad: nothing important lives here, and files you

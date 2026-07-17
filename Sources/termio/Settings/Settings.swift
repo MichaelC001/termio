@@ -102,6 +102,7 @@ final class AppSettings: ObservableObject {
         static let claudeKeychainDeclined = "usage.claudeKeychainDeclined"
         static let projectSortOrder = "sidebar.projectSortOrder"
         static let recentProjects = "welcome.recentProjects"
+        static let lastChatAgent = "chats.lastAgent"
     }
 
     // MARK: Appearance
@@ -145,6 +146,15 @@ final class AppSettings: ObservableObject {
         didSet {
             defaults.set(try? JSONEncoder().encode(recentProjects), forKey: Key.recentProjects)
         }
+    }
+
+    /// The coding agent the last scratch **chat** was started with, so a bare
+    /// "New Chat" (the single File-menu / `+` action) relaunches the agent you
+    /// actually use rather than a fixed one. Stored by id; `nil` until the first
+    /// chat is started, and ignored if that agent is later disabled — both fall
+    /// back to the first enabled agent (see `TermioStore.defaultChatAgent`).
+    @Published var lastChatAgentID: String? {
+        didSet { defaults.set(lastChatAgentID, forKey: Key.lastChatAgent) }
     }
 
     /// The most a project can be opened is capped so the Recent column stays a
@@ -380,6 +390,7 @@ final class AppSettings: ObservableObject {
         projectSortOrder = defaults.string(forKey: Key.projectSortOrder).flatMap(ProjectSortOrder.init) ?? .recentActivity
         recentProjects = defaults.data(forKey: Key.recentProjects)
             .flatMap { try? JSONDecoder().decode([RecentProject].self, from: $0) } ?? []
+        lastChatAgentID = defaults.string(forKey: Key.lastChatAgent)
     }
 
     /// Effective command for an agent: the user's override if it's non-empty,

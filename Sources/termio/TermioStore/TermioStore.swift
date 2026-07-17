@@ -435,7 +435,7 @@ final class TermioStore: ObservableObject {
         }
 
         let store = TermioStore(
-            projects: migratingHomeProject(normalizingAgentTitles(snapshot.projects)),
+            projects: migratingScratchProject(migratingHomeProject(normalizingAgentTitles(snapshot.projects))),
             settings: settings
         )
         if let id = snapshot.selectedSessionID, store.session(id) != nil {
@@ -498,6 +498,28 @@ final class TermioStore: ObservableObject {
                 if session.title == "shell" { session.title = "Terminal \(index + 1)" }
                 return session
             }
+            return project
+        }
+    }
+
+    /// State files from before the Chats funnel existed modeled scratch **agent**
+    /// sessions as a plain `.folder` project named "default" at `~/.termio/default`.
+    /// Re-tag that container as `.chats` (the fixed section name and the new
+    /// `~/.termio/chats` root) so it renders as the Chats section rather than a fake
+    /// "default" project folder. Matched by its old scratch path; idempotent — an
+    /// already-tagged `.chats` container, and any real project, pass through unchanged.
+    /// Sessions restart fresh on relaunch anyway, so repointing the spawn path is free.
+    private static func migratingScratchProject(_ projects: [Project]) -> [Project] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+        let oldPath = home.appendingPathComponent(".termio/default").standardizedFileURL.path
+        let newPath = home.appendingPathComponent(".termio/chats").standardizedFileURL.path
+        return projects.map { project in
+            guard project.kind == .folder,
+                  (project.path as NSString).standardizingPath == oldPath else { return project }
+            var project = project
+            project.kind = .chats
+            project.name = "Chats"
+            project.path = newPath
             return project
         }
     }
