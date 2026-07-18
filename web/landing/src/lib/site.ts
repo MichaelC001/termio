@@ -17,6 +17,9 @@ export const navLinks = [
   { label: "Changelog", href: "/changelog" },
 ] as const;
 
+// Community Discord invite, surfaced in the site nav.
+export const discordUrl = "https://discord.gg/H9DKVwsE5f";
+
 // The desktop build download — the stable Cloudflare R2 URL (behind
 // downloads.termio.sh) that always serves the newest notarized DMG. The release
 // workflow (.github/workflows/release.yml) overwrites this object on every tag.

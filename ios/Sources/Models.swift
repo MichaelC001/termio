@@ -86,7 +86,7 @@ extension AgentKind {
         case "amp": self = .amp
         case "cursor": self = .cursor
         case "kimi": self = .kimi
-        case "gemini": self = .gemini
+        case "antigravity": self = .antigravity
         case "hermes": self = .hermes
         default: self = .terminal
         }
@@ -111,7 +111,7 @@ extension AgentKind {
         case .codex:
             mark = AnyView(BrandLogoShape(logo: .codex).fill(.black, style: FillStyle(eoFill: true)))
             isTemplate = true
-        case .opencode, .pi, .amp, .cursor, .kimi, .gemini, .hermes:
+        case .opencode, .pi, .amp, .cursor, .kimi, .antigravity, .hermes:
             mark = AnyView(BrandImageView(asset: brandImage!, size: pointSize))
             isTemplate = false
         case .terminal:
