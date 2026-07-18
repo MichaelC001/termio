@@ -32,6 +32,37 @@ deprecated in place, so this doc is the map; git is the backup.
    carried a `sandboxStandDownArguments` field purely so the launcher could tell each agent
    to disable *its own* sandbox. Security policy leaked into the agent-definition data model.
 
+## Why it isn't the right thing to invest in *now*
+
+The four points above are the *mechanical* reasons the current implementation had to go.
+The deeper reason it isn't being rebuilt right now is a product call, not a code one:
+
+- **The problem is already solved one layer down.** The threat this guarded against — a
+  rogue or prompt-injected agent running `rm -rf`, exfiltrating `~/.ssh`/the Keychain, or
+  piping `curl | sh` — is now handled by the agents themselves. Claude Code, Codex, and Grok
+  each ship their own confinement. termio spending effort here buys **~zero marginal safety**
+  over what the user already gets by default; it mostly duplicates work the vendors do better
+  and keep current.
+- **It's a moving target we'd be chasing, not owning.** `sandbox-exec` is deprecated, the
+  agents' own sandbox flags drift release to release (the stand-down strings were already
+  three different dialects), and Apple's replacement story (`sandbox_init`, containers) is
+  unsettled. Building on this now means signing up to re-verify a security boundary against
+  a shifting substrate — the worst kind of maintenance to carry on an indie, free tool.
+- **It fights termio's whole reason to exist.** termio is a deliberately small, focused,
+  native terminal for agents (see [[ambition]]) — its edge is taste and a tiny surface area,
+  not being a security product. A per-project SBPL compiler, a threat-model UI, presets, and
+  per-agent policy is a *large, permanent* surface that pulls the project toward something it
+  chose not to be. Saying no here is the same discipline that keeps the rest of the app sharp.
+- **The cost of waiting is nearly nothing, and it's fully reversible.** Because the agents
+  already sandbox themselves, there's no urgency gap to cover. If the calculus changes — a
+  headline agent drops its own sandbox, or a real user asks for host-level confinement — this
+  doc plus git bring it back in an afternoon, and the recommended shape ([§6](#6-if-we-bring-it-back-do-it-lighter))
+  is a few lines of launch-prefix glue rather than a security subsystem to re-own.
+
+In short: **not "sandboxing is unimportant", but "termio owning the sandbox is the wrong
+place to spend a small team's attention right now."** The right posture today is to lean on
+each agent's own sandbox and keep termio's surface small.
+
 Restoration path: **git**. The pre-removal commit (below) contains the complete, working
 implementation. Bringing it back = `git revert` / `git cherry-pick` of the removal commit,
 or a fresh lighter build per [§6](#6-if-we-bring-it-back-do-it-lighter).
