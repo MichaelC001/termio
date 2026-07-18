@@ -85,10 +85,6 @@ final class TermioStore: ObservableObject {
     /// high-frequency working-event updates off the disk-writing `projects` array.
     @Published var liveActivity: [Project.ID: Date] = [:]
 
-    /// The project whose Security panel is open, or `nil` when none is. Transient UI
-    /// state (not persisted) driving the sandbox-configuration sheet.
-    @Published var editingSecurityProjectID: Project.ID?
-
     /// The file currently open in the editor overlay, or `nil` when the terminal is showing.
     /// Transient UI state: clicking a text file in the inspector sets it, and the terminal
     /// pane covers itself with the editor while it is non-nil (see `TerminalPane` / `FileEditorView`).

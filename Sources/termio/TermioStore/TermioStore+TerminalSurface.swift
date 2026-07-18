@@ -82,8 +82,7 @@ extension TermioStore {
         }
 
         // An isolated worktree (if one was created for this session) wins over the
-        // project's own directory, so the agent edits the branch in place — and so the
-        // sandbox's writable workspace is exactly where the session actually works.
+        // project's own directory, so the agent edits the branch in place.
         // A loose terminal instead respawns at the cwd it last reported over OSC 7
         // (its path is the session's own mutable property, not the container's) —
         // so a relaunch drops the user back where they `cd`'d, not at `$HOME`.
@@ -103,8 +102,8 @@ extension TermioStore {
         // and the directory-resume agents); it's written back below.
         // An SSH terminal launches `ssh <host>` instead of a local shell or agent —
         // the remote host allocates its own pty over the connection. It never
-        // resumes or sandboxes (both are local-agent concepts), so it short-circuits
-        // the agent launch resolution below.
+        // resumes (a local-agent concept), so it short-circuits the agent launch
+        // resolution below.
         let launch = session.sshHost.map { (command: Self.sshCommand(host: $0), resumeID: String?.none) }
             ?? resolveLaunch(for: session, workspacePath: workspacePath)
         let agentCommand = launch.command
@@ -113,18 +112,6 @@ extension TermioStore {
         // and warns when no file exists yet; pre-creating it keeps the launch silent.
         if session.agent == .pi, let pinnedID = launch.resumeID {
             PiSession.ensureExists(id: pinnedID, cwd: workspacePath)
-        }
-
-        // When the project is sandboxed, the session's whole process tree runs under a
-        // Seatbelt profile compiled from `project.sandbox`: `sandbox-exec` wraps the same
-        // command that would otherwise run on the host, the agent is told to stand down
-        // its own (now redundant, and un-nestable) sandbox, and everything outside the
-        // workspace and the baseline allows is invisible. `nil` (no sandbox, or the
-        // profile file couldn't be written) falls back to running on the host as before.
-        let sandboxedCommand: String? = project.sandbox.flatMap { profile in
-            SandboxLauncher.command(agentCommand: agentCommand, agent: session.agent,
-                                    profile: profile, workspacePath: workspacePath,
-                                    sessionID: session.id)
         }
 
         let controller = TerminalController { [self] builder in
@@ -146,8 +133,7 @@ extension TermioStore {
         // session control. The surface's keystrokes/resizes flow to the PTY via
         // the callbacks; the PTY's output fans back into the surface (and any
         // attached companion sink) through `receive`.
-        let effectiveCommand = sandboxedCommand ?? agentCommand
-        let argv = Self.launchArgv(command: effectiveCommand)
+        let argv = Self.launchArgv(command: agentCommand)
         var env = Self.sanitizedEnvironment()
         // Stamp the session id so any agent hook running inside can echo it back,
         // letting `HookListener` correlate events to this exact session.
@@ -363,10 +349,10 @@ extension TermioStore {
         }
     }
 
-    /// The argv to spawn in the session's PTY. An agent command string (possibly
-    /// a full sandbox-exec line) runs through the shell so its quoting/args parse
-    /// exactly as under libghostty's `.exec`; `exec` keeps the shell from lingering
-    /// as an extra process. A `nil` command is the plain interactive login shell.
+    /// The argv to spawn in the session's PTY. An agent command string runs through
+    /// the shell so its quoting/args parse exactly as under libghostty's `.exec`;
+    /// `exec` keeps the shell from lingering as an extra process. A `nil` command is
+    /// the plain interactive login shell.
     private static func launchArgv(command: String?) -> [String] {
         let shell = loginShell
         if let command, !command.isEmpty {

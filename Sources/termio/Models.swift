@@ -67,11 +67,6 @@ struct Project: Identifiable, Hashable, Codable {
     /// stay in `sessions` so the control plane keeps one flat project roster.
     var worktrees: [Worktree] = []
 
-    /// Optional sandbox configuration. `nil` (the default) runs this project's
-    /// sessions directly on the host; a value runs them under an Apple Seatbelt profile
-    /// (see `SeatbeltProfile`), which confines the agent's whole process tree.
-    var sandbox: SandboxProfile?
-
     /// Whether the user has pinned this project to the top of the sidebar. Pinned
     /// projects always sort ahead of the rest, regardless of the chosen sort order
     /// (see `TermioStore.orderedProjects`).
@@ -84,7 +79,7 @@ struct Project: Identifiable, Hashable, Codable {
 
 extension Project {
     private enum CodingKeys: String, CodingKey {
-        case id, name, path, branch, sessions, worktrees, sandbox, pinned, kind
+        case id, name, path, branch, sessions, worktrees, pinned, kind
     }
 
     /// Missing collection and flag keys take their pre-feature defaults so older
@@ -99,7 +94,6 @@ extension Project {
         branch = try container.decode(String.self, forKey: .branch)
         sessions = try container.decode([Session].self, forKey: .sessions)
         worktrees = try container.decodeIfPresent([Worktree].self, forKey: .worktrees) ?? []
-        sandbox = try container.decodeIfPresent(SandboxProfile.self, forKey: .sandbox)
         pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         kind = try container.decodeIfPresent(ProjectKind.self, forKey: .kind) ?? .folder
     }

@@ -441,28 +441,22 @@ extension TermioStore {
         }
     }
 
-    /// Presents a folder picker. `sandboxed` decides whether the opened project runs
-    /// its sessions under a Seatbelt sandbox (File ▸ Open Project Sandboxed…) or on the
-    /// host (File ▸ Open Project…) — the sandbox is decided when the project is brought
-    /// in, and can be adjusted later from the project's Security panel.
-    func presentOpenProjectPanel(sandboxed: Bool = false) {
+    /// Presents a folder picker that opens the chosen directory as a new project.
+    func presentOpenProjectPanel() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.prompt = sandboxed ? "Open Sandboxed" : "Open"
-        panel.message = sandboxed
-            ? "Choose a project folder to open under a Seatbelt sandbox."
-            : "Choose a project folder to open in termio."
+        panel.prompt = "Open"
+        panel.message = "Choose a project folder to open in termio."
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        addProject(at: url, sandboxed: sandboxed)
+        addProject(at: url)
     }
 
     /// Adds the directory at `url` as a new project section seeded with a single
     /// terminal session, which becomes the selection. A folder already open as a
-    /// project is not duplicated — its first session is selected instead. `sandboxed`
-    /// seeds the project's sandbox profile so its sessions run under a Seatbelt profile.
-    func addProject(at url: URL, sandboxed: Bool = false) {
+    /// project is not duplicated — its first session is selected instead.
+    func addProject(at url: URL) {
         let path = url.standardizedFileURL.path
         settings.noteRecentProject(name: url.lastPathComponent, path: path)
         if let existing = projects.first(where: { $0.path == path }) {
@@ -474,36 +468,10 @@ extension TermioStore {
             name: url.lastPathComponent,
             path: path,
             branch: currentBranch(in: path) ?? "—",
-            sessions: [session],
-            sandbox: sandboxed ? SandboxProfile() : nil
+            sessions: [session]
         )
         projects.append(project)
         selectedSessionID = project.sessions.first?.id
-    }
-
-    /// Turns the per-project sandbox on or off. On flips `sandbox` to a default
-    /// `SandboxProfile`; off clears it. Only sessions opened *after* the change pick
-    /// it up — an already-running session keeps its cached surface — so the user opens
-    /// a fresh session to enter (or leave) the sandbox. The change persists via the
-    /// `projects` `didSet`.
-    func setSandbox(_ enabled: Bool, for id: Project.ID) {
-        guard let index = projects.firstIndex(where: { $0.id == id }) else { return }
-        projects[index].sandbox = enabled ? SandboxProfile() : nil
-    }
-
-    /// The sandbox profile of a project, or `nil` when the project runs on the host.
-    func sandboxProfile(for id: Project.ID) -> SandboxProfile? {
-        projects.first(where: { $0.id == id })?.sandbox
-    }
-
-    /// Edits a sandboxed project's profile in place (a no-op when the project isn't
-    /// sandboxed). The mutation persists via the `projects` `didSet`, and is picked up by
-    /// sessions opened after the change — the Security panel edits through here.
-    func updateSandbox(for id: Project.ID, _ mutate: (inout SandboxProfile) -> Void) {
-        guard let index = projects.firstIndex(where: { $0.id == id }),
-              var profile = projects[index].sandbox else { return }
-        mutate(&profile)
-        projects[index].sandbox = profile
     }
 
     /// Removes a project from the sidebar: tears down every session's live surface
@@ -516,7 +484,6 @@ extension TermioStore {
 
         let removedSessionIDs = Set(projects[projectIndex].sessions.map(\.id))
         for sessionID in removedSessionIDs {
-            SandboxLauncher.cleanUp(sessionID: sessionID)
             ptyProcesses[sessionID]?.terminate()
             ptyProcesses[sessionID] = nil
             surfaces[sessionID] = nil
@@ -578,7 +545,6 @@ extension TermioStore {
         else { return }
 
         projects[projectIndex].sessions.remove(at: sessionIndex)
-        SandboxLauncher.cleanUp(sessionID: id)
         ptyProcesses[id]?.terminate()
         ptyProcesses[id] = nil
         surfaces[id] = nil

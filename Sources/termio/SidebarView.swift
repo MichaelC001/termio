@@ -259,19 +259,6 @@ struct SidebarView: View {
         .listStyle(.sidebar)
         .environment(\.defaultMinListRowHeight, 1)
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
-        // One sheet for the whole sidebar, driven by the store rather than per-row state,
-        // so opening it from any project's context menu (or its Sandbox pill) presents the
-        // same panel over the window.
-        .sheet(isPresented: Binding(
-            get: { store.editingSecurityProjectID != nil },
-            set: { if !$0 { store.editingSecurityProjectID = nil } }
-        )) {
-            if let id = store.editingSecurityProjectID {
-                SecuritySheet(projectID: id)
-                    .environmentObject(store)
-                    .environmentObject(settings)
-            }
-        }
     }
 
     /// One project's rows: its header, then (unless folded) its primary-checkout
@@ -533,7 +520,7 @@ private struct ProjectHeader: View {
     /// project's own actions. Mirrors the hover controls so both routes stay in sync.
     /// The Terminals section is not a folder project — agents don't belong in `$HOME`
     /// (they get a real project or the scoped scratch workspace), and worktree /
-    /// sandbox / Finder actions are about a project's directory — so its menu is
+    /// Finder actions are about a project's directory — so its menu is
     /// just the terminal action and Close All Terminals.
     private var menuItems: [SidebarMenuItem] {
         if isTerminalsHeader {
@@ -572,7 +559,6 @@ private struct ProjectHeader: View {
         items.append(.action(project.pinned ? "Unpin" : "Pin to Top") {
             store.togglePinned(project.id)
         })
-        items.append(.action("Security…") { store.editingSecurityProjectID = project.id })
         items.append(.action("Reveal in Finder") {
             NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: project.path)
         })
@@ -619,25 +605,6 @@ private struct ProjectHeader: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .layoutPriority(-1)
-            }
-            // A quiet "Sandbox" tag when this project runs under a Seatbelt profile —
-            // borrows the same soft quaternary capsule as the title-bar chips. Clicking it
-            // opens the Security panel (the same sheet the right-click menu offers), so the
-            // pill doubles as the at-rest entry point. Shown once on the header.
-            if worktree == nil && project.sandbox != nil {
-                Button {
-                    store.editingSecurityProjectID = project.id
-                } label: {
-                    Text("Sandbox")
-                        .font(.system(size: 9, weight: .semibold))
-                        .tracking(0.5)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Capsule(style: .continuous).fill(.quaternary))
-                }
-                .buttonStyle(.plain)
-                .help("Sandbox settings")
             }
             Spacer(minLength: 4)
             // A worktree's git-linkage marker, pinned to the row's right edge — its
@@ -1165,137 +1132,5 @@ private struct WorkingIndicator: View {
         let raw = abs(Double(index) - head)
         let distance = min(raw, count - raw)
         return max(0.4, 1 - distance / 3)
-    }
-}
-
-/// Per-project sandbox configuration, opened from a project's right-click "Security…"
-/// item or its "Sandbox" pill. A direct view over the project's `SandboxProfile` (edited
-/// through `TermioStore.updateSandbox`) — there is no separate model. Edits apply to
-/// sessions opened after the change, matching how the sandbox toggle has always behaved.
-struct SecuritySheet: View {
-    @EnvironmentObject var store: TermioStore
-    let projectID: Project.ID
-
-    private var project: Project? { store.projects.first { $0.id == projectID } }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider()
-            ScrollView { content.padding(20) }
-                .frame(maxHeight: 460)
-            Divider()
-            HStack {
-                Spacer()
-                Button("Done") { store.editingSecurityProjectID = nil }
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding(16)
-        }
-        .frame(width: 470)
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Security").font(.headline)
-            if let project {
-                Text(project.path)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(20)
-    }
-
-    @ViewBuilder private var content: some View {
-        Toggle(isOn: sandboxOn) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Run this project's sessions in a sandbox").font(.system(size: 13, weight: .medium))
-                Text("Confines the agent to the project folder. Your SSH keys, the login Keychain, and the rest of your home stay invisible.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-        }
-        .toggleStyle(.switch)
-
-        if sandboxOn.wrappedValue {
-            sandboxSettings
-        } else {
-            Label {
-                Text("This project's agents run with full access to your Mac — they can read your keys, credentials, and any file your account can.")
-                    .font(.system(size: 11))
-            } icon: {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.12)))
-            .padding(.top, 14)
-        }
-    }
-
-    @ViewBuilder private var sandboxSettings: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            section("Filesystem") {
-                Toggle("Let the agent edit the project files", isOn: bindInverse(\.workspaceReadOnly))
-                caption("Off makes the workspace read-only — the agent can look but not touch.")
-            }
-            section("Secrets") {
-                Toggle("Hide .env files from the agent", isOn: bind(\.blockDotEnv, true))
-                caption("Blocks reading .env / .env.* even inside the project. May stop commands that load them (e.g. a dev server) from starting.")
-                Toggle("Allow SSH keys (~/.ssh)", isOn: bind(\.allowSSH, false))
-                Toggle("Allow reading your entire home folder", isOn: bind(\.allowFullHomeRead, false))
-                    .tint(.orange)
-            }
-            section("Network") {
-                Picker("Network access", selection: bind(\.network, .full)) {
-                    Text("Full").tag(SandboxProfile.Network.full)
-                    Text("Off").tag(SandboxProfile.Network.off)
-                }
-                .pickerStyle(.segmented)
-                .fixedSize()
-                caption("Off blocks all network — most agents need Full to reach their model API.")
-            }
-        }
-        .padding(.top, 16)
-    }
-
-    private func section(_ title: String, @ViewBuilder _ rows: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title.uppercased())
-                .font(.system(size: 10, weight: .semibold)).tracking(0.6)
-                .foregroundStyle(.secondary)
-            rows()
-        }
-    }
-
-    private func caption(_ text: String) -> some View {
-        Text(text).font(.system(size: 11)).foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    // MARK: bindings into the project's profile (valid only while sandboxed)
-
-    private var sandboxOn: Binding<Bool> {
-        Binding(
-            get: { store.sandboxProfile(for: projectID) != nil },
-            set: { store.setSandbox($0, for: projectID) }
-        )
-    }
-
-    private func bind<T>(_ keyPath: WritableKeyPath<SandboxProfile, T>, _ fallback: T) -> Binding<T> {
-        Binding(
-            get: { store.sandboxProfile(for: projectID)?[keyPath: keyPath] ?? fallback },
-            set: { value in store.updateSandbox(for: projectID) { $0[keyPath: keyPath] = value } }
-        )
-    }
-
-    private func bindInverse(_ keyPath: WritableKeyPath<SandboxProfile, Bool>) -> Binding<Bool> {
-        Binding(
-            get: { !(store.sandboxProfile(for: projectID)?[keyPath: keyPath] ?? false) },
-            set: { value in store.updateSandbox(for: projectID) { $0[keyPath: keyPath] = !value } }
-        )
     }
 }

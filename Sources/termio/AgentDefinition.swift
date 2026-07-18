@@ -22,11 +22,6 @@ struct AgentDefinition: Identifiable {
     /// stable enough to wire to a one-click toggle (the free-text command override
     /// still accepts any flag). Composed on by `AppSettings.command(for:)`.
     let permissionBypassFlag: String?
-    /// A shell-ready fragment telling the agent to NOT run its own Seatbelt sandbox,
-    /// because termio's per-project profile is the single enforcement layer. Required
-    /// (macOS forbids a sandbox inside a sandbox), not an optimization. `nil` for
-    /// agents with no internal sandbox. Appended by `SandboxLauncher`.
-    let sandboxStandDownArguments: String?
     /// How (and whether) a relaunch resumes this agent's prior conversation.
     let resumeStyle: ResumeStyle
     let icon: AgentIcon
@@ -59,7 +54,7 @@ struct AgentDefinition: Identifiable {
     /// fallback don't each have to spell them out.
     init(
         id: String, displayName: String, command: String?, permissionBypassFlag: String?,
-        sandboxStandDownArguments: String?, resumeStyle: ResumeStyle, icon: AgentIcon,
+        resumeStyle: ResumeStyle, icon: AgentIcon,
         tint: Color, installURL: URL?, wireName: String,
         statusRules: AgentStatusRules? = nil, hookSpec: AgentHookSpec? = nil
     ) {
@@ -67,7 +62,6 @@ struct AgentDefinition: Identifiable {
         self.displayName = displayName
         self.command = command
         self.permissionBypassFlag = permissionBypassFlag
-        self.sandboxStandDownArguments = sandboxStandDownArguments
         self.resumeStyle = resumeStyle
         self.icon = icon
         self.tint = tint
@@ -198,38 +192,36 @@ extension AgentDefinition: Codable {
 extension AgentDefinition {
     static let terminal = AgentDefinition(
         id: "terminal", displayName: "Terminal", command: nil,
-        permissionBypassFlag: nil, sandboxStandDownArguments: nil, resumeStyle: .none,
+        permissionBypassFlag: nil, resumeStyle: .none,
         icon: .hugeIcon(.terminal), tint: .monochromeInk, installURL: nil, wireName: "terminal")
 
     static let claudeCode = AgentDefinition(
         id: "claudeCode", displayName: "Claude Code", command: "claude",
         permissionBypassFlag: "--dangerously-skip-permissions",
-        sandboxStandDownArguments: "--settings '{\"sandbox\":{\"enabled\":false}}'",
         resumeStyle: .claudeStyle, icon: .brand(.claude), tint: BrandLogo.claude.tint,
         installURL: URL(string: "https://claude.com/claude-code"), wireName: "claude")
 
     static let codex = AgentDefinition(
         id: "codex", displayName: "Codex", command: "codex",
         permissionBypassFlag: "--dangerously-bypass-approvals-and-sandbox",
-        sandboxStandDownArguments: "--sandbox danger-full-access",
         resumeStyle: .codexStyle, icon: .brand(.codex), tint: BrandLogo.codex.tint,
         installURL: URL(string: "https://developers.openai.com/codex/cli"), wireName: "codex")
 
     static let opencode = AgentDefinition(
         id: "opencode", displayName: "OpenCode", command: "opencode",
-        permissionBypassFlag: nil, sandboxStandDownArguments: nil, resumeStyle: .openCodeStyle,
+        permissionBypassFlag: nil, resumeStyle: .openCodeStyle,
         icon: .brandImage(.openCode), tint: .monochromeInk,
         installURL: URL(string: "https://opencode.ai"), wireName: "opencode")
 
     static let pi = AgentDefinition(
         id: "pi", displayName: "Pi", command: "pi",
-        permissionBypassFlag: nil, sandboxStandDownArguments: nil, resumeStyle: .piStyle,
+        permissionBypassFlag: nil, resumeStyle: .piStyle,
         icon: .brandImage(.pi), tint: .monochromeInk,
         installURL: URL(string: "https://pi.dev"), wireName: "pi")
 
     static let amp = AgentDefinition(
         id: "amp", displayName: "Amp", command: "amp",
-        permissionBypassFlag: nil, sandboxStandDownArguments: nil, resumeStyle: .none,
+        permissionBypassFlag: nil, resumeStyle: .none,
         icon: .brandImage(.amp), tint: .monochromeInk,
         installURL: URL(string: "https://ampcode.com/manual"), wireName: "amp")
 
@@ -237,25 +229,25 @@ extension AgentDefinition {
         // Cursor's headless CLI binary is `cursor-agent`, distinct from the `cursor`
         // GUI launcher, so name it explicitly.
         id: "cursor", displayName: "Cursor", command: "cursor-agent",
-        permissionBypassFlag: nil, sandboxStandDownArguments: nil, resumeStyle: .none,
+        permissionBypassFlag: nil, resumeStyle: .none,
         icon: .brandImage(.cursor), tint: .monochromeInk,
         installURL: URL(string: "https://cursor.com/docs/cli"), wireName: "cursor")
 
     static let kimi = AgentDefinition(
         id: "kimi", displayName: "Kimi", command: "kimi",
-        permissionBypassFlag: nil, sandboxStandDownArguments: nil, resumeStyle: .none,
+        permissionBypassFlag: nil, resumeStyle: .none,
         icon: .brandImage(.kimi), tint: .monochromeInk,
         installURL: URL(string: "https://moonshotai.github.io/kimi-code"), wireName: "kimi")
 
     static let antigravity = AgentDefinition(
         id: "antigravity", displayName: "Antigravity", command: "agy",
-        permissionBypassFlag: nil, sandboxStandDownArguments: nil, resumeStyle: .none,
+        permissionBypassFlag: nil, resumeStyle: .none,
         icon: .brandImage(.antigravity), tint: .monochromeInk,
         installURL: URL(string: "https://antigravity.google/product/antigravity-cli"), wireName: "antigravity")
 
     static let hermes = AgentDefinition(
         id: "hermes", displayName: "Hermes", command: "hermes",
-        permissionBypassFlag: nil, sandboxStandDownArguments: nil, resumeStyle: .none,
+        permissionBypassFlag: nil, resumeStyle: .none,
         icon: .brandImage(.hermes), tint: .monochromeInk,
         installURL: URL(string: "https://hermes-agent.nousresearch.com/#downloads"), wireName: "hermes")
 
@@ -272,7 +264,7 @@ extension AgentDefinition {
     static func fallback(id: String) -> AgentDefinition {
         AgentDefinition(
             id: id, displayName: id, command: nil, permissionBypassFlag: nil,
-            sandboxStandDownArguments: nil, resumeStyle: .none,
+            resumeStyle: .none,
             icon: .systemSymbol("questionmark.app"), tint: .monochromeInk,
             installURL: nil, wireName: id)
     }
@@ -567,7 +559,6 @@ struct UserAgentManifest: Decodable {
     let name: String
     var command: String?
     var permissionBypassFlag: String?
-    var sandboxStandDownArguments: String?
     var installURL: String?
     var icon: IconSpec?
     var status: StatusSpec?
@@ -630,7 +621,6 @@ struct UserAgentManifest: Decodable {
         return AgentDefinition(
             id: id, displayName: name, command: command,
             permissionBypassFlag: permissionBypassFlag,
-            sandboxStandDownArguments: sandboxStandDownArguments,
             resumeStyle: .none, icon: resolvedIcon, tint: resolvedTint,
             installURL: installURL.flatMap(URL.init(string:)), wireName: id,
             statusRules: statusRules, hookSpec: hookSpec)
