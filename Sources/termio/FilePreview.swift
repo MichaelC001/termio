@@ -64,15 +64,14 @@ struct FilePreviewView: View {
             WebPreview(url: url)
         case .image:
             // NSImage decodes the raster formats; anything it can't (e.g. some SVGs) falls back to
-            // the web view, which renders vector art reliably.
+            // the web view, which renders vector art reliably. The image fits the pane by default —
+            // large images scale down to fit rather than overflow, small ones center.
             if let image = NSImage(contentsOf: url) {
-                ScrollView([.horizontal, .vertical]) {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .padding(24)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 WebPreview(url: url)
             }
