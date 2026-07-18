@@ -23,6 +23,12 @@ struct FileEditorView: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
+    /// Edit shows the Highlightr source editor; Preview renders the Markdown as a themed
+    /// reading view. Only offered for Markdown files — everything else is edit-only.
+    private enum Mode: Hashable { case edit, preview }
+    /// Markdown opens in Preview (a doc you mostly read); source stays one click away.
+    @State private var mode: Mode
+
     @State private var text: String
     /// The text last written to disk, so auto-save only writes on a genuine change.
     @State private var savedText: String
@@ -50,9 +56,17 @@ struct FileEditorView: View {
         _text = State(initialValue: contents ?? "")
         _savedText = State(initialValue: contents ?? "")
         _loadFailed = State(initialValue: contents == nil)
+        _mode = State(initialValue: Self.isMarkdown(url) ? .preview : .edit)
         self.language = Self.highlightLanguage(for: url)
         self.relativePath = Self.repoRelativePath(for: url)
     }
+
+    /// Markdown files get the Edit/Preview toggle; sniffed from the extension only (matching
+    /// the `markdown` grammar in `highlightLanguage`).
+    static func isMarkdown(_ url: URL) -> Bool {
+        ["md", "markdown", "mdx"].contains(url.pathExtension.lowercased())
+    }
+    private var isMarkdown: Bool { Self.isMarkdown(url) }
 
     /// Walks up from the file to its git root and returns the path relative to it (the form the diff
     /// header shows, e.g. `core 2/lib/fs.ts`). `nil` when the file isn't inside a git work tree.
@@ -103,20 +117,32 @@ struct FileEditorView: View {
                 VStack(spacing: 0) {
                     header
                     Divider()
-                    HighlightedTextView(
-                        text: $text,
-                        cursor: $cursor,
-                        language: language,
-                        theme: colorScheme == .dark ? "xcode-dark" : "xcode",
-                        font: editorFont,
-                        backgroundColor: settings.terminalBackgroundColor,
-                        caretColor: caretColor,
-                        lineNumberColor: lineNumberColor,
-                        isEditable: !readOnly,
-                        jumpToLine: jumpLine,
-                        onSave: saveNow
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if isMarkdown && mode == .preview {
+                        // Render the *live* buffer, so flipping over from Edit shows unsaved
+                        // keystrokes without a round-trip through disk.
+                        MarkdownReaderView(
+                            source: text,
+                            fileURL: url,
+                            settings: settings,
+                            colorScheme: colorScheme
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        HighlightedTextView(
+                            text: $text,
+                            cursor: $cursor,
+                            language: language,
+                            theme: colorScheme == .dark ? "xcode-dark" : "xcode",
+                            font: editorFont,
+                            backgroundColor: settings.terminalBackgroundColor,
+                            caretColor: caretColor,
+                            lineNumberColor: lineNumberColor,
+                            isEditable: !readOnly,
+                            jumpToLine: jumpLine,
+                            onSave: saveNow
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                     Divider()
                     statusBar
                 }
@@ -171,11 +197,48 @@ struct FileEditorView: View {
             // The close control lives in the toolbar (a bordered, Liquid Glass button on the
             // terminal column's trailing edge); this trailing spacer keeps the label left-aligned.
             Spacer()
+            // Markdown reads as a document by default; the toggle keeps the source one click away.
+            if isMarkdown {
+                modeToggle
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color(nsColor: settings.terminalBackgroundColor))
         .animation(.easeOut(duration: 0.15), value: isDirty)
+    }
+
+    /// A two-segment Edit/Preview toggle, drawn by hand (a segmented `Picker` only renders
+    /// `Text`/`Image`, not the stroked `HugeIconView`) so it matches termio's own chrome —
+    /// a faint track with the active segment lifted onto the terminal background.
+    private var modeToggle: some View {
+        HStack(spacing: 2) {
+            modeSegment(.edit, icon: .edit, help: "Edit source")
+            modeSegment(.preview, icon: .view, help: "Preview")
+        }
+        .padding(2)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(0.06))
+        )
+    }
+
+    private func modeSegment(_ segment: Mode, icon: HugeIcon, help: String) -> some View {
+        let selected = mode == segment
+        return Button { mode = segment } label: {
+            HugeIconView(
+                icon: icon, size: 13,
+                color: selected ? (chrome?.accent ?? .primary) : .secondary
+            )
+            .frame(width: 26, height: 18)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(selected ? Color(nsColor: settings.terminalBackgroundColor) : .clear)
+                    .shadow(color: .black.opacity(selected ? 0.12 : 0), radius: 1, y: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     /// A slim VS Code-style footer: language on the left, cursor position and file facts on the
@@ -188,7 +251,10 @@ struct FileEditorView: View {
                 statusItem("Read-Only")
             }
             Spacer()
-            if let cursor {
+            if isMarkdown && mode == .preview {
+                // No caret in the rendered view — name the mode so the missing Ln/Col reads right.
+                statusItem("Preview")
+            } else if let cursor {
                 statusItem("Ln \(cursor.line), Col \(cursor.column)")
             }
             statusItem("UTF-8")
