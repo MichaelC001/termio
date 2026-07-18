@@ -15,6 +15,10 @@ struct FileTreeList: View {
     let rootURL: URL
     /// Open / create / delete actions, forwarded to each row.
     let actions: FileTreeActions
+    /// Hands the hosting `NSOutlineView` up to `FileBrowserView` so it can expand a
+    /// folder programmatically when its row is selected — a click can't be observed
+    /// any other way (the outline view swallows primary-click recognizers).
+    let captureOutline: (NSOutlineView?) -> Void
 
     var body: some View {
         // Keep List's native `selection:` binding — it drives selection at the AppKit
@@ -24,7 +28,7 @@ struct FileTreeList: View {
         // outline view's `selectionHighlightStyle = .none` (see `FileRow`), leaving our
         // own `SidebarRowHighlight` as the sole, left-sidebar-matching selection cue.
         List(nodes, children: \.children, selection: $selection) { node in
-            FileRow(node: node, font: font, isSelected: selection == node.url, onDrop: onDrop, actions: actions)
+            FileRow(node: node, font: font, isSelected: selection == node.url, onDrop: onDrop, actions: actions, captureOutline: captureOutline)
                 .listRowSeparator(.hidden)
         }
         .listStyle(.plain)
@@ -40,9 +44,6 @@ struct FileTreeList: View {
         // A right-click in the empty area below the rows offers New File / New Folder
         // at the project root — the rows' own menus take the clicks that land on them.
         .background(EmptyAreaContextMenu(rootDirectory: rootURL, actions: actions))
-        // A single click anywhere on a folder row expands/collapses it (VS Code), not
-        // just a hit on the disclosure triangle. Files open via the List's selection.
-        .background(FolderClickToggle())
     }
 }
 
@@ -57,6 +58,8 @@ private struct FileRow: View {
     let isSelected: Bool
     let onDrop: (_ sources: [URL], _ destination: URL) -> Bool
     let actions: FileTreeActions
+    /// Reports the hosting outline view up to `FileBrowserView` (see `FileTreeList`).
+    let captureOutline: (NSOutlineView?) -> Void
 
     @State private var isHovering = false
     /// True while a drag hovers this folder, lighting its background the way the VS
@@ -100,6 +103,9 @@ private struct FileRow: View {
         // selection cue is our `SidebarRowHighlight` below. Lives in a row so it can
         // walk up to the enclosing outline view.
         .background(OutlineSelectionStyleStripper())
+        // Capture that same outline view (a row is the one place the walk-up reaches
+        // it) so `FileBrowserView` can expand this folder on the click that selected it.
+        .background(OutlineViewCapture(onFound: captureOutline))
         // Drag a row out as its file URL. The terminal pane catches the drop and
         // inserts the shell-quoted path at the prompt (see `TerminalPane.sendPaths`);
         // a folder row catches it to move the file into that folder. Selection is the
@@ -348,97 +354,34 @@ private struct EmptyAreaContextMenu: NSViewRepresentable {
     }
 }
 
-/// A primary-click recognizer on the outline view that expands/collapses the folder
-/// row under the click — the VS Code gesture, where clicking anywhere on a folder row
-/// (not just its disclosure triangle) toggles it. It fires on top of the outline
-/// view's own selection/drag (not instead of them): `delaysPrimaryMouseButtonEvents`
-/// is off so the down-stroke still selects and a drag still begins, and only the
-/// clean up-click without movement toggles. File rows (not expandable) are left to
-/// the List's single-click-to-open selection, and a click that lands on the triangle
-/// itself is skipped so the outline view's own toggle isn't undone.
-private struct FolderClickToggle: NSViewRepresentable {
-    func makeCoordinator() -> Coordinator { Coordinator() }
+/// Finds the `NSOutlineView` backing the file tree and hands it to `onFound`, so
+/// `FileBrowserView` can expand a folder programmatically when its row is selected —
+/// the click that selects a row is the only reliable signal (the outline view swallows
+/// primary-click recognizers in its own mouse tracking). Mounted *inside a row* (like
+/// `OutlineSelectionStyleStripper`), so the outline view is a real ancestor on its
+/// superview chain — a `.background` on the List sits in a sibling subtree and can't
+/// reach it.
+private struct OutlineViewCapture: NSViewRepresentable {
+    let onFound: (NSOutlineView?) -> Void
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
-        context.coordinator.owner = view
-        context.coordinator.attach()
+        DispatchQueue.main.async { onFound(Self.outlineView(above: view)) }
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.attach()
+        DispatchQueue.main.async { onFound(Self.outlineView(above: nsView)) }
     }
 
-    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        coordinator.detach()
-    }
-
-    @MainActor
-    final class Coordinator: NSObject {
-        weak var owner: NSView?
-        private weak var outline: NSOutlineView?
-        private var recognizer: NSClickGestureRecognizer?
-
-        func attach() {
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let owner = self.owner else { return }
-                guard let outline = Self.outlineView(near: owner) else { return }
-                if self.outline === outline, recognizer != nil { return }
-                detach()
-                let recognizer = NSClickGestureRecognizer(target: self, action: #selector(self.handleClick(_:)))
-                recognizer.buttonMask = 0x1 // primary (left) button
-                // Observe the click without swallowing the outline view's own mouse
-                // tracking — selection happens on mouse-down, a drag on movement.
-                recognizer.delaysPrimaryMouseButtonEvents = false
-                outline.addGestureRecognizer(recognizer)
-                self.recognizer = recognizer
-                self.outline = outline
-            }
+    /// Walk up to the enclosing outline view (an `NSTableView` subclass).
+    private static func outlineView(above view: NSView) -> NSOutlineView? {
+        var ancestor = view.superview
+        while let current = ancestor {
+            if let outline = current as? NSOutlineView { return outline }
+            ancestor = current.superview
         }
-
-        func detach() {
-            if let recognizer, let outline { outline.removeGestureRecognizer(recognizer) }
-            recognizer = nil
-            outline = nil
-        }
-
-        @objc private func handleClick(_ recognizer: NSClickGestureRecognizer) {
-            guard let outline else { return }
-            let point = recognizer.location(in: outline)
-            let row = outline.row(at: point)
-            guard row >= 0, let item = outline.item(atRow: row) else { return }
-            // Only folders toggle; files open via the List's selection binding.
-            guard outline.isExpandable(item) else { return }
-            // A click on the disclosure triangle is already handled by the outline
-            // view — toggling here too would just undo it.
-            let triangle = outline.frameOfOutlineCell(atRow: row)
-            if !triangle.isEmpty, triangle.contains(point) { return }
-            if outline.isItemExpanded(item) {
-                outline.animator().collapseItem(item)
-            } else {
-                outline.animator().expandItem(item)
-            }
-        }
-
-        private static func outlineView(near view: NSView) -> NSOutlineView? {
-            var ancestor: NSView? = view
-            while let current = ancestor {
-                if let scroll = current as? NSScrollView, let outline = findOutline(in: scroll) {
-                    return outline
-                }
-                ancestor = current.superview
-            }
-            return nil
-        }
-
-        private static func findOutline(in view: NSView) -> NSOutlineView? {
-            if let outline = view as? NSOutlineView { return outline }
-            for subview in view.subviews {
-                if let outline = findOutline(in: subview) { return outline }
-            }
-            return nil
-        }
+        return nil
     }
 }
 
