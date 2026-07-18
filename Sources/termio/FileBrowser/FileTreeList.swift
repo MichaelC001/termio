@@ -40,6 +40,9 @@ struct FileTreeList: View {
         // A right-click in the empty area below the rows offers New File / New Folder
         // at the project root — the rows' own menus take the clicks that land on them.
         .background(EmptyAreaContextMenu(rootDirectory: rootURL, actions: actions))
+        // A single click anywhere on a folder row expands/collapses it (VS Code), not
+        // just a hit on the disclosure triangle. Files open via the List's selection.
+        .background(FolderClickToggle())
     }
 }
 
@@ -112,6 +115,12 @@ private struct FileRow: View {
                 isHovering: isHovering,
                 chrome: chrome
             )
+            // Cancel the highlight's own 6pt leading inset so its frosted lift reaches
+            // the row's leading edge, clearing the disclosure chevron. The `.plain`
+            // list style (unlike the sidebar's `.sidebar`) hugs the chevron to the
+            // row edge, so the default inset would crowd the chevron against the
+            // highlight's left rounded corner. Trailing inset is untouched.
+            .padding(.leading, -6)
             .animation(.easeInOut(duration: 0.12), value: isSelected)
             .animation(.easeInOut(duration: 0.12), value: isTargeted)
             .animation(.easeInOut(duration: 0.12), value: isHovering)
@@ -333,6 +342,100 @@ private struct EmptyAreaContextMenu: NSViewRepresentable {
             if let table = view as? NSTableView { return table }
             for subview in view.subviews {
                 if let table = findTable(in: subview) { return table }
+            }
+            return nil
+        }
+    }
+}
+
+/// A primary-click recognizer on the outline view that expands/collapses the folder
+/// row under the click — the VS Code gesture, where clicking anywhere on a folder row
+/// (not just its disclosure triangle) toggles it. It fires on top of the outline
+/// view's own selection/drag (not instead of them): `delaysPrimaryMouseButtonEvents`
+/// is off so the down-stroke still selects and a drag still begins, and only the
+/// clean up-click without movement toggles. File rows (not expandable) are left to
+/// the List's single-click-to-open selection, and a click that lands on the triangle
+/// itself is skipped so the outline view's own toggle isn't undone.
+private struct FolderClickToggle: NSViewRepresentable {
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.owner = view
+        context.coordinator.attach()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.attach()
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        weak var owner: NSView?
+        private weak var outline: NSOutlineView?
+        private var recognizer: NSClickGestureRecognizer?
+
+        func attach() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let owner = self.owner else { return }
+                guard let outline = Self.outlineView(near: owner) else { return }
+                if self.outline === outline, recognizer != nil { return }
+                detach()
+                let recognizer = NSClickGestureRecognizer(target: self, action: #selector(self.handleClick(_:)))
+                recognizer.buttonMask = 0x1 // primary (left) button
+                // Observe the click without swallowing the outline view's own mouse
+                // tracking — selection happens on mouse-down, a drag on movement.
+                recognizer.delaysPrimaryMouseButtonEvents = false
+                outline.addGestureRecognizer(recognizer)
+                self.recognizer = recognizer
+                self.outline = outline
+            }
+        }
+
+        func detach() {
+            if let recognizer, let outline { outline.removeGestureRecognizer(recognizer) }
+            recognizer = nil
+            outline = nil
+        }
+
+        @objc private func handleClick(_ recognizer: NSClickGestureRecognizer) {
+            guard let outline else { return }
+            let point = recognizer.location(in: outline)
+            let row = outline.row(at: point)
+            guard row >= 0, let item = outline.item(atRow: row) else { return }
+            // Only folders toggle; files open via the List's selection binding.
+            guard outline.isExpandable(item) else { return }
+            // A click on the disclosure triangle is already handled by the outline
+            // view — toggling here too would just undo it.
+            let triangle = outline.frameOfOutlineCell(atRow: row)
+            if !triangle.isEmpty, triangle.contains(point) { return }
+            if outline.isItemExpanded(item) {
+                outline.animator().collapseItem(item)
+            } else {
+                outline.animator().expandItem(item)
+            }
+        }
+
+        private static func outlineView(near view: NSView) -> NSOutlineView? {
+            var ancestor: NSView? = view
+            while let current = ancestor {
+                if let scroll = current as? NSScrollView, let outline = findOutline(in: scroll) {
+                    return outline
+                }
+                ancestor = current.superview
+            }
+            return nil
+        }
+
+        private static func findOutline(in view: NSView) -> NSOutlineView? {
+            if let outline = view as? NSOutlineView { return outline }
+            for subview in view.subviews {
+                if let outline = findOutline(in: subview) { return outline }
             }
             return nil
         }
