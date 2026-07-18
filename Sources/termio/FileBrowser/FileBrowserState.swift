@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 
@@ -8,4 +9,8 @@ import Foundation
 @MainActor
 final class FileBrowserState: ObservableObject {
     @Published var selection: URL?
+    /// The `NSOutlineView` backing the tree, captured by `FileTreeList` so
+    /// `FileBrowserView` can expand a folder on the click that selected it. Not
+    /// `@Published` — it's an AppKit escape hatch, not view state.
+    weak var outlineView: NSOutlineView?
 }

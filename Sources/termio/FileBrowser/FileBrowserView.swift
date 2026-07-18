@@ -102,18 +102,49 @@ struct FileBrowserView: View {
             seedChangeCount()
         }
         .onChange(of: browserState.selection) {
-            // Single-click open (VS Code): the table fires native selection on a clean
-            // click — reliably, unlike a click recognizer, which `NSOutlineView`'s own
-            // primary-button tracking swallows. So opening on selection IS the click
-            // handler. Files only; selecting a folder just expands it.
-            if let url = browserState.selection, !isDirectory(url) {
-                onActivate(url)
+            // The table fires native selection on a clean click — reliably, unlike a
+            // click recognizer, which `NSOutlineView`'s own primary-button tracking
+            // swallows. So selection IS the click handler: a file opens, a folder opens
+            // (expands). Collapse stays on the disclosure triangle.
+            if let url = browserState.selection {
+                if isDirectory(url) {
+                    toggleSelectedFolder()
+                } else {
+                    onActivate(url)
+                }
             }
             // Keep an open Quick Look panel in step as the selection moves.
             if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible {
                 QLPreviewPanel.shared().reloadData()
             }
         }
+    }
+
+    /// Toggle (expand/collapse) the folder whose row was just selected, on the native
+    /// outline view — the click that selected it is the only signal we get (the outline
+    /// view swallows primary-click recognizers), so clicking a folder row IS "open/close
+    /// it". Afterward we clear the selection: an unchanged selection wouldn't re-fire
+    /// this handler, so a second click on the *same* folder (to collapse it) would go
+    /// unseen — resetting to nil makes every click on a folder register. Folders thus
+    /// don't hold a persistent highlight; files (which stay selected/open) are untouched.
+    private func toggleSelectedFolder(attempt: Int = 0) {
+        guard let outline = browserState.outlineView else { return }
+        let row = outline.selectedRow
+        // The AppKit selection normally already reflects the click that drove this
+        // change; if it hasn't caught up yet, retry a couple of runloop turns.
+        guard row >= 0, let item = outline.item(atRow: row) else {
+            if attempt < 3 {
+                DispatchQueue.main.async { toggleSelectedFolder(attempt: attempt + 1) }
+            }
+            return
+        }
+        guard outline.isExpandable(item) else { return }
+        if outline.isItemExpanded(item) {
+            outline.animator().collapseItem(item)
+        } else {
+            outline.animator().expandItem(item)
+        }
+        browserState.selection = nil
     }
 
     /// Whether `url` points at a directory — used to open only files on selection.
@@ -131,7 +162,8 @@ struct FileBrowserView: View {
                 font: settings.interfaceFont,
                 onDrop: { sources, destination in receive(sources, into: destination) },
                 rootURL: root.url,
-                actions: treeActions
+                actions: treeActions,
+                captureOutline: { browserState.outlineView = $0 }
             )
             .onKeyPress(.space) {
                 guard browserState.selection != nil else { return .ignored }
