@@ -1114,11 +1114,13 @@ private struct WorkingIndicator: View {
             let phase = context.date.timeIntervalSinceReferenceDate
                 .truncatingRemainder(dividingBy: period) / period
             ZStack {
-                // A steady center anchors the spinning ring, sitting just above
-                // the tail floor but well under the comet head.
-                dot(opacity: 0.45)
+                // A steady center anchors the spinning ring, matching the tail
+                // so the grid reads as one solid mark with a swell running
+                // around it.
+                dot(opacity: 0.5, scale: 1)
                 ForEach(Array(Self.ring.enumerated()), id: \.offset) { index, cell in
-                    dot(opacity: opacity(at: index, phase: phase))
+                    let distance = ringDistance(at: index, phase: phase)
+                    dot(opacity: opacity(distance: distance), scale: scale(distance: distance))
                         .offset(
                             x: CGFloat(cell.0 - 1) * spacing,
                             y: CGFloat(cell.1 - 1) * spacing
@@ -1129,22 +1131,34 @@ private struct WorkingIndicator: View {
         }
     }
 
-    private func dot(opacity: Double) -> some View {
+    private func dot(opacity: Double, scale: Double) -> some View {
         Circle()
             .fill(tint)
-            .frame(width: dotSize, height: dotSize)
+            .frame(width: dotSize * scale, height: dotSize * scale)
             .opacity(opacity)
     }
 
-    /// Brightness of a perimeter cell: peaks at the comet's head and fades over the
-    /// next few cells, measured as the shorter way around the ring so the tail wraps.
-    /// The tail decays over four cells to a low floor — a longer, higher-contrast
-    /// sweep than an even ring, so the rotation reads at a glance.
-    private func opacity(at index: Int, phase: Double) -> Double {
+    /// A perimeter cell's distance from the comet's head, measured the shorter way
+    /// around the ring so the tail wraps.
+    private func ringDistance(at index: Int, phase: Double) -> Double {
         let count = Double(Self.ring.count)
         let head = phase * count
         let raw = abs(Double(index) - head)
-        let distance = min(raw, count - raw)
-        return max(0.3, 1 - distance / 4)
+        return min(raw, count - raw)
+    }
+
+    /// The rotation is carried by two signals so neither has to be extreme: a
+    /// brightness wave AND a size swell at the comet's head. Opacity alone needed a
+    /// near-invisible tail to read as motion, which left the whole mark far paler
+    /// than the full-ink glyphs beside it; with the swell doing half the work the
+    /// tail floor stays at half ink and the grid keeps real visual weight.
+    private func opacity(distance: Double) -> Double {
+        max(0.5, 1 - distance / 4)
+    }
+
+    /// Size factor for a cell: the head swells about a third and the swell dies
+    /// out over the next two cells.
+    private func scale(distance: Double) -> Double {
+        1 + 0.35 * max(0, 1 - distance / 2)
     }
 }
