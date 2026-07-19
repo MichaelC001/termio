@@ -914,10 +914,12 @@ private struct SessionRow: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                 } else if store.status(for: session.id) == .working {
-                    // Status speaks one color language everywhere: blue = working,
-                    // green = done, orange = needs you (the menu bar's palette).
-                    // Tinting the spinner per agent brand read as noise — identity
-                    // belongs to the idle brand mark, state to the indicator.
+                    // The spinner is deliberately quiet grey, like the Mac's own
+                    // busy spinners: its motion already says "working", so color
+                    // stays reserved for the states that need the user — the
+                    // green done / orange attention dots, whose only channel is
+                    // color. Per-agent brand tints read as noise; identity
+                    // belongs to the idle brand mark.
                     WorkingIndicator()
                 } else {
                     AgentIconView(agent: store.effectiveAgent(for: session), size: 15)
@@ -1091,7 +1093,7 @@ private struct StatusDot: View {
 /// the eight perimeter cells, so the small nine-square grid reads as rotating. Sits
 /// in place of the session's brand icon while a turn is in flight (see `SessionRow`).
 private struct WorkingIndicator: View {
-    var tint: Color = .blue
+    var tint: Color = .secondary
 
     /// The eight perimeter cells of the 3×3 grid in clockwise order, as
     /// `(column, row)` with the center at `(1, 1)`. The comet travels this ring.
