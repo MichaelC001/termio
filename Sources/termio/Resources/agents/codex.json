@@ -17,8 +17,7 @@
       { "on": "PreToolUse", "state": "working" },
       { "on": "PostToolUse", "state": "working" },
       { "on": "PermissionRequest", "state": "attention" },
-      { "on": "Stop", "state": "done" },
-      { "on": "SubagentStop", "state": "working" }
+      { "on": "Stop", "state": "done" }
     ]
   }
 }
