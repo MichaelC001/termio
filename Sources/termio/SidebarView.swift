@@ -1164,9 +1164,9 @@ private struct WorkingIndicator: View {
         max(0.5, 1 - distance / 4)
     }
 
-    /// Size factor for a cell: the head swells about a third and the swell dies
+    /// Size factor for a cell: the head swells a fifth and the swell dies
     /// out over the next two cells.
     private func scale(distance: Double) -> Double {
-        1 + 0.35 * max(0, 1 - distance / 2)
+        1 + 0.2 * max(0, 1 - distance / 2)
     }
 }
