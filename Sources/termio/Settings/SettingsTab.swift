@@ -4,6 +4,7 @@ import SwiftUI
 /// private so the launch reminder can open settings straight to a given tab (see
 /// `AppDelegate.openSettings`).
 enum SettingsTab: String, CaseIterable, Identifiable {
+    case general
     case appearance
     case interface
     case terminal
@@ -16,6 +17,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .general: return "General"
         case .appearance: return "Appearance"
         case .interface: return "Interface"
         case .terminal: return "Terminal"
@@ -28,6 +30,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 
     var symbol: String {
         switch self {
+        case .general: return "gearshape"
         case .appearance: return "paintbrush"
         case .interface: return "sidebar.left"
         case .terminal: return "terminal"
@@ -42,6 +45,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     /// matching macOS System Settings' navigation subtitle.
     var subtitle: String {
         switch self {
+        case .general: return "The termio command-line tool"
         case .appearance: return "Terminal font, theme, cursor, and window"
         case .interface: return "The app's own sidebar font and density"
         case .terminal: return "Scrollback history and text selection"
