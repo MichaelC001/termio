@@ -1,22 +1,27 @@
 import Foundation
 import Markdown
 
-/// Markdown → HTML for agent messages in the session trace, built on Apple's
-/// swift-markdown (cmark-gfm underneath, so GFM tables / strikethrough / task lists
-/// parse correctly). We walk the AST and emit HTML ourselves instead of using a stock
-/// formatter for two reasons: every piece of source text must be escaped (transcripts
+/// Markdown → HTML, shared by the session trace (agent messages) and the file-preview
+/// Markdown reader. Built on Apple's swift-markdown (cmark-gfm underneath, so GFM tables /
+/// strikethrough / task lists parse correctly). We walk the AST and emit HTML ourselves
+/// instead of using a stock formatter so every piece of source text is escaped (transcripts
 /// carry untrusted tool output, so raw HTML in the markdown renders as text, never as
-/// markup), and soft line breaks render as `<br>` (GitHub-comment style) because agent
-/// messages use single newlines for line-based content, not paragraph wrapping.
-enum TraceMarkdown {
-    static func html(_ source: String) -> String {
-        var visitor = HTMLVisitor()
+/// markup). Soft-break handling differs per caller — see `softBreaksAsBreaks`.
+enum MarkdownHTML {
+    /// `softBreaksAsBreaks`: agent messages use single newlines for line-based content, so
+    /// the trace renders each as `<br>`. A *document* (README, design doc) hard-wraps its
+    /// source at ~80 columns and expects those newlines to collapse to spaces and reflow to
+    /// the viewport — pass `false` there, or every source line break becomes a literal break
+    /// (ragged short lines, big right-hand gap, and no reflow on resize).
+    static func html(_ source: String, softBreaksAsBreaks: Bool = true) -> String {
+        var visitor = HTMLVisitor(softBreaksAsBreaks: softBreaksAsBreaks)
         return visitor.visit(Document(parsing: source))
     }
 }
 
 private struct HTMLVisitor: MarkupVisitor {
     typealias Result = String
+    let softBreaksAsBreaks: Bool
 
     mutating func defaultVisit(_ markup: Markup) -> String {
         children(markup)
@@ -136,7 +141,9 @@ private struct HTMLVisitor: MarkupVisitor {
     }
 
     mutating func visitSoftBreak(_ br: SoftBreak) -> String {
-        "<br>"
+        // A document collapses source line breaks to spaces (normal Markdown) so text
+        // reflows; the trace keeps them as `<br>` for line-based agent output.
+        softBreaksAsBreaks ? "<br>" : " "
     }
 
     mutating func visitLineBreak(_ br: LineBreak) -> String {

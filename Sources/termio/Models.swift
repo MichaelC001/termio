@@ -168,6 +168,8 @@ enum HugeIcon: Hashable {
     case folder
     case folderOpen
     case chevronRight
+    case edit
+    case view
 
     /// Side length of the source SVG's square viewBox (Hugeicons uses 24).
     var viewBox: CGFloat { 24 }
@@ -190,6 +192,13 @@ enum HugeIcon: Hashable {
             // linejoin softens the tip. The section disclosure arrow: points right when
             // collapsed, rotated a quarter-turn down when open.
             return "M10 6L16 12L10 18"
+        case .edit:
+            // Hugeicons "edit-02": a pencil over a baseline — the file editor's Edit
+            // mode. Two subpaths (nib+body, then the underline).
+            return "M14.074 3.885c.745-.807 1.117-1.21 1.513-1.446a3.1 3.1 0 0 1 3.103-.047c.403.224.787.616 1.555 1.4c.768.785 1.152 1.178 1.37 1.589a3.29 3.29 0 0 1-.045 3.17c-.23.404-.625.785-1.416 1.546l-9.403 9.057c-1.498 1.443-2.247 2.164-3.183 2.53s-1.965.338-4.023.285l-.28-.008c-.626-.016-.94-.024-1.121-.231c-.183-.207-.158-.526-.108-1.164l.027-.346c.14-1.796.21-2.694.56-3.502s.956-1.463 2.166-2.774zM13 4l7 7 M14 22h8"
+        case .view:
+            // Hugeicons "view": an eye (outline + pupil) — the Markdown Preview mode.
+            return "M21.544 11.045c.304.426.456.64.456.955c0 .316-.152.529-.456.955C20.178 14.871 16.689 19 12 19c-4.69 0-8.178-4.13-9.544-6.045C2.152 12.529 2 12.315 2 12c0-.316.152-.529.456-.955C3.822 9.129 7.311 5 12 5c4.69 0 8.178 4.13 9.544 6.045Z M15 12a3 3 0 1 0-6 0a3 3 0 0 0 6 0Z"
         }
     }
 }
