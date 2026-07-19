@@ -294,9 +294,12 @@ enum SessionSkillInstaller {
 
 /// Installs and audits the `termio` command-line tool — the bundled script the
 /// app symlinks onto the user's PATH so any shell (and any agent's shell tool)
-/// can run `termio sessions …` and `termio .`. Modeled on VS Code's `code` tool:
-/// the binary lives inside the app bundle, so the symlink keeps pointing at the
-/// current version across updates, and the audit surfaces a moved/old install.
+/// can run `termio sessions …` and `termio .`. Modeled on VS Code's `code` tool,
+/// with one twist: the symlink (and every agent hook) points at a channel-stable
+/// *copy* under Application Support, not into the bundle, because the bundle's
+/// location is transient — a dev build launched from a since-deleted git worktree
+/// once took every hook that referenced its path down with it. The copy's path
+/// never changes; each launch refreshes its content from the running bundle.
 enum CommandLineTool {
     /// The tool's name on PATH and inside the bundle: `termio` for a release build,
     /// `termio-dev` for the side-by-side dev channel, so the dev app links its own
@@ -309,16 +312,17 @@ enum CommandLineTool {
     static var installURL: URL { URL(fileURLWithPath: "/usr/local/bin/\(toolName)") }
 
     enum Status: Equatable {
-        /// Linked to this build's bundled tool — nothing to do.
+        /// Linked to this channel's stable tool copy — nothing to do.
         case installed
-        /// Linked to a `termio` tool at a different bundle path (the app moved or
-        /// this is an older install); offer to update the link.
+        /// Linked to an old-style bundle path, or the copy behind the link is
+        /// missing; offer to update the install.
         case stale(String)
         /// Nothing occupies the PATH location yet.
         case notInstalled
         /// A file that termio did not create sits at the location; never clobber it.
         case conflict
-        /// Running as a bare dev binary with no bundle, so there is nothing to link.
+        /// No bundled tool and no previously installed copy (a bare `swift run`
+        /// binary on a fresh machine), so there is nothing to link.
         case unavailable
     }
 
@@ -328,9 +332,43 @@ enum CommandLineTool {
         Bundle.main.url(forResource: toolName, withExtension: nil)
     }
 
-    static func audit() -> Status {
-        guard let bundled = bundledURL else { return .unavailable }
+    /// The channel-stable copy of the tool (`…/Application Support/termio[-dev]/bin/`)
+    /// — the only path hook files and the PATH symlink ever reference.
+    static var supportCopyURL: URL {
+        AppChannel.supportDirectory.appendingPathComponent("bin/\(toolName)")
+    }
+
+    /// Aligns the support copy's content with the bundled tool. A bare `swift run`
+    /// binary has no bundle to copy from, so an existing copy (from the last real
+    /// app build) is left serving. Returns whether a usable copy exists afterwards.
+    @discardableResult
+    static func refreshSupportCopy() -> Bool {
         let fileManager = FileManager.default
+        let copy = supportCopyURL
+        guard let bundled = bundledURL, let content = try? Data(contentsOf: bundled) else {
+            return fileManager.isExecutableFile(atPath: copy.path)
+        }
+        if (try? Data(contentsOf: copy)) != content {
+            do {
+                try fileManager.createDirectory(
+                    at: copy.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try content.write(to: copy, options: .atomic)
+            } catch {
+                FileHandle.standardError.write(
+                    Data("termio: command-line tool copy failed: \(error)\n".utf8))
+                return fileManager.isExecutableFile(atPath: copy.path)
+            }
+        }
+        // An atomic write lands with default (non-executable) permissions, and hooks
+        // exec the copy directly, so re-assert the mode even on the unchanged path.
+        try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: copy.path)
+        return true
+    }
+
+    static func audit() -> Status {
+        let fileManager = FileManager.default
+        let copyUsable = fileManager.isExecutableFile(atPath: supportCopyURL.path)
+        guard copyUsable || bundledURL != nil else { return .unavailable }
         let path = installURL.path
         guard let attributes = try? fileManager.attributesOfItem(atPath: path) else {
             return fileManager.fileExists(atPath: path) ? .conflict : .notInstalled
@@ -341,20 +379,23 @@ enum CommandLineTool {
             return .conflict
         }
         let resolved = URL(fileURLWithPath: destination).standardizedFileURL.path
-        if resolved == bundled.standardizedFileURL.path { return .installed }
+        if resolved == supportCopyURL.standardizedFileURL.path {
+            return copyUsable ? .installed : .stale(resolved)
+        }
+        // A link into any app bundle is a pre-copy install (or a moved app); update it.
         if resolved.hasSuffix("/Contents/Resources/\(toolName)") { return .stale(resolved) }
         return .conflict
     }
 
-    /// Links the bundled tool onto PATH and returns the fresh audit. Replaces our
-    /// own stale link; refuses to overwrite a file we did not create.
+    /// Links the stable tool copy onto PATH and returns the fresh audit. Replaces
+    /// our own stale link; refuses to overwrite a file we did not create.
     @discardableResult
     static func install() -> Status {
-        guard let bundled = bundledURL else { return .unavailable }
+        guard refreshSupportCopy() else { return .unavailable }
         if case .conflict = audit() { return .conflict }
         let target = installURL.path
-        if linkWithoutPrivileges(from: bundled.path, to: target) { return audit() }
-        linkWithAdminPrompt(from: bundled.path, to: target)
+        if linkWithoutPrivileges(from: supportCopyURL.path, to: target) { return audit() }
+        linkWithAdminPrompt(from: supportCopyURL.path, to: target)
         return audit()
     }
 

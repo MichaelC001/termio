@@ -78,6 +78,11 @@ extension TermioStore {
             // same result as Claude's hook-carried path, just discovered.
             transcriptPaths[id] = path
         }
+        // Any recognized report proves this session's hooks are alive and speaking,
+        // which tells the screen-driven promotion to stand down (`hookQuietWindow`).
+        if ["working", "done", "attention", "idle"].contains(report.state) {
+            lastHookReportAt[id] = Date()
+        }
         switch report.state {
         case "working":
             // Spin a row only when it's genuinely an agent: a declared agent session,
@@ -120,22 +125,82 @@ extension TermioStore {
     private func clearWorking(_ id: Session.ID) {
         currentTool[id] = nil
         lastWorkingAt[id] = nil
+        promotionStreak[id] = nil
     }
 
-    /// Refreshes a working session's activity timestamp when the rendered screen
-    /// changed. A genuinely working agent repaints changing content (its ticking
-    /// spinner, streaming tokens) every second, so a changing viewport means the
-    /// turn is still live; the moment the screen goes static (the agent is back at
-    /// its prompt), the timestamp stops advancing and `sweepStaleWorking` can clear
-    /// the spinner. Keying on the *screen* rather than raw bytes is what closes the
-    /// gap for a finished agent that keeps dribbling output at an idle prompt (a
-    /// redraw, a blinking cursor) — the stuck-spinner failure. No-op unless the
-    /// session is actually spinning, so idle sessions cost nothing. Fed by a
-    /// throttled tap on the PTY stream (see `surface(for:in:)`).
-    func noteOutputActivity(_ id: Session.ID, screenChanged: Bool) {
-        guard statuses[id] == .working else { return }
-        guard screenChanged else { return }
-        lastWorkingAt[id] = Date()
+    /// Marks the moment of live user input into a session's terminal. Keystroke
+    /// echo and mouse-mode scrolling repaint the screen exactly like agent
+    /// output, so promotion holds off while the human is the one causing the
+    /// changes. Fed each status poke from `PTYProcess.lastInputAt` — the choke
+    /// point every input path crosses (Mac surface, phone companion bridge,
+    /// synthetic `sessions send`) — hence the monotonic guard: a poke can only
+    /// carry the timestamp forward.
+    func noteUserInput(_ id: Session.ID, at instant: Date) {
+        if let existing = lastUserInputAt[id], existing >= instant { return }
+        lastUserInputAt[id] = instant
+    }
+
+    /// Keeps a session's status honest against its live output, in both directions.
+    ///
+    /// *Sustain*: while `.working`, a changed rendered screen (streaming tokens, a
+    /// ticking spinner) refreshes `lastWorkingAt` so `sweepStaleWorking` leaves the
+    /// turn alone; a static screen lets the timestamp age out — the recovery for a
+    /// turn that ended without a `Stop` hook. The screen, not raw bytes, is the
+    /// primary key: a finished agent still dribbles output at an idle prompt (a
+    /// redraw, a blinking cursor), which is exactly the stuck-spinner failure. The
+    /// byte-rate floor is the one exception — a viewport the user scrolled away
+    /// from stops changing even mid-stream (`readViewportText` follows the scroll),
+    /// so a genuinely streaming byte volume also counts as liveness.
+    ///
+    /// *Promote*: a session whose hooks have gone quiet can also come back the
+    /// other way. Hooks miss turns in the wild — an uninstalled/broken hook file, a
+    /// turn the sweep cleared mid-stream, an agent whose TUI never fires them — and
+    /// historically nothing could re-light the spinner until the next hook event.
+    /// Two consecutive changed ticks promote `.idle` back to `.working`, guarded
+    /// so precision states are never guessed over: never out of `.done` or
+    /// `.needsAttention`, not while recent hooks are speaking for the session
+    /// (`hookQuietWindow`), not right after launch (the banner painting), not right
+    /// after user input (keystroke echo), and never for a plain terminal or an
+    /// agent whose declared screen rules already own its status.
+    ///
+    /// Fed by a throttled once-a-second tap on the PTY stream (see
+    /// `surface(for:in:)`); no-ops cost a dictionary lookup.
+    func noteOutputActivity(_ id: Session.ID, screenChanged: Bool, bytes: Int) {
+        if statuses[id] == .working {
+            promotionStreak[id] = nil
+            if screenChanged || bytes >= streamingByteFloor {
+                lastWorkingAt[id] = Date()
+            }
+            return
+        }
+        guard screenChanged else {
+            promotionStreak[id] = nil
+            return
+        }
+        guard status(for: id) == .idle,
+              let session = session(id),
+              effectiveAgent(for: session) != .terminal,
+              effectiveAgent(for: session).statusRules == nil
+        else { return }
+        let now = Date()
+        if let launched = session.launchedAt, now.timeIntervalSince(launched) < launchGraceWindow {
+            return
+        }
+        if let input = lastUserInputAt[id], now.timeIntervalSince(input) < userInputQuietWindow {
+            return
+        }
+        if let report = lastHookReportAt[id], now.timeIntervalSince(report) < hookQuietWindow {
+            return
+        }
+        let streak = (promotionStreak[id] ?? 0) + 1
+        guard streak >= 2 else {
+            promotionStreak[id] = streak
+            return
+        }
+        promotionStreak[id] = nil
+        statuses[id] = .working
+        lastWorkingAt[id] = now
+        if let pid = project(for: id)?.id { liveActivity[pid] = now }
     }
 
     /// Drives status from an agent's own screen when it ships no hook system — the path
@@ -169,6 +234,39 @@ extension TermioStore {
         }
     }
 
+    /// Drives status from the agent's live `OSC 0/2` title — the in-band state
+    /// broadcast some agents ship (Claude prefixes a braille spinner mid-turn,
+    /// Codex/Grok flip to "Action Required" when blocked). Unlike the screen path
+    /// this *coexists* with hooks: the title is the agent's own deliberate signal
+    /// on a channel that cannot break, so it corrects a missed `working` hook the
+    /// instant the turn starts and ends a lost turn the instant the title calms —
+    /// no 12s sweep wait, no promotion evidence-gathering. Transitions only
+    /// (`lastTitleActivity`), with hooks kept senior where they are more precise:
+    /// a title-working never overrides `needsAttention` (a blocked agent's title
+    /// can keep spinning), and a title-idle only ends a turn — an arbitrary title
+    /// (which classifies idle by no-match) must not clear hook-set states.
+    func applyTitleActivity(_ activity: AgentStatusRules.Activity, for id: Session.ID) {
+        guard lastTitleActivity[id] != activity else { return }
+        let previous = lastTitleActivity[id]
+        lastTitleActivity[id] = activity
+        switch activity {
+        case .working:
+            guard statuses[id] != .needsAttention else { return }
+            guard let session = session(id), effectiveAgent(for: session) != .terminal
+            else { return }
+            statuses[id] = .working
+            lastWorkingAt[id] = Date()
+            if let pid = project(for: id)?.id { liveActivity[pid] = Date() }
+        case .attention:
+            clearWorking(id)
+            if selectedSessionID != id { statuses[id] = .needsAttention }
+        case .idle:
+            guard previous == .working, statuses[id] == .working else { return }
+            clearWorking(id)
+            statuses[id] = (selectedSessionID == id) ? .idle : .done
+        }
+    }
+
     /// Records (or clears) the agent detected running in a plain terminal's
     /// foreground, upgrading the row to a first-class agent while it runs (brand icon,
     /// adopted live title, working spinner) and reverting it to a plain terminal when
@@ -184,6 +282,7 @@ extension TermioStore {
         } else {
             detectedAgents[id] = nil
             liveTitles[id] = nil
+            lastTitleActivity[id] = nil
             clearWorking(id)
             if statuses[id] == .working || statuses[id] == .done { statuses[id] = .idle }
         }
@@ -220,12 +319,15 @@ extension TermioStore {
     /// Resolves a status report back to its session. The exact key is the
     /// `TERMIO_SESSION` id termio stamped into the PTY and the agent echoed back, so
     /// this is unambiguous even when several sessions share one project directory.
+    /// A report that *carries* an id this app didn't stamp is another channel's
+    /// session (the CLI broadcasts each report to both the release and dev app's
+    /// sockets) and must be dropped, not cwd-guessed — that guess is exactly how a
+    /// prod session's activity would light up a dev session sharing its directory.
     /// `cwd` is only a fallback for an agent whose environment didn't carry the id
-    /// through to the hook.
+    /// through to the hook at all (an agent hand-started outside termio).
     private func sessionID(for report: StatusReport) -> Session.ID? {
-        if let token = report.termioSession,
-           let id = UUID(uuidString: token),
-           session(id) != nil {
+        if let token = report.termioSession, !token.isEmpty {
+            guard let id = UUID(uuidString: token), session(id) != nil else { return nil }
             return id
         }
         return sessionID(forCwd: report.cwd)

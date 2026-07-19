@@ -150,7 +150,15 @@ struct GitChangesView: View {
     }
 
     private func open(_ change: GitChange) {
-        store.openDiff = GitDiffRequest(repoRoot: repoRoot, change: change)
+        // An image/SVG/PDF has no meaningful text diff, so show the file itself in the preview
+        // overlay. A deleted file is gone from disk, so fall back to the diff (its empty result
+        // is the honest one).
+        let url = fileURL(for: change)
+        if FileActivation.previewsRatherThanDiff(url), FileManager.default.fileExists(atPath: url.path) {
+            store.openFileInEditor(url)
+        } else {
+            store.openDiff = GitDiffRequest(repoRoot: repoRoot, change: change)
+        }
     }
 
     // MARK: Row actions
@@ -207,7 +215,16 @@ struct GitChangesView: View {
     /// never fires. Deselection is ignored — closing the diff is the overlay's own job.
     private var selectedPath: Binding<String?> {
         Binding(
-            get: { store.openDiff?.commit == nil ? store.openDiff?.change.path : nil },
+            get: {
+                if let diff = store.openDiff, diff.commit == nil { return diff.change.path }
+                // Image/SVG/PDF changes open in the preview overlay, not the diff — match the
+                // open file back to its row so the selection stays put while it's up.
+                if let open = store.openFileURL?.standardizedFileURL,
+                   let change = model.changes.first(where: { fileURL(for: $0).standardizedFileURL == open }) {
+                    return change.path
+                }
+                return nil
+            },
             set: { path in
                 if let change = model.changes.first(where: { $0.path == path }) { open(change) }
             }

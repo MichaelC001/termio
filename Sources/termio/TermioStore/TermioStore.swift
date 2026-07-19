@@ -253,6 +253,11 @@ final class TermioStore: ObservableObject {
     /// into (see `AgentStatusRules` / `applyScreenDetectedActivity`), so status is only
     /// re-driven on a transition — not re-emitted every tick the screen sits idle.
     var lastScreenActivity: [Session.ID: AgentStatusRules.Activity] = [:]
+    /// The last activity an agent's live OSC title was classified into (see
+    /// `applyTitleActivity`), so title-driven status also moves only on
+    /// transitions — a spinner frame change re-classifies as the same `working`
+    /// and is dropped here.
+    var lastTitleActivity: [Session.ID: AgentStatusRules.Activity] = [:]
     var staleWorkingSweep: Timer?
     /// How long a `.working` session may go with *no screen change and no working
     /// hook* before the sweep flips it back to idle. A working agent's TUI repaints
@@ -262,6 +267,37 @@ final class TermioStore: ObservableObject {
     /// without a `Stop` hook (a cancelled `/resume` or `/compact`, an esc-interrupt,
     /// or a hook that never correlated) instead of spinning forever.
     let staleWorkingTimeout: TimeInterval = 12
+
+    /// When a session's hooks last applied any state, so the screen-driven
+    /// promotion in `noteOutputActivity` can defer to live hooks: a session whose
+    /// hooks just spoke doesn't need the screen to guess for them.
+    var lastHookReportAt: [Session.ID: Date] = [:]
+    /// When the user last typed (or scrolled) into a session's terminal. Keystroke
+    /// echo repaints the screen exactly like streaming output does, so promotion
+    /// stays quiet for a beat after any input.
+    var lastUserInputAt: [Session.ID: Date] = [:]
+    /// Consecutive changed-screen ticks observed for a non-working session — the
+    /// debounce counter behind promotion (see `noteOutputActivity`).
+    var promotionStreak: [Session.ID: Int] = [:]
+    /// Hooks are trusted for this long after their last report before the screen
+    /// may promote a session to working on its own. Just above
+    /// `staleWorkingTimeout`, so a live turn the sweep mistakenly cleared becomes
+    /// recoverable the moment it repaints, while the repaint burst right after a
+    /// `Stop` hook (the final answer rendering) can never re-light the spinner.
+    let hookQuietWindow: TimeInterval = 15
+    /// How long after user input the screen must settle before promotion; typing a
+    /// long prompt repaints the input box every keystroke.
+    let userInputQuietWindow: TimeInterval = 3
+    /// No promotion this soon after launch: an agent's banner and first prompt
+    /// paint across several ticks while it is simply starting up.
+    let launchGraceWindow: TimeInterval = 10
+    /// PTY bytes per throttle tick that read as genuine streaming for the
+    /// *sustain* path in `noteOutputActivity` — enough to keep a working session
+    /// alive while the user has scrolled its viewport away from the live tail
+    /// (a frozen viewport stops the screen-change signal), yet above the trickle
+    /// an idle prompt emits (a cursor-park sequence, a redraw) so a finished turn
+    /// still goes static and gets swept.
+    let streamingByteFloor = 512
 
     /// Records the host surface's live grid so the next session's PTY is spawned
     /// at a size that matches the window, avoiding the first-prompt reflow. Only

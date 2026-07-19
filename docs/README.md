@@ -63,7 +63,7 @@ from the real front matter).
 | draft | design | [分享 Agent 会话（带密码的实时分享链接）](design/session-share.md) |
 | draft | design | [移动端 Agent UI 协议 —— PTY 之上的旁路结构面（ACP 词汇）](design/mobile-agent-ui-protocol.md) |
 | draft | design | [调研：下一批 AgentAdapter 的落盘格式（OpenCode / Pi / Amp / Cursor / Kimi）](design/agent-transcript-survey.md) |
-| draft | design | [Agent Abstraction & Configuration](design/agent-abstraction-and-configuration.md) |
+| draft | design | ["Markdown preview — Apple-grade reading typography"](design/markdown-preview-reading-typography.md) |
 | draft | design | [Mac retention analytics (no app changes)](design/mac-retention-analytics.md) |
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/remote-projects.md) |
 | draft | design | [Session Daemon Architecture (termiod — one model for local, remote, mobile)](design/session-daemon-architecture.md) |
