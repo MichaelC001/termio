@@ -1111,9 +1111,9 @@ private struct WorkingIndicator: View {
         (0, 0), (1, 0), (2, 0), (2, 1), (2, 2), (1, 2), (0, 2), (0, 1),
     ]
     // Dots this small read lighter than their nominal opacity, so the size and
-    // the opacity ramp are tuned together: 2.7pt ink with a 0.3 tail floor sits
-    // at the same perceived weight as the neighboring 15pt primary-ink glyphs.
-    private let dotSize: CGFloat = 2.7
+    // the opacity ramp are tuned together: 2.5pt pure ink with a 0.5 tail floor
+    // sits at the same perceived weight as the neighboring 15pt glyphs.
+    private let dotSize: CGFloat = 2.5
     private let spacing: CGFloat = 3.6
     private let period: Double = 1.1
 
