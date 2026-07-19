@@ -8,6 +8,9 @@
   "resume": "claude",
   "icon": { "vector": "claude" },
   "install": "https://claude.com/claude-code",
+  "titleStatus": {
+    "working": ["^[⠀-⣿] "]
+  },
   "hooks": {
     "type": "json",
     "file": "~/.claude/settings.json",

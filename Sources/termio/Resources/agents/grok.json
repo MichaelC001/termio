@@ -8,6 +8,9 @@
   "resume": "claude",
   "icon": { "asset": "grok-favicon" },
   "install": "https://x.ai/cli",
+  "titleStatus": {
+    "attention": ["Action Required"]
+  },
   "hooks": {
     "type": "json",
     "file": "~/.grok/hooks/termio.json",

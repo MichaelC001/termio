@@ -234,6 +234,39 @@ extension TermioStore {
         }
     }
 
+    /// Drives status from the agent's live `OSC 0/2` title — the in-band state
+    /// broadcast some agents ship (Claude prefixes a braille spinner mid-turn,
+    /// Codex/Grok flip to "Action Required" when blocked). Unlike the screen path
+    /// this *coexists* with hooks: the title is the agent's own deliberate signal
+    /// on a channel that cannot break, so it corrects a missed `working` hook the
+    /// instant the turn starts and ends a lost turn the instant the title calms —
+    /// no 12s sweep wait, no promotion evidence-gathering. Transitions only
+    /// (`lastTitleActivity`), with hooks kept senior where they are more precise:
+    /// a title-working never overrides `needsAttention` (a blocked agent's title
+    /// can keep spinning), and a title-idle only ends a turn — an arbitrary title
+    /// (which classifies idle by no-match) must not clear hook-set states.
+    func applyTitleActivity(_ activity: AgentStatusRules.Activity, for id: Session.ID) {
+        guard lastTitleActivity[id] != activity else { return }
+        let previous = lastTitleActivity[id]
+        lastTitleActivity[id] = activity
+        switch activity {
+        case .working:
+            guard statuses[id] != .needsAttention else { return }
+            guard let session = session(id), effectiveAgent(for: session) != .terminal
+            else { return }
+            statuses[id] = .working
+            lastWorkingAt[id] = Date()
+            if let pid = project(for: id)?.id { liveActivity[pid] = Date() }
+        case .attention:
+            clearWorking(id)
+            if selectedSessionID != id { statuses[id] = .needsAttention }
+        case .idle:
+            guard previous == .working, statuses[id] == .working else { return }
+            clearWorking(id)
+            statuses[id] = (selectedSessionID == id) ? .idle : .done
+        }
+    }
+
     /// Records (or clears) the agent detected running in a plain terminal's
     /// foreground, upgrading the row to a first-class agent while it runs (brand icon,
     /// adopted live title, working spinner) and reverting it to a plain terminal when
@@ -249,6 +282,7 @@ extension TermioStore {
         } else {
             detectedAgents[id] = nil
             liveTitles[id] = nil
+            lastTitleActivity[id] = nil
             clearWorking(id)
             if statuses[id] == .working || statuses[id] == .done { statuses[id] = .idle }
         }

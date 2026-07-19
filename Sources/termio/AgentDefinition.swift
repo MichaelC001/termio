@@ -53,6 +53,14 @@ struct AgentDefinition: Identifiable {
     /// no `status` block (or that declared `hooks`, which take authority). See
     /// `AgentStatusRules`.
     let statusRules: AgentStatusRules?
+    /// Rules over the agent's live `OSC 0/2` *title* — the in-band state broadcast
+    /// some agents ship (Claude prefixes a braille spinner while working, Codex and
+    /// Grok flip to "Action Required" when blocked). Unlike `statusRules` this
+    /// coexists with hooks rather than replacing them: the title is the agent's own
+    /// deliberate signal on a channel that cannot break (no hook file, no external
+    /// script, no socket), so it corrects a missed or late hook the instant the
+    /// title flips. See `TermioStore.applyTitleActivity` for the arbitration.
+    let titleRules: AgentStatusRules?
     /// A manifest's declarative hook integration: the destination owned by the agent,
     /// a closed installer/dialect, and its event→state mapping.
     /// When present it is installed by `AgentStatusHooks` and becomes the session's
@@ -67,7 +75,8 @@ struct AgentDefinition: Identifiable {
         permissionBypassFlag: String?,
         resumeStyle: ResumeStyle, icon: AgentIcon,
         iconRef: TermioShared.IconRef, tint: Color, tintHex: String?, installURL: URL?, wireName: String,
-        statusRules: AgentStatusRules? = nil, hookSpec: AgentHookSpec? = nil
+        statusRules: AgentStatusRules? = nil, titleRules: AgentStatusRules? = nil,
+        hookSpec: AgentHookSpec? = nil
     ) {
         self.id = id
         self.order = order
@@ -82,6 +91,7 @@ struct AgentDefinition: Identifiable {
         self.installURL = installURL
         self.wireName = wireName
         self.statusRules = statusRules
+        self.titleRules = titleRules
         self.hookSpec = hookSpec
     }
 
@@ -769,6 +779,11 @@ struct AgentManifest: Decodable {
     var installURL: String?
     var icon: IconSpec?
     var status: StatusSpec?
+    /// Same regex shape as `status`, matched against the agent's live OSC 0/2
+    /// title instead of the rendered screen. Coexists with `hooks` (the title is a
+    /// correction channel, not a competing authority), so it is not gated the way
+    /// `status` is.
+    var titleStatus: StatusSpec?
     var hooks: HookSpec?
 
     struct IconSpec: Decodable {
@@ -923,6 +938,9 @@ struct AgentManifest: Decodable {
         let statusRules = hookSpec == nil
             ? AgentStatusRules.from(working: status?.working, attention: status?.attention, label: id)
             : nil
+        let titleRules = AgentStatusRules.from(
+            working: titleStatus?.working, attention: titleStatus?.attention,
+            label: "\(id).title")
 
         let resumeStyle: AgentDefinition.ResumeStyle
         switch resume?.lowercased() ?? "none" {
@@ -941,7 +959,7 @@ struct AgentManifest: Decodable {
             resumeStyle: resumeStyle, icon: resolvedIcon, iconRef: resolvedIconRef,
             tint: resolvedTint, tintHex: resolvedTintHex,
             installURL: (install ?? installURL).flatMap(URL.init(string:)), wireName: wire ?? id,
-            statusRules: statusRules, hookSpec: hookSpec)
+            statusRules: statusRules, titleRules: titleRules, hookSpec: hookSpec)
     }
 
     private static func bundledAsset(named name: String, in bundle: Bundle) -> URL? {
