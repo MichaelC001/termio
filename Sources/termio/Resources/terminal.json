@@ -1,0 +1,7 @@
+{
+  "id": "terminal",
+  "order": 0,
+  "name": "Terminal",
+  "wire": "terminal",
+  "resume": "none"
+}

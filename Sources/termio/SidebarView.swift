@@ -683,7 +683,7 @@ private struct ProjectHeader: View {
 
 @MainActor
 func enabledAgentPresets(_ settings: AppSettings) -> [AgentPreset] {
-    AgentPreset.allCases.filter(settings.isAgentEnabled)
+    settings.orderedAgents(AgentPreset.allCases.filter(settings.isAgentEnabled))
 }
 
 /// A project-like header always offers a shell, followed by each coding agent the

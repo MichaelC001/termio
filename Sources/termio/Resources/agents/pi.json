@@ -1,0 +1,19 @@
+{
+  "id": "pi",
+  "order": 40,
+  "name": "Pi",
+  "wire": "pi",
+  "command": "pi",
+  "resume": "pi",
+  "icon": { "asset": "pi-favicon" },
+  "install": "https://pi.dev",
+  "hooks": {
+    "type": "plugin",
+    "dir": "~/.pi/agent/extensions",
+    "dialect": "pi",
+    "events": [
+      { "on": "agent_start", "state": "working" },
+      { "on": "agent_end", "state": "done" }
+    ]
+  }
+}

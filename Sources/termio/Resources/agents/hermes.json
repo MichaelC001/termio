@@ -1,0 +1,10 @@
+{
+  "id": "hermes",
+  "order": 90,
+  "name": "Hermes",
+  "wire": "hermes",
+  "command": "hermes",
+  "resume": "none",
+  "icon": { "asset": "hermes-favicon" },
+  "install": "https://hermes-agent.nousresearch.com/#downloads"
+}

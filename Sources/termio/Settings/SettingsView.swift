@@ -55,6 +55,7 @@ struct SettingsView: View {
     @ViewBuilder
     private var detail: some View {
         switch selection {
+        case .general: GeneralSettingsTab(settings: settings)
         case .appearance: AppearanceSettingsTab(settings: settings)
         case .interface: InterfaceSettingsTab(settings: settings)
         case .terminal: TerminalSettingsTab(settings: settings)

@@ -95,6 +95,7 @@ final class AppSettings: ObservableObject {
         static let agentCommands = "agents.commandOverrides"
         static let bypassPermissionAgents = "agents.bypassPermissions"
         static let disabledAgents = "agents.disabled"
+        static let agentOrder = "agents.order"
         static let agentHooksEnabled = "agents.hooksEnabled"
         static let sessionControlEnabled = "agents.sessionControlEnabled"
         static let sessionControlPrompted = "agents.sessionControlPrompted"
@@ -280,6 +281,17 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(Array(disabledAgents), forKey: Key.disabledAgents) }
     }
 
+    /// The user's own agent arrangement, as an ordered list of `rawValue`s — the
+    /// runtime layer that overrides each manifest's default `order` (the VSCode
+    /// model: shipped defaults, user settings on top). Empty until the user drags a
+    /// row in Settings, in which case `orderedAgents` falls straight through to the
+    /// catalog's default order. Ids absent from the list keep catalog order and sort
+    /// after ranked ones; Terminal is always pinned first regardless (see
+    /// `orderedAgents`).
+    @Published var agentOrder: [String] {
+        didSet { defaults.set(agentOrder, forKey: Key.agentOrder) }
+    }
+
     /// When on, termio installs Claude Code hooks (into `~/.claude/settings.json`)
     /// that report each turn's lifecycle, so a running agent reads as `.working`
     /// and a tool-in-use can be named — precision the zero-config bell/OSC signals
@@ -347,7 +359,7 @@ final class AppSettings: ObservableObject {
         // overrides a returning user's own choices.
         if defaults.object(forKey: Key.disabledAgents) == nil {
             let enabledByDefault: Set<String> = ["terminal", "claudeCode", "codex"]
-            let hidden = AgentDefinition.builtins.map(\.id).filter { !enabledByDefault.contains($0) }
+            let hidden = AgentCatalog.shared.bundled.map(\.id).filter { !enabledByDefault.contains($0) }
             defaults.set(hidden, forKey: Key.disabledAgents)
         }
 
@@ -392,6 +404,7 @@ final class AppSettings: ObservableObject {
         agentCommandOverrides = defaults.dictionary(forKey: Key.agentCommands) as? [String: String] ?? [:]
         bypassPermissionAgents = Set(defaults.stringArray(forKey: Key.bypassPermissionAgents) ?? [])
         disabledAgents = Set(defaults.stringArray(forKey: Key.disabledAgents) ?? [])
+        agentOrder = defaults.stringArray(forKey: Key.agentOrder) ?? []
         agentHooksEnabled = defaults.bool(forKey: Key.agentHooksEnabled)
         sessionControlEnabled = defaults.bool(forKey: Key.sessionControlEnabled)
         usageAuthorizedAgents = Set(defaults.stringArray(forKey: Key.usageAuthorizedAgents) ?? [])
@@ -451,5 +464,29 @@ final class AppSettings: ObservableObject {
         } else {
             disabledAgents.insert(agent.rawValue)
         }
+    }
+
+    /// Applies the user's `agentOrder` on top of the catalog's default order. The
+    /// single chokepoint every ordered surface goes through (the sidebar quick-add
+    /// row, the command palette, the New-chat picker, the Settings list), so a drag
+    /// in Settings moves the agent everywhere. Terminal is pinned first; ranked ids
+    /// follow in the user's arrangement; anything the user hasn't placed keeps its
+    /// incoming (catalog) order and sorts after the ranked block.
+    func orderedAgents(_ agents: [AgentPreset]) -> [AgentPreset] {
+        let rank = Dictionary(
+            agentOrder.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
+        func key(_ item: (offset: Int, element: AgentPreset)) -> (Int, Int) {
+            if item.element.id == AgentPreset.terminal.id { return (-1, item.offset) }
+            return (rank[item.element.id] ?? Int.max, item.offset)
+        }
+        return agents.enumerated().sorted { key($0) < key($1) }.map(\.element)
+    }
+
+    /// Records a new arrangement of the enabled (non-Terminal) agents after a drag.
+    /// Every other id keeps its current relative order behind the enabled block, so
+    /// the full ranking stays well-defined and a later enable slots in predictably.
+    func setEnabledOrder(_ enabledIDs: [String]) {
+        let rest = AgentPreset.allCases.map(\.id).filter { !enabledIDs.contains($0) }
+        agentOrder = enabledIDs + rest
     }
 }
