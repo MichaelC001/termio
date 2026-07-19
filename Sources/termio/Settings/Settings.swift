@@ -370,7 +370,7 @@ final class AppSettings: ObservableObject {
             Key.interfaceRowPadding: 2.0,
             Key.agentHooksEnabled: false,
             Key.sessionControlEnabled: false,
-            Key.projectSortOrder: "recentActivity",
+            Key.projectSortOrder: "name",
         ])
 
         fontFamily = defaults.string(forKey: Key.fontFamily) ?? ""
@@ -396,7 +396,7 @@ final class AppSettings: ObservableObject {
         sessionControlEnabled = defaults.bool(forKey: Key.sessionControlEnabled)
         usageAuthorizedAgents = Set(defaults.stringArray(forKey: Key.usageAuthorizedAgents) ?? [])
         claudeKeychainDeclined = defaults.bool(forKey: Key.claudeKeychainDeclined)
-        projectSortOrder = defaults.string(forKey: Key.projectSortOrder).flatMap(ProjectSortOrder.init) ?? .recentActivity
+        projectSortOrder = defaults.string(forKey: Key.projectSortOrder).flatMap(ProjectSortOrder.init) ?? .name
         recentProjects = defaults.data(forKey: Key.recentProjects)
             .flatMap { try? JSONDecoder().decode([RecentProject].self, from: $0) } ?? []
         lastChatAgentID = defaults.string(forKey: Key.lastChatAgent)
