@@ -56,7 +56,9 @@ struct FileEditorView: View {
         _text = State(initialValue: contents ?? "")
         _savedText = State(initialValue: contents ?? "")
         _loadFailed = State(initialValue: contents == nil)
-        _mode = State(initialValue: Self.isMarkdown(url) ? .preview : .edit)
+        // A jump-to-line open (content-search hit, cmd-click) targets the *source*, so it
+        // must land in Edit — Preview has no lines to jump to and would swallow the scroll.
+        _mode = State(initialValue: Self.isMarkdown(url) && jumpLine == nil ? .preview : .edit)
         self.language = Self.highlightLanguage(for: url)
         self.relativePath = Self.repoRelativePath(for: url)
     }
