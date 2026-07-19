@@ -128,12 +128,16 @@ extension TermioStore {
         promotionStreak[id] = nil
     }
 
-    /// Marks the moment of live user input into a session's terminal (fed by the
-    /// surface's PTY write path). Keystroke echo and mouse-mode scrolling repaint
-    /// the screen exactly like agent output, so promotion holds off while the
-    /// human is the one causing the changes.
-    func noteUserInput(_ id: Session.ID) {
-        lastUserInputAt[id] = Date()
+    /// Marks the moment of live user input into a session's terminal. Keystroke
+    /// echo and mouse-mode scrolling repaint the screen exactly like agent
+    /// output, so promotion holds off while the human is the one causing the
+    /// changes. Fed each status poke from `PTYProcess.lastInputAt` — the choke
+    /// point every input path crosses (Mac surface, phone companion bridge,
+    /// synthetic `sessions send`) — hence the monotonic guard: a poke can only
+    /// carry the timestamp forward.
+    func noteUserInput(_ id: Session.ID, at instant: Date) {
+        if let existing = lastUserInputAt[id], existing >= instant { return }
+        lastUserInputAt[id] = instant
     }
 
     /// Keeps a session's status honest against its live output, in both directions.

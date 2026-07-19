@@ -152,15 +152,11 @@ extension TermioStore {
         let pty = PTYProcess(argv: argv, cwd: workspacePath, env: env,
                              cols: lastHostGridColumns, rows: lastHostGridRows)
         let inMemory = InMemoryTerminalSession(
-            write: { [weak self] data in
+            write: { data in
                 // Typing on the Mac reclaims the winsize from an attached
                 // phone — the size follows the device being used.
                 pty?.claimHostOwnership()
                 pty?.write(data)
-                // Live input (keystrokes, mouse-mode scrolling) repaints the
-                // screen just like agent output, so the status promotion in
-                // `noteOutputActivity` holds off while the human is typing.
-                DispatchQueue.main.async { self?.noteUserInput(session.id) }
             },
             resize: { [weak self] viewport in
                 let columns = Int(viewport.columns)
@@ -212,13 +208,20 @@ extension TermioStore {
             // stream's volume alongside the screen compare — the scroll-frozen-
             // viewport liveness signal (see `noteOutputActivity`).
             var pendingBytes = 0
-            pty.addSink { [weak self, weak inMemory] data in
+            pty.addSink { [weak self, weak inMemory, weak pty] data in
                 pendingBytes += data.count
                 let now = Date()
                 guard now.timeIntervalSince(lastPoke) >= 1 else { return }
                 lastPoke = now
                 let bytes = pendingBytes
                 pendingBytes = 0
+                // The PTY timestamps every stdin write (Mac keystrokes, phone
+                // input over the companion bridge, synthetic `sessions send`
+                // text), so sampling it here — instead of tapping only the Mac
+                // surface's write callback — keeps promotion quiet after input
+                // from any device. Input echo repaints the screen just like
+                // agent output does.
+                let inputAt = pty?.lastInputAt
                 let text = inMemory?.readViewportText()
                 let screenChanged: Bool
                 if let text {
@@ -242,6 +245,7 @@ extension TermioStore {
                     detected = nil
                 }
                 DispatchQueue.main.async {
+                    if let inputAt { self?.noteUserInput(session.id, at: inputAt) }
                     self?.noteOutputActivity(session.id, screenChanged: screenChanged, bytes: bytes)
                     if let detected {
                         self?.applyScreenDetectedActivity(detected, for: session.id)

@@ -465,6 +465,7 @@ final class PTYProcess: @unchecked Sendable {
         writeLock.lock()
         defer { writeLock.unlock() }
         guard !writerTornDown else { return }
+        lastInputAtLocked = Date()
         // Once a backlog exists every write must append behind it, or these
         // bytes would overtake the queued remainder and reorder the stream.
         guard pendingWrite.isEmpty else {
@@ -477,6 +478,22 @@ final class PTYProcess: @unchecked Sendable {
         case .blocked(let resumeAt):
             appendBacklogLocked(data.subdata(in: resumeAt ..< data.count))
         }
+    }
+
+    /// Instant of the last stdin write. Every input path funnels through
+    /// `write(_:)` — Mac keystrokes via the surface's write callback, phone
+    /// keystrokes via the companion bridge, synthetic `sessions send` text — so
+    /// this is the one place input can be timestamped for all of them. Guarded
+    /// by `writeLock` like the rest of the writer state.
+    private var lastInputAtLocked = Date.distantPast
+
+    /// Thread-safe read of the last stdin-write instant. The status tap reads it
+    /// each poke to tell input echo apart from agent-driven output (see
+    /// `TermioStore.noteUserInput`).
+    var lastInputAt: Date {
+        writeLock.lock()
+        defer { writeLock.unlock() }
+        return lastInputAtLocked
     }
 
     /// Result of pushing bytes at the non-blocking write fd.
