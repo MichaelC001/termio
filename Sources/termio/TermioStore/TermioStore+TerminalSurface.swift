@@ -682,9 +682,25 @@ extension TermioStore {
             state.$lastBellAt.dropFirst().compactMap { $0 }.sink { _ in flag() },
             state.$lastDesktopNotificationAt.dropFirst().compactMap { $0 }.sink { _ in flag() },
             // The surface already publishes the program's live `OSC 0/2` title;
-            // adopt the meaningful values as the agent session's display label.
+            // classify it as a status signal, then adopt the meaningful values as
+            // the agent session's display label. Classification sees the RAW
+            // title — the working/idle marks (Claude's braille spinner prefix,
+            // Codex's "Action Required") are exactly what the label sanitizer
+            // strips as noise. Every frame of a ticking title spinner republishes
+            // here; `applyTitleActivity` collapses them on its own transition
+            // guard, so per-frame work is one regex over a short string.
             state.$title.removeDuplicates().sink { [weak self] title in
                 guard let self, let session = self.session(id) else { return }
+                let agent = self.effectiveAgent(for: session)
+                if let rules = agent.titleRules {
+                    let (activity, matched) = rules.explain(title)
+                    if ProcessInfo.processInfo.environment["TERMIO_STATUS_TRACE"] != nil {
+                        AgentStatusRules.trace(
+                            agent: "\(agent.id).title", session: id,
+                            activity: activity, matched: matched)
+                    }
+                    self.applyTitleActivity(activity, for: id)
+                }
                 let cleaned = self.sanitizedLiveTitle(title)
                 guard self.isMeaningfulLiveTitle(cleaned, for: session),
                       self.liveTitles[id] != cleaned else { return }

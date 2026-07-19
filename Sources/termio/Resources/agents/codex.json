@@ -8,6 +8,10 @@
   "resume": "codex",
   "icon": { "vector": "codex" },
   "install": "https://developers.openai.com/codex/cli",
+  "titleStatus": {
+    "working": ["(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)"],
+    "attention": ["Action Required"]
+  },
   "hooks": {
     "type": "json",
     "file": "~/.codex/hooks.json",

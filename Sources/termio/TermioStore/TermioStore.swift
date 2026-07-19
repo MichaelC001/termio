@@ -253,6 +253,11 @@ final class TermioStore: ObservableObject {
     /// into (see `AgentStatusRules` / `applyScreenDetectedActivity`), so status is only
     /// re-driven on a transition — not re-emitted every tick the screen sits idle.
     var lastScreenActivity: [Session.ID: AgentStatusRules.Activity] = [:]
+    /// The last activity an agent's live OSC title was classified into (see
+    /// `applyTitleActivity`), so title-driven status also moves only on
+    /// transitions — a spinner frame change re-classifies as the same `working`
+    /// and is dropped here.
+    var lastTitleActivity: [Session.ID: AgentStatusRules.Activity] = [:]
     var staleWorkingSweep: Timer?
     /// How long a `.working` session may go with *no screen change and no working
     /// hook* before the sweep flips it back to idle. A working agent's TUI repaints
