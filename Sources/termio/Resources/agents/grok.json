@@ -1,5 +1,6 @@
 {
   "id": "grok",
+  "order": 95,
   "name": "Grok",
   "wire": "grok",
   "command": "grok",

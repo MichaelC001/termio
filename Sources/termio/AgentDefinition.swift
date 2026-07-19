@@ -13,6 +13,11 @@ struct AgentDefinition: Identifiable {
     /// Stable slug, aligned with the old `AgentPreset.rawValue`. The persistence
     /// key, the settings-dictionary key, and the identity used for equality.
     let id: String
+    /// Default catalog position — the manifest's `order` field, replacing the old
+    /// filename number prefix. Lower sorts first (Terminal is 0). A user's runtime
+    /// drag-reorder layers on top of this via `AppSettings.orderedAgents`; a manifest
+    /// that omits `order` (most user agents) defaults high and lands at the end.
+    let order: Int
     let displayName: String
     /// Program launched in the session, or `nil` for the user's login shell. The
     /// CLIs are expected on `PATH`; if missing, the terminal shows the shell's
@@ -58,12 +63,14 @@ struct AgentDefinition: Identifiable {
     /// All fields after `wireName` are optional so the built-in roster and the
     /// fallback don't each have to spell them out.
     init(
-        id: String, displayName: String, command: String?, permissionBypassFlag: String?,
+        id: String, order: Int = Self.unorderedRank, displayName: String, command: String?,
+        permissionBypassFlag: String?,
         resumeStyle: ResumeStyle, icon: AgentIcon,
         iconRef: TermioShared.IconRef, tint: Color, tintHex: String?, installURL: URL?, wireName: String,
         statusRules: AgentStatusRules? = nil, hookSpec: AgentHookSpec? = nil
     ) {
         self.id = id
+        self.order = order
         self.displayName = displayName
         self.command = command
         self.permissionBypassFlag = permissionBypassFlag
@@ -76,6 +83,16 @@ struct AgentDefinition: Identifiable {
         self.wireName = wireName
         self.statusRules = statusRules
         self.hookSpec = hookSpec
+    }
+
+    /// The default `order` for a manifest that declares none — high, so unspecified
+    /// agents (typically user-dropped ones) sort after every ranked built-in.
+    static let unorderedRank = 1_000_000
+
+    /// Catalog sort: by default `order`, then `id` for a stable tie-break so the
+    /// merged roster is deterministic regardless of file-enumeration order.
+    static func byCatalogOrder(_ a: AgentDefinition, _ b: AgentDefinition) -> Bool {
+        (a.order, a.id) < (b.order, b.id)
     }
 
     /// Compatibility shim for the many call sites and settings dictionaries that
@@ -219,6 +236,15 @@ extension AgentDefinition {
     /// old `AgentPreset.allCases`; the pickers, the roster, and name resolution all
     /// read from here, so user agents appear everywhere built-ins do.
     static var allCases: [AgentDefinition] { AgentCatalog.shared.all }
+
+    /// The plain login shell rather than a coding-agent CLI. It's configured on the
+    /// Terminal settings tab and is always available in the New-session menu, so it's
+    /// deliberately excluded from the manageable agent roster — the Agents settings
+    /// tab and the chat pickers list `codingAgents` only, never the shell.
+    var isShell: Bool { id == "terminal" }
+
+    /// Every agent the user actually manages: the roster minus the plain shell.
+    static var codingAgents: [AgentDefinition] { allCases.filter { !$0.isShell } }
 
     // Compatibility conveniences for enum-shaped call sites. These are catalog
     // lookups, not definitions: every fact still comes from the corresponding JSON
@@ -386,14 +412,22 @@ final class AgentCatalog {
     private let commandIndex: [String: AgentDefinition]
 
     private init() {
-        let bundled = Self.loadBundledAgents()
+        // The plain shell is a session kind rather than a manageable agent, so it
+        // loads from its own manifest at the bundle root — kept out of the coding-agent
+        // directory. It still joins the roster (every terminal session resolves to it)
+        // and, at `order: 0`, sorts first.
+        let bundled = (Self.loadBundledShell().map { [$0] } ?? []) + Self.loadBundledAgents()
         Self.migrateLegacyUserAgents()
         // A failed/colliding migration remains readable in its old location; flat
         // config wins when both sources intentionally carry the same id.
         let legacy = Self.loadLegacyUserAgents()
         let user = Self.merge(legacy, overriddenBy: Self.loadUserAgents())
-        let all = Self.merge(bundled, overriddenBy: user)
-        self.bundled = bundled
+        // Final roster order is the manifest `order` field, not file-enumeration or
+        // merge-insertion order — so a user override that changes `order` moves the
+        // agent, and the roster is deterministic. A user's runtime drag-reorder then
+        // layers on top of this default via `AppSettings.orderedAgents`.
+        let all = Self.merge(bundled, overriddenBy: user).sorted(by: AgentDefinition.byCatalogOrder)
+        self.bundled = bundled.sorted(by: AgentDefinition.byCatalogOrder)
         self.all = all
         var index: [String: AgentDefinition] = [:]
         for definition in all {
@@ -493,6 +527,20 @@ final class AgentCatalog {
             .appendingPathComponent("agents", isDirectory: true)
     }
 
+    /// The plain login shell, loaded from its own manifest at the bundle root rather
+    /// than the coding-agent directory. `nil` only if the file is missing or unparseable
+    /// (the roster then degrades to the id-only fallback for terminal sessions).
+    private static func loadBundledShell() -> AgentDefinition? {
+        guard let resourceURL = Bundle.termioResources.resourceURL else {
+            log("bundled resource directory is unavailable")
+            return nil
+        }
+        let url = resourceURL.appendingPathComponent("terminal.json")
+        return decode(manifest: url, resolvingRelativeTo: resourceURL)
+    }
+
+    /// The coding agents only — the `agents/` directory deliberately excludes the plain
+    /// shell (see `loadBundledShell`), so this enumerates the manageable roster.
     private static func loadBundledAgents() -> [AgentDefinition] {
         guard let resourceURL = Bundle.termioResources.resourceURL else {
             log("bundled resource directory is unavailable")
@@ -708,6 +756,10 @@ final class AgentCatalog {
 struct AgentManifest: Decodable {
     let id: String
     let name: String
+    /// Default catalog position. Bundled manifests declare it (Terminal 0, Claude 10,
+    /// …); a user manifest may set its own slot, and one that omits it defaults high
+    /// so new user agents land at the end. Replaces the old filename number prefix.
+    var order: Int?
     var wire: String?
     var command: String?
     var permissionBypassFlag: String?
@@ -883,7 +935,8 @@ struct AgentManifest: Decodable {
         }
 
         return AgentDefinition(
-            id: id, displayName: name, command: command,
+            id: id, order: order ?? AgentDefinition.unorderedRank,
+            displayName: name, command: command,
             permissionBypassFlag: permissionBypassFlag,
             resumeStyle: resumeStyle, icon: resolvedIcon, iconRef: resolvedIconRef,
             tint: resolvedTint, tintHex: resolvedTintHex,

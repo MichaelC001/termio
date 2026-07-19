@@ -1,5 +1,6 @@
 {
   "id": "kimi",
+  "order": 70,
   "name": "Kimi",
   "wire": "kimi",
   "command": "kimi",

@@ -1,5 +1,6 @@
 {
   "id": "antigravity",
+  "order": 80,
   "name": "Antigravity",
   "wire": "antigravity",
   "command": "agy",

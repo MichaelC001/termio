@@ -1,5 +1,6 @@
 {
   "id": "cursor",
+  "order": 60,
   "name": "Cursor",
   "wire": "cursor",
   "command": "cursor-agent",

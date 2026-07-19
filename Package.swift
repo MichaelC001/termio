@@ -53,9 +53,13 @@ let package = Package(
             resources: [
                 // Process app assets into the resource-bundle root so existing
                 // name-based lookups stay stable. Agent manifests are copied as a
-                // directory because the catalog intentionally enumerates only it.
+                // directory because the catalog intentionally enumerates only it —
+                // and that directory is coding agents only. The plain shell is a
+                // session kind, not a manageable agent, so its manifest sits apart at
+                // the bundle root, loaded by name (see AgentCatalog.loadBundledShell).
                 .process("Resources/assets"),
                 .copy("Resources/agents"),
+                .copy("Resources/terminal.json"),
                 // Devicon language/tool logos (one SVG per file type), loaded by name
                 // for the file tree; see LangIconCatalog / LangIconView. Kept as a
                 // folder copy (not `.process`) so the lookup subdirectory survives.

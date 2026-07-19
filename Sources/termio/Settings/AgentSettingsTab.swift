@@ -3,6 +3,22 @@ import SwiftUI
 struct AgentSettingsTab: View {
     @ObservedObject var settings: AppSettings
 
+    /// Which enabled agents have their configuration drawer open. Keyed by id so the
+    /// set survives reordering and enable/disable without stale indices.
+    @State private var expanded: Set<String> = []
+    /// Whether the collapsed "More agents" drawer (the disabled agents) is open.
+    @State private var showingMore = false
+
+    /// The agents the user actually manages, in the user's arrangement. The plain
+    /// Terminal is not here — it's the login shell, configured on the Terminal tab and
+    /// always available, so it's never an enable/reorder row (see `AgentDefinition.isShell`).
+    private var enabledAgents: [AgentPreset] {
+        settings.orderedAgents(AgentPreset.codingAgents.filter(settings.isAgentEnabled))
+    }
+    private var disabledAgents: [AgentPreset] {
+        settings.orderedAgents(AgentPreset.codingAgents.filter { !settings.isAgentEnabled($0) })
+    }
+
     var body: some View {
         Form {
             Section {
@@ -43,13 +59,58 @@ struct AgentSettingsTab: View {
             } header: {
                 SectionHeaderLabel(title: "New chat")
             }
-            ForEach(AgentPreset.allCases) { preset in
-                Section {
-                    AgentRow(settings: settings, preset: preset)
-                }
-            }
+            agentsSection
         }
         .formStyle(.grouped)
+    }
+
+    /// The one section that replaced a full-height card per agent: the enabled agents
+    /// as a compact, reorderable list whose per-agent config hides behind a disclosure,
+    /// and the long tail of disabled agents folded into a "More agents" drawer.
+    private var agentsSection: some View {
+        Section {
+            ForEach(enabledAgents) { preset in
+                AgentManagerRow(
+                    settings: settings,
+                    preset: preset,
+                    isExpanded: expanded.contains(preset.id),
+                    toggleExpanded: { toggleExpanded(preset) }
+                )
+            }
+            .onMove(perform: moveEnabled)
+
+            if !disabledAgents.isEmpty {
+                DisclosureGroup(isExpanded: $showingMore) {
+                    ForEach(disabledAgents) { preset in
+                        DisabledAgentRow(settings: settings, preset: preset)
+                    }
+                } label: {
+                    HStack {
+                        Text("More agents").font(.headline)
+                        Spacer()
+                        Text("\(disabledAgents.count)").foregroundStyle(.secondary)
+                    }
+                }
+            }
+        } header: {
+            SectionHeaderLabel(title: "Agents")
+        } footer: {
+            Text("The agents offered in the new-session menu and the sidebar's quick-add row, in this order — drag to reorder. Open a row to set a custom command or skip its permission prompts.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func toggleExpanded(_ preset: AgentPreset) {
+        if expanded.contains(preset.id) { expanded.remove(preset.id) } else { expanded.insert(preset.id) }
+    }
+
+    /// Persists a drag as the new enabled arrangement; `setEnabledOrder` keeps every
+    /// other id ranked behind it so the ordering stays total.
+    private func moveEnabled(from source: IndexSet, to destination: Int) {
+        var ids = enabledAgents.map(\.id)
+        ids.move(fromOffsets: source, toOffset: destination)
+        settings.setEnabledOrder(ids)
     }
 }
 
@@ -66,7 +127,7 @@ private struct DefaultChatAgentRow: View {
     private let lastUsedTag = ""
 
     private var chatAgents: [AgentPreset] {
-        enabledAgentPresets(settings).filter { $0 != .terminal }
+        enabledAgentPresets(settings).filter { !$0.isShell }
     }
 
     var body: some View {
@@ -96,38 +157,59 @@ private struct DefaultChatAgentRow: View {
     }
 }
 
-/// One agent's settings block: enable switch, command/path override, an install
-/// link when its CLI can't be resolved, and the permission-bypass toggle.
-private struct AgentRow: View {
+/// An enabled agent's management row: a compact header (icon, name, effective
+/// command, an unavailable hint, the enable switch) with the heavier config —
+/// command override, install link, permission bypass — tucked behind a disclosure so
+/// the list stays scannable. Draggable to reorder (the enclosing `ForEach.onMove`).
+private struct AgentManagerRow: View {
     @ObservedObject var settings: AppSettings
     let preset: AgentPreset
+    let isExpanded: Bool
+    let toggleExpanded: () -> Void
 
     /// `nil` while the PATH probe is still running (show nothing rather than a
     /// premature warning); `false` once we've confirmed the command isn't resolvable.
     @State private var available: Bool?
 
     var body: some View {
-        // `Group` is transparent inside a Form (its children each become a row), so it
-        // just gives the several rows one place to hang the availability probe.
+        // `Group` is transparent inside a Form (its children each become a row), so the
+        // header and the disclosed controls read as sibling rows while sharing one probe.
         Group {
-            // The Dia "Sync row": a badge + title + subtitle on the left, its switch on
-            // the right. The switch controls whether the agent appears in the sidebar's
-            // new-session quick-add row.
-            Toggle(isOn: Binding(
-                get: { settings.isAgentEnabled(preset) },
-                set: { settings.setAgent(preset, enabled: $0) }
-            )) {
-                SettingsLabel(
-                    preset.icon,
-                    title: preset.displayName,
-                    subtext: settings.command(for: preset) ?? "Login shell"
-                )
+            HStack(spacing: 10) {
+                IconBadge(preset.icon)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(preset.displayName).font(.headline)
+                    Text(settings.command(for: preset) ?? "Login shell")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                // A quiet, uncolored hint — matching the tab's calm tone — rather than
+                // an alarm; the install link lives inside the drawer.
+                if available == false {
+                    Image(systemName: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .help("\(preset.displayName) isn’t on your PATH")
+                }
+                Button(action: toggleExpanded) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .contentShape(Rectangle())
+                        .frame(width: 16, height: 16)
+                }
+                .buttonStyle(.plain)
+                Toggle("", isOn: Binding(
+                    get: { settings.isAgentEnabled(preset) },
+                    set: { settings.setAgent(preset, enabled: $0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
             }
-            .toggleStyle(.switch)
 
-            // The plain terminal launches the login shell — there is no command to
-            // override, so only agent presets get a field.
-            if preset != .terminal {
+            if isExpanded {
                 TextField(
                     "Command",
                     text: Binding(
@@ -137,48 +219,60 @@ private struct AgentRow: View {
                     prompt: Text(preset.command ?? "")
                 )
 
-                // When the CLI can't be resolved on PATH, quietly offer a jump to its
-                // install page — no alarm. Not every agent is meant to be installed, so
-                // this only appears for agents that carry an install link.
                 if available == false, let url = preset.installURL {
                     Link(destination: url) {
                         Label("Install \(preset.displayName)", systemImage: "arrow.down.circle")
                     }
                 }
-            }
 
-            // One-click bypass for the agent's permission/approval prompts, for agents
-            // that have a stable flag for it. Appends the flag to the command above
-            // rather than replacing it, so it composes with a custom override.
-            if let flag = preset.permissionBypassFlag {
-                Toggle(isOn: Binding(
-                    get: { settings.bypassesPermissions(preset) },
-                    set: { settings.setBypassPermissions(preset, enabled: $0) }
-                )) {
-                    SettingsLabel(
-                        title: "Skip permission prompts",
-                        subtext: "Runs with `\(flag)`. The agent won't ask before editing files or running commands."
-                    )
+                if let flag = preset.permissionBypassFlag {
+                    Toggle(isOn: Binding(
+                        get: { settings.bypassesPermissions(preset) },
+                        set: { settings.setBypassPermissions(preset, enabled: $0) }
+                    )) {
+                        SettingsLabel(
+                            title: "Skip permission prompts",
+                            subtext: "Runs with `\(flag)`. The agent won't ask before editing files or running commands."
+                        )
+                    }
+                    .toggleStyle(.switch)
                 }
-                .toggleStyle(.switch)
             }
         }
         // Re-checks whenever the effective command changes, so typing a valid path
-        // clears the warning. The PATH probe runs once (cached); each row does an
-        // in-memory lookup. SwiftUI cancels and restarts this on every id change, so
-        // the leading sleep debounces per-keystroke edits into one probe once the
-        // user pauses. The plain terminal has no command to resolve, so it never probes.
+        // clears the hint. The PATH probe runs once (cached); each row does an
+        // in-memory lookup. The leading sleep debounces per-keystroke edits into one
+        // probe once the user pauses.
         .task(id: effectiveCommand) {
-            guard preset != .terminal else { return }
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
             available = await AgentAvailability.isCommandAvailable(effectiveCommand)
         }
     }
 
-    /// The effective command whose binary availability we probe (override + bypass
-    /// flag folded in), matching what a session actually launches.
     private var effectiveCommand: String { settings.command(for: preset) ?? "" }
+}
+
+/// A disabled agent in the "More agents" drawer: just its identity and the enable
+/// switch. There's nothing to configure until it's on, so it carries no drawer —
+/// enabling it lifts it into the reorderable list above, where its config lives.
+private struct DisabledAgentRow: View {
+    @ObservedObject var settings: AppSettings
+    let preset: AgentPreset
+
+    var body: some View {
+        Toggle(isOn: Binding(
+            get: { settings.isAgentEnabled(preset) },
+            set: { settings.setAgent(preset, enabled: $0) }
+        )) {
+            SettingsLabel(
+                preset.icon,
+                title: preset.displayName,
+                subtext: preset.command ?? "Login shell"
+            )
+        }
+        .toggleStyle(.switch)
+    }
 }
 
 /// Installs and reports the `termio` command-line tool. It audits on appear so the

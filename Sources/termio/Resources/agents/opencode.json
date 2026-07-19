@@ -1,5 +1,6 @@
 {
   "id": "opencode",
+  "order": 30,
   "name": "OpenCode",
   "wire": "opencode",
   "command": "opencode",

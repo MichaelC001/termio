@@ -1,5 +1,6 @@
 {
   "id": "amp",
+  "order": 50,
   "name": "Amp",
   "wire": "amp",
   "command": "amp",

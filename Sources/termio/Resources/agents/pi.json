@@ -1,5 +1,6 @@
 {
   "id": "pi",
+  "order": 40,
   "name": "Pi",
   "wire": "pi",
   "command": "pi",

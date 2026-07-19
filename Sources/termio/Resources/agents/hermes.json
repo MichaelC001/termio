@@ -1,5 +1,6 @@
 {
   "id": "hermes",
+  "order": 90,
   "name": "Hermes",
   "wire": "hermes",
   "command": "hermes",

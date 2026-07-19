@@ -1,5 +1,6 @@
 {
   "id": "claudeCode",
+  "order": 10,
   "name": "Claude Code",
   "wire": "claude",
   "command": "claude",
