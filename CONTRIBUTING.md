@@ -99,6 +99,20 @@ package version in `Package.swift`.
 
 ## Patch conventions
 
+### Branching — trunk-based
+
+`main` is the single trunk and the default branch. There is no `dev` or
+`release` branch.
+
+- Branch off the latest `main` for every change, using a `feat/…`, `fix/…`, or
+  `chore/…` name:
+  `git switch main && git pull --ff-only && git switch -c feat/<slug>`.
+- Keep branches **short-lived** — open a PR early and merge or close it quickly.
+  Long-lived divergent branches are exactly what this workflow exists to avoid.
+- Open the PR against `main`: `gh pr create --base main`.
+- For a substantial feature, a git worktree keeps it isolated:
+  `git worktree add ../termio-worktrees/<slug> -b feat/<slug> main`.
+
 ### Commits
 
 - [Conventional Commits 1.0.0](https://www.conventionalcommits.org/):

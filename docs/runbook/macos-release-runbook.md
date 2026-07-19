@@ -202,27 +202,25 @@ cache step to run by hand.
 
 ## Per-release runbook
 
-Daily work lands on `dev` (the GitHub default branch since 2026-07-12); `main`
-only advances at release time, via a full-history merge — never squash, never
-direct work commits.
+termio is **trunk-based** (since 2026-07-19): `main` is the single default
+branch and the development trunk. Feature work goes on short-lived branches →
+PR → merge into `main`; there is no separate `dev`/`release` branch. A release
+is just a `vX.Y.Z` tag on `main` — the tag *is* the release marker.
 
-1. Make sure CI is green on `dev` and everything meant for the release is
-   pushed there.
+1. Make sure CI is green on `main` and everything meant for the release is
+   merged there.
 2. Pick the next version (semver), e.g. `0.1.0`. Nothing in the repo needs
    editing — the tag *is* the version.
-3. Merge and cut it on `main`:
+3. Tag `main` and push the tag:
 
    ```sh
    git checkout main
-   git merge --no-ff dev -m "release: v0.1.0"
-   git push origin main
+   git pull --ff-only            # be at the tip you want to ship
    git tag v0.1.0
    git push origin v0.1.0
-   git checkout dev
    ```
 
-   The `--no-ff` merge commit is the release marker on `main`; the full `dev`
-   commit history is preserved beneath it.
+   No merge, no release branch — the tag on `main` triggers the release.
 
 4. Watch the **Release** workflow:
 
