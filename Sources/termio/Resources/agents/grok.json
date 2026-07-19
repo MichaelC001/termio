@@ -16,8 +16,7 @@
       { "on": "UserPromptSubmit", "state": "working" },
       { "on": "PreToolUse", "state": "working" },
       { "on": "PostToolUse", "state": "working" },
-      { "on": "Stop", "state": "done" },
-      { "on": "SubagentStop", "state": "working" }
+      { "on": "Stop", "state": "done" }
     ]
   }
 }

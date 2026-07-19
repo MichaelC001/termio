@@ -18,8 +18,7 @@
       { "on": "PreToolUse", "state": "working", "matcher": "*" },
       { "on": "PostToolUse", "state": "working", "matcher": "*" },
       { "on": "PermissionRequest", "state": "attention", "matcher": "*" },
-      { "on": "Stop", "state": "done" },
-      { "on": "SubagentStop", "state": "working" }
+      { "on": "Stop", "state": "done" }
     ]
   }
 }
