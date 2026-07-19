@@ -28,9 +28,6 @@ SUPPORT_DIR_NAME="termio"
 BUNDLE_ID="sh.termio.app"
 
 SOCKET="$HOME/Library/Application Support/$SUPPORT_DIR_NAME/session-control.sock"
-# The agent-status socket `HookListener` binds — same channel-scoped directory as the
-# control socket, so a dev app's hooks report into the dev app, not the release one.
-STATUS_SOCKET="$HOME/Library/Application Support/$SUPPORT_DIR_NAME/agent-status.sock"
 
 # JSON-escape a string for embedding in a request: backslashes, double quotes, and
 # newlines (which would otherwise break the single-line JSON object).
@@ -86,7 +83,10 @@ sessions() {
 # An agent's status hook runs this instead of a hand-rolled `printf | nc`; termio
 # stamps the absolute path to this script into the hook file at install time. It reads
 # the session id from $TERMIO_SESSION (which the PTY carries) and the cwd from $PWD,
-# then writes the normalized `{termio_session,state,cwd}` report to the status socket.
+# then writes the normalized `{termio_session,state,cwd}` report to the status socket
+# of *every* channel (release and dev). The two apps can run side by side sharing one
+# global hook file per agent, so a single report fans out to both; each app keeps only
+# the reports whose session id it stamped and ignores the rest (`TermioStore.sessionID`).
 # A missing socket (app not running) is a silent no-op — hooks fire constantly.
 #   --transcript  slurp stdin (Claude feeds hooks a JSON blob) and forward its
 #                 transcript_path so termio can address the raw Q&A log.
@@ -133,12 +133,15 @@ agent() {
             "$session" "$state" "$cwd")
     fi
 
-    if [ "$reply" -eq 1 ]; then
-        printf '%s' "$payload" | nc -w 1 -U "$STATUS_SOCKET" >/dev/null 2>&1 || true
-        printf '{}'
-    else
-        printf '%s' "$payload" | nc -w 1 -U "$STATUS_SOCKET" 2>/dev/null || true
-    fi
+    # Fan out to every channel's status socket, not just this binary's own: the
+    # report is self-identifying (the session id routes it), so broadcasting is
+    # what lets one installed hook serve a release app and a dev app at once.
+    for channel_dir in "termio" "termio-dev"; do
+        status_socket="$HOME/Library/Application Support/$channel_dir/agent-status.sock"
+        [ -S "$status_socket" ] || continue
+        printf '%s' "$payload" | nc -w 1 -U "$status_socket" >/dev/null 2>&1 || true
+    done
+    if [ "$reply" -eq 1 ]; then printf '{}'; fi
 }
 
 if [ "${1:-}" = "sessions" ]; then

@@ -2,7 +2,7 @@
 title: Vibe Island 式 Agent 状态层（Claude Code hooks）
 status: done
 type: design
-updated: 2026-07-18
+updated: 2026-07-19
 ---
 
 # 设计：Vibe Island 式 Agent 状态层（Claude Code hooks）
@@ -56,6 +56,21 @@ TermioStore.applyHookEvent(_:)  (reducer)  ──写──▶  statuses[id]
 既有 UI：SidebarView.StatusDot / MenuBarController（无需改）
 ```
 
+> **更新（2026-07-19，channel-stable CLI path + 广播）**：修复一个真实事故——worktree 里
+> 构建/启动的 dev app 把**自己 bundle 内的 CLI 绝对路径**盖进了所有 agent 的全局 hook 文件，
+> worktree merge 后删除，路径失效，每个 agent 的每次工具调用都刷 hook 报错。三点修正：
+> - **hook 只引用 channel 稳定路径**：app 每次启动把打包的 CLI **拷贝**到
+>   `~/Library/Application Support/termio[-dev]/bin/termio[-dev]`
+>   （`CommandLineTool.refreshSupportCopy`，内容比对 + 原子写 + 0755），hook 与
+>   `/usr/local/bin` symlink 一律指向该拷贝。路径永不变；worktree 删除后拷贝仍在，零失效窗口。
+> - **CLI 广播**：`agent report` 不再只写本 channel 的 socket，而是向 `termio` 与
+>   `termio-dev` 两个 support 目录的 `agent-status.sock` 都发（缺失即跳过）。dev/prod 两个
+>   app 共存共享同一份全局 hook 文件时，不论最后由谁安装，两边都收到报告。
+> - **收端按 id 路由，杜绝串台**：`sessionID(for:)` 对"带 session id 但本 app 不认识"的
+>   报告直接丢弃（那是另一 channel 的会话），cwd 兜底只服务完全没带 id 的手动启动 agent。
+>   hook 命令尾部加 `2>/dev/null || true`（Cursor 为 `|| printf '{}'`），路径万一损坏时
+>   静默降级而非刷屏。
+>
 > **更新（2026-07-18，final as-built，多 agent）**：下面 §1 的 cwd 方案已被
 > **env-id 注入**取代为主关联键，并从单一 Claude 扩展到声明 hooks 的全部内置 agent。要点：
 > - **注入**：`TermioStore.surface` 给每个 PTY 设 `builder.withCustom("env", "TERMIO_SESSION=<session.id>")`

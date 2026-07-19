@@ -207,6 +207,9 @@ enum AgentStatusHooks {
 
     /// Re-applies every agent's integration (or removes them all) to match `enabled`.
     static func sync(enabled: Bool) {
+        // Every hook references the channel-stable CLI copy, so make sure it carries
+        // this build's content before (re)stamping its path anywhere.
+        CommandLineTool.refreshSupportCopy()
         if enabled {
             // A full user override may intentionally remove/redirect a shipped hook.
             // Remove that old managed wiring before installing the merged catalog.
@@ -250,10 +253,13 @@ enum AgentStatusHooks {
     /// stamped into the plugin agents' JavaScript too, so every installer converges on
     /// the same contract.
     ///
-    /// The CLI path is *stamped absolute* so the hook resolves to this exact channel's
-    /// binary — a dev app's hooks call `termio-dev` (its own socket), a release app's
-    /// call `termio` — mirroring how the PTY stamps TERMIO_SESSION. Getting this wrong
-    /// would make dev hooks report into the release app or vice versa.
+    /// The stamped path is the channel-stable CLI copy — never the bundle, whose
+    /// location can vanish (a dev build launched from a deleted git worktree). The CLI
+    /// broadcasts each report to every channel's status socket, so which channel's copy
+    /// a hook happens to invoke doesn't matter; the receiving apps route by session id.
+    /// Status reporting stays best-effort either way: the whole command degrades to a
+    /// silent no-op if the copy is missing, instead of spamming every agent turn with
+    /// hook-failure noise.
     static func reportCommand(
         state: String, withTranscript: Bool = false, dialect: HookDialect = .claudeNested
     ) -> String {
@@ -264,17 +270,21 @@ enum AgentStatusHooks {
         if withTranscript { command += " --transcript" }
         // Cursor reads the hook's stdout as its JSON reply, so the CLI must stay silent
         // and print a benign `{}`. (Claude/Codex ignore hook stdout, so they don't.)
-        if dialect == .cursorFlat { command += " --reply" }
+        // The fallback keeps that contract even when the CLI itself couldn't run.
+        if dialect == .cursorFlat {
+            command += " --reply 2>/dev/null || printf '{}'"
+        } else {
+            command += " 2>/dev/null || true"
+        }
         return command
     }
 
-    /// Absolute path to *this channel's* bundled `termio`/`termio-dev` CLI, stamped into
-    /// each hook command so it drives the right app+socket regardless of PATH or whether
-    /// the user installed the `/usr/local/bin` symlink. A plain SwiftPM binary has no
-    /// bundled tool, so use the channel-specific install location; it remains absolute
-    /// and surfaces a missing CLI as a normal hook command failure.
+    /// Absolute path to this channel's stable `termio`/`termio-dev` CLI copy under
+    /// Application Support (see `CommandLineTool.supportCopyURL`), stamped into each
+    /// hook command so it resolves regardless of PATH, the `/usr/local/bin` symlink,
+    /// or where the app bundle happens to live.
     static var cliPath: String {
-        CommandLineTool.bundledURL?.path ?? CommandLineTool.installURL.path
+        CommandLineTool.supportCopyURL.path
     }
 
     /// Single-quotes a path for safe embedding in a hook shell command (the bundle path

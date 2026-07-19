@@ -220,12 +220,15 @@ extension TermioStore {
     /// Resolves a status report back to its session. The exact key is the
     /// `TERMIO_SESSION` id termio stamped into the PTY and the agent echoed back, so
     /// this is unambiguous even when several sessions share one project directory.
+    /// A report that *carries* an id this app didn't stamp is another channel's
+    /// session (the CLI broadcasts each report to both the release and dev app's
+    /// sockets) and must be dropped, not cwd-guessed — that guess is exactly how a
+    /// prod session's activity would light up a dev session sharing its directory.
     /// `cwd` is only a fallback for an agent whose environment didn't carry the id
-    /// through to the hook.
+    /// through to the hook at all (an agent hand-started outside termio).
     private func sessionID(for report: StatusReport) -> Session.ID? {
-        if let token = report.termioSession,
-           let id = UUID(uuidString: token),
-           session(id) != nil {
+        if let token = report.termioSession, !token.isEmpty {
+            guard let id = UUID(uuidString: token), session(id) != nil else { return nil }
             return id
         }
         return sessionID(forCwd: report.cwd)
