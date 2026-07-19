@@ -152,11 +152,15 @@ extension TermioStore {
         let pty = PTYProcess(argv: argv, cwd: workspacePath, env: env,
                              cols: lastHostGridColumns, rows: lastHostGridRows)
         let inMemory = InMemoryTerminalSession(
-            write: { data in
+            write: { [weak self] data in
                 // Typing on the Mac reclaims the winsize from an attached
                 // phone — the size follows the device being used.
                 pty?.claimHostOwnership()
                 pty?.write(data)
+                // Live input (keystrokes, mouse-mode scrolling) repaints the
+                // screen just like agent output, so the status promotion in
+                // `noteOutputActivity` holds off while the human is typing.
+                DispatchQueue.main.async { self?.noteUserInput(session.id) }
             },
             resize: { [weak self] viewport in
                 let columns = Int(viewport.columns)
@@ -168,20 +172,21 @@ extension TermioStore {
         )
         if let pty {
             pty.addSink { [weak inMemory] data in inMemory?.receive(data) }
-            // Tap the same stream as a working-liveness signal: while an agent is
-            // mid-turn its TUI repaints changing content (a ticking spinner,
-            // streaming tokens), so a *changing* screen keeps `lastWorkingAt`
-            // fresh and a screen that goes static lets the stale sweep clear the
-            // spinner — the recovery path for a turn that ends without a `Stop`
-            // hook. Liveness is judged on the rendered viewport, not raw bytes:
-            // an agent parked at an idle prompt still dribbles output (a redraw, a
-            // blinking cursor) that the byte stream alone reads as activity, which
-            // is what pins a finished agent's spinner on forever. `readViewportText`
-            // is thread-safe (its own lock), so the compare runs on the read pump;
-            // only the changed-flag hops to the main actor. Throttled to once a
-            // second and cheap when the session isn't spinning
-            // (`noteOutputActivity` no-ops). The read pump calls sinks serially, so
-            // the captured `lastPoke` / `lastScreenSignature` need no lock.
+            // Tap the same stream as a working-status signal (see
+            // `noteOutputActivity` for the full model): a *changing* rendered
+            // screen keeps a working session's `lastWorkingAt` fresh — and, when
+            // hooks have gone quiet, can promote an idle session back to working —
+            // while a static screen lets the stale sweep clear the spinner. The
+            // screen, not raw bytes, is the primary key: an agent parked at an
+            // idle prompt still dribbles output (a redraw, a blinking cursor) that
+            // the byte stream alone reads as activity, which is what pins a
+            // finished agent's spinner on forever. The per-tick byte count rides
+            // along as a secondary liveness signal for a viewport the user
+            // scrolled away from the live tail. `readViewportText` is thread-safe
+            // (its own lock), so the compare runs on the read pump; only the
+            // changed-flag and byte count hop to the main actor. Throttled to once
+            // a second. The read pump calls sinks serially, so the captured
+            // `lastPoke` / `lastScreenSignature` / `pendingBytes` need no lock.
             // A user agent may declare `status` regex rules in its `agent.json`; the
             // same viewport read that feeds the liveness sweep is classified against
             // them to drive working / needs-attention / done for agents that ship no
@@ -190,8 +195,9 @@ extension TermioStore {
             //
             // Caveat: `readViewportText` returns the *displayed* viewport, which follows
             // the user's scrollback — so scrolling an inline agent's pane up feeds stale
-            // rows to the classifier until it snaps back to the bottom (self-healing).
-            // herdr avoids this by reading the live bottom (active) buffer; the clean fix
+            // rows to the classifier until it snaps back to the bottom (self-healing;
+            // the byte-count signal covers working-liveness meanwhile). herdr avoids
+            // this by reading the live bottom (active) buffer; the clean fix
             // here needs a `readActiveText()` on the libghostty wrapper (its blessed read
             // serializes against the PTY write under a private lock we can't hold, and a
             // raw unsynchronized `GHOSTTY_POINT_ACTIVE` read from this pump thread would
@@ -202,10 +208,17 @@ extension TermioStore {
             let statusTrace = ProcessInfo.processInfo.environment["TERMIO_STATUS_TRACE"] != nil
             var lastPoke = Date.distantPast
             var lastScreenSignature: Int?
-            pty.addSink { [weak self, weak inMemory] _ in
+            // Bytes seen since the last poke, so the throttled tick can report the
+            // stream's volume alongside the screen compare — the scroll-frozen-
+            // viewport liveness signal (see `noteOutputActivity`).
+            var pendingBytes = 0
+            pty.addSink { [weak self, weak inMemory] data in
+                pendingBytes += data.count
                 let now = Date()
                 guard now.timeIntervalSince(lastPoke) >= 1 else { return }
                 lastPoke = now
+                let bytes = pendingBytes
+                pendingBytes = 0
                 let text = inMemory?.readViewportText()
                 let screenChanged: Bool
                 if let text {
@@ -229,7 +242,7 @@ extension TermioStore {
                     detected = nil
                 }
                 DispatchQueue.main.async {
-                    self?.noteOutputActivity(session.id, screenChanged: screenChanged)
+                    self?.noteOutputActivity(session.id, screenChanged: screenChanged, bytes: bytes)
                     if let detected {
                         self?.applyScreenDetectedActivity(detected, for: session.id)
                     }
