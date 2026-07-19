@@ -10,6 +10,15 @@ enum FileActivation {
         previewExtensions.contains(url.pathExtension.lowercased())
     }
 
+    /// Previewable files whose git diff isn't useful: image rasters, SVG art, and PDFs are
+    /// binary or opaque, so the Changes pane opens the file itself rather than a "binary files
+    /// differ" / empty diff. HTML keeps its (meaningful) text diff.
+    static func previewsRatherThanDiff(_ url: URL) -> Bool {
+        guard isPreviewable(url) else { return false }
+        let ext = url.pathExtension.lowercased()
+        return ext != "html" && ext != "htm"
+    }
+
     private static let previewExtensions: Set<String> = [
         "png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "tiff", "bmp", "icns", "svg",
         "pdf", "html", "htm",
