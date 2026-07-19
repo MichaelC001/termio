@@ -914,12 +914,14 @@ private struct SessionRow: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                 } else if store.status(for: session.id) == .working {
-                    // The spinner is deliberately quiet grey, like the Mac's own
-                    // busy spinners: its motion already says "working", so color
-                    // stays reserved for the states that need the user — the
-                    // green done / orange attention dots, whose only channel is
-                    // color. Per-agent brand tints read as noise; identity
-                    // belongs to the idle brand mark.
+                    // The spinner carries no status color — its motion already
+                    // says "working", so color stays reserved for the states
+                    // that need the user (the green done / orange attention
+                    // dots, whose only channel is color), and per-agent brand
+                    // tints read as noise. It draws in the same primary ink as
+                    // the sidebar's folder and terminal glyphs; the comet's own
+                    // opacity ramp provides all the fade, so the head reads at
+                    // full icon strength instead of a double-discounted grey.
                     WorkingIndicator()
                 } else {
                     AgentIconView(agent: store.effectiveAgent(for: session), size: 15)
@@ -1093,7 +1095,7 @@ private struct StatusDot: View {
 /// the eight perimeter cells, so the small nine-square grid reads as rotating. Sits
 /// in place of the session's brand icon while a turn is in flight (see `SessionRow`).
 private struct WorkingIndicator: View {
-    var tint: Color = .secondary
+    var tint: Color = .primary
 
     /// The eight perimeter cells of the 3×3 grid in clockwise order, as
     /// `(column, row)` with the center at `(1, 1)`. The comet travels this ring.
