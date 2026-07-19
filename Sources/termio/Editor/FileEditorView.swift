@@ -220,21 +220,24 @@ struct FileEditorView: View {
         }
         .padding(2)
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color.primary.opacity(0.06))
         )
     }
 
     private func modeSegment(_ segment: Mode, icon: HugeIcon, help: String) -> some View {
         let selected = mode == segment
-        return Button { mode = segment } label: {
+        return Button { withAnimation(.easeOut(duration: 0.12)) { mode = segment } } label: {
             HugeIconView(
-                icon: icon, size: 13,
+                icon: icon, size: 14,
                 color: selected ? (chrome?.accent ?? .primary) : .secondary
             )
-            .frame(width: 26, height: 18)
+            .frame(width: 34, height: 24)
+            // A filled hit shape so the whole segment — not just the icon's thin
+            // stroke — takes the click, which is what made the toggle feel unresponsive.
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(selected ? Color(nsColor: settings.terminalBackgroundColor) : .clear)
                     .shadow(color: .black.opacity(selected ? 0.12 : 0), radius: 1, y: 0.5)
             )
