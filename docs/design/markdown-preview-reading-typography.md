@@ -3,7 +3,7 @@ title: "Markdown preview — Apple-grade reading typography"
 status: draft
 type: design
 created: 2026-07-18
-updated: 2026-07-18
+updated: 2026-07-19
 related:
   - agent-abstraction-and-configuration.md
 ---
@@ -29,6 +29,35 @@ premium.
 - Not the DocC pipeline. We are not building `.docc` catalogs or a compile step.
 - Not a chat/transcript surface. The session trace (`Info/`) keeps its own dense
   dashboard CSS; this is a separate *document reader* skin.
+
+## As built — final typography decisions (2026-07-19)
+
+The sections below this one are the original plan; where they disagree, **this
+list is what shipped** (the CSS sketch in §2 is kept as historical reference):
+
+- **Body face: bundled iA Writer Quattro** (static S cuts, four woff2 ≈ 172KB,
+  SIL OFL — license shipped alongside in `Resources/Fonts/`), `17px/1.6`,
+  falling back to `-apple-system`. The earlier "terminal font as body"
+  experiment was reverted: pure mono is a terminal aesthetic, not a reading
+  one — Quattro is the mono-boned face *designed* for reading, which is the
+  "terminal-native document" register this feature wants.
+- **Fonts are base64-embedded `@font-face`**, not `baseURL`-resolved as §4
+  planned: `loadHTMLString` gives the WebContent process **no read access to
+  the app bundle**, so `file://` font URLs silently fail. Built once and cached
+  in `MarkdownReaderRenderer.quattroFontFaces`.
+- **Measure: a ceiling, not a column** — `max-width: calc(76ch + side padding)`,
+  centered. Narrow/medium panes still fill edge-to-edge (the pane stays the
+  measure control); a wide pane stops at ~76 characters instead of 120+.
+- **Code spans/blocks keep the terminal font** (`--font-mono`, from
+  `settings.fontFamily`) so code in Preview matches the editor you flip from.
+  iA Writer Mono is not bundled.
+- **Only real weights (400/700)** — Quattro S ships Regular/Bold (+italics);
+  the sketch's 650/680 would silently snap to 700 anyway.
+- **No `scroll-behavior: smooth`** — it animated the post-reload scroll
+  restore, and AppKit has no such global smoothing; removed.
+- **Reader fallback palette decoupled from the trace**: `TraceTheme.reader(dark:)`
+  carries the muted reading accents; `builtin` stays untouched so Mac/phone
+  trace colors are stable.
 
 ## Why the current path isn't enough
 

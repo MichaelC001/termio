@@ -4,7 +4,7 @@ import WebKit
 
 /// The Preview side of `FileEditorView` for Markdown: renders the file as a themed,
 /// document-grade reading view (the Apple-docs / iA-Writer register — narrow measure,
-/// generous rhythm), reusing the same `TraceMarkdown` parser the session trace uses but
+/// generous rhythm), reusing the same `MarkdownHTML` parser the session trace uses but
 /// with its own reader stylesheet rather than the trace's dense dashboard skin.
 ///
 /// It renders the *live* editor buffer (`source`), not the file on disk, so flipping over
@@ -17,10 +17,10 @@ struct MarkdownReaderView: View {
     let colorScheme: ColorScheme
 
     var body: some View {
-        let theme = TraceTheme.resolve(settings: settings, colorScheme: colorScheme)
+        let theme = TraceTheme.resolveReader(settings: settings, colorScheme: colorScheme)
         // Relative image paths (`![](./shot.png)`) resolve against the file's own folder.
         MarkdownReaderWebView(
-            html: MarkdownReaderRenderer.document(source, theme: theme),
+            html: MarkdownReaderRenderer.document(source, theme: theme, fontFamily: settings.fontFamily),
             baseURL: fileURL.deletingLastPathComponent(),
             background: settings.terminalBackgroundColor
         )

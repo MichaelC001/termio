@@ -389,7 +389,7 @@ enum SessionTraceRenderer {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return "" }
         return markdown
-            ? "<div class=\"text md\">\(TraceMarkdown.html(s))</div>"
+            ? "<div class=\"text md\">\(MarkdownHTML.html(s))</div>"
             : "<div class=\"text\">\(escaped(s))</div>"
     }
 
