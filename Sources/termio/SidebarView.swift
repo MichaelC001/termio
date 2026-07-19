@@ -914,7 +914,11 @@ private struct SessionRow: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                 } else if store.status(for: session.id) == .working {
-                    WorkingIndicator(tint: store.effectiveAgent(for: session).tintColor)
+                    // Status speaks one color language everywhere: blue = working,
+                    // green = done, orange = needs you (the menu bar's palette).
+                    // Tinting the spinner per agent brand read as noise — identity
+                    // belongs to the idle brand mark, state to the indicator.
+                    WorkingIndicator()
                 } else {
                     AgentIconView(agent: store.effectiveAgent(for: session), size: 15)
                 }
@@ -1087,7 +1091,7 @@ private struct StatusDot: View {
 /// the eight perimeter cells, so the small nine-square grid reads as rotating. Sits
 /// in place of the session's brand icon while a turn is in flight (see `SessionRow`).
 private struct WorkingIndicator: View {
-    var tint: Color = .secondary
+    var tint: Color = .blue
 
     /// The eight perimeter cells of the 3×3 grid in clockwise order, as
     /// `(column, row)` with the center at `(1, 1)`. The comet travels this ring.
@@ -1103,8 +1107,9 @@ private struct WorkingIndicator: View {
             let phase = context.date.timeIntervalSinceReferenceDate
                 .truncatingRemainder(dividingBy: period) / period
             ZStack {
-                // A faint steady center anchors the spinning ring.
-                dot(opacity: 0.45)
+                // A faint steady center anchors the spinning ring, kept dimmer
+                // than the tail floor so the comet reads against it.
+                dot(opacity: 0.35)
                 ForEach(Array(Self.ring.enumerated()), id: \.offset) { index, cell in
                     dot(opacity: opacity(at: index, phase: phase))
                         .offset(
@@ -1126,11 +1131,13 @@ private struct WorkingIndicator: View {
 
     /// Brightness of a perimeter cell: peaks at the comet's head and fades over the
     /// next few cells, measured as the shorter way around the ring so the tail wraps.
+    /// The tail decays over four cells to a low floor — a longer, higher-contrast
+    /// sweep than an even ring, so the rotation reads at a glance.
     private func opacity(at index: Int, phase: Double) -> Double {
         let count = Double(Self.ring.count)
         let head = phase * count
         let raw = abs(Double(index) - head)
         let distance = min(raw, count - raw)
-        return max(0.4, 1 - distance / 3)
+        return max(0.18, 1 - distance / 4)
     }
 }
