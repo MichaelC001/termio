@@ -1102,7 +1102,10 @@ private struct WorkingIndicator: View {
     private static let ring: [(Int, Int)] = [
         (0, 0), (1, 0), (2, 0), (2, 1), (2, 2), (1, 2), (0, 2), (0, 1),
     ]
-    private let dotSize: CGFloat = 2.3
+    // Dots this small read lighter than their nominal opacity, so the size and
+    // the opacity ramp are tuned together: 2.7pt ink with a 0.3 tail floor sits
+    // at the same perceived weight as the neighboring 15pt primary-ink glyphs.
+    private let dotSize: CGFloat = 2.7
     private let spacing: CGFloat = 3.6
     private let period: Double = 1.1
 
@@ -1111,9 +1114,9 @@ private struct WorkingIndicator: View {
             let phase = context.date.timeIntervalSinceReferenceDate
                 .truncatingRemainder(dividingBy: period) / period
             ZStack {
-                // A faint steady center anchors the spinning ring, kept dimmer
-                // than the tail floor so the comet reads against it.
-                dot(opacity: 0.35)
+                // A steady center anchors the spinning ring, sitting just above
+                // the tail floor but well under the comet head.
+                dot(opacity: 0.45)
                 ForEach(Array(Self.ring.enumerated()), id: \.offset) { index, cell in
                     dot(opacity: opacity(at: index, phase: phase))
                         .offset(
@@ -1142,6 +1145,6 @@ private struct WorkingIndicator: View {
         let head = phase * count
         let raw = abs(Double(index) - head)
         let distance = min(raw, count - raw)
-        return max(0.18, 1 - distance / 4)
+        return max(0.3, 1 - distance / 4)
     }
 }
