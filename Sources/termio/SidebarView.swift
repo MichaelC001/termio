@@ -1095,7 +1095,15 @@ private struct StatusDot: View {
 /// the eight perimeter cells, so the small nine-square grid reads as rotating. Sits
 /// in place of the session's brand icon while a turn is in flight (see `SessionRow`).
 private struct WorkingIndicator: View {
-    var tint: Color = .primary
+    /// Pure ink, deeper than `.primary`: labelColor keeps ~15% transparency and
+    /// the sidebar's vibrancy lightens it again, which left even the comet's
+    /// full-opacity head reading grey. Appearance-adaptive black/white punches
+    /// through both.
+    private static let ink = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .white : .black
+    })
+
+    var tint: Color = Self.ink
 
     /// The eight perimeter cells of the 3×3 grid in clockwise order, as
     /// `(column, row)` with the center at `(1, 1)`. The comet travels this ring.
