@@ -4,7 +4,15 @@
   "name": "OpenCode",
   "wire": "opencode",
   "command": "opencode",
-  "resume": "opencode",
+  "resume": {
+    "resume": "--session {id}",
+    "discover": {
+      "root": "~/.local/share/opencode/storage/session",
+      "format": "json",
+      "id": "id",
+      "cwd": "directory"
+    }
+  },
   "icon": { "asset": "opencode-favicon" },
   "install": "https://opencode.ai",
   "hooks": {
