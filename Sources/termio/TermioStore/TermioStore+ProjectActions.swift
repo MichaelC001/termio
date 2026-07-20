@@ -493,6 +493,7 @@ extension TermioStore {
             currentTool[sessionID] = nil
             liveTitles[sessionID] = nil
             detectedAgents[sessionID] = nil
+            processSpawnedAt[sessionID] = nil
             lastWorkingAt[sessionID] = nil
             lastHookReportAt[sessionID] = nil
             lastUserInputAt[sessionID] = nil
@@ -558,6 +559,7 @@ extension TermioStore {
         currentTool[id] = nil
         liveTitles[id] = nil
         detectedAgents[id] = nil
+        processSpawnedAt[id] = nil
         lastWorkingAt[id] = nil
         lastHookReportAt[id] = nil
         lastUserInputAt[id] = nil
