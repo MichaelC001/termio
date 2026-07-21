@@ -265,7 +265,12 @@ struct HighlightedTextView: NSViewRepresentable {
 /// trigger a re-highlight or pollute undo.
 private final class SavingTextView: NSTextView {
     var onSave: (() -> Void)?
-    var onDefinitionRequest: ((Int) -> Void)?
+    /// Setting this from nil to non-nil (the LSP client attaches *after* the view is already in
+    /// the window) must re-run `updateTrackingAreas` — AppKit only calls it on geometry events,
+    /// so without this the ⌘-hover area would never install on a freshly opened file.
+    var onDefinitionRequest: ((Int) -> Void)? {
+        didSet { if (onDefinitionRequest == nil) != (oldValue == nil) { updateTrackingAreas() } }
+    }
     var hoverProvider: ((Int) async -> String?)?
     /// Full-width wash under the caret's line; `.clear` (or a read-only buffer) draws nothing.
     var currentLineColor: NSColor = .clear { didSet { needsDisplay = true } }
@@ -276,6 +281,9 @@ private final class SavingTextView: NSTextView {
     private var linkRange: NSRange?
     /// The bracket pair currently washed, so the previous pair can be cleanly un-washed.
     private var bracketRanges: [NSRange] = []
+    /// Start offset of the line last painted with the current-line band (-1 = none), so caret
+    /// moves within one line skip the repaint.
+    private var lastCaretLineStart = -1
     /// The armed dwell → hover-popover chain, cancelled whenever the target changes.
     private var hoverTask: Task<Void, Never>?
     private var hoverPopover: NSPopover?
@@ -333,8 +341,25 @@ private final class SavingTextView: NSTextView {
     }
 
     /// Selection moved: the line band follows the caret, and the bracket wash re-derives.
+    /// The full-view repaint only fires when the caret actually changed lines — per-keystroke
+    /// full redraws would scale typing cost with the visible glyph count for nothing (edits on
+    /// the same line already invalidate their own rects through the layout manager).
     func caretDidMove() {
-        needsDisplay = true
+        let selection = selectedRange()
+        let text = string as NSString
+        var lineStart = -1 // "no band": a real selection, or an empty document
+        if selection.length == 0, text.length > 0 {
+            if selection.location == text.length, text.character(at: text.length - 1) == 0x0A {
+                lineStart = text.length // the trailing empty line is its own row
+            } else {
+                let caret = min(selection.location, text.length - 1)
+                lineStart = text.lineRange(for: NSRange(location: caret, length: 0)).location
+            }
+        }
+        if lineStart != lastCaretLineStart {
+            lastCaretLineStart = lineStart
+            needsDisplay = true
+        }
         updateBracketMatch()
     }
 
@@ -346,11 +371,15 @@ private final class SavingTextView: NSTextView {
     private func updateBracketMatch() {
         if !bracketRanges.isEmpty, let layoutManager {
             for range in bracketRanges {
-                layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
+                // Clamp against the *current* length — an edit can shrink the text between
+                // caret moves, and removing an attribute past the end raises.
+                guard let clamped = Self.clamp(range, to: (string as NSString).length) else { continue }
+                layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: clamped)
             }
             bracketRanges = []
         }
-        guard bracketHighlightColor.alphaComponent > 0, let layoutManager else { return }
+        // Caret decorations belong to editing; a read-only peek advertises no caret.
+        guard isEditable, bracketHighlightColor.alphaComponent > 0, let layoutManager else { return }
         let selection = selectedRange()
         guard selection.length == 0 else { return }
         let text = string as NSString
@@ -473,8 +502,15 @@ private final class SavingTextView: NSTextView {
         hoverPopover = nil
         guard let range = linkRange else { return }
         linkRange = nil
-        layoutManager?.removeTemporaryAttribute(.underlineStyle, forCharacterRange: range)
-        layoutManager?.removeTemporaryAttribute(.cursor, forCharacterRange: range)
+        guard let clamped = Self.clamp(range, to: (string as NSString).length) else { return }
+        layoutManager?.removeTemporaryAttribute(.underlineStyle, forCharacterRange: clamped)
+        layoutManager?.removeTemporaryAttribute(.cursor, forCharacterRange: clamped)
+    }
+
+    /// `range` cut down to fit a text of `length`, or `nil` when it starts past the end.
+    private static func clamp(_ range: NSRange, to length: Int) -> NSRange? {
+        guard range.location < length else { return nil }
+        return NSRange(location: range.location, length: min(range.length, length - range.location))
     }
 
     /// The character under `windowPoint`, or `nil` when the point isn't over actual glyphs (past
@@ -490,6 +526,8 @@ private final class SavingTextView: NSTextView {
         let glyphIndex = layoutManager.glyphIndex(
             for: containerPoint, in: textContainer, fractionOfDistanceThroughGlyph: &fraction
         )
+        // An empty document has no glyph to bound; the index AppKit returns would be out of range.
+        guard glyphIndex < layoutManager.numberOfGlyphs else { return nil }
         let glyphRect = layoutManager.boundingRect(
             forGlyphRange: NSRange(location: glyphIndex, length: 1), in: textContainer
         )

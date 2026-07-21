@@ -197,7 +197,20 @@ struct FileEditorView: View {
         }
         // Attach the language server (if one owns this file type) once per open. Failed or absent
         // servers resolve to nil, and the editor stays a plain editor.
-        .task { if !loadFailed { lsp = await LSPEditorClient.attach(url: url, text: text) } }
+        .task {
+            guard !loadFailed else { return }
+            let opened = text
+            guard let client = await LSPEditorClient.attach(url: url, text: opened) else { return }
+            // The editor may already be gone (Escape during the server's spawn window) — the
+            // document was announced, so it must be un-announced, not leaked open.
+            guard !Task.isCancelled else { client.close(); return }
+            lsp = client
+            // Edits typed while the server was starting happened before `lsp` existed; re-sync.
+            if text != opened { client.noteChange(fullText: text) }
+        }
+        // A host-driven jump (another search hit) supersedes any local go-to-definition target;
+        // without this reset a stale `revealLine` would mask every later `jumpLine`.
+        .onChange(of: jumpLine) { revealLine = nil }
     }
 
     private var header: some View {

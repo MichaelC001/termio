@@ -97,7 +97,8 @@ enum LSPRegistry {
     /// first word against the login-shell PATH (the same probe the Agents settings use — a
     /// Finder-launched app's own PATH has no homebrew). `nil` when the binary isn't installed.
     static func resolveLaunch(_ command: String) async -> (binary: String, arguments: [String])? {
-        var words = command.split(separator: " ").map(String.init)
+        // Same trimming as `AgentAvailability.isCommandAvailable`, so the two PATH views agree.
+        var words = command.trimmingCharacters(in: .whitespaces).split(separator: " ").map(String.init)
         guard let first = words.first, !first.isEmpty else { return nil }
         words.removeFirst()
         if first.hasPrefix("/") || first.hasPrefix("~") {

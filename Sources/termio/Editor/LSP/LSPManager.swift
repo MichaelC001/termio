@@ -32,14 +32,14 @@ final class LSPManager {
     private init() {}
 
     /// The running (or newly spawned) server for `fileURL`, with the language id to announce it
-    /// under and the workspace root it was initialized with. `nil` when no registered server owns
-    /// the extension, its binary isn't installed, or it already crashed this run.
-    func server(for fileURL: URL) async -> (server: InitializingServer, languageID: String, root: URL)? {
+    /// under. `nil` when no registered server owns the extension, its binary isn't installed, or
+    /// it already crashed this run.
+    func server(for fileURL: URL) async -> (server: InitializingServer, languageID: String)? {
         guard let (descriptor, languageID) = LSPRegistry.descriptor(for: fileURL) else { return nil }
         let root = Self.workspaceRoot(for: fileURL)
         let key = Key(root: root.path, serverID: descriptor.id)
         if dead.contains(key) { return nil }
-        if let existing = servers[key] { return (existing, languageID, root) }
+        if let existing = servers[key] { return (existing, languageID) }
 
         if pending[key] == nil {
             pending[key] = Task { await self.start(descriptor, root: root, key: key) }
@@ -47,7 +47,7 @@ final class LSPManager {
         let task = pending[key]!
         let server = await task.value
         pending[key] = nil
-        return server.map { ($0, languageID, root) }
+        return server.map { ($0, languageID) }
     }
 
     /// The workspace a file belongs to: its git root, or its own directory outside a repo —

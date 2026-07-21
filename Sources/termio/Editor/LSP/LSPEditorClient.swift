@@ -10,7 +10,6 @@ import LanguageServerProtocol
 final class LSPEditorClient {
     private let server: InitializingServer
     private let uri: DocumentUri
-    private let fileURL: URL
     private var version = 1
     /// The buffer text the server hasn't seen yet, and the debounce that will send it. Requests
     /// flush first, so a jump right after typing still resolves against the current text.
@@ -28,7 +27,6 @@ final class LSPEditorClient {
 
     private init(server: InitializingServer, url: URL) {
         self.server = server
-        self.fileURL = url.standardizedFileURL
         self.uri = url.standardizedFileURL.absoluteString
     }
 
