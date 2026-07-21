@@ -76,7 +76,12 @@ final class CompanionServer {
     private let port: UInt16
     private let rosterProvider: () -> CompanionRoster
     private let ptyForSession: (String) -> PTYProcess?
-    private let startSession: (String, String) -> String?
+    /// Creates a session for a `start` request. A nil agent is the phone's
+    /// bare New Chat — the store resolves it through the same default-agent
+    /// policy as ⌘N. Returns the new session's wire id plus the agent wire id
+    /// actually launched (echoed in `.started` so the phone can label the
+    /// session before the next roster push), or nil when the start failed.
+    private let startSession: (String, String?) -> (sessionID: String, agentID: String)?
     private let stopSession: (String) -> Bool
     /// Resolves a session's transcript path and display title for a `trace`
     /// request, or nil when the session has no readable transcript yet.
@@ -102,7 +107,7 @@ final class CompanionServer {
         port: UInt16 = CompanionServer.defaultPort,
         rosterProvider: @escaping () -> CompanionRoster,
         ptyForSession: @escaping (String) -> PTYProcess?,
-        startSession: @escaping (String, String) -> String?,
+        startSession: @escaping (String, String?) -> (sessionID: String, agentID: String)?,
         stopSession: @escaping (String) -> Bool,
         traceProvider: @escaping (String) -> (path: String, title: String)?
     ) {
@@ -294,8 +299,11 @@ final class CompanionServer {
             // The phone's sidebar-equivalent "new session" — same store action
             // the CLI's `sessions start` uses; the roster push announces it to
             // every other client, the reply lets this one attach immediately.
-            if let sessionID = startSession(projectID, agent) {
-                sendControl(.started(sessionID: sessionID), to: connection)
+            if let started = startSession(projectID, agent) {
+                sendControl(
+                    .started(sessionID: started.sessionID, agent: started.agentID),
+                    to: connection
+                )
             } else {
                 sendControl(.error(message: "could not start a session there"), to: connection)
             }
@@ -311,8 +319,8 @@ final class CompanionServer {
             bridges[id]?.applyClientResize(cols: cols, rows: rows)
         case .listFiles(let projectID, let path):
             handleListFiles(projectID: projectID, path: path, on: connection)
-        case .readFile(let projectID, let path):
-            handleReadFile(projectID: projectID, path: path, on: connection)
+        case .readFile(let projectID, let path, let dark):
+            handleReadFile(projectID: projectID, path: path, dark: dark, on: connection)
         case .writeFile(let projectID, let path, let base64, let baseMtime):
             handleWriteFile(
                 projectID: projectID, path: path, base64: base64,
@@ -510,7 +518,7 @@ final class CompanionServer {
         return paths
     }
 
-    private func handleReadFile(projectID: String, path: String, on connection: NWConnection) {
+    private func handleReadFile(projectID: String, path: String, dark: Bool, on connection: NWConnection) {
         guard let root = projectRoot(for: projectID),
               let url = Self.resolve(path, under: root) else {
             sendControl(.error(message: "unknown project or path"), to: connection)
@@ -518,7 +526,7 @@ final class CompanionServer {
         }
         Task.detached(priority: .userInitiated) { [weak self] in
             let reply: CompanionControl
-            if let file = Self.readFilePayload(at: url, path: path) {
+            if let file = Self.readFilePayload(at: url, path: path, dark: dark) {
                 reply = .file(file)
             } else {
                 reply = .error(message: "could not read \(path)")
@@ -674,7 +682,7 @@ final class CompanionServer {
 
     nonisolated private static let maxFileBytes = 1 << 20 // 1 MB — plenty for "peek at a source file"
 
-    nonisolated private static func readFilePayload(at url: URL, path: String) -> WireFile? {
+    nonisolated private static func readFilePayload(at url: URL, path: String, dark: Bool = false) -> WireFile? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
@@ -699,7 +707,26 @@ final class CompanionServer {
             size: size,
             binary: binary,
             truncated: truncated,
-            mtime: mtimeMillis(url)
+            mtime: mtimeMillis(url),
+            html: markdownPreviewHTML(for: data, path: path, binary: binary, truncated: truncated, dark: dark)
+        )
+    }
+
+    /// The phone's Markdown preview, rendered Mac-side with the same reader
+    /// pipeline as the desktop editor's Preview pane (the trace pattern: one
+    /// renderer, the phone only supplies its light/dark trait). Fonts are not
+    /// embedded — the phone falls through to its system stack instead of
+    /// paying ~230KB of woff2 CSS per file read. nil for anything that is not
+    /// a complete, decodable Markdown document.
+    nonisolated private static func markdownPreviewHTML(
+        for data: Data, path: String, binary: Bool, truncated: Bool, dark: Bool
+    ) -> String? {
+        guard !binary, !truncated,
+              ["md", "markdown"].contains((path as NSString).pathExtension.lowercased()),
+              let source = String(data: data, encoding: .utf8)
+        else { return nil }
+        return MarkdownReaderRenderer.document(
+            source, theme: TraceTheme.builtin(dark: dark), fontFamily: "", embedFonts: false
         )
     }
 
@@ -935,8 +962,26 @@ extension TermioStore {
 
     /// Create a session in a project for a phone `start` request — the same
     /// `addSession` the sidebar buttons and the CLI use. Returns the new
-    /// session's wire id, nil if the project is unknown.
-    func companionStartSession(projectID wireID: String, agent wireAgent: String) -> String? {
+    /// session's wire id plus the launched agent's wire id (the `.started`
+    /// echo), nil if the project is unknown or no agent could be resolved.
+    func companionStartSession(
+        projectID wireID: String, agent wireAgent: String?
+    ) -> (sessionID: String, agentID: String)? {
+        // An agent-less start is the phone's bare New Chat (the Chats tab's ＋
+        // tap). The default-agent habit lives on the Mac only: resolve exactly
+        // the way ⌘N does (pinned → last used → first enabled, see
+        // `defaultChatAgent`), and land in the scratch chats container —
+        // `addScratchSession` finds or creates it by kind, so the phone's
+        // projectID (its view of that container) is deliberately not needed.
+        // Going through `addScratchSession` also feeds `lastChatAgentID`, so
+        // the phone and ⌘N keep sharing one habit. nil when every agent is
+        // disabled — the caller answers with the standard start error.
+        guard let wireAgent else {
+            guard let preset = defaultChatAgent() else { return nil }
+            addScratchSession(agent: preset)
+            guard let sessionID = selectedSessionID?.uuidString else { return nil }
+            return (sessionID, preset.wireName)
+        }
         let prefix = wireID.lowercased()
         guard !prefix.isEmpty,
               let project = projects.first(where: {
@@ -948,7 +993,8 @@ extension TermioStore {
         // an unknown token falls back to a plain terminal.
         let preset = AgentPreset.allCases.first { $0.wireName == wireAgent } ?? .terminal
         addSession(to: project.id, agent: preset)
-        return selectedSessionID?.uuidString
+        guard let sessionID = selectedSessionID?.uuidString else { return nil }
+        return (sessionID, preset.wireName)
     }
 
     /// Close a session for a phone `stop` request — the same `closeSession`
@@ -1000,6 +1046,7 @@ extension TermioStore {
                 name: project.name,
                 path: project.path,
                 branch: branchModel.branch(for: project.path) ?? project.branch,
+                kind: project.kind.rawValue,
                 // Browser panes stay Mac-only: the phone renders terminals over
                 // the PTY wire, and a browser session has no PTY to attach.
                 sessions: project.sessions.filter { !$0.isBrowser }.map { session in
@@ -1011,7 +1058,11 @@ extension TermioStore {
                         title: displayTitle(for: session),
                         agent: Self.wireAgent(session.agent),
                         status: Self.wireStatus(status(for: session.id)),
-                        subtitle: activity.isEmpty ? nil : activity
+                        subtitle: activity.isEmpty ? nil : activity,
+                        // Worktree sessions ride the project's flat roster, so
+                        // the checkout's branch is the phone's only clue that a
+                        // row lives off the main checkout.
+                        branch: session.worktreePath.flatMap { branch(forFolder: $0) }
                     )
                 }
             )

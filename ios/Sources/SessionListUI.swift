@@ -81,6 +81,10 @@ struct SessionRow: View {
     private var subtitle: String {
         var parts: [String] = []
         if showsProject, !session.project.isEmpty { parts.append(session.project) }
+        // The worktree's branch, verbatim like the Mac sidebar's label — only
+        // set for sessions living off the main checkout, so plain rows don't
+        // repeat the project branch.
+        if let branch = session.worktreeBranch { parts.append(branch) }
         if !session.subtitle.isEmpty { parts.append(session.subtitle) }
         return parts.joined(separator: " · ")
     }
@@ -97,22 +101,6 @@ struct RowSeparator: View {
             .fill(Color(uiColor: .separator))
             .frame(height: 1 / UIScreen.main.scale)
             .padding(.leading, leadingInset)
-    }
-}
-
-// MARK: - Glass chrome
-
-enum GlassChrome {
-    /// A Liquid Glass surface. On iOS 26 it's a real interactive `UIGlassEffect`
-    /// (the Telegram tab-bar look); older systems fall back to a chrome-material
-    /// blur, which reads as translucent glass too.
-    static func makeView(interactive: Bool) -> UIVisualEffectView {
-        if #available(iOS 26.0, *) {
-            let glass = UIGlassEffect(style: .regular)
-            glass.isInteractive = interactive
-            return UIVisualEffectView(effect: glass)
-        }
-        return UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
     }
 }
 

@@ -18,6 +18,7 @@ final class ProjectListViewController: UIViewController {
     /// Cross-project attention sessions (the strip's rows).
     private var attention: [MockSession] = []
     /// The store's projects in the chosen order — what the table shows.
+    /// Chats-kind containers are excluded: they have their own tab.
     private var visible: [MockProject] = []
 
     /// Mirrors the Mac sidebar's sort pull-down. The roster arrives in the
@@ -26,6 +27,7 @@ final class ProjectListViewController: UIViewController {
     private var sortByName = UserDefaults.standard.string(forKey: "sessions.sortOrder") == "name"
 
     private let filterButton = UIButton(type: .system)
+    private let newSessionButton = UIButton(type: .system)
     private let tableView = UITableView(frame: .zero, style: .grouped)
     /// The Telegram/iMessage-style zero state shown when there are no projects
     /// to list — never fake rows. Its copy tracks `CompanionLink.state`.
@@ -52,8 +54,8 @@ final class ProjectListViewController: UIViewController {
         let topBar = configureTopBar()
         configureTable(below: topBar)
         configureEmptyState(below: topBar)
-        // Added last so the floating glass footer layers over the list.
-        configureBottomBar()
+        // Added last so it floats over the list, opposite the home tab pill.
+        configureNewSessionButton()
         refilter()
         rosterObserver = NotificationCenter.default.addObserver(
             forName: RosterStore.didChange, object: nil, queue: .main
@@ -139,42 +141,39 @@ final class ProjectListViewController: UIViewController {
         refilter()
     }
 
-    // MARK: - Bottom bar (the floating settings button)
+    // MARK: - New-session button (the floating ＋)
 
-    /// Telegram's iOS 26 tab bar: nothing spans the width. A **detached
-    /// circular glass button** floats bottom-right (settings) and the list
-    /// scrolls under it, so the footer reads as chrome, not a divider. The
-    /// Mac pairing and its live status live in Settings ▸ Connectivity.
-    private func configureBottomBar() {
-        let gear = UIButton(type: .system)
-        gear.setImage(
-            UIImage(systemName: "gearshape", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .medium)),
-            for: .normal
-        )
-        gear.tintColor = .label
-        gear.accessibilityLabel = "Settings"
-        gear.addAction(UIAction { [weak self] _ in
-            self?.presentSettings()
-        }, for: .touchUpInside)
-        let puck = GlassChrome.makeView(interactive: true)
-        gear.translatesAutoresizingMaskIntoConstraints = false
-        puck.contentView.addSubview(gear)
-        puck.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(puck)
-
-        let puckSize: CGFloat = 44
-        puck.layer.cornerRadius = puckSize / 2
-        puck.clipsToBounds = true
-
+    /// ＋ floats bottom-right like Slack's compose button — the same corner as
+    /// the Chats tab's ＋, so "start something new" always lives in one place.
+    /// A project must be picked first, so the menu is one submenu per project
+    /// with the agents inside (the long-press menu, made discoverable);
+    /// deferred so it always reflects the live roster, hidden while unpaired.
+    private func configureNewSessionButton() {
+        newSessionButton.applyGlassSymbol("plus", pointSize: 22)
+        newSessionButton.tintColor = .label
+        newSessionButton.accessibilityLabel = "New Session"
+        newSessionButton.showsMenuAsPrimaryAction = true
+        newSessionButton.menu = UIMenu(children: [
+            UIDeferredMenuElement.uncached { [weak self] completion in
+                guard let self else { return completion([]) }
+                completion(visible.filter { $0.rosterID != nil }.map { project in
+                    UIMenu(
+                        title: project.name,
+                        image: UIImage(systemName: "folder"),
+                        children: self.store.newSessionActions(in: project)
+                    )
+                })
+            },
+        ])
+        newSessionButton.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(newSessionButton)
         NSLayoutConstraint.activate([
-            puck.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-            puck.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
-            puck.widthAnchor.constraint(equalToConstant: puckSize),
-            puck.heightAnchor.constraint(equalToConstant: puckSize),
-            gear.centerXAnchor.constraint(equalTo: puck.contentView.centerXAnchor),
-            gear.centerYAnchor.constraint(equalTo: puck.contentView.centerYAnchor),
-            gear.widthAnchor.constraint(equalTo: puck.widthAnchor),
-            gear.heightAnchor.constraint(equalTo: puck.heightAnchor),
+            newSessionButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            // The tab pill's own scale (64pt, 8pt above the safe area), so the
+            // two ends of the bottom edge read as one balanced bar.
+            newSessionButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
+            newSessionButton.widthAnchor.constraint(equalToConstant: 64),
+            newSessionButton.heightAnchor.constraint(equalToConstant: 64),
         ])
     }
 
@@ -207,11 +206,10 @@ final class ProjectListViewController: UIViewController {
             forHeaderFooterViewReuseIdentifier: SectionCapView.reuseID
         )
         tableView.translatesAutoresizingMaskIntoConstraints = false
-        // The floating glass footer sits over the list, so the list runs to the
-        // bottom edge and reserves room with an inset — the last rows clear the
-        // pill instead of butting a divider.
-        tableView.contentInset.bottom = 56
-        tableView.verticalScrollIndicatorInsets.bottom = 56
+        // The floating tab pill sits over the list; reserve room so the last
+        // rows scroll clear of it (64pt pill + margins).
+        tableView.contentInset.bottom = 80
+        tableView.verticalScrollIndicatorInsets.bottom = 80
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 16),
@@ -222,13 +220,18 @@ final class ProjectListViewController: UIViewController {
     }
 
     /// Rebuild the section list from the store: the attention strip (only when
-    /// non-empty), then the projects in the chosen order.
+    /// non-empty), then the projects in the chosen order. Chats-kind containers
+    /// belong to the Chats tab — their attention sessions still surface in the
+    /// strip here, the cross-cutting shortcut.
     private func refilter() {
         attention = store.attentionSessions
-        visible = sortByName
+        let ordered = sortByName
             ? store.projects.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             : store.projects
+        visible = ordered.filter { $0.kind != "chats" }
         sections = (attention.isEmpty ? [] : [.needsYou]) + [.projects]
+        newSessionButton.isHidden = store.companionURL == nil
+            || !visible.contains { $0.rosterID != nil }
         tableView.reloadData()
         updateEmptyState()
     }

@@ -23,10 +23,18 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     case attach(sessionID: String)
     /// The client asks the Mac to create a session in a project — the phone's
     /// equivalent of the sidebar's new-session buttons. Answered with
-    /// `.started` (or `.error`).
-    case start(projectID: String, agent: String)
-    /// A `start` succeeded; the new session is ready to `attach`.
-    case started(sessionID: String)
+    /// `.started` (or `.error`). `agent` nil is the phone's bare "New Chat":
+    /// the Mac resolves the agent itself (pinned → last used → first enabled,
+    /// the same policy behind ⌘N) so the habit lives in exactly one place —
+    /// the phone never re-implements it. Older Macs drop an agent-less start
+    /// (their decoder required the field), which degrades to "nothing
+    /// happens", never to a wrong agent.
+    case start(projectID: String, agent: String?)
+    /// A `start` succeeded; the new session is ready to `attach`. `agent`
+    /// echoes the wire id the Mac actually launched — the client can't know
+    /// it for an agent-less start until the next roster push. nil from an
+    /// older Mac; the client falls back to the agent it asked for.
+    case started(sessionID: String, agent: String?)
     /// The client asks the Mac to close a session (the phone's swipe-to-remove).
     /// No success reply — the next roster push drops the row everywhere.
     case stop(sessionID: String)
@@ -40,7 +48,10 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     /// One directory listing (server → client).
     case fileList(path: String, entries: [WireFileEntry])
     /// The client asks for a file's contents. Answered with `.file` or `.error`.
-    case readFile(projectID: String, path: String)
+    /// `dark` is the client's light/dark trait — the server bakes it into the
+    /// rendered Markdown preview (`WireFile.html`) so the page matches, the
+    /// same contract as `.trace`.
+    case readFile(projectID: String, path: String, dark: Bool)
     /// File contents (server → client).
     case file(WireFile)
     /// The client writes edited contents back. `baseMtime` is the mtime (ms)
@@ -95,9 +106,15 @@ public enum CompanionControl: Codable, Sendable, Equatable {
         case .attach(let sessionID):
             return #"{"t":"attach","session":"\#(sessionID)"}"#
         case .start(let projectID, let agent):
-            return #"{"t":"start","project":"\#(projectID)","agent":"\#(agent)"}"#
-        case .started(let sessionID):
-            return #"{"t":"started","session":"\#(sessionID)"}"#
+            // A nil agent omits the key (not `null`) so the hand-rolled
+            // decoders on both ends keep reading plain `as? String`.
+            var fields: [String: Any] = ["t": "start", "project": projectID]
+            if let agent { fields["agent"] = agent }
+            return Self.json(fields)
+        case .started(let sessionID, let agent):
+            var fields: [String: Any] = ["t": "started", "session": sessionID]
+            if let agent { fields["agent"] = agent }
+            return Self.json(fields)
         case .stop(let sessionID):
             return #"{"t":"stop","session":"\#(sessionID)"}"#
         case .resize(let cols, let rows):
@@ -113,14 +130,18 @@ public enum CompanionControl: Codable, Sendable, Equatable {
                 "t": "fileList", "path": path,
                 "entries": entries.map { ["name": $0.name, "dir": $0.isDir, "changed": $0.changed] },
             ])
-        case .readFile(let projectID, let path):
-            return Self.json(["t": "readFile", "project": projectID, "path": path])
+        case .readFile(let projectID, let path, let dark):
+            return Self.json(["t": "readFile", "project": projectID, "path": path, "dark": dark])
         case .file(let file):
-            return Self.json([
+            var payload: [String: Any] = [
                 "t": "file", "path": file.path, "data": file.base64,
                 "size": file.size, "binary": file.binary, "truncated": file.truncated,
                 "mtime": file.mtime,
-            ])
+            ]
+            // Only Markdown carries a rendered preview; absent otherwise so the
+            // common case stays small.
+            if let html = file.html { payload["html"] = html }
+            return Self.json(payload)
         case .writeFile(let projectID, let path, let base64, let baseMtime):
             return Self.json([
                 "t": "writeFile", "project": projectID, "path": path,
@@ -172,12 +193,13 @@ public enum CompanionControl: Codable, Sendable, Equatable {
             guard let sessionID = obj["session"] as? String else { return nil }
             return .attach(sessionID: sessionID)
         case "start":
-            guard let projectID = obj["project"] as? String,
-                  let agent = obj["agent"] as? String else { return nil }
-            return .start(projectID: projectID, agent: agent)
+            guard let projectID = obj["project"] as? String else { return nil }
+            // Missing agent = "Mac picks" — lenient, so today's phone can talk
+            // to a Mac that still always sends one.
+            return .start(projectID: projectID, agent: obj["agent"] as? String)
         case "started":
             guard let sessionID = obj["session"] as? String else { return nil }
-            return .started(sessionID: sessionID)
+            return .started(sessionID: sessionID, agent: obj["agent"] as? String)
         case "stop":
             guard let sessionID = obj["session"] as? String else { return nil }
             return .stop(sessionID: sessionID)
@@ -206,7 +228,10 @@ public enum CompanionControl: Codable, Sendable, Equatable {
         case "readFile":
             guard let projectID = obj["project"] as? String,
                   let path = obj["path"] as? String else { return nil }
-            return .readFile(projectID: projectID, path: path)
+            return .readFile(
+                projectID: projectID, path: path,
+                dark: obj["dark"] as? Bool ?? false
+            )
         case "file":
             guard let path = obj["path"] as? String,
                   let base64 = obj["data"] as? String else { return nil }
@@ -216,7 +241,8 @@ public enum CompanionControl: Codable, Sendable, Equatable {
                 size: obj["size"] as? Int ?? 0,
                 binary: obj["binary"] as? Bool ?? false,
                 truncated: obj["truncated"] as? Bool ?? false,
-                mtime: obj["mtime"] as? Int ?? 0
+                mtime: obj["mtime"] as? Int ?? 0,
+                html: obj["html"] as? String
             ))
         case "writeFile":
             guard let projectID = obj["project"] as? String,
@@ -329,14 +355,23 @@ public struct WireFile: Codable, Sendable, Equatable {
     /// mtime in milliseconds — the base for conflict-checked writes.
     /// 0 when the serving peer predates the write plane.
     public let mtime: Int
+    /// A self-contained rendered preview document, only for Markdown files —
+    /// the Mac renders with the same reader pipeline as its own Preview pane
+    /// and the phone drops it into a `WKWebView`, the trace pattern. nil for
+    /// every other file, and when the serving peer predates the field.
+    public let html: String?
 
-    public init(path: String, base64: String, size: Int, binary: Bool, truncated: Bool, mtime: Int = 0) {
+    public init(
+        path: String, base64: String, size: Int, binary: Bool, truncated: Bool,
+        mtime: Int = 0, html: String? = nil
+    ) {
         self.path = path
         self.base64 = base64
         self.size = size
         self.binary = binary
         self.truncated = truncated
         self.mtime = mtime
+        self.html = html
     }
 
     public var data: Data? { Data(base64Encoded: base64) }
@@ -357,13 +392,21 @@ public struct RosterSession: Codable, Sendable, Equatable {
     /// shows it as the row's preview line, Messages-style. Optional so older
     /// peers that don't send it still decode; nil when there is nothing to say.
     public let subtitle: String?
+    /// The branch of the linked worktree checkout this session runs in — nil
+    /// for sessions in the project's main checkout, so the phone can label
+    /// only the rows that live somewhere other than the project's own branch.
+    public let branch: String?
 
-    public init(id: String, title: String, agent: String, status: String, subtitle: String? = nil) {
+    public init(
+        id: String, title: String, agent: String, status: String,
+        subtitle: String? = nil, branch: String? = nil
+    ) {
         self.id = id
         self.title = title
         self.agent = agent
         self.status = status
         self.subtitle = subtitle
+        self.branch = branch
     }
 }
 
@@ -375,13 +418,21 @@ public struct RosterProject: Codable, Sendable, Equatable {
     /// Current git branch of the checkout, nil for non-repos. Optional so
     /// older peers that don't send it still decode.
     public let branch: String?
+    /// What this container *is* on the Mac — `ProjectKind` on the wire:
+    /// "folder" (a real project), "terminals" (loose shells), "chats" (loose
+    /// agent sessions). nil from an older Mac; treat as "folder".
+    public let kind: String?
     public let sessions: [RosterSession]
 
-    public init(id: String, name: String, path: String, branch: String? = nil, sessions: [RosterSession]) {
+    public init(
+        id: String, name: String, path: String, branch: String? = nil,
+        kind: String? = nil, sessions: [RosterSession]
+    ) {
         self.id = id
         self.name = name
         self.path = path
         self.branch = branch
+        self.kind = kind
         self.sessions = sessions
     }
 }
