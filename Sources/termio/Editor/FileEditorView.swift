@@ -46,6 +46,9 @@ struct FileEditorView: View {
     /// A same-file go-to-definition target; feeds the same reveal plumbing as `jumpLine` without
     /// a round-trip through the store (which would also reset the read-only flag).
     @State private var revealLine: Int?
+    /// A registered-but-not-installed server for this file's language: the header shows its
+    /// install command once (Zed's meet-the-file-where-it-is pattern, minus the store).
+    @State private var installHint: LSPServerDescriptor?
 
     /// The highlight.js language id, sniffed once from the file extension (`nil` lets highlight.js
     /// auto-detect). Stable for the lifetime of the open file.
@@ -200,7 +203,12 @@ struct FileEditorView: View {
         .task {
             guard !loadFailed else { return }
             let opened = text
-            guard let client = await LSPEditorClient.attach(url: url, text: opened) else { return }
+            guard let client = await LSPEditorClient.attach(url: url, text: opened) else {
+                // No server came up. If one is registered but just not installed, surface its
+                // install command — only in an editable open; a read-only peek stays silent.
+                if !readOnly { installHint = await LSPManager.shared.missingServer(for: url) }
+                return
+            }
             // The editor may already be gone (Escape during the server's spawn window) — the
             // document was announced, so it must be un-announced, not leaked open.
             guard !Task.isCancelled else { client.close(); return }
@@ -251,6 +259,11 @@ struct FileEditorView: View {
             // The close control lives in the toolbar (a bordered, Liquid Glass button on the
             // terminal column's trailing edge); this trailing spacer keeps the label left-aligned.
             Spacer()
+            // One quiet, dismissible line when this language's server isn't installed: the
+            // command to copy, shown at the moment it's relevant instead of buried in Settings.
+            if let hint = installHint, let install = hint.install {
+                installHintView(hint: hint, install: install)
+            }
             // Markdown reads as a document by default; the toggle keeps the source one click away.
             if isMarkdown {
                 modeToggle
@@ -260,6 +273,39 @@ struct FileEditorView: View {
         .padding(.vertical, 8)
         .background(Color(nsColor: settings.terminalBackgroundColor))
         .animation(.easeOut(duration: 0.15), value: isDirty)
+    }
+
+    /// The header's install nudge: `⌘-click needs <server> · <install command> [copy] [×]`,
+    /// caption-quiet. Dismissing remembers the server for the rest of the app run, so the hint
+    /// never becomes a nag; the Languages settings pane remains the always-there reference.
+    private func installHintView(hint: LSPServerDescriptor, install: String) -> some View {
+        HStack(spacing: 6) {
+            Text("⌘-click needs")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            Text(install)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(install, forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc").font(.caption)
+            }
+            .buttonStyle(.plain)
+            .help("Copy install command — enables jump-to-definition and hover for \(hint.displayName)")
+            Button {
+                LSPManager.shared.dismissedInstallHints.insert(hint.id)
+                withAnimation(.easeOut(duration: 0.15)) { installHint = nil }
+            } label: {
+                Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.tertiary)
+            .help("Dismiss for this run")
+        }
+        .transition(.opacity)
     }
 
     /// A two-segment Edit/Preview toggle, drawn by hand (a segmented `Picker` only renders

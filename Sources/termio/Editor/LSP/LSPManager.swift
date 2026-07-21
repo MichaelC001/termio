@@ -28,6 +28,8 @@ final class LSPManager {
     /// In-flight spawns, so two editors opening at once share one server instead of racing
     /// two children into existence.
     private var pending: [Key: Task<InitializingServer?, Never>] = [:]
+    /// Install hints the user dismissed, so a missing server nags at most once per app run.
+    var dismissedInstallHints: Set<String> = []
 
     private init() {}
 
@@ -48,6 +50,18 @@ final class LSPManager {
         let server = await task.value
         pending[key] = nil
         return server.map { ($0, languageID) }
+    }
+
+    /// The registered-but-not-installed server for `fileURL` — the one case worth a quiet
+    /// install hint in the editor. `nil` when the file has no registered server, the server is
+    /// present (or toolchain-bundled, `install == nil`), or the hint was already dismissed.
+    func missingServer(for fileURL: URL) async -> LSPServerDescriptor? {
+        guard let (descriptor, _) = LSPRegistry.descriptor(for: fileURL),
+              descriptor.install != nil,
+              !dismissedInstallHints.contains(descriptor.id),
+              await LSPRegistry.resolveLaunch(descriptor.command) == nil
+        else { return nil }
+        return descriptor
     }
 
     /// The workspace a file belongs to: its git root, or its own directory outside a repo —
