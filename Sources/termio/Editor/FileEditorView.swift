@@ -107,18 +107,24 @@ struct FileEditorView: View {
     /// truth) so plain text and the insertion point sit on the terminal background cleanly.
     private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
     private var caretColor: NSColor { chrome.map { NSColor($0.accent) } ?? .textColor }
-    /// Muted line-number ink — the theme foreground dimmed, so the gutter recedes against the
-    /// code the way Xcode's does (and always contrasts the terminal background, whatever it is).
-    /// Dark themes need noticeably more ink: 0.4 alpha over a near-black terminal background
-    /// left the numbers illegible (user report).
+    /// Whether the editor sits on a dark background — the theme's own luminance signal, falling
+    /// back to the system appearance when no theme is picked.
+    private var onDarkBackground: Bool { chrome?.isDark ?? (colorScheme == .dark) }
+    /// Muted line-number ink, dimmed white over a dark background and dimmed black over a light
+    /// one. Deriving this from the theme's *foreground* was the trap: a grey or tinted foreground
+    /// sank into a black background no matter the alpha (user report ×2) — contrast must come
+    /// from the background's own darkness, not the text palette.
     private var lineNumberColor: NSColor {
-        (chrome.map { NSColor($0.foreground) } ?? .textColor)
-            .withAlphaComponent(colorScheme == .dark ? 0.62 : 0.48)
+        onDarkBackground
+            ? NSColor.white.withAlphaComponent(0.55)
+            : NSColor.black.withAlphaComponent(0.42)
     }
-    /// A whisper of the theme's ink under the caret's line — enough to anchor the eye, faint
-    /// enough to sit on any terminal background without fighting the syntax colors.
+    /// A whisper of ink under the caret's line — enough to anchor the eye, faint enough not to
+    /// fight the syntax colors. Same background-driven white/black choice as the gutter.
     private var currentLineColor: NSColor {
-        (chrome.map { NSColor($0.foreground) } ?? .textColor).withAlphaComponent(0.055)
+        onDarkBackground
+            ? NSColor.white.withAlphaComponent(0.06)
+            : NSColor.black.withAlphaComponent(0.05)
     }
 
     var body: some View {
