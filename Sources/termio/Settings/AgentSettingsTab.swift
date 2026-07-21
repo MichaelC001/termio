@@ -3,20 +3,18 @@ import SwiftUI
 struct AgentSettingsTab: View {
     @ObservedObject var settings: AppSettings
 
-    /// Which enabled agents have their configuration drawer open. Keyed by id so the
+    /// Which listed agents have their configuration drawer open. Keyed by id so the
     /// set survives reordering and enable/disable without stale indices.
     @State private var expanded: Set<String> = []
-    /// Whether the collapsed "More agents" drawer (the disabled agents) is open.
-    @State private var showingMore = false
 
     /// The agents the user actually manages, in the user's arrangement. The plain
     /// Terminal is not here — it's the login shell, configured on the Terminal tab and
     /// always available, so it's never an enable/reorder row (see `AgentDefinition.isShell`).
-    private var enabledAgents: [AgentPreset] {
-        settings.orderedAgents(AgentPreset.codingAgents.filter(settings.isAgentEnabled))
+    private var listedAgents: [AgentPreset] {
+        settings.orderedAgents(AgentPreset.codingAgents.filter(settings.isAgentListed))
     }
-    private var disabledAgents: [AgentPreset] {
-        settings.orderedAgents(AgentPreset.codingAgents.filter { !settings.isAgentEnabled($0) })
+    private var addableAgents: [AgentPreset] {
+        settings.orderedAgents(AgentPreset.codingAgents.filter { !settings.isAgentListed($0) })
     }
 
     var body: some View {
@@ -63,12 +61,13 @@ struct AgentSettingsTab: View {
         .formStyle(.grouped)
     }
 
-    /// The one section that replaced a full-height card per agent: the enabled agents
+    /// The one section that replaced a full-height card per agent: the user's agents
     /// as a compact, reorderable list whose per-agent config hides behind a disclosure,
-    /// and the long tail of disabled agents folded into a "More agents" drawer.
+    /// and the rest of the catalog behind an "Add Agent" pull-down at the bottom —
+    /// the System Settings shape for "curated list + pool to add from".
     private var agentsSection: some View {
         Section {
-            ForEach(enabledAgents) { preset in
+            ForEach(listedAgents) { preset in
                 AgentManagerRow(
                     settings: settings,
                     preset: preset,
@@ -76,27 +75,39 @@ struct AgentSettingsTab: View {
                     toggleExpanded: { toggleExpanded(preset) }
                 )
             }
-            .onMove(perform: moveEnabled)
+            .onMove(perform: moveListed)
 
-            if !disabledAgents.isEmpty {
-                DisclosureGroup(isExpanded: $showingMore) {
-                    ForEach(disabledAgents) { preset in
-                        DisabledAgentRow(settings: settings, preset: preset)
+            if !addableAgents.isEmpty {
+                Menu {
+                    ForEach(addableAgents) { preset in
+                        Button { add(preset) } label: {
+                            Label { Text(preset.displayName) } icon: { IconBadge(preset.icon) }
+                        }
                     }
                 } label: {
-                    HStack {
-                        Text("More agents").font(.headline)
-                        Spacer()
-                        Text("\(disabledAgents.count)").foregroundStyle(.secondary)
-                    }
+                    Label("Add Agent", systemImage: "plus")
                 }
             }
         } header: {
             SectionHeaderLabel(title: "Agents")
         } footer: {
-            Text("The agents offered in the new-session menu and the sidebar's quick-add row, in this order — drag to reorder. Open a row to set a custom command or skip its permission prompts.")
+            Text("The agents offered in the new-session menu and the sidebar's quick-add row, in this order — drag to reorder, right-click to remove. Open a row to set a custom command or skip its permission prompts. An agent whose CLI isn't installed stays off until it is.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Adds the agent's row immediately, then lets the availability probe decide the
+    /// switch: an installed CLI turns it on; a missing one leaves it off with its
+    /// drawer opened onto the install link. The row never blocks on the probe.
+    private func add(_ preset: AgentPreset) {
+        settings.addAgent(preset)
+        Task { @MainActor in
+            if await AgentAvailability.isCommandAvailable(settings.command(for: preset) ?? "") {
+                settings.setAgent(preset, enabled: true)
+            } else {
+                expanded.insert(preset.id)
+            }
         }
     }
 
@@ -104,10 +115,10 @@ struct AgentSettingsTab: View {
         if expanded.contains(preset.id) { expanded.remove(preset.id) } else { expanded.insert(preset.id) }
     }
 
-    /// Persists a drag as the new enabled arrangement; `setEnabledOrder` keeps every
+    /// Persists a drag as the new arrangement; `setEnabledOrder` keeps every
     /// other id ranked behind it so the ordering stays total.
-    private func moveEnabled(from source: IndexSet, to destination: Int) {
-        var ids = enabledAgents.map(\.id)
+    private func moveListed(from source: IndexSet, to destination: Int) {
+        var ids = listedAgents.map(\.id)
         ids.move(fromOffsets: source, toOffset: destination)
         settings.setEnabledOrder(ids)
     }
@@ -171,9 +182,10 @@ private struct AgentManagerRow: View {
     @State private var available: Bool?
 
     var body: some View {
-        // `Group` is transparent inside a Form (its children each become a row), so the
-        // header and the disclosed controls read as sibling rows while sharing one probe.
-        Group {
+        // One VStack = one Form row, so the header and its disclosed controls share a
+        // single cell — separators fall only between agents, and the drawer can't be
+        // mistaken for top-level rows (as `Group`'s sibling rows were).
+        VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 IconBadge(preset.icon)
                 VStack(alignment: .leading, spacing: 2) {
@@ -206,36 +218,66 @@ private struct AgentManagerRow: View {
                 ))
                 .labelsHidden()
                 .toggleStyle(.switch)
+                // A missing CLI can't be launched, so it can't be switched on — only
+                // off (an already-on agent stays revocable while the hint shows).
+                .disabled(available == false && !settings.isAgentEnabled(preset))
+            }
+            // Without an explicit shape only the row's glyphs are right-clickable —
+            // the padding and the Spacer are holes in the Form row's hit test.
+            .contentShape(Rectangle())
+            .contextMenu {
+                Button("Remove from List") { settings.removeAgent(preset) }
             }
 
             if isExpanded {
-                TextField(
-                    "Command",
-                    text: Binding(
-                        get: { settings.agentCommandOverrides[preset.rawValue] ?? "" },
-                        set: { settings.agentCommandOverrides[preset.rawValue] = $0 }
-                    ),
-                    prompt: Text(preset.command ?? "")
-                )
-
-                if available == false, let url = preset.installURL {
-                    Link(destination: url) {
-                        Label("Install \(preset.displayName)", systemImage: "arrow.down.circle")
-                    }
-                }
-
-                if let flag = preset.permissionBypassFlag {
-                    Toggle(isOn: Binding(
-                        get: { settings.bypassesPermissions(preset) },
-                        set: { settings.setBypassPermissions(preset, enabled: $0) }
-                    )) {
-                        SettingsLabel(
-                            title: "Skip permission prompts",
-                            subtext: "Runs with `\(flag)`. The agent won't ask before editing files or running commands."
+                VStack(alignment: .leading, spacing: 12) {
+                    LabeledContent("Command") {
+                        TextField(
+                            "",
+                            text: Binding(
+                                get: { settings.agentCommandOverrides[preset.rawValue] ?? "" },
+                                set: { settings.agentCommandOverrides[preset.rawValue] = $0 }
+                            ),
+                            prompt: Text(preset.command ?? "")
                         )
+                        .textFieldStyle(.plain)
+                        .labelsHidden()
                     }
-                    .toggleStyle(.switch)
+
+                    if available == false, let url = preset.installURL {
+                        Link(destination: url) {
+                            Label("Install \(preset.displayName)", systemImage: "arrow.down.circle")
+                        }
+                    }
+
+                    if let flag = preset.permissionBypassFlag {
+                        Toggle(isOn: Binding(
+                            get: { settings.bypassesPermissions(preset) },
+                            set: { settings.setBypassPermissions(preset, enabled: $0) }
+                        )) {
+                            SettingsLabel(
+                                title: "Skip permission prompts",
+                                subtext: "Runs with `\(flag)`. The agent won't ask before editing files or running commands."
+                            )
+                        }
+                        .toggleStyle(.switch)
+                    }
+
+                    // The visible twin of the row's right-click item — a drawer-only
+                    // action so the scannable list stays clean. Deliberately not
+                    // red: nothing is destroyed — the row folds back into the "Add
+                    // Agent" menu with its overrides intact, so no confirmation
+                    // either.
+                    Button("Remove from List") {
+                        settings.removeAgent(preset)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
+                // Indent to the title's column (icon 22 + spacing 10) so the drawer
+                // reads as the row's children, not more agents.
+                .padding(.leading, 32)
+                .padding(.top, 12)
             }
         }
         // Re-checks whenever the effective command changes, so typing a valid path
@@ -250,26 +292,4 @@ private struct AgentManagerRow: View {
     }
 
     private var effectiveCommand: String { settings.command(for: preset) ?? "" }
-}
-
-/// A disabled agent in the "More agents" drawer: just its identity and the enable
-/// switch. There's nothing to configure until it's on, so it carries no drawer —
-/// enabling it lifts it into the reorderable list above, where its config lives.
-private struct DisabledAgentRow: View {
-    @ObservedObject var settings: AppSettings
-    let preset: AgentPreset
-
-    var body: some View {
-        Toggle(isOn: Binding(
-            get: { settings.isAgentEnabled(preset) },
-            set: { settings.setAgent(preset, enabled: $0) }
-        )) {
-            SettingsLabel(
-                preset.icon,
-                title: preset.displayName,
-                subtext: preset.command ?? "Login shell"
-            )
-        }
-        .toggleStyle(.switch)
-    }
 }
