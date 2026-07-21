@@ -204,7 +204,7 @@ These were designed but intentionally not built in phase 1:
    `+`) → a new session that starts in a fresh worktree from t=0.
 3. **Per-preset / per-project default** for isolation, replacing the global
    `worktreeEnabled` toggle, so creation never asks at click time (see
-   `docs/maketing/` discussion — decision moved off the hot path).
+   marketing discussion — decision moved off the hot path).
 4. **Manage-worktrees view** listing all worktrees incl. empty ones, with cleanup.
 5. **Collapsible folder nodes** + ahead/behind or dirty markers, if wanted.
 

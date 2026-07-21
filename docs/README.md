@@ -7,8 +7,11 @@ page when you browse `docs/`.
 
 - Every doc lives **somewhere under `docs/`** and carries its own metadata in
   **YAML front matter** at the top of the file. Subfolders (`design/`,
-  `maketing/`, `competitive-analysis/`, …) are just loose grouping — the authoritative
+  `competitive-analysis/`, …) are just loose grouping — the authoritative
   category is the front matter `type`, **not** the path.
+- **Product promo assets** (App Store shots, social covers) stay under
+  `maketing/` in this repo. **Strategy / pitch markdown** lives in the sibling
+  `pitch` repo: `/Users/yuanjiwei/Documents/GitHub/pitch/termio`.
 - Each doc declares: `title`, `status`, `type`, `created`/`updated`, and optional
   `related`. The front matter is the **single source of truth** for status —
   there is no separate status file to keep in sync.
@@ -37,7 +40,6 @@ from the real front matter).
 | active | design | [iOS libghostty "non-functional" panel + teardown UAF — root-cause findings](design/ios-ghostty-renderer-panic-investigation-findings.md) |
 | active | design | [iOS terminal input & attachments](design/ios-terminal-input.md) |
 | active | design | [macOS release runbook — cut, notarize, publish termio.dmg](runbook/macos-release-runbook.md) |
-| active | marketing | [termio — Go-to-Market & Revenue Reality](maketing/go-to-market.md) |
 | active | rfc | [Push-to-talk voice dictation — hold the space bar (iOS shipped, OpenAI)](rfcs/push-to-talk-voice-dictation.md) |
 | approved | design | [会话历史 · 搜索 · 恢复（Session History / Search / Resume）](design/session-history-search-resume.md) |
 | approved | design | [Agent Resume Identity — keeping the resume pin on the live conversation](design/agent-resume-identity.md) |
@@ -53,7 +55,6 @@ from the real front matter).
 | done | design | [Agent Abstraction & Configuration](design/agent-abstraction-and-configuration.md) |
 | done | design | [Config-driven agent resume](design/config-driven-agent-resume.md) |
 | done | design | [Vibe Island 式 Agent 状态层（Claude Code hooks）](design/vibe-island-status.md) |
-| done | marketing | [从 IDE 到 ADE：开发环境六十年，以及它为什么正在终结](maketing/blog-ide-to-ade.md) |
 | done | research | ["ADE 赛道全景表（2026-07）：开源 + 闭源一张表，termio 亮点"](competitive-analysis/10-landscape-table-2026-07.md) |
 | done | research | ["Competitive analysis: claude-squad"](competitive-analysis/05-claude-squad.md) |
 | done | research | ["Competitive analysis: cmux (manaflow-ai)"](competitive-analysis/02-cmux.md) |
@@ -72,7 +73,6 @@ from the real front matter).
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/remote-projects.md) |
 | draft | design | [Session Daemon Architecture (termiod — one model for local, remote, mobile)](design/session-daemon-architecture.md) |
 | draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/remote-access-relay-strategy.md) |
-| draft | marketing | [OG image & landing copy](maketing/og-image-and-messaging.md) |
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/sandbox-seatbelt.md) |
 | draft | rfc | [Automation — scheduled agent runs](rfcs/automation-scheduled-agent-runs.md) |
 | draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](rfcs/fork-libghostty-spm.md) |
