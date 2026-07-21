@@ -29,9 +29,13 @@ final class LineNumberRulerView: NSRulerView {
         needsDisplay = true
     }
 
-    /// Slightly smaller than the editor's font, with monospaced digits so the numbers stay aligned.
+    /// The editor's own face, slightly smaller — numbers set in the system font next to mono code
+    /// read as a different app (and its light digits vanished on dark themes). Monospace families
+    /// have monospaced digits by nature, so alignment holds.
     private static func gutterFont(for editorFont: NSFont) -> NSFont {
-        NSFont.monospacedDigitSystemFont(ofSize: max(9, editorFont.pointSize - 1.5), weight: .regular)
+        let size = max(9, editorFont.pointSize - 1.5)
+        return NSFont(descriptor: editorFont.fontDescriptor, size: size)
+            ?? NSFont.monospacedDigitSystemFont(ofSize: size, weight: .regular)
     }
 
     override func draw(_ dirtyRect: NSRect) {

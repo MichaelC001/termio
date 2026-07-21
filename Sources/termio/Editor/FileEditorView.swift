@@ -109,8 +109,16 @@ struct FileEditorView: View {
     private var caretColor: NSColor { chrome.map { NSColor($0.accent) } ?? .textColor }
     /// Muted line-number ink — the theme foreground dimmed, so the gutter recedes against the
     /// code the way Xcode's does (and always contrasts the terminal background, whatever it is).
+    /// Dark themes need noticeably more ink: 0.4 alpha over a near-black terminal background
+    /// left the numbers illegible (user report).
     private var lineNumberColor: NSColor {
-        (chrome.map { NSColor($0.foreground) } ?? .textColor).withAlphaComponent(0.4)
+        (chrome.map { NSColor($0.foreground) } ?? .textColor)
+            .withAlphaComponent(colorScheme == .dark ? 0.62 : 0.48)
+    }
+    /// A whisper of the theme's ink under the caret's line — enough to anchor the eye, faint
+    /// enough to sit on any terminal background without fighting the syntax colors.
+    private var currentLineColor: NSColor {
+        (chrome.map { NSColor($0.foreground) } ?? .textColor).withAlphaComponent(0.055)
     }
 
     var body: some View {
@@ -149,6 +157,7 @@ struct FileEditorView: View {
                             backgroundColor: settings.terminalBackgroundColor,
                             caretColor: caretColor,
                             lineNumberColor: lineNumberColor,
+                            currentLineColor: currentLineColor,
                             isEditable: !readOnly,
                             jumpToLine: revealLine ?? jumpLine,
                             onSave: saveNow,

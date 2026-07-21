@@ -14,6 +14,10 @@ struct HighlightedTextView: NSViewRepresentable {
     let backgroundColor: NSColor
     let caretColor: NSColor
     let lineNumberColor: NSColor
+    /// The full-width wash under the caret's line (Xcode-style), already dimmed to sit on any
+    /// terminal background. Only drawn while the buffer is editable — a read-only peek has no
+    /// caret, so a highlighted line would just be a mystery stripe.
+    let currentLineColor: NSColor
     /// When false the text stays selectable (copyable) but cannot be typed into — the read-only
     /// preview path. Defaults to editable so the inspector's own opens are unchanged.
     var isEditable: Bool = true
@@ -167,6 +171,11 @@ struct HighlightedTextView: NSViewRepresentable {
         textView.font = font
         textView.backgroundColor = backgroundColor
         textView.insertionPointColor = caretColor
+        if let saving = textView as? SavingTextView {
+            saving.currentLineColor = currentLineColor
+            // The matched pair glows in the caret's own accent, dimmed to a wash.
+            saving.bracketHighlightColor = caretColor.withAlphaComponent(0.28)
+        }
     }
 
     /// Scrolls the 1-based `line` into view, parks the caret at its start, and flashes the find
@@ -233,6 +242,7 @@ struct HighlightedTextView: NSViewRepresentable {
 
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            (textView as? SavingTextView)?.caretDidMove()
             let location = textView.selectedRange().location
             let full = textView.string as NSString
             guard location <= full.length else { return }
@@ -257,9 +267,15 @@ private final class SavingTextView: NSTextView {
     var onSave: (() -> Void)?
     var onDefinitionRequest: ((Int) -> Void)?
     var hoverProvider: ((Int) async -> String?)?
+    /// Full-width wash under the caret's line; `.clear` (or a read-only buffer) draws nothing.
+    var currentLineColor: NSColor = .clear { didSet { needsDisplay = true } }
+    /// Background wash on a bracket pair when the caret sits against one of them.
+    var bracketHighlightColor: NSColor = .clear
 
     /// The identifier currently underlined under a ⌘-hover.
     private var linkRange: NSRange?
+    /// The bracket pair currently washed, so the previous pair can be cleanly un-washed.
+    private var bracketRanges: [NSRange] = []
     /// The armed dwell → hover-popover chain, cancelled whenever the target changes.
     private var hoverTask: Task<Void, Never>?
     private var hoverPopover: NSPopover?
@@ -279,6 +295,108 @@ private final class SavingTextView: NSTextView {
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    // MARK: Current line
+
+    /// Xcode-style band under the logical line holding the caret (all of its wrapped rows),
+    /// drawn behind the text. Only for a zero-length selection — a real selection is its own
+    /// highlight — and only while editable, since a read-only peek shows no caret.
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+        guard isEditable, currentLineColor.alphaComponent > 0,
+              let layoutManager, let textContainer else { return }
+        let selection = selectedRange()
+        guard selection.length == 0 else { return }
+        let text = string as NSString
+
+        var lineRect: NSRect
+        if text.length == 0 || (selection.location == text.length && text.character(at: text.length - 1) == 0x0A) {
+            // The empty trailing line (or empty document) has no glyphs — AppKit tracks its
+            // fragment separately.
+            lineRect = layoutManager.extraLineFragmentRect
+            if lineRect.isEmpty {
+                lineRect = NSRect(x: 0, y: 0, width: 0, height: layoutManager.defaultLineHeight(for: font ?? .systemFont(ofSize: 12)))
+            }
+        } else {
+            let caret = min(selection.location, text.length - 1)
+            let lineRange = text.lineRange(for: NSRange(location: caret, length: 0))
+            let glyphRange = layoutManager.glyphRange(forCharacterRange: lineRange, actualCharacterRange: nil)
+            lineRect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+        }
+        lineRect.origin.y += textContainerOrigin.y
+        lineRect.origin.x = 0
+        lineRect.size.width = bounds.width
+        guard lineRect.intersects(rect) else { return }
+        currentLineColor.setFill()
+        lineRect.fill()
+    }
+
+    /// Selection moved: the line band follows the caret, and the bracket wash re-derives.
+    func caretDidMove() {
+        needsDisplay = true
+        updateBracketMatch()
+    }
+
+    // MARK: Bracket matching
+
+    /// Washes the bracket beside the caret and its partner. Plain text-scan matching — a bracket
+    /// inside a string or comment can fool it, the classic lightweight-editor tradeoff; the scan
+    /// is bounded so an unbalanced megafile can't stall caret movement.
+    private func updateBracketMatch() {
+        if !bracketRanges.isEmpty, let layoutManager {
+            for range in bracketRanges {
+                layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
+            }
+            bracketRanges = []
+        }
+        guard bracketHighlightColor.alphaComponent > 0, let layoutManager else { return }
+        let selection = selectedRange()
+        guard selection.length == 0 else { return }
+        let text = string as NSString
+        // The bracket just left of the caret wins (the one you typed or stepped past), else the
+        // one right under it.
+        for index in [selection.location - 1, selection.location]
+        where index >= 0 && index < text.length {
+            guard let match = matchingBracket(for: index, in: text) else { continue }
+            bracketRanges = [NSRange(location: index, length: 1), NSRange(location: match, length: 1)]
+            for range in bracketRanges {
+                layoutManager.addTemporaryAttribute(
+                    .backgroundColor, value: bracketHighlightColor, forCharacterRange: range
+                )
+            }
+            return
+        }
+    }
+
+    private func matchingBracket(for index: Int, in text: NSString) -> Int? {
+        let pairs: [(open: unichar, close: unichar)] = [(40, 41), (91, 93), (123, 125)] // () [] {}
+        let character = text.character(at: index)
+        if let pair = pairs.first(where: { $0.open == character }) {
+            return scanForMatch(from: index, in: text, pair: pair, forward: true)
+        }
+        if let pair = pairs.first(where: { $0.close == character }) {
+            return scanForMatch(from: index, in: text, pair: pair, forward: false)
+        }
+        return nil
+    }
+
+    private func scanForMatch(
+        from index: Int, in text: NSString, pair: (open: unichar, close: unichar), forward: Bool
+    ) -> Int? {
+        var depth = 0
+        var position = index
+        var steps = 0
+        while steps < 100_000 {
+            let character = text.character(at: position)
+            if character == pair.open { depth += forward ? 1 : -1 }
+            else if character == pair.close { depth += forward ? -1 : 1 }
+            if depth == 0 { return position == index ? nil : position }
+            position += forward ? 1 : -1
+            guard position >= 0, position < text.length else { return nil }
+            steps += 1
+        }
+        return nil
     }
 
     // MARK: ⌘-hover / ⌘-click
