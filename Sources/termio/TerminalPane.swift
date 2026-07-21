@@ -155,7 +155,8 @@ struct TerminalPane: View {
                     } else {
                         FileEditorView(url: url, settings: settings,
                                        readOnly: store.openFileReadOnly,
-                                       jumpLine: store.openFileLine, onClose: onClose)
+                                       jumpLine: store.openFileLine, onClose: onClose,
+                                       onNavigate: { store.openFileInEditor($0, at: $1) })
                     }
                 }
                 .id(url)

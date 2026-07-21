@@ -22,6 +22,13 @@ struct HighlightedTextView: NSViewRepresentable {
     var jumpToLine: Int? = nil
     /// Invoked when the user presses ⌘S — flushes the buffer to disk immediately.
     let onSave: () -> Void
+    /// Jump-to-definition (⌘-click on an identifier, or ⌃⌘J at the caret), handed the UTF-16
+    /// offset of the symbol. `nil` — no language server for this file — leaves the whole
+    /// gesture layer dormant: no underline, no hand cursor, clicks behave as stock.
+    var onDefinitionRequest: ((Int) -> Void)? = nil
+    /// Hover documentation: given the UTF-16 offset under a dwelling ⌘-hover, returns the
+    /// markdown to show in a popover (`nil` shows nothing).
+    var hoverProvider: ((Int) async -> String?)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text, cursor: $cursor) }
 
@@ -42,6 +49,8 @@ struct HighlightedTextView: NSViewRepresentable {
 
         let textView = SavingTextView(frame: .zero, textContainer: container)
         textView.onSave = onSave
+        textView.onDefinitionRequest = onDefinitionRequest
+        textView.hoverProvider = hoverProvider
         textView.delegate = context.coordinator
         textView.isEditable = isEditable
         textView.isSelectable = true
@@ -111,6 +120,8 @@ struct HighlightedTextView: NSViewRepresentable {
         // Refresh the save closure each update so ⌘S always flushes the latest buffer (the closure
         // captures the view's current state, which SwiftUI re-creates on every change).
         textView.onSave = onSave
+        textView.onDefinitionRequest = onDefinitionRequest
+        textView.hoverProvider = hoverProvider
         if textView.isEditable != isEditable { textView.isEditable = isEditable }
         let coordinator = context.coordinator
         let storage = coordinator.textStorage
@@ -235,15 +246,253 @@ struct HighlightedTextView: NSViewRepresentable {
 /// An `NSTextView` that intercepts ⌘S to flush a manual save before AppKit routes it anywhere else,
 /// then lets every other key equivalent fall through unchanged. The editor auto-saves on idle, so
 /// this only serves the reflex of pressing ⌘S — there is still no Save button.
+///
+/// It also carries the editor's code-intelligence gestures, all dormant unless a language server
+/// owns the file (`onDefinitionRequest` set): ⌘-hover underlines the identifier under the cursor
+/// IDE-style, ⌘-click jumps to its definition, ⌃⌘J jumps from the caret (Xcode's key), and a
+/// ⌘-hover that *dwells* shows the hover documentation in a transient popover. The underline is a
+/// layout-manager temporary attribute — it never touches the Highlightr text storage, so it can't
+/// trigger a re-highlight or pollute undo.
 private final class SavingTextView: NSTextView {
     var onSave: (() -> Void)?
+    var onDefinitionRequest: ((Int) -> Void)?
+    var hoverProvider: ((Int) async -> String?)?
+
+    /// The identifier currently underlined under a ⌘-hover.
+    private var linkRange: NSRange?
+    /// The armed dwell → hover-popover chain, cancelled whenever the target changes.
+    private var hoverTask: Task<Void, Never>?
+    private var hoverPopover: NSPopover?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-           event.charactersIgnoringModifiers == "s" {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if modifiers == .command, event.charactersIgnoringModifiers == "s" {
             onSave?()
             return true
         }
+        if modifiers == [.command, .control], event.charactersIgnoringModifiers == "j",
+           let onDefinitionRequest {
+            let caret = selectedRange().location
+            if identifierRange(at: caret) != nil || caret > 0 && identifierRange(at: caret - 1) != nil {
+                onDefinitionRequest(caret)
+            }
+            return true
+        }
         return super.performKeyEquivalent(with: event)
+    }
+
+    // MARK: ⌘-hover / ⌘-click
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas where area.owner === self && area.userInfo?["lsp"] != nil {
+            removeTrackingArea(area)
+        }
+        guard onDefinitionRequest != nil else { return }
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: ["lsp": true]
+        ))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        guard onDefinitionRequest != nil,
+              event.modifierFlags.contains(.command),
+              let index = characterIndex(at: event.locationInWindow),
+              let range = identifierRange(at: index)
+        else {
+            clearLink()
+            return
+        }
+        guard range != linkRange else { return }
+        clearLink()
+        linkRange = range
+        layoutManager?.addTemporaryAttributes(
+            [.underlineStyle: NSUnderlineStyle.single.rawValue, .cursor: NSCursor.pointingHand],
+            forCharacterRange: range
+        )
+        armHover(for: range)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        clearLink()
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        if !event.modifierFlags.contains(.command) { clearLink() }
+        super.flagsChanged(with: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.command),
+           let onDefinitionRequest,
+           let range = linkRange,
+           let index = characterIndex(at: event.locationInWindow),
+           NSLocationInRange(index, range) {
+            // Swallow the click: stock ⌘-click starts a discontiguous selection, which would
+            // fight the jump.
+            clearLink()
+            onDefinitionRequest(range.location)
+            return
+        }
+        clearLink()
+        super.mouseDown(with: event)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        clearLink()
+        super.scrollWheel(with: event)
+    }
+
+    private func clearLink() {
+        hoverTask?.cancel()
+        hoverTask = nil
+        hoverPopover?.close()
+        hoverPopover = nil
+        guard let range = linkRange else { return }
+        linkRange = nil
+        layoutManager?.removeTemporaryAttribute(.underlineStyle, forCharacterRange: range)
+        layoutManager?.removeTemporaryAttribute(.cursor, forCharacterRange: range)
+    }
+
+    /// The character under `windowPoint`, or `nil` when the point isn't over actual glyphs (past
+    /// the line end, below the last line — where AppKit clamps to the nearest index).
+    private func characterIndex(at windowPoint: NSPoint) -> Int? {
+        guard let layoutManager, let textContainer else { return nil }
+        let local = convert(windowPoint, from: nil)
+        let containerPoint = NSPoint(
+            x: local.x - textContainerOrigin.x,
+            y: local.y - textContainerOrigin.y
+        )
+        var fraction: CGFloat = 0
+        let glyphIndex = layoutManager.glyphIndex(
+            for: containerPoint, in: textContainer, fractionOfDistanceThroughGlyph: &fraction
+        )
+        let glyphRect = layoutManager.boundingRect(
+            forGlyphRange: NSRange(location: glyphIndex, length: 1), in: textContainer
+        )
+        guard glyphRect.insetBy(dx: -2, dy: -2).contains(containerPoint) else { return nil }
+        return layoutManager.characterRange(
+            forGlyphRange: NSRange(location: glyphIndex, length: 1), actualGlyphRange: nil
+        ).location
+    }
+
+    /// The identifier (alphanumerics + `_`) spanning `index`, or `nil` when the character there
+    /// isn't part of one.
+    private func identifierRange(at index: Int) -> NSRange? {
+        let text = string as NSString
+        guard index >= 0, index < text.length, Self.isIdentifierChar(text.character(at: index))
+        else { return nil }
+        var start = index
+        while start > 0, Self.isIdentifierChar(text.character(at: start - 1)) { start -= 1 }
+        var end = index + 1
+        while end < text.length, Self.isIdentifierChar(text.character(at: end)) { end += 1 }
+        return NSRange(location: start, length: end - start)
+    }
+
+    private static func isIdentifierChar(_ unit: unichar) -> Bool {
+        unit == UInt16(UnicodeScalar("_").value)
+            || (UnicodeScalar(unit).map { CharacterSet.alphanumerics.contains($0) } ?? false)
+    }
+
+    // MARK: Hover documentation
+
+    /// After a short dwell on the underlined identifier, asks the provider for hover markdown and
+    /// shows it in a transient popover anchored to the word. Moving off, releasing ⌘, scrolling,
+    /// or clicking all tear it down via `clearLink`.
+    private func armHover(for range: NSRange) {
+        guard let hoverProvider else { return }
+        hoverTask?.cancel()
+        hoverTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            if Task.isCancelled { return }
+            guard let markdown = await hoverProvider(range.location) else { return }
+            if Task.isCancelled { return }
+            await MainActor.run { [weak self] in
+                guard let self, self.linkRange == range else { return }
+                self.showHoverPopover(markdown: markdown, over: range)
+            }
+        }
+    }
+
+    private func showHoverPopover(markdown: String, over range: NSRange) {
+        guard let layoutManager, let textContainer else { return }
+        hoverPopover?.close()
+        let glyphRange = layoutManager.glyphRange(
+            forCharacterRange: range, actualCharacterRange: nil
+        )
+        var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+        rect.origin.x += textContainerOrigin.x
+        rect.origin.y += textContainerOrigin.y
+
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = false
+        let controller = NSViewController()
+        controller.view = NSHostingView(rootView: LSPHoverContent(markdown: markdown))
+        popover.contentViewController = controller
+        popover.show(relativeTo: rect, of: self, preferredEdge: .maxY)
+        hoverPopover = popover
+    }
+}
+
+/// The hover popover's body: the server's markdown, code-styled where fenced, capped to a
+/// readable column and height. Deliberately plain — a tooltip, not a browser.
+private struct LSPHoverContent: View {
+    let markdown: String
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+                    if segment.isCode {
+                        Text(segment.text)
+                            .font(.system(size: 11.5, design: .monospaced))
+                            .textSelection(.enabled)
+                    } else {
+                        Text(attributed(segment.text))
+                            .font(.system(size: 12))
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: 440)
+        .frame(maxHeight: 320)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Splits on fenced code blocks so signatures render monospaced; everything else goes through
+    /// Foundation's inline-markdown parser (bold/italic/code spans — enough for hover prose).
+    private var segments: [(text: String, isCode: Bool)] {
+        var result: [(String, Bool)] = []
+        var inCode = false
+        var current: [String] = []
+        for line in markdown.components(separatedBy: "\n") {
+            if line.hasPrefix("```") {
+                let text = current.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty { result.append((text, inCode)) }
+                current = []
+                inCode.toggle()
+            } else {
+                current.append(line)
+            }
+        }
+        let text = current.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty { result.append((text, inCode)) }
+        return result
+    }
+
+    private func attributed(_ text: String) -> AttributedString {
+        (try? AttributedString(
+            markdown: text,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(text)
     }
 }

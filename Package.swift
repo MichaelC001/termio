@@ -27,6 +27,17 @@ let package = Package(
         // agent messages for the session trace; `TraceMarkdown` walks the AST and emits
         // escaped HTML. Apache-2.0.
         .package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.5.0"),
+        // LanguageClient (ChimeHQ) — the LSP client behind the editor's go-to-definition
+        // and hover: hosts a language server subprocess over stdio and speaks typed
+        // JSON-RPC (pulls in LanguageServerProtocol + JSONRPC). All code-only targets,
+        // so the Bundle.module accessor bug that forced vendoring Highlightr can't bite.
+        .package(url: "https://github.com/ChimeHQ/LanguageClient", from: "0.8.0"),
+        // The protocol types themselves (Position, InitializeParams, …) — a direct
+        // dependency because the editor's LSP glue names them, not just LanguageClient.
+        .package(url: "https://github.com/ChimeHQ/LanguageServerProtocol", from: "0.13.3"),
+        // Process.ExecutionParameters, the launch shape LanguageClient's stdio channel
+        // takes — direct for the same reason (LSPManager builds the parameters).
+        .package(url: "https://github.com/ChimeHQ/ProcessEnv", from: "1.0.0"),
         // Code shared with the iOS companion app — the companion wire protocol
         // (roster + control messages) lives here so both ends stay in sync.
         .package(path: "Shared"),
@@ -44,6 +55,9 @@ let package = Package(
                 .product(name: "GhosttyTheme", package: "libghostty-swift"),
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Markdown", package: "swift-markdown"),
+                .product(name: "LanguageClient", package: "LanguageClient"),
+                .product(name: "LanguageServerProtocol", package: "LanguageServerProtocol"),
+                .product(name: "ProcessEnv", package: "ProcessEnv"),
                 .product(name: "TermioShared", package: "Shared"),
             ],
             path: "Sources/termio",

@@ -20,6 +20,9 @@ struct FileEditorView: View {
     let jumpLine: Int?
     /// Dismisses the overlay (clears `store.openFileURL`) and hands focus back to the terminal.
     let onClose: () -> Void
+    /// A go-to-definition landing in *another* file: the host swaps the overlay to it (through
+    /// `store.openFileInEditor`). `nil` — no host wiring — keeps jumps same-file only.
+    let onNavigate: ((URL, Int) -> Void)?
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -37,6 +40,12 @@ struct FileEditorView: View {
     @State private var cursor: EditorCursor?
     /// The pending debounced write, cancelled and rescheduled on each keystroke.
     @State private var saveTask: Task<Void, Never>?
+    /// The file's language-server session — `nil` (no server installed for this language, or
+    /// none registered) leaves every code-intelligence hook dormant.
+    @State private var lsp: LSPEditorClient?
+    /// A same-file go-to-definition target; feeds the same reveal plumbing as `jumpLine` without
+    /// a round-trip through the store (which would also reset the read-only flag).
+    @State private var revealLine: Int?
 
     /// The highlight.js language id, sniffed once from the file extension (`nil` lets highlight.js
     /// auto-detect). Stable for the lifetime of the open file.
@@ -46,12 +55,13 @@ struct FileEditorView: View {
     private let relativePath: String?
 
     init(url: URL, settings: AppSettings, readOnly: Bool = false, jumpLine: Int? = nil,
-         onClose: @escaping () -> Void) {
+         onClose: @escaping () -> Void, onNavigate: ((URL, Int) -> Void)? = nil) {
         self.url = url
         self.settings = settings
         self.readOnly = readOnly
         self.jumpLine = jumpLine
         self.onClose = onClose
+        self.onNavigate = onNavigate
         let contents = try? String(contentsOf: url, encoding: .utf8)
         _text = State(initialValue: contents ?? "")
         _savedText = State(initialValue: contents ?? "")
@@ -140,8 +150,12 @@ struct FileEditorView: View {
                             caretColor: caretColor,
                             lineNumberColor: lineNumberColor,
                             isEditable: !readOnly,
-                            jumpToLine: jumpLine,
-                            onSave: saveNow
+                            jumpToLine: revealLine ?? jumpLine,
+                            onSave: saveNow,
+                            onDefinitionRequest: lsp == nil ? nil : jumpToDefinition,
+                            hoverProvider: lsp == nil ? nil : { [self] offset in
+                                await lsp?.hover(at: offset, in: text)
+                            }
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
@@ -154,11 +168,21 @@ struct FileEditorView: View {
         // titlebar — no outer `.frame`, which was reserving an empty band above the header.
         .background(Color(nsColor: settings.terminalBackgroundColor).ignoresSafeArea())
         // Auto-save: debounce a write after each edit; Escape closes (flushing first). A read-only
-        // peek never writes, so neither the debounce nor the exit flush is armed.
-        .onChange(of: text) { if !readOnly { scheduleSave() } }
+        // peek never writes, so neither the debounce nor the exit flush is armed. The language
+        // server tracks the *buffer*, not the disk, so it hears about every edit regardless.
+        .onChange(of: text) {
+            if !readOnly { scheduleSave() }
+            lsp?.noteChange(fullText: text)
+        }
         .onExitCommand { close() }
         // A safety flush if the overlay goes away without the close button (file switch, app quit).
-        .onDisappear { if !readOnly { saveTask?.cancel(); writeIfNeeded() } }
+        .onDisappear {
+            if !readOnly { saveTask?.cancel(); writeIfNeeded() }
+            lsp?.close()
+        }
+        // Attach the language server (if one owns this file type) once per open. Failed or absent
+        // servers resolve to nil, and the editor stays a plain editor.
+        .task { if !loadFailed { lsp = await LSPEditorClient.attach(url: url, text: text) } }
     }
 
     private var header: some View {
@@ -306,6 +330,27 @@ struct FileEditorView: View {
         saveTask?.cancel()
         writeIfNeeded()
         onClose()
+    }
+
+    /// Resolves the symbol at `utf16Offset` through the language server. A same-file hit reuses
+    /// the reveal plumbing in place; a cross-file hit hands the target to the host, which swaps
+    /// the overlay (`.id(url)`) exactly like clicking another search result. No answer → a beep,
+    /// the quietest possible "nothing there".
+    private func jumpToDefinition(at utf16Offset: Int) {
+        Task { @MainActor in
+            guard let lsp, let hit = await lsp.definition(at: utf16Offset, in: text) else {
+                NSSound.beep()
+                return
+            }
+            if hit.url == url.standardizedFileURL {
+                revealLine = hit.line
+            } else if FileManager.default.fileExists(atPath: hit.url.path), let onNavigate {
+                onNavigate(hit.url, hit.line)
+            } else {
+                // A virtual target (generated interface, out-of-tree stub) the editor can't open.
+                NSSound.beep()
+            }
+        }
     }
 
     /// Writes the buffer to disk if it differs from what's already there. The single place a save
