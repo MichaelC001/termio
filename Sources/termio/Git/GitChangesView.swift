@@ -60,16 +60,21 @@ struct GitChangesView: View {
                 store.openDiff = nil
             }
         }
-        // Re-read when a diff overlay closes — the user may have just acted on it. A
-        // lone selection is released too, so clicking the same row reopens its diff.
+        // Follow the overlay both ways: ← / → walks inside it, so the list's selection
+        // chases the shown file; on close, re-read (the user may have just acted on it)
+        // and release a lone selection so clicking the same row reopens its diff. The
+        // `openFileURL` guards keep a diff↔preview hand-off from reading as a close.
         .onChange(of: store.openDiff) { _, request in
-            if request == nil {
+            if let request, request.commit == nil, selection != [request.change.path] {
+                selection = [request.change.path]
+            }
+            if request == nil, store.openFileURL == nil {
                 Task { await model.load() }
                 if selection.count == 1 { selection.removeAll() }
             }
         }
         .onChange(of: store.openFileURL) { _, url in
-            if url == nil, selection.count == 1 { selection.removeAll() }
+            if url == nil, store.openDiff == nil, selection.count == 1 { selection.removeAll() }
         }
         .alert("Discard Changes?", isPresented: discardAlertPresented, presenting: pendingDiscard) { changes in
             Button("Discard Changes", role: .destructive) { performDiscard(changes) }
@@ -110,21 +115,17 @@ struct GitChangesView: View {
         .buttonStyle(.plain)
     }
 
-    /// Status strip under the content: what the visible list adds up to, and refresh.
+    /// Status strip under the content: what the visible list adds up to. There is no
+    /// refresh control — the model watches the worktree and git dir and re-reads on
+    /// its own (see `GitPanelModel.armWatcher`), the same invariant that lets IDEs
+    /// ship without one.
     private var bottomBar: some View {
         HStack(spacing: 5) {
             summary
             Spacer(minLength: 8)
-            TreeHeaderButton(systemName: "arrow.clockwise", help: "Refresh") {
-                Task {
-                    if mode == .changes { await model.load() }
-                    else { await model.loadHistory(force: true) }
-                }
-            }
         }
         .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-        .padding(.leading, 12)
-        .padding(.trailing, 8)
+        .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .overlay(alignment: .top) {
             Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)
@@ -193,6 +194,16 @@ struct GitChangesView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 1)
+        // ← / → walk the open diff from here too — the list usually holds focus
+        // (↑ ↓ walk via selection), so the overlay's own keys alone wouldn't fire.
+        .onKeyPress(.leftArrow) { walkOverlay(-1) }
+        .onKeyPress(.rightArrow) { walkOverlay(+1) }
+    }
+
+    private func walkOverlay(_ delta: Int) -> KeyPress.Result {
+        guard let next = store.openDiff?.neighbor(delta) else { return .ignored }
+        store.openDiff = next
+        return .handled
     }
 
     /// The row's menu acts on the whole selection when the clicked row is part of it,
@@ -230,12 +241,12 @@ struct GitChangesView: View {
     private func open(_ change: GitChange) {
         // An image/SVG/PDF has no meaningful text diff, so show the file itself in the preview
         // overlay. A deleted file is gone from disk, so fall back to the diff (its empty result
-        // is the honest one).
+        // is the honest one). The store's overlay didSets keep the two mutually exclusive.
         let url = fileURL(for: change)
         if FileActivation.previewsRatherThanDiff(url), FileManager.default.fileExists(atPath: url.path) {
             store.openFileInEditor(url)
         } else {
-            store.openDiff = GitDiffRequest(repoRoot: repoRoot, change: change)
+            store.openDiff = GitDiffRequest(repoRoot: repoRoot, change: change, siblings: model.changes)
         }
     }
 
@@ -374,6 +385,9 @@ private struct GitChangeRow: View {
                 }
                 .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                 .opacity(0.85)
+                // Counts never wrap or compress — when the row runs out of width the
+                // dimmed directory is the one flexible element that gives way.
+                .fixedSize()
             }
         }
         .padding(.horizontal, 14)

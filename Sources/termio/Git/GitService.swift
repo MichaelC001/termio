@@ -15,8 +15,19 @@ enum GitService {
     /// The unified-diff rows for one changed file (staged + unstaged vs `HEAD`, or the
     /// whole file for an untracked one). With `commit` set, the file's diff *at that
     /// commit* instead — the History tab's per-file view.
+    ///
+    /// Rows are fetched with *full* context (`-U999999`) so the whole file is present
+    /// and the overlay can collapse unchanged runs into expandable bands client-side;
+    /// a pathological row count falls back to git's default 3-line context (the view
+    /// then shows the inter-hunk gaps as fixed, non-expandable bands).
     static func diffRows(for change: GitChange, in repoRoot: String, commit: String? = nil) async -> [DiffRow] {
-        await offMain { parseDiff(loadDiffText(change, repoRoot, commit: commit)) }
+        await offMain {
+            let full = loadDiffText(change, repoRoot, commit: commit, context: 999_999)
+            // ~20k lines of average code ≈ 1.5 MB. Beyond that, re-fetch at git's
+            // default 3-line context rather than parse (and render) a whole huge file.
+            let text = full.count <= 1_500_000 ? full : loadDiffText(change, repoRoot, commit: commit)
+            return parseDiff(text)
+        }
     }
 
     /// The raw unified-diff text for one changed file — what "Copy Diff" puts on the
@@ -38,6 +49,26 @@ enum GitService {
     /// "Discard N Files…". Sequential and best-effort per file, like the single form.
     static func discard(_ changes: [GitChange], in repoRoot: String) async {
         await offMain { for change in changes { _ = discardChanges(change, repoRoot) } }
+    }
+
+    /// The directories whose file-system events invalidate the git pane: the worktree
+    /// itself, plus the resolved git dir(s). For a linked worktree the metadata lives
+    /// *outside* the checkout (`.git` there is a pointer file; commits write into the
+    /// primary checkout's `.git/worktrees/<name>` and `refs`), so watching the tree
+    /// alone would miss commits made in the terminal. `gitDirs` is empty for a non-repo.
+    static func watchPaths(for repoRoot: String) async -> (worktree: String, gitDirs: [String]) {
+        await offMain {
+            var dirs: [String] = []
+            for args in [["rev-parse", "--absolute-git-dir"], ["rev-parse", "--git-common-dir"]] {
+                guard let out = run(args, in: repoRoot)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines), !out.isEmpty else { continue }
+                let absolute = out.hasPrefix("/")
+                    ? out : (repoRoot as NSString).appendingPathComponent(out)
+                let standardized = URL(fileURLWithPath: absolute).standardizedFileURL.path
+                if !dirs.contains(standardized) { dirs.append(standardized) }
+            }
+            return (repoRoot, dirs)
+        }
     }
 
     // MARK: History
@@ -224,25 +255,28 @@ enum GitService {
         }
     }
 
-    private static func loadDiffText(_ change: GitChange, _ repoRoot: String, commit: String? = nil) -> String {
+    private static func loadDiffText(_ change: GitChange, _ repoRoot: String,
+                                     commit: String? = nil, context: Int? = nil) -> String {
+        let contextArguments = context.map { ["-U\($0)"] } ?? []
         // History file row: the file's change within one commit. `--format=` strips the
         // commit header so parseDiff sees only the unified diff.
         if let commit {
-            return run(["show", "--format=", "-M", commit, "--", change.path],
+            return run(["show", "--format=", "-M"] + contextArguments + [commit, "--", change.path],
                        in: repoRoot, ignoreStatus: true) ?? ""
         }
         if change.isUntracked {
             // `--no-index` exits non-zero when the files differ, which is the normal
             // case here, so the status is ignored.
-            return run(["diff", "--no-index", "--", "/dev/null", change.path],
+            return run(["diff", "--no-index"] + contextArguments + ["--", "/dev/null", change.path],
                        in: repoRoot, ignoreStatus: true) ?? ""
         }
         // `diff HEAD` shows staged and unstaged together. Fall back to the split views
         // for a repo with no commit yet, or a fully-staged change.
-        if let d = run(["diff", "HEAD", "--", change.path], in: repoRoot), !d.isEmpty { return d }
-        let unstaged = run(["diff", "--", change.path], in: repoRoot) ?? ""
+        if let d = run(["diff"] + contextArguments + ["HEAD", "--", change.path], in: repoRoot),
+           !d.isEmpty { return d }
+        let unstaged = run(["diff"] + contextArguments + ["--", change.path], in: repoRoot) ?? ""
         if !unstaged.isEmpty { return unstaged }
-        return run(["diff", "--cached", "--", change.path], in: repoRoot) ?? ""
+        return run(["diff"] + contextArguments + ["--cached", "--", change.path], in: repoRoot) ?? ""
     }
 
     /// Parses unified-diff text into rows, tracking old/new line numbers from each
@@ -256,7 +290,9 @@ enum GitService {
             let line = String(raw)
             if line.hasPrefix("@@") {
                 if let (o, n) = parseHunkHeader(line) { oldNo = o; newNo = n }
-                rows.append(DiffRow(id: id, kind: .hunk, text: line, oldLine: nil, newLine: nil)); id += 1
+                // Hunk rows carry their start numbers so the overlay can size the gap
+                // to the previous hunk when it renders the boundary as a "⋯ n lines" band.
+                rows.append(DiffRow(id: id, kind: .hunk, text: line, oldLine: oldNo, newLine: newNo)); id += 1
                 continue
             }
             if isFileHeader(line) { continue }
@@ -273,7 +309,64 @@ enum GitService {
                 continue
             }
         }
+        applyIntraline(&rows)
         return rows
+    }
+
+    /// Marks the changed span inside modified lines (Critique/Xcode's intraline
+    /// highlight): within each hunk, a run of deletions immediately followed by a run
+    /// of additions is paired index-wise, and each pair gets its common prefix/suffix
+    /// stripped to leave the span that actually changed.
+    private static func applyIntraline(_ rows: inout [DiffRow]) {
+        var i = 0
+        while i < rows.count {
+            guard rows[i].kind == .deletion else { i += 1; continue }
+            let delStart = i
+            while i < rows.count, rows[i].kind == .deletion { i += 1 }
+            let addStart = i
+            while i < rows.count, rows[i].kind == .addition { i += 1 }
+            for k in 0..<min(addStart - delStart, i - addStart) {
+                guard let (old, new) = emphasisRanges(rows[delStart + k].text, rows[addStart + k].text)
+                else { continue }
+                rows[delStart + k].emphasis = old
+                rows[addStart + k].emphasis = new
+            }
+        }
+    }
+
+    /// The changed spans of a deletion/addition line pair: common prefix and suffix
+    /// are peeled off, then the boundaries snap outward to whole words so renaming
+    /// `newValue` → `oldValue` highlights the identifiers, not a `ldValue` tail.
+    /// Returns `nil` when the sides share under a fifth of the shorter line — a
+    /// rewrite, where span-highlighting the whole line would just be noise.
+    private static func emphasisRanges(_ oldText: String, _ newText: String) -> (Range<Int>, Range<Int>)? {
+        guard oldText != newText, oldText.count <= 2000, newText.count <= 2000 else { return nil }
+        let o = Array(oldText), n = Array(newText)
+        var prefix = 0
+        while prefix < o.count, prefix < n.count, o[prefix] == n[prefix] { prefix += 1 }
+        var suffix = 0
+        while suffix < o.count - prefix, suffix < n.count - prefix,
+              o[o.count - 1 - suffix] == n[n.count - 1 - suffix] { suffix += 1 }
+        guard (prefix + suffix) * 5 >= min(o.count, n.count) else { return nil }
+
+        // CJK scripts have no intra-word boundaries, so snapping there would swallow
+        // the whole run — every ideograph/kana counts as its own boundary instead.
+        func isWord(_ c: Character) -> Bool {
+            guard c.isLetter || c.isNumber || c == "_" else { return false }
+            guard let scalar = c.unicodeScalars.first else { return false }
+            return scalar.value < 0x2E80
+        }
+        while prefix > 0, isWord(o[prefix - 1]),
+              (prefix < o.count - suffix && isWord(o[prefix]))
+                || (prefix < n.count - suffix && isWord(n[prefix])) {
+            prefix -= 1
+        }
+        while suffix > 0, isWord(o[o.count - suffix]),
+              (o.count - suffix > prefix && isWord(o[o.count - suffix - 1]))
+                || (n.count - suffix > prefix && isWord(n[n.count - suffix - 1])) {
+            suffix -= 1
+        }
+        return (prefix..<(o.count - suffix), prefix..<(n.count - suffix))
     }
 
     private static func isFileHeader(_ line: String) -> Bool {
