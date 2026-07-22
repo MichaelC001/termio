@@ -1,4 +1,5 @@
 import Foundation
+import LanguageServerProtocol
 
 /// One language server: how to launch it and which files it owns. The built-in table covers the
 /// common toolchains; users extend or override it by dropping descriptors into
@@ -18,6 +19,12 @@ struct LSPServerDescriptor: Codable, Identifiable {
     /// The install command to surface when the binary is missing (`brew install gopls`).
     /// `nil` means the server ships with the system toolchain — nothing to install.
     var install: String?
+    /// Raw JSON forwarded verbatim as the server's `initializationOptions` — what servers
+    /// like vue-language-server (`typescript.tsdk`) need before they're useful at all.
+    var initializationOptions: LSPAny?
+    /// Raw JSON sent as one `workspace/didChangeConfiguration` right after startup — the
+    /// vehicle for pyright/rust-analyzer style server settings.
+    var settings: LSPAny?
 
     var displayName: String { name ?? id }
 }
@@ -202,22 +209,31 @@ enum LSPRegistry {
     /// Built-ins merged with the user's config file, computed once per app run — the same
     /// load-at-launch contract the agent manifests have.
     static let descriptors: [LSPServerDescriptor] = {
-        var merged = builtin
-        guard let data = try? Data(contentsOf: configURL) else { return merged }
+        guard let data = try? Data(contentsOf: configURL) else { return builtin }
         do {
             let custom = try JSONDecoder().decode([LSPServerDescriptor].self, from: data)
-            for descriptor in custom {
-                if let index = merged.firstIndex(where: { $0.id == descriptor.id }) {
-                    merged[index] = descriptor
-                } else {
-                    merged.append(descriptor)
-                }
-            }
+            return merged(builtin: builtin, custom: custom)
         } catch {
             Log.lsp.error("lsp.json invalid, using built-ins: \(String(describing: error), privacy: .public)")
+            return builtin
+        }
+    }()
+
+    /// Built-ins overlaid with the user's entries: a matching `id` replaces the built-in
+    /// wholesale, a new `id` appends. Pure so the merge semantics are testable.
+    static func merged(
+        builtin: [LSPServerDescriptor], custom: [LSPServerDescriptor]
+    ) -> [LSPServerDescriptor] {
+        var merged = builtin
+        for descriptor in custom {
+            if let index = merged.firstIndex(where: { $0.id == descriptor.id }) {
+                merged[index] = descriptor
+            } else {
+                merged.append(descriptor)
+            }
         }
         return merged
-    }()
+    }
 
     /// The server owning `url`'s extension, and the LSP language id it should be announced as.
     static func descriptor(for url: URL) -> (descriptor: LSPServerDescriptor, languageID: String)? {

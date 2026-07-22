@@ -184,12 +184,8 @@ struct HighlightedTextView: NSViewRepresentable {
     private static func reveal(line: Int, in textView: NSTextView) {
         let full = textView.string as NSString
         guard full.length > 0 else { return }
-        var location = 0, current = 1
-        while current < line, location < full.length {
-            location = NSMaxRange(full.lineRange(for: NSRange(location: location, length: 0)))
-            current += 1
-        }
-        let lineRange = full.lineRange(for: NSRange(location: min(location, full.length - 1), length: 0))
+        let location = TextPositions.offset(ofLine: line, in: full)
+        let lineRange = full.lineRange(for: NSRange(location: location, length: 0))
         textView.setSelectedRange(NSRange(location: lineRange.location, length: 0))
         textView.scrollRangeToVisible(lineRange)
         textView.showFindIndicator(for: lineRange)
@@ -246,9 +242,8 @@ struct HighlightedTextView: NSViewRepresentable {
             let location = textView.selectedRange().location
             let full = textView.string as NSString
             guard location <= full.length else { return }
-            // Line = lines up to the caret; column = characters past the last newline + 1.
-            let lines = full.substring(to: location).components(separatedBy: "\n")
-            cursor.wrappedValue = EditorCursor(line: lines.count, column: (lines.last?.count ?? 0) + 1)
+            let (line, column) = TextPositions.lineColumn(utf16Offset: location, in: full)
+            cursor.wrappedValue = EditorCursor(line: line, column: column)
         }
     }
 }
@@ -365,9 +360,8 @@ private final class SavingTextView: NSTextView {
 
     // MARK: Bracket matching
 
-    /// Washes the bracket beside the caret and its partner. Plain text-scan matching — a bracket
-    /// inside a string or comment can fool it, the classic lightweight-editor tradeoff; the scan
-    /// is bounded so an unbalanced megafile can't stall caret movement.
+    /// Washes the bracket beside the caret and its partner (`BracketMatcher` carries the
+    /// scan-bound and strings-can-fool-it tradeoffs).
     private func updateBracketMatch() {
         if !bracketRanges.isEmpty, let layoutManager {
             for range in bracketRanges {
@@ -387,7 +381,7 @@ private final class SavingTextView: NSTextView {
         // one right under it.
         for index in [selection.location - 1, selection.location]
         where index >= 0 && index < text.length {
-            guard let match = matchingBracket(for: index, in: text) else { continue }
+            guard let match = BracketMatcher.match(at: index, in: text) else { continue }
             bracketRanges = [NSRange(location: index, length: 1), NSRange(location: match, length: 1)]
             for range in bracketRanges {
                 layoutManager.addTemporaryAttribute(
@@ -396,36 +390,6 @@ private final class SavingTextView: NSTextView {
             }
             return
         }
-    }
-
-    private func matchingBracket(for index: Int, in text: NSString) -> Int? {
-        let pairs: [(open: unichar, close: unichar)] = [(40, 41), (91, 93), (123, 125)] // () [] {}
-        let character = text.character(at: index)
-        if let pair = pairs.first(where: { $0.open == character }) {
-            return scanForMatch(from: index, in: text, pair: pair, forward: true)
-        }
-        if let pair = pairs.first(where: { $0.close == character }) {
-            return scanForMatch(from: index, in: text, pair: pair, forward: false)
-        }
-        return nil
-    }
-
-    private func scanForMatch(
-        from index: Int, in text: NSString, pair: (open: unichar, close: unichar), forward: Bool
-    ) -> Int? {
-        var depth = 0
-        var position = index
-        var steps = 0
-        while steps < 100_000 {
-            let character = text.character(at: position)
-            if character == pair.open { depth += forward ? 1 : -1 }
-            else if character == pair.close { depth += forward ? -1 : 1 }
-            if depth == 0 { return position == index ? nil : position }
-            position += forward ? 1 : -1
-            guard position >= 0, position < text.length else { return nil }
-            steps += 1
-        }
-        return nil
     }
 
     // MARK: ⌘-hover / ⌘-click

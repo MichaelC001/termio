@@ -73,7 +73,7 @@ final class LSPEditorClient {
     /// a jump, and menus can come later if it ever matters.
     func definition(at utf16Offset: Int, in text: String) async -> (url: URL, line: Int)? {
         await flushPendingChange()
-        let position = LSPPositions.position(utf16Offset: utf16Offset, in: text as NSString)
+        let position = TextPositions.position(utf16Offset: utf16Offset, in: text as NSString)
         let response: DefinitionResponse
         do {
             response = try await server.definition(TextDocumentPositionParams(uri: uri, position: position))
@@ -103,7 +103,7 @@ final class LSPEditorClient {
     /// (fenced when the server sent language-tagged code). `nil` when there's nothing to show.
     func hover(at utf16Offset: Int, in text: String) async -> String? {
         await flushPendingChange()
-        let position = LSPPositions.position(utf16Offset: utf16Offset, in: text as NSString)
+        let position = TextPositions.position(utf16Offset: utf16Offset, in: text as NSString)
         let response: HoverResponse
         do {
             response = try await server.hover(TextDocumentPositionParams(uri: uri, position: position))

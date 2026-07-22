@@ -64,20 +64,10 @@ final class LSPManager {
         return descriptor
     }
 
-    /// The workspace a file belongs to: its git root, or its own directory outside a repo —
-    /// the same walk the editor header uses for the repo-relative path.
+    /// The workspace a file belongs to: its git root (the same `GitRoot` walk the editor header
+    /// uses), or its own directory outside a repo.
     static func workspaceRoot(for url: URL) -> URL {
-        let file = url.standardizedFileURL
-        var dir = file.deletingLastPathComponent()
-        var candidate = dir
-        while candidate.path != "/" {
-            if FileManager.default.fileExists(atPath: candidate.appendingPathComponent(".git").path) {
-                dir = candidate
-                break
-            }
-            candidate = candidate.deletingLastPathComponent()
-        }
-        return dir
+        GitRoot.find(for: url) ?? url.standardizedFileURL.deletingLastPathComponent()
     }
 
     private func start(_ descriptor: LSPServerDescriptor, root: URL, key: Key) async -> InitializingServer? {
@@ -117,7 +107,7 @@ final class LSPManager {
                 locale: nil,
                 rootPath: root.path,
                 rootUri: rootURI,
-                initializationOptions: nil,
+                initializationOptions: descriptor.initializationOptions,
                 capabilities: ClientCapabilities(
                     workspace: nil,
                     textDocument: TextDocumentClientCapabilities(
@@ -136,6 +126,13 @@ final class LSPManager {
         }
         servers[key] = server
         processes[key] = pair.process
+        // Server settings ride one didChangeConfiguration right behind initialize —
+        // InitializingServer serializes it after the handshake on its own.
+        if let settings = descriptor.settings {
+            Task {
+                try? await server.didChangeConfiguration(DidChangeConfigurationParams(settings: settings))
+            }
+        }
         Log.lsp.info("\(descriptor.id, privacy: .public) started for \(root.path, privacy: .public)")
         return server
     }

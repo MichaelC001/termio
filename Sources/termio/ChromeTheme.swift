@@ -25,6 +25,14 @@ struct ChromeTheme {
     /// appearance (traffic lights, scrollbars) to the theme.
     let isDark: Bool
 
+    /// Ink guaranteed to contrast a background: dimmed white over dark, dimmed black over light.
+    /// The lesson this encodes (learned in the editor gutter): contrast must come from the
+    /// *background's* darkness — a grey or tinted theme foreground sinks into a black background
+    /// at any alpha, so never derive overlay ink from the foreground palette.
+    static func overlayInk(onDark dark: Bool, alpha: CGFloat) -> NSColor {
+        (dark ? NSColor.white : .black).withAlphaComponent(alpha)
+    }
+
     init?(_ definition: GhosttyThemeDefinition) {
         guard let background = Color(hex: definition.background),
               let foreground = Color(hex: definition.foreground)

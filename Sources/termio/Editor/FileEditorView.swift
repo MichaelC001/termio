@@ -83,19 +83,12 @@ struct FileEditorView: View {
     }
     private var isMarkdown: Bool { Self.isMarkdown(url) }
 
-    /// Walks up from the file to its git root and returns the path relative to it (the form the diff
-    /// header shows, e.g. `core 2/lib/fs.ts`). `nil` when the file isn't inside a git work tree.
+    /// The file's path relative to its git root (the form the diff header shows, e.g.
+    /// `core 2/lib/fs.ts`). `nil` when the file isn't inside a git work tree.
     private static func repoRelativePath(for url: URL) -> String? {
         let file = url.standardizedFileURL
-        let manager = FileManager.default
-        var dir = file.deletingLastPathComponent()
-        while dir.path != "/" {
-            if manager.fileExists(atPath: dir.appendingPathComponent(".git").path) {
-                return String(file.path.dropFirst(dir.path.count + 1))
-            }
-            dir = dir.deletingLastPathComponent()
-        }
-        return nil
+        guard let root = GitRoot.find(for: file) else { return nil }
+        return String(file.path.dropFirst(root.path.count + 1))
     }
 
     private var isDirty: Bool { text != savedText }
@@ -113,21 +106,15 @@ struct FileEditorView: View {
     /// Whether the editor sits on a dark background — the theme's own luminance signal, falling
     /// back to the system appearance when no theme is picked.
     private var onDarkBackground: Bool { chrome?.isDark ?? (colorScheme == .dark) }
-    /// Muted line-number ink, dimmed white over a dark background and dimmed black over a light
-    /// one. Deriving this from the theme's *foreground* was the trap: a grey or tinted foreground
-    /// sank into a black background no matter the alpha (user report ×2) — contrast must come
-    /// from the background's own darkness, not the text palette.
+    /// Muted line-number ink; `ChromeTheme.overlayInk` carries the never-derive-from-foreground
+    /// lesson (user report ×2: grey theme ink sank into black backgrounds at any alpha).
     private var lineNumberColor: NSColor {
-        onDarkBackground
-            ? NSColor.white.withAlphaComponent(0.55)
-            : NSColor.black.withAlphaComponent(0.42)
+        ChromeTheme.overlayInk(onDark: onDarkBackground, alpha: onDarkBackground ? 0.55 : 0.42)
     }
     /// A whisper of ink under the caret's line — enough to anchor the eye, faint enough not to
-    /// fight the syntax colors. Same background-driven white/black choice as the gutter.
+    /// fight the syntax colors.
     private var currentLineColor: NSColor {
-        onDarkBackground
-            ? NSColor.white.withAlphaComponent(0.06)
-            : NSColor.black.withAlphaComponent(0.05)
+        ChromeTheme.overlayInk(onDark: onDarkBackground, alpha: onDarkBackground ? 0.06 : 0.05)
     }
 
     var body: some View {

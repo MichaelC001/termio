@@ -85,5 +85,16 @@ let package = Package(
                 .swiftLanguageMode(.v5),
             ]
         ),
+        .testTarget(
+            name: "termioTests",
+            dependencies: [
+                "termio",
+                .product(name: "LanguageServerProtocol", package: "LanguageServerProtocol"),
+            ],
+            path: "Tests/termioTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v5),
+            ]
+        ),
     ]
 )
