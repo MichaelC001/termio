@@ -581,6 +581,25 @@ extension TermioStore {
         }
     }
 
+    /// Respawns a session's process in place: drops the cached surface (the PTY is
+    /// already gone — this runs after its child exited) and nudges a re-render, so
+    /// the mounted pane's next `surface(for:)` relaunches the agent with its usual
+    /// resume arguments. The session row, title, and split slot all stay put; only
+    /// the surface is remade. Used by the self-update exit path (`onExit`'s
+    /// binary-replaced check): the "restart Codex" the agent asks for, done for the
+    /// user, conversation resumed.
+    func relaunchSession(_ id: Session.ID) {
+        guard session(id) != nil else { return }
+        ptyProcesses[id]?.terminate()
+        ptyProcesses[id] = nil
+        surfaces[id] = nil
+        monitors[id] = nil
+        processSpawnedAt[id] = nil
+        // `surfaces` is a plain cache, not `@Published` — nothing re-renders on
+        // its own, so poke observers; the pane then rebuilds via `surface(for:)`.
+        objectWillChange.send()
+    }
+
     /// The checked-out branch of the git repository at `directory`, or `nil` when
     /// it is not a repo (rendered as "—", matching the seed projects).
     private func currentBranch(in directory: String) -> String? {

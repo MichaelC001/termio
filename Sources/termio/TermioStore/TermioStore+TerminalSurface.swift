@@ -240,6 +240,7 @@ extension TermioStore {
             // been bitten by). Tracked as an upstream ask, not worked around unsafely.
             let statusRules = session.agent.statusRules
             let agentID = session.agent.id
+            let isAgentSession = session.agent != .terminal && !session.isSSH
             let statusTrace = ProcessInfo.processInfo.environment["TERMIO_STATUS_TRACE"] != nil
             var lastPoke = Date.distantPast
             var lastScreenSignature: Int?
@@ -254,6 +255,10 @@ extension TermioStore {
                 lastPoke = now
                 let bytes = pendingBytes
                 pendingBytes = 0
+                // Pin the agent's launch binary (once, post-exec) as the baseline
+                // for the self-update relaunch check in `onExit` below. Agent
+                // sessions only — a terminal's exit policy never consults it.
+                if isAgentSession { pty?.recordChildExecutable() }
                 // The PTY timestamps every stdin write (Mac keystrokes, phone
                 // input over the companion bridge, synthetic `sessions send`
                 // text), so sampling it here — instead of tapping only the Mac
@@ -334,7 +339,22 @@ extension TermioStore {
                     DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.35, execute: work)
                 }
             }
-            pty.onExit = { [weak self, weak inMemory] code, runtimeMs in
+            pty.onExit = { [weak self, weak inMemory, weak pty] code, runtimeMs in
+                self?.ptyProcesses[session.id] = nil
+                self?.lastScreenActivity[session.id] = nil
+                // An agent that exits cleanly right after its own binary changed
+                // on disk just self-updated in this pane (codex's in-pane upgrade
+                // ends with "Please restart Codex." and quits) — so do the restart
+                // for the user: respawn the agent in place, resuming the
+                // conversation, instead of parking the pane on the dead-end
+                // "Press any key to close" prompt. The binary compare keeps this
+                // away from a plain quit (binary untouched → prompt as before),
+                // and it cannot loop: the respawn pins the *new* binary as its
+                // own baseline.
+                if isAgentSession, code == 0, pty?.childExecutableWasReplaced() == true {
+                    self?.relaunchSession(session.id)
+                    return
+                }
                 // Report the *real* runtime, not 0. On macOS ghostty ignores the
                 // exit code and shows its "failed to launch the requested command"
                 // overlay whenever runtime ≤ `abnormal-command-exit-runtime` (250 ms) —
@@ -344,8 +364,6 @@ extension TermioStore {
                 // "process exited" message, reserving the scary banner for genuine
                 // sub-threshold launch failures (binary not found, bad argv).
                 inMemory?.finish(exitCode: UInt32(bitPattern: code), runtimeMilliseconds: runtimeMs)
-                self?.ptyProcesses[session.id] = nil
-                self?.lastScreenActivity[session.id] = nil
                 // A plain terminal that exits *cleanly* closes its tab like a
                 // native terminal (Terminal.app / iTerm2 / Ghostty all do this) —
                 // you typed `exit`, so the pane goes away with no extra keypress.

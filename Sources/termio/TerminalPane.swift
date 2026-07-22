@@ -464,6 +464,12 @@ private struct ManagedTerminalSurface: View {
             .onChange(of: surfaceFocus) { _, focused in
                 if focused { onFocused() }
             }
+            // A relaunched session gets a fresh TerminalViewState (see
+            // `relaunchSession`); keying the mounted view on the state's identity
+            // remounts the NSView for the new surface. Without this the
+            // representable would only *update* — and its update path deliberately
+            // keeps the first-mounted delegate, which is the old, dead state.
+            .id(ObjectIdentifier(context))
     }
 }
 
