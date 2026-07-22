@@ -97,11 +97,7 @@ struct FileEditorView: View {
     /// truth) so plain text and the insertion point sit on the terminal background cleanly.
     private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
     private var caretColor: NSColor { chrome.map { NSColor($0.accent) } ?? .textColor }
-    /// Muted line-number ink — the theme foreground dimmed, so the gutter recedes against the
-    /// code the way Xcode's does (and always contrasts the terminal background, whatever it is).
-    private var lineNumberColor: NSColor {
-        (chrome.map { NSColor($0.foreground) } ?? .textColor).withAlphaComponent(0.4)
-    }
+    private var lineNumberColor: NSColor { settings.gutterInk(for: colorScheme) }
 
     var body: some View {
         // The editor's chrome (header, gutter) already sits in the safe content area below the

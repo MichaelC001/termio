@@ -140,6 +140,7 @@ struct GitDiffView: View {
                 styled: styledLines,
                 font: settings.resolvedTerminalFont(),
                 backgroundColor: settings.terminalBackgroundColor,
+                numberColor: settings.gutterInk(for: colorScheme),
                 onExpand: { id in
                     expanded.insert(id)
                     self.document = DiffDocument.build(

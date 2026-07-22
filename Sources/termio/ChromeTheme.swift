@@ -84,6 +84,18 @@ extension AppSettings {
         return .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
+    /// Muted line-number ink shared by every code surface's gutter (file editor, diff
+    /// view): the theme foreground dimmed, so the numbers recede the way Xcode's do yet
+    /// always contrast the terminal background, whatever theme paints it. Statically
+    /// resolved per `colorScheme` — a dynamic system color is no substitute here, both
+    /// because it ignores the terminal theme and because dimming one at body-eval time
+    /// (`withAlphaComponent`) freezes it against whatever appearance is ambient.
+    func gutterInk(for colorScheme: ColorScheme) -> NSColor {
+        let base = chromeTheme(for: colorScheme).map { NSColor($0.foreground) }
+            ?? (colorScheme == .dark ? NSColor.white : NSColor.black)
+        return base.withAlphaComponent(0.4)
+    }
+
     var terminalBackgroundColor: NSColor {
         let lightBackground = chromeTheme(for: .light)?.background
         let darkBackground = chromeTheme(for: .dark)?.background

@@ -2,7 +2,7 @@ import AppKit
 
 /// The diff's gutter, following `LineNumberRulerView`'s ruler precedent (including its
 /// hard-won full-redraw-on-scroll invalidation, wired up by the pane's coordinator):
-/// old and new line-number columns in quaternary ink plus the `+`/`−` sign, drawn at
+/// old and new line-number columns in the shared muted gutter ink plus the `+`/`−` sign, drawn at
 /// each paragraph's first line fragment. Living in the ruler — outside the text view —
 /// is what keeps the numbers out of selection and the clipboard. The add/delete washes
 /// and band fills continue across it so each row reads as one full-width band.
@@ -11,6 +11,7 @@ final class DiffGutterRulerView: NSRulerView {
     private var numberFont: NSFont = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
     private var signFont: NSFont = .monospacedSystemFont(ofSize: 12, weight: .regular)
     private var gutterColor: NSColor = .textBackgroundColor
+    private var numberColor: NSColor = .quaternaryLabelColor
     private var oldColumnWidth: CGFloat = 0
     private var newColumnWidth: CGFloat = 0
 
@@ -21,19 +22,23 @@ final class DiffGutterRulerView: NSRulerView {
 
     override var isOpaque: Bool { true }
 
-    init(scrollView: NSScrollView, codeFont: NSFont, gutterColor: NSColor) {
+    init(scrollView: NSScrollView, codeFont: NSFont, gutterColor: NSColor,
+         numberColor: NSColor) {
         super.init(scrollView: scrollView, orientation: .verticalRuler)
         clientView = scrollView.documentView
         self.gutterColor = gutterColor
+        self.numberColor = numberColor
         restyle(codeFont: codeFont)
     }
 
     @available(*, unavailable)
     required init(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    func configure(document: DiffDocument, codeFont: NSFont, gutterColor: NSColor) {
+    func configure(document: DiffDocument, codeFont: NSFont, gutterColor: NSColor,
+                   numberColor: NSColor) {
         self.document = document
         self.gutterColor = gutterColor
+        self.numberColor = numberColor
         restyle(codeFont: codeFont)
     }
 
@@ -74,7 +79,7 @@ final class DiffGutterRulerView: NSRulerView {
         // Maps the text view's y-coordinates into the ruler's (carries the scroll offset).
         let yOffset = convert(NSPoint.zero, from: textView).y
         let numberAttrs: [NSAttributedString.Key: Any] = [
-            .font: numberFont, .foregroundColor: NSColor.quaternaryLabelColor,
+            .font: numberFont, .foregroundColor: numberColor,
         ]
         // Numbers stranded in the strip above the content clip would ghost over the
         // header; anything at or above the ruler's top edge stays undrawn.

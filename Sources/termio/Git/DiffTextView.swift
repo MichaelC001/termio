@@ -16,6 +16,9 @@ struct DiffTextPane: NSViewRepresentable {
     let styled: [Int: NSAttributedString]
     let font: NSFont
     let backgroundColor: NSColor
+    /// Line-number ink, from the shared `gutterInk(for:)` so the diff's gutter and the
+    /// file editor's read as one family.
+    let numberColor: NSColor
     /// Splices a clicked band's hidden lines back in (rebuilds the document upstream).
     let onExpand: (Int) -> Void
     /// ← / → sibling walk; returns false at either end so the press dies quietly.
@@ -64,7 +67,8 @@ struct DiffTextPane: NSViewRepresentable {
         scrollView.contentView.backgroundColor = backgroundColor
 
         let ruler = DiffGutterRulerView(scrollView: scrollView, codeFont: font,
-                                        gutterColor: backgroundColor)
+                                        gutterColor: backgroundColor,
+                                        numberColor: numberColor)
         scrollView.verticalRulerView = ruler
         scrollView.hasVerticalRuler = true
         scrollView.rulersVisible = true
@@ -120,8 +124,11 @@ struct DiffTextPane: NSViewRepresentable {
             layoutManager.document = document
             textView.document = document
             textView.textStorage?.setAttributedString(document.attributed)
-            ruler.configure(document: document, codeFont: font, gutterColor: backgroundColor)
         }
+        // Outside the document-identity check so a theme change re-inks the gutter of an
+        // already-open diff, matching the editor's every-update restyle.
+        ruler.configure(document: document, codeFont: font, gutterColor: backgroundColor,
+                        numberColor: numberColor)
         // A dictionary identity check, not equality: the highlight pass lands at most
         // once per load, so pointer-style diffing by count is enough and O(1).
         if !styled.isEmpty, coordinator.appliedStyled != styled.count {
