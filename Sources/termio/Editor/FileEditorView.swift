@@ -261,7 +261,8 @@ struct FileEditorView: View {
             Spacer()
             // One quiet, dismissible line when this language's server isn't installed: the
             // command to copy, shown at the moment it's relevant instead of buried in Settings.
-            if let hint = installHint, let install = hint.install {
+            // Not in Markdown Preview — there is no ⌘-click there to need anything.
+            if let hint = installHint, let install = hint.install, !(isMarkdown && mode == .preview) {
                 installHintView(hint: hint, install: install)
             }
             // Markdown reads as a document by default; the toggle keeps the source one click away.
