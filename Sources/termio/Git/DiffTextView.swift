@@ -30,6 +30,10 @@ struct DiffTextPane: NSViewRepresentable {
         storage.addLayoutManager(layoutManager)
         let container = NSTextContainer()
         container.widthTracksTextView = true          // soft-wrap to the panel width
+        // Horizontal breathing room lives here, not in textContainerInset: AppKit clips
+        // all layout-manager drawing to the inset region, so an inset would leave an
+        // unpaintable blank strip splitting the gutter's wash band from the text's.
+        container.lineFragmentPadding = 11
         layoutManager.addTextContainer(container)
 
         let textView = DiffTextView(frame: .zero, textContainer: container)
@@ -41,7 +45,7 @@ struct DiffTextPane: NSViewRepresentable {
         textView.isRichText = false
         textView.usesFindBar = true
         textView.isIncrementalSearchingEnabled = true
-        textView.textContainerInset = NSSize(width: 6, height: 8)
+        textView.textContainerInset = NSSize(width: 0, height: 8)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
