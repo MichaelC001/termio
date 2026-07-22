@@ -31,3 +31,12 @@ ios/build-sim/
 
 # Per-project termio session state
 /.termio/
+
+# LaTeX build intermediates (talk decks under docs/talks/)
+*.aux
+*.nav
+*.snm
+*.toc
+*.vrb
+docs/talks/**/*.log
+docs/talks/**/*.out
