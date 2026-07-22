@@ -181,25 +181,28 @@ final class MenuBarController {
     }
 
     /// Renders an agent's brand mark for a roster row by reusing the sidebar's
-    /// `AgentIconView`, so the menu shows the exact same glyphs. Drawn under the
-    /// menu's current appearance so the monochrome marks (Codex, terminal, Pi)
-    /// resolve to the right ink for a light or dark menu.
+    /// `AgentIconView`, so the menu shows the exact same glyphs. Rasterized lazily
+    /// in a drawing-handler image: AppKit re-invokes the handler under the menu's
+    /// own appearance at display time, so the monochrome marks (Codex, Grok)
+    /// resolve to the right ink. Resolving eagerly against the status button's
+    /// appearance is wrong — the menu bar tints from the wallpaper and can be
+    /// dark while the dropdown menu (system theme) is light, which baked those
+    /// marks in as invisible white-on-white.
     private func agentImage(for agent: AgentPreset) -> NSImage? {
         let side: CGFloat = 15
-        let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
-        let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-        let content = AgentIconView(agent: agent, size: 13)
-            .frame(width: side, height: side)
-            .environment(\.colorScheme, isDark ? .dark : .light)
-
-        var image: NSImage?
-        appearance.performAsCurrentDrawingAppearance {
-            let renderer = ImageRenderer(content: content)
+        return NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            let appearance = NSAppearance.currentDrawing()
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            let renderer = ImageRenderer(
+                content: AgentIconView(agent: agent, size: 13)
+                    .frame(width: side, height: side)
+                    .environment(\.colorScheme, isDark ? .dark : .light)
+            )
             renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
-            image = renderer.nsImage
+            guard let rendered = renderer.nsImage else { return false }
+            rendered.draw(in: rect)
+            return true
         }
-        image?.size = NSSize(width: side, height: side)
-        return image
     }
 
     /// The row title with a trailing status dot for any session that is busy, done,
