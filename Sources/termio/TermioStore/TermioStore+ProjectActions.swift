@@ -492,7 +492,6 @@ extension TermioStore {
             statuses[sessionID] = nil
             currentTool[sessionID] = nil
             liveTitles[sessionID] = nil
-            detectedAgents[sessionID] = nil
             processSpawnedAt[sessionID] = nil
             lastWorkingAt[sessionID] = nil
             lastHookReportAt[sessionID] = nil
@@ -558,7 +557,6 @@ extension TermioStore {
         statuses[id] = nil
         currentTool[id] = nil
         liveTitles[id] = nil
-        detectedAgents[id] = nil
         processSpawnedAt[id] = nil
         lastWorkingAt[id] = nil
         lastHookReportAt[id] = nil
@@ -598,6 +596,17 @@ extension TermioStore {
         // `surfaces` is a plain cache, not `@Published` — nothing re-renders on
         // its own, so poke observers; the pane then rebuilds via `surface(for:)`.
         objectWillChange.send()
+    }
+
+    /// A declared agent that quit cleanly (`/quit`, `/exit`) hands its pane back to
+    /// a shell in the same directory — the place a hand-started agent leaves you —
+    /// instead of parking on the exit prompt. The session demotes to a plain
+    /// terminal first (identity follows what the pane runs; `noteForegroundAgent`
+    /// is the promotion mirror), so the respawn resolves to a login shell — from
+    /// which typing the agent's command re-promotes the very same row.
+    func revertSessionToShell(_ id: Session.ID) {
+        demoteSessionToTerminal(id)
+        relaunchSession(id)
     }
 
     /// The checked-out branch of the git repository at `directory`, or `nil` when
