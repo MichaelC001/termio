@@ -318,7 +318,7 @@ extension AgentDefinition {
         self = definition
     }
 
-    /// Resolves a free-text agent name from the CLI (`termio sessions start claude`)
+    /// Resolves a free-text agent name from the CLI (`termio sessions send --agent claude`)
     /// to a definition, accepting the id, the display name, and common aliases.
     static func resolve(_ raw: String?) -> AgentDefinition? {
         guard let raw = raw?.trimmingCharacters(in: .whitespaces).lowercased(), !raw.isEmpty else {

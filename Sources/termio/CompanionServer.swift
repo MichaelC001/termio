@@ -297,7 +297,7 @@ final class CompanionServer {
             }
         case .start(let projectID, let agent):
             // The phone's sidebar-equivalent "new session" — same store action
-            // the CLI's `sessions start` uses; the roster push announces it to
+            // the CLI's spawn-on-`send` uses; the roster push announces it to
             // every other client, the reply lets this one attach immediately.
             if let started = startSession(projectID, agent) {
                 sendControl(

@@ -1,31 +1,46 @@
 #!/bin/sh
 # termio — drive the running termio app from the command line.
 #
-# Usage:
-#   termio [DIR]                       # open DIR (default: cwd) as a project
-#   termio sessions list               # sibling sessions in this project + status
-#   termio sessions read  <id>         # read a sibling's recent output
-#   termio sessions send  <id> <text>  # send a prompt to a sibling
-#   termio sessions answer <id> <text> # answer a sibling's menu/prompt
-#   termio sessions start <agent>      # start a new session (claude/codex/…)
-#   termio sessions stop  <id>         # stop a session
-#   termio agent report <state>        # report this agent's activity to termio
-#
-# Add --json to any `sessions` command for machine-readable output.
-#
 # `sessions` talks to the running app over its local control socket, scoped to the
 # project the calling shell is in (via $TERMIO_SESSION, or the current directory).
+# Sessions are addressed by the `<agent>@<id>` handle that `sessions list` prints.
 # `agent report` is the public hook contract: an agent's own status hook calls it to
 # tell termio the session is working / waiting / done, replacing the raw `printf | nc`
-# termio used to bake into every hook file. The plain `termio [DIR]` form routes a
-# folder to the app via LaunchServices.
+# termio used to bake into every hook file. `termio open` routes a folder to the app
+# via LaunchServices.
 set -eu
 
-# Channel binding. These two lines are the release defaults; `build-app.sh` rewrites
+# Channel binding. These lines are the release defaults; `build-app.sh` rewrites
 # them in the copy it bundles into a dev-channel app so `termio-dev` drives the dev
-# build (its own socket + bundle id) instead of the release one.
+# build (its own socket + bundle id) instead of the release one, and stamps the
+# release version over "dev".
 SUPPORT_DIR_NAME="termio"
 BUNDLE_ID="sh.termio.app"
+VERSION="dev"
+
+usage() {
+    cat <<'EOF'
+usage:
+  termio open [DIR]                          open DIR (default: cwd) as a project
+  termio [DIR]                               shorthand for `termio open DIR`
+
+  termio sessions list                       sibling sessions in this project + status
+  termio sessions send "<prompt>"            start a NEW agent session and send it the prompt
+  termio sessions send <agent>@<id> "<prompt>"   send to an existing session
+  termio sessions answer <agent>@<id> "<choice>" answer a session's menu/permission prompt
+  termio sessions close <agent>@<id> [...]   close session tabs
+  termio sessions focus <agent>@<id>         select the session in the app
+
+  termio agent report <state>                report this agent's activity (hook contract)
+
+options:
+  --json           machine-readable output (any `sessions` command)
+  --agent <name>   agent for a new session (send without a handle; default: caller's)
+  --help, --version
+
+`<agent>@<id>` handles come from `termio sessions list` or a `send` reply.
+EOF
+}
 
 SOCKET="$HOME/Library/Application Support/$SUPPORT_DIR_NAME/session-control.sock"
 
@@ -47,6 +62,34 @@ mine_field() {
         | sed 's/^"[^"]*"[[:space:]]*:[[:space:]]*"//;s/"$//'
 }
 
+# Whether a token is a `<agent>@<id>` session handle (as printed by `list`) rather
+# than prompt text. The strict shape is what lets `send` take an optional target
+# with no flag: a mistyped handle falls through to `not_found` on the server, never
+# silently becomes the start of a prompt to a freshly spawned agent.
+is_handle() {
+    printf '%s' "$1" | grep -qE '^[A-Za-z][A-Za-z0-9._-]*@[0-9a-fA-F]{4,32}$'
+}
+
+# One request/response round-trip. Prints the app's reply and returns nonzero when
+# it reports failure, so callers (and `set -e`) surface errors through the exit
+# code — agents check `$?`, not prose.
+request_once() {
+    req_op="$1"; req_format="$2"; req_target="$3"; req_agent="$4"; req_text="$5"
+    request=$(printf '{"op":"%s","format":"%s","caller_session":"%s","caller_cwd":"%s","target":"%s","agent":"%s","text":"%s"}' \
+        "$req_op" "$req_format" \
+        "$(json_escape "${TERMIO_SESSION:-}")" \
+        "$(json_escape "$PWD")" \
+        "$(json_escape "$req_target")" \
+        "$(json_escape "$req_agent")" \
+        "$(json_escape "$req_text")")
+    response=$(printf '%s' "$request" | nc -U "$SOCKET")
+    printf '%s\n' "$response"
+    case "$response" in
+        error:*|*'"ok":false'*) return 1 ;;
+    esac
+    return 0
+}
+
 sessions() {
     if [ ! -S "$SOCKET" ]; then
         echo "termio: app is not running (no control socket at $SOCKET)" >&2
@@ -56,37 +99,72 @@ sessions() {
     op="${1:-list}"
     [ $# -gt 0 ] && shift || true
 
+    case "$op" in
+        list|send|answer|close|focus) ;;
+        -h|--help|help) usage; exit 0 ;;
+        *)
+            echo "termio: unknown sessions command '$op'" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+
     format=text
-    target=""
     agent=""
+    targets=""
     text=""
-    # Collect positional args, pulling out --json wherever it appears. The first
-    # non-flag is the target (or, for `start`, the agent); the rest is the text.
-    for arg in "$@"; do
-        case "$arg" in
+    seen_positional=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
             --json) format=json ;;
+            --agent)
+                [ $# -ge 2 ] || { echo "termio: --agent needs a value" >&2; exit 1; }
+                agent="$2"; shift ;;
             *)
-                if [ -z "$target" ] && { [ "$op" = read ] || [ "$op" = send ] \
-                    || [ "$op" = answer ] || [ "$op" = stop ]; }; then
-                    target="$arg"
-                elif [ -z "$agent" ] && [ "$op" = start ]; then
-                    agent="$arg"
+                if [ "$op" = close ]; then
+                    # Every positional is a tab to close.
+                    targets="${targets:+$targets }$1"
+                elif [ "$seen_positional" -eq 0 ] && { [ "$op" = answer ] || [ "$op" = focus ]; }; then
+                    targets="$1"
+                elif [ "$seen_positional" -eq 0 ] && [ "$op" = send ] && is_handle "$1"; then
+                    # `send` alone takes an *optional* leading handle — absent, the
+                    # app starts a new agent session for the prompt.
+                    targets="$1"
                 else
-                    text="${text:+$text }$arg"
+                    text="${text:+$text }$1"
                 fi
+                seen_positional=1
                 ;;
         esac
+        shift
     done
 
-    request=$(printf '{"op":"%s","format":"%s","caller_session":"%s","caller_cwd":"%s","target":"%s","agent":"%s","text":"%s"}' \
-        "$op" "$format" \
-        "$(json_escape "${TERMIO_SESSION:-}")" \
-        "$(json_escape "$PWD")" \
-        "$(json_escape "$target")" \
-        "$(json_escape "$agent")" \
-        "$(json_escape "$text")")
+    case "$op" in
+        answer|focus)
+            if [ -z "$targets" ]; then
+                echo "termio: $op needs a session handle (see \`termio sessions list\`)" >&2
+                exit 1
+            fi
+            ;;
+        close)
+            if [ -z "$targets" ]; then
+                echo "termio: close needs at least one session handle" >&2
+                exit 1
+            fi
+            ;;
+    esac
 
-    printf '%s' "$request" | nc -U "$SOCKET"
+    if [ "$op" = close ]; then
+        # One request per tab; any failure fails the whole command, but every
+        # handle still gets its attempt and its own reply line.
+        failed=0
+        for handle in $targets; do
+            request_once close "$format" "$handle" "" "" || failed=1
+        done
+        exit "$failed"
+    fi
+
+    request_once "$op" "$format" "$targets" "$agent" "$text"
 }
 
 # The public hook contract:
@@ -179,27 +257,45 @@ agent() {
     if [ "$reply" -eq 1 ]; then printf '{}'; fi
 }
 
-if [ "${1:-}" = "sessions" ]; then
-    shift
-    sessions "$@"
-    exit 0
-fi
+open_project() {
+    dir="${1:-.}"
+    if [ ! -d "$dir" ]; then
+        echo "termio: not a directory: $dir" >&2
+        exit 1
+    fi
+    # Resolve to an absolute, symlink-free path so termio keys the project by the
+    # same canonical path it stores, avoiding duplicate sidebar entries.
+    abs=$(cd "$dir" && pwd -P)
+    exec open -b "$BUNDLE_ID" "$abs"
+}
 
-if [ "${1:-}" = "agent" ]; then
-    shift
-    agent "$@"
-    exit 0
-fi
-
-target="${1:-.}"
-
-if [ ! -d "$target" ]; then
-    echo "termio: not a directory: $target" >&2
-    exit 1
-fi
-
-# Resolve to an absolute, symlink-free path so termio keys the project by the
-# same canonical path it stores, avoiding duplicate sidebar entries.
-abs=$(cd "$target" && pwd -P)
-
-exec open -b "$BUNDLE_ID" "$abs"
+case "${1:-}" in
+    -h|--help|help)
+        usage
+        exit 0
+        ;;
+    --version)
+        channel="release"
+        [ "$SUPPORT_DIR_NAME" != "termio" ] && channel="${SUPPORT_DIR_NAME#termio-}"
+        echo "termio $VERSION ($channel)"
+        exit 0
+        ;;
+    sessions)
+        shift
+        sessions "$@"
+        exit 0
+        ;;
+    agent)
+        shift
+        agent "$@"
+        exit 0
+        ;;
+    open)
+        shift
+        open_project "${1:-.}"
+        ;;
+    *)
+        # Bare `termio [DIR]` stays as the `code .`-shaped shorthand for `open`.
+        open_project "${1:-.}"
+        ;;
+esac
