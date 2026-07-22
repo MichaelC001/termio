@@ -240,6 +240,7 @@ extension TermioStore {
             // been bitten by). Tracked as an upstream ask, not worked around unsafely.
             let statusRules = session.agent.statusRules
             let agentID = session.agent.id
+            let isAgentSession = session.agent != .terminal && !session.isSSH
             let statusTrace = ProcessInfo.processInfo.environment["TERMIO_STATUS_TRACE"] != nil
             var lastPoke = Date.distantPast
             var lastScreenSignature: Int?
@@ -254,6 +255,10 @@ extension TermioStore {
                 lastPoke = now
                 let bytes = pendingBytes
                 pendingBytes = 0
+                // Pin the agent's launch binary (once, post-exec) as the baseline
+                // for the self-update relaunch check in `onExit` below. Agent
+                // sessions only — a terminal's exit policy never consults it.
+                if isAgentSession { pty?.recordChildExecutable() }
                 // The PTY timestamps every stdin write (Mac keystrokes, phone
                 // input over the companion bridge, synthetic `sessions send`
                 // text), so sampling it here — instead of tapping only the Mac
@@ -334,7 +339,32 @@ extension TermioStore {
                     DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.35, execute: work)
                 }
             }
-            pty.onExit = { [weak self, weak inMemory] code, runtimeMs in
+            pty.onExit = { [weak self, weak inMemory, weak pty] code, runtimeMs in
+                self?.ptyProcesses[session.id] = nil
+                self?.lastScreenActivity[session.id] = nil
+                // A clean agent exit never parks the pane on the dead-end
+                // "Press any key to close" prompt (whose keypress deleted the
+                // session outright). Two flavors, told apart by the launch
+                // binary on disk:
+                //  - replaced (codex's in-pane upgrade ends with "Please restart
+                //    Codex." and quits — Homebrew purged the old version): do the
+                //    restart for the user, respawning the agent in place with its
+                //    resume arguments. Can't loop — the respawn pins the new
+                //    binary as its own baseline.
+                //  - untouched (a plain `/quit`): hand the pane back to a shell
+                //    in the same directory — exactly where a hand-started agent
+                //    leaves you — demoting the session to a plain terminal (the
+                //    identity mirror of `noteForegroundAgent`'s promotion).
+                // A non-zero exit still parks on the prompt: its error output
+                // must stay readable.
+                if isAgentSession, code == 0 {
+                    if pty?.childExecutableWasReplaced() == true {
+                        self?.relaunchSession(session.id)
+                    } else {
+                        self?.revertSessionToShell(session.id)
+                    }
+                    return
+                }
                 // Report the *real* runtime, not 0. On macOS ghostty ignores the
                 // exit code and shows its "failed to launch the requested command"
                 // overlay whenever runtime ≤ `abnormal-command-exit-runtime` (250 ms) —
@@ -344,16 +374,13 @@ extension TermioStore {
                 // "process exited" message, reserving the scary banner for genuine
                 // sub-threshold launch failures (binary not found, bad argv).
                 inMemory?.finish(exitCode: UInt32(bitPattern: code), runtimeMilliseconds: runtimeMs)
-                self?.ptyProcesses[session.id] = nil
-                self?.lastScreenActivity[session.id] = nil
                 // A plain terminal that exits *cleanly* closes its tab like a
                 // native terminal (Terminal.app / iTerm2 / Ghostty all do this) —
                 // you typed `exit`, so the pane goes away with no extra keypress.
-                // A non-zero exit is left on screen so its error output stays
-                // readable, and an agent session (Claude, Codex) always persists
-                // as a resumable sidebar entry rather than silently vanishing
-                // (e.g. after a `codex` self-update that quits). ghostty can't
-                // read the exit code reliably on macOS, but our `waitpid` here can.
+                // A non-zero exit (terminal or agent — clean agent exits were
+                // handled above) is left on screen so its error output stays
+                // readable rather than silently vanishing. ghostty can't read
+                // the exit code reliably on macOS, but our `waitpid` here can.
                 if session.agent == .terminal, code == 0 {
                     self?.closeSession(session.id)
                 }
@@ -618,7 +645,7 @@ extension TermioStore {
     }
 
     /// The position of a session in the project tree, for an in-place edit.
-    private func locate(_ id: Session.ID) -> (project: Int, session: Int)? {
+    func locate(_ id: Session.ID) -> (project: Int, session: Int)? {
         for (p, project) in projects.enumerated() {
             if let s = project.sessions.firstIndex(where: { $0.id == id }) {
                 return (p, s)
