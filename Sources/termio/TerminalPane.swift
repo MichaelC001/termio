@@ -155,7 +155,15 @@ struct TerminalPane: View {
                     } else {
                         FileEditorView(url: url, settings: settings,
                                        readOnly: store.openFileReadOnly,
-                                       jumpLine: store.openFileLine, onClose: onClose)
+                                       jumpLine: store.openFileLine, onClose: onClose,
+                                       onNavigate: { url, line in
+                                           // A jump out of a read-only peek stays a peek — landing
+                                           // in an editable buffer would quietly escape the
+                                           // "a stray click can't change it" contract.
+                                           let readOnly = store.openFileReadOnly
+                                           store.openFileInEditor(url, at: line)
+                                           store.openFileReadOnly = readOnly
+                                       })
                     }
                 }
                 .id(url)

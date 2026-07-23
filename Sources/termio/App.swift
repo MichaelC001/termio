@@ -321,6 +321,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// agent children that ignore the resulting SIGHUP live on as orphans.
     func applicationWillTerminate(_ notification: Notification) {
         store.terminateAllSessions()
+        // Language servers die with their stdio; no polite LSP handshake needed at quit.
+        LSPManager.shared.terminateAll()
     }
 
     /// Builds the window's content: an `NSSplitViewController` with a native sidebar item

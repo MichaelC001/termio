@@ -20,6 +20,9 @@ struct FileEditorView: View {
     let jumpLine: Int?
     /// Dismisses the overlay (clears `store.openFileURL`) and hands focus back to the terminal.
     let onClose: () -> Void
+    /// A go-to-definition landing in *another* file: the host swaps the overlay to it (through
+    /// `store.openFileInEditor`). `nil` — no host wiring — keeps jumps same-file only.
+    let onNavigate: ((URL, Int) -> Void)?
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -37,6 +40,15 @@ struct FileEditorView: View {
     @State private var cursor: EditorCursor?
     /// The pending debounced write, cancelled and rescheduled on each keystroke.
     @State private var saveTask: Task<Void, Never>?
+    /// The file's language-server session — `nil` (no server installed for this language, or
+    /// none registered) leaves every code-intelligence hook dormant.
+    @State private var lsp: LSPEditorClient?
+    /// A same-file go-to-definition target; feeds the same reveal plumbing as `jumpLine` without
+    /// a round-trip through the store (which would also reset the read-only flag).
+    @State private var revealLine: Int?
+    /// A registered-but-not-installed server for this file's language: the header shows its
+    /// install command once (Zed's meet-the-file-where-it-is pattern, minus the store).
+    @State private var installHint: LSPServerDescriptor?
 
     /// The highlight.js language id, sniffed once from the file extension (`nil` lets highlight.js
     /// auto-detect). Stable for the lifetime of the open file.
@@ -46,12 +58,13 @@ struct FileEditorView: View {
     private let relativePath: String?
 
     init(url: URL, settings: AppSettings, readOnly: Bool = false, jumpLine: Int? = nil,
-         onClose: @escaping () -> Void) {
+         onClose: @escaping () -> Void, onNavigate: ((URL, Int) -> Void)? = nil) {
         self.url = url
         self.settings = settings
         self.readOnly = readOnly
         self.jumpLine = jumpLine
         self.onClose = onClose
+        self.onNavigate = onNavigate
         let contents = try? String(contentsOf: url, encoding: .utf8)
         _text = State(initialValue: contents ?? "")
         _savedText = State(initialValue: contents ?? "")
@@ -70,19 +83,12 @@ struct FileEditorView: View {
     }
     private var isMarkdown: Bool { Self.isMarkdown(url) }
 
-    /// Walks up from the file to its git root and returns the path relative to it (the form the diff
-    /// header shows, e.g. `core 2/lib/fs.ts`). `nil` when the file isn't inside a git work tree.
+    /// The file's path relative to its git root (the form the diff header shows, e.g.
+    /// `core 2/lib/fs.ts`). `nil` when the file isn't inside a git work tree.
     private static func repoRelativePath(for url: URL) -> String? {
         let file = url.standardizedFileURL
-        let manager = FileManager.default
-        var dir = file.deletingLastPathComponent()
-        while dir.path != "/" {
-            if manager.fileExists(atPath: dir.appendingPathComponent(".git").path) {
-                return String(file.path.dropFirst(dir.path.count + 1))
-            }
-            dir = dir.deletingLastPathComponent()
-        }
-        return nil
+        guard let root = GitRoot.find(for: file) else { return nil }
+        return String(file.path.dropFirst(root.path.count + 1))
     }
 
     private var isDirty: Bool { text != savedText }
@@ -97,7 +103,17 @@ struct FileEditorView: View {
     /// truth) so plain text and the insertion point sit on the terminal background cleanly.
     private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
     private var caretColor: NSColor { chrome.map { NSColor($0.accent) } ?? .textColor }
+    /// Whether the editor sits on a dark background — the theme's own luminance signal, falling
+    /// back to the system appearance when no theme is picked.
+    private var onDarkBackground: Bool { chrome?.isDark ?? (colorScheme == .dark) }
+    /// Muted line-number ink, shared with the diff gutter through `AppSettings.gutterInk`
+    /// (background-contrast white/black, not theme-foreground-derived).
     private var lineNumberColor: NSColor { settings.gutterInk(for: colorScheme) }
+    /// A whisper of ink under the caret's line — enough to anchor the eye, faint enough not to
+    /// fight the syntax colors.
+    private var currentLineColor: NSColor {
+        ChromeTheme.overlayInk(onDark: onDarkBackground, alpha: onDarkBackground ? 0.06 : 0.05)
+    }
 
     var body: some View {
         // The editor's chrome (header, gutter) already sits in the safe content area below the
@@ -135,9 +151,14 @@ struct FileEditorView: View {
                             backgroundColor: settings.terminalBackgroundColor,
                             caretColor: caretColor,
                             lineNumberColor: lineNumberColor,
+                            currentLineColor: currentLineColor,
                             isEditable: !readOnly,
-                            jumpToLine: jumpLine,
-                            onSave: saveNow
+                            jumpToLine: revealLine ?? jumpLine,
+                            onSave: saveNow,
+                            onDefinitionRequest: lsp == nil ? nil : jumpToDefinition,
+                            hoverProvider: lsp == nil ? nil : { [self] offset in
+                                await lsp?.hover(at: offset, in: text)
+                            }
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
@@ -150,11 +171,39 @@ struct FileEditorView: View {
         // titlebar — no outer `.frame`, which was reserving an empty band above the header.
         .background(Color(nsColor: settings.terminalBackgroundColor).ignoresSafeArea())
         // Auto-save: debounce a write after each edit; Escape closes (flushing first). A read-only
-        // peek never writes, so neither the debounce nor the exit flush is armed.
-        .onChange(of: text) { if !readOnly { scheduleSave() } }
+        // peek never writes, so neither the debounce nor the exit flush is armed. The language
+        // server tracks the *buffer*, not the disk, so it hears about every edit regardless.
+        .onChange(of: text) {
+            if !readOnly { scheduleSave() }
+            lsp?.noteChange(fullText: text)
+        }
         .onExitCommand { close() }
         // A safety flush if the overlay goes away without the close button (file switch, app quit).
-        .onDisappear { if !readOnly { saveTask?.cancel(); writeIfNeeded() } }
+        .onDisappear {
+            if !readOnly { saveTask?.cancel(); writeIfNeeded() }
+            lsp?.close()
+        }
+        // Attach the language server (if one owns this file type) once per open. Failed or absent
+        // servers resolve to nil, and the editor stays a plain editor.
+        .task {
+            guard !loadFailed else { return }
+            let opened = text
+            guard let client = await LSPEditorClient.attach(url: url, text: opened) else {
+                // No server came up. If one is registered but just not installed, surface its
+                // install command — only in an editable open; a read-only peek stays silent.
+                if !readOnly { installHint = await LSPManager.shared.missingServer(for: url) }
+                return
+            }
+            // The editor may already be gone (Escape during the server's spawn window) — the
+            // document was announced, so it must be un-announced, not leaked open.
+            guard !Task.isCancelled else { client.close(); return }
+            lsp = client
+            // Edits typed while the server was starting happened before `lsp` existed; re-sync.
+            if text != opened { client.noteChange(fullText: text) }
+        }
+        // A host-driven jump (another search hit) supersedes any local go-to-definition target;
+        // without this reset a stale `revealLine` would mask every later `jumpLine`.
+        .onChange(of: jumpLine) { revealLine = nil }
     }
 
     private var header: some View {
@@ -195,6 +244,12 @@ struct FileEditorView: View {
             // The close control lives in the toolbar (a bordered, Liquid Glass button on the
             // terminal column's trailing edge); this trailing spacer keeps the label left-aligned.
             Spacer()
+            // One quiet, dismissible line when this language's server isn't installed: the
+            // command to copy, shown at the moment it's relevant instead of buried in Settings.
+            // Not in Markdown Preview — there is no ⌘-click there to need anything.
+            if let hint = installHint, let install = hint.install, !(isMarkdown && mode == .preview) {
+                installHintView(hint: hint, install: install)
+            }
             // Markdown reads as a document by default; the toggle keeps the source one click away.
             if isMarkdown {
                 modeToggle
@@ -204,6 +259,39 @@ struct FileEditorView: View {
         .padding(.vertical, 8)
         .background(Color(nsColor: settings.terminalBackgroundColor))
         .animation(.easeOut(duration: 0.15), value: isDirty)
+    }
+
+    /// The header's install nudge: `⌘-click needs <server> · <install command> [copy] [×]`,
+    /// caption-quiet. Dismissing remembers the server for the rest of the app run, so the hint
+    /// never becomes a nag; the Languages settings pane remains the always-there reference.
+    private func installHintView(hint: LSPServerDescriptor, install: String) -> some View {
+        HStack(spacing: 6) {
+            Text("⌘-click needs")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            Text(install)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(install, forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc").font(.caption)
+            }
+            .buttonStyle(.plain)
+            .help("Copy install command — enables jump-to-definition and hover for \(hint.displayName)")
+            Button {
+                LSPManager.shared.dismissedInstallHints.insert(hint.id)
+                withAnimation(.easeOut(duration: 0.15)) { installHint = nil }
+            } label: {
+                Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.tertiary)
+            .help("Dismiss for this run")
+        }
+        .transition(.opacity)
     }
 
     /// A two-segment Edit/Preview toggle, drawn by hand (a segmented `Picker` only renders
@@ -302,6 +390,27 @@ struct FileEditorView: View {
         saveTask?.cancel()
         writeIfNeeded()
         onClose()
+    }
+
+    /// Resolves the symbol at `utf16Offset` through the language server. A same-file hit reuses
+    /// the reveal plumbing in place; a cross-file hit hands the target to the host, which swaps
+    /// the overlay (`.id(url)`) exactly like clicking another search result. No answer → a beep,
+    /// the quietest possible "nothing there".
+    private func jumpToDefinition(at utf16Offset: Int) {
+        Task { @MainActor in
+            guard let lsp, let hit = await lsp.definition(at: utf16Offset, in: text) else {
+                NSSound.beep()
+                return
+            }
+            if hit.url == url.standardizedFileURL {
+                revealLine = hit.line
+            } else if FileManager.default.fileExists(atPath: hit.url.path), let onNavigate {
+                onNavigate(hit.url, hit.line)
+            } else {
+                // A virtual target (generated interface, out-of-tree stub) the editor can't open.
+                NSSound.beep()
+            }
+        }
     }
 
     /// Writes the buffer to disk if it differs from what's already there. The single place a save
