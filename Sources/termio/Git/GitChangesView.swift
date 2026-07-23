@@ -270,9 +270,9 @@ struct GitChangesView: View {
             // folder form that actually fixes a build-products flood in one click).
             if change.isUntracked {
                 Divider()
-                Button("Add to .gitignore") { addToGitignore(["/" + change.path]) }
+                Button("Add to .gitignore") { addToGitignore(paths: [change.path]) }
                 if let root = untrackedRoot(of: change) {
-                    Button("Ignore Folder “\(root)”") { addToGitignore(["/" + root]) }
+                    Button("Ignore Folder “\(root)”") { addToGitignore(paths: [root]) }
                 }
             }
             Divider()
@@ -285,6 +285,17 @@ struct GitChangesView: View {
                 copyToPasteboard(targets.map(\.path).joined(separator: "\n"))
             }
             Button("Copy Diff") { copyDiff(targets) }
+            // The flood repair must survive multi-selection too — the footer advertises it.
+            let untracked = targets.filter(\.isUntracked)
+            if !untracked.isEmpty {
+                Divider()
+                Button("Add \(untracked.count) Files to .gitignore") {
+                    addToGitignore(paths: untracked.map(\.path))
+                }
+                if let root = untrackedRoot(of: change) {
+                    Button("Ignore Folder “\(root)”") { addToGitignore(paths: [root]) }
+                }
+            }
             Divider()
             Button("Discard \(targets.count) Files…", role: .destructive) { pendingDiscard = targets }
         }
@@ -301,7 +312,11 @@ struct GitChangesView: View {
         model.untrackedRoots.first { change.path.hasPrefix($0) }
     }
 
-    private func addToGitignore(_ patterns: [String]) {
+    /// Escapes each repo-relative path into a literal rooted pattern before appending —
+    /// a name containing `*`/`?`/`[` or trailing spaces must ignore exactly itself.
+    private func addToGitignore(paths: [String]) {
+        let patterns = paths.compactMap(GitService.gitignorePattern(for:))
+        guard !patterns.isEmpty else { return }
         Task {
             await GitService.appendToGitignore(patterns, in: repoRoot)
             await model.load()

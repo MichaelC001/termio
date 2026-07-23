@@ -30,6 +30,8 @@ final class GitPanelModel: ObservableObject {
     private var watcher: FolderEventStream?
     private var appActiveObserver: AnyCancellable?
     private var refreshDebounce: Task<Void, Never>?
+    /// Monotonic ticket for `load()` — only the newest pass may publish.
+    private var loadGeneration = 0
 
     init(repoRoot: String) {
         self.repoRoot = repoRoot
@@ -47,11 +49,20 @@ final class GitPanelModel: ObservableObject {
     /// Reloads the working-tree change list. The first successful pass also arms the
     /// file-system watch, so from then on the pane refreshes itself.
     func load() async {
-        changes = await GitService.changes(in: repoRoot)
+        // Loads overlap (explicit reload racing the FSEvents debounce); the generation guard
+        // keeps a slow older pass from publishing stale changes or — worse — stale untracked
+        // roots that would back an over-broad "Ignore Folder" action.
+        loadGeneration += 1
+        let generation = loadGeneration
+        let loaded = await GitService.changes(in: repoRoot)
+        guard generation == loadGeneration else { return }
+        changes = loaded
         isLoading = false
-        untrackedRoots = changes.contains(where: \.isUntracked)
+        let roots = loaded.contains(where: \.isUntracked)
             ? await GitService.untrackedRoots(in: repoRoot)
             : []
+        guard generation == loadGeneration else { return }
+        untrackedRoots = roots
         if watcher == nil { await armWatcher() }
     }
 

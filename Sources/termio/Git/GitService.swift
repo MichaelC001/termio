@@ -259,25 +259,48 @@ enum GitService {
 
     private enum UntrackedCount { case lines(Int), binary, skip }
 
-    /// The `+N` for one untracked file, cheaply: a memory-mapped byte scan for newlines —
-    /// never a full UTF-8 decode (the old path read whole `.o` files into a `String` just to
-    /// fail the decode). A NUL in the head marks a binary; an oversized file is skipped.
+    /// The `+N` for one untracked file, cheaply: bounded chunked reads scanning bytes for
+    /// newlines — never a full UTF-8 decode (the old path read whole `.o` files into a `String`
+    /// just to fail the decode), and deliberately **not** mmap: a build truncating the file
+    /// mid-scan would turn a mapped read into SIGBUS, which no `try?` catches. A NUL in the
+    /// first chunk marks a binary (git's own sniff); crossing the size cap bails.
     private static func untrackedLineCount(_ path: String) -> UntrackedCount {
-        if let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int,
-           size > untrackedSizeLimit {
-            return .skip
+        guard let handle = FileHandle(forReadingAtPath: path) else { return .skip }
+        defer { try? handle.close() }
+        var lines = 0
+        var total = 0
+        var lastByte: UInt8 = 0x0A
+        var isFirstChunk = true
+        while let chunk = try? handle.read(upToCount: 262_144), !chunk.isEmpty {
+            if isFirstChunk {
+                if chunk.prefix(min(8000, chunk.count)).contains(0) { return .binary }
+                isFirstChunk = false
+            }
+            total += chunk.count
+            if total > untrackedSizeLimit { return .skip }
+            for byte in chunk where byte == 0x0A { lines += 1 }
+            lastByte = chunk.last ?? lastByte
         }
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe),
-              !data.isEmpty
-        else { return .skip }
-        return data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) -> UntrackedCount in
-            // The same sniff git itself uses: a NUL in the first ~8k means binary.
-            if bytes.prefix(min(8000, bytes.count)).contains(0) { return .binary }
-            var lines = 0
-            for byte in bytes where byte == 0x0A { lines += 1 }
-            if bytes.last != 0x0A { lines += 1 }
-            return .lines(lines)
+        if isFirstChunk { return .skip } // empty (or vanished mid-read): no badge
+        if lastByte != 0x0A { lines += 1 }
+        return .lines(lines)
+    }
+
+    /// A repo-relative path encoded as a literal `.gitignore` pattern: glob metacharacters
+    /// backslash-escaped, trailing spaces escaped (git strips them bare), rooted with a
+    /// leading `/` (which also disarms leading `#`/`!`). `nil` for the one unrepresentable
+    /// case, a newline in the name.
+    static func gitignorePattern(for path: String) -> String? {
+        guard !path.contains("\n") else { return nil }
+        var escaped = ""
+        for character in path {
+            if "\\*?[]".contains(character) { escaped.append("\\") }
+            escaped.append(character)
         }
+        let trailingSpaces = escaped.reversed().prefix(while: { $0 == " " }).count
+        escaped = String(escaped.dropLast(trailingSpaces))
+            + String(repeating: "\\ ", count: trailingSpaces)
+        return "/" + escaped
     }
 
     /// The untracked *directories* as git itself collapses them (`--untracked-files=normal`) —
@@ -293,17 +316,40 @@ enum GitService {
     }
 
     /// Appends patterns to the repo root's `.gitignore` (created if absent), skipping lines
-    /// already present. The pane's file-system watch sees the write and refreshes on its own.
-    static func appendToGitignore(_ patterns: [String], in repoRoot: String) async {
+    /// already present. Strictly append-oriented — the existing bytes are never rewritten, so
+    /// an unreadable file or a concurrent editor save can't be clobbered; a read failure on an
+    /// existing file aborts instead of treating it as empty. The pane's file-system watch sees
+    /// the write and refreshes on its own.
+    @discardableResult
+    static func appendToGitignore(_ patterns: [String], in repoRoot: String) async -> Bool {
         await offMain {
             let url = URL(fileURLWithPath: repoRoot).appendingPathComponent(".gitignore")
-            var text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-            let existing = Set(text.split(separator: "\n").map(String.init))
-            let additions = patterns.filter { !existing.contains($0) }
-            guard !additions.isEmpty else { return }
-            if !text.isEmpty, !text.hasSuffix("\n") { text += "\n" }
-            text += additions.joined(separator: "\n") + "\n"
-            try? text.write(to: url, atomically: true, encoding: .utf8)
+            let exists = FileManager.default.fileExists(atPath: url.path)
+            var existingLines: Set<String> = []
+            var needsLeadingNewline = false
+            if exists {
+                guard let data = try? Data(contentsOf: url) else { return false }
+                existingLines = Set(
+                    String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
+                )
+                needsLeadingNewline = !data.isEmpty && data.last != 0x0A
+            }
+            let additions = patterns.filter { !existingLines.contains($0) }
+            guard !additions.isEmpty else { return true }
+            let payload = (needsLeadingNewline ? "\n" : "") + additions.joined(separator: "\n") + "\n"
+            if exists {
+                guard let handle = FileHandle(forWritingAtPath: url.path) else { return false }
+                defer { try? handle.close() }
+                do {
+                    try handle.seekToEnd()
+                    try handle.write(contentsOf: Data(payload.utf8))
+                    return true
+                } catch { return false }
+            }
+            do {
+                try Data(payload.utf8).write(to: url)
+                return true
+            } catch { return false }
         }
     }
 

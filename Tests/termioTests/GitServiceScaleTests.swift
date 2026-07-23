@@ -65,6 +65,42 @@ final class GitServiceScaleTests: XCTestCase {
         XCTAssertEqual(roots, [".build/"])
     }
 
+    func testLineCountBoundaries() async throws {
+        // Trailing newline must NOT add a phantom line (the old String-split did: "x\ny\n"
+        // split non-omitting gave ["x","y",""] = 3); git counts 2 and so do we now.
+        try write("terminated.txt", Data("x\ny\n".utf8))
+        try write("empty.txt", Data())
+        try write("blank.txt", Data("\n".utf8))
+        let changes = await GitService.changes(in: repo.path)
+        XCTAssertEqual(changes.first { $0.path == "terminated.txt" }?.additions, 2)
+        XCTAssertEqual(changes.first { $0.path == "empty.txt" }?.additions, 0)
+        XCTAssertEqual(changes.first { $0.path == "blank.txt" }?.additions, 1)
+    }
+
+    func testGitignorePatternEscapesLiteralNames() async throws {
+        // Names full of glob metacharacters and a trailing space must ignore exactly
+        // themselves — proven by git's own matcher, not our reading of the spec.
+        let names = ["we ird *[a].txt", "#lead.txt", "!bang.txt", "trail .txt"]
+        for name in names {
+            try write(name, Data("x".utf8))
+            let pattern = try XCTUnwrap(GitService.gitignorePattern(for: name))
+            await GitService.appendToGitignore([pattern], in: repo.path)
+        }
+        XCTAssertNil(GitService.gitignorePattern(for: "new\nline.txt"))
+        let changes = await GitService.changes(in: repo.path)
+        XCTAssertEqual(changes.map(\.path), [".gitignore"], "some pattern failed to match its own file")
+    }
+
+    func testAppendToGitignoreAppendsWithoutRewriting() async throws {
+        // Existing contents (even non-UTF8 bytes) must survive an append untouched.
+        let original = Data([0x23, 0x20, 0xFF, 0xFE, 0x0A]) // "# " + invalid UTF-8 + newline
+        try original.write(to: repo.appendingPathComponent(".gitignore"))
+        await GitService.appendToGitignore(["/x.txt"], in: repo.path)
+        let after = try Data(contentsOf: repo.appendingPathComponent(".gitignore"))
+        XCTAssertEqual(after.prefix(original.count), original)
+        XCTAssertTrue(String(decoding: after, as: UTF8.self).hasSuffix("/x.txt\n"))
+    }
+
     func testAppendToGitignoreCreatesDeduplicatesAndSilences() async throws {
         try write(".build/junk.o", Data("junk".utf8))
         await GitService.appendToGitignore(["/.build/"], in: repo.path)
