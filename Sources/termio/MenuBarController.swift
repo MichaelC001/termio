@@ -8,10 +8,11 @@ import SwiftUI
 /// Rather than swapping to unrelated symbols, state is conveyed *over* the mark —
 /// it breathes while an agent works, and wears a small coloured status badge when
 /// a session is done (green) or waiting on you (amber). Clicking it drops a
-/// roster of just the sessions that want you — done (green) or blocked on input
-/// (amber) — grouped by project; working and idle agents are running fine on
-/// their own and stay out of the list. Picking one focuses that session and
-/// brings the window forward.
+/// roster of the active-and-your-turn sessions — working agents (shown with the
+/// sidebar's orbiting comet), plus the resting states that want you: done
+/// (green) or blocked on input (amber) — grouped by project. Only idle agents
+/// (running fine on their own) and plain terminals stay out of the list. Picking
+/// one focuses that session and brings the window forward.
 ///
 /// We manage a raw `NSStatusItem` (not SwiftUI's `MenuBarExtra`) because termio
 /// drives an explicit `NSApplication` rather than the SwiftUI app lifecycle.
@@ -157,9 +158,15 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // done (green) or blocked on input (amber). Idle agents are getting on fine
         // on their own and plain terminals live in the window, so both stay out.
         for project in store.projects {
-            let agentSessions = project.sessions.filter {
-                $0.agent != .terminal && shouldList(store.status(for: $0.id))
-            }
+            let agentSessions = project.sessions
+                .filter { $0.agent != .terminal && shouldList(store.status(for: $0.id)) }
+                // The states that want the user rise to the top of each project's
+                // rows — blocked first, then just-finished, then still working — so a
+                // glance lands on what's actionable before what's merely in progress.
+                .sorted {
+                    rosterPriority(store.status(for: $0.id))
+                        < rosterPriority(store.status(for: $1.id))
+                }
             guard !agentSessions.isEmpty else { continue }
 
             let header = NSMenuItem(title: project.name, action: nil, keyEquivalent: "")
@@ -251,6 +258,19 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// (and plain terminals, filtered separately) stay off the list.
     private func shouldList(_ status: SessionStatus) -> Bool {
         status != .idle
+    }
+
+    /// Roster ordering weight: the resting "your turn" states outrank work in
+    /// progress, so the menu reads top-down as a to-do list — blocked (amber)
+    /// first, then just-finished (green), then still working. Idle never reaches
+    /// here (see `shouldList`).
+    private func rosterPriority(_ status: SessionStatus) -> Int {
+        switch status {
+        case .needsAttention: return 0
+        case .done: return 1
+        case .working: return 2
+        case .idle: return 3
+        }
     }
 
     /// The trailing dot colour for a resting "your turn" state — green when the

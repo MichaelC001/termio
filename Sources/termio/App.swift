@@ -226,6 +226,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         menuBar = MenuBarController(store: store) { [weak self] id in
             self?.store.selectedSessionID = id
+            // Picking a done/blocked row acknowledges it, even if that session was
+            // already selected (the selection didSet only reacts to a change).
+            self?.store.markSeen(id)
             NSApp.activate(ignoringOtherApps: true)
             self?.window.makeKeyAndOrderFront(nil)
         }

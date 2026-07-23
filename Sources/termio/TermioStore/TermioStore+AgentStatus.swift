@@ -132,11 +132,14 @@ extension TermioStore {
             // float its project up under the "Recent Activity" sort (see `orderedProjects`).
             if let pid = project(for: id)?.id { liveActivity[pid] = Date() }
         case "done":
-            // The turn finished. If the user is looking at it, calm; otherwise a
-            // gentle "ready for you" cue — distinct from `needsAttention`, which is
-            // reserved for the agent actually being blocked on the user.
+            // The turn finished — always leave a "ready for you" green dot, even on
+            // the session the user is currently looking at, so a finished agent stays
+            // on the menu-bar roster instead of blinking off the instant it stops.
+            // The dot is cleared by engaging with the row (`markSeen`, wired to the
+            // sidebar/tray click) or by the next turn starting. Distinct from
+            // `needsAttention`, which is reserved for the agent being blocked on you.
             clearWorking(id)
-            statuses[id] = (selectedSessionID == id) ? .idle : .done
+            statuses[id] = .done
         case "attention":
             // The agent is blocked waiting on the user (a permission prompt or a
             // free-text answer). Mirror the bell path: only flag a session the user
