@@ -307,25 +307,63 @@ extension TermioStore {
         }
     }
 
-    /// Records (or clears) the agent detected running in a plain terminal's
-    /// foreground, upgrading the row to a first-class agent while it runs (brand icon,
-    /// adopted live title, working spinner) and reverting it to a plain terminal when
-    /// it exits. Terminal-only (a declared agent session is never reclassified) and
-    /// idempotent (unchanged detection is a no-op, so the once-a-second poll is cheap).
-    /// On clear it also drops the transient agent title and any lingering spinner so
-    /// the row can't be left mid-turn once the agent is gone.
+    /// Reclassifies a shell-backed session to whatever agent runs in its foreground —
+    /// for real, not as a runtime overlay: a hand-started `claude` makes the session
+    /// *become* a Claude Code session (persisted, so a reopened app relaunches it as
+    /// that agent, resuming the conversation its hooks pinned meanwhile), and the
+    /// agent exiting back to the shell demotes it to a plain terminal again. The
+    /// identity always says what the pane runs. Only sessions spawned with a shell
+    /// underneath ever report here (the detection sink exists solely for them), so a
+    /// promoted row keeps polling and the demotion fires when its shell resurfaces.
+    /// Idempotent per poll; an SSH terminal is never reclassified (its foreground is
+    /// the local `ssh`, and the agents run remotely).
     func noteForegroundAgent(_ detected: AgentDefinition?, for id: Session.ID) {
-        guard session(id)?.agent == .terminal else { return }
-        guard detectedAgents[id] != detected else { return }
+        guard let location = locate(id) else { return }
+        var session = projects[location.project].sessions[location.session]
+        guard !session.isSSH else { return }
         if let detected {
-            detectedAgents[id] = detected
-        } else {
-            detectedAgents[id] = nil
-            liveTitles[id] = nil
-            lastTitleActivity[id] = nil
-            clearWorking(id)
-            if statuses[id] == .working || statuses[id] == .done { statuses[id] = .idle }
+            // Promote a plain terminal only: an already-promoted row seeing its own
+            // agent is the idempotent no-op, and a *different* foreground under a
+            // promoted row is the agent's own subprocess, not a new identity.
+            guard session.agent == .terminal, detected != .terminal else { return }
+            // Adopt the declared-session title convention (`addSession`) so the row
+            // reads `Claude Code` — but never overwrite a name the user chose.
+            if Self.isAutoTerminalName(session.title) {
+                session.title = detected.displayName
+            }
+            session.agent = detected
+            projects[location.project].sessions[location.session] = session
+        } else if session.agent != .terminal {
+            demoteSessionToTerminal(id)
         }
+    }
+
+    /// The one place a session stops being an agent: reverts the row to a plain
+    /// terminal (persisted) and clears the conversation-scoped runtime state — the
+    /// adopted topic title and any lingering spinner — so the row can't be left
+    /// mid-turn once the agent is gone. The resume pin deliberately survives: it is
+    /// dormant on a terminal row, and it still names the conversation this pane last
+    /// hosted. Shared by the foreground poll (agent quit back to its shell) and the
+    /// clean-exit revert of an exec'd agent session (`revertSessionToShell`).
+    func demoteSessionToTerminal(_ id: Session.ID) {
+        guard let location = locate(id) else { return }
+        var session = projects[location.project].sessions[location.session]
+        guard session.agent != .terminal else { return }
+        // Un-renamed rows fall back to the auto `Terminal N` convention (numbered
+        // like `addSession`, counting this row itself), so display naming — cwd
+        // basename for loose terminals — takes over again.
+        if session.title == session.agent.displayName {
+            let terminalCount = projects[location.project].sessions
+                .filter { $0.agent == .terminal }.count
+            session.title = "Terminal \(terminalCount + 1)"
+        }
+        session.agent = .terminal
+        session.liveTitle = nil
+        projects[location.project].sessions[location.session] = session
+        liveTitles[id] = nil
+        lastTitleActivity[id] = nil
+        clearWorking(id)
+        if statuses[id] == .working || statuses[id] == .done { statuses[id] = .idle }
     }
 
     /// Resolves a session's transcript file from disk when its hook hasn't handed

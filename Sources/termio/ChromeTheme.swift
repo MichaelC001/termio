@@ -92,6 +92,17 @@ extension AppSettings {
         return .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
+    /// Muted line-number ink shared by every code surface's gutter (file editor, diff view),
+    /// chosen against the theme *background's* darkness via `ChromeTheme.overlayInk` — an
+    /// earlier foreground-derived version sank into black backgrounds whenever the theme's
+    /// foreground was grey or tinted, at any alpha (user report ×2). Statically resolved per
+    /// `colorScheme`; a dynamic system color is no substitute because it ignores the terminal
+    /// theme entirely.
+    func gutterInk(for colorScheme: ColorScheme) -> NSColor {
+        let dark = chromeTheme(for: colorScheme)?.isDark ?? (colorScheme == .dark)
+        return ChromeTheme.overlayInk(onDark: dark, alpha: dark ? 0.55 : 0.42)
+    }
+
     var terminalBackgroundColor: NSColor {
         let lightBackground = chromeTheme(for: .light)?.background
         let darkBackground = chromeTheme(for: .dark)?.background

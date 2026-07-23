@@ -106,11 +106,9 @@ struct FileEditorView: View {
     /// Whether the editor sits on a dark background — the theme's own luminance signal, falling
     /// back to the system appearance when no theme is picked.
     private var onDarkBackground: Bool { chrome?.isDark ?? (colorScheme == .dark) }
-    /// Muted line-number ink; `ChromeTheme.overlayInk` carries the never-derive-from-foreground
-    /// lesson (user report ×2: grey theme ink sank into black backgrounds at any alpha).
-    private var lineNumberColor: NSColor {
-        ChromeTheme.overlayInk(onDark: onDarkBackground, alpha: onDarkBackground ? 0.55 : 0.42)
-    }
+    /// Muted line-number ink, shared with the diff gutter through `AppSettings.gutterInk`
+    /// (background-contrast white/black, not theme-foreground-derived).
+    private var lineNumberColor: NSColor { settings.gutterInk(for: colorScheme) }
     /// A whisper of ink under the caret's line — enough to anchor the eye, faint enough not to
     /// fight the syntax colors.
     private var currentLineColor: NSColor {
