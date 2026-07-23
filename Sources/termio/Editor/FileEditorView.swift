@@ -49,6 +49,9 @@ struct FileEditorView: View {
     /// A registered-but-not-installed server for this file's language: the header shows its
     /// install command once (Zed's meet-the-file-where-it-is pattern, minus the store).
     @State private var installHint: LSPServerDescriptor?
+    /// A transient footer line for slow LSP work ("Starting sourcekit-lsp…") — silence reads
+    /// as broken during a cold server start.
+    @State private var lspActivity: String?
 
     /// The highlight.js language id, sniffed once from the file extension (`nil` lets highlight.js
     /// auto-detect). Stable for the lifetime of the open file.
@@ -158,6 +161,11 @@ struct FileEditorView: View {
                             onDefinitionRequest: lsp == nil ? nil : jumpToDefinition,
                             hoverProvider: lsp == nil ? nil : { [self] offset in
                                 await lsp?.hover(at: offset, in: text)
+                            },
+                            linkResolver: lsp == nil ? nil : { [self] offset in
+                                // The probe result is memoized in the client, so the click that
+                                // follows a lit link costs no second request.
+                                await lsp?.definition(at: offset, in: text) != nil
                             }
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -188,7 +196,15 @@ struct FileEditorView: View {
         .task {
             guard !loadFailed else { return }
             let opened = text
-            guard let client = await LSPEditorClient.attach(url: url, text: opened) else {
+            // Xcode-style activity whisper: only a slow start earns a footer line — a warm
+            // server attaches in milliseconds and should stay invisible.
+            let notice = slowActivityNotice(
+                LSPRegistry.descriptor(for: url).map { "Starting \($0.descriptor.id)…" }
+            )
+            let client = await LSPEditorClient.attach(url: url, text: opened)
+            notice.cancel()
+            lspActivity = nil
+            guard let client else {
                 // No server came up. If one is registered but just not installed, surface its
                 // install command — only in an editable open; a read-only peek stays silent.
                 if !readOnly { installHint = await LSPManager.shared.missingServer(for: url) }
@@ -339,6 +355,13 @@ struct FileEditorView: View {
                 // Mark the peek so the absent caret/typing doesn't read as the editor being broken.
                 statusItem("Read-Only")
             }
+            // The LSP activity whisper — "Starting sourcekit-lsp…", "Looking up definition…" —
+            // shown only when the work is actually slow, gone the moment it lands.
+            if let lspActivity {
+                statusItem(lspActivity)
+                    .foregroundStyle(.tertiary)
+                    .transition(.opacity)
+            }
             Spacer()
             if isMarkdown && mode == .preview {
                 // No caret in the rendered view — name the mode so the missing Ln/Col reads right.
@@ -392,13 +415,28 @@ struct FileEditorView: View {
         onClose()
     }
 
+    /// Arms a delayed footer status line: fast work never shows it (cancel before the delay),
+    /// slow work earns a quiet whisper instead of dead silence. Caller cancels + clears.
+    private func slowActivityNotice(_ message: String?, after delay: UInt64 = 400_000_000) -> Task<Void, Never> {
+        Task { @MainActor in
+            guard let message else { return }
+            try? await Task.sleep(nanoseconds: delay)
+            if Task.isCancelled { return }
+            withAnimation(.easeIn(duration: 0.15)) { lspActivity = message }
+        }
+    }
+
     /// Resolves the symbol at `utf16Offset` through the language server. A same-file hit reuses
     /// the reveal plumbing in place; a cross-file hit hands the target to the host, which swaps
     /// the overlay (`.id(url)`) exactly like clicking another search result. No answer → a beep,
     /// the quietest possible "nothing there".
     private func jumpToDefinition(at utf16Offset: Int) {
         Task { @MainActor in
-            guard let lsp, let hit = await lsp.definition(at: utf16Offset, in: text) else {
+            let notice = slowActivityNotice("Looking up definition…")
+            let hit = await lsp?.definition(at: utf16Offset, in: text)
+            notice.cancel()
+            lspActivity = nil
+            guard let hit else {
                 NSSound.beep()
                 return
             }
