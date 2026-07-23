@@ -210,6 +210,15 @@ enum GitService {
         return change
     }
 
+    /// Above this many untracked files the per-file line counts are skipped wholesale — the
+    /// flood case, almost always a missing `.gitignore` over a build directory. Decorating a
+    /// broken list is not worth thousands of file reads; VS Code degrades the same way at its
+    /// `git.statusLimit`. Rows still show their `U` status, the footer still counts files.
+    static let untrackedCountLimit = 500
+    /// An untracked file bigger than this is never line-counted — nobody reviews a
+    /// multi-megabyte file by its `+N` badge.
+    private static let untrackedSizeLimit = 4_000_000
+
     /// Fills each change's add/delete counts: `git diff --numstat` (unstaged) merged
     /// with `--cached` (staged) for tracked files, and a line count for untracked ones.
     private static func applyCounts(_ changes: inout [GitChange], repoRoot: String) {
@@ -228,16 +237,15 @@ enum GitService {
                 counts[path] = (existing.0 + adds, existing.1 + dels)
             }
         }
+        let untrackedFlood = changes.lazy.filter(\.isUntracked).count > untrackedCountLimit
         for idx in changes.indices {
             if changes[idx].isUntracked {
+                guard !untrackedFlood else { continue }
                 let abs = (repoRoot as NSString).appendingPathComponent(changes[idx].path)
-                if let content = try? String(contentsOfFile: abs, encoding: .utf8) {
-                    if !content.isEmpty {
-                        changes[idx].additions = content.split(separator: "\n", omittingEmptySubsequences: false).count
-                    }
-                } else {
-                    // Unreadable as UTF-8 but present on disk: a new binary.
-                    changes[idx].isBinary = FileManager.default.fileExists(atPath: abs)
+                switch untrackedLineCount(abs) {
+                case .lines(let count): changes[idx].additions = count
+                case .binary: changes[idx].isBinary = true
+                case .skip: break
                 }
             } else {
                 if let c = counts[changes[idx].path] {
@@ -246,6 +254,56 @@ enum GitService {
                 }
                 changes[idx].isBinary = binaries.contains(changes[idx].path)
             }
+        }
+    }
+
+    private enum UntrackedCount { case lines(Int), binary, skip }
+
+    /// The `+N` for one untracked file, cheaply: a memory-mapped byte scan for newlines —
+    /// never a full UTF-8 decode (the old path read whole `.o` files into a `String` just to
+    /// fail the decode). A NUL in the head marks a binary; an oversized file is skipped.
+    private static func untrackedLineCount(_ path: String) -> UntrackedCount {
+        if let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int,
+           size > untrackedSizeLimit {
+            return .skip
+        }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe),
+              !data.isEmpty
+        else { return .skip }
+        return data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) -> UntrackedCount in
+            // The same sniff git itself uses: a NUL in the first ~8k means binary.
+            if bytes.prefix(min(8000, bytes.count)).contains(0) { return .binary }
+            var lines = 0
+            for byte in bytes where byte == 0x0A { lines += 1 }
+            if bytes.last != 0x0A { lines += 1 }
+            return .lines(lines)
+        }
+    }
+
+    /// The untracked *directories* as git itself collapses them (`--untracked-files=normal`) —
+    /// the gitignore-shaped roots of an untracked flood, powering "Ignore Folder …".
+    static func untrackedRoots(in repoRoot: String) async -> [String] {
+        await offMain {
+            guard let raw = run(["status", "--porcelain=v2", "-z", "--untracked-files=normal"], in: repoRoot)
+            else { return [] }
+            return raw.components(separatedBy: "\0")
+                .filter { $0.hasPrefix("? ") && $0.hasSuffix("/") }
+                .map { String($0.dropFirst(2)) }
+        }
+    }
+
+    /// Appends patterns to the repo root's `.gitignore` (created if absent), skipping lines
+    /// already present. The pane's file-system watch sees the write and refreshes on its own.
+    static func appendToGitignore(_ patterns: [String], in repoRoot: String) async {
+        await offMain {
+            let url = URL(fileURLWithPath: repoRoot).appendingPathComponent(".gitignore")
+            var text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+            let existing = Set(text.split(separator: "\n").map(String.init))
+            let additions = patterns.filter { !existing.contains($0) }
+            guard !additions.isEmpty else { return }
+            if !text.isEmpty, !text.hasSuffix("\n") { text += "\n" }
+            text += additions.joined(separator: "\n") + "\n"
+            try? text.write(to: url, atomically: true, encoding: .utf8)
         }
     }
 

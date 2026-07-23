@@ -18,6 +18,9 @@ final class GitPanelModel: ObservableObject {
 
     @Published var changes: [GitChange] = []
     @Published var isLoading = true
+    /// Untracked directories as git collapses them (`ios/.build/` …) — the patterns the
+    /// "Ignore Folder" row action offers, refreshed with every change load.
+    @Published var untrackedRoots: [String] = []
 
     /// The commit history, loaded lazily the first time the History tab is shown.
     @Published var commits: [GitCommit] = []
@@ -46,6 +49,9 @@ final class GitPanelModel: ObservableObject {
     func load() async {
         changes = await GitService.changes(in: repoRoot)
         isLoading = false
+        untrackedRoots = changes.contains(where: \.isUntracked)
+            ? await GitService.untrackedRoots(in: repoRoot)
+            : []
         if watcher == nil { await armWatcher() }
     }
 

@@ -189,6 +189,13 @@ struct GitChangesView: View {
                 .foregroundStyle(.secondary)
             if additions > 0 { Text("+\(additions)").foregroundStyle(.green) }
             if deletions > 0 { Text("−\(deletions)").foregroundStyle(.red) }
+            // The flood tell: line counts are off above the limit, and the fix is a
+            // .gitignore line — say so where the missing numbers would have been.
+            if model.changes.lazy.filter(\.isUntracked).count > GitService.untrackedCountLimit {
+                Text("· mostly untracked — right-click a file to add its folder to .gitignore")
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
         }
     }
 
@@ -259,6 +266,15 @@ struct GitChangesView: View {
             Button("Copy Path") { copyPath(change) }
             Button("Copy Relative Path") { copyToPasteboard(change.path) }
             Button("Copy Diff") { copyDiff(targets) }
+            // The forgot-my-.gitignore repair, on the spot (VS Code's action, plus the
+            // folder form that actually fixes a build-products flood in one click).
+            if change.isUntracked {
+                Divider()
+                Button("Add to .gitignore") { addToGitignore(["/" + change.path]) }
+                if let root = untrackedRoot(of: change) {
+                    Button("Ignore Folder “\(root)”") { addToGitignore(["/" + root]) }
+                }
+            }
             Divider()
             Button("Discard Changes…", role: .destructive) { pendingDiscard = targets }
         } else {
@@ -277,6 +293,19 @@ struct GitChangesView: View {
     private func targets(for change: GitChange) -> [GitChange] {
         guard selection.contains(change.path), selection.count > 1 else { return [change] }
         return model.changes.filter { selection.contains($0.path) }
+    }
+
+    /// The collapsed untracked directory containing this file (`ios/.build/` for
+    /// `ios/.build/foo.o`), i.e. the pattern one `.gitignore` line can silence.
+    private func untrackedRoot(of change: GitChange) -> String? {
+        model.untrackedRoots.first { change.path.hasPrefix($0) }
+    }
+
+    private func addToGitignore(_ patterns: [String]) {
+        Task {
+            await GitService.appendToGitignore(patterns, in: repoRoot)
+            await model.load()
+        }
     }
 
     private func open(_ change: GitChange) {
