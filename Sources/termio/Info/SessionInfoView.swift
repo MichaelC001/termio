@@ -23,7 +23,7 @@ struct SessionInfoView: View {
     private var workingDirectory: String? {
         guard let project else { return nil }
         if project.kind == .terminals, let id = store.selectedSessionID {
-            return store.workingDirectories[id]
+            return store.workingDirectory(for: id)
                 ?? session?.lastWorkingDirectory
                 ?? project.path
         }
