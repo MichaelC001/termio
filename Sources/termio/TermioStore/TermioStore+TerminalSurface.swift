@@ -180,6 +180,16 @@ extension TermioStore {
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
         env["TERM_PROGRAM"] = "termio"
+        // termio embeds libghostty, which renders OSC 8 hyperlinks. Agent CLIs
+        // that gate hyperlink emission on a `TERM_PROGRAM` allowlist (the npm
+        // `supports-hyperlinks` package — Claude Code, Gemini, Qwen, …) don't
+        // recognize `termio`, so they fall back to plain text. FORCE_HYPERLINK
+        // is that library's highest-precedence override; setting it here makes
+        // file-path/URL links clickable without impersonating another terminal
+        // (we must keep TERM_PROGRAM=termio for session identity — see
+        // `PTYProcess` self-detection). Tools that emit OSC 8 unconditionally
+        // (Codex, Aider/Rich) are unaffected.
+        env["FORCE_HYPERLINK"] = "1"
 
         // The PTY is created first so the surface's `@Sendable` write/resize
         // callbacks can capture it directly (it is thread-safe: fd writes and

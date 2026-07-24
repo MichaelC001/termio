@@ -27,10 +27,7 @@ final class TermioStore: ObservableObject {
             if let id = selectedSessionID {
                 // A mid-turn `.working` keeps its spinner; only the resting
                 // "your turn" states are answered by looking.
-                let current = status(for: id)
-                if current == .needsAttention || current == .done {
-                    setStatus(.idle, for: id)
-                }
+                markSeen(id)
                 // Switching to a session counts as activity for its project, so the
                 // "Recent Activity" sort floats a project the moment you focus it —
                 // forced past the coalesce window since it's a deliberate user action.
@@ -677,6 +674,19 @@ final class TermioStore: ObservableObject {
     /// place the sidebar label does, without touching the storage directly.
     func workingDirectory(for sessionID: Session.ID) -> String? {
         runtimes[sessionID]?.workingDirectory
+    }
+
+    /// Acknowledge a resting "your turn" cue: a finished (`.done`) or blocked
+    /// (`.needsAttention`) session the user has now engaged with drops back to
+    /// `.idle`, clearing its sidebar/tray dot. A mid-turn `.working` is left
+    /// alone — its spinner isn't a cue to dismiss. Idempotent, and unlike the
+    /// `selectedSessionID` didSet it doesn't require the selection to *change*, so
+    /// re-clicking the session you're already on still clears the dot.
+    func markSeen(_ id: Session.ID) {
+        let current = status(for: id)
+        if current == .done || current == .needsAttention {
+            setStatus(.idle, for: id)
+        }
     }
 
     /// The agent a session *presents* as. Since identity became persistent this is

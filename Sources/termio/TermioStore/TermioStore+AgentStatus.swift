@@ -60,7 +60,7 @@ extension TermioStore {
     /// Maps a normalized agent status report onto the session's status. This is the
     /// only path that drives `.working`: an agent's hooks expose when a turn (or a
     /// tool) *starts*, which the surface bell/OSC signals never could. The two
-    /// layers coexist by writing the same `statuses` — hooks add precision when
+    /// layers coexist by writing the same per-session status — hooks add precision when
     /// installed, the zero-config signals remain the fallback when they are not.
     private func applyStatusReport(_ report: StatusReport) {
         guard let id = sessionID(for: report) else { return }
@@ -130,11 +130,14 @@ extension TermioStore {
             // sort is handled by `setStatus`'s working transition.)
             lastWorkingAt[id] = Date()
         case "done":
-            // The turn finished. If the user is looking at it, calm; otherwise a
-            // gentle "ready for you" cue — distinct from `needsAttention`, which is
-            // reserved for the agent actually being blocked on the user.
+            // The turn finished — always leave a "ready for you" green dot, even on
+            // the session the user is currently looking at, so a finished agent stays
+            // on the menu-bar roster instead of blinking off the instant it stops.
+            // The dot is cleared by engaging with the row (`markSeen`, wired to the
+            // sidebar/tray click) or by the next turn starting. Distinct from
+            // `needsAttention`, which is reserved for the agent being blocked on you.
             clearWorking(id)
-            setStatus(selectedSessionID == id ? .idle : .done, for: id)
+            setStatus(.done, for: id)
         case "attention":
             // The agent is blocked waiting on the user (a permission prompt or a
             // free-text answer). Mirror the bell path: only flag a session the user

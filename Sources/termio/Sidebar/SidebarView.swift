@@ -1077,6 +1077,9 @@ private struct SessionRow: View {
             // editor even when this row is already selected (no selection change to react to).
             store.openFileURL = nil
             store.selectedSessionID = session.id
+            // Re-tapping the row you're already on still clears a resting done/attention
+            // dot (the selection didSet only reacts to a change).
+            store.markSeen(session.id)
         }
         // NSMenu rather than SwiftUI's `.contextMenu` so right-click leaves no blue
         // accent ring on the row (see `SidebarRowContextMenu`).
