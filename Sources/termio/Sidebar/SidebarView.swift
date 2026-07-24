@@ -951,13 +951,7 @@ private struct SessionRow: View {
             // settings page shows), and the plain terminal symbol carries its own
             // muted grey from AgentIconView.
             Group {
-                if session.isBrowser {
-                    // A browser pane has no agent to badge (and never "works"),
-                    // so it carries a plain globe in the terminal glyph's grey.
-                    Image(systemName: "globe")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                } else if session.isSSH, store.status(for: session.id) != .working {
+                if session.isSSH, store.status(for: session.id) != .working {
                     // An SSH terminal reads as a remote link — a network glyph in the
                     // terminal grey — except while a detected remote agent is working,
                     // when it falls through to the spinner below.

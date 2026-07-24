@@ -63,12 +63,6 @@ extension TermioStore {
         }
         switch resolveTarget(request.target, in: project) {
         case .found(let session):
-            // A browser pane takes no keystrokes — and `surface(for:)` below would
-            // conjure a shell for it, which a browser session must never get.
-            if session.isBrowser {
-                return controlError(request, "not_terminal",
-                    "\(displayTitle(for: session)) is a browser pane — it accepts no input.")
-            }
             let state = surface(for: session, in: project)
 
             // The libghostty surface attaches lazily on the pane's first render, so a

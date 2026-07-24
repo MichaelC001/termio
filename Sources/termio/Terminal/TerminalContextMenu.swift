@@ -97,10 +97,6 @@ final class TerminalContextMenu: NSObject {
         menu.addItem(.separator())
         menu.addItem(storeItem("Split Right", action: #selector(splitRight), symbol: "rectangle.split.2x1"))
         menu.addItem(storeItem("Split Down", action: #selector(splitDown), symbol: "rectangle.split.1x2"))
-        // Opens a browser pane split to the right of this terminal — always
-        // present, not gated on a hovered link. With a link under the pointer the
-        // pane opens on it; otherwise it opens blank with the address bar focused.
-        menu.addItem(storeItem("Open Browser", action: #selector(openBrowser), symbol: "globe"))
         // A split pane leaves the layout but keeps its session alive ("Close
         // Pane"); a lone terminal has no pane to leave, so the only close that
         // means anything kills the session outright — same action and label as
@@ -144,8 +140,6 @@ final class TerminalContextMenu: NSObject {
         guard let url = clickedLinkURL else { return }
         NSWorkspace.shared.open(url)
     }
-
-    @objc private func openBrowser() { store?.openBrowserPane(url: clickedLinkURL, direction: .horizontal) }
 
     /// All terminal surface views under `root`, in tree order.
     private func terminalViews(in root: NSView) -> [TerminalView] {

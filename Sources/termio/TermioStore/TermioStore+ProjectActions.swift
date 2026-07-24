@@ -487,7 +487,6 @@ extension TermioStore {
             ptyProcesses[sessionID]?.terminate()
             ptyProcesses[sessionID] = nil
             surfaces[sessionID] = nil
-            browserPanes[sessionID] = nil
             monitors[sessionID] = nil
             removeRuntime(for: sessionID)
             processSpawnedAt[sessionID] = nil
@@ -550,7 +549,6 @@ extension TermioStore {
         ptyProcesses[id]?.terminate()
         ptyProcesses[id] = nil
         surfaces[id] = nil
-        browserPanes[id] = nil
         monitors[id] = nil
         removeRuntime(for: id)
         processSpawnedAt[id] = nil
