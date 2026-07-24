@@ -320,18 +320,6 @@ enum GitService {
         return "/" + escaped
     }
 
-    /// The untracked *directories* as git itself collapses them (`--untracked-files=normal`) —
-    /// the gitignore-shaped roots of an untracked flood, powering "Ignore Folder …".
-    static func untrackedRoots(in repoRoot: String) async -> [String] {
-        await offMain {
-            guard let raw = run(["status", "--porcelain=v2", "-z", "--untracked-files=normal"], in: repoRoot)
-            else { return [] }
-            return raw.components(separatedBy: "\0")
-                .filter { $0.hasPrefix("? ") && $0.hasSuffix("/") }
-                .map { String($0.dropFirst(2)) }
-        }
-    }
-
     /// Appends patterns to the repo root's `.gitignore` (created if absent), skipping lines
     /// already present. The descriptor is opened with `O_APPEND` so a concurrent creator can
     /// never be truncated; `flock` serializes termio's own simultaneous menu actions. Existing

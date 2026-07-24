@@ -78,14 +78,6 @@ final class GitServiceScaleTests: XCTestCase {
         XCTAssertEqual(scans.value, 0)
     }
 
-    func testUntrackedRootsCollapseDirectories() async throws {
-        try write(".build/deep/one.o", Data("a".utf8))
-        try write(".build/deep/two.o", Data("b".utf8))
-        try write("loose.txt", Data("c".utf8))
-        let roots = await GitService.untrackedRoots(in: repo.path)
-        XCTAssertEqual(roots, [".build/"])
-    }
-
     func testLineCountBoundaries() async throws {
         // Trailing newline must NOT add a phantom line (the old String-split did: "x\ny\n"
         // split non-omitting gave ["x","y",""] = 3); git counts 2 and so do we now.

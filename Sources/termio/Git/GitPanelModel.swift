@@ -18,9 +18,6 @@ final class GitPanelModel: ObservableObject {
 
     @Published var changes: [GitChange] = []
     @Published var isLoading = true
-    /// Untracked directories as git collapses them (`ios/.build/` …) — the patterns the
-    /// "Ignore Folder" row action offers, refreshed with every change load.
-    @Published var untrackedRoots: [String] = []
 
     /// The commit history, loaded lazily the first time the History tab is shown.
     @Published var commits: [GitCommit] = []
@@ -49,21 +46,13 @@ final class GitPanelModel: ObservableObject {
     /// Reloads the working-tree change list. The first successful pass also arms the
     /// file-system watch, so from then on the pane refreshes itself.
     func load() async {
-        // Loads overlap (explicit reload racing the FSEvents debounce); the generation guard
-        // keeps a slow older pass from publishing stale changes or — worse — stale untracked
-        // roots that would back an over-broad "Ignore Folder" action.
+        // Loads overlap (explicit reload racing the FSEvents debounce); the generation
+        // guard keeps a slow older pass from publishing a stale snapshot over a newer one.
         loadGeneration += 1
         let generation = loadGeneration
         let loaded = await GitService.changes(in: repoRoot)
         guard generation == loadGeneration else { return }
-        let roots = loaded.contains(where: \.isUntracked)
-            ? await GitService.untrackedRoots(in: repoRoot)
-            : []
-        guard generation == loadGeneration else { return }
-        // Publish one coherent snapshot. Leaving the previous roots paired with newly
-        // published changes, even briefly, can expose a stale "Ignore Folder" action.
         changes = loaded
-        untrackedRoots = roots
         isLoading = false
         if watcher == nil { await armWatcher() }
     }

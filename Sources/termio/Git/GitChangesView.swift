@@ -200,13 +200,6 @@ struct GitChangesView: View {
                 .foregroundStyle(.secondary)
             if additions > 0 { Text("+\(additions)").foregroundStyle(.green) }
             if deletions > 0 { Text("−\(deletions)").foregroundStyle(.red) }
-            // The flood tell: line counts are off above the limit, and the fix is a
-            // .gitignore line — say so where the missing numbers would have been.
-            if model.changes.lazy.filter(\.isUntracked).count > GitService.untrackedCountLimit {
-                Text("· mostly untracked — right-click a file to add its folder to .gitignore")
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-            }
         }
     }
 
@@ -270,6 +263,7 @@ struct GitChangesView: View {
     @ViewBuilder
     private func contextMenu(for change: GitChange) -> some View {
         let targets = targets(for: change)
+        let fileExtension = (change.path as NSString).pathExtension.lowercased()
         if targets.count == 1 {
             Button("Open in Editor") { openInEditor(change) }
             Button("Reveal in Finder") { revealInFinder(change) }
@@ -277,13 +271,15 @@ struct GitChangesView: View {
             Button("Copy Path") { copyPath(change) }
             Button("Copy Relative Path") { copyToPasteboard(change.path) }
             Button("Copy Diff") { copyDiff(targets) }
-            // The forgot-my-.gitignore repair, on the spot (VS Code's action, plus the
-            // folder form that actually fixes a build-products flood in one click).
+            // GitHub Desktop's two ignore actions, verbatim — the by-extension form is
+            // what clears a build-products flood one file type at a time.
             if change.isUntracked {
                 Divider()
-                Button("Add to .gitignore") { addToGitignore(paths: [change.path]) }
-                if let root = untrackedRoot(of: change) {
-                    Button("Ignore Folder “\(root)”") { addToGitignore(paths: [root]) }
+                Button("Ignore File (Add to .gitignore)") { addToGitignore(paths: [change.path]) }
+                if !fileExtension.isEmpty {
+                    Button("Ignore All .\(fileExtension) Files (Add to .gitignore)") {
+                        addRawPatternToGitignore("*." + fileExtension)
+                    }
                 }
             }
             Divider()
@@ -296,15 +292,12 @@ struct GitChangesView: View {
                 copyToPasteboard(targets.map(\.path).joined(separator: "\n"))
             }
             Button("Copy Diff") { copyDiff(targets) }
-            // The flood repair must survive multi-selection too — the footer advertises it.
+            // GitHub Desktop acts on the whole selection here too.
             let untracked = targets.filter(\.isUntracked)
             if !untracked.isEmpty {
                 Divider()
-                Button("Add \(untracked.count) \(untracked.count == 1 ? "File" : "Files") to .gitignore") {
+                Button("Ignore \(untracked.count) Selected Files (Add to .gitignore)") {
                     addToGitignore(paths: untracked.map(\.path))
-                }
-                if let root = untrackedRoot(of: change) {
-                    Button("Ignore Folder “\(root)”") { addToGitignore(paths: [root]) }
                 }
             }
             Divider()
@@ -317,10 +310,16 @@ struct GitChangesView: View {
         return model.changes.filter { selection.contains($0.path) }
     }
 
-    /// The collapsed untracked directory containing this file (`ios/.build/` for
-    /// `ios/.build/foo.o`), i.e. the pattern one `.gitignore` line can silence.
-    private func untrackedRoot(of change: GitChange) -> String? {
-        model.untrackedRoots.first { change.path.hasPrefix($0) }
+    /// Appends a pattern exactly as given (`*.o`) — GitHub Desktop's by-extension form.
+    private func addRawPatternToGitignore(_ pattern: String) {
+        Task {
+            let succeeded = await GitService.appendToGitignore([pattern], in: repoRoot)
+            if !succeeded {
+                gitignoreErrorMessage =
+                    "termio could not append to the repository’s .gitignore. Check its permissions and try again."
+            }
+            await model.load()
+        }
     }
 
     /// Escapes each repo-relative path into a literal rooted pattern before appending —
