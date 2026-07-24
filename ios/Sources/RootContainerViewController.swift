@@ -1,3 +1,4 @@
+import TermioShared
 import UIKit
 
 /// The shell: the home is two tabs — Projects (the strip + project list, with
@@ -37,6 +38,11 @@ final class RootContainerViewController: UIViewController {
     private lazy var chatsNav = HomeNavigationController(
         rootViewController: ChatListViewController(store: store)
     )
+    /// The Terminals tab's stack: the flat loose-shell list, the shell twin of
+    /// Chats. Same shape (a nav for consistency; nothing pushes onto it yet).
+    private lazy var terminalsNav = HomeNavigationController(
+        rootViewController: TerminalListViewController(store: store)
+    )
     /// The Settings tab, Telegram's placement: the same page the unpaired
     /// zero state presents modally, minus the modal ✕. A stock nav (bar
     /// visible) — settings uses system chrome, unlike the home lists.
@@ -50,9 +56,10 @@ final class RootContainerViewController: UIViewController {
     }()
     /// The bottom-left floating switcher between the three.
     private let tabPill = HomeTabPill(items: [
-        (title: "Projects", symbol: "folder"),
-        (title: "Chats", symbol: "bubble.left.and.bubble.right"),
-        (title: "Settings", symbol: "gearshape"),
+        (title: "Projects", icon: .folder),
+        (title: "Chats", icon: .bubbleChat),
+        (title: "Terminals", icon: .terminal),
+        (title: "Settings", icon: .settings),
     ])
 
     /// Every parked terminal is a live libghostty surface (scrollback + render
@@ -76,7 +83,7 @@ final class RootContainerViewController: UIViewController {
         // All tab stacks are permanent base layers: added once, always behind
         // any terminal, only ever toggled hidden — so each tab keeps its
         // scroll position and pushed pages across switches.
-        let tabStacks: [UIViewController] = [projectsNav, chatsNav, settingsNav]
+        let tabStacks: [UIViewController] = [projectsNav, chatsNav, terminalsNav, settingsNav]
         for nav in tabStacks {
             addChild(nav)
             nav.view.frame = view.bounds
@@ -275,6 +282,9 @@ final class RootContainerViewController: UIViewController {
         }
         for screen in chatsNav.viewControllers {
             (screen as? ChatListViewController)?.refresh()
+        }
+        for screen in terminalsNav.viewControllers {
+            (screen as? TerminalListViewController)?.refresh()
         }
     }
 

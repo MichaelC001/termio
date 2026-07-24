@@ -220,15 +220,16 @@ final class ProjectListViewController: UIViewController {
     }
 
     /// Rebuild the section list from the store: the attention strip (only when
-    /// non-empty), then the projects in the chosen order. Chats-kind containers
-    /// belong to the Chats tab — their attention sessions still surface in the
-    /// strip here, the cross-cutting shortcut.
+    /// non-empty), then the projects in the chosen order. The loose funnels
+    /// (Chats, Terminals) belong to their own tabs, so they're kept out of the
+    /// folder list — their attention sessions still surface in the strip here,
+    /// the cross-cutting shortcut.
     private func refilter() {
         attention = store.attentionSessions
         let ordered = sortByName
             ? store.projects.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             : store.projects
-        visible = ordered.filter { $0.kind != "chats" }
+        visible = ordered.filter { $0.kind != "chats" && $0.kind != "terminals" }
         sections = (attention.isEmpty ? [] : [.needsYou]) + [.projects]
         newSessionButton.isHidden = store.companionURL == nil
             || !visible.contains { $0.rosterID != nil }
