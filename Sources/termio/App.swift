@@ -179,6 +179,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         updateWindowTitle()
         // Keep the native title/subtitle in step with the selected session and its live branch.
+        // The title reads only the selected session's working-directory/project path (see
+        // `updateWindowTitle`), both of which live on the structural store, so plain
+        // `objectWillChange` covers it — no per-session runtime ping needed here.
         titleObserver = store.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] in

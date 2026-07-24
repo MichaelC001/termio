@@ -180,6 +180,16 @@ extension TermioStore {
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
         env["TERM_PROGRAM"] = "termio"
+        // termio embeds libghostty, which renders OSC 8 hyperlinks. Agent CLIs
+        // that gate hyperlink emission on a `TERM_PROGRAM` allowlist (the npm
+        // `supports-hyperlinks` package — Claude Code, Gemini, Qwen, …) don't
+        // recognize `termio`, so they fall back to plain text. FORCE_HYPERLINK
+        // is that library's highest-precedence override; setting it here makes
+        // file-path/URL links clickable without impersonating another terminal
+        // (we must keep TERM_PROGRAM=termio for session identity — see
+        // `PTYProcess` self-detection). Tools that emit OSC 8 unconditionally
+        // (Codex, Aider/Rich) are unaffected.
+        env["FORCE_HYPERLINK"] = "1"
 
         // The PTY is created first so the surface's `@Sendable` write/resize
         // callbacks can capture it directly (it is thread-safe: fd writes and
@@ -584,7 +594,7 @@ extension TermioStore {
         // agent name until the new conversation earns a topic. Status and
         // `lastTitleActivity` are separate channels — leave them alone.
         if session.resumeID != nil {
-            liveTitles[id] = nil
+            setLiveTitle(nil, for: id)
             session.liveTitle = nil
         }
         session.resumeID = conversationID
@@ -840,9 +850,9 @@ extension TermioStore {
     /// state, so "Action Required" after a turn ends is a real question to you.
     private func monitor(_ state: TerminalViewState, for id: Session.ID) {
         let flag: () -> Void = { [weak self] in
-            guard let self, self.selectedSessionID != id, self.statuses[id] != .done
+            guard let self, self.selectedSessionID != id, self.status(for: id) != .done
             else { return }
-            self.statuses[id] = .needsAttention
+            self.setStatus(.needsAttention, for: id)
         }
         monitors[id] = [
             state.$lastBellAt.dropFirst().compactMap { $0 }.sink { _ in flag() },
@@ -869,8 +879,8 @@ extension TermioStore {
                 }
                 let cleaned = self.sanitizedLiveTitle(title)
                 guard self.isMeaningfulLiveTitle(cleaned, for: session),
-                      self.liveTitles[id] != cleaned else { return }
-                self.liveTitles[id] = cleaned
+                      self.runtimes[id]?.liveTitle != cleaned else { return }
+                self.setLiveTitle(cleaned, for: id)
                 // Also record it on the session itself, so the label survives an
                 // app restart (the agent won't re-emit a title until it next works).
                 // Declared agent sessions only: a plain terminal's adopted title
@@ -896,7 +906,7 @@ extension TermioStore {
     /// it on the session itself, since the cwd is that entity's own path (the
     /// shell respawns there next launch; see docs/design/loose-terminal-entity.md).
     func noteWorkingDirectory(_ cwd: String, for id: Session.ID) {
-        if workingDirectories[id] != cwd { workingDirectories[id] = cwd }
+        setWorkingDirectory(cwd, for: id)
         guard let location = locate(id),
               projects[location.project].kind == .terminals,
               projects[location.project].sessions[location.session]

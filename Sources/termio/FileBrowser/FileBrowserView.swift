@@ -34,7 +34,7 @@ struct FileBrowserView: View {
     private var projectPath: String? {
         guard let id = store.selectedSessionID, let project = store.project(for: id) else { return nil }
         if project.kind == .terminals {
-            return store.workingDirectories[id]
+            return store.workingDirectory(for: id)
                 ?? store.session(id)?.lastWorkingDirectory
                 ?? project.path
         }

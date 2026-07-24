@@ -951,10 +951,12 @@ extension TermioStore {
         // Without this, permission prompts answered through the raw PTY can stay
         // orange forever because menu keystrokes don't necessarily produce a new
         // agent hook event to overwrite the old attention state.
-        if statuses[session.id] == .needsAttention || statuses[session.id] == .done {
-            statuses[session.id] = .idle
+        let current = status(for: session.id)
+        if current == .needsAttention || current == .done {
+            setStatus(.idle, for: session.id)
         }
-        liveActivity[project.id] = Date()
+        // A deliberate attach from the phone, like desktop selection — float it now.
+        noteProjectActivity(project.id, force: true)
         if let pty = ptyProcesses[session.id] { return pty }
         _ = surface(for: session, in: project)
         return ptyProcesses[session.id]

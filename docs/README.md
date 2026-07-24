@@ -73,6 +73,7 @@ from the real front matter).
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/remote-projects.md) |
 | draft | design | [Session Daemon Architecture (termiod — one model for local, remote, mobile)](design/session-daemon-architecture.md) |
 | draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/remote-access-relay-strategy.md) |
+| draft | design | [Sidebar scroll performance — per-session runtime state](design/sidebar-scroll-performance.md) |
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/sandbox-seatbelt.md) |
 | draft | rfc | [Automation — scheduled agent runs](rfcs/automation-scheduled-agent-runs.md) |
 | draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](rfcs/fork-libghostty-spm.md) |

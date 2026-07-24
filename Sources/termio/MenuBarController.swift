@@ -40,8 +40,18 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // backs the working-state pulse animation.
         statusItem.button?.wantsLayer = true
 
+        // Structural changes (a session opened/closed, a rename) come over the store's
+        // own `objectWillChange`.
         store.objectWillChange
             .receive(on: RunLoop.main)
+            .sink { [weak self] in self?.refresh() }
+            .store(in: &cancellables)
+        // Per-session status/title churn no longer rides `objectWillChange` (it moved to
+        // per-session `SessionRuntime`s so the sidebar stops rebuilding on every tick),
+        // so the tray subscribes to the dedicated runtime ping instead. Throttled: the
+        // menu only needs to catch up a few times a second, not on every hook event.
+        store.sessionRuntimeDidChange
+            .throttle(for: .milliseconds(250), scheduler: RunLoop.main, latest: true)
             .sink { [weak self] in self?.refresh() }
             .store(in: &cancellables)
         refresh()

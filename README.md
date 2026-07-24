@@ -72,9 +72,3 @@ and Claude Code emits OSC 9/99 notifications natively inside Ghostty, so
 - Git worktrees grouped under each project (also gives each session a unique cwd,
   which is what lets hooks correlate back to the right session).
 - Hosted PTY / session-host so sessions survive quitting the window.
-
-## History
-
-termio was previously a Zed fork. On 2026-06-26 it was restarted from scratch as
-a Swift + libghostty app. The Zed-fork tree is preserved in git history under the
-`zed-fork-archive` tag (`git checkout zed-fork-archive`).

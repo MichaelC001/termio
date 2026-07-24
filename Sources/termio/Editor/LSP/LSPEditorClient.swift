@@ -15,6 +15,9 @@ final class LSPEditorClient {
     /// flush first, so a jump right after typing still resolves against the current text.
     private var unsentText: String?
     private var changeTask: Task<Void, Never>?
+    /// The last definition answer, keyed by offset and invalidated on every edit — the ⌘-hover
+    /// probe and the click that follows it become one server request instead of two.
+    private var definitionMemo: (offset: Int, target: (url: URL, line: Int)?)?
 
     /// Opens `url` against its project's server. `nil` when no server owns the file — the caller
     /// leaves every LSP hook dormant.
@@ -43,6 +46,7 @@ final class LSPEditorClient {
     /// (a rangeless change event is a full replace — every mainstream server accepts it, and it
     /// sidesteps incremental-diff bookkeeping entirely).
     func noteChange(fullText: String) {
+        definitionMemo = nil
         unsentText = fullText
         changeTask?.cancel()
         changeTask = Task {
@@ -72,6 +76,7 @@ final class LSPEditorClient {
     /// when the server has no answer. Multiple candidates collapse to the first — good enough for
     /// a jump, and menus can come later if it ever matters.
     func definition(at utf16Offset: Int, in text: String) async -> (url: URL, line: Int)? {
+        if let memo = definitionMemo, memo.offset == utf16Offset { return memo.target }
         await flushPendingChange()
         let position = TextPositions.position(utf16Offset: utf16Offset, in: text as NSString)
         let response: DefinitionResponse
@@ -81,9 +86,15 @@ final class LSPEditorClient {
             Log.lsp.error("definition failed: \(String(describing: error), privacy: .public)")
             return nil
         }
-        guard let hit = Self.firstTarget(in: response) else { return nil }
-        guard let url = URL(string: hit.uri), url.isFileURL else { return nil }
-        return (url.standardizedFileURL, hit.range.start.line + 1)
+        let target: (url: URL, line: Int)?
+        if let hit = Self.firstTarget(in: response),
+           let url = URL(string: hit.uri), url.isFileURL {
+            target = (url.standardizedFileURL, hit.range.start.line + 1)
+        } else {
+            target = nil
+        }
+        definitionMemo = (utf16Offset, target)
+        return target
     }
 
     private static func firstTarget(in response: DefinitionResponse) -> (uri: DocumentUri, range: LSPRange)? {
