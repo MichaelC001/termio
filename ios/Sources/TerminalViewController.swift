@@ -644,14 +644,28 @@ final class TerminalViewController: UIViewController {
             return shellSession.terminalSession
         case .companion(let url):
             let transport = CompanionTransport(url: url, attachSessionID: session.rosterID)
+            // The phone mirrors the Mac's PTY through a live libghostty surface,
+            // which answers terminal queries (XTVERSION, DA, DSR) on its own. The
+            // Mac's authoritative surface already answered; the phone's duplicate
+            // arrives late and, having missed the agent's parse window, leaks into
+            // its input line as literal text — e.g. Grok showing a stray
+            // ">|ghostty 1.3.2-main-+…". A mirror must never talk back to the host.
+            // These auto-responses fire synchronously while the surface parses host
+            // output, so we drop any write emitted inside `receive()`. Real
+            // keystrokes arrive on the main thread via `sendInput`, never inside a
+            // `receive()`, so the guard is thread-scoped and leaves them untouched.
+            let mirrorGuard = MirrorResponseGuard()
             let terminalSession = InMemoryTerminalSession(
-                write: { [weak transport] data in transport?.send(data) },
+                write: { [weak transport] data in
+                    guard !mirrorGuard.isSuppressing else { return }
+                    transport?.send(data)
+                },
                 resize: { [weak transport] viewport in
                     transport?.resize(cols: Int(viewport.columns), rows: Int(viewport.rows))
                 }
             )
             transport.onOutput = { [weak terminalSession, weak self] data in
-                terminalSession?.receive(data)
+                mirrorGuard.duringReceive { terminalSession?.receive(data) }
                 DispatchQueue.main.async { self?.altScreenSniffer.consume(data) }
             }
             transport.onState = { [weak self] state in
@@ -1075,6 +1089,34 @@ extension TerminalViewController: TerminalSurfaceRendererHealthDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
             self?.rendererCoverView.isHidden = true
         }
+    }
+}
+
+// MARK: - Mirror response guard
+
+/// Marks the window in which the companion surface is parsing host output, so
+/// the `write` closure can tell a surface-generated terminal reply (XTVERSION,
+/// DA, DSR — emitted synchronously from inside `receive()`) apart from a genuine
+/// keystroke. The Mac's authoritative surface already answers every host query;
+/// the phone is a passive mirror and must stay silent, or its late duplicate
+/// reply leaks into the agent's input line.
+///
+/// Thread-scoped by identity: `duringReceive` runs on the socket delivery queue,
+/// real input on the main thread, so a write is a mirror auto-response exactly
+/// when it fires on the thread currently inside `receive()`.
+private final class MirrorResponseGuard {
+    private let lock = NSLock()
+    private var receivingThread: Thread?
+
+    func duringReceive(_ body: () -> Void) {
+        lock.lock(); receivingThread = Thread.current; lock.unlock()
+        defer { lock.lock(); receivingThread = nil; lock.unlock() }
+        body()
+    }
+
+    var isSuppressing: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return receivingThread === Thread.current
     }
 }
 
