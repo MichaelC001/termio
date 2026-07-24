@@ -83,7 +83,7 @@ final class ChatListViewController: UIViewController {
     /// longer the primary action. Deferred so it always reflects the roster's
     /// current agent list (and the button hides while unpaired).
     private func configureNewChatButton() {
-        newChatButton.applyGlassSymbol("plus", pointSize: 22)
+        newChatButton.applyGlassIcon(.add, boxSize: 26)
         newChatButton.tintColor = .label
         newChatButton.accessibilityLabel = "New Chat"
         newChatButton.addAction(

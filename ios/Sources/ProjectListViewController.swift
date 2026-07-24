@@ -149,7 +149,7 @@ final class ProjectListViewController: UIViewController {
     /// with the agents inside (the long-press menu, made discoverable);
     /// deferred so it always reflects the live roster, hidden while unpaired.
     private func configureNewSessionButton() {
-        newSessionButton.applyGlassSymbol("plus", pointSize: 22)
+        newSessionButton.applyGlassIcon(.add, boxSize: 26)
         newSessionButton.tintColor = .label
         newSessionButton.accessibilityLabel = "New Session"
         newSessionButton.showsMenuAsPrimaryAction = true

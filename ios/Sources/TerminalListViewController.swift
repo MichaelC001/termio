@@ -83,7 +83,7 @@ final class TerminalListViewController: UIViewController {
     /// so — unlike the Chats ＋ — no long-press menu. Hidden until the Mac has a
     /// terminals container to land in (mirrors the Chats ＋), and while unpaired.
     private func configureNewTerminalButton() {
-        newTerminalButton.applyGlassSymbol("plus", pointSize: 22)
+        newTerminalButton.applyGlassIcon(.add, boxSize: 26)
         newTerminalButton.tintColor = .label
         newTerminalButton.accessibilityLabel = "New Terminal"
         newTerminalButton.addAction(
