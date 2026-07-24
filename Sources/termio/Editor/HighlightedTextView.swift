@@ -33,6 +33,10 @@ struct HighlightedTextView: NSViewRepresentable {
     /// Hover documentation: given the UTF-16 offset under a dwelling ⌘-hover, returns the
     /// markdown to show in a popover (`nil` shows nothing).
     var hoverProvider: ((Int) async -> String?)? = nil
+    /// The honest-underline probe: does the symbol at this offset actually resolve to a
+    /// definition? The ⌘-hover link only lights when this answers true, so an underline is a
+    /// promise a click can keep — Xcode's contract. `nil` falls back to lexical underlining.
+    var linkResolver: ((Int) async -> Bool)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text, cursor: $cursor) }
 
@@ -55,6 +59,7 @@ struct HighlightedTextView: NSViewRepresentable {
         textView.onSave = onSave
         textView.onDefinitionRequest = onDefinitionRequest
         textView.hoverProvider = hoverProvider
+        textView.linkResolver = linkResolver
         textView.delegate = context.coordinator
         textView.isEditable = isEditable
         textView.isSelectable = true
@@ -126,6 +131,7 @@ struct HighlightedTextView: NSViewRepresentable {
         textView.onSave = onSave
         textView.onDefinitionRequest = onDefinitionRequest
         textView.hoverProvider = hoverProvider
+        textView.linkResolver = linkResolver
         if textView.isEditable != isEditable { textView.isEditable = isEditable }
         let coordinator = context.coordinator
         let storage = coordinator.textStorage
@@ -173,8 +179,10 @@ struct HighlightedTextView: NSViewRepresentable {
         textView.insertionPointColor = caretColor
         if let saving = textView as? SavingTextView {
             saving.currentLineColor = currentLineColor
-            // The matched pair glows in the caret's own accent, dimmed to a wash.
+            // The matched pair glows in the caret's own accent, dimmed to a wash; a lit
+            // ⌘-hover link takes the accent at full strength — Xcode's symbol-turns-blue.
             saving.bracketHighlightColor = caretColor.withAlphaComponent(0.28)
+            saving.linkColor = caretColor
         }
     }
 
@@ -234,6 +242,8 @@ struct HighlightedTextView: NSViewRepresentable {
             guard let textView = notification.object as? NSTextView else { return }
             text.wrappedValue = textView.string
             ruler?.needsDisplay = true
+            // Every cached link-probe answer keyed on the old text is stale now.
+            (textView as? SavingTextView)?.bufferChanged()
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
@@ -267,6 +277,9 @@ private final class SavingTextView: NSTextView {
         didSet { if (onDefinitionRequest == nil) != (oldValue == nil) { updateTrackingAreas() } }
     }
     var hoverProvider: ((Int) async -> String?)?
+    /// Does the symbol at this offset resolve to a definition? Confirms a candidate before it
+    /// lights up (`nil` = light lexically, the pre-probe behavior).
+    var linkResolver: ((Int) async -> Bool)?
     /// Full-width wash under the caret's line; `.clear` (or a read-only buffer) draws nothing.
     var currentLineColor: NSColor = .clear { didSet { needsDisplay = true } }
     /// Background wash on a bracket pair when the caret sits against one of them.
@@ -282,6 +295,14 @@ private final class SavingTextView: NSTextView {
     /// The armed dwell → hover-popover chain, cancelled whenever the target changes.
     private var hoverTask: Task<Void, Never>?
     private var hoverPopover: NSPopover?
+    /// The hovered identifier whose definition probe is still in flight.
+    private var candidateRange: NSRange?
+    private var resolveTask: Task<Void, Never>?
+    /// Probe answers for the current buffer version (cleared on every edit), so re-hovering a
+    /// word doesn't re-ask the server.
+    private var linkCache: [NSRange: Bool] = [:]
+    /// The accent a confirmed link lights up in (set alongside the caret color).
+    var linkColor: NSColor = .linkColor
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -408,6 +429,11 @@ private final class SavingTextView: NSTextView {
         ))
     }
 
+    /// The honest-underline flow: hovering an identifier under ⌘ makes it a *candidate*; a short
+    /// debounce later the resolver confirms a definition actually exists, and only then does the
+    /// word light up in the accent (color + underline + hand) — so, like Xcode, a lit link is a
+    /// promise the click can keep. ⌘-click itself still *attempts* anywhere (a cold server may
+    /// not have resolved the probe yet); the light is honesty, not a gate.
     override func mouseMoved(with event: NSEvent) {
         super.mouseMoved(with: event)
         guard onDefinitionRequest != nil,
@@ -418,14 +444,43 @@ private final class SavingTextView: NSTextView {
             clearLink()
             return
         }
-        guard range != linkRange else { return }
+        if range == linkRange || range == candidateRange { return }
         clearLink()
+        candidateRange = range
+        armHover(for: range)
+        guard let linkResolver else { light(range); return } // no probe → lexical fallback
+        if let known = linkCache[range] {
+            if known { light(range) }
+            return
+        }
+        resolveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 90_000_000) // let the cursor travel settle
+            if Task.isCancelled { return }
+            let resolved = await linkResolver(range.location)
+            if Task.isCancelled { return }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.linkCache[range] = resolved
+                guard resolved, self.candidateRange == range,
+                      NSEvent.modifierFlags.contains(.command) else { return }
+                self.light(range)
+            }
+        }
+    }
+
+    /// Turns the confirmed identifier into a link: accent ink, accent underline, hand cursor —
+    /// all temporary attributes, so the Highlightr storage never notices.
+    private func light(_ range: NSRange) {
         linkRange = range
         layoutManager?.addTemporaryAttributes(
-            [.underlineStyle: NSUnderlineStyle.single.rawValue, .cursor: NSCursor.pointingHand],
+            [
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+                .underlineColor: linkColor,
+                .foregroundColor: linkColor,
+                .cursor: NSCursor.pointingHand,
+            ],
             forCharacterRange: range
         )
-        armHover(for: range)
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -441,11 +496,10 @@ private final class SavingTextView: NSTextView {
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.command),
            let onDefinitionRequest,
-           let range = linkRange,
            let index = characterIndex(at: event.locationInWindow),
-           NSLocationInRange(index, range) {
+           let range = identifierRange(at: index) {
             // Swallow the click: stock ⌘-click starts a discontiguous selection, which would
-            // fight the jump.
+            // fight the jump. The jump is attempted even if the probe hasn't lit the word yet.
             clearLink()
             onDefinitionRequest(range.location)
             return
@@ -459,15 +513,26 @@ private final class SavingTextView: NSTextView {
         super.scrollWheel(with: event)
     }
 
+    /// The buffer changed: every cached probe answer and lit range is stale.
+    func bufferChanged() {
+        linkCache.removeAll()
+        clearLink()
+    }
+
     private func clearLink() {
         hoverTask?.cancel()
         hoverTask = nil
+        resolveTask?.cancel()
+        resolveTask = nil
+        candidateRange = nil
         hoverPopover?.close()
         hoverPopover = nil
         guard let range = linkRange else { return }
         linkRange = nil
         guard let clamped = Self.clamp(range, to: (string as NSString).length) else { return }
         layoutManager?.removeTemporaryAttribute(.underlineStyle, forCharacterRange: clamped)
+        layoutManager?.removeTemporaryAttribute(.underlineColor, forCharacterRange: clamped)
+        layoutManager?.removeTemporaryAttribute(.foregroundColor, forCharacterRange: clamped)
         layoutManager?.removeTemporaryAttribute(.cursor, forCharacterRange: clamped)
     }
 
@@ -551,7 +616,7 @@ private final class SavingTextView: NSTextView {
 
         let popover = NSPopover()
         popover.behavior = .transient
-        popover.animates = false
+        popover.animates = true // the soft system fade Quick Help has
         let controller = NSViewController()
         controller.view = NSHostingView(rootView: LSPHoverContent(markdown: markdown))
         popover.contentViewController = controller
@@ -560,15 +625,34 @@ private final class SavingTextView: NSTextView {
     }
 }
 
-/// The hover popover's body: the server's markdown, code-styled where fenced, capped to a
-/// readable column and height. Deliberately plain — a tooltip, not a browser.
+/// The hover popover's body, shaped like Xcode's Quick Help: the declaration (the leading fenced
+/// code block, which is how every mainstream server opens its hover) sits in a monospaced chip,
+/// a divider separates it from the documentation prose, further code blocks stay monospaced.
+/// Still a tooltip, not a browser.
 private struct LSPHoverContent: View {
     let markdown: String
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+        let segments = segments
+        let declaration = segments.first?.isCode == true ? segments[0].text : nil
+        let rest = declaration == nil ? segments : Array(segments.dropFirst())
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                if let declaration {
+                    Text(declaration)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.primary.opacity(0.05))
+                        )
+                }
+                if declaration != nil, !rest.isEmpty {
+                    Divider()
+                }
+                ForEach(Array(rest.enumerated()), id: \.offset) { _, segment in
                     if segment.isCode {
                         Text(segment.text)
                             .font(.system(size: 11.5, design: .monospaced))
@@ -576,6 +660,7 @@ private struct LSPHoverContent: View {
                     } else {
                         Text(attributed(segment.text))
                             .font(.system(size: 12))
+                            .foregroundStyle(.primary.opacity(0.85))
                             .textSelection(.enabled)
                     }
                 }
