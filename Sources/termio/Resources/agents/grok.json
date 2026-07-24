@@ -9,7 +9,8 @@
     "create": "--session-id {id}",
     "resume": "--resume {id}",
     "storeRoot": "~/.grok/sessions",
-    "storeMatch": "dir:{id}"
+    "storeMatch": "dir:{id}",
+    "transcriptName": "chat_history.jsonl"
   },
   "icon": { "vector": "grok" },
   "install": "https://x.ai/cli",

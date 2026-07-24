@@ -372,7 +372,9 @@ extension TermioStore {
     /// A discovered-id agent with a known pin is likewise looked up by that exact id —
     /// the launch-time earliest-match below would drift back to a rotated-away record —
     /// and only an unpinned session falls back to the launch-time file match
-    /// (`AgentSessionStore`). `nil` until a matching transcript exists on disk.
+    /// (`AgentSessionStore`). For a directory-based store (Grok: `dir:{id}`), the
+    /// directory itself is located and its contents scanned for a transcript file.
+    /// `nil` until a matching transcript exists on disk.
     func resolveTranscriptPath(for id: Session.ID) -> String? {
         guard let session = session(id), session.launched else { return nil }
         if let store = session.agent.resumeSpec.store, !store.isDirectory,
@@ -380,12 +382,49 @@ extension TermioStore {
            let path = SessionStore.locate(store, id: resumeID) {
             return path
         }
+        if let store = session.agent.resumeSpec.store, store.isDirectory,
+           let resumeID = session.resumeID,
+           let dirPath = SessionStore.locate(store, id: resumeID) {
+            // Directory-based store: the session is a directory of files. Prefer the
+            // manifest's `transcriptName` when set (Grok: `chat_history.jsonl`). Do not
+            // fall through to sole-jsonl when a name is declared — Grok dirs routinely
+            // hold several `.jsonl` files (`updates.jsonl`, `events.jsonl`, …), and a
+            // briefly-missing named file must not pin a sibling. Sole-jsonl is only for
+            // undeclared names where exactly one candidate exists.
+            if let name = store.transcriptName {
+                return transcriptFile(in: dirPath, named: name)
+            }
+            return soleJSONLFile(in: dirPath)
+        }
         if session.agent.resumeSpec.discover != nil, let resumeID = session.resumeID {
             return AgentSessionStore.transcript(agent: session.agent, id: resumeID)
         }
         guard let directory = session.worktreePath ?? project(for: id)?.path else { return nil }
         return AgentSessionStore.discoverTranscript(
             agent: session.agent, directory: directory, after: session.launchedAt)
+    }
+
+    /// Returns the path to a named file inside a directory, or `nil` if it doesn't exist.
+    private func transcriptFile(in directory: String, named name: String) -> String? {
+        let candidate = URL(fileURLWithPath: directory).appendingPathComponent(name).path
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: candidate, isDirectory: &isDir),
+              !isDir.boolValue else { return nil }
+        return candidate
+    }
+
+    /// Returns the path to the single `.jsonl` file in a directory, or `nil` when there
+    /// are zero or more than one — the transcript is ambiguous with multiple candidates.
+    private func soleJSONLFile(in directory: String) -> String? {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: URL(fileURLWithPath: directory), includingPropertiesForKeys: nil)
+        else { return nil }
+        let jsonlFiles = entries.filter {
+            $0.pathExtension.lowercased() == "jsonl"
+                && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }
+        guard jsonlFiles.count == 1 else { return nil }
+        return jsonlFiles[0].path
     }
 
     /// Sweeps sessions stuck in `.working` with no activity for a generous window
