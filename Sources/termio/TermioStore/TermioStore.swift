@@ -77,6 +77,13 @@ final class TermioStore: ObservableObject {
     /// pane. `TerminalPane` honours it only while a split is on screen.
     @Published var isPaneZoomed = false
 
+    /// The session currently being drag-reordered in the sidebar, recorded when a row
+    /// drag begins so a hovered row can ask `canReorder` whether it's a legal drop
+    /// target (same project + worktree bucket) and light its background only then.
+    /// Transient drag bookkeeping — deliberately *not* `@Published`, since it's read
+    /// on drop-hover events, never rendered.
+    var draggingSessionID: Session.ID?
+
     /// When each project was last active — the moment one of its agents last reported
     /// work, or the user last switched to one of its sessions. Drives the sidebar's
     /// "Recent Activity" sort (see `orderedProjects`). In-memory and `@Published` so a

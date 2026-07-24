@@ -21,6 +21,49 @@ extension TermioStore {
         selectedSessionID = session.id
     }
 
+    /// Whether `moved` may be drag-reordered next to `target`: both must live in the
+    /// same project and the same worktree bucket. Drives which rows light their
+    /// background as a legal drop target while a session is in flight, so a
+    /// cross-project or primary-over-worktree hover stays inert.
+    func canReorder(_ moved: Session.ID, relativeTo target: Session.ID) -> Bool {
+        guard moved != target,
+              let p = projects.firstIndex(where: { $0.sessions.contains { $0.id == moved } }),
+              let movedIndex = projects[p].sessions.firstIndex(where: { $0.id == moved }),
+              let targetIndex = projects[p].sessions.firstIndex(where: { $0.id == target })
+        else { return false }
+        return sessionBucketKey(projects[p].sessions[movedIndex], in: projects[p])
+            == sessionBucketKey(projects[p].sessions[targetIndex], in: projects[p])
+    }
+
+    /// Moves `moved` next to `target` within their shared bucket, committed on drop
+    /// (a cross-bucket move is a no-op via `canReorder`). The insert side follows the
+    /// drag direction: dropping onto a row *below* lands `moved` just under the target,
+    /// onto one *above* lands it just over — so the gesture reads as "move toward the
+    /// row you let go on". Persistence rides `projects.didSet` like every roster edit.
+    func reorderSession(_ moved: Session.ID, relativeTo target: Session.ID) {
+        guard canReorder(moved, relativeTo: target),
+              let p = projects.firstIndex(where: { $0.sessions.contains { $0.id == moved } }),
+              let movedIndex = projects[p].sessions.firstIndex(where: { $0.id == moved }),
+              let targetIndex = projects[p].sessions.firstIndex(where: { $0.id == target })
+        else { return }
+
+        let row = projects[p].sessions.remove(at: movedIndex)
+        // Re-find the target after the removal so its index stays valid regardless of
+        // which row came first; insert on the side `moved` was dragged from.
+        let newTarget = projects[p].sessions.firstIndex(where: { $0.id == target })
+            ?? projects[p].sessions.count - 1
+        let insertAt = movedIndex < targetIndex ? newTarget + 1 : newTarget
+        projects[p].sessions.insert(row, at: insertAt)
+    }
+
+    /// The sidebar bucket a session sits in: `nil` for the primary checkout (a `nil`
+    /// or project-root `worktreePath`), else the worktree path. Reorder works only
+    /// within one bucket, matching how `primarySessions` splits the tree.
+    private func sessionBucketKey(_ session: Session, in project: Project) -> String? {
+        if session.worktreePath == nil || session.worktreePath == project.path { return nil }
+        return session.worktreePath
+    }
+
     /// Creates a fresh detached checkout and records its folder under the parent
     /// project. No session is forced into it: the nested header remains available so
     /// the user can add terminals or agents when ready.

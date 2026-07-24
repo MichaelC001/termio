@@ -114,11 +114,33 @@ struct SidebarView: View {
     // default system look untouched.
     private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
 
+    /// Bridges List's native `selection:` to the store's `selectedSessionID`. Only
+    /// session rows carry a `.tag` (`SidebarSelection.session`), so headers and
+    /// section labels stay unselectable — and the dedicated enum tag means a
+    /// project's UUID can never be mistaken for a session's (both are `UUID`). A
+    /// click selects the session, returns to its terminal (closing any open editor),
+    /// and clears its resting done/attention dot, matching the old tap handler; a
+    /// `nil` (deselection) is ignored so clicking blank space keeps the session up.
+    private var listSelection: Binding<SidebarSelection?> {
+        Binding(
+            get: { store.selectedSessionID.map(SidebarSelection.session) },
+            set: { selection in
+                guard case let .session(id)? = selection else { return }
+                store.openFileURL = nil
+                store.selectedSessionID = id
+                store.markSeen(id)
+            }
+        )
+    }
+
     var body: some View {
-        // Selection is driven by row taps rather than List's `selection:` binding
-        // so we can paint our own frosted-grey highlight. The system selection
-        // forces an edge-to-edge accent fill (and white text) that can't be
-        // restyled without also draining the row's other accent-tinted controls.
+        // Selection uses List's native `selection:` binding (see `listSelection`),
+        // not a row `.onTapGesture` — a SwiftUI tap gesture on a row silently kills the
+        // row drag (it never starts), so drag-reorder needs the tap out of the way.
+        // Native selection is handled at the AppKit layer and coexists with drag; its
+        // edge-to-edge blue accent fill is stripped by `OutlineSelectionStyleStripper`
+        // (already mounted per row), leaving our own frosted-grey `SidebarRowHighlight`
+        // as the only selection cue. Same trick the file tree uses (see `FileTreeList`).
         // A flat list rather than `Section`s: the sidebar's section spacing leaves
         // a big empty band between a collapsed project's header and the next, and
         // macOS has no `listSectionSpacing`. So the pinned grouping is hand-rolled
@@ -156,7 +178,7 @@ struct SidebarView: View {
         let hasPinned = !pinnedProjects.isEmpty || !pinnedWorktrees.isEmpty || !pinnedSessions.isEmpty
         let hasTerminals = terminals.contains { !$0.sessions.isEmpty }
         let hasChats = chats.contains { !$0.sessions.isEmpty }
-        return List {
+        return List(selection: listSelection) {
             // The top "Pinned" working set, under its own section header: pinned projects
             // as full blocks, then pinned worktrees as mini-blocks (header + their
             // sessions), then pinned sessions as shortcut rows — each nested entry tagged
@@ -409,6 +431,13 @@ struct SidebarView: View {
         closeRun()
         return marks
     }
+}
+
+/// The List's native selection value. A dedicated case (rather than a bare
+/// `Session.ID`) keeps the selection type distinct from the project/worktree UUIDs
+/// that also flow through the sidebar, so only tagged session rows are selectable.
+enum SidebarSelection: Hashable {
+    case session(Session.ID)
 }
 
 /// A session row's segment of the split-group bracket: the corner opening the
@@ -904,12 +933,13 @@ private struct SessionRow: View {
     /// lives. `nil` for a row in its normal tree spot.
     var breadcrumb: String? = nil
     @State private var isHovering = false
-    /// A same-project session is being dragged over this row — highlight it as the
-    /// grouping target (VS Code's blue pane-drop cue).
+    /// A same-bucket session is being dragged over this row: light its whole-row
+    /// background (the hover lift) as the reorder drop target. Only set when the
+    /// in-flight session could legally land here (`store.canReorder`).
     @State private var isDropTarget = false
 
-    /// The drag pasteboard payload identifying a session by id. Namespaced so the
-    /// row's `.dropDestination` accepts only a session drag, never arbitrary text.
+    /// Namespace prefix for the drag payload, so the row's drop accepts only a
+    /// session drag (a session id) and never arbitrary dropped text.
     private static let dragPrefix = "termio-session:"
 
     private var isSelected: Bool { store.selectedSessionID == session.id }
@@ -1006,25 +1036,14 @@ private struct SessionRow: View {
         // is a folder-level action now (the project header's "New worktree" button),
         // so a session row carries only its close button.
         .overlay(alignment: .trailing) {
-            HStack(spacing: 0) {
-                // The drag handle (独立 → 联合): grab it and drop onto another
-                // session's row to combine the two into one split group. It lives on
-                // its own subview with no tap gesture so `.draggable` isn't preempted
-                // by the row's selection tap — the conflict noted in the file browser.
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 20, height: 22)
-                    .contentShape(Rectangle())
-                    .help("Drag onto another session to split them together")
-                    .draggable(Self.dragPrefix + session.id.uuidString)
-                SessionRowActionButton(
-                    systemImage: "xmark.circle.fill",
-                    help: "Close session",
-                    chrome: chrome
-                ) {
-                    store.closeSession(session.id)
-                }
+            // Just the close button now — reordering is a drag of the whole row (no
+            // separate handle), so the trailing hover cluster carries only the close.
+            SessionRowActionButton(
+                systemImage: "xmark.circle.fill",
+                help: "Close session",
+                chrome: chrome
+            ) {
+                store.closeSession(session.id)
             }
             .opacity(isHovering ? 1 : 0)
             .allowsHitTesting(isHovering)
@@ -1047,42 +1066,81 @@ private struct SessionRow: View {
             }
         }
         .contentShape(Rectangle())
-        // Accept a session drag dropped onto this row: combine the dragged session
-        // with this one into a split group. A String payload (not a custom type) so
-        // it rides the same pasteboard SwiftUI drop reads; the prefix filter rejects
-        // any non-session text, and a self-drop is ignored.
+        // Drag the whole row to reorder it within its bucket (no handle). Uses
+        // `.onDrag` (AppKit's drag session) rather than `.draggable` (SwiftUI's): a
+        // SwiftUI drag settles its preview over ~0.3s on release, while an AppKit drag
+        // image just vanishes on a successful drop — so the row moves crisply. The
+        // drag only carries the session id; nothing reorders until the drop commits
+        // it (see the drop below). It starts at all only because selection is the
+        // List's native binding, not a row tap — a SwiftUI tap gesture kills a drag.
+        .onDrag {
+            store.draggingSessionID = session.id
+            return NSItemProvider(object: (Self.dragPrefix + session.id.uuidString) as NSString)
+        } preview: {
+            // The drag preview is just the row's identity (icon + title), so the
+            // floating chip never carries the hover-only close button. `.fixedSize`
+            // keeps the label at its natural width — the preview proposes a tight size
+            // that would otherwise squeeze the flexible Text away, leaving only the
+            // fixed-width icon — and the material plate makes the chip legible.
+            HStack(spacing: 6) {
+                AgentIconView(agent: store.effectiveAgent(for: session), size: 15)
+                    .frame(width: 16)
+                Text(store.displayTitle(for: session))
+                    .font(settings.interfaceFont)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+            }
+            .fixedSize()
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(.regularMaterial)
+            )
+        }
+        // Reorder on drop: the prefix filter rejects non-session text, a self-drop is
+        // ignored, and a cross-bucket drop is a no-op in the store.
         .dropDestination(for: String.self) { payloads, _ in
+            store.draggingSessionID = nil
+            // Clear the drop lift the instant we commit so it can't linger on this row
+            // (or ghost onto its new neighbour) as the list settles the move.
+            isDropTarget = false
             guard let payload = payloads.first(where: { $0.hasPrefix(Self.dragPrefix) }),
                   let moved = UUID(uuidString: String(payload.dropFirst(Self.dragPrefix.count))),
                   moved != session.id
             else { return false }
-            store.groupSession(moved, with: session.id)
+            store.reorderSession(moved, relativeTo: session.id)
             return true
-        } isTargeted: { isDropTarget = $0 }
-        .overlay {
-            if isDropTarget {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(Color.accentColor, lineWidth: 2)
-                    .padding(.horizontal, 4)
-            }
+        } isTargeted: { targeted in
+            // Light the background only when the in-flight session could actually land
+            // here — same project + worktree bucket — so a cross-section hover stays inert.
+            isDropTarget = targeted
+                && (store.draggingSessionID.map { store.canReorder($0, relativeTo: session.id) } ?? false)
         }
+        // Tag the row for the List's native `selection:` binding (see `listSelection`);
+        // only session rows are tagged, so headers/labels stay unselectable. Native
+        // selection (not a row tap) is also what lets the drag start at all.
+        .tag(SidebarSelection.session(session.id))
         .onHover { isHovering = $0 }
-        .onTapGesture {
-            // Tapping a session in the sidebar always returns to its terminal — close the file
-            // editor even when this row is already selected (no selection change to react to).
-            store.openFileURL = nil
-            store.selectedSessionID = session.id
-            // Re-tapping the row you're already on still clears a resting done/attention
-            // dot (the selection didSet only reacts to a change).
-            store.markSeen(session.id)
-        }
         // NSMenu rather than SwiftUI's `.contextMenu` so right-click leaves no blue
         // accent ring on the row (see `SidebarRowContextMenu`).
         .background(SidebarRowContextMenu(items: menuItems))
+        // Strip the source list's native blue selection fill at the AppKit layer, so
+        // the only selection cue stays our `SidebarRowHighlight` (as the file tree does).
+        .background(OutlineSelectionStyleStripper())
+        // The reorder drop target (VS Code's `Over` effect) reuses the *hover* lift
+        // verbatim — same frosted-grey fill, same row-sized region and insets — so the
+        // drop cue never introduces a second background shape; it reads as a hover.
         .listRowBackground(
-            SidebarRowHighlight(isSelected: isSelected, isHovering: isHovering, chrome: chrome)
+            SidebarRowHighlight(isSelected: isSelected,
+                                isHovering: isHovering || isDropTarget,
+                                chrome: chrome)
                 .animation(.easeInOut(duration: 0.12), value: isSelected)
                 .animation(.easeInOut(duration: 0.12), value: isHovering)
+                // No animation on the drop cue: it must snap off the instant the drag
+                // leaves or commits (VS Code's `Over` feedback is instant), otherwise
+                // the lift lingers on the row while it's already moving.
+                .animation(nil, value: isDropTarget)
         )
         .animation(.easeInOut(duration: 0.12), value: isHovering)
     }
