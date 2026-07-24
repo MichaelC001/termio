@@ -268,9 +268,6 @@ final class TermioStore: ObservableObject {
     let branchModel = BranchModel()
 
     var surfaces: [Session.ID: TerminalViewState] = [:]
-    /// The live WKWebView behind each browser-pane session (see `browserPane(for:)`),
-    /// cached like `surfaces` so revisiting the pane never reloads the page.
-    var browserPanes: [Session.ID: BrowserPaneModel] = [:]
     var monitors: [Session.ID: [AnyCancellable]] = [:]
     /// The termio-owned PTY behind each host-managed session — the byte stream
     /// the surface renders and the companion server taps for a phone.

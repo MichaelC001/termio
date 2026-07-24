@@ -251,18 +251,6 @@ struct Session: Identifiable, Hashable, Codable {
     /// shortcut up top, it doesn't move the row).
     var pinned = false
 
-    /// When set, this session is a **browser pane** — a WKWebView split beside the
-    /// terminals (see `BrowserPaneView`) — not a terminal: no shell is spawned and
-    /// no libghostty surface is created for it. Holds the pane's last URL, kept
-    /// current on navigation, so a persisted browser pane restores by reloading
-    /// (which is more than a shell session can say). A browser leaf stays a
-    /// `Session` on purpose: the split tree, focus arrows, sidebar grouping, and
-    /// close paths all key on `Session.ID`, so an orthogonal field costs nothing
-    /// while a second leaf type would fork all of them.
-    var browserURL: String?
-
-    var isBrowser: Bool { browserURL != nil }
-
     /// When set, this session is an **SSH terminal** — instead of a local login
     /// shell it launches `ssh <host>` in the PTY, dropping the user straight onto a
     /// remote host. The value is the connection target: a `~/.ssh/config` alias
@@ -304,7 +292,7 @@ struct Session: Identifiable, Hashable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, agent, createdAt, worktreePath, resumeID, launched, launchedAt,
-             liveTitle, browserURL, lastWorkingDirectory, sshHost, pinned
+             liveTitle, lastWorkingDirectory, sshHost, pinned
     }
 
     /// Custom decoding so state files written before the resume fields existed still
@@ -323,7 +311,6 @@ struct Session: Identifiable, Hashable, Codable {
         pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         launchedAt = try container.decodeIfPresent(Date.self, forKey: .launchedAt)
         liveTitle = try container.decodeIfPresent(String.self, forKey: .liveTitle)
-        browserURL = try container.decodeIfPresent(String.self, forKey: .browserURL)
         lastWorkingDirectory = try container.decodeIfPresent(String.self, forKey: .lastWorkingDirectory)
         sshHost = try container.decodeIfPresent(String.self, forKey: .sshHost)
     }

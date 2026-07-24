@@ -96,12 +96,6 @@ extension TermioStore {
         }
         switch resolveTarget(token, in: project) {
         case .found(let session):
-            // A browser pane takes no keystrokes — and `surface(for:)` below would
-            // conjure a shell for it, which a browser session must never get.
-            if session.isBrowser {
-                return controlError(request, "not_terminal",
-                    "\(displayTitle(for: session)) is a browser pane — it accepts no input.")
-            }
             let state = surface(for: session, in: project)
             return await deliver(payload, to: session, state: state, request: request, created: false)
         case .notFound:
