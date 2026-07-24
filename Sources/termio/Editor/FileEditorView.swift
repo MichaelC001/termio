@@ -20,9 +20,6 @@ struct FileEditorView: View {
     let jumpLine: Int?
     /// Dismisses the overlay (clears `store.openFileURL`) and hands focus back to the terminal.
     let onClose: () -> Void
-    /// A go-to-definition landing in *another* file: the host swaps the overlay to it (through
-    /// `store.openFileInEditor`). `nil` — no host wiring — keeps jumps same-file only.
-    let onNavigate: ((URL, Int) -> Void)?
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -40,18 +37,6 @@ struct FileEditorView: View {
     @State private var cursor: EditorCursor?
     /// The pending debounced write, cancelled and rescheduled on each keystroke.
     @State private var saveTask: Task<Void, Never>?
-    /// The file's language-server session — `nil` (no server installed for this language, or
-    /// none registered) leaves every code-intelligence hook dormant.
-    @State private var lsp: LSPEditorClient?
-    /// A same-file go-to-definition target; feeds the same reveal plumbing as `jumpLine` without
-    /// a round-trip through the store (which would also reset the read-only flag).
-    @State private var revealLine: Int?
-    /// A registered-but-not-installed server for this file's language: the header shows its
-    /// install command once (Zed's meet-the-file-where-it-is pattern, minus the store).
-    @State private var installHint: LSPServerDescriptor?
-    /// A transient footer line for slow LSP work ("Starting sourcekit-lsp…") — silence reads
-    /// as broken during a cold server start.
-    @State private var lspActivity: String?
 
     /// The highlight.js language id, sniffed once from the file extension (`nil` lets highlight.js
     /// auto-detect). Stable for the lifetime of the open file.
@@ -61,13 +46,12 @@ struct FileEditorView: View {
     private let relativePath: String?
 
     init(url: URL, settings: AppSettings, readOnly: Bool = false, jumpLine: Int? = nil,
-         onClose: @escaping () -> Void, onNavigate: ((URL, Int) -> Void)? = nil) {
+         onClose: @escaping () -> Void) {
         self.url = url
         self.settings = settings
         self.readOnly = readOnly
         self.jumpLine = jumpLine
         self.onClose = onClose
-        self.onNavigate = onNavigate
         let contents = try? String(contentsOf: url, encoding: .utf8)
         _text = State(initialValue: contents ?? "")
         _savedText = State(initialValue: contents ?? "")
@@ -156,17 +140,8 @@ struct FileEditorView: View {
                             lineNumberColor: lineNumberColor,
                             currentLineColor: currentLineColor,
                             isEditable: !readOnly,
-                            jumpToLine: revealLine ?? jumpLine,
-                            onSave: saveNow,
-                            onDefinitionRequest: lsp == nil ? nil : jumpToDefinition,
-                            hoverProvider: lsp == nil ? nil : { [self] offset in
-                                await lsp?.hover(at: offset, in: text)
-                            },
-                            linkResolver: lsp == nil ? nil : { [self] offset in
-                                // The probe result is memoized in the client, so the click that
-                                // follows a lit link costs no second request.
-                                await lsp?.definition(at: offset, in: text) != nil
-                            }
+                            jumpToLine: jumpLine,
+                            onSave: saveNow
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
@@ -179,47 +154,15 @@ struct FileEditorView: View {
         // titlebar — no outer `.frame`, which was reserving an empty band above the header.
         .background(Color(nsColor: settings.terminalBackgroundColor).ignoresSafeArea())
         // Auto-save: debounce a write after each edit; Escape closes (flushing first). A read-only
-        // peek never writes, so neither the debounce nor the exit flush is armed. The language
-        // server tracks the *buffer*, not the disk, so it hears about every edit regardless.
+        // peek never writes, so neither the debounce nor the exit flush is armed.
         .onChange(of: text) {
             if !readOnly { scheduleSave() }
-            lsp?.noteChange(fullText: text)
         }
         .onExitCommand { close() }
         // A safety flush if the overlay goes away without the close button (file switch, app quit).
         .onDisappear {
             if !readOnly { saveTask?.cancel(); writeIfNeeded() }
-            lsp?.close()
         }
-        // Attach the language server (if one owns this file type) once per open. Failed or absent
-        // servers resolve to nil, and the editor stays a plain editor.
-        .task {
-            guard !loadFailed else { return }
-            let opened = text
-            // Xcode-style activity whisper: only a slow start earns a footer line — a warm
-            // server attaches in milliseconds and should stay invisible.
-            let notice = slowActivityNotice(
-                LSPRegistry.descriptor(for: url).map { "Starting \($0.descriptor.id)…" }
-            )
-            let client = await LSPEditorClient.attach(url: url, text: opened)
-            notice.cancel()
-            lspActivity = nil
-            guard let client else {
-                // No server came up. If one is registered but just not installed, surface its
-                // install command — only in an editable open; a read-only peek stays silent.
-                if !readOnly { installHint = await LSPManager.shared.missingServer(for: url) }
-                return
-            }
-            // The editor may already be gone (Escape during the server's spawn window) — the
-            // document was announced, so it must be un-announced, not leaked open.
-            guard !Task.isCancelled else { client.close(); return }
-            lsp = client
-            // Edits typed while the server was starting happened before `lsp` existed; re-sync.
-            if text != opened { client.noteChange(fullText: text) }
-        }
-        // A host-driven jump (another search hit) supersedes any local go-to-definition target;
-        // without this reset a stale `revealLine` would mask every later `jumpLine`.
-        .onChange(of: jumpLine) { revealLine = nil }
     }
 
     private var header: some View {
@@ -260,12 +203,6 @@ struct FileEditorView: View {
             // The close control lives in the toolbar (a bordered, Liquid Glass button on the
             // terminal column's trailing edge); this trailing spacer keeps the label left-aligned.
             Spacer()
-            // One quiet, dismissible line when this language's server isn't installed: the
-            // command to copy, shown at the moment it's relevant instead of buried in Settings.
-            // Not in Markdown Preview — there is no ⌘-click there to need anything.
-            if let hint = installHint, let install = hint.install, !(isMarkdown && mode == .preview) {
-                installHintView(hint: hint, install: install)
-            }
             // Markdown reads as a document by default; the toggle keeps the source one click away.
             if isMarkdown {
                 modeToggle
@@ -275,39 +212,6 @@ struct FileEditorView: View {
         .padding(.vertical, 8)
         .background(Color(nsColor: settings.terminalBackgroundColor))
         .animation(.easeOut(duration: 0.15), value: isDirty)
-    }
-
-    /// The header's install nudge: `⌘-click needs <server> · <install command> [copy] [×]`,
-    /// caption-quiet. Dismissing remembers the server for the rest of the app run, so the hint
-    /// never becomes a nag; the Languages settings pane remains the always-there reference.
-    private func installHintView(hint: LSPServerDescriptor, install: String) -> some View {
-        HStack(spacing: 6) {
-            Text("⌘-click needs")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-            Text(install)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(install, forType: .string)
-            } label: {
-                Image(systemName: "doc.on.doc").font(.caption)
-            }
-            .buttonStyle(.plain)
-            .help("Copy install command — enables jump-to-definition and hover for \(hint.displayName)")
-            Button {
-                LSPManager.shared.dismissedInstallHints.insert(hint.id)
-                withAnimation(.easeOut(duration: 0.15)) { installHint = nil }
-            } label: {
-                Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.tertiary)
-            .help("Dismiss for this run")
-        }
-        .transition(.opacity)
     }
 
     /// A two-segment Edit/Preview toggle, drawn by hand (a segmented `Picker` only renders
@@ -354,13 +258,6 @@ struct FileEditorView: View {
             if readOnly {
                 // Mark the peek so the absent caret/typing doesn't read as the editor being broken.
                 statusItem("Read-Only")
-            }
-            // The LSP activity whisper — "Starting sourcekit-lsp…", "Looking up definition…" —
-            // shown only when the work is actually slow, gone the moment it lands.
-            if let lspActivity {
-                statusItem(lspActivity)
-                    .foregroundStyle(.tertiary)
-                    .transition(.opacity)
             }
             Spacer()
             if isMarkdown && mode == .preview {
@@ -413,42 +310,6 @@ struct FileEditorView: View {
         saveTask?.cancel()
         writeIfNeeded()
         onClose()
-    }
-
-    /// Arms a delayed footer status line: fast work never shows it (cancel before the delay),
-    /// slow work earns a quiet whisper instead of dead silence. Caller cancels + clears.
-    private func slowActivityNotice(_ message: String?, after delay: UInt64 = 400_000_000) -> Task<Void, Never> {
-        Task { @MainActor in
-            guard let message else { return }
-            try? await Task.sleep(nanoseconds: delay)
-            if Task.isCancelled { return }
-            withAnimation(.easeIn(duration: 0.15)) { lspActivity = message }
-        }
-    }
-
-    /// Resolves the symbol at `utf16Offset` through the language server. A same-file hit reuses
-    /// the reveal plumbing in place; a cross-file hit hands the target to the host, which swaps
-    /// the overlay (`.id(url)`) exactly like clicking another search result. No answer → a beep,
-    /// the quietest possible "nothing there".
-    private func jumpToDefinition(at utf16Offset: Int) {
-        Task { @MainActor in
-            let notice = slowActivityNotice("Looking up definition…")
-            let hit = await lsp?.definition(at: utf16Offset, in: text)
-            notice.cancel()
-            lspActivity = nil
-            guard let hit else {
-                NSSound.beep()
-                return
-            }
-            if hit.url == url.standardizedFileURL {
-                revealLine = hit.line
-            } else if FileManager.default.fileExists(atPath: hit.url.path), let onNavigate {
-                onNavigate(hit.url, hit.line)
-            } else {
-                // A virtual target (generated interface, out-of-tree stub) the editor can't open.
-                NSSound.beep()
-            }
-        }
     }
 
     /// Writes the buffer to disk if it differs from what's already there. The single place a save

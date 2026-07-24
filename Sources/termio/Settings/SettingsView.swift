@@ -61,7 +61,6 @@ struct SettingsView: View {
         case .terminal: TerminalSettingsTab(settings: settings)
         case .keyboard: KeybindingsSettingsTab()
         case .agents: AgentSettingsTab(settings: settings)
-        case .languages: LanguagesSettingsTab()
         case .usage: UsageSettingsTab(settings: settings, usage: usage)
         case .mobile: MobileSettingsTab()
         }
