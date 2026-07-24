@@ -34,6 +34,7 @@ from the real front matter).
 <!-- BEGIN docs-index -->
 | status | type | title |
 | --- | --- | --- |
+|  |  | [](talks/shaogefenhao-20260725/shaogefenhao-ai-product-termio.md) |
 | active | backlog | [Backlog](backlog/backlog.md) |
 | active | bug | [iOS libghostty "non-functional" panel + surface-teardown crash — fix journey](bug/ios-ghostty-renderer-panic-and-teardown-uaf.md) |
 | active | design | ["Remote-access design lessons: sleep reachability, stable domains, identity, monetization"](design/remote-access-lessons.md) |
@@ -48,6 +49,7 @@ from the real front matter).
 | approved | design | [Worktree information architecture](design/worktree-information-architecture.md) |
 | archived | design | [iOS scroll-draw coalescing (vsync-capped surface draws)](design/ios-scroll-renderer-health.md) |
 | archived | design | [Sandbox VM —— 原生 per-project 容器（Apple Containerization）](design/sandbox-vm.md) |
+| archived | essay | ["From IDE to ADE: Sixty Years of Development Environments, and Why the Era Is Ending"](essays/from-ide-to-ade.md) |
 | archived | plan | [Fix — defer the PTY spawn to the first real layout size so the agent banner boots at pane width](plan/terminal-narrow-grid-frozen-banner-fix.md) |
 | done | bug | ["HANDOFF: terminal content does not reflow on window resize"](bug/terminal-resize-no-reflow-HANDOFF.md) |
 | done | bug | [Agent welcome banner frozen into a narrow column when a session opens in a wide window](bug/terminal-narrow-grid-frozen-banner-on-open.md) |
@@ -73,8 +75,8 @@ from the real front matter).
 | draft | design | [Mac retention analytics (no app changes)](design/mac-retention-analytics.md) |
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/remote-projects.md) |
 | draft | design | [Session Daemon Architecture (termiod — one model for local, remote, mobile)](design/session-daemon-architecture.md) |
-| draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/remote-access-relay-strategy.md) |
 | draft | design | [Sidebar scroll performance — per-session runtime state](design/sidebar-scroll-performance.md) |
+| draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/remote-access-relay-strategy.md) |
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/sandbox-seatbelt.md) |
 | draft | rfc | [Automation — scheduled agent runs](rfcs/automation-scheduled-agent-runs.md) |
 | draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](rfcs/fork-libghostty-spm.md) |
