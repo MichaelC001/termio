@@ -4,9 +4,6 @@ status: archived
 type: essay
 created: 2026-07-11
 updated: 2026-07-24
-lang: en
-related:
-  - from-ide-to-ade.zh.md
 description: For sixty years, every generation of development environment has killed the slowest link in the loop between human intent and machine state. The bottleneck has finally moved to us — and that changes what programming means.
 ---
 
