@@ -647,17 +647,15 @@ final class TerminalViewController: UIViewController {
             // The phone mirrors the Mac's PTY through a live libghostty surface,
             // which answers terminal queries (XTVERSION, DA, DSR) on its own. The
             // Mac's authoritative surface already answered; the phone's duplicate
-            // arrives late and, having missed the agent's parse window, leaks into
-            // its input line as literal text — e.g. Grok showing a stray
-            // ">|ghostty 1.3.2-main-+…". A mirror must never talk back to the host.
-            // These auto-responses fire synchronously while the surface parses host
-            // output, so we drop any write emitted inside `receive()`. Real
-            // keystrokes arrive on the main thread via `sendInput`, never inside a
-            // `receive()`, so the guard is thread-scoped and leaves them untouched.
-            let mirrorGuard = MirrorResponseGuard()
+            // arrives (late, from libghostty's IO thread) and, having missed the
+            // agent's parse window, leaks into its input line as literal text —
+            // e.g. Grok showing a stray ">|ghostty 1.3.2-main-+…". A mirror must
+            // never talk back to the host, so we drop any write that is a terminal
+            // device report. A real keystroke or key-bar sequence never looks like
+            // one, so genuine input passes through untouched.
             let terminalSession = InMemoryTerminalSession(
                 write: { [weak transport] data in
-                    guard !mirrorGuard.isSuppressing else { return }
+                    guard !MirrorReportFilter.isDeviceReport(data) else { return }
                     transport?.send(data)
                 },
                 resize: { [weak transport] viewport in
@@ -665,7 +663,7 @@ final class TerminalViewController: UIViewController {
                 }
             )
             transport.onOutput = { [weak terminalSession, weak self] data in
-                mirrorGuard.duringReceive { terminalSession?.receive(data) }
+                terminalSession?.receive(data)
                 DispatchQueue.main.async { self?.altScreenSniffer.consume(data) }
             }
             transport.onState = { [weak self] state in
@@ -1092,31 +1090,40 @@ extension TerminalViewController: TerminalSurfaceRendererHealthDelegate {
     }
 }
 
-// MARK: - Mirror response guard
+// MARK: - Mirror response filter
 
-/// Marks the window in which the companion surface is parsing host output, so
-/// the `write` closure can tell a surface-generated terminal reply (XTVERSION,
-/// DA, DSR — emitted synchronously from inside `receive()`) apart from a genuine
-/// keystroke. The Mac's authoritative surface already answers every host query;
-/// the phone is a passive mirror and must stay silent, or its late duplicate
-/// reply leaks into the agent's input line.
+/// Classifies a companion `write` chunk as a terminal device report — a reply
+/// the phone's mirror surface auto-generates to a host query, which the Mac's
+/// authoritative surface has already answered. Dropping these stops the phone's
+/// late duplicate from leaking into the agent's input line (Grok's stray
+/// ">|ghostty 1.3.2-main-+…").
 ///
-/// Thread-scoped by identity: `duringReceive` runs on the socket delivery queue,
-/// real input on the main thread, so a write is a mirror auto-response exactly
-/// when it fires on the thread currently inside `receive()`.
-private final class MirrorResponseGuard {
-    private let lock = NSLock()
-    private var receivingThread: Thread?
-
-    func duringReceive(_ body: () -> Void) {
-        lock.lock(); receivingThread = Thread.current; lock.unlock()
-        defer { lock.lock(); receivingThread = nil; lock.unlock() }
-        body()
-    }
-
-    var isSuppressing: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return receivingThread === Thread.current
+/// libghostty emits each reply as one standalone escape sequence:
+///   • ESC P … (DCS) — XTVERSION ">|ghostty …", DECRQSS, XTGETTCAP
+///   • ESC ] … (OSC) — color / clipboard query answers
+///   • ESC [ … c     — Device Attributes (primary / secondary)
+///   • ESC [ … R     — Cursor Position Report
+///
+/// Genuine input never matches: arrows / home / end terminate a CSI in A–H or
+/// `~`, a bare Esc is a lone byte, pasted or typed text carries no ESC lead-in.
+private enum MirrorReportFilter {
+    static func isDeviceReport(_ data: Data) -> Bool {
+        let b = [UInt8](data)
+        guard b.first == 0x1B, b.count >= 2 else { return false }
+        switch b[1] {
+        case 0x50, 0x5D: // ESC P (DCS) / ESC ] (OSC)
+            return true
+        case 0x5B: // ESC [ (CSI): a report only when the final byte is 'c' or 'R'
+            var i = 2
+            while i < b.count {
+                let c = b[i]
+                if c >= 0x40, c <= 0x7E { return c == 0x63 || c == 0x52 }
+                i += 1
+            }
+            return false
+        default:
+            return false
+        }
     }
 }
 
