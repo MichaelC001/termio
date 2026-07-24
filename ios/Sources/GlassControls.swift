@@ -1,3 +1,5 @@
+import SwiftUI
+import TermioShared
 import UIKit
 
 extension UIFont {
@@ -25,6 +27,22 @@ extension UIButton {
             configuration = config
         } else {
             setImage(UIImage(systemName: symbol), for: .normal)
+        }
+    }
+
+    /// The Hugeicons twin of `applyGlassSymbol`, for floating buttons whose glyph
+    /// should read from the same stroke family as the tab pill and sidebar rows
+    /// (the ＋ compose buttons sit right beside the pill). `boxSize` is the
+    /// glyph's drawn size in points; the stroke is the shared 1.5px-on-24 recipe.
+    func applyGlassIcon(_ icon: HugeIcon, boxSize: CGFloat) {
+        let image = icon.strokeImage(boxSize: boxSize)
+        if #available(iOS 26.0, *) {
+            var config = UIButton.Configuration.glass()
+            config.image = image
+            config.cornerStyle = .capsule
+            configuration = config
+        } else {
+            setImage(image, for: .normal)
         }
     }
 }
@@ -60,8 +78,8 @@ final class HomeTabPill: UIView {
     var onSelect: ((Int) -> Void)?
 
     private var buttons: [UIButton] = []
-    /// The tab symbols, kept to pick each tab's own selection animation.
-    private let symbols: [String]
+    /// The tab glyphs, kept to pick each tab's own selection animation.
+    private let icons: [HugeIcon]
     /// The sliding selected-item capsule. Telegram's is the system liquid
     /// lens (private API, warps the content below); the public equivalent is
     /// an interactive `UIGlassEffect` — real refraction, not a flat fill —
@@ -84,8 +102,8 @@ final class HomeTabPill: UIView {
     }()
     private var selectedIndex = 0
 
-    init(items: [(title: String, symbol: String)]) {
-        symbols = items.map(\.symbol)
+    init(items: [(title: String, icon: HugeIcon)]) {
+        icons = items.map(\.icon)
         super.init(frame: .zero)
         let glass = GlassChrome.makeView(interactive: true)
         glass.translatesAutoresizingMaskIntoConstraints = false
@@ -97,12 +115,13 @@ final class HomeTabPill: UIView {
 
         buttons = items.enumerated().map { index, item in
             var config = UIButton.Configuration.plain()
-            config.image = UIImage(systemName: item.symbol)
+            // The same Hugeicons stroke marks the Mac sidebar (and the project
+            // rows one screen up) draw, instead of SF Symbols — one icon
+            // family across both apps. A 21pt box inks ~18pt wide, matching
+            // the drawn area of Telegram's ~28px tab icons.
+            config.image = item.icon.strokeImage(boxSize: 21)
             config.imagePlacement = .top
             config.imagePadding = 3
-            // ~17pt matches the drawn area of Telegram's ~28px tab icons;
-            // 20pt SF symbols read oversized next to them.
-            config.preferredSymbolConfigurationForImage = .init(pointSize: 17, weight: .medium)
             config.attributedTitle = AttributedString(
                 item.title,
                 attributes: AttributeContainer([.font: UIFont.systemFont(ofSize: 10, weight: .semibold)])
@@ -171,7 +190,7 @@ final class HomeTabPill: UIView {
         // keyed in Core Animation per icon — in-place character moves with
         // overshoot, never a size pop.
         if animated, changed, buttons.indices.contains(index) {
-            playSelectionAnimation(on: buttons[index], symbol: symbols[index])
+            playSelectionAnimation(on: buttons[index], icon: icons[index])
         }
         layoutIfNeeded()
         let settle = { self.selection.frame = self.selectionFrame() }
@@ -184,27 +203,27 @@ final class HomeTabPill: UIView {
         }
     }
 
-    /// The character set: the gear engages with a springy quarter-turn, the
-    /// bubbles rock against each other like a conversation, the folder does
-    /// a small hop-and-tip as if opening. All one-shot and size-stable.
-    private func playSelectionAnimation(on button: UIButton, symbol: String) {
+    /// The character set: the gear engages with a springy turn, the chat
+    /// bubble rocks as if mid-conversation, the folder does a small
+    /// hop-and-tip as if opening. All one-shot and size-stable.
+    private func playSelectionAnimation(on button: UIButton, icon: HugeIcon) {
         guard let layer = button.imageView?.layer else { return }
         layer.removeAnimation(forKey: "tabSelect")
         let animation: CAAnimation
-        switch symbol {
-        case "gearshape":
-            // A quarter turn lands on gearshape's 8-tooth symmetry, so the
-            // snap back to the model value after the spring is invisible.
+        switch icon {
+        case .settings:
+            // A third turn lands on the Hugeicons cog's 6-tooth symmetry, so
+            // the snap back to the model value after the spring is invisible.
             let spin = CASpringAnimation(keyPath: "transform.rotation.z")
             spin.fromValue = 0
-            spin.toValue = CGFloat.pi / 2
+            spin.toValue = CGFloat.pi * 2 / 3
             spin.mass = 1
             spin.stiffness = 170
             spin.damping = 13
             spin.initialVelocity = 4
             spin.duration = spin.settlingDuration
             animation = spin
-        case "bubble.left.and.bubble.right":
+        case .bubbleChat:
             animation = Self.characterMove(
                 rotationDegrees: [0, 8, -6, 3, 0],
                 x: [0, 1.2, -1.2, 0.4, 0],
@@ -244,5 +263,30 @@ final class HomeTabPill: UIView {
         ]
         group.duration = duration
         return group
+    }
+}
+
+extension HugeIcon {
+    /// The glyph as a tintable template `UIImage` — a bitmap for UIKit chrome
+    /// like the tab pill, where SwiftUI's `HugeIconView` can't be used
+    /// directly. Same stroke recipe (1.5px-on-24 with the hairline floor,
+    /// round caps); the path is inset by the stroke's half-width so round
+    /// caps at the glyph's edge don't clip against the bitmap bounds.
+    func strokeImage(boxSize: CGFloat) -> UIImage {
+        let lineWidth = max(1.1, boxSize * 1.5 / viewBox)
+        let bounds = CGRect(x: 0, y: 0, width: boxSize, height: boxSize)
+        let path = HugeIconShape(icon: self)
+            .path(in: bounds.insetBy(dx: lineWidth / 2, dy: lineWidth / 2))
+            .cgPath
+        let renderer = UIGraphicsImageRenderer(bounds: bounds)
+        return renderer.image { context in
+            let cg = context.cgContext
+            cg.setStrokeColor(UIColor.white.cgColor)
+            cg.setLineWidth(lineWidth)
+            cg.setLineCap(.round)
+            cg.setLineJoin(.round)
+            cg.addPath(path)
+            cg.strokePath()
+        }.withRenderingMode(.alwaysTemplate)
     }
 }

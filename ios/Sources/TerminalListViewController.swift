@@ -2,18 +2,20 @@ import SwiftUI
 import TermioShared
 import UIKit
 
-/// The Chats tab: the Mac's loose agent sessions (the `chats`-kind container),
-/// listed flat — the phone twin of the desktop sidebar's Chats section. The
-/// sessions ARE the content: no project page in between, a row goes straight
-/// to its terminal, like the ChatGPT chat list. ＋ starts a new chat in one
-/// tap — the Mac picks the agent, the same default ⌘N launches — with the
-/// per-agent menu kept behind a long-press.
-final class ChatListViewController: UIViewController {
+/// The Terminals tab: the Mac's loose shell sessions (the `terminals`-kind
+/// container), listed flat — the phone twin of the desktop sidebar's Terminals
+/// section, and the exact mirror of the Chats tab for shells instead of agents.
+/// Loose terminals used to fall through as a project *folder* you had to tap
+/// into; promoting them to their own tab keeps a live shell one tap away, the
+/// same shape Chats already got. A row goes straight to its terminal. ＋ opens a
+/// new plain shell at `~` — no agent to pick, so (unlike Chats) it carries no
+/// per-agent menu.
+final class TerminalListViewController: UIViewController {
     private let store: RosterStore
 
-    private var chats: [MockSession] = []
+    private var terminals: [MockSession] = []
 
-    private let newChatButton = UIButton(type: .system)
+    private let newTerminalButton = UIButton(type: .system)
     private let tableView = UITableView(frame: .zero, style: .grouped)
     private let emptyState = ListEmptyStateView()
     private var rosterObserver: NSObjectProtocol?
@@ -32,7 +34,7 @@ final class ChatListViewController: UIViewController {
         configureTable(below: topBar)
         configureEmptyState(below: topBar)
         // Added last so it floats over the list, opposite the home tab pill.
-        configureNewChatButton()
+        configureNewTerminalButton()
         refilter()
         rosterObserver = NotificationCenter.default.addObserver(
             forName: RosterStore.didChange, object: nil, queue: .main
@@ -55,7 +57,7 @@ final class ChatListViewController: UIViewController {
 
     private func configureTopBar() -> UIView {
         let pageTitle = UILabel()
-        pageTitle.text = "Chats"
+        pageTitle.text = "Terminals"
         pageTitle.font = .systemFont(ofSize: 34, weight: .bold)
         pageTitle.textColor = .label
 
@@ -76,38 +78,27 @@ final class ChatListViewController: UIViewController {
     }
 
     /// ＋ floats bottom-right, opposite the home tab pill — the compose corner.
-    /// A TAP is one New Chat, no questions asked: the Mac resolves the agent
-    /// through its ⌘N default policy (`startDefaultChat`), so composing costs
-    /// zero choices. The per-agent menu survives on LONG-PRESS as the
-    /// pick-a-specific-agent escape hatch — `menu` stays set, it's just no
-    /// longer the primary action. Deferred so it always reflects the roster's
-    /// current agent list (and the button hides while unpaired).
-    private func configureNewChatButton() {
-        newChatButton.applyGlassIcon(.add, boxSize: 26)
-        newChatButton.tintColor = .label
-        newChatButton.accessibilityLabel = "New Chat"
-        newChatButton.addAction(
-            UIAction { [weak self] _ in self?.store.startDefaultChat() },
+    /// A TAP is one new terminal: a plain login shell at `~`, which the Mac
+    /// gathers into the loose `.terminals` funnel. There is no agent to choose,
+    /// so — unlike the Chats ＋ — no long-press menu. Hidden until the Mac has a
+    /// terminals container to land in (mirrors the Chats ＋), and while unpaired.
+    private func configureNewTerminalButton() {
+        newTerminalButton.applyGlassIcon(.add, boxSize: 26)
+        newTerminalButton.tintColor = .label
+        newTerminalButton.accessibilityLabel = "New Terminal"
+        newTerminalButton.addAction(
+            UIAction { [weak self] _ in self?.store.startDefaultTerminal() },
             for: .touchUpInside
         )
-        newChatButton.menu = UIMenu(children: [
-            UIDeferredMenuElement.uncached { [weak self] completion in
-                guard let self, let chatsProject = store.chatsProject else {
-                    completion([])
-                    return
-                }
-                completion(store.newSessionActions(in: chatsProject))
-            },
-        ])
-        newChatButton.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(newChatButton)
+        newTerminalButton.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(newTerminalButton)
         NSLayoutConstraint.activate([
-            newChatButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            newTerminalButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
             // The tab pill's own scale (64pt, 8pt above the safe area), so the
             // two ends of the bottom edge read as one balanced bar.
-            newChatButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
-            newChatButton.widthAnchor.constraint(equalToConstant: 64),
-            newChatButton.heightAnchor.constraint(equalToConstant: 64),
+            newTerminalButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
+            newTerminalButton.widthAnchor.constraint(equalToConstant: 64),
+            newTerminalButton.heightAnchor.constraint(equalToConstant: 64),
         ])
     }
 
@@ -138,8 +129,8 @@ final class ChatListViewController: UIViewController {
     }
 
     private func refilter() {
-        chats = store.chatSessions
-        newChatButton.isHidden = store.chatsProject?.rosterID == nil
+        terminals = store.terminalSessions
+        newTerminalButton.isHidden = store.terminalsProject?.rosterID == nil
         tableView.reloadData()
         updateEmptyState()
     }
@@ -159,15 +150,19 @@ final class ChatListViewController: UIViewController {
     }
 
     /// Link-state nuance lives on the Projects tab (the pairing home); this
-    /// zero state only answers "no chats yet". The ＋ above is the next step,
-    /// so no pill button repeats it.
+    /// zero state only answers "no terminals yet". When the ＋ is visible it is
+    /// the next step; when it's hidden (no container yet) the message points at
+    /// the Mac, since the phone can't seed the first one over the wire.
     private func updateEmptyState() {
-        emptyState.isHidden = !chats.isEmpty
+        emptyState.isHidden = !terminals.isEmpty
         guard !emptyState.isHidden else { return }
+        let canStart = store.terminalsProject?.rosterID != nil
         emptyState.configure(
-            symbol: "bubble.left.and.bubble.right",
-            title: "No chats yet",
-            message: "Chats are agent sessions that aren't tied to a project. Start one with ＋, or on your Mac.",
+            symbol: "terminal",
+            title: "No terminals yet",
+            message: canStart
+                ? "Terminals are plain shells that aren't tied to a project. Start one with ＋, or on your Mac."
+                : "Terminals are plain shells that aren't tied to a project. Start one on your Mac and it appears here.",
             actionTitle: nil,
             busy: false
         )
@@ -176,22 +171,22 @@ final class ChatListViewController: UIViewController {
 
 // MARK: - Table data source / delegate
 
-extension ChatListViewController: UITableViewDataSource, UITableViewDelegate {
+extension TerminalListViewController: UITableViewDataSource, UITableViewDelegate {
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        chats.count
+        terminals.count
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "row", for: indexPath)
         cell.selectionStyle = .none
         cell.backgroundColor = .clear
-        let session = chats[indexPath.row]
+        let session = terminals[indexPath.row]
         cell.contentConfiguration = UIHostingConfiguration {
             SessionRow(
                 session: session,
                 isCurrent: session.key == store.currentSessionKey,
                 showsProject: false,
-                showsSeparator: indexPath.row < chats.count - 1
+                showsSeparator: indexPath.row < terminals.count - 1
             )
         }
         .margins(.horizontal, 12)
@@ -201,7 +196,7 @@ extension ChatListViewController: UITableViewDataSource, UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         // The row IS the session — straight to its terminal.
-        store.openSession(chats[indexPath.row])
+        store.openSession(terminals[indexPath.row])
     }
 
     /// Trailing swipe: the Mac session menu's "Close Session".
@@ -210,7 +205,7 @@ extension ChatListViewController: UITableViewDataSource, UITableViewDelegate {
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
         guard store.companionURL != nil,
-              let sessionID = chats[indexPath.row].rosterID
+              let sessionID = terminals[indexPath.row].rosterID
         else { return nil }
         let close = UIContextualAction(style: .destructive, title: "Close") { [weak self] _, _, done in
             self?.store.stopSession(sessionID)

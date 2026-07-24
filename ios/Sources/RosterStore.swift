@@ -57,6 +57,18 @@ final class RosterStore {
         projects.filter { $0.kind == "chats" }.flatMap(\.sessions)
     }
 
+    /// The Mac's loose-terminals container — the Terminals tab's backing
+    /// project (and the target a phone-started terminal lands in). The shell
+    /// twin of `chatsProject`; nil until the Mac has opened a loose shell.
+    var terminalsProject: MockProject? {
+        projects.first { $0.kind == "terminals" }
+    }
+
+    /// The Terminals tab's rows, flat and in roster order.
+    var terminalSessions: [MockSession] {
+        projects.filter { $0.kind == "terminals" }.flatMap(\.sessions)
+    }
+
     /// The live project for a stable key (path, falling back to name — see
     /// `MockProject.stableKey`), or nil once the Mac closes it.
     func project(forKey key: String) -> MockProject? {
@@ -129,6 +141,17 @@ final class RosterStore {
         guard let project = chatsProject, let projectID = project.rosterID else { return }
         pendingStart = (project, nil)
         client?.send(.start(projectID: projectID, agent: nil))
+    }
+
+    /// The Terminals tab's ＋: open a plain login shell at `~` in the loose
+    /// `.terminals` funnel. The wire agent token `"terminal"` maps to the Mac's
+    /// `.terminal` preset (an unknown token also falls back to it), so the Mac
+    /// starts a shell — not the default chat agent an agent-less start would.
+    /// Needs an existing terminals container to land in; the ＋ hides until then.
+    func startDefaultTerminal() {
+        guard let project = terminalsProject, let projectID = project.rosterID else { return }
+        pendingStart = (project, nil)
+        client?.send(.start(projectID: projectID, agent: "terminal"))
     }
 
     /// Close on the Mac; the next roster push drops the row everywhere.

@@ -142,7 +142,7 @@ final class ProjectDetailViewController: UIViewController {
     /// balancing the tab pill bottom-left. Live rosters only; the bundled mock
     /// can't start anything.
     private func configureAddButton() {
-        addButton.applyGlassSymbol("plus", pointSize: 22)
+        addButton.applyGlassIcon(.add, boxSize: 26)
         addButton.tintColor = .label
         addButton.accessibilityLabel = "New session in \(project.name)"
         addButton.showsMenuAsPrimaryAction = true
