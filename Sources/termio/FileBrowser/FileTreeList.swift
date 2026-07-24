@@ -84,8 +84,12 @@ private struct FileRow: View {
                     .frame(width: 16, alignment: .leading)
             } else {
                 // The file's real language/tool logo (a Devicon mark) when bundled,
-                // else a tinted SF Symbol — see `FileIconView`.
-                FileIconView(url: node.url, size: 15, symbolSize: 13)
+                // else a tinted SF Symbol — see `FileIconView`. Boxed below the folder's
+                // nominal 15: Devicon marks fill their box edge-to-edge while HugeIcons
+                // ink only ~75% of theirs (the left sidebar's shared-column rule), so an
+                // equal nominal size made every file icon read a step LARGER than the
+                // folder and sidebar family — 12 brings their ink widths level.
+                FileIconView(url: node.url, size: 12, symbolSize: 11)
                     .frame(width: 16, alignment: .leading)
             }
             Text(node.name)
