@@ -664,7 +664,27 @@ final class TerminalViewController: UIViewController {
             )
             transport.onOutput = { [weak terminalSession, weak self] data in
                 terminalSession?.receive(data)
-                DispatchQueue.main.async { self?.altScreenSniffer.consume(data) }
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    let wasAlternate = self.altScreenSniffer.isAlternate
+                    self.altScreenSniffer.consume(data)
+                    // A slow-starting full-screen agent (Grok) switches into its
+                    // alt-screen TUI only after the phone's on-attach grid claim
+                    // has gone stale, and the Mac won't re-SIGWINCH an unchanged
+                    // winsize — so the TUI first paints at the wrong grid and only
+                    // a tap (which changes the keyboard geometry) forces a reflow.
+                    // Re-claim the grid the instant the TUI appears; the Mac
+                    // jiggles when the size is unchanged, so the agent reflows on
+                    // its own. Twice, mirroring the on-connect reassert, in case
+                    // the first lands before the agent finishes its opening paint.
+                    if !wasAlternate, self.altScreenSniffer.isAlternate, case .companion = self.backend {
+                        self.companion?.reassertGrid()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                            guard let self, case .companion = backend else { return }
+                            companion?.reassertGrid()
+                        }
+                    }
+                }
             }
             transport.onState = { [weak self] state in
                 self?.companionStateChanged(state)
