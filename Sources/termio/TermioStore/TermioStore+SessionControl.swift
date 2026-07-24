@@ -165,7 +165,10 @@ extension TermioStore {
             return controlError(request, "bad_agent",
                 "Unknown agent '\(request.agent ?? "")'. Try one of: \(names).")
         }
-        addSession(to: project.id, agent: preset)
+        // Drop the new agent in beside the pane you were watching (a split), not
+        // as a full-screen swap that hides the caller — the whole reason to start
+        // a sibling from the CLI is to see them side by side.
+        addSplitSession(to: project.id, agent: preset)
         guard let id = selectedSessionID, let session = self.session(id) else {
             return controlError(request, "start_failed", "Could not start the session.")
         }

@@ -59,6 +59,23 @@ indirect enum SplitNode: Codable, Hashable {
         }
     }
 
+    /// The axis of the branch that has `id` as a direct child — the direction the
+    /// pane is currently divided along. Used to add a neighbour on the *cross*
+    /// axis so splits alternate the way a tiling window manager does. `nil` when
+    /// `id` is a lone pane with no enclosing branch.
+    func branchDirection(childLeaf id: Session.ID) -> SplitDirection? {
+        switch self {
+        case .leaf:
+            return nil
+        case .split(let branch):
+            if branch.first == .leaf(id) || branch.second == .leaf(id) {
+                return branch.direction
+            }
+            return branch.first.branchDirection(childLeaf: id)
+                ?? branch.second.branchDirection(childLeaf: id)
+        }
+    }
+
     /// Replaces the `target` leaf with a split of it and `newLeaf` (the new pane
     /// takes the second/trailing slot, matching "Split Right"/"Split Down").
     /// A miss returns the tree unchanged.

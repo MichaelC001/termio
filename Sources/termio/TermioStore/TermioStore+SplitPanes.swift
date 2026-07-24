@@ -89,6 +89,168 @@ extension TermioStore {
         selectedSessionID = newSession.id
     }
 
+    /// Adds a session to a project and drops it in **beside** a visible pane as a
+    /// split, instead of replacing the view the way `addSession` does. This is the
+    /// path the CLI / an agent spawning a sibling takes (`termio sessions start`):
+    /// there the whole point is to *see* the new agent next to the one you were
+    /// watching, not to have it hijack the terminal area and push its predecessor
+    /// off to a sidebar row.
+    ///
+    /// The anchor is the pane you're looking at when it belongs to this project,
+    /// else the project's last session (a cross-project selection is ignored, so a
+    /// background agent's sibling never gets dragged into another project's group).
+    /// The split axis alternates across the anchor's current one, tiling-WM style —
+    /// a lone anchor opens side by side. With no pane to anchor to (an empty
+    /// project) it falls back to a plain `addSession`.
+    func addSplitSession(to projectID: Project.ID, agent: AgentPreset = .terminal) {
+        guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }) else { return }
+
+        let anchorID = selectedSessionID.flatMap { id in
+            projects[projectIndex].sessions.contains { $0.id == id } ? id : nil
+        } ?? projects[projectIndex].sessions.last?.id
+
+        guard let anchorID,
+              let anchorIndex = projects[projectIndex].sessions.firstIndex(where: { $0.id == anchorID })
+        else {
+            // Empty project — nothing to split against; behave like a normal add.
+            addSession(to: projectID, agent: agent)
+            return
+        }
+
+        let project = projects[projectIndex]
+        let title = agent == .terminal
+            ? "Terminal \(project.sessions.filter { $0.agent == .terminal }.count + 1)"
+            : agent.displayName
+        var newSession = Session(title: title, agent: agent)
+        // Share the anchor's working directory so a worktree agent's sibling lands
+        // in the same checkout — the same courtesy `splitSelectedPane` extends.
+        newSession.worktreePath = session(anchorID)?.worktreePath
+        // Adjacent to the anchor, so the sidebar reads the group as neighbouring
+        // rows and draws its ┌/└ bracket (see `splitLinkMarks`).
+        projects[projectIndex].sessions.insert(newSession, at: anchorIndex + 1)
+
+        // Alternate the split axis across the anchor's current one; a lone anchor
+        // (no enclosing branch) opens side by side.
+        let group = groupIndex(containing: anchorID)
+        let direction: SplitDirection
+        if let group, let current = splitGroups[group].branchDirection(childLeaf: anchorID) {
+            direction = current == .horizontal ? .vertical : .horizontal
+        } else {
+            direction = .horizontal
+        }
+
+        if let group {
+            splitGroups[group] = splitGroups[group]
+                .splitting(leaf: anchorID, direction: direction, adding: newSession.id)
+        } else {
+            splitGroups.append(.split(SplitBranch(direction: direction, ratio: 0.5,
+                                                  first: .leaf(anchorID),
+                                                  second: .leaf(newSession.id))))
+        }
+        selectedSessionID = newSession.id
+        isPaneZoomed = false
+    }
+
+    // MARK: - Type switching (联合 ⇄ 独立)
+
+    /// Whether `id` is currently part of a split group (联合) rather than a
+    /// standalone session (独立). Drives which switch action the sidebar offers.
+    func isInSplitGroup(_ id: Session.ID) -> Bool {
+        groupIndex(containing: id) != nil
+    }
+
+    /// The sessions `id` can be grouped *with* — same project, same working
+    /// bucket (root vs a given worktree, keyed by `worktreePath`), and not
+    /// already grouped with `id`. The bucket match is what keeps the resulting
+    /// group a single adjacent run in the sidebar, so its ┌/└ bracket draws.
+    func groupableTargets(for id: Session.ID) -> [Session] {
+        guard let project = projects.first(where: { $0.sessions.contains { $0.id == id } }),
+              let me = session(id) else { return [] }
+        let myGroup = groupIndex(containing: id)
+        return project.sessions.filter { other in
+            other.id != id
+                && other.worktreePath == me.worktreePath
+                && !(myGroup != nil && groupIndex(containing: other.id) == myGroup)
+        }
+    }
+
+    /// Pulls a pane out of its split group into a standalone session — VS Code's
+    /// "Unsplit Terminal" (联合 → 独立). The session itself is untouched (its shell
+    /// keeps running, its surface stays cached); it just leaves the tree, the
+    /// group dissolves when a lone pane is left, and the selection *follows* the
+    /// detached pane so you see it come up on its own (the difference from
+    /// `closeSelectedPane`, which hands focus to the neighbour it leaves behind).
+    func detachFromSplit(_ id: Session.ID) {
+        guard let group = groupIndex(containing: id) else { return }
+        setGroup(at: group, to: splitGroups[group].removing(leaf: id))
+        selectedSessionID = id
+        isPaneZoomed = false
+    }
+
+    /// Groups an existing `moved` session in beside `anchor` (独立 → 联合) — VS
+    /// Code's drag-a-tab-into-a-pane / "Move to Group". Unlike `splitSelectedPane`
+    /// this reuses a session already in the sidebar instead of spawning a fresh
+    /// one, so it's how two scattered sessions become one combined split.
+    ///
+    /// `moved` is first detached from any prior group (a session is a leaf in at
+    /// most one tree, so it can never appear twice), then spliced beside the
+    /// anchor with the axis alternated across the anchor's current one — the same
+    /// tiling-WM rule `addSplitSession` uses. Finally the sidebar rows are
+    /// reordered so the group reads as an adjacent run, which is what lets
+    /// `splitLinkMarks` draw its bracket over them.
+    func groupSession(_ moved: Session.ID, with anchor: Session.ID) {
+        guard moved != anchor,
+              let projectIndex = projects.firstIndex(where: { $0.sessions.contains { $0.id == anchor } }),
+              projects[projectIndex].sessions.contains(where: { $0.id == moved })
+        else { return }
+        // Already sharing the anchor's group — nothing to switch.
+        if let anchorGroup = groupIndex(containing: anchor),
+           groupIndex(containing: moved) == anchorGroup { return }
+
+        // 1. Detach `moved` from any prior group, keeping the "one leaf, one tree"
+        //    invariant. This may dissolve that group and shift `splitGroups`
+        //    indices, so the anchor's group is (re)resolved only afterwards.
+        if let previous = groupIndex(containing: moved) {
+            setGroup(at: previous, to: splitGroups[previous].removing(leaf: moved))
+        }
+
+        // 2. Splice beside the anchor, alternating the split axis across its
+        //    current one; a lone anchor (no branch yet) opens side by side.
+        let anchorGroup = groupIndex(containing: anchor)
+        let direction: SplitDirection
+        if let group = anchorGroup, let current = splitGroups[group].branchDirection(childLeaf: anchor) {
+            direction = current == .horizontal ? .vertical : .horizontal
+        } else {
+            direction = .horizontal
+        }
+        if let group = anchorGroup {
+            splitGroups[group] = splitGroups[group]
+                .splitting(leaf: anchor, direction: direction, adding: moved)
+        } else {
+            splitGroups.append(.split(SplitBranch(direction: direction, ratio: 0.5,
+                                                  first: .leaf(anchor), second: .leaf(moved))))
+        }
+
+        // 3. Sit `moved`'s row right after the anchor's so the sidebar reads the
+        //    group as a contiguous run (see `splitLinkMarks`).
+        moveSessionRow(moved, besideAnchor: anchor, in: projectIndex)
+        selectedSessionID = moved
+        isPaneZoomed = false
+    }
+
+    /// Moves `moved`'s row to immediately follow the anchor's within the project,
+    /// keeping a split group's sidebar rows adjacent. The anchor index is read
+    /// *after* the removal so it stays valid regardless of which row came first.
+    private func moveSessionRow(_ moved: Session.ID, besideAnchor anchor: Session.ID,
+                                in projectIndex: Int) {
+        guard let from = projects[projectIndex].sessions.firstIndex(where: { $0.id == moved })
+        else { return }
+        let row = projects[projectIndex].sessions.remove(at: from)
+        let anchorIndex = projects[projectIndex].sessions.firstIndex { $0.id == anchor }
+            ?? projects[projectIndex].sessions.count - 1
+        projects[projectIndex].sessions.insert(row, at: anchorIndex + 1)
+    }
+
     /// Closes the focused *pane* — the layout operation, not the session one.
     /// The session stays alive in the sidebar (its shell keeps running, its
     /// surface stays cached); it just leaves its group, and focus moves to its
