@@ -1,9 +1,13 @@
 ---
 title: "From IDE to ADE: Sixty Years of Development Environments, and Why the Era Is Ending"
-description: For sixty years, every generation of development environment has killed the slowest link in the loop between human intent and machine state. The bottleneck has finally moved to us — and that changes what programming means.
-date: 2026-07-11
+status: archived
+type: essay
+created: 2026-07-11
+updated: 2026-07-24
 lang: en
-slug: from-ide-to-ade
+related:
+  - from-ide-to-ade.zh.md
+description: For sixty years, every generation of development environment has killed the slowest link in the loop between human intent and machine state. The bottleneck has finally moved to us — and that changes what programming means.
 ---
 
 On July 8, 2026, InfoWorld ran a piece with a blunt headline: **"The IDE is dead, long live the ADE."** Nick Hodges's argument: the integrated development environment, after forty years of ruling software development, is becoming a tool developers reach for less and less.
