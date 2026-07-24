@@ -18,12 +18,6 @@ struct TreeHeaderButton: View {
     let action: () -> Void
     @State private var isHovering = false
 
-    init(systemName: String, help: String, action: @escaping () -> Void) {
-        self.source = .symbol(systemName)
-        self.help = help
-        self.action = action
-    }
-
     init(codicon: Codicon, help: String, action: @escaping () -> Void) {
         self.source = .codicon(codicon)
         self.help = help

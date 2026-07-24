@@ -48,10 +48,6 @@ enum ThemeLibrary {
         userThemes.first { $0.name == name } ?? GhosttyThemeCatalog.theme(named: name)
     }
 
-    /// Every bundled theme name, sorted — the picker's full "All Themes" list.
-    /// Enumerating the catalog is not free, so it is computed once for the process.
-    static let bundledThemeNames: [String] = GhosttyThemeCatalog.search("").map(\.name).sorted()
-
     /// The bundled catalog partitioned by brightness, computed once. The picker shows
     /// only the slot-appropriate half — dark themes in the Dark slot, light in the
     /// Light slot — so a slot can never offer a theme that renders the wrong way.
