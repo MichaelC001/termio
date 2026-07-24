@@ -1,7 +1,7 @@
 import Foundation
 
-/// The one walk-up-for-`.git` in the editor, shared by the header's repo-relative path and the
-/// LSP workspace root so the two can never disagree about which repo a file belongs to.
+/// The one walk-up-for-`.git` in the editor, backing the header's repo-relative path so a file's
+/// shown path always agrees with the repo it belongs to.
 enum GitRoot {
     /// The work-tree root containing `url`, or `nil` outside a repo. Matches any `.git` entry —
     /// a directory in a normal clone, a *file* in linked worktrees and submodules.

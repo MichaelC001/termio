@@ -1,8 +1,8 @@
 import XCTest
 @testable import termio
 
-/// The editor's pure LSP logic: position mapping, bracket pairing, registry merging. These are
-/// the pieces where a silent off-by-one becomes "jumped to the wrong symbol" — cheap to pin down.
+/// The editor's pure text logic: line/offset mapping and bracket pairing. These are the pieces
+/// where a silent off-by-one becomes "revealed the wrong line" — cheap to pin down.
 final class TextPositionsTests: XCTestCase {
     func testAsciiOffsets() {
         let text = "let a = 1\nlet b = 2\n" as NSString
@@ -16,7 +16,7 @@ final class TextPositionsTests: XCTestCase {
     }
 
     func testUTF16UnitsCountSurrogatePairsAsTwo() {
-        // "🙂" is two UTF-16 units; LSP counts UTF-16, so the symbol after it starts at 3.
+        // "🙂" is two UTF-16 units, so the symbol after it starts at character 3.
         let text = "🙂 var x = 1" as NSString
         let position = TextPositions.position(utf16Offset: 3, in: text)
         XCTAssertEqual(position.line, 0)
@@ -99,66 +99,5 @@ final class BracketMatcherTests: XCTestCase {
         XCTAssertNil(BracketMatcher.match(at: 1, in: text))
         XCTAssertNil(BracketMatcher.match(at: -1, in: text))
         XCTAssertNil(BracketMatcher.match(at: 3, in: text))
-    }
-}
-
-final class LSPRegistryTests: XCTestCase {
-    private func descriptor(_ id: String, command: String = "cmd") -> LSPServerDescriptor {
-        LSPServerDescriptor(id: id, command: command, extensions: ["x": "x"])
-    }
-
-    func testMergeReplacesMatchingIdWholesale() {
-        let merged = LSPRegistry.merged(
-            builtin: [descriptor("pyright", command: "pyright-langserver --stdio")],
-            custom: [descriptor("pyright", command: "pylsp")]
-        )
-        XCTAssertEqual(merged.count, 1)
-        XCTAssertEqual(merged[0].command, "pylsp")
-    }
-
-    func testMergeAppendsNewIdsInOrder() {
-        let merged = LSPRegistry.merged(
-            builtin: [descriptor("a"), descriptor("b")],
-            custom: [descriptor("c")]
-        )
-        XCTAssertEqual(merged.map(\.id), ["a", "b", "c"])
-    }
-
-    func testUserConfigDecodesWithOptionalFieldsAbsent() throws {
-        let json = #"[{ "id": "zls", "command": "zls", "extensions": { "zig": "zig" } }]"#
-        let decoded = try JSONDecoder().decode([LSPServerDescriptor].self, from: Data(json.utf8))
-        XCTAssertEqual(decoded[0].displayName, "zls")
-        XCTAssertNil(decoded[0].install)
-        XCTAssertNil(decoded[0].initializationOptions)
-    }
-
-    func testUserConfigDecodesInitializationOptionsAsRawJSON() throws {
-        let json = """
-        [{ "id": "vue", "command": "vue-language-server --stdio",
-           "extensions": { "vue": "vue" },
-           "initializationOptions": { "typescript": { "tsdk": "/usr/local/lib/tsdk" } } }]
-        """
-        let decoded = try JSONDecoder().decode([LSPServerDescriptor].self, from: Data(json.utf8))
-        XCTAssertNotNil(decoded[0].initializationOptions)
-    }
-
-    func testBuiltinExtensionsNeverCollide() {
-        var seen: [String: String] = [:]
-        for descriptor in LSPRegistry.builtin {
-            for ext in descriptor.extensions.keys {
-                XCTAssertNil(seen[ext], ".\(ext) claimed by both \(seen[ext]!) and \(descriptor.id)")
-                seen[ext] = descriptor.id
-            }
-        }
-    }
-
-    func testResolveLaunchSplitsAbsoluteCommands() async {
-        // /bin/ls exists everywhere; the resolver should accept the absolute path and
-        // hand back the remaining words as arguments.
-        let launch = await LSPRegistry.resolveLaunch("/bin/ls -la")
-        XCTAssertEqual(launch?.binary, "/bin/ls")
-        XCTAssertEqual(launch?.arguments, ["-la"])
-        let missing = await LSPRegistry.resolveLaunch("/no/such/binary --stdio")
-        XCTAssertNil(missing)
     }
 }
