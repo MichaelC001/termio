@@ -36,6 +36,9 @@ struct GitChangesView: View {
     /// destructive alert is up, so the actual `git restore`/delete only fires on "OK".
     @State private var pendingDiscard: [GitChange]?
 
+    /// A failed ignore action must not look successful merely because the list reloads.
+    @State private var gitignoreErrorMessage: String?
+
     /// The list's selected rows, by path. Exactly one selected row opens its diff;
     /// several become the targets of the batch context-menu actions.
     @State private var selection = Set<String>()
@@ -91,6 +94,14 @@ struct GitChangesView: View {
             Button("Cancel", role: .cancel) { pendingDiscard = nil }
         } message: { changes in
             Text(discardMessage(changes))
+        }
+        .alert(
+            "Couldn’t Update .gitignore",
+            isPresented: gitignoreErrorPresented
+        ) {
+            Button("OK") { gitignoreErrorMessage = nil }
+        } message: {
+            Text(gitignoreErrorMessage ?? "The ignore rule could not be added.")
         }
     }
 
@@ -289,7 +300,7 @@ struct GitChangesView: View {
             let untracked = targets.filter(\.isUntracked)
             if !untracked.isEmpty {
                 Divider()
-                Button("Add \(untracked.count) Files to .gitignore") {
+                Button("Add \(untracked.count) \(untracked.count == 1 ? "File" : "Files") to .gitignore") {
                     addToGitignore(paths: untracked.map(\.path))
                 }
                 if let root = untrackedRoot(of: change) {
@@ -315,10 +326,20 @@ struct GitChangesView: View {
     /// Escapes each repo-relative path into a literal rooted pattern before appending —
     /// a name containing `*`/`?`/`[` or trailing spaces must ignore exactly itself.
     private func addToGitignore(paths: [String]) {
-        let patterns = paths.compactMap(GitService.gitignorePattern(for:))
+        let encoded = paths.map { GitService.gitignorePattern(for: $0) }
+        guard encoded.allSatisfy({ $0 != nil }) else {
+            gitignoreErrorMessage =
+                "Git ignore patterns cannot represent a filename containing a line break."
+            return
+        }
+        let patterns = encoded.compactMap { $0 }
         guard !patterns.isEmpty else { return }
         Task {
-            await GitService.appendToGitignore(patterns, in: repoRoot)
+            let succeeded = await GitService.appendToGitignore(patterns, in: repoRoot)
+            if !succeeded {
+                gitignoreErrorMessage =
+                    "termio could not append to the repository’s .gitignore. Check its permissions and try again."
+            }
             await model.load()
         }
     }
@@ -396,6 +417,13 @@ struct GitChangesView: View {
 
     private var discardAlertPresented: Binding<Bool> {
         Binding(get: { pendingDiscard != nil }, set: { if !$0 { pendingDiscard = nil } })
+    }
+
+    private var gitignoreErrorPresented: Binding<Bool> {
+        Binding(
+            get: { gitignoreErrorMessage != nil },
+            set: { if !$0 { gitignoreErrorMessage = nil } }
+        )
     }
 
     /// The absolute on-disk URL for a change — `git status` paths are repo-relative.

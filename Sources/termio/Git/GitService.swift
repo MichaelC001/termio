@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 // MARK: - Git
@@ -8,8 +9,11 @@ import Foundation
 enum GitService {
     /// Changed files for a repo root, with their `+`/`−` counts filled in. Empty when
     /// the folder is not a git work tree.
-    static func changes(in repoRoot: String) async -> [GitChange] {
-        await offMain { loadChanges(repoRoot) }
+    static func changes(
+        in repoRoot: String,
+        onUntrackedScan: (@Sendable () -> Void)? = nil
+    ) async -> [GitChange] {
+        await offMain { loadChanges(repoRoot, onUntrackedScan: onUntrackedScan) }
     }
 
     /// The unified-diff rows for one changed file (staged + unstaged vs `HEAD`, or the
@@ -146,14 +150,17 @@ enum GitService {
 
     // MARK: Loading
 
-    private static func loadChanges(_ repoRoot: String) -> [GitChange] {
+    private static func loadChanges(
+        _ repoRoot: String,
+        onUntrackedScan: (@Sendable () -> Void)?
+    ) -> [GitChange] {
         guard run(["rev-parse", "--is-inside-work-tree"], in: repoRoot)?
             .trimmingCharacters(in: .whitespacesAndNewlines) == "true",
             let raw = run(["status", "--porcelain=v2", "-z", "--untracked-files=all"], in: repoRoot)
         else { return [] }
 
         var changes = parseStatus(raw)
-        applyCounts(&changes, repoRoot: repoRoot)
+        applyCounts(&changes, repoRoot: repoRoot, onUntrackedScan: onUntrackedScan)
         // Conflicts float to the top — they are the one status that *must* be acted
         // on. Everything else sorts by full path, so siblings cluster the way the
         // file tree shows them rather than in git's emit order.
@@ -221,7 +228,11 @@ enum GitService {
 
     /// Fills each change's add/delete counts: `git diff --numstat` (unstaged) merged
     /// with `--cached` (staged) for tracked files, and a line count for untracked ones.
-    private static func applyCounts(_ changes: inout [GitChange], repoRoot: String) {
+    private static func applyCounts(
+        _ changes: inout [GitChange],
+        repoRoot: String,
+        onUntrackedScan: (@Sendable () -> Void)?
+    ) {
         var counts: [String: (Int, Int)] = [:]
         var binaries: Set<String> = []
         for args in [["diff", "--numstat"], ["diff", "--numstat", "--cached"]] {
@@ -242,6 +253,7 @@ enum GitService {
             if changes[idx].isUntracked {
                 guard !untrackedFlood else { continue }
                 let abs = (repoRoot as NSString).appendingPathComponent(changes[idx].path)
+                onUntrackedScan?()
                 switch untrackedLineCount(abs) {
                 case .lines(let count): changes[idx].additions = count
                 case .binary: changes[idx].isBinary = true
@@ -271,15 +283,20 @@ enum GitService {
         var total = 0
         var lastByte: UInt8 = 0x0A
         var isFirstChunk = true
-        while let chunk = try? handle.read(upToCount: 262_144), !chunk.isEmpty {
-            if isFirstChunk {
-                if chunk.prefix(min(8000, chunk.count)).contains(0) { return .binary }
-                isFirstChunk = false
+        while true {
+            do {
+                guard let chunk = try handle.read(upToCount: 262_144), !chunk.isEmpty else { break }
+                if isFirstChunk {
+                    if chunk.prefix(min(8000, chunk.count)).contains(0) { return .binary }
+                    isFirstChunk = false
+                }
+                total += chunk.count
+                if total > untrackedSizeLimit { return .skip }
+                for byte in chunk where byte == 0x0A { lines += 1 }
+                lastByte = chunk.last ?? lastByte
+            } catch {
+                return .skip
             }
-            total += chunk.count
-            if total > untrackedSizeLimit { return .skip }
-            for byte in chunk where byte == 0x0A { lines += 1 }
-            lastByte = chunk.last ?? lastByte
         }
         if isFirstChunk { return .skip } // empty (or vanished mid-read): no badge
         if lastByte != 0x0A { lines += 1 }
@@ -288,10 +305,10 @@ enum GitService {
 
     /// A repo-relative path encoded as a literal `.gitignore` pattern: glob metacharacters
     /// backslash-escaped, trailing spaces escaped (git strips them bare), rooted with a
-    /// leading `/` (which also disarms leading `#`/`!`). `nil` for the one unrepresentable
-    /// case, a newline in the name.
+    /// leading `/` (which also disarms leading `#`/`!`). `nil` for the unrepresentable
+    /// case of a line break in the name.
     static func gitignorePattern(for path: String) -> String? {
-        guard !path.contains("\n") else { return nil }
+        guard !path.contains("\n"), !path.contains("\r") else { return nil }
         var escaped = ""
         for character in path {
             if "\\*?[]".contains(character) { escaped.append("\\") }
@@ -316,40 +333,43 @@ enum GitService {
     }
 
     /// Appends patterns to the repo root's `.gitignore` (created if absent), skipping lines
-    /// already present. Strictly append-oriented — the existing bytes are never rewritten, so
-    /// an unreadable file or a concurrent editor save can't be clobbered; a read failure on an
-    /// existing file aborts instead of treating it as empty. The pane's file-system watch sees
-    /// the write and refreshes on its own.
+    /// already present. The descriptor is opened with `O_APPEND` so a concurrent creator can
+    /// never be truncated; `flock` serializes termio's own simultaneous menu actions. Existing
+    /// bytes are compared and preserved without decoding, so even a non-UTF8 ignore file is safe.
+    /// The pane's file-system watch sees the write and refreshes on its own.
     @discardableResult
     static func appendToGitignore(_ patterns: [String], in repoRoot: String) async -> Bool {
-        await offMain {
-            let url = URL(fileURLWithPath: repoRoot).appendingPathComponent(".gitignore")
-            let exists = FileManager.default.fileExists(atPath: url.path)
-            var existingLines: Set<String> = []
-            var needsLeadingNewline = false
-            if exists {
-                guard let data = try? Data(contentsOf: url) else { return false }
-                existingLines = Set(
-                    String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
-                )
-                needsLeadingNewline = !data.isEmpty && data.last != 0x0A
-            }
-            let additions = patterns.filter { !existingLines.contains($0) }
+        await offMain { appendPatternsToGitignore(patterns, repoRoot: repoRoot) }
+    }
+
+    private static func appendPatternsToGitignore(_ patterns: [String], repoRoot: String) -> Bool {
+        let url = URL(fileURLWithPath: repoRoot).appendingPathComponent(".gitignore")
+        let permissions = mode_t(S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH)
+        let descriptor = Darwin.open(
+            url.path,
+            O_RDWR | O_APPEND | O_CREAT | O_CLOEXEC,
+            permissions
+        )
+        guard descriptor >= 0 else { return false }
+        defer { Darwin.close(descriptor) }
+        guard flock(descriptor, LOCK_EX) == 0 else { return false }
+        defer { _ = flock(descriptor, LOCK_UN) }
+
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        do {
+            try handle.seek(toOffset: 0)
+            let existing = try handle.readToEnd() ?? Data()
+            let existingBytes = Array(existing)
+            let existingLines = Set(existingBytes.split(separator: 0x0A).map { Data($0) })
+            let additions = patterns.filter { !existingLines.contains(Data($0.utf8)) }
             guard !additions.isEmpty else { return true }
-            let payload = (needsLeadingNewline ? "\n" : "") + additions.joined(separator: "\n") + "\n"
-            if exists {
-                guard let handle = FileHandle(forWritingAtPath: url.path) else { return false }
-                defer { try? handle.close() }
-                do {
-                    try handle.seekToEnd()
-                    try handle.write(contentsOf: Data(payload.utf8))
-                    return true
-                } catch { return false }
-            }
-            do {
-                try Data(payload.utf8).write(to: url)
-                return true
-            } catch { return false }
+            let needsLeadingNewline = !existing.isEmpty && existing.last != 0x0A
+            let payload = (needsLeadingNewline ? "\n" : "")
+                + additions.joined(separator: "\n") + "\n"
+            try handle.write(contentsOf: Data(payload.utf8))
+            return true
+        } catch {
+            return false
         }
     }
 

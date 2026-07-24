@@ -56,13 +56,15 @@ final class GitPanelModel: ObservableObject {
         let generation = loadGeneration
         let loaded = await GitService.changes(in: repoRoot)
         guard generation == loadGeneration else { return }
-        changes = loaded
-        isLoading = false
         let roots = loaded.contains(where: \.isUntracked)
             ? await GitService.untrackedRoots(in: repoRoot)
             : []
         guard generation == loadGeneration else { return }
+        // Publish one coherent snapshot. Leaving the previous roots paired with newly
+        // published changes, even briefly, can expose a stale "Ignore Folder" action.
+        changes = loaded
         untrackedRoots = roots
+        isLoading = false
         if watcher == nil { await armWatcher() }
     }
 
