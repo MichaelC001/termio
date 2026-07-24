@@ -24,7 +24,7 @@ release one, so both can run at the same time:
 | CLI on PATH | `termio` | `termio-dev` |
 | Sparkle auto-update | on | **stripped** (dev never self-updates) |
 
-All of this falls out of the `.dev` bundle-id suffix via `Sources/termio/AppChannel.swift`
+All of this falls out of the `.dev` bundle-id suffix via `Sources/termio/Companion/AppChannel.swift`
 (paths + port) and `scripts/build-app.sh` (id, name, Sparkle strip, CLI rebind).
 
 termio is a plain SwiftPM executable (`Package.swift` → `executableTarget` named
