@@ -71,13 +71,6 @@ final class HookListener {
         queue.async { [weak self] in self?.bindAndListen() }
     }
 
-    func stop() {
-        queue.async { [weak self] in
-            self?.source?.cancel()
-            self?.source = nil
-        }
-    }
-
     private func bindAndListen() {
         let url = Self.socketURL
         try? FileManager.default.createDirectory(

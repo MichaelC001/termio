@@ -60,7 +60,7 @@ extension TermioStore {
     /// Maps a normalized agent status report onto the session's status. This is the
     /// only path that drives `.working`: an agent's hooks expose when a turn (or a
     /// tool) *starts*, which the surface bell/OSC signals never could. The two
-    /// layers coexist by writing the same `statuses` — hooks add precision when
+    /// layers coexist by writing the same per-session status — hooks add precision when
     /// installed, the zero-config signals remain the fallback when they are not.
     private func applyStatusReport(_ report: StatusReport) {
         guard let id = sessionID(for: report) else { return }
@@ -121,31 +121,32 @@ extension TermioStore {
             // stays calm, so only real agent rows show the thinking spinner.
             guard let session = session(id), effectiveAgent(for: session) != .terminal
             else { break }
-            statuses[id] = .working
-            currentTool[id] = report.tool
+            setStatus(.working, for: id)
+            setCurrentTool(report.tool, for: id)
             // Remember when work was last seen, so a turn that ends abnormally
             // (the agent crashed and never sent `done`) can be swept back to calm
             // instead of spinning forever — the failure mode cmux's own tracker
-            // suffers from (issue #3749).
+            // suffers from (issue #3749). (Floating the project up the Recent-Activity
+            // sort is handled by `setStatus`'s working transition.)
             lastWorkingAt[id] = Date()
-            // A working agent is the strongest "this project is active" signal, so
-            // float its project up under the "Recent Activity" sort (see `orderedProjects`).
-            if let pid = project(for: id)?.id { liveActivity[pid] = Date() }
         case "done":
-            // The turn finished. If the user is looking at it, calm; otherwise a
-            // gentle "ready for you" cue — distinct from `needsAttention`, which is
-            // reserved for the agent actually being blocked on the user.
+            // The turn finished — always leave a "ready for you" green dot, even on
+            // the session the user is currently looking at, so a finished agent stays
+            // on the menu-bar roster instead of blinking off the instant it stops.
+            // The dot is cleared by engaging with the row (`markSeen`, wired to the
+            // sidebar/tray click) or by the next turn starting. Distinct from
+            // `needsAttention`, which is reserved for the agent being blocked on you.
             clearWorking(id)
-            statuses[id] = (selectedSessionID == id) ? .idle : .done
+            setStatus(.done, for: id)
         case "attention":
             // The agent is blocked waiting on the user (a permission prompt or a
             // free-text answer). Mirror the bell path: only flag a session the user
             // isn't already looking at.
             clearWorking(id)
-            if selectedSessionID != id { statuses[id] = .needsAttention }
+            if selectedSessionID != id { setStatus(.needsAttention, for: id) }
         case "idle":
             clearWorking(id)
-            statuses[id] = .idle
+            setStatus(.idle, for: id)
         default:
             break
         }
@@ -163,7 +164,7 @@ extension TermioStore {
     }
 
     private func clearWorking(_ id: Session.ID) {
-        currentTool[id] = nil
+        setCurrentTool(nil, for: id)
         lastWorkingAt[id] = nil
         promotionStreak[id] = nil
     }
@@ -206,7 +207,7 @@ extension TermioStore {
     /// Fed by a throttled once-a-second tap on the PTY stream (see
     /// `surface(for:in:)`); no-ops cost a dictionary lookup.
     func noteOutputActivity(_ id: Session.ID, screenChanged: Bool, bytes: Int) {
-        if statuses[id] == .working {
+        if status(for: id) == .working {
             promotionStreak[id] = nil
             if screenChanged || bytes >= streamingByteFloor {
                 lastWorkingAt[id] = Date()
@@ -238,9 +239,8 @@ extension TermioStore {
             return
         }
         promotionStreak[id] = nil
-        statuses[id] = .working
+        setStatus(.working, for: id)
         lastWorkingAt[id] = now
-        if let pid = project(for: id)?.id { liveActivity[pid] = now }
     }
 
     /// Drives status from an agent's own screen when it ships no hook system — the path
@@ -259,17 +259,16 @@ extension TermioStore {
         lastScreenActivity[id] = activity
         switch activity {
         case .working:
-            statuses[id] = .working
-            if let pid = project(for: id)?.id { liveActivity[pid] = Date() }
+            setStatus(.working, for: id)
         case .attention:
             clearWorking(id)
-            if selectedSessionID != id { statuses[id] = .needsAttention }
+            if selectedSessionID != id { setStatus(.needsAttention, for: id) }
         case .idle:
             clearWorking(id)
             if previous == .working || previous == .attention {
-                statuses[id] = (selectedSessionID == id) ? .idle : .done
+                setStatus(selectedSessionID == id ? .idle : .done, for: id)
             } else {
-                statuses[id] = .idle
+                setStatus(.idle, for: id)
             }
         }
     }
@@ -291,41 +290,79 @@ extension TermioStore {
         lastTitleActivity[id] = activity
         switch activity {
         case .working:
-            guard statuses[id] != .needsAttention else { return }
+            guard status(for: id) != .needsAttention else { return }
             guard let session = session(id), effectiveAgent(for: session) != .terminal
             else { return }
-            statuses[id] = .working
+            setStatus(.working, for: id)
             lastWorkingAt[id] = Date()
-            if let pid = project(for: id)?.id { liveActivity[pid] = Date() }
         case .attention:
             clearWorking(id)
-            if selectedSessionID != id { statuses[id] = .needsAttention }
+            if selectedSessionID != id { setStatus(.needsAttention, for: id) }
         case .idle:
-            guard previous == .working, statuses[id] == .working else { return }
+            guard previous == .working, status(for: id) == .working else { return }
             clearWorking(id)
-            statuses[id] = (selectedSessionID == id) ? .idle : .done
+            setStatus(selectedSessionID == id ? .idle : .done, for: id)
         }
     }
 
-    /// Records (or clears) the agent detected running in a plain terminal's
-    /// foreground, upgrading the row to a first-class agent while it runs (brand icon,
-    /// adopted live title, working spinner) and reverting it to a plain terminal when
-    /// it exits. Terminal-only (a declared agent session is never reclassified) and
-    /// idempotent (unchanged detection is a no-op, so the once-a-second poll is cheap).
-    /// On clear it also drops the transient agent title and any lingering spinner so
-    /// the row can't be left mid-turn once the agent is gone.
+    /// Reclassifies a shell-backed session to whatever agent runs in its foreground —
+    /// for real, not as a runtime overlay: a hand-started `claude` makes the session
+    /// *become* a Claude Code session (persisted, so a reopened app relaunches it as
+    /// that agent, resuming the conversation its hooks pinned meanwhile), and the
+    /// agent exiting back to the shell demotes it to a plain terminal again. The
+    /// identity always says what the pane runs. Only sessions spawned with a shell
+    /// underneath ever report here (the detection sink exists solely for them), so a
+    /// promoted row keeps polling and the demotion fires when its shell resurfaces.
+    /// Idempotent per poll; an SSH terminal is never reclassified (its foreground is
+    /// the local `ssh`, and the agents run remotely).
     func noteForegroundAgent(_ detected: AgentDefinition?, for id: Session.ID) {
-        guard session(id)?.agent == .terminal else { return }
-        guard detectedAgents[id] != detected else { return }
+        guard let location = locate(id) else { return }
+        var session = projects[location.project].sessions[location.session]
+        guard !session.isSSH else { return }
         if let detected {
-            detectedAgents[id] = detected
-        } else {
-            detectedAgents[id] = nil
-            liveTitles[id] = nil
-            lastTitleActivity[id] = nil
-            clearWorking(id)
-            if statuses[id] == .working || statuses[id] == .done { statuses[id] = .idle }
+            // Promote a plain terminal only: an already-promoted row seeing its own
+            // agent is the idempotent no-op, and a *different* foreground under a
+            // promoted row is the agent's own subprocess, not a new identity.
+            guard session.agent == .terminal, detected != .terminal else { return }
+            // Adopt the declared-session title convention (`addSession`) so the row
+            // reads `Claude Code` — but never overwrite a name the user chose.
+            if Self.isAutoTerminalName(session.title) {
+                session.title = detected.displayName
+            }
+            session.agent = detected
+            projects[location.project].sessions[location.session] = session
+        } else if session.agent != .terminal {
+            demoteSessionToTerminal(id)
         }
+    }
+
+    /// The one place a session stops being an agent: reverts the row to a plain
+    /// terminal (persisted) and clears the conversation-scoped runtime state — the
+    /// adopted topic title and any lingering spinner — so the row can't be left
+    /// mid-turn once the agent is gone. The resume pin deliberately survives: it is
+    /// dormant on a terminal row, and it still names the conversation this pane last
+    /// hosted. Shared by the foreground poll (agent quit back to its shell) and the
+    /// clean-exit revert of an exec'd agent session (`revertSessionToShell`).
+    func demoteSessionToTerminal(_ id: Session.ID) {
+        guard let location = locate(id) else { return }
+        var session = projects[location.project].sessions[location.session]
+        guard session.agent != .terminal else { return }
+        // Un-renamed rows fall back to the auto `Terminal N` convention (numbered
+        // like `addSession`, counting this row itself), so display naming — cwd
+        // basename for loose terminals — takes over again.
+        if session.title == session.agent.displayName {
+            let terminalCount = projects[location.project].sessions
+                .filter { $0.agent == .terminal }.count
+            session.title = "Terminal \(terminalCount + 1)"
+        }
+        session.agent = .terminal
+        session.liveTitle = nil
+        projects[location.project].sessions[location.session] = session
+        setLiveTitle(nil, for: id)
+        lastTitleActivity[id] = nil
+        clearWorking(id)
+        let current = status(for: id)
+        if current == .working || current == .done { setStatus(.idle, for: id) }
     }
 
     /// Resolves a session's transcript file from disk when its hook hasn't handed
@@ -359,7 +396,7 @@ extension TermioStore {
     private func sweepStaleWorking() {
         let now = Date()
         for (id, since) in lastWorkingAt where now.timeIntervalSince(since) > staleWorkingTimeout {
-            if statuses[id] == .working { statuses[id] = .idle }
+            if status(for: id) == .working { setStatus(.idle, for: id) }
             clearWorking(id)
         }
     }
@@ -405,7 +442,7 @@ extension TermioStore {
         case .idle:
             return ""
         case .working:
-            if let tool = currentTool[sessionID] { return "Working — \(tool)" }
+            if let tool = runtimes[sessionID]?.currentTool { return "Working — \(tool)" }
             return "Working…"
         case .done:
             return "Done"

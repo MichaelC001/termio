@@ -36,6 +36,9 @@ struct GitChangesView: View {
     /// destructive alert is up, so the actual `git restore`/delete only fires on "OK".
     @State private var pendingDiscard: [GitChange]?
 
+    /// A failed ignore action must not look successful merely because the list reloads.
+    @State private var gitignoreErrorMessage: String?
+
     /// The list's selected rows, by path. Exactly one selected row opens its diff;
     /// several become the targets of the batch context-menu actions.
     @State private var selection = Set<String>()
@@ -91,6 +94,14 @@ struct GitChangesView: View {
             Button("Cancel", role: .cancel) { pendingDiscard = nil }
         } message: { changes in
             Text(discardMessage(changes))
+        }
+        .alert(
+            "Couldn’t Update .gitignore",
+            isPresented: gitignoreErrorPresented
+        ) {
+            Button("OK") { gitignoreErrorMessage = nil }
+        } message: {
+            Text(gitignoreErrorMessage ?? "The ignore rule could not be added.")
         }
     }
 
@@ -252,6 +263,7 @@ struct GitChangesView: View {
     @ViewBuilder
     private func contextMenu(for change: GitChange) -> some View {
         let targets = targets(for: change)
+        let fileExtension = (change.path as NSString).pathExtension.lowercased()
         if targets.count == 1 {
             Button("Open in Editor") { openInEditor(change) }
             Button("Reveal in Finder") { revealInFinder(change) }
@@ -259,6 +271,17 @@ struct GitChangesView: View {
             Button("Copy Path") { copyPath(change) }
             Button("Copy Relative Path") { copyToPasteboard(change.path) }
             Button("Copy Diff") { copyDiff(targets) }
+            // GitHub Desktop's two ignore actions, verbatim — the by-extension form is
+            // what clears a build-products flood one file type at a time.
+            if change.isUntracked {
+                Divider()
+                Button("Ignore File (Add to .gitignore)") { addToGitignore(paths: [change.path]) }
+                if !fileExtension.isEmpty {
+                    Button("Ignore All .\(fileExtension) Files (Add to .gitignore)") {
+                        addRawPatternToGitignore("*." + fileExtension)
+                    }
+                }
+            }
             Divider()
             Button("Discard Changes…", role: .destructive) { pendingDiscard = targets }
         } else {
@@ -269,6 +292,14 @@ struct GitChangesView: View {
                 copyToPasteboard(targets.map(\.path).joined(separator: "\n"))
             }
             Button("Copy Diff") { copyDiff(targets) }
+            // GitHub Desktop acts on the whole selection here too.
+            let untracked = targets.filter(\.isUntracked)
+            if !untracked.isEmpty {
+                Divider()
+                Button("Ignore \(untracked.count) Selected Files (Add to .gitignore)") {
+                    addToGitignore(paths: untracked.map(\.path))
+                }
+            }
             Divider()
             Button("Discard \(targets.count) Files…", role: .destructive) { pendingDiscard = targets }
         }
@@ -277,6 +308,39 @@ struct GitChangesView: View {
     private func targets(for change: GitChange) -> [GitChange] {
         guard selection.contains(change.path), selection.count > 1 else { return [change] }
         return model.changes.filter { selection.contains($0.path) }
+    }
+
+    /// Appends a pattern exactly as given (`*.o`) — GitHub Desktop's by-extension form.
+    private func addRawPatternToGitignore(_ pattern: String) {
+        Task {
+            let succeeded = await GitService.appendToGitignore([pattern], in: repoRoot)
+            if !succeeded {
+                gitignoreErrorMessage =
+                    "termio could not append to the repository’s .gitignore. Check its permissions and try again."
+            }
+            await model.load()
+        }
+    }
+
+    /// Escapes each repo-relative path into a literal rooted pattern before appending —
+    /// a name containing `*`/`?`/`[` or trailing spaces must ignore exactly itself.
+    private func addToGitignore(paths: [String]) {
+        let encoded = paths.map { GitService.gitignorePattern(for: $0) }
+        guard encoded.allSatisfy({ $0 != nil }) else {
+            gitignoreErrorMessage =
+                "Git ignore patterns cannot represent a filename containing a line break."
+            return
+        }
+        let patterns = encoded.compactMap { $0 }
+        guard !patterns.isEmpty else { return }
+        Task {
+            let succeeded = await GitService.appendToGitignore(patterns, in: repoRoot)
+            if !succeeded {
+                gitignoreErrorMessage =
+                    "termio could not append to the repository’s .gitignore. Check its permissions and try again."
+            }
+            await model.load()
+        }
     }
 
     private func open(_ change: GitChange) {
@@ -352,6 +416,13 @@ struct GitChangesView: View {
 
     private var discardAlertPresented: Binding<Bool> {
         Binding(get: { pendingDiscard != nil }, set: { if !$0 { pendingDiscard = nil } })
+    }
+
+    private var gitignoreErrorPresented: Binding<Bool> {
+        Binding(
+            get: { gitignoreErrorMessage != nil },
+            set: { if !$0 { gitignoreErrorMessage = nil } }
+        )
     }
 
     /// The absolute on-disk URL for a change — `git status` paths are repo-relative.

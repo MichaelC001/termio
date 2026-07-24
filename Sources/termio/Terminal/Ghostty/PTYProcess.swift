@@ -108,6 +108,13 @@ final class PTYProcess: @unchecked Sendable {
     /// pid may be recycled — the escalation kill checks this so a delayed
     /// SIGKILL can never hit an innocent reused pid/pgid.
     private var childExited = false
+    /// The executable the child exec'd into (kernel path + inode), pinned by
+    /// `recordChildExecutable` once it has moved past the spawn shell. The
+    /// baseline `childExecutableWasReplaced()` compares against. Lock-guarded.
+    private var childExecutable: (path: String, inode: ino_t?)?
+    /// argv[0] of the spawn — the login shell the child starts as, which
+    /// `recordChildExecutable` must wait out before pinning the identity.
+    private let spawnExecutablePath: String
     /// Pending coalesced host SIGWINCH (see `resizeFromHost`). Lock-guarded.
     private var hostApplyWork: DispatchWorkItem?
     private let lock = NSLock()
@@ -129,6 +136,7 @@ final class PTYProcess: @unchecked Sendable {
     /// Spawns `argv` in `cwd` with `env` overrides at an initial `cols`×`rows`.
     /// Returns nil if the PTY or the process could not be created.
     init?(argv: [String], cwd: String, env: [String: String], cols: Int, rows: Int) {
+        spawnExecutablePath = argv[0]
         lastCols = cols
         lastRows = rows
         hostCols = cols
@@ -787,6 +795,44 @@ final class PTYProcess: @unchecked Sendable {
             let path = String(cString: base.assumingMemoryBound(to: CChar.self))
             return path.isEmpty ? nil : path
         }
+    }
+
+    /// Records which executable the child is running right now (`proc_pidpath`
+    /// plus its inode), once it has exec'd past the spawn shell. Called
+    /// opportunistically from the output ticks, so by the time an agent has
+    /// printed anything the identity is pinned. One-shot on purpose: the first
+    /// non-shell sample is the *launch* baseline `childExecutableWasReplaced()`
+    /// compares against — resampling later would paper over an in-place upgrade.
+    func recordChildExecutable() {
+        lock.lock()
+        let skip = childExited || childExecutable != nil
+        lock.unlock()
+        guard !skip, pid > 0 else { return }
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return }
+        let path = String(cString: buffer)
+        guard path != spawnExecutablePath else { return }
+        var info = stat()
+        let inode: ino_t? = stat(path, &info) == 0 ? info.st_ino : nil
+        lock.lock()
+        childExecutable = (path, inode)
+        lock.unlock()
+    }
+
+    /// Whether the recorded launch executable has since been replaced on disk:
+    /// the file is gone (Homebrew purges the old versioned dir on upgrade) or
+    /// its inode changed (an in-place reinstall). The exit path uses this to
+    /// tell "the agent updated itself and quit" from a plain quit, whose binary
+    /// is untouched. `false` when no identity was ever pinned — no evidence.
+    func childExecutableWasReplaced() -> Bool {
+        lock.lock()
+        let identity = childExecutable
+        lock.unlock()
+        guard let identity else { return false }
+        var info = stat()
+        guard stat(identity.path, &info) == 0 else { return true }
+        guard let inode = identity.inode else { return true }
+        return info.st_ino != inode
     }
 
     /// The argv of the process group currently in the *foreground* of this PTY —

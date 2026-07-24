@@ -26,15 +26,29 @@ Requires macOS 14+, Swift 6 (Xcode 26).
 
 ## Layout
 
+`Sources/termio/` is grouped by feature. Top-level folders:
+
+| Folder | What lives there |
+| --- | --- |
+| `App/` | app bootstrap, window/menu, models, logging, resource bundle |
+| `Terminal/` | terminal pane, split tree, context menu, link opening; `Terminal/Ghostty/` isolates the libghostty/PTY boundary (`PTYProcess`) |
+| `Sidebar/` | projects → sessions list, status dots |
+| `Agents/` | agent definitions, session store, hook listener |
+| `Companion/` | companion server, app channel, tunnel + usage monitors |
+| `Editor/` · `Git/` · `FileBrowser/` · `Settings/` · `Info/` · `Keybindings/` | inspector + settings surfaces |
+| `TermioStore/` | central state + per-session terminal **SurfaceCache** |
+| `Theme/` · `CommandPalette/` · `Welcome/` · `Browser/` | supporting UI |
+
+Orientation for the core files:
+
 | File | Role |
 | --- | --- |
-| `Sources/termio/App.swift` | `NSApplication` bootstrap, window, menu |
-| `Sources/termio/Models.swift` | `Project` / `Session` model + seed data |
-| `Sources/termio/TermioStore.swift` | state + per-session terminal **SurfaceCache** |
-| `Sources/termio/RootView.swift` | `NavigationSplitView` (sidebar + detail) |
-| `Sources/termio/SidebarView.swift` | projects → sessions, `+` to add a session, status dots |
-| `Sources/termio/TerminalPane.swift` | top bar + `TerminalSurfaceView` |
-| `Sources/termio/MenuBarController.swift` | menu-bar tray: pulse + session roster |
+| `App/App.swift` | `NSApplication` bootstrap, window, menu |
+| `App/Models.swift` | `Project` / `Session` model + seed data |
+| `TermioStore/TermioStore.swift` | state + per-session terminal **SurfaceCache** |
+| `Sidebar/SidebarView.swift` | projects → sessions, `+` to add a session, status dots |
+| `Terminal/TerminalPane.swift` | top bar + `TerminalSurfaceView` |
+| `App/MenuBarController.swift` | menu-bar tray: pulse + session roster |
 
 ### How sessions persist
 
@@ -72,9 +86,3 @@ and Claude Code emits OSC 9/99 notifications natively inside Ghostty, so
 - Git worktrees grouped under each project (also gives each session a unique cwd,
   which is what lets hooks correlate back to the right session).
 - Hosted PTY / session-host so sessions survive quitting the window.
-
-## History
-
-termio was previously a Zed fork. On 2026-06-26 it was restarted from scratch as
-a Swift + libghostty app. The Zed-fork tree is preserved in git history under the
-`zed-fork-archive` tag (`git checkout zed-fork-archive`).

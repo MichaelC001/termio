@@ -8,7 +8,6 @@ struct IconBadge: View {
     let icon: AgentIcon
 
     init(_ icon: AgentIcon) { self.icon = icon }
-    init(symbol: String) { self.icon = .symbol(symbol) }
 
     var body: some View {
         glyph

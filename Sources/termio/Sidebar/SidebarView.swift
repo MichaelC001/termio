@@ -694,9 +694,11 @@ func headerSessionPresets(_ settings: AppSettings) -> [AgentPreset] {
     [.terminal] + enabledAgentPresets(settings).filter { $0 != .terminal }
 }
 
-/// One entry in a sidebar row's right-click menu — a titled action or a separator.
+/// One entry in a sidebar row's right-click menu — a titled action, a titled
+/// submenu of further entries, or a separator.
 enum SidebarMenuItem {
     case action(String, () -> Void)
+    indirect case submenu(String, [SidebarMenuItem])
     case separator
 }
 
@@ -763,8 +765,14 @@ private struct SidebarRowContextMenu: NSViewRepresentable {
 
         @objc private func showMenu(_ recognizer: NSClickGestureRecognizer) {
             guard let hostView else { return }
-            let menu = NSMenu()
+            let menu = build(items)
             menu.delegate = self
+            menu.popUp(positioning: nil, at: recognizer.location(in: hostView), in: hostView)
+        }
+
+        /// Builds an `NSMenu` from the spec, recursing for submenus.
+        private func build(_ items: [SidebarMenuItem]) -> NSMenu {
+            let menu = NSMenu()
             for item in items {
                 switch item {
                 case .separator:
@@ -774,9 +782,16 @@ private struct SidebarRowContextMenu: NSViewRepresentable {
                     menuItem.target = self
                     menuItem.representedObject = Handler(handler)
                     menu.addItem(menuItem)
+                case let .submenu(title, children):
+                    let menuItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                    // An empty submenu (e.g. nothing to group with) reads as a
+                    // disabled, un-openable parent rather than a dead-end click.
+                    menuItem.isEnabled = !children.isEmpty
+                    menuItem.submenu = children.isEmpty ? nil : build(children)
+                    menu.addItem(menuItem)
                 }
             }
-            menu.popUp(positioning: nil, at: recognizer.location(in: hostView), in: hostView)
+            return menu
         }
 
         @objc private func invoke(_ sender: NSMenuItem) {
@@ -888,8 +903,44 @@ private struct SessionRow: View {
     /// lives. `nil` for a row in its normal tree spot.
     var breadcrumb: String? = nil
     @State private var isHovering = false
+    /// A same-project session is being dragged over this row — highlight it as the
+    /// grouping target (VS Code's blue pane-drop cue).
+    @State private var isDropTarget = false
+
+    /// The drag pasteboard payload identifying a session by id. Namespaced so the
+    /// row's `.dropDestination` accepts only a session drag, never arbitrary text.
+    private static let dragPrefix = "termio-session:"
 
     private var isSelected: Bool { store.selectedSessionID == session.id }
+
+    /// The row's right-click menu. Rename/Pin/Close are always present; the two
+    /// split "type switch" items appear conditionally — "Unsplit" only when the
+    /// session is already in a group (联合 → 独立), and "Group with ▸" only when
+    /// there is a sibling to combine it with (独立 → 联合).
+    private var menuItems: [SidebarMenuItem] {
+        var items: [SidebarMenuItem] = [
+            .action("Rename…") { store.renameSession(session.id) }
+        ]
+        let targets = store.groupableTargets(for: session.id)
+        if store.isInSplitGroup(session.id) || !targets.isEmpty { items.append(.separator) }
+        if store.isInSplitGroup(session.id) {
+            items.append(.action("Unsplit") { store.detachFromSplit(session.id) })
+        }
+        if !targets.isEmpty {
+            items.append(.submenu("Group with", targets.map { target in
+                .action(store.displayTitle(for: target)) {
+                    store.groupSession(session.id, with: target.id)
+                }
+            }))
+        }
+        items.append(contentsOf: [
+            .separator,
+            .action(session.pinned ? "Unpin" : "Pin") { store.toggleSessionPinned(session.id) },
+            .separator,
+            .action("Close") { store.closeSession(session.id) },
+        ])
+        return items
+    }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -960,12 +1011,25 @@ private struct SessionRow: View {
         // is a folder-level action now (the project header's "New worktree" button),
         // so a session row carries only its close button.
         .overlay(alignment: .trailing) {
-            SessionRowActionButton(
-                systemImage: "xmark.circle.fill",
-                help: "Close session",
-                chrome: chrome
-            ) {
-                store.closeSession(session.id)
+            HStack(spacing: 0) {
+                // The drag handle (独立 → 联合): grab it and drop onto another
+                // session's row to combine the two into one split group. It lives on
+                // its own subview with no tap gesture so `.draggable` isn't preempted
+                // by the row's selection tap — the conflict noted in the file browser.
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20, height: 22)
+                    .contentShape(Rectangle())
+                    .help("Drag onto another session to split them together")
+                    .draggable(Self.dragPrefix + session.id.uuidString)
+                SessionRowActionButton(
+                    systemImage: "xmark.circle.fill",
+                    help: "Close session",
+                    chrome: chrome
+                ) {
+                    store.closeSession(session.id)
+                }
             }
             .opacity(isHovering ? 1 : 0)
             .allowsHitTesting(isHovering)
@@ -988,22 +1052,38 @@ private struct SessionRow: View {
             }
         }
         .contentShape(Rectangle())
+        // Accept a session drag dropped onto this row: combine the dragged session
+        // with this one into a split group. A String payload (not a custom type) so
+        // it rides the same pasteboard SwiftUI drop reads; the prefix filter rejects
+        // any non-session text, and a self-drop is ignored.
+        .dropDestination(for: String.self) { payloads, _ in
+            guard let payload = payloads.first(where: { $0.hasPrefix(Self.dragPrefix) }),
+                  let moved = UUID(uuidString: String(payload.dropFirst(Self.dragPrefix.count))),
+                  moved != session.id
+            else { return false }
+            store.groupSession(moved, with: session.id)
+            return true
+        } isTargeted: { isDropTarget = $0 }
+        .overlay {
+            if isDropTarget {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(Color.accentColor, lineWidth: 2)
+                    .padding(.horizontal, 4)
+            }
+        }
         .onHover { isHovering = $0 }
         .onTapGesture {
             // Tapping a session in the sidebar always returns to its terminal — close the file
             // editor even when this row is already selected (no selection change to react to).
             store.openFileURL = nil
             store.selectedSessionID = session.id
+            // Re-tapping the row you're already on still clears a resting done/attention
+            // dot (the selection didSet only reacts to a change).
+            store.markSeen(session.id)
         }
         // NSMenu rather than SwiftUI's `.contextMenu` so right-click leaves no blue
         // accent ring on the row (see `SidebarRowContextMenu`).
-        .background(SidebarRowContextMenu(items: [
-            .action("Rename…") { store.renameSession(session.id) },
-            .separator,
-            .action(session.pinned ? "Unpin" : "Pin") { store.toggleSessionPinned(session.id) },
-            .separator,
-            .action("Close") { store.closeSession(session.id) }
-        ]))
+        .background(SidebarRowContextMenu(items: menuItems))
         .listRowBackground(
             SidebarRowHighlight(isSelected: isSelected, isHovering: isHovering, chrome: chrome)
                 .animation(.easeInOut(duration: 0.12), value: isSelected)
@@ -1094,7 +1174,7 @@ private struct StatusDot: View {
 /// The "agent is working" mark: a 3×3 grid of dots with a bright comet that orbits
 /// the eight perimeter cells, so the small nine-square grid reads as rotating. Sits
 /// in place of the session's brand icon while a turn is in flight (see `SessionRow`).
-private struct WorkingIndicator: View {
+struct WorkingIndicator: View {
     /// Pure ink, deeper than `.primary`: labelColor keeps ~15% transparency and
     /// the sidebar's vibrancy lightens it again, which left even the comet's
     /// full-opacity head reading grey. Appearance-adaptive black/white punches
@@ -1104,6 +1184,12 @@ private struct WorkingIndicator: View {
     })
 
     var tint: Color = Self.ink
+
+    /// When nil the comet self-animates via `TimelineView`; supplying a phase
+    /// (0...1) renders one still frame instead, so a caller can drive the rotation
+    /// with its own timer where `TimelineView` never ticks — e.g. inside an open
+    /// `NSMenu`, which runs a modal event-tracking loop.
+    var phase: Double? = nil
 
     /// The eight perimeter cells of the 3×3 grid in clockwise order, as
     /// `(column, row)` with the center at `(1, 1)`. The comet travels this ring.
@@ -1118,25 +1204,33 @@ private struct WorkingIndicator: View {
     private let period: Double = 1.1
 
     var body: some View {
-        TimelineView(.animation) { context in
-            let phase = context.date.timeIntervalSinceReferenceDate
-                .truncatingRemainder(dividingBy: period) / period
-            ZStack {
-                // A steady center anchors the spinning ring, matching the tail
-                // so the grid reads as one solid mark with a swell running
-                // around it.
-                dot(opacity: 0.5, scale: 1)
-                ForEach(Array(Self.ring.enumerated()), id: \.offset) { index, cell in
-                    let distance = ringDistance(at: index, phase: phase)
-                    dot(opacity: opacity(distance: distance), scale: scale(distance: distance))
-                        .offset(
-                            x: CGFloat(cell.0 - 1) * spacing,
-                            y: CGFloat(cell.1 - 1) * spacing
-                        )
-                }
+        if let phase {
+            grid(phase: phase)
+        } else {
+            TimelineView(.animation) { context in
+                let p = context.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: period) / period
+                grid(phase: p)
             }
-            .frame(width: 13, height: 13)
         }
+    }
+
+    private func grid(phase: Double) -> some View {
+        ZStack {
+            // A steady center anchors the spinning ring, matching the tail
+            // so the grid reads as one solid mark with a swell running
+            // around it.
+            dot(opacity: 0.5, scale: 1)
+            ForEach(Array(Self.ring.enumerated()), id: \.offset) { index, cell in
+                let distance = ringDistance(at: index, phase: phase)
+                dot(opacity: opacity(distance: distance), scale: scale(distance: distance))
+                    .offset(
+                        x: CGFloat(cell.0 - 1) * spacing,
+                        y: CGFloat(cell.1 - 1) * spacing
+                    )
+            }
+        }
+        .frame(width: 13, height: 13)
     }
 
     private func dot(opacity: Double, scale: Double) -> some View {

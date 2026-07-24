@@ -15,6 +15,12 @@ enum AgentAvailability {
     /// "assume available" rather than raise a false alarm.
     private static let resolvedPath = Task.detached(priority: .utility) { resolvePathDirectories() }
 
+    /// The resolved login-shell PATH directories, for other PATH-sensitive lookups
+    /// (the editor's language-server registry). Empty when the probe failed.
+    static func pathDirectories() async -> [String] {
+        await resolvedPath.value
+    }
+
     /// Whether the first word of `command` (its binary) is an executable on PATH. An
     /// absolute/`~` path is checked directly; an empty command (the plain login shell)
     /// is always "available".

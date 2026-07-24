@@ -216,17 +216,6 @@ enum SessionStatus: Hashable {
     /// The agent is blocked waiting on the user (permission prompt, or a bell /
     /// desktop notification it raised). The one state that demands attention.
     case needsAttention
-
-    /// SF Symbol drawn as the status dot in the sidebar and the per-session row
-    /// in the menu-bar roster.
-    var symbolName: String {
-        switch self {
-        case .idle: return "circle.fill"
-        case .working: return "circle.dotted"
-        case .done: return "circle.fill"
-        case .needsAttention: return "exclamationmark.circle.fill"
-        }
-    }
 }
 
 /// A single terminal session within a project. Each session owns one live
@@ -306,11 +295,6 @@ struct Session: Identifiable, Hashable, Codable {
     /// record created at this moment (see `AgentSessionStore.discover`). `nil` until
     /// first launch, and unused by the pinned-id agents (Claude Code, Pi).
     var launchedAt: Date?
-
-    /// Program passed to libghostty's `command` config; derived from `agent`.
-    /// User overrides and the resume arguments are resolved in `TermioStore` via
-    /// `AppSettings.command(for:)` and `AgentPreset.resumeArguments(_:)`.
-    var command: String? { agent.command }
 
     init(title: String, agent: AgentPreset = .terminal, createdAt: Date = Date()) {
         self.title = title

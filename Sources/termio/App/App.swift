@@ -179,6 +179,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         updateWindowTitle()
         // Keep the native title/subtitle in step with the selected session and its live branch.
+        // The title reads only the selected session's working-directory/project path (see
+        // `updateWindowTitle`), both of which live on the structural store, so plain
+        // `objectWillChange` covers it — no per-session runtime ping needed here.
         titleObserver = store.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] in
@@ -226,6 +229,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         menuBar = MenuBarController(store: store) { [weak self] id in
             self?.store.selectedSessionID = id
+            // Picking a done/blocked row acknowledges it, even if that session was
+            // already selected (the selection didSet only reacts to a change).
+            self?.store.markSeen(id)
             NSApp.activate(ignoringOtherApps: true)
             self?.window.makeKeyAndOrderFront(nil)
         }
@@ -321,6 +327,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// agent children that ignore the resulting SIGHUP live on as orphans.
     func applicationWillTerminate(_ notification: Notification) {
         store.terminateAllSessions()
+        // Language servers die with their stdio; no polite LSP handshake needed at quit.
+        LSPManager.shared.terminateAll()
     }
 
     /// Builds the window's content: an `NSSplitViewController` with a native sidebar item

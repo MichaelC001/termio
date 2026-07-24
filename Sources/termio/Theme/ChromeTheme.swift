@@ -25,6 +25,14 @@ struct ChromeTheme {
     /// appearance (traffic lights, scrollbars) to the theme.
     let isDark: Bool
 
+    /// Ink guaranteed to contrast a background: dimmed white over dark, dimmed black over light.
+    /// The lesson this encodes (learned in the editor gutter): contrast must come from the
+    /// *background's* darkness — a grey or tinted theme foreground sinks into a black background
+    /// at any alpha, so never derive overlay ink from the foreground palette.
+    static func overlayInk(onDark dark: Bool, alpha: CGFloat) -> NSColor {
+        (dark ? NSColor.white : .black).withAlphaComponent(alpha)
+    }
+
     init?(_ definition: GhosttyThemeDefinition) {
         guard let background = Color(hex: definition.background),
               let foreground = Color(hex: definition.foreground)
@@ -84,16 +92,15 @@ extension AppSettings {
         return .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
-    /// Muted line-number ink shared by every code surface's gutter (file editor, diff
-    /// view): the theme foreground dimmed, so the numbers recede the way Xcode's do yet
-    /// always contrast the terminal background, whatever theme paints it. Statically
-    /// resolved per `colorScheme` — a dynamic system color is no substitute here, both
-    /// because it ignores the terminal theme and because dimming one at body-eval time
-    /// (`withAlphaComponent`) freezes it against whatever appearance is ambient.
+    /// Muted line-number ink shared by every code surface's gutter (file editor, diff view),
+    /// chosen against the theme *background's* darkness via `ChromeTheme.overlayInk` — an
+    /// earlier foreground-derived version sank into black backgrounds whenever the theme's
+    /// foreground was grey or tinted, at any alpha (user report ×2). Statically resolved per
+    /// `colorScheme`; a dynamic system color is no substitute because it ignores the terminal
+    /// theme entirely.
     func gutterInk(for colorScheme: ColorScheme) -> NSColor {
-        let base = chromeTheme(for: colorScheme).map { NSColor($0.foreground) }
-            ?? (colorScheme == .dark ? NSColor.white : NSColor.black)
-        return base.withAlphaComponent(0.4)
+        let dark = chromeTheme(for: colorScheme)?.isDark ?? (colorScheme == .dark)
+        return ChromeTheme.overlayInk(onDark: dark, alpha: dark ? 0.55 : 0.42)
     }
 
     var terminalBackgroundColor: NSColor {

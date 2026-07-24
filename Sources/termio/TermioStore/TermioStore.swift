@@ -16,6 +16,7 @@ final class TermioStore: ObservableObject {
         didSet {
             persist()
             syncWatchedFolders()
+            syncRuntimes()
         }
     }
     @Published var selectedSessionID: Session.ID? {
@@ -26,12 +27,11 @@ final class TermioStore: ObservableObject {
             if let id = selectedSessionID {
                 // A mid-turn `.working` keeps its spinner; only the resting
                 // "your turn" states are answered by looking.
-                if statuses[id] == .needsAttention || statuses[id] == .done {
-                    statuses[id] = .idle
-                }
+                markSeen(id)
                 // Switching to a session counts as activity for its project, so the
-                // "Recent Activity" sort floats a project the moment you focus it.
-                if let pid = project(for: id)?.id { liveActivity[pid] = Date() }
+                // "Recent Activity" sort floats a project the moment you focus it —
+                // forced past the coalesce window since it's a deliberate user action.
+                if let pid = project(for: id)?.id { noteProjectActivity(pid, force: true) }
             }
             persist()
         }
@@ -136,35 +136,126 @@ final class TermioStore: ObservableObject {
     /// changes" without the inspector being open.
     @Published var gitChangeCount = 0
 
-    /// Per-session activity, driven by terminal signals and, when enabled, agent hooks.
-    /// A session with no entry (never opened, so no surface yet) reads as `.idle`.
-    @Published var statuses: [Session.ID: SessionStatus] = [:]
+    /// Per-session high-frequency live state (status, running tool, live title, cwd),
+    /// each held in its own `@Observable` `SessionRuntime` so a change re-renders only
+    /// the owning sidebar row rather than the whole tree. Deliberately **not**
+    /// `@Published`: the map's identity is stable (an entry is created when a session
+    /// enters the tree — see `syncRuntimes` — and dropped when it leaves), and the
+    /// reactive signal lives on each `SessionRuntime`, not on the store. Read through
+    /// the accessors (`status(for:)`, `displayTitle(for:)`, …) so callers never couple
+    /// to the storage; mutate through the private setters below, which guard against
+    /// no-op writes and ping `sessionRuntimeDidChange` for the non-SwiftUI observers.
+    private(set) var runtimes: [Session.ID: SessionRuntime] = [:]
 
-    /// The tool a working session is currently running (`PreToolUse.tool_name`),
-    /// shown in the session's status tooltip. Cleared when the turn ends.
-    @Published var currentTool: [Session.ID: String] = [:]
+    /// A coarse "some session's runtime changed" ping for observers that can't
+    /// subscribe to a per-session `@Observable` — the menu-bar tray and the window
+    /// title bar (both plain AppKit). The sidebar deliberately ignores this: its rows
+    /// track their own `SessionRuntime`, so this signal never rebuilds the tree. The
+    /// companion server doesn't need it either (it polls the store once a second).
+    let sessionRuntimeDidChange = PassthroughSubject<Void, Never>()
 
-    /// The running program's live terminal title (`OSC 0/2`) per session, used as
-    /// an agent session's display label so two sessions of the same agent stay
-    /// distinguishable. The stored `Session.title` is never touched.
-    @Published var liveTitles: [Session.ID: String] = [:]
+    /// The runtime for a session, created on first touch. Callers that mutate state go
+    /// through this; read-only paths use `runtimes[id]?` so a bare read never allocates.
+    func runtime(for id: Session.ID) -> SessionRuntime {
+        if let existing = runtimes[id] { return existing }
+        let created = SessionRuntime()
+        runtimes[id] = created
+        return created
+    }
 
-    /// The agent detected running in the *foreground* of a plain terminal session —
-    /// a `claude`/`codex`/… the user started by hand rather than through termio. Set
-    /// and cleared by `noteForegroundAgent` from a per-terminal poll of the PTY's
-    /// foreground process, it upgrades that row to a first-class agent (brand icon,
-    /// adopted live title, working spinner) for as long as the agent is running, then
-    /// reverts to a plain terminal when it exits. Runtime-only and terminal-only: a
-    /// declared agent session is never touched, and nothing here is persisted (the
-    /// shell respawns bare next launch). See `effectiveAgent(for:)`.
-    @Published var detectedAgents: [Session.ID: AgentDefinition] = [:]
+    /// Drops a closed session's runtime. Called from the session/project teardown
+    /// paths; `syncRuntimes` would also reap it on the next `projects` change, but the
+    /// teardown sites clear the rest of a session's caches inline, so this keeps them
+    /// in one place. (A dedicated method because `runtimes` is `private(set)`, so its
+    /// setter is unreachable from the store's other-file extensions.)
+    func removeRuntime(for id: Session.ID) {
+        runtimes.removeValue(forKey: id)
+    }
 
-    /// The live working directory per session, from the shell's OSC 7 reports
-    /// (surfaced by `TerminalViewState.workingDirectory`, subscribed in
-    /// `monitor(_:for:)`). For loose terminals this *is* the entity's path: it
-    /// labels the sidebar row and roots the inspector (file tree / search /
-    /// changes), so the app follows a `cd` instead of staying parked at `$HOME`.
-    @Published var workingDirectories: [Session.ID: String] = [:]
+    /// Reconciles the runtime map with the live session set: creates a runtime for any
+    /// session that lacks one (so its row has a stable object to observe from its very
+    /// first render — an on-demand create during view update would both miss the
+    /// dependency and warn about mutating state mid-render) and drops runtimes for
+    /// sessions that have closed. Called from `projects.didSet` and once after load, so
+    /// every add/remove/restore keeps the map in step without per-site bookkeeping.
+    func syncRuntimes() {
+        let live = Set(projects.flatMap(\.sessions).map(\.id))
+        for id in live where runtimes[id] == nil { runtimes[id] = SessionRuntime() }
+        for id in runtimes.keys where !live.contains(id) { runtimes.removeValue(forKey: id) }
+    }
+
+    /// Sets a session's status, no-op-guarded so a redundant same-value write (the hook
+    /// path re-asserts `.working` on every tool event) neither re-renders the row nor
+    /// pings the tray. Returns whether it actually changed, for callers that gate
+    /// follow-on work on a real transition.
+    @discardableResult
+    func setStatus(_ status: SessionStatus, for id: Session.ID) -> Bool {
+        let runtime = runtime(for: id)
+        guard runtime.status != status else { return false }
+        runtime.status = status
+        // The tray and window title present status, so a real change pings them.
+        sessionRuntimeDidChange.send()
+        // A session *entering* `.working` is the "this project is active" signal that
+        // floats its project up the Recent-Activity sort. Bumping here, on the genuine
+        // transition, means one write per turn instead of one per hook/screen tick — the
+        // callers no longer poke activity themselves (they used to fire it every tick).
+        if status == .working, let pid = project(for: id)?.id { noteProjectActivity(pid) }
+        return true
+    }
+
+    /// Sets the running tool for a session (`nil` clears it), guarded like `setStatus`.
+    /// No runtime ping: the tool shows only in the sidebar row's own tooltip, which
+    /// tracks its session's runtime directly — no AppKit observer reads it.
+    func setCurrentTool(_ tool: String?, for id: Session.ID) {
+        let runtime = runtime(for: id)
+        guard runtime.currentTool != tool else { return }
+        runtime.currentTool = tool
+    }
+
+    /// Sets a session's live `OSC 0/2` title (`nil` clears it), guarded like `setStatus`.
+    /// Pings: the title feeds the tray roster label and the selected row, so a change
+    /// must reach the AppKit tray.
+    func setLiveTitle(_ title: String?, for id: Session.ID) {
+        let runtime = runtime(for: id)
+        guard runtime.liveTitle != title else { return }
+        runtime.liveTitle = title
+        sessionRuntimeDidChange.send()
+    }
+
+    /// Sets a session's live working directory (shell `OSC 7`), guarded like `setStatus`.
+    /// No runtime ping: the cwd shows only in SwiftUI (the loose-terminal row label and
+    /// the cwd-following inspector), which track the runtime directly.
+    func setWorkingDirectory(_ path: String?, for id: Session.ID) {
+        let runtime = runtime(for: id)
+        guard runtime.workingDirectory != path else { return }
+        runtime.workingDirectory = path
+    }
+
+    /// Window within which repeated activity pokes for the same project coalesce into a
+    /// single `liveActivity` write. A working agent re-pokes its project several times a
+    /// second (every hook tool event, every screen tick); each poke used to write a
+    /// fresh `Date`, and because `liveActivity` is `@Published` that re-sorted and
+    /// rebuilt the entire sidebar at agent-tick frequency — a second churn source
+    /// alongside the status dictionaries. The "Recent Activity" order only needs coarse
+    /// freshness, so collapsing pokes to one write every few seconds ends the churn
+    /// while still floating a newly-active project up promptly.
+    private let activityCoalesceWindow: TimeInterval = 4
+
+    /// Floats a project up the "Recent Activity" sort (see `orderedProjects`).
+    ///
+    /// Background agent activity is coalesced — a project bumped within
+    /// `activityCoalesceWindow` is left alone, so a working agent that flaps
+    /// working→idle→working doesn't re-sort the sidebar every tick. Deliberate user
+    /// actions (focusing a session, attaching from the phone) pass `force: true` to
+    /// bypass the window: selecting a session must float it *now*, even if a background
+    /// tick bumped the same project a moment ago — otherwise a just-selected project can
+    /// sit below a more-recently-active one, contradicting "float the moment you focus it".
+    func noteProjectActivity(_ pid: Project.ID, force: Bool = false) {
+        let now = Date()
+        if !force, let last = liveActivity[pid],
+           now.timeIntervalSince(last) < activityCoalesceWindow { return }
+        liveActivity[pid] = now
+    }
 
     /// User preferences (appearance, agent commands, worktree behaviour). Held so
     /// surfaces can be configured on creation and re-styled live when settings
@@ -326,6 +417,10 @@ final class TermioStore: ObservableObject {
         let storedRows = UserDefaults.standard.integer(forKey: Self.hostGridRowsKey)
         self.lastHostGridColumns = storedColumns > 0 ? storedColumns : 80
         self.lastHostGridRows = storedRows > 0 ? storedRows : 24
+        // The initial `projects` assignment above runs before `didSet` is armed, so
+        // seed the runtime map for the restored tree explicitly (later add/remove goes
+        // through `projects.didSet`).
+        syncRuntimes()
 
         // Re-style already-open terminals whenever appearance settings change.
         // `objectWillChange` fires *before* the new value lands, so we hop to the
@@ -571,17 +666,36 @@ final class TermioStore: ObservableObject {
     }
 
     func status(for sessionID: Session.ID) -> SessionStatus {
-        statuses[sessionID] ?? .idle
+        runtimes[sessionID]?.status ?? .idle
     }
 
-    /// The agent a session *presents* as: its declared agent, or — for a plain
-    /// terminal running a hand-started agent — the one detected in its foreground
-    /// (see `detectedAgents` / `noteForegroundAgent`). Detection only ever upgrades a
-    /// terminal; a declared agent session always presents as itself, so its icon,
-    /// resume behaviour, and hooks are never overridden by what runs inside it.
+    /// The live working directory a session last reported (shell `OSC 7`), or `nil`.
+    /// A thin accessor over the runtime so the inspector / file browser read the same
+    /// place the sidebar label does, without touching the storage directly.
+    func workingDirectory(for sessionID: Session.ID) -> String? {
+        runtimes[sessionID]?.workingDirectory
+    }
+
+    /// Acknowledge a resting "your turn" cue: a finished (`.done`) or blocked
+    /// (`.needsAttention`) session the user has now engaged with drops back to
+    /// `.idle`, clearing its sidebar/tray dot. A mid-turn `.working` is left
+    /// alone — its spinner isn't a cue to dismiss. Idempotent, and unlike the
+    /// `selectedSessionID` didSet it doesn't require the selection to *change*, so
+    /// re-clicking the session you're already on still clears the dot.
+    func markSeen(_ id: Session.ID) {
+        let current = status(for: id)
+        if current == .done || current == .needsAttention {
+            setStatus(.idle, for: id)
+        }
+    }
+
+    /// The agent a session *presents* as. Since identity became persistent this is
+    /// simply the declared agent: a hand-started `claude` *reclassifies* its shell
+    /// session outright (see `noteForegroundAgent`), and an agent that quits back
+    /// to the shell demotes it — the session is always exactly what its pane runs.
+    /// Kept as the shared read point so call sites don't couple to that invariant.
     func effectiveAgent(for session: Session) -> AgentDefinition {
-        guard session.agent == .terminal else { return session.agent }
-        return detectedAgents[session.id] ?? .terminal
+        session.agent
     }
 
     /// The label to show for a session. Centralized so the sidebar and the
@@ -603,17 +717,7 @@ final class TermioStore: ObservableObject {
             if session.title != session.agent.displayName {
                 return session.title
             }
-            return liveTitles[session.id] ?? session.liveTitle ?? session.title
-        }
-        // A plain terminal running a hand-started agent adopts that agent's live
-        // title (its conversation topic) while detected, just like a declared agent
-        // row — but only while the user hasn't manually renamed the session. Until
-        // the agent reports a live title (many, e.g. Claude Code, never emit OSC
-        // 0/2), fall back to the agent's display name so the row reads `Claude Code`
-        // rather than a bare `Terminal` while its brand icon is already showing.
-        if let detected = detectedAgents[session.id],
-           Self.isAutoTerminalName(session.title) {
-            return liveTitles[session.id] ?? detected.displayName
+            return runtimes[session.id]?.liveTitle ?? session.liveTitle ?? session.title
         }
         guard Self.isAutoTerminalName(session.title) else {
             return session.title
@@ -625,7 +729,7 @@ final class TermioStore: ObservableObject {
         // shell's first OSC 7 report. Project terminals keep the plain label —
         // their place is the project, not wherever they've wandered.
         if project(for: session.id)?.kind == .terminals,
-           let cwd = workingDirectories[session.id] ?? session.lastWorkingDirectory {
+           let cwd = runtimes[session.id]?.workingDirectory ?? session.lastWorkingDirectory {
             return Self.terminalLabel(forPath: cwd)
         }
         return "Terminal"
@@ -644,7 +748,7 @@ final class TermioStore: ObservableObject {
 
     /// Whether `title` is an auto-generated `Terminal N` label (as opposed to a
     /// name the user chose), which is what makes it eligible for live re-indexing.
-    private static func isAutoTerminalName(_ title: String) -> Bool {
+    static func isAutoTerminalName(_ title: String) -> Bool {
         let suffix = title.dropFirst("Terminal ".count)
         return title.hasPrefix("Terminal ") && !suffix.isEmpty
             && suffix.allSatisfy(\.isNumber)
