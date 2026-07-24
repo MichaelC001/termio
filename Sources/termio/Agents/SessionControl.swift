@@ -52,12 +52,19 @@ final class SessionControlListener {
     }
 
     private let onRequest: @MainActor (ControlRequest) async -> Data
+    /// Resolves a `watch` subscription: returns the caller's project id to scope the
+    /// stream to, or an error payload to write back and hang up. Split from
+    /// `onRequest` because a watch is not one-shot — the connection stays open and is
+    /// handed to `SessionWatchHub` instead of being answered and closed.
+    private let onWatch: @MainActor (ControlRequest) -> (UUID?, Data?)
     private let queue = DispatchQueue(label: "com.termio.session-control")
     private var source: DispatchSourceRead?
     private var listenDescriptor: Int32 = -1
 
-    init(onRequest: @escaping @MainActor (ControlRequest) async -> Data) {
+    init(onRequest: @escaping @MainActor (ControlRequest) async -> Data,
+         onWatch: @escaping @MainActor (ControlRequest) -> (UUID?, Data?)) {
         self.onRequest = onRequest
+        self.onWatch = onWatch
     }
 
     func start() {
@@ -135,6 +142,27 @@ final class SessionControlListener {
             close(descriptor)
             return
         }
+        // `watch` is the one streaming op: the connection is not answered and closed
+        // but handed to `SessionWatchHub`, which pushes a line per status transition
+        // until the client disconnects. Everything else is one-shot request/response.
+        if decoded.op == "watch" {
+            let resolve = onWatch
+            Task { @MainActor in
+                let (projectID, errorData) = resolve(decoded)
+                self.queue.async {
+                    if let errorData {
+                        Self.writeAll(descriptor, errorData)
+                        close(descriptor)
+                        return
+                    }
+                    guard let projectID else { close(descriptor); return }
+                    SessionWatchHub.shared.subscribe(
+                        descriptor: descriptor, projectID: projectID,
+                        states: Self.watchStates(decoded.text), wantsJSON: decoded.wantsJSON)
+                }
+            }
+            return
+        }
         // The handler touches `TermioStore`, so it must run on the main actor; the
         // reply is written back on this private queue so the socket work stays off
         // the main thread.
@@ -146,6 +174,17 @@ final class SessionControlListener {
                 close(descriptor)
             }
         }
+    }
+
+    /// The status filter a `watch` client asked for, carried in the request's `text`
+    /// field as a comma-separated list. Empty means the two states a supervisor acts
+    /// on — a session finishing (`done`) or stopping to ask (`needs-you`).
+    private static func watchStates(_ text: String?) -> Set<String> {
+        let raw = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !raw.isEmpty else { return ["done", "needs-you"] }
+        return Set(raw.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty })
     }
 
     private static func writeAll(_ descriptor: Int32, _ data: Data) {
@@ -166,6 +205,104 @@ final class SessionControlListener {
 
     private static func log(_ message: String) {
         FileHandle.standardError.write(Data("termio: session control \(message)\n".utf8))
+    }
+}
+
+/// One status transition, pushed to every `termio sessions watch` client scoped to
+/// the session's project and interested in the new state. Built on the main actor
+/// (where `setStatus` lives) and handed to `SessionWatchHub`, which does the socket
+/// writes off the main thread.
+struct SessionWatchEvent {
+    let projectID: UUID
+    let handle: String
+    /// Wire status token (`working` / `idle` / `done` / `needs-you`).
+    let status: String
+    let title: String
+    let cwd: String
+}
+
+/// Holds the open `watch` connections and fans status transitions out to them. A
+/// `watch` is the one long-lived control connection: unlike request/response, the
+/// socket stays open and this hub pushes a line whenever a scoped session changes
+/// state, until the client goes away.
+///
+/// Everything runs on a private serial queue so a slow or dead reader never blocks
+/// the agent tick that produced the event. A dead client is detected lazily — on the
+/// next write that fails — rather than by watching the socket for EOF: a piped CLI
+/// client (`… | nc -U`) half-closes its write side as soon as it has sent the
+/// request, which would look like a disconnect while the client is very much still
+/// reading. `SO_NOSIGPIPE` keeps that failing write from signalling the whole app.
+final class SessionWatchHub {
+    static let shared = SessionWatchHub()
+
+    private struct Subscriber {
+        let projectID: UUID
+        let states: Set<String>
+        let wantsJSON: Bool
+    }
+
+    private let queue = DispatchQueue(label: "com.termio.session-watch")
+    private var subscribers: [Int32: Subscriber] = [:]
+
+    /// Adopt a client descriptor as a watcher. Ownership of the fd transfers here —
+    /// the hub closes it when the client disconnects.
+    func subscribe(descriptor: Int32, projectID: UUID, states: Set<String>, wantsJSON: Bool) {
+        queue.async {
+            var on: Int32 = 1
+            setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &on,
+                       socklen_t(MemoryLayout<Int32>.size))
+            self.subscribers[descriptor] = Subscriber(
+                projectID: projectID, states: states, wantsJSON: wantsJSON)
+        }
+    }
+
+    /// Push an event to every matching subscriber. Called from the main actor via
+    /// `TermioStore.setStatus`; the work hops onto the hub's queue immediately.
+    func broadcast(_ event: SessionWatchEvent) {
+        queue.async {
+            guard !self.subscribers.isEmpty else { return }
+            let line = event.wireLine
+            let jsonLine = event.jsonLine
+            for (fd, sub) in self.subscribers {
+                guard sub.projectID == event.projectID, sub.states.contains(event.status)
+                else { continue }
+                if !Self.write(fd, sub.wantsJSON ? jsonLine : line) {
+                    self.subscribers.removeValue(forKey: fd)
+                    close(fd)
+                }
+            }
+        }
+    }
+
+    /// Best-effort full write; returns false when the reader is gone (so the caller
+    /// reaps the subscriber).
+    private static func write(_ fd: Int32, _ data: Data) -> Bool {
+        data.withUnsafeBytes { raw -> Bool in
+            guard let base = raw.baseAddress else { return true }
+            var offset = 0
+            while offset < data.count {
+                let n = Darwin.write(fd, base + offset, data.count - offset)
+                if n <= 0 { return false }
+                offset += n
+            }
+            return true
+        }
+    }
+}
+
+private extension SessionWatchEvent {
+    var wireLine: Data {
+        let suffix = title.isEmpty ? "" : "  \(title)"
+        return Data("\(handle)  [\(status)]\(suffix)\n".utf8)
+    }
+    var jsonLine: Data {
+        let object: [String: Any] = [
+            "schema_version": 1, "handle": handle, "status": status,
+            "title": title, "cwd": cwd,
+        ]
+        let data = (try? JSONSerialization.data(
+            withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])) ?? Data()
+        return data + Data("\n".utf8)
     }
 }
 
@@ -207,13 +344,15 @@ enum SessionSkillInstaller {
 
         - `termio sessions list` — siblings in this project, with status (working /
           idle / needs-you / done)
-        - `termio sessions send "<prompt>"` — start a NEW agent session and give it
-          the prompt (`--agent codex` picks the agent; default: your own kind). The
+        - `termio sessions watch` — block and stream one line per sibling status
+          change (`done` / `needs-you` by default) until you interrupt it — the push
+          alternative to polling `list`. `--state working,idle,done,needs-you` widens it.
+        - `termio sessions spawn "<prompt>"` — start a NEW agent session on the
+          prompt (`--agent codex` picks the agent; default: your own kind). The
           reply contains the new session's handle — use it for every follow-up.
-        - `termio sessions send <agent>@<id> "<prompt>"` — type a prompt into that
-          existing sibling and submit it (a real Return keypress, so it actually runs)
-        - `termio sessions answer <agent>@<id> "<choice>"` — answer a sibling's
-          menu/permission prompt (e.g. `"1"`, `"yes"`)
+        - `termio sessions send <agent>@<id> "<text>"` — type text into that existing
+          sibling and submit it with a real Return keypress. Send a prompt to drive
+          it, or a menu choice (`"1"`, `"yes"`) to answer a permission prompt.
         - `termio sessions close <agent>@<id> …` — close session tabs;
           `termio sessions focus <agent>@<id>` — bring one to the front in the app
 
@@ -225,24 +364,26 @@ enum SessionSkillInstaller {
           and never run multiple `send` commands in parallel — delegate to ONE
           session.
         - Unsure which sibling the user means? Ask them, or start a fresh session
-          with a plain `send` — don't broadcast.
+          with `spawn` — don't broadcast.
 
         ### Reading a sibling's response
 
-        Don't scrape the terminal. `send` returns the sibling's **transcript** — the
-        agent's own structured Q&A log (Claude Code: a JSONL file) — plus a **cursor**
-        (its line count at send time). To read the reply:
+        Don't scrape the terminal. `spawn`/`send` returns the sibling's **transcript**
+        — the agent's own structured Q&A log (Claude Code: a JSONL file) — plus a
+        **cursor** (its line count at send time). To read the reply:
 
-        1. `send` and note `transcript` + `cursor` from the output. (A just-started
-           session has no transcript yet; it appears in `list --json` once the agent
-           reports it — read that file from the start.)
+        1. `spawn`/`send` and note `transcript` + `cursor` from the output. (A just-
+           started session has no transcript yet; it appears in `list --json` once the
+           agent reports it — read that file from the start.)
         2. Poll `termio sessions list` until that session's status is `done` (or
-           `needs-you` if it's blocked waiting on input — then `answer` it).
+           `needs-you` if it's blocked waiting on input — then `send` its answer).
         3. Read the transcript file from line `cursor` onward; the `assistant` entries
            after it are the reply. (Each line is a JSON object with a `type`/`role`.)
 
         Workflow: send → wait for `done` via `list` → read the transcript tail. Prefer
-        this over assuming a sibling is finished.
+        this over assuming a sibling is finished. Supervising several at once? Block on
+        `termio sessions watch` instead of polling — it prints the handle the moment any
+        sibling turns `done` or `needs-you`, so you act on the transition, not a spin loop.
         \(endMarker)
         """
     }
