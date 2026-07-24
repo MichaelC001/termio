@@ -489,9 +489,7 @@ extension TermioStore {
             surfaces[sessionID] = nil
             browserPanes[sessionID] = nil
             monitors[sessionID] = nil
-            statuses[sessionID] = nil
-            currentTool[sessionID] = nil
-            liveTitles[sessionID] = nil
+            removeRuntime(for: sessionID)
             processSpawnedAt[sessionID] = nil
             lastWorkingAt[sessionID] = nil
             lastHookReportAt[sessionID] = nil
@@ -554,9 +552,7 @@ extension TermioStore {
         surfaces[id] = nil
         browserPanes[id] = nil
         monitors[id] = nil
-        statuses[id] = nil
-        currentTool[id] = nil
-        liveTitles[id] = nil
+        removeRuntime(for: id)
         processSpawnedAt[id] = nil
         lastWorkingAt[id] = nil
         lastHookReportAt[id] = nil

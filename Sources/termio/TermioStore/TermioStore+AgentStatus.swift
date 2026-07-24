@@ -121,31 +121,29 @@ extension TermioStore {
             // stays calm, so only real agent rows show the thinking spinner.
             guard let session = session(id), effectiveAgent(for: session) != .terminal
             else { break }
-            statuses[id] = .working
-            currentTool[id] = report.tool
+            setStatus(.working, for: id)
+            setCurrentTool(report.tool, for: id)
             // Remember when work was last seen, so a turn that ends abnormally
             // (the agent crashed and never sent `done`) can be swept back to calm
             // instead of spinning forever — the failure mode cmux's own tracker
-            // suffers from (issue #3749).
+            // suffers from (issue #3749). (Floating the project up the Recent-Activity
+            // sort is handled by `setStatus`'s working transition.)
             lastWorkingAt[id] = Date()
-            // A working agent is the strongest "this project is active" signal, so
-            // float its project up under the "Recent Activity" sort (see `orderedProjects`).
-            if let pid = project(for: id)?.id { liveActivity[pid] = Date() }
         case "done":
             // The turn finished. If the user is looking at it, calm; otherwise a
             // gentle "ready for you" cue — distinct from `needsAttention`, which is
             // reserved for the agent actually being blocked on the user.
             clearWorking(id)
-            statuses[id] = (selectedSessionID == id) ? .idle : .done
+            setStatus(selectedSessionID == id ? .idle : .done, for: id)
         case "attention":
             // The agent is blocked waiting on the user (a permission prompt or a
             // free-text answer). Mirror the bell path: only flag a session the user
             // isn't already looking at.
             clearWorking(id)
-            if selectedSessionID != id { statuses[id] = .needsAttention }
+            if selectedSessionID != id { setStatus(.needsAttention, for: id) }
         case "idle":
             clearWorking(id)
-            statuses[id] = .idle
+            setStatus(.idle, for: id)
         default:
             break
         }
@@ -163,7 +161,7 @@ extension TermioStore {
     }
 
     private func clearWorking(_ id: Session.ID) {
-        currentTool[id] = nil
+        setCurrentTool(nil, for: id)
         lastWorkingAt[id] = nil
         promotionStreak[id] = nil
     }
@@ -206,7 +204,7 @@ extension TermioStore {
     /// Fed by a throttled once-a-second tap on the PTY stream (see
     /// `surface(for:in:)`); no-ops cost a dictionary lookup.
     func noteOutputActivity(_ id: Session.ID, screenChanged: Bool, bytes: Int) {
-        if statuses[id] == .working {
+        if status(for: id) == .working {
             promotionStreak[id] = nil
             if screenChanged || bytes >= streamingByteFloor {
                 lastWorkingAt[id] = Date()
@@ -238,9 +236,8 @@ extension TermioStore {
             return
         }
         promotionStreak[id] = nil
-        statuses[id] = .working
+        setStatus(.working, for: id)
         lastWorkingAt[id] = now
-        if let pid = project(for: id)?.id { liveActivity[pid] = now }
     }
 
     /// Drives status from an agent's own screen when it ships no hook system — the path
@@ -259,17 +256,16 @@ extension TermioStore {
         lastScreenActivity[id] = activity
         switch activity {
         case .working:
-            statuses[id] = .working
-            if let pid = project(for: id)?.id { liveActivity[pid] = Date() }
+            setStatus(.working, for: id)
         case .attention:
             clearWorking(id)
-            if selectedSessionID != id { statuses[id] = .needsAttention }
+            if selectedSessionID != id { setStatus(.needsAttention, for: id) }
         case .idle:
             clearWorking(id)
             if previous == .working || previous == .attention {
-                statuses[id] = (selectedSessionID == id) ? .idle : .done
+                setStatus(selectedSessionID == id ? .idle : .done, for: id)
             } else {
-                statuses[id] = .idle
+                setStatus(.idle, for: id)
             }
         }
     }
@@ -291,19 +287,18 @@ extension TermioStore {
         lastTitleActivity[id] = activity
         switch activity {
         case .working:
-            guard statuses[id] != .needsAttention else { return }
+            guard status(for: id) != .needsAttention else { return }
             guard let session = session(id), effectiveAgent(for: session) != .terminal
             else { return }
-            statuses[id] = .working
+            setStatus(.working, for: id)
             lastWorkingAt[id] = Date()
-            if let pid = project(for: id)?.id { liveActivity[pid] = Date() }
         case .attention:
             clearWorking(id)
-            if selectedSessionID != id { statuses[id] = .needsAttention }
+            if selectedSessionID != id { setStatus(.needsAttention, for: id) }
         case .idle:
-            guard previous == .working, statuses[id] == .working else { return }
+            guard previous == .working, status(for: id) == .working else { return }
             clearWorking(id)
-            statuses[id] = (selectedSessionID == id) ? .idle : .done
+            setStatus(selectedSessionID == id ? .idle : .done, for: id)
         }
     }
 
@@ -360,10 +355,11 @@ extension TermioStore {
         session.agent = .terminal
         session.liveTitle = nil
         projects[location.project].sessions[location.session] = session
-        liveTitles[id] = nil
+        setLiveTitle(nil, for: id)
         lastTitleActivity[id] = nil
         clearWorking(id)
-        if statuses[id] == .working || statuses[id] == .done { statuses[id] = .idle }
+        let current = status(for: id)
+        if current == .working || current == .done { setStatus(.idle, for: id) }
     }
 
     /// Resolves a session's transcript file from disk when its hook hasn't handed
@@ -397,7 +393,7 @@ extension TermioStore {
     private func sweepStaleWorking() {
         let now = Date()
         for (id, since) in lastWorkingAt where now.timeIntervalSince(since) > staleWorkingTimeout {
-            if statuses[id] == .working { statuses[id] = .idle }
+            if status(for: id) == .working { setStatus(.idle, for: id) }
             clearWorking(id)
         }
     }
@@ -443,7 +439,7 @@ extension TermioStore {
         case .idle:
             return ""
         case .working:
-            if let tool = currentTool[sessionID] { return "Working — \(tool)" }
+            if let tool = runtimes[sessionID]?.currentTool { return "Working — \(tool)" }
             return "Working…"
         case .done:
             return "Done"
