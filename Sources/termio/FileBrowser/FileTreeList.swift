@@ -72,12 +72,17 @@ private struct FileRow: View {
 
     var body: some View {
         // One explicit HStack for both kinds (not `Label`, whose internal insets shift
-        // the title): a folder is just its name pulled flush to the disclosure chevron
-        // (VS Code, no glyph — cleaner without a folder icon); a file leads with its
-        // type icon. Because both start at the HStack's leading edge, a folder's name
-        // lines up exactly under the file icons below it.
+        // the title): a folder leads with the same folder glyph the left sidebar's
+        // project headers use; a file leads with its type icon. Because both occupy
+        // the same 16-wide leading column, names line up down the tree.
         let row = HStack(spacing: 5) {
-            if !node.isDirectory {
+            if node.isDirectory {
+                // Static — the disclosure chevron already carries open/closed state
+                // (Finder/Xcode's pattern), so the glyph doesn't need to swap and the
+                // row needs no expansion tracking of its own.
+                HugeIconView(icon: .folder, size: 15, color: chrome?.foreground ?? .primary)
+                    .frame(width: 16, alignment: .leading)
+            } else {
                 // The file's real language/tool logo (a Devicon mark) when bundled,
                 // else a tinted SF Symbol — see `FileIconView`.
                 FileIconView(url: node.url, size: 15, symbolSize: 13)
