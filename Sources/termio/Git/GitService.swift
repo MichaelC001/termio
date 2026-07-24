@@ -40,15 +40,6 @@ enum GitService {
         await offMain { loadDiffText(change, repoRoot) }
     }
 
-    /// Throws away every change to a single file, restoring it to its clean state:
-    /// modified/deleted files reset to `HEAD` (index *and* worktree), a newly-added file
-    /// is unstaged and removed, and an untracked file is deleted from disk. Best-effort —
-    /// the caller reloads the changes list afterwards regardless of the return.
-    @discardableResult
-    static func discard(_ change: GitChange, in repoRoot: String) async -> Bool {
-        await offMain { discardChanges(change, repoRoot) }
-    }
-
     /// Discards a whole selection in one confirmed action — the multi-select's
     /// "Discard N Files…". Sequential and best-effort per file, like the single form.
     static func discard(_ changes: [GitChange], in repoRoot: String) async {

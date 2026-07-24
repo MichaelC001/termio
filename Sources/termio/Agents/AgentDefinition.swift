@@ -305,18 +305,6 @@ extension AgentDefinition {
     static var claudeCode: AgentDefinition { AgentCatalog.shared.definition(for: "claudeCode") }
     static var codex: AgentDefinition { AgentCatalog.shared.definition(for: "codex") }
     static var opencode: AgentDefinition { AgentCatalog.shared.definition(for: "opencode") }
-    static var pi: AgentDefinition { AgentCatalog.shared.definition(for: "pi") }
-    static var amp: AgentDefinition { AgentCatalog.shared.definition(for: "amp") }
-    static var cursor: AgentDefinition { AgentCatalog.shared.definition(for: "cursor") }
-    static var kimi: AgentDefinition { AgentCatalog.shared.definition(for: "kimi") }
-    static var antigravity: AgentDefinition { AgentCatalog.shared.definition(for: "antigravity") }
-    static var hermes: AgentDefinition { AgentCatalog.shared.definition(for: "hermes") }
-    static var grok: AgentDefinition { AgentCatalog.shared.definition(for: "grok") }
-
-    init?(rawValue: String) {
-        guard let definition = AgentCatalog.shared.find(id: rawValue) else { return nil }
-        self = definition
-    }
 
     /// Resolves a free-text agent name from the CLI (`termio sessions start claude`)
     /// to a definition, accepting the id, the display name, and common aliases.
@@ -364,8 +352,6 @@ struct AgentStatusRules {
         case attention
         case idle
     }
-
-    func classify(_ screen: String) -> Activity { explain(screen).activity }
 
     /// Like `classify`, but also returns the source pattern that decided the state
     /// (or `nil` when nothing matched → idle). Feeds the `TERMIO_STATUS_TRACE`

@@ -22,11 +22,6 @@ struct UsageWindow: Identifiable, Hashable, Sendable {
 /// never interrupt a session.
 struct AgentUsage: Hashable, Sendable {
     var windows: [UsageWindow]
-    /// The tightest window (highest utilization), used for the one-line summaries
-    /// in the sidebar footer and the tray.
-    var tightest: UsageWindow? {
-        windows.max { $0.usedPercent < $1.usedPercent }
-    }
 }
 
 /// Reads the usage limits of the coding agents termio runs, on demand.
