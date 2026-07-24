@@ -100,6 +100,10 @@ if [[ "$channel" == "dev" ]]; then
         -e 's/^BUNDLE_ID="sh.termio.app"/BUNDLE_ID="sh.termio.app.dev"/' \
         "$resources_dir/$cli_name"
 fi
+if [[ -n "${TERMIO_VERSION:-}" ]]; then
+    /usr/bin/sed -i '' -e "s/^VERSION=\"dev\"/VERSION=\"$TERMIO_VERSION\"/" \
+        "$resources_dir/$cli_name"
+fi
 chmod +x "$resources_dir/$cli_name"
 
 # Stamp version / build number when the release workflow supplies them. The

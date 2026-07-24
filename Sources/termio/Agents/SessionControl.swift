@@ -5,18 +5,18 @@ import Foundation
 /// over `SessionControlListener`'s local socket. This is the write/drive
 /// counterpart to `HookListener`'s read-only status stream: where a hook reports
 /// "this session is now working", a control request *acts on* a sibling session
-/// — listing them, sending a prompt, answering a menu, starting or stopping one.
+/// — listing them, sending a prompt, answering a menu, closing or focusing one.
 ///
-/// - `op` — `list` / `read` / `send` / `answer` / `start` / `stop`.
+/// - `op` — `list` / `read` / `send` / `answer` / `close` / `focus`.
 /// - `format` — `text` (human-readable lines, the default) or `json`.
 /// - `callerSession` / `callerCwd` — who is asking, used to scope every operation
 ///   to the caller's own project. `callerSession` is the `TERMIO_SESSION` the PTY
 ///   carries; `callerCwd` (`$PWD`) is the fallback for a shell that isn't a termio
 ///   session but sits inside an open project's directory.
-/// - `target` — the session to act on, matched within the caller's project by full
-///   id, id prefix, or title.
+/// - `target` — the session to act on: a `<agent>@<id>` handle from `list`, or a
+///   bare id / id prefix / title. Empty for `send` means "start a fresh session".
 /// - `text` — the prompt (`send`) or menu answer (`answer`).
-/// - `agent` — which preset to launch (`start`).
+/// - `agent` — the agent for a fresh session (`send` with no target).
 struct ControlRequest: Decodable {
     let op: String
     let format: String?
@@ -202,16 +202,30 @@ enum SessionSkillInstaller {
         You are running inside termio alongside other agent sessions in this same
         project. Coordinate with them through the `termio sessions` CLI. Every command
         is scoped to this project automatically; add `--json` for machine-readable
-        output. `<id>` is the 8-char id from `list` (a title also works).
+        output. Sessions are addressed by the handle `list` prints: `<agent>@<id>`
+        (e.g. `claude@ab12cd34`).
 
-        - `termio sessions list` — siblings in this project, with status (working / idle
-          / attention / done)
-        - `termio sessions send <id> "<prompt>"` — type a prompt into a sibling and
-          submit it (a real Return keypress, so the agent actually runs it)
-        - `termio sessions answer <id> "<choice>"` — answer a sibling's menu/permission
-          prompt (e.g. `"1"`, `"yes"`)
-        - `termio sessions start <agent>` — start a new session (`claude` / `codex` /
-          `shell`), `termio sessions stop <id>` — close one
+        - `termio sessions list` — siblings in this project, with status (working /
+          idle / needs-you / done)
+        - `termio sessions send "<prompt>"` — start a NEW agent session and give it
+          the prompt (`--agent codex` picks the agent; default: your own kind). The
+          reply contains the new session's handle — use it for every follow-up.
+        - `termio sessions send <agent>@<id> "<prompt>"` — type a prompt into that
+          existing sibling and submit it (a real Return keypress, so it actually runs)
+        - `termio sessions answer <agent>@<id> "<choice>"` — answer a sibling's
+          menu/permission prompt (e.g. `"1"`, `"yes"`)
+        - `termio sessions close <agent>@<id> …` — close session tabs;
+          `termio sessions focus <agent>@<id>` — bring one to the front in the app
+
+        ### Targeting discipline
+
+        - Copy handles verbatim from `list` or a `send` reply; never guess or
+          construct one.
+        - One request, one target. Never send the same prompt to several siblings,
+          and never run multiple `send` commands in parallel — delegate to ONE
+          session.
+        - Unsure which sibling the user means? Ask them, or start a fresh session
+          with a plain `send` — don't broadcast.
 
         ### Reading a sibling's response
 
@@ -219,9 +233,11 @@ enum SessionSkillInstaller {
         agent's own structured Q&A log (Claude Code: a JSONL file) — plus a **cursor**
         (its line count at send time). To read the reply:
 
-        1. `send` and note `transcript` + `cursor` from the output.
+        1. `send` and note `transcript` + `cursor` from the output. (A just-started
+           session has no transcript yet; it appears in `list --json` once the agent
+           reports it — read that file from the start.)
         2. Poll `termio sessions list` until that session's status is `done` (or
-           `attention` if it's blocked waiting on input — then `answer` it).
+           `needs-you` if it's blocked waiting on input — then `answer` it).
         3. Read the transcript file from line `cursor` onward; the `assistant` entries
            after it are the reply. (Each line is a JSON object with a `type`/`role`.)
 
