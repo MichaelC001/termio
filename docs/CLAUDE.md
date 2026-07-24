@@ -25,7 +25,7 @@ clarity over cleverness. Do not add features that were not requested.
   Ghostty from source — `zig` is not installed.
 - Terminal backends: `.exec` runs a real PTY inside ghostty; `.inMemory` is
   host-managed. termio uses **`.inMemory`**: it owns the PTY itself via
-  `Sources/termio/PTYProcess.swift` (spawned with `forkpty` — login_tty shape;
+  `Sources/termio/Terminal/Ghostty/PTYProcess.swift` (spawned with `forkpty` — login_tty shape;
   do NOT switch to `posix_spawn`, that shape breaks agents' resize repaint, see
   `docs/bug/terminal-resize-no-reflow-HANDOFF.md`), and the surface only renders.
 - One `TerminalViewState` owns one terminal surface via its `TerminalController`.
