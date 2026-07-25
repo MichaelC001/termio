@@ -63,6 +63,7 @@ from the real front matter).
 | done | research | ["Competitive analysis: Conductor"](competitive-analysis/03-conductor.md) |
 | done | research | ["Competitive analysis: container-use (dagger)"](competitive-analysis/06-container-use.md) |
 | done | research | ["Competitive analysis: Crystal / Nimbalyst"](competitive-analysis/04-crystal.md) |
+| done | research | ["Competitive analysis: Superset (superset.sh)"](competitive-analysis/11-superset.md) |
 | done | research | ["Competitive analysis: Unpeel"](competitive-analysis/01-unpeel.md) |
 | done | research | ["Competitive analysis: Vibe Island family (status monitors)"](competitive-analysis/07-vibe-island.md) |
 | done | research | ["Competitive analysis: Warp (alternative paradigm)"](competitive-analysis/08-warp.md) |
@@ -75,6 +76,7 @@ from the real front matter).
 | draft | design | [Mac retention analytics (no app changes)](design/mac-retention-analytics.md) |
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/remote-projects.md) |
 | draft | design | [Session Daemon Architecture (termiod — one model for local, remote, mobile)](design/session-daemon-architecture.md) |
+| draft | design | [Sessions CLI v2 — reliability & command design](design/sessions-cli-v2.md) |
 | draft | design | [Sidebar scroll performance — per-session runtime state](design/sidebar-scroll-performance.md) |
 | draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/remote-access-relay-strategy.md) |
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/sandbox-seatbelt.md) |
