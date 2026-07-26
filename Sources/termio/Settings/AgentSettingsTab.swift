@@ -20,38 +20,6 @@ struct AgentSettingsTab: View {
     var body: some View {
         Form {
             Section {
-                Toggle(isOn: $settings.agentHooksEnabled) {
-                    SettingsLabel(
-                        .huge(.wireless),
-                        title: "Live agent status",
-                        subtext: "Installs hooks for Claude Code, Codex, OpenCode, and Pi so termio can tell when an agent is working or waiting on you — shown as the spinning sidebar icon and the menu-bar pulse. Adds termio's own entries to each agent's config; turning this off removes them. (Codex needs a one-time /hooks trust.)"
-                    )
-                }
-                .toggleStyle(.switch)
-                if settings.agentHooksEnabled {
-                    // For re-applying after the user (or another tool) has edited
-                    // ~/.claude/settings.json; install is idempotent.
-                    Button("Reinstall hooks") { AgentStatusHooks.sync(enabled: true) }
-                }
-            } header: {
-                SectionHeaderLabel(title: "Status")
-            }
-            Section {
-                Toggle(isOn: $settings.sessionControlEnabled) {
-                    SettingsLabel(
-                        .huge(.gitBranch),
-                        title: "Session control",
-                        subtext: "Lets an agent see and drive its sibling sessions in the same project with the `termio sessions` command (list, send a prompt, answer a menu, start, stop). Scoped to the current project. Adds a short awareness note to the agents' instruction files; turning this off removes it."
-                    )
-                }
-                .toggleStyle(.switch)
-                if settings.sessionControlEnabled {
-                    Button("Reinstall note") { SessionSkillInstaller.sync(enabled: true) }
-                }
-            } header: {
-                SectionHeaderLabel(title: "Orchestration")
-            }
-            Section {
                 DefaultChatAgentRow(settings: settings)
             } header: {
                 SectionHeaderLabel(title: "New chat")
@@ -91,7 +59,7 @@ struct AgentSettingsTab: View {
         } header: {
             SectionHeaderLabel(title: "Agents")
         } footer: {
-            Text("The agents offered in the new-session menu and the sidebar's quick-add row, in this order — drag to reorder, right-click to remove. Open a row to set a custom command or skip its permission prompts. An agent whose CLI isn't installed stays off until it is.")
+            Text("The agents offered when starting a new session, in this order — drag to reorder, right-click to remove.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
