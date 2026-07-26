@@ -83,7 +83,7 @@ struct SSHSettingsTab: View {
         } header: {
             SectionHeaderLabel(title: "Hosts")
         } footer: {
-            Text("The Host blocks from ~/.ssh/config (Include'd files too) — exactly the aliases `ssh` resolves. Test Connection probes reachability and auth without opening a session; right-click a host to Connect it as a terminal in the sidebar, same as File ▸ New SSH Connection.")
+            Text("Your Host entries from ~/.ssh/config — the same aliases `ssh` resolves. Right-click a host to connect.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -97,7 +97,7 @@ struct SSHSettingsTab: View {
                 SettingsLabel(
                     .huge(.fileDoc),
                     title: "~/.ssh/config",
-                    subtext: "The OpenSSH client config is the single source of truth — termio keeps no separate host database. Edits show up here and in plain `ssh` alike."
+                    subtext: "Reads ~/.ssh/config directly — termio keeps no separate host list."
                 )
             }
         } header: {

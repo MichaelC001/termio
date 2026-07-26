@@ -1,9 +1,11 @@
 import SwiftUI
 import UserNotifications
 
-/// App-level settings that aren't about a specific surface: the `termio`
-/// command-line tool (an app integration, not an agent feature, so it lives here
-/// rather than in the Agents tab) and task-completion notifications.
+/// App-level settings that aren't about a specific surface: task-completion
+/// notifications, the `termio` command-line tool, and the machine-wide agent
+/// integrations (status hooks, session control). The latter three install termio's
+/// wiring outside the app — PATH, agent configs, instruction files — rather than
+/// configure a particular agent, so they live here rather than in the Agents tab.
 struct GeneralSettingsTab: View {
     @ObservedObject var settings: AppSettings
 
@@ -14,7 +16,7 @@ struct GeneralSettingsTab: View {
                     SettingsLabel(
                         .huge(.checkCircle),
                         title: "Task completion",
-                        subtext: "Posts a macOS notification when an agent finishes a task — or stops to ask you something — while termio is in the background. Quick replies and answer-only turns that ran no tools stay quiet; a blocked agent always notifies. Click the notification to jump to that session. macOS asks for permission the first time."
+                        subtext: "Posts a notification when an agent finishes or needs you while termio is in the background."
                     )
                 }
                 .toggleStyle(.switch)
@@ -29,6 +31,38 @@ struct GeneralSettingsTab: View {
                 CommandLineToolRow()
             } header: {
                 SectionHeaderLabel(title: "Command line")
+            }
+            Section {
+                Toggle(isOn: $settings.agentHooksEnabled) {
+                    SettingsLabel(
+                        .huge(.wireless),
+                        title: "Live agent status",
+                        subtext: "Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs termio's hooks into each agent's config."
+                    )
+                }
+                .toggleStyle(.switch)
+                if settings.agentHooksEnabled {
+                    // For re-applying after the user (or another tool) has edited
+                    // ~/.claude/settings.json; install is idempotent.
+                    Button("Reinstall hooks") { AgentStatusHooks.sync(enabled: true) }
+                }
+            } header: {
+                SectionHeaderLabel(title: "Status")
+            }
+            Section {
+                Toggle(isOn: $settings.sessionControlEnabled) {
+                    SettingsLabel(
+                        .huge(.gitBranch),
+                        title: "Session control",
+                        subtext: "Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command."
+                    )
+                }
+                .toggleStyle(.switch)
+                if settings.sessionControlEnabled {
+                    Button("Reinstall note") { SessionSkillInstaller.sync(enabled: true) }
+                }
+            } header: {
+                SectionHeaderLabel(title: "Orchestration")
             }
         }
         .formStyle(.grouped)
