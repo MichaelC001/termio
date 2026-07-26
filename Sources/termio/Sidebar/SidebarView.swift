@@ -519,7 +519,8 @@ private struct ProjectHeader: View {
         return CGFloat(count) * 22 + CGFloat(count - 1) * 3
     }
 
-    /// The right-click menu: a "New … Session" entry per enabled agent, then the
+    /// The right-click menu: New Terminal, a "New Agent Session ▸" submenu with one
+    /// row per enabled agent (the same row shape as File ▸ New Chat), then the
     /// project's own actions. Mirrors the hover controls so both routes stay in sync.
     /// The Terminals section is not a folder project — agents don't belong in `$HOME`
     /// (they get a real project or the scoped scratch workspace), and worktree /
@@ -533,11 +534,12 @@ private struct ProjectHeader: View {
                 .action("Close All Terminals") { store.removeProject(project.id) },
             ]
         }
-        var items: [SidebarMenuItem] = headerSessionPresets(settings).map { preset in
-            .action(preset == .terminal ? "New Terminal" : "New \(preset.displayName) Session") {
-                addSession(preset)
-            }
-        }
+        var items: [SidebarMenuItem] = [
+            .action("New Terminal") { addSession(.terminal) },
+            .submenu("New Agent Session", enabledAgentPresets(settings)
+                .filter { $0 != .terminal }
+                .map { preset in .agent(preset) { addSession(preset) } }),
+        ]
         if let worktree {
             items.append(.separator)
             items.append(.action(worktree.pinned ? "Unpin" : "Pin") {
@@ -695,10 +697,12 @@ func headerSessionPresets(_ settings: AppSettings) -> [AgentPreset] {
     [.terminal] + enabledAgentPresets(settings).filter { $0 != .terminal }
 }
 
-/// One entry in a sidebar row's right-click menu — a titled action, a titled
+/// One entry in a sidebar row's right-click menu — a titled action, an agent row
+/// (display name plus brand icon, the File ▸ New Chat row shape), a titled
 /// submenu of further entries, or a separator.
 enum SidebarMenuItem {
     case action(String, () -> Void)
+    case agent(AgentPreset, () -> Void)
     indirect case submenu(String, [SidebarMenuItem])
     case separator
 }
@@ -782,6 +786,12 @@ private struct SidebarRowContextMenu: NSViewRepresentable {
                     let menuItem = NSMenuItem(title: title, action: #selector(invoke(_:)), keyEquivalent: "")
                     menuItem.target = self
                     menuItem.representedObject = Handler(handler)
+                    menu.addItem(menuItem)
+                case let .agent(preset, handler):
+                    let menuItem = NSMenuItem(title: preset.displayName, action: #selector(invoke(_:)), keyEquivalent: "")
+                    menuItem.target = self
+                    menuItem.representedObject = Handler(handler)
+                    menuItem.image = agentMenuImage(for: preset)
                     menu.addItem(menuItem)
                 case let .submenu(title, children):
                     let menuItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
