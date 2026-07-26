@@ -3,7 +3,7 @@ title: Sessions CLI v2 — reliability & command design
 status: active
 type: design
 created: 2026-07-24
-updated: 2026-07-25
+updated: 2026-07-26
 related:
   - session-daemon-architecture.md
 ---
@@ -296,7 +296,7 @@ per-agent transcript schemas; ship 4a without it.
 | 1 | shell only | trivial | empty-reply failure, client timeout, `json_escape` hardening, per-verb help (§4.1) |
 | 2 | host | moderate | non-blocking `spawn` + head-of-line verification (§4.2); `watch` snapshot, heartbeat, `cwd`, exit codes (§4.3) |
 | 3 | host + shell | moderate | reimplement `--wait` on the v2 base, `send` + `spawn` (§4.4); actionable `needs-you`/`done` payloads (§4.3); contract docs (§4.5); caller envelope (§4.6) — **shipped #87/#88** |
-| 4 | host | moderate | loop-level stall detection: `stalled` watch events with evidence, probes 1–4, signal-not-kill (§4.7); 4b tool-signature repetition later |
+| 4 | host | moderate | loop-level stall detection: `stalled` watch events with evidence, probes 1–4, signal-not-kill (§4.7) — **4a shipped #92**; 4b tool-signature repetition later |
 
 Each phase is one PR; Phase 1 can ship today with no app update (the installed
 CLI is a copied script).

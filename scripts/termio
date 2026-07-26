@@ -50,7 +50,7 @@ options:
 
 `termio sessions <verb> --help` prints focused help for one verb.
 `<agent>@<id>` handles come from `termio sessions list` or a `spawn` reply.
-`answer` is a deprecated alias of `send`; `send` with no handle aliases `spawn`.
+`answer` is a deprecated, agent-only alias of `send`; `send` with no handle aliases `spawn`.
 Every one-shot command times out after ${TERMIO_CLI_TIMEOUT:-15}s (TERMIO_CLI_TIMEOUT overrides).
 EOF
 }
@@ -156,7 +156,7 @@ whose agent exits mid-wait fails as session_closed / agent_gone.
 
 exit codes: 0 settled, 1 error (including stalled/vanished), 3 timed out.
 
-`answer` is a deprecated alias; `send` without a handle aliases `spawn`.
+`answer` is a deprecated, agent-only alias; `send` without a handle aliases `spawn`.
 EOF
             ;;
         close) cat <<'EOF'
@@ -365,6 +365,16 @@ sessions() {
                 echo "termio: spawn needs a prompt (e.g. \`termio sessions spawn \"fix the build\" --agent codex\`)" >&2
                 exit 1
             fi
+            # One job, one entry point: spawn creates agents, run creates terminals.
+            # The wire cannot tell `spawn --agent terminal` from `run` (both arrive
+            # as an empty-target send with the shell pinned), so the split is
+            # enforced here, where the user's intent is still visible.
+            case "$agent" in
+                [Tt]erminal|[Ss]hell)
+                    echo "termio: spawn starts agents — for a plain terminal running a command, use \`termio sessions run \"<command>\"\`" >&2
+                    exit 1
+                    ;;
+            esac
             ;;
         run)
             if [ -z "$text" ]; then
