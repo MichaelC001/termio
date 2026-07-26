@@ -157,9 +157,10 @@ extension TermioStore {
         case "attention":
             // The agent is blocked waiting on the user (a permission prompt or a
             // free-text answer). Mirror the bell path: only flag a session the user
-            // isn't already looking at.
+            // isn't actually watching — with termio backgrounded, even the selected
+            // session needs the cue (it's what fires the desktop notification).
             clearWorking(id)
-            if selectedSessionID != id { setStatus(.needsAttention, for: id) }
+            if !isViewing(id) { setStatus(.needsAttention, for: id) }
         case "idle":
             clearWorking(id)
             setStatus(.idle, for: id)
@@ -191,6 +192,8 @@ extension TermioStore {
     /// `transcriptPaths` is deliberately not here: a relaunch resumes the same
     /// conversation, so only the close/remove paths clear it (inline).
     func clearActivityTracking(for id: Session.ID) {
+        // Whatever banner the session had delivered no longer describes a live turn.
+        TaskNotificationCenter.shared.forget(id)
         lastWorkingAt[id] = nil
         lastHookReportAt[id] = nil
         lastUserInputAt[id] = nil
@@ -298,11 +301,11 @@ extension TermioStore {
             setStatus(.working, for: id)
         case .attention:
             clearWorking(id)
-            if selectedSessionID != id { setStatus(.needsAttention, for: id) }
+            if !isViewing(id) { setStatus(.needsAttention, for: id) }
         case .idle:
             clearWorking(id)
             if previous == .working || previous == .attention {
-                setStatus(selectedSessionID == id ? .idle : .done, for: id)
+                setStatus(isViewing(id) ? .idle : .done, for: id)
             } else {
                 setStatus(.idle, for: id)
             }
@@ -333,11 +336,11 @@ extension TermioStore {
             lastWorkingAt[id] = Date()
         case .attention:
             clearWorking(id)
-            if selectedSessionID != id { setStatus(.needsAttention, for: id) }
+            if !isViewing(id) { setStatus(.needsAttention, for: id) }
         case .idle:
             guard previous == .working, status(for: id) == .working else { return }
             clearWorking(id)
-            setStatus(selectedSessionID == id ? .idle : .done, for: id)
+            setStatus(isViewing(id) ? .idle : .done, for: id)
         }
     }
 

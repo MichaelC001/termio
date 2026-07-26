@@ -1,13 +1,30 @@
 import SwiftUI
+import UserNotifications
 
-/// App-level settings that aren't about a specific surface. Today that's the `termio`
-/// command-line tool — an app integration (install the binary to your PATH), not an
-/// agent feature, so it lives here rather than in the Agents tab.
+/// App-level settings that aren't about a specific surface: the `termio`
+/// command-line tool (an app integration, not an agent feature, so it lives here
+/// rather than in the Agents tab) and task-completion notifications.
 struct GeneralSettingsTab: View {
     @ObservedObject var settings: AppSettings
 
     var body: some View {
         Form {
+            Section {
+                Toggle(isOn: $settings.notifyOnTaskCompletion) {
+                    SettingsLabel(
+                        .huge(.checkCircle),
+                        title: "Task completion",
+                        subtext: "Posts a macOS notification when an agent finishes a task — or stops to ask you something — while termio is in the background. Quick replies and answer-only turns that ran no tools stay quiet; a blocked agent always notifies. Click the notification to jump to that session. macOS asks for permission the first time."
+                    )
+                }
+                .toggleStyle(.switch)
+                if settings.notifyOnTaskCompletion {
+                    Toggle("Play sound", isOn: $settings.notificationSoundEnabled)
+                    NotificationPermissionRow()
+                }
+            } header: {
+                SectionHeaderLabel(title: "Notifications")
+            }
             Section {
                 CommandLineToolRow()
             } header: {
@@ -15,6 +32,59 @@ struct GeneralSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// Surfaces the macOS-side notification authorization under the toggle. An app
+/// cannot grant itself notification permission — only the system prompt or
+/// System Settings can — so this row offers whichever of the two applies:
+/// "Request Permission" while macOS has never been asked, a System Settings
+/// deep link once the user has denied. Silent when already authorized (or when
+/// running unbundled, where the framework is untouchable). Re-audits whenever
+/// the app comes back to front, so returning from System Settings updates it.
+private struct NotificationPermissionRow: View {
+    @State private var status: UNAuthorizationStatus?
+
+    var body: some View {
+        Group {
+            switch status {
+            case .notDetermined:
+                HStack(spacing: 10) {
+                    Text("macOS hasn't been asked to allow termio's notifications yet.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Request Permission") {
+                        Task {
+                            _ = await TaskNotificationCenter.requestPermission()
+                            status = await TaskNotificationCenter.authorizationStatus()
+                        }
+                    }
+                }
+            case .denied:
+                HStack(spacing: 10) {
+                    Text("Notifications for termio are turned off in System Settings.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Open System Settings") {
+                        let id = Bundle.main.bundleIdentifier ?? ""
+                        if let url = URL(string:
+                            "x-apple.systempreferences:com.apple.preference.notifications?id=\(id)") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
+            default:
+                EmptyView()
+            }
+        }
+        .task { status = await TaskNotificationCenter.authorizationStatus() }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)
+        ) { _ in
+            Task { status = await TaskNotificationCenter.authorizationStatus() }
+        }
     }
 }
 

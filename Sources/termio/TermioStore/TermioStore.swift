@@ -255,6 +255,16 @@ final class TermioStore: ObservableObject {
         // transition, means one write per turn instead of one per hook/screen tick — the
         // callers no longer poke activity themselves (they used to fire it every tick).
         if status == .working, let pid = project(for: id)?.id { noteProjectActivity(pid) }
+        // Settling on a "your turn" state is the one transition worth a desktop
+        // notification. Firing from the choke point (no-op writes never reach here)
+        // is what keeps one completion to one notification; the notifier applies
+        // its own gates (setting off, plain terminal, app frontmost, short turn).
+        // The working transition starts the turn clock those gates measure against.
+        if status == .working {
+            TaskNotificationCenter.shared.sessionDidStartWorking(id)
+        } else if status == .done || status == .needsAttention {
+            TaskNotificationCenter.shared.sessionDidSettle(id, status: status)
+        }
         return true
     }
 
@@ -262,6 +272,11 @@ final class TermioStore: ObservableObject {
     /// No runtime ping: the tool shows only in the sidebar row's own tooltip, which
     /// tracks its session's runtime directly — no AppKit observer reads it.
     func setCurrentTool(_ tool: String?, for id: Session.ID) {
+        // A named tool is the "this turn did real work" signal the notifier's
+        // task-vs-chat gate keys on. Recorded at this choke point — before the
+        // no-op guard, since the gate cares about the turn, not the value change —
+        // so any future tool source feeds the gate without extra wiring.
+        if tool != nil { TaskNotificationCenter.shared.sessionDidUseTool(id) }
         let runtime = runtime(for: id)
         guard runtime.currentTool != tool else { return }
         runtime.currentTool = tool
@@ -780,10 +795,38 @@ final class TermioStore: ObservableObject {
     /// alone — its spinner isn't a cue to dismiss. Idempotent, and unlike the
     /// `selectedSessionID` didSet it doesn't require the selection to *change*, so
     /// re-clicking the session you're already on still clears the dot.
+    /// Whether the user is plausibly looking at this session right now: termio is
+    /// the active app and the session is selected. The status paths use it to pick
+    /// between a quiet in-place settle and a "your turn" cue — with termio in the
+    /// background, even the selected session isn't being watched, and the cue is
+    /// what lets the desktop notification fire (it only hears real transitions).
+    func isViewing(_ id: Session.ID) -> Bool {
+        NSApp.isActive && selectedSessionID == id
+    }
+
     func markSeen(_ id: Session.ID) {
+        // Engaging with the session makes any delivered banner stale too.
+        TaskNotificationCenter.shared.withdraw(for: id)
         let current = status(for: id)
         if current == .done || current == .needsAttention {
             setStatus(.idle, for: id)
+        }
+    }
+
+    /// Selects a session in the sidebar and brings termio to the front — the
+    /// "come look at this" verb shared by `termio sessions focus` and a
+    /// task-notification click (which may find the window miniaturized).
+    func revealSession(_ id: Session.ID) {
+        guard session(id) != nil else { return }
+        selectedSessionID = id
+        // Explicit, because the didSet above skips a same-value write: revealing
+        // a session that was already selected (app in background) must still
+        // acknowledge its "your turn" dot and withdraw its banner.
+        markSeen(id)
+        NSApp.activate(ignoringOtherApps: true)
+        if let window = AppDelegate.mainWindow {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
         }
     }
 
