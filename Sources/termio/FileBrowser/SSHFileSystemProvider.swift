@@ -7,13 +7,15 @@ import Foundation
 /// operation rides the same socket via `clientOptions` — no second handshake,
 /// no auth prompt a background pane could ever raise.
 enum SSHMux {
-    /// Where the control sockets live: a termio-owned dir under Application
-    /// Support — a stable path (never bundle-derived; a rebuilt dev app must
-    /// keep reaching the same sockets), `%C` hashed by ssh per
-    /// (local host, remote host, port, user) so it stays under the `sun_path`
-    /// length limit and two sessions to one alias share one master.
+    /// Where the control sockets live: `~/.termio[-dev]/ssh-mux` — a stable path
+    /// (never bundle-derived; a rebuilt dev app must keep reaching the same
+    /// sockets) that is also SHORT, because a Unix socket path is capped at 103
+    /// bytes (`sun_path`): under Application Support the dev channel's path plus
+    /// ssh's 40-hex `%C` hash (per local host/remote host/port/user, which is
+    /// what lets two sessions to one alias share one master) already measures
+    /// 104 and ssh refuses with "ControlPath too long".
     static var directory: URL {
-        AppChannel.supportDirectory.appendingPathComponent("ssh-mux", isDirectory: true)
+        AppChannel.homeConfigDirectory.appendingPathComponent("ssh-mux", isDirectory: true)
     }
 
     /// The `ControlPath` value both sides pass — `%C` is expanded by ssh itself.
