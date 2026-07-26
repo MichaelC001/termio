@@ -21,6 +21,26 @@ struct AppearanceSettingsTab: View {
                     .foregroundStyle(.secondary)
             }
             Section {
+                ThemePickerField(title: "Light", selection: $settings.lightThemeName, userThemeNames: userThemeNames)
+                ThemePickerField(title: "Dark", selection: $settings.darkThemeName, userThemeNames: userThemeNames)
+                HStack {
+                    Button("Open Themes Folder…", action: openThemesFolder)
+                    Spacer()
+                    if !userThemeNames.isEmpty {
+                        Text("\(userThemeNames.count) custom")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("Reload", action: reloadUserThemes)
+                }
+            } header: {
+                SectionHeaderLabel(title: "Theme")
+            } footer: {
+                Text("termio switches between these as macOS changes appearance; leave a slot on the default for termio's own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
                 FontFamilyField(
                     title: "Family",
                     prompt: "System monospace",
@@ -68,26 +88,6 @@ struct AppearanceSettingsTab: View {
                 SectionHeaderLabel(title: "Window")
             } footer: {
                 Text("Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Section {
-                ThemePickerField(title: "Light", selection: $settings.lightThemeName, userThemeNames: userThemeNames)
-                ThemePickerField(title: "Dark", selection: $settings.darkThemeName, userThemeNames: userThemeNames)
-                HStack {
-                    Button("Open Themes Folder…", action: openThemesFolder)
-                    Spacer()
-                    if !userThemeNames.isEmpty {
-                        Text("\(userThemeNames.count) custom")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Button("Reload", action: reloadUserThemes)
-                }
-            } header: {
-                SectionHeaderLabel(title: "Theme")
-            } footer: {
-                Text("termio switches between these as macOS changes appearance; leave a slot on the default for termio's own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -158,6 +158,22 @@ final class TermioStore: ObservableObject {
     /// changes" without the inspector being open.
     @Published var gitChangeCount = 0
 
+    /// The directory the inspector panes root at: the selected session's worktree if it
+    /// has one, otherwise its project folder. `nil` when nothing is selected.
+    /// A loose terminal roots at its *live* cwd instead (falling back to the cwd
+    /// persisted from the last run, then `$HOME`) — the session owns its path, so
+    /// the tree, search, and changes panes all follow a `cd`. Real projects keep
+    /// their stable root; the anchor is the point of a project.
+    var inspectorProjectPath: String? {
+        guard let id = selectedSessionID, let project = project(for: id) else { return nil }
+        if project.kind == .terminals {
+            return workingDirectory(for: id)
+                ?? session(id)?.lastWorkingDirectory
+                ?? project.path
+        }
+        return session(id)?.worktreePath ?? project.path
+    }
+
     /// Whether the trailing inspector panel is expanded. Mirrored from the AppKit
     /// split item — the owner of collapse state — via KVO in `App.swift`, so hosted
     /// panes can stand down while hidden: a collapsed item keeps its view hierarchy

@@ -64,6 +64,18 @@ struct GeneralSettingsTab: View {
             } header: {
                 SectionHeaderLabel(title: "Orchestration")
             }
+            Section {
+                Toggle(isOn: $settings.githubIntegrationEnabled) {
+                    SettingsLabel(
+                        .huge(.github),
+                        title: "GitHub",
+                        subtext: "Shows the Issues pane in the inspector for projects whose remote is on GitHub."
+                    )
+                }
+                .toggleStyle(.switch)
+            } header: {
+                SectionHeaderLabel(title: "Integrations")
+            }
         }
         .formStyle(.grouped)
     }

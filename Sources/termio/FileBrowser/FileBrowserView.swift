@@ -25,21 +25,8 @@ struct FileBrowserView: View {
     /// it changes, so the tree stays live with an agent's edits (see `onChange` below).
     @StateObject private var watcher = FileTreeWatcher()
 
-    /// The directory the tree is rooted at: the selected session's worktree if it
-    /// has one, otherwise its project folder. `nil` when nothing is selected.
-    /// A loose terminal roots at its *live* cwd instead (falling back to the cwd
-    /// persisted from the last run, then `$HOME`) — the session owns its path, so
-    /// the tree, search, and changes panes all follow a `cd`. Real projects keep
-    /// their stable root; the anchor is the point of a project.
-    private var projectPath: String? {
-        guard let id = store.selectedSessionID, let project = store.project(for: id) else { return nil }
-        if project.kind == .terminals {
-            return store.workingDirectory(for: id)
-                ?? store.session(id)?.lastWorkingDirectory
-                ?? project.path
-        }
-        return store.session(id)?.worktreePath ?? project.path
-    }
+    /// The directory the tree is rooted at — see `TermioStore.inspectorProjectPath`.
+    private var projectPath: String? { store.inspectorProjectPath }
 
     var body: some View {
         VStack(spacing: 0) {

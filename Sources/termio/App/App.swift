@@ -1368,7 +1368,9 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             let item = NSToolbarItem(itemIdentifier: .inspectorTabs)
             item.label = "Inspector"
             item.toolTip = "Switch between project files, search, changes, and info"
-            let host = NSHostingView(rootView: InspectorTabsToolbar().environmentObject(store))
+            let host = NSHostingView(rootView: InspectorTabsToolbar()
+                .environmentObject(store)
+                .environmentObject(store.settings))
             host.sizingOptions = [.intrinsicContentSize]
             item.view = host
             item.isBordered = false
