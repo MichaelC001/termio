@@ -915,8 +915,8 @@ private struct SessionRow: View {
 
     private var isSelected: Bool { store.selectedSessionID == session.id }
 
-    /// The row's right-click menu. Rename/Pin/Close are always present; the two
-    /// split "type switch" items appear conditionally — "Unsplit" only when the
+    /// The row's right-click menu. Rename/Pin/Close Session are always present; the two
+    /// split "type switch" items appear conditionally — "Ungroup" only when the
     /// session is already in a group (联合 → 独立), and "Group with ▸" only when
     /// there is a sibling to combine it with (独立 → 联合).
     private var menuItems: [SidebarMenuItem] {
@@ -926,7 +926,7 @@ private struct SessionRow: View {
         let targets = store.groupableTargets(for: session.id)
         if store.isInSplitGroup(session.id) || !targets.isEmpty { items.append(.separator) }
         if store.isInSplitGroup(session.id) {
-            items.append(.action("Unsplit") { store.detachFromSplit(session.id) })
+            items.append(.action("Ungroup") { store.detachFromSplit(session.id) })
         }
         if !targets.isEmpty {
             items.append(.submenu("Group with", targets.map { target in
@@ -939,7 +939,7 @@ private struct SessionRow: View {
             .separator,
             .action(session.pinned ? "Unpin" : "Pin") { store.toggleSessionPinned(session.id) },
             .separator,
-            .action("Close") { store.closeSession(session.id) },
+            .action("Close Session") { store.closeSession(session.id) },
         ])
         return items
     }
