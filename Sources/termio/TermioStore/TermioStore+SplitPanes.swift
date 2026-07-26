@@ -157,12 +157,12 @@ extension TermioStore {
         }
     }
 
-    /// Pulls a pane out of its split group into a standalone session — VS Code's
-    /// "Unsplit Terminal" (联合 → 独立). The session itself is untouched (its shell
+    /// Pulls a pane out of its split group into a standalone session — the
+    /// sidebar's "Ungroup" (联合 → 独立). The session itself is untouched (its shell
     /// keeps running, its surface stays cached); it just leaves the tree, the
     /// group dissolves when a lone pane is left, and the selection *follows* the
     /// detached pane so you see it come up on its own (the difference from
-    /// `closeSelectedPane`, which hands focus to the neighbour it leaves behind).
+    /// `ungroupSelectedPane`, which hands focus to the neighbour it leaves behind).
     func detachFromSplit(_ id: Session.ID) {
         guard let group = groupIndex(containing: id) else { return }
         setGroup(at: group, to: splitGroups[group].removing(leaf: id))
@@ -234,12 +234,12 @@ extension TermioStore {
         projects[projectIndex].sessions.insert(row, at: anchorIndex + 1)
     }
 
-    /// Closes the focused *pane* — the layout operation, not the session one.
+    /// Ungroups the focused *pane* — the layout operation, not the session one.
     /// The session stays alive in the sidebar (its shell keeps running, its
     /// surface stays cached); it just leaves its group, and focus moves to its
-    /// layout neighbour. Killing the session outright remains the sidebar's
-    /// close, which prunes the groups through `pruneSessionsFromSplit`.
-    func closeSelectedPane() {
+    /// layout neighbour. Killing the session outright remains "Close Session",
+    /// which prunes the groups through `pruneSessionsFromSplit`.
+    func ungroupSelectedPane() {
         guard let focusedID = selectedSessionID,
               let group = groupIndex(containing: focusedID) else { return }
         let neighbor = neighborPane(of: focusedID, in: splitGroups[group])

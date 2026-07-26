@@ -998,14 +998,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.splitSelectedPane(.vertical)
     }
 
-    /// View ▸ Close Pane (⌘W) — collapses the focused pane out of the layout,
-    /// terminal-style. The session itself stays alive in the sidebar (killing it
-    /// remains the sidebar's explicit close). With no split on screen there is no
-    /// pane to peel off, so ⌘W falls through to closing the window, matching
-    /// iTerm2 where the last pane's ⌘W closes its container.
-    @objc func closeSplitPane(_ sender: Any?) {
+    /// View ▸ Ungroup (⌘W) — collapses the focused pane out of the layout.
+    /// The session itself stays alive in the sidebar (killing it remains the
+    /// explicit "Close Session"). With no split on screen there is no pane to
+    /// peel off, so ⌘W falls through to closing the window, matching iTerm2
+    /// where the last pane's ⌘W closes its container.
+    @objc func ungroupPane(_ sender: Any?) {
         if store.splitRoot != nil {
-            store.closeSelectedPane()
+            store.ungroupSelectedPane()
         } else {
             window?.performClose(sender)
         }
@@ -1570,7 +1570,7 @@ private func buildMainMenu() -> NSMenu {
         command: .openProject
     )
     fileMenu.addItem(.separator())
-    // ⌘⇧W closes the whole window (⌘W is Close Pane, terminal-style — see View menu).
+    // ⌘⇧W closes the whole window (⌘W is Ungroup, terminal-style — see View menu).
     fileMenu.addItem(
         withTitle: "Close Window",
         action: #selector(AppDelegate.closeMainWindow(_:)),
@@ -1625,13 +1625,13 @@ private func buildMainMenu() -> NSMenu {
         action: #selector(AppDelegate.toggleSplitZoom(_:)),
         command: .splitZoom
     )
-    // ⌘W closes the focused *pane* (the layout slot), not the session, matching
-    // terminal convention; the last pane's ⌘W falls through to the window. The
+    // ⌘W ungroups the focused *pane* (the layout slot) — the session survives
+    // in the sidebar; the last pane's ⌘W falls through to the window. The
     // whole window is ⌘⇧W (File ▸ Close Window).
     viewMenu.addItem(
-        withTitle: "Close Pane",
-        action: #selector(AppDelegate.closeSplitPane(_:)),
-        command: .closePane
+        withTitle: "Ungroup",
+        action: #selector(AppDelegate.ungroupPane(_:)),
+        command: .ungroup
     )
     viewMenu.addItem(.separator())
     // ⌥⌘ arrows move focus between panes, scored on the split geometry.
