@@ -457,9 +457,23 @@ struct AgentHookSpec: Hashable {
 
 /// Owns the merged set of agent definitions. Both sources decode through
 /// `AgentManifest`; only their directory layout differs until Cut 4 migrates the
-/// legacy user folders. Loaded once, with no hot reload.
+/// legacy user folders. Each instance is immutable; `reload()` swaps in a fresh
+/// one after Settings writes or deletes a user manifest.
 final class AgentCatalog {
-    static let shared = AgentCatalog()
+    private static let sharedLock = NSLock()
+    private static var _shared = AgentCatalog()
+
+    static var shared: AgentCatalog {
+        sharedLock.withLock { _shared }
+    }
+
+    /// Re-reads bundled + user manifests. Readers pick up the fresh instance on
+    /// their next `shared` access; definitions already handed out keep their old
+    /// values (equality is by id, so live sessions are unaffected).
+    static func reload() {
+        let fresh = AgentCatalog()
+        sharedLock.withLock { _shared = fresh }
+    }
 
     let all: [AgentDefinition]
     /// Retained so a user override that removes or redirects a shipped hook can
@@ -496,6 +510,14 @@ final class AgentCatalog {
 
     func find(id: String) -> AgentDefinition? {
         all.first { $0.id == id }
+    }
+
+    /// Whether this id came from a user manifest rather than the bundle — i.e. the
+    /// Settings editor may rewrite or delete its file. A user *override* of a
+    /// bundled id is deliberately excluded: deleting it would resurrect the
+    /// bundled agent, which "Delete" does not promise.
+    func isUserDefined(_ id: String) -> Bool {
+        find(id: id) != nil && !bundled.contains { $0.id == id }
     }
 
     /// Language runtimes an agent's CLI may be executed through, so a `node …/cli.js`
@@ -577,7 +599,9 @@ final class AgentCatalog {
     }
 
     /// The channel-scoped flat manifest directory (`~/.termio[-dev]/config/agents`).
-    private static var userAgentsDirectory: URL {
+    /// Internal so the Settings custom-agent editor writes to the same place the
+    /// catalog reads from.
+    static var userAgentsDirectory: URL {
         AppChannel.homeConfigDirectory
             .appendingPathComponent("config", isDirectory: true)
             .appendingPathComponent("agents", isDirectory: true)
