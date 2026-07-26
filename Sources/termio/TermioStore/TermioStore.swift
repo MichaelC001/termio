@@ -898,8 +898,9 @@ final class TermioStore: ObservableObject {
 
     /// Covers the terminal with a read-only preview of `url`, but only if it points at an existing
     /// regular file — a missing path or a directory is silently dropped rather than opening an empty
-    /// overlay.
-    private func presentFilePreview(_ url: URL) {
+    /// overlay. Also the remote tree's open path: it stages the remote bytes into a temp file and
+    /// previews that (read-only is the point — there is no write-back to the host).
+    func presentFilePreview(_ url: URL) {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
               !isDirectory.boolValue else { return }

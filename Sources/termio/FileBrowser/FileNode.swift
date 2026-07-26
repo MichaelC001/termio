@@ -30,33 +30,15 @@ final class FileNode: Identifiable {
         return contents
     }
 
-    /// Directory entries, folders first then files, each alphabetized the way the
-    /// Finder orders names. Dotfiles are shown (the VS Code explorer default); only the
-    /// VCS/OS metadata in `ignoredNames` is dropped — matching VS Code's own default
-    /// `files.exclude`, which likewise leaves `node_modules`/build folders visible.
+    /// Directory entries per the tree's shared listing conventions (folders first,
+    /// Finder-ordered, VCS/OS metadata dropped — see `FileEntry.ignoredNames`), read
+    /// through the local provider so this stays the one `FileManager` walk in the tree.
     private static func readContents(of url: URL) -> [FileNode] {
-        let manager = FileManager.default
-        guard let entries = try? manager.contentsOfDirectory(
-            at: url,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: []
-        ) else { return [] }
-
-        return entries
-            .filter { !ignoredNames.contains($0.lastPathComponent) }
-            .map { entry in
-                let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-                return FileNode(url: entry, isDirectory: isDirectory)
-            }
-            .sorted { left, right in
-                if left.isDirectory != right.isDirectory { return left.isDirectory }
-                return left.name.localizedStandardCompare(right.name) == .orderedAscending
-            }
+        LocalFileSystemProvider.listSync(url).map { entry in
+            FileNode(
+                url: url.appendingPathComponent(entry.name, isDirectory: entry.isDirectory),
+                isDirectory: entry.isDirectory
+            )
+        }
     }
-
-    /// VCS and OS metadata that is always noise, dropped even though dotfiles are
-    /// otherwise shown. Mirrors VS Code's default `files.exclude`
-    /// (`.git`/`.svn`/`.hg`/`.DS_Store`/`Thumbs.db`); like VS Code it does *not* hide
-    /// `node_modules` or build output — those stay visible, loaded lazily on expand.
-    private static let ignoredNames: Set<String> = [".git", ".svn", ".hg", ".DS_Store", "Thumbs.db"]
 }
