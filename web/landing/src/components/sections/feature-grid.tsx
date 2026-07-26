@@ -95,8 +95,7 @@ export function FeatureGrid() {
           <p className="mx-auto mt-10 max-w-3xl text-balance text-center text-sm leading-relaxed text-muted-foreground">
             Also in the box: git worktrees nested under each project, a
             read-only git pane with unified diffs, a click-to-edit file editor,
-            Ghostty-style split panes, and a sessions CLI your agents can drive
-            themselves.
+            and Ghostty-style split panes.
           </p>
         </Reveal>
       </div>

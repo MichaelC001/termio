@@ -1,6 +1,6 @@
 ---
 title: Session control & the CLI
-description: Turn on session control to let your agents report status and coordinate with each other, and use the termio command-line tool to open projects and drive sessions from the shell.
+description: Termio's orchestration API — status hooks that let agents report what they're doing, and the termio sessions CLI that lets you (or another agent) spawn, drive, and supervise sessions from the shell.
 ---
 
 Two related, opt-in features sit behind the live statuses you see in the sidebar:
@@ -43,11 +43,32 @@ termio ~/code/myapp    # open a specific folder
 Run it in any directory and Termio brings that folder into the sidebar — the
 shell equivalent of **Open Project**.
 
+### The orchestration model
+
+The `termio sessions` family is Termio's orchestration API: it lets one agent —
+or your own scripts — see and steer sibling sessions in the same project. Before
+the verb reference, the design rules everything below follows:
+
+- **Project-scoped by default.** Every command resolves the caller to its own
+  project (via the session id the PTY carries, or the working directory) and can
+  only see and drive siblings there — never sessions in unrelated projects.
+- **Stable handles, one target.** Sessions are addressed by `<agent>@<id>`
+  handles minted at creation and printed by `list`. The agent name is a
+  checksum: a name spliced onto the wrong id is an error, not a misdelivery.
+- **Transcript as truth.** An agent's *result* is read from its own structured
+  transcript (the path and line range the replies hand back), never scraped off
+  the screen. The screen is the result channel only for plain `run` terminals,
+  which have no transcript.
+- **Waiting is explicit.** No command blocks unless you pass `--wait`, and
+  `--wait` always means the same thing: wait for the turn's *outcome*, fail
+  fast when no outcome can come, and split the result across exit codes.
+- **Signal, never kill.** The supervision plane observes and reports — `watch`
+  events, the `stalled` alarm — but never terminates or auto-answers a session.
+  Acting on a signal is always the supervisor's decision.
+
 ### Drive sessions
 
-The `termio sessions` family lets one agent see and steer its siblings in the same
-project — the machinery behind multi-agent workflows. Add `--json` to any command
-for machine-readable output.
+Add `--json` to any command for machine-readable output.
 
 | Command | What it does |
 | --- | --- |
