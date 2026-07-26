@@ -83,10 +83,10 @@ struct AgentSettingsTab: View {
 
             Divider()
             Menu {
+                // Plain text rows: AppKit menus rasterize custom SwiftUI icon views
+                // at their natural image size, not the badge frame.
                 ForEach(addableAgents) { preset in
-                    Button { add(preset) } label: {
-                        Label { Text(preset.displayName) } icon: { IconBadge(preset.icon) }
-                    }
+                    Button(preset.displayName) { add(preset) }
                 }
                 if !addableAgents.isEmpty { Divider() }
                 Button("Custom Agent…") { editorTarget = EditorTarget(existing: nil) }
