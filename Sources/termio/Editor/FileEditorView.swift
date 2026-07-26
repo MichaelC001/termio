@@ -29,14 +29,25 @@ struct FileEditorView: View {
     /// Markdown opens in Preview (a doc you mostly read); source stays one click away.
     @State private var mode: Mode
 
-    @State private var text: String
+    @State private var text = ""
     /// The text last written to disk, so auto-save only writes on a genuine change.
-    @State private var savedText: String
-    @State private var loadFailed: Bool
+    @State private var savedText = ""
+    /// False until the async load lands — the editor mounts only then, so the
+    /// highlighter and the jump-to-line both see the real document, never the
+    /// empty placeholder.
+    @State private var loaded = false
+    @State private var loadFailed = false
+    /// Set when the file is too large for syntax highlighting (see `highlightByteLimit`).
+    @State private var highlightDisabled = false
     @State private var saveError: String?
     @State private var cursor: EditorCursor?
     /// The pending debounced write, cancelled and rescheduled on each keystroke.
     @State private var saveTask: Task<Void, Never>?
+
+    /// Past this size the file renders as plain text: highlight.js parses off-main, but
+    /// *applying* its result is thousands of main-thread `setAttributes` calls plus a
+    /// whole-document relayout — seconds of beachball on a generated 600 KB YAML.
+    private static let highlightByteLimit = 256 * 1024
 
     /// The highlight.js language id, sniffed once from the file extension (`nil` lets highlight.js
     /// auto-detect). Stable for the lifetime of the open file.
@@ -52,10 +63,10 @@ struct FileEditorView: View {
         self.readOnly = readOnly
         self.jumpLine = jumpLine
         self.onClose = onClose
-        let contents = try? String(contentsOf: url, encoding: .utf8)
-        _text = State(initialValue: contents ?? "")
-        _savedText = State(initialValue: contents ?? "")
-        _loadFailed = State(initialValue: contents == nil)
+        // No I/O here: SwiftUI re-runs this init on every parent render (the store's
+        // session churn), and only the first init per `.id(url)` identity keeps its
+        // state — a sync read would hit the disk over and over just to be discarded.
+        // The actual load happens once, in `.task`.
         // A jump-to-line open (content-search hit, cmd-click) targets the *source*, so it
         // must land in Edit — Preview has no lines to jump to and would swallow the scroll.
         _mode = State(initialValue: Self.isMarkdown(url) && jumpLine == nil ? .preview : .edit)
@@ -114,6 +125,10 @@ struct FileEditorView: View {
                     huge: .fileQuestion,
                     description: Text("\(url.lastPathComponent) isn't a UTF-8 text file.")
                 )
+            } else if !loaded {
+                // The bare background while the async read runs — small files land
+                // within a frame or two, so a spinner would only flash.
+                Color.clear
             } else {
                 VStack(spacing: 0) {
                     header
@@ -132,7 +147,7 @@ struct FileEditorView: View {
                         HighlightedTextView(
                             text: $text,
                             cursor: $cursor,
-                            language: language,
+                            language: highlightDisabled ? nil : language,
                             theme: colorScheme == .dark ? "xcode-dark" : "xcode",
                             font: editorFont,
                             backgroundColor: settings.terminalBackgroundColor,
@@ -153,6 +168,7 @@ struct FileEditorView: View {
         // Match the diff overlay (`GitDiffView`): a plain VStack whose background bleeds under the
         // titlebar — no outer `.frame`, which was reserving an empty band above the header.
         .background(Color(nsColor: settings.terminalBackgroundColor).ignoresSafeArea())
+        .task { await load() }
         // Auto-save: debounce a write after each edit; Escape closes (flushing first). A read-only
         // peek never writes, so neither the debounce nor the exit flush is armed.
         .onChange(of: text) {
@@ -280,8 +296,10 @@ struct FileEditorView: View {
         Text(text).padding(.leading, 14)
     }
 
-    /// A human-readable name for the detected language ("Plain Text" when auto/unknown).
+    /// A human-readable name for the detected language ("Plain Text" when auto/unknown,
+    /// with the reason named when a large file skipped highlighting).
     private var languageName: String {
+        guard !highlightDisabled else { return "Plain Text — large file" }
         guard let language else { return "Plain Text" }
         return language.prefix(1).uppercased() + language.dropFirst()
     }
@@ -312,10 +330,29 @@ struct FileEditorView: View {
         onClose()
     }
 
+    /// Reads the file once per opened identity (`.id(url)` on the overlay), off the main
+    /// thread — a large file must not beachball the click that opened it. Oversized files
+    /// also flip `highlightDisabled` so the editor renders them as plain text.
+    private func load() async {
+        let url = url
+        let result: (text: String?, bytes: Int) = await Task.detached(priority: .userInitiated) {
+            guard let data = try? Data(contentsOf: url) else { return (nil, 0) }
+            return (String(data: data, encoding: .utf8), data.count)
+        }.value
+        guard let contents = result.text else {
+            loadFailed = true
+            return
+        }
+        highlightDisabled = result.bytes >= Self.highlightByteLimit
+        text = contents
+        savedText = contents
+        loaded = true
+    }
+
     /// Writes the buffer to disk if it differs from what's already there. The single place a save
     /// happens, shared by the debounce, the close button, and the disappear safety net.
     private func writeIfNeeded() {
-        guard !readOnly, text != savedText else { return }
+        guard !readOnly, loaded, text != savedText else { return }
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             savedText = text
