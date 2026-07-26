@@ -102,6 +102,7 @@ final class AppSettings: ObservableObject {
         static let sessionControlPrompted = "agents.sessionControlPrompted"
         static let usageAuthorizedAgents = "usage.authorizedAgents"
         static let claudeKeychainDeclined = "usage.claudeKeychainDeclined"
+        static let githubIntegrationEnabled = "github.integrationEnabled"
         static let notifyTaskCompletion = "notifications.taskCompletion"
         static let notificationSound = "notifications.sound"
         static let projectSortOrder = "sidebar.projectSortOrder"
@@ -332,6 +333,13 @@ final class AppSettings: ObservableObject {
         set { defaults.set(newValue, forKey: Key.sessionControlPrompted) }
     }
 
+    /// Gates the GitHub side of the app — today the inspector's Issues pane. The
+    /// pane additionally only appears for projects whose origin remote points at
+    /// github.com, so this switch is for opting out of GitHub entirely.
+    @Published var githubIntegrationEnabled: Bool {
+        didSet { defaults.set(githubIntegrationEnabled, forKey: Key.githubIntegrationEnabled) }
+    }
+
     /// Agents whose usage data the user has allowed termio to read, by `rawValue`.
     /// The Usage tab is opt-in per agent: until the user clicks Allow there, none
     /// of that agent's data is touched — not its local session logs and not its
@@ -410,6 +418,9 @@ final class AppSettings: ObservableObject {
             Key.interfaceRowPadding: 2.0,
             Key.agentHooksEnabled: false,
             Key.sessionControlEnabled: false,
+            // On by default: the pane is read-only and only appears for projects
+            // with a GitHub remote, so there is nothing to opt into until then.
+            Key.githubIntegrationEnabled: true,
             Key.projectSortOrder: "name",
             // Notifications ship on (macOS's own permission prompt is the real
             // gate); the sound stays opt-in so a finishing agent is never noisy
@@ -441,6 +452,7 @@ final class AppSettings: ObservableObject {
         agentOrder = defaults.stringArray(forKey: Key.agentOrder) ?? []
         agentHooksEnabled = defaults.bool(forKey: Key.agentHooksEnabled)
         sessionControlEnabled = defaults.bool(forKey: Key.sessionControlEnabled)
+        githubIntegrationEnabled = defaults.bool(forKey: Key.githubIntegrationEnabled)
         usageAuthorizedAgents = Set(defaults.stringArray(forKey: Key.usageAuthorizedAgents) ?? [])
         claudeKeychainDeclined = defaults.bool(forKey: Key.claudeKeychainDeclined)
         notifyOnTaskCompletion = defaults.bool(forKey: Key.notifyTaskCompletion)
