@@ -173,6 +173,13 @@ extension TermioStore {
     /// help gets a Claude), then to the user's preferred chat agent; `--agent`
     /// overrides both.
     private func spawnAndSend(_ request: ControlRequest, in project: Project, payload: String) async -> Data {
+        // Who is asking, resolved against this project's roster: a sibling agent
+        // spawning from inside termio, or nil for a spawn from an outside shell.
+        // Drives both defaults below — the new agent's kind and where its pane lands.
+        let caller = request.callerSession
+            .flatMap(UUID.init(uuidString:))
+            .flatMap { id in project.sessions.first { $0.id == id } }
+
         let preset: AgentDefinition
         if let name = request.agent, !name.isEmpty {
             // An explicit name may be the plain shell — that is `run`, a terminal
@@ -184,8 +191,7 @@ extension TermioStore {
                     "Unknown agent '\(name)'. Try one of: \(names), or terminal.")
             }
             preset = resolved
-        } else if let callerID = request.callerSession, let uuid = UUID(uuidString: callerID),
-                  let caller = session(uuid), !effectiveAgent(for: caller).isShell {
+        } else if let caller, !effectiveAgent(for: caller).isShell {
             preset = effectiveAgent(for: caller)
         } else if let fallback = defaultChatAgent() {
             preset = fallback
@@ -194,11 +200,14 @@ extension TermioStore {
                 "No coding agent is enabled — pass --agent <name>.")
         }
 
-        // Drop the new agent in beside the pane you were watching (a split), not
-        // as a full-screen swap that hides the caller — the whole reason to spawn
-        // a sibling from the CLI is to see them side by side.
-        addSplitSession(to: project.id, agent: preset)
-        guard let id = selectedSessionID, let fresh = session(id) else {
+        // Beside the caller's pane as a split, not a full-screen swap — the whole
+        // reason to spawn a sibling is to see them side by side. Anchoring and
+        // focus policy are documented on `addSplitSession`; the selection only
+        // moves when the caller is the pane the user is already watching.
+        let freshID = addSplitSession(
+            to: project.id, agent: preset, anchor: caller?.id,
+            takeFocus: caller == nil || caller?.id == selectedSessionID)
+        guard let freshID, let fresh = session(freshID) else {
             return controlError(request, "start_failed", "Could not start the session.")
         }
         let state = surface(for: fresh, in: project)
@@ -290,13 +299,15 @@ extension TermioStore {
         _ payload: String, to session: Session, state: TerminalViewState
     ) async -> Bool {
         // The libghostty surface attaches lazily on the pane's first render, so a
-        // session never shown in the UI has no surface yet. Selecting it adds it to
-        // the mounted set, then poll for the attach rather than betting on one
-        // render cycle: right after app launch several panes render at once and one
-        // cycle isn't enough — a `run` session's near-instant boot-settle hit that
-        // window as a spurious not_live. (A session shown even once stays mounted,
-        // so this only foregrounds on the very first drive.)
-        if state.surface == nil { selectedSessionID = session.id }
+        // session never shown in the UI has no surface yet. A background mount adds
+        // it to the mounted set *without* moving the user's selection (a sibling
+        // driving a pane the user isn't watching must stay silent), then poll for
+        // the attach rather than betting on one render cycle: right after app
+        // launch several panes render at once and one cycle isn't enough — a `run`
+        // session's near-instant boot-settle hit that window as a spurious
+        // not_live. (A session mounted even once stays mounted, so this only fires
+        // on the very first drive.)
+        if state.surface == nil { activateInBackground(session.id) }
         let attachDeadline = Date().addingTimeInterval(3)
         while state.surface == nil, Date() < attachDeadline {
             try? await Task.sleep(for: .milliseconds(150))

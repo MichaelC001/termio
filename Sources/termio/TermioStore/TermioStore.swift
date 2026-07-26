@@ -77,6 +77,21 @@ final class TermioStore: ObservableObject {
     /// pane. `TerminalPane` honours it only while a split is on screen.
     @Published var isPaneZoomed = false
 
+    /// Activation *requests* for sessions that are neither selected nor in the
+    /// visible group: a background spawn's fresh pane, a `send` target never
+    /// shown. `TerminalPane` folds these into its own `activated` list — the
+    /// actual mounted set — so the pane mounts invisibly at full size, which is
+    /// what attaches the libghostty surface: the queued prompt can then be
+    /// delivered without yanking the user's selection over to the new pane.
+    /// Transient and not persisted — on relaunch the pane mounts the normal way.
+    @Published private(set) var backgroundActivationIDs: [Session.ID] = []
+
+    /// Requests an invisible mount for `id` (see `backgroundActivationIDs`).
+    func activateInBackground(_ id: Session.ID) {
+        guard !backgroundActivationIDs.contains(id) else { return }
+        backgroundActivationIDs.append(id)
+    }
+
     /// The session currently being drag-reordered in the sidebar, recorded when a row
     /// drag begins so a hovered row can ask `canReorder` whether it's a legal drop
     /// target (same project + worktree bucket) and light its background only then.
