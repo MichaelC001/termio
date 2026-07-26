@@ -200,7 +200,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                     item.image = cometImage(phase: cometPhase)
                     workingItems.append(item)
                 } else {
-                    item.image = agentImage(for: session.agent)
+                    item.image = agentMenuImage(for: session.agent)
                 }
                 item.attributedTitle = rowTitle(store.displayTitle(for: session), status: status)
                 item.indentationLevel = 1
@@ -221,31 +221,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             keyEquivalent: "q"
         )
         return menu
-    }
-
-    /// Renders an agent's brand mark for a roster row by reusing the sidebar's
-    /// `AgentIconView`, so the menu shows the exact same glyphs. Rasterized lazily
-    /// in a drawing-handler image: AppKit re-invokes the handler under the menu's
-    /// own appearance at display time, so the monochrome marks (Codex, Grok)
-    /// resolve to the right ink. Resolving eagerly against the status button's
-    /// appearance is wrong — the menu bar tints from the wallpaper and can be
-    /// dark while the dropdown menu (system theme) is light, which baked those
-    /// marks in as invisible white-on-white.
-    private func agentImage(for agent: AgentPreset) -> NSImage? {
-        let side: CGFloat = 15
-        return NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
-            let appearance = NSAppearance.currentDrawing()
-            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            let renderer = ImageRenderer(
-                content: AgentIconView(agent: agent, size: 13)
-                    .frame(width: side, height: side)
-                    .environment(\.colorScheme, isDark ? .dark : .light)
-            )
-            renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
-            guard let rendered = renderer.nsImage else { return false }
-            rendered.draw(in: rect)
-            return true
-        }
     }
 
     /// The row title with a trailing status dot for a session that just finished
@@ -297,7 +272,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     /// The sidebar's orbiting-comet working mark, rasterised at a fixed phase so the
-    /// menu timer can advance it frame by frame. Mirrors `agentImage`'s deferred
+    /// menu timer can advance it frame by frame. Mirrors `agentMenuImage`'s deferred
     /// drawing-handler trick so the ink resolves under the dropdown's appearance
     /// (menu bar tint and menu theme can differ), passing the resolved black/white
     /// as the comet tint rather than relying on its adaptive-ink default.

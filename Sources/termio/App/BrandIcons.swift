@@ -1,4 +1,29 @@
+import AppKit
 import SwiftUI
+
+/// Renders an agent's brand mark as an `NSImage` for AppKit menu rows by reusing
+/// `AgentIconView`, so menus show the exact same glyphs as the sidebar. Rasterized
+/// lazily in a drawing-handler image: AppKit re-invokes the handler under the menu's
+/// own appearance at display time, so the monochrome marks (Codex, Grok) resolve
+/// to the right ink. Resolving eagerly against the caller's appearance is wrong —
+/// the menu bar tints from the wallpaper and can be dark while the dropdown menu
+/// (system theme) is light, which baked those marks in as invisible white-on-white.
+@MainActor
+func agentMenuImage(for agent: AgentPreset, side: CGFloat = 15) -> NSImage? {
+    NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+        let appearance = NSAppearance.currentDrawing()
+        let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        let renderer = ImageRenderer(
+            content: AgentIconView(agent: agent, size: side - 2)
+                .frame(width: side, height: side)
+                .environment(\.colorScheme, isDark ? .dark : .light)
+        )
+        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+        guard let rendered = renderer.nsImage else { return false }
+        rendered.draw(in: rect)
+        return true
+    }
+}
 
 /// Renders an `AgentPreset`'s glyph: a muted SF Symbol for the plain terminal, or
 /// a vendor's real brand mark for the coding agents, painted in that vendor's

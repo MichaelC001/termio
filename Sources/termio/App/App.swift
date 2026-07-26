@@ -649,11 +649,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.addScratchTerminal()
     }
 
-    /// File ▸ New Chat (⌘N) — starts one scratch chat with the default agent (your
-    /// last-used, else the first enabled; see `TermioStore.addDefaultChat`), grouped
-    /// under the Chats section. Reached via the responder chain.
-    @objc func newChatDefault(_ sender: Any?) {
-        store.addDefaultChat()
+    /// A row of the New Chat agents submenu (File menu and the toolbar `+` share it —
+    /// see `menuNeedsUpdate`) — starts one scratch chat with the picked agent, carried
+    /// in `representedObject` by id. The row for the resolved default also holds the
+    /// ⌘N binding, so the shortcut keeps opening your last-used agent.
+    @objc func newChatAgent(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let agent = enabledAgentPresets(settings).first(where: { $0.id == id })
+        else { return }
+        store.addScratchSession(agent: agent)
     }
 
     /// File ▸ New SSH Connection… — prompts for a host (`~/.ssh/config` alias or
@@ -990,6 +994,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func focusPaneDown(_ sender: Any?) { store.focusPane(.down) }
 }
 
+/// The "New Chat ▸" parent item shared by the File menu and the toolbar `+`
+/// pull-down. Its submenu starts empty: the AppDelegate (as its delegate) fills it
+/// with the user's enabled agents on every open and on every key-equivalent search,
+/// so roster edits and the migrating ⌘N default never need change-notification
+/// plumbing.
+@MainActor
+private func makeNewChatItem() -> NSMenuItem {
+    let item = NSMenuItem(title: "New Chat", action: nil, keyEquivalent: "")
+    let submenu = NSMenu(title: "New Chat")
+    submenu.delegate = NSApp.delegate as? AppDelegate
+    item.submenu = submenu
+    return item
+}
+
+extension AppDelegate: NSMenuDelegate {
+    /// Fills a New Chat submenu with one row per enabled agent — the user's own
+    /// roster (built-ins plus any manifest in `~/.termio/config/agents/`), in
+    /// Settings order. The resolved default (pinned, else last-used, else first)
+    /// carries the ⌘N binding, so the menu always names what the shortcut opens
+    /// and the binding follows the default as it migrates.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let agents = enabledAgentPresets(settings).filter { $0 != .terminal }
+        guard !agents.isEmpty else {
+            menu.addItem(withTitle: "No Agents Enabled", action: nil, keyEquivalent: "")
+            return
+        }
+        let defaultID = store.defaultChatAgent()?.id
+        for agent in agents {
+            let item = menu.addItem(
+                withTitle: agent.displayName,
+                action: #selector(newChatAgent(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = agent.id
+            item.image = agentMenuImage(for: agent)
+            if agent.id == defaultID { item.applyShortcut(for: .newChat) }
+        }
+    }
+}
+
 /// A borderless window can't become key by default, but the palette's search
 /// field needs key status to type into — hence the one-line subclass.
 private final class KeyBorderlessPanel: NSPanel {
@@ -1085,20 +1131,14 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     /// Builds the `+` pull-down for the `.newTerminal` toolbar item: the ways something
     /// new enters the sidebar without opening a folder — a loose terminal (Terminals
     /// section), a loose agent chat (Chats section), an SSH terminal, or a folder opened
-    /// as a project. "New Chat" is a single action (not an agent submenu — see
-    /// `TermioStore.addDefaultChat`); the specific-agent picker lives on the welcome
-    /// page and in the command palette. Hidden when every agent is disabled.
+    /// as a project. "New Chat" opens the user's agent roster as a submenu (the same
+    /// one the File menu carries — see `makeNewChatItem`).
     func makeNewSessionMenu() -> NSMenu {
         let menu = NSMenu()
         let terminal = NSMenuItem(title: "New Terminal", action: #selector(newTerminal(_:)), keyEquivalent: "")
         terminal.target = self
         menu.addItem(terminal)
-        if store.defaultChatAgent() != nil {
-            let chat = NSMenuItem(title: "New Chat", action: #selector(newChatDefault(_:)), keyEquivalent: "")
-            chat.target = self
-            chat.applyShortcut(for: .newChat)  // shows ⌘N (or the user's override) in the pull-down
-            menu.addItem(chat)
-        }
+        menu.addItem(makeNewChatItem())
         let ssh = NSMenuItem(title: "New SSH Connection…", action: #selector(newSSHConnection(_:)), keyEquivalent: "")
         ssh.target = self
         menu.addItem(ssh)
@@ -1109,7 +1149,6 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     }
 
     @objc private func newTerminal(_ sender: Any?) { store.addScratchTerminal() }
-    @objc func newChatDefault(_ sender: Any?) { store.addDefaultChat() }
     @objc private func newSSHConnection(_ sender: Any?) { store.presentSSHConnectPanel() }
     @objc private func openFolder(_ sender: Any?) { store.presentOpenProjectPanel() }
 
@@ -1423,13 +1462,11 @@ private func buildMainMenu() -> NSMenu {
         action: #selector(AppDelegate.newScratchTerminal(_:)),
         command: .newTerminal
     )
-    // New Chat (⌘N by default, rebindable in Settings ▸ Keyboard) — starts one
-    // scratch chat with your last-used agent. A single action, matching New Terminal.
-    fileMenu.addItem(
-        withTitle: "New Chat",
-        action: #selector(AppDelegate.newChatDefault(_:)),
-        command: .newChat
-    )
+    // New Chat ▸ one row per enabled agent (the user's roster, filled on open by the
+    // AppDelegate — see `makeNewChatItem`). ⌘N (rebindable in Settings ▸ Keyboard)
+    // sits on the resolved default's row, so the shortcut stays one-press and the
+    // menu names the agent it will open.
+    fileMenu.addItem(makeNewChatItem())
     fileMenu.addItem(
         withTitle: "New SSH Connection…",
         action: #selector(AppDelegate.newSSHConnection(_:)),
