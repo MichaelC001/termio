@@ -4,10 +4,10 @@ import SwiftUI
 // MARK: - Models
 
 /// Which inspector pane the trailing column is showing — the file tree, the file
-/// search, the git changes list, or the session Info pane. Drives the segmented
-/// switch at the top of `FileBrowserView`.
+/// search, the git changes list, the issue tracker, or the session Info pane.
+/// Drives the segmented switch at the top of `FileBrowserView`.
 enum InspectorTab: Hashable, Sendable {
-    case files, search, changes, info
+    case files, search, changes, issues, info
 }
 
 /// The git pane's own inner switch: the working-tree changes, or the commit
@@ -120,6 +120,10 @@ struct GitDiffRequest: Hashable, Sendable {
     /// (`git show <sha>`) rather than the working-tree diff — the History tab's
     /// file rows carry the commit they belong to.
     var commit: String? = nil
+    /// When set, a `base...head` range: the overlay shows the file's three-dot
+    /// (merge-base) diff across it — the Issues pane's PR file rows, diffed over
+    /// fetched refs without a checkout.
+    var range: String? = nil
     /// The ordered set the overlay walks with ← / → — the whole Changes list, or
     /// the files of the commit being read. Also feeds the header's "n of m".
     var siblings: [GitChange] = []

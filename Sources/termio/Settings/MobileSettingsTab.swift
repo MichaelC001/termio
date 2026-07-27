@@ -38,7 +38,7 @@ struct MobileSettingsTab: View {
             Section {
                 Toggle("Mobile Access", isOn: $mobile.isEnabled)
             } footer: {
-                Text("When off, this Mac stops listening and your iPhone disconnects — but stays paired. Turn it back on to reconnect; no new QR needed.")
+                Text("Turn off to disconnect your iPhone; pairing is kept.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -86,7 +86,7 @@ struct MobileSettingsTab: View {
                 } header: {
                     SectionHeaderLabel(title: "Remote Access")
                 } footer: {
-                    Text("Fronts this Mac with a public URL so the iPhone can connect away from home. The QR above switches to the tunnel address while one is running; every connection still has to present this Mac's pairing token.")
+                    Text("Gives this Mac a public URL so your iPhone can connect away from home; connections still require this Mac's pairing token.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }

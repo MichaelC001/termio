@@ -15,7 +15,8 @@ enum KeyCommandID: String, CaseIterable, Identifiable {
     case splitRight = "pane.split-right"
     case splitDown = "pane.split-down"
     case splitZoom = "pane.zoom"
-    case closePane = "pane.close"
+    // Raw value predates the Ungroup rename — kept so saved keybindings resolve.
+    case ungroup = "pane.close"
     case focusPaneLeft = "pane.focus-left"
     case focusPaneRight = "pane.focus-right"
     case focusPaneUp = "pane.focus-up"
@@ -72,7 +73,7 @@ enum KeyCommandCatalog {
               defaultShortcut: .init(modifiers: [.command, .shift], key: .char("d"))),
         .init(id: .splitZoom, category: "Panes", title: "Zoom Split",
               defaultShortcut: .init(modifiers: [.command, .shift], key: .return)),
-        .init(id: .closePane, category: "Panes", title: "Close Pane",
+        .init(id: .ungroup, category: "Panes", title: "Ungroup",
               defaultShortcut: .init(modifiers: [.command], key: .char("w"))),
         .init(id: .focusPaneLeft, category: "Panes", title: "Focus Pane Left",
               defaultShortcut: .init(modifiers: [.command, .option], key: .left)),

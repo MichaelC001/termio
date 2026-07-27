@@ -102,6 +102,9 @@ final class AppSettings: ObservableObject {
         static let sessionControlPrompted = "agents.sessionControlPrompted"
         static let usageAuthorizedAgents = "usage.authorizedAgents"
         static let claudeKeychainDeclined = "usage.claudeKeychainDeclined"
+        static let githubIntegrationEnabled = "github.integrationEnabled"
+        static let notifyTaskCompletion = "notifications.taskCompletion"
+        static let notificationSound = "notifications.sound"
         static let projectSortOrder = "sidebar.projectSortOrder"
         static let recentProjects = "welcome.recentProjects"
         static let lastChatAgent = "chats.lastAgent"
@@ -330,6 +333,13 @@ final class AppSettings: ObservableObject {
         set { defaults.set(newValue, forKey: Key.sessionControlPrompted) }
     }
 
+    /// Gates the GitHub side of the app — today the inspector's Issues pane. The
+    /// pane additionally only appears for projects whose origin remote points at
+    /// github.com, so this switch is for opting out of GitHub entirely.
+    @Published var githubIntegrationEnabled: Bool {
+        didSet { defaults.set(githubIntegrationEnabled, forKey: Key.githubIntegrationEnabled) }
+    }
+
     /// Agents whose usage data the user has allowed termio to read, by `rawValue`.
     /// The Usage tab is opt-in per agent: until the user clicks Allow there, none
     /// of that agent's data is touched — not its local session logs and not its
@@ -347,6 +357,22 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(claudeKeychainDeclined, forKey: Key.claudeKeychainDeclined) }
     }
 
+
+    // MARK: Notifications
+
+    /// Whether a settled agent turn — finished, or blocked waiting on your input —
+    /// in a session you aren't looking at posts a native macOS notification.
+    /// Clicking the notification focuses that session. The first notification is
+    /// what triggers the standard macOS permission prompt (see
+    /// `TaskNotificationCenter`).
+    @Published var notifyOnTaskCompletion: Bool {
+        didSet { defaults.set(notifyOnTaskCompletion, forKey: Key.notifyTaskCompletion) }
+    }
+
+    /// Whether those notifications also play the system alert sound.
+    @Published var notificationSoundEnabled: Bool {
+        didSet { defaults.set(notificationSoundEnabled, forKey: Key.notificationSound) }
+    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -392,7 +418,15 @@ final class AppSettings: ObservableObject {
             Key.interfaceRowPadding: 2.0,
             Key.agentHooksEnabled: false,
             Key.sessionControlEnabled: false,
+            // On by default: the pane is read-only and only appears for projects
+            // with a GitHub remote, so there is nothing to opt into until then.
+            Key.githubIntegrationEnabled: true,
             Key.projectSortOrder: "name",
+            // Notifications ship on (macOS's own permission prompt is the real
+            // gate); the sound stays opt-in so a finishing agent is never noisy
+            // by default.
+            Key.notifyTaskCompletion: true,
+            Key.notificationSound: false,
         ])
 
         fontFamily = defaults.string(forKey: Key.fontFamily) ?? ""
@@ -418,8 +452,11 @@ final class AppSettings: ObservableObject {
         agentOrder = defaults.stringArray(forKey: Key.agentOrder) ?? []
         agentHooksEnabled = defaults.bool(forKey: Key.agentHooksEnabled)
         sessionControlEnabled = defaults.bool(forKey: Key.sessionControlEnabled)
+        githubIntegrationEnabled = defaults.bool(forKey: Key.githubIntegrationEnabled)
         usageAuthorizedAgents = Set(defaults.stringArray(forKey: Key.usageAuthorizedAgents) ?? [])
         claudeKeychainDeclined = defaults.bool(forKey: Key.claudeKeychainDeclined)
+        notifyOnTaskCompletion = defaults.bool(forKey: Key.notifyTaskCompletion)
+        notificationSoundEnabled = defaults.bool(forKey: Key.notificationSound)
         projectSortOrder = defaults.string(forKey: Key.projectSortOrder).flatMap(ProjectSortOrder.init) ?? .name
         recentProjects = defaults.data(forKey: Key.recentProjects)
             .flatMap { try? JSONDecoder().decode([RecentProject].self, from: $0) } ?? []

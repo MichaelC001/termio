@@ -97,13 +97,15 @@ final class TerminalContextMenu: NSObject {
         menu.addItem(.separator())
         menu.addItem(storeItem("Split Right", action: #selector(splitRight), symbol: "rectangle.split.2x1"))
         menu.addItem(storeItem("Split Down", action: #selector(splitDown), symbol: "rectangle.split.1x2"))
-        // A split pane leaves the layout but keeps its session alive ("Close
-        // Pane"); a lone terminal has no pane to leave, so the only close that
-        // means anything kills the session outright — same action and label as
-        // the sidebar row's "Close Session".
+        // "Ungroup" is the layout half: the pane leaves the split group but its
+        // session stays alive in the sidebar — the same action the sidebar row
+        // names "Ungroup" (the inverse of "Group with"). "Close Session" is the destructive half and is
+        // always offered; closing a split session prunes its pane on the way
+        // out, so the layout needs no separate cleanup.
         if store?.splitRoot != nil {
-            menu.addItem(storeItem("Close Pane", action: #selector(closePane), symbol: "rectangle"))
-        } else if clickedSessionID != nil {
+            menu.addItem(storeItem("Ungroup", action: #selector(ungroup), symbol: "rectangle"))
+        }
+        if clickedSessionID != nil {
             menu.addItem(storeItem("Close Session", action: #selector(closeSession), symbol: "xmark"))
         }
         return menu
@@ -130,7 +132,7 @@ final class TerminalContextMenu: NSObject {
 
     @objc private func splitRight() { store?.splitSelectedPane(.horizontal) }
     @objc private func splitDown() { store?.splitSelectedPane(.vertical) }
-    @objc private func closePane() { store?.closeSelectedPane() }
+    @objc private func ungroup() { store?.ungroupSelectedPane() }
     @objc private func closeSession() {
         guard let id = clickedSessionID else { return }
         store?.closeSession(id)

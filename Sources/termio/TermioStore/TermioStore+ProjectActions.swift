@@ -4,12 +4,14 @@ import Foundation
 extension TermioStore {
     /// Adds a session to a project, optionally running in one of its linked
     /// worktree folders while remaining in the project's flat session roster.
+    @discardableResult
     func addSession(
         to projectID: Project.ID,
         agent: AgentPreset = .terminal,
-        worktreePath: String? = nil
-    ) {
-        guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
+        worktreePath: String? = nil,
+        takeFocus: Bool = true
+    ) -> Session.ID? {
+        guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return nil }
         let project = projects[index]
         let terminalCount = project.sessions.filter { $0.agent == .terminal }.count
         let title = agent == .terminal
@@ -18,7 +20,12 @@ extension TermioStore {
         var session = Session(title: title, agent: agent)
         session.worktreePath = worktreePath
         projects[index].sessions.append(session)
-        selectedSessionID = session.id
+        if takeFocus {
+            selectedSessionID = session.id
+        } else {
+            activateInBackground(session.id)
+        }
+        return session.id
     }
 
     /// Whether `moved` may be drag-reordered next to `target`: both must live in the

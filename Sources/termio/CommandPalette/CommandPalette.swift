@@ -227,9 +227,9 @@ struct CommandPaletteView: View {
                                  shortcut: keys.display(for: .splitZoom)) {
                 $0.toggleSelectedPaneZoom()
             })
-            actions.append(.init(id: "close-pane", title: "Close Pane",
-                                 icon: .square, shortcut: keys.display(for: .closePane)) {
-                $0.closeSelectedPane()
+            actions.append(.init(id: "ungroup", title: "Ungroup",
+                                 icon: .square, shortcut: keys.display(for: .ungroup)) {
+                $0.ungroupSelectedPane()
             })
             for (id, command, selector) in [
                 ("focus-left", KeyCommandID.focusPaneLeft, #selector(AppDelegate.focusPaneLeft(_:))),

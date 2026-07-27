@@ -22,6 +22,11 @@ import SwiftUI
 /// reads unambiguously even where the glass pill is subtle.
 struct InspectorTabsToolbar: View {
     @EnvironmentObject var store: TermioStore
+    @EnvironmentObject var settings: AppSettings
+    /// Whether the current project's origin remote points at github.com — probed
+    /// async per selection change; gates the Issues segment together with the
+    /// General "GitHub" setting.
+    @State private var hasGitHubRemote = false
     /// Slides the selection pill from the old segment to the new one.
     @Namespace private var pillNamespace
     /// Drives the fade-in that syncs the cluster with the inspector pane's slide. The toolbar item
@@ -47,8 +52,16 @@ struct InspectorTabsToolbar: View {
         (.files, .listBullet, "Project Files"),
         (.search, .search, "Search Files"),
         (.changes, .gitBranch, "Changes"),
+        (.issues, .github, "Issues"),
         (.info, .infoCircle, "Info"),
     ]
+
+    /// Issues only exists for a project that actually lives on GitHub (and with the
+    /// integration left on in General) — for anything else the segment disappears
+    /// rather than leading to a dead pane.
+    private var visibleSegments: [(tab: InspectorTab, icon: HugeIcon, help: String)] {
+        segments.filter { $0.tab != .issues || (settings.githubIntegrationEnabled && hasGitHubRemote) }
+    }
 
     var body: some View {
         segmentedTrack
@@ -62,6 +75,21 @@ struct InspectorTabsToolbar: View {
             // cluster and the pane read as one motion instead of a snap followed by a slide.
             .opacity(appeared ? 1 : 0)
             .onAppear { withAnimation(.easeOut(duration: 0.25)) { appeared = true } }
+            // Re-probe when the selection moves or the General switch flips; keyed so
+            // the check doesn't rerun on unrelated store churn.
+            .task(id: "\(settings.githubIntegrationEnabled)|\(store.inspectorProjectPath ?? "")") {
+                if let path = store.inspectorProjectPath, settings.githubIntegrationEnabled {
+                    hasGitHubRemote = await GitService.gitHubRepoSlug(in: path) != nil
+                } else {
+                    hasGitHubRemote = false
+                }
+                // The pane someone was on can vanish out from under them (setting
+                // turned off, selection moved to a non-GitHub project) — land on Files.
+                if store.inspectorTab == .issues,
+                   !(settings.githubIntegrationEnabled && hasGitHubRemote) {
+                    store.inspectorTab = .files
+                }
+            }
     }
 
     /// The row of segments with the sliding selection pill behind the active one, all inside our own
@@ -69,7 +97,7 @@ struct InspectorTabsToolbar: View {
     /// macOS 26, flat capsule fills on macOS 15 / earlier).
     private var segmentedTrack: some View {
         HStack(spacing: 0) {
-            ForEach(segments, id: \.tab) { seg in
+            ForEach(visibleSegments, id: \.tab) { seg in
                 let selected = store.inspectorTab == seg.tab
                 // Active glyph lifts to full-strength; the rest stay muted — so the selected
                 // pane is legible even before you notice the pill.

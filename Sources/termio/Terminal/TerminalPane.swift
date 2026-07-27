@@ -197,6 +197,14 @@ struct TerminalPane: View {
                 activated.append(id)
             }
         }
+        // A background-driven session (a sibling spawn, a `send` to a pane never
+        // shown) mounts invisibly so its surface attaches without the selection
+        // moving; the focus paths all gate on visibility, so it stays silent.
+        .onChange(of: store.backgroundActivationIDs, initial: true) { _, ids in
+            for id in ids where !activated.contains(id) {
+                activated.append(id)
+            }
+        }
         .onChange(of: store.selectedSessionID, initial: true) { _, id in
             if let id, !activated.contains(id) {
                 activated.append(id)
@@ -645,9 +653,7 @@ private final class TerminalFocusDriver {
     }
 
     private func mainWindow() -> NSWindow? {
-        NSApp.windows.first {
-            $0.frameAutosaveName == AppDelegate.mainWindowFrameAutosaveName
-        }
+        AppDelegate.mainWindow
     }
 
     private func terminalView(

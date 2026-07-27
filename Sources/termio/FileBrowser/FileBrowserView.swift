@@ -28,30 +28,13 @@ struct FileBrowserView: View {
     /// The remote host when the selected session is an SSH terminal — those panes
     /// must not show the local Mac's filesystem (issue #105): the terminal is on
     /// the remote box, so Files browses it over the session's own connection and
-    /// Search/Changes say plainly that they don't reach it yet.
+    /// Search/Changes/Issues say plainly that they don't reach it yet.
     private var sshHost: String? {
         store.selectedSessionID.flatMap(store.session)?.sshHost
     }
 
-    /// The directory the tree is rooted at: the selected session's worktree if it
-    /// has one, otherwise its project folder. `nil` when nothing is selected —
-    /// or when the session is SSH (its filesystem isn't this Mac's; the remote
-    /// branches above take over, and a `nil` here stands down the watcher, the
-    /// change count, and the drop target in one place).
-    /// A loose terminal roots at its *live* cwd instead (falling back to the cwd
-    /// persisted from the last run, then `$HOME`) — the session owns its path, so
-    /// the tree, search, and changes panes all follow a `cd`. Real projects keep
-    /// their stable root; the anchor is the point of a project.
-    private var projectPath: String? {
-        guard let id = store.selectedSessionID, let project = store.project(for: id) else { return nil }
-        guard store.session(id)?.sshHost == nil else { return nil }
-        if project.kind == .terminals {
-            return store.workingDirectory(for: id)
-                ?? store.session(id)?.lastWorkingDirectory
-                ?? project.path
-        }
-        return store.session(id)?.worktreePath ?? project.path
-    }
+    /// The directory the tree is rooted at — see `TermioStore.inspectorProjectPath`.
+    private var projectPath: String? { store.inspectorProjectPath }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -98,6 +81,17 @@ struct FileBrowserView: View {
                     .id(repoRoot)
                 } else {
                     content
+                }
+            case .issues:
+                if sshHost != nil {
+                    remoteUnavailable(pane: "Issues")
+                } else if let repoRoot = projectPath {
+                    // Fresh identity per repo, like Changes: the panel model (connection
+                    // phase, binding, list, pushed-in detail) resets when the project moves.
+                    IssuesView(repoRoot: repoRoot)
+                        .id(repoRoot)
+                } else {
+                    noProject
                 }
             case .info:
                 SessionInfoView()

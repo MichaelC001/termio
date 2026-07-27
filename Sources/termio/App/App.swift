@@ -29,6 +29,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// elsewhere in the app (`TerminalPane` filters key-window notifications with it,
     /// so the settings window never triggers the terminal refocus rescue).
     static let mainWindowFrameAutosaveName = "TermioMainWindow"
+    /// The main window, resolved by that autosave name — for code that can't hold
+    /// the delegate's own reference (the store's reveal verb, pane focus rescue).
+    static var mainWindow: NSWindow? {
+        NSApp.windows.first { $0.frameAutosaveName == mainWindowFrameAutosaveName }
+    }
     private var window: NSWindow!
     private let settings = AppSettings()
     private lazy var store = TermioStore.restored(settings: settings)
@@ -109,6 +114,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Sweep up session processes a previous instance stranded (crash,
         // force-quit, dev rebuild's kill -9) before this run adds its own.
         PTYProcess.reapStrayOrphans()
+        // Task-completion notifications: the delegate must be installed before a
+        // notification click can arrive, so wire it before any session runs.
+        TaskNotificationCenter.shared.activate(store: store)
         // Menu items cache their key equivalents at build time, so rebuild the
         // whole main menu whenever a user rebinds a shortcut in Settings.
         keybindingsObserver = NotificationCenter.default.addObserver(
@@ -244,12 +252,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         terminalContextMenu = TerminalContextMenu(store: store)
 
         menuBar = MenuBarController(store: store) { [weak self] id in
-            self?.store.selectedSessionID = id
-            // Picking a done/blocked row acknowledges it, even if that session was
-            // already selected (the selection didSet only reacts to a change).
-            self?.store.markSeen(id)
-            NSApp.activate(ignoringOtherApps: true)
-            self?.window.makeKeyAndOrderFront(nil)
+            // The tray's "come look at this" — same verb as a notification click
+            // and `termio sessions focus` (select + acknowledge + raise).
+            self?.store.revealSession(id)
         }
 
         // Serve the iOS companion app: the live roster, plus PTY bridging for
@@ -342,6 +347,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// no teardown path at all on quit — the PTYs die with the process and
     /// agent children that ignore the resulting SIGHUP live on as orphans.
     func applicationWillTerminate(_ notification: Notification) {
+        // Delivered banners would outlive the sessions they point at.
+        TaskNotificationCenter.shared.withdrawAll()
         store.terminateAllSessions()
     }
 
@@ -591,8 +598,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Opens (or refocuses) the preferences window. Reached via the responder
     /// chain from the menu item, which targets `nil`. The window is kept alive
     /// (not released on close) so reopening preserves nothing-to-rebuild state.
+    /// ⌘, lands on whatever tab the user last had open (the platform convention
+    /// — Safari, Xcode), falling back to the first tab on a fresh install;
+    /// deep-linked opens (`openSettings(initialTab:)`) still pick their own.
     @objc func showSettings(_ sender: Any?) {
-        openSettings(initialTab: .appearance)
+        let remembered = UserDefaults.standard.string(forKey: SettingsTab.lastOpenKey)
+            .flatMap(SettingsTab.init(rawValue:))
+        openSettings(initialTab: remembered ?? .general)
     }
 
     /// Opens (or refocuses) the preferences window on a specific tab. The content
@@ -986,14 +998,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.splitSelectedPane(.vertical)
     }
 
-    /// View ▸ Close Pane (⌘W) — collapses the focused pane out of the layout,
-    /// terminal-style. The session itself stays alive in the sidebar (killing it
-    /// remains the sidebar's explicit close). With no split on screen there is no
-    /// pane to peel off, so ⌘W falls through to closing the window, matching
-    /// iTerm2 where the last pane's ⌘W closes its container.
-    @objc func closeSplitPane(_ sender: Any?) {
+    /// View ▸ Ungroup (⌘W) — collapses the focused pane out of the layout.
+    /// The session itself stays alive in the sidebar (killing it remains the
+    /// explicit "Close Session"). With no split on screen there is no pane to
+    /// peel off, so ⌘W falls through to closing the window, matching iTerm2
+    /// where the last pane's ⌘W closes its container.
+    @objc func ungroupPane(_ sender: Any?) {
         if store.splitRoot != nil {
-            store.closeSelectedPane()
+            store.ungroupSelectedPane()
         } else {
             window?.performClose(sender)
         }
@@ -1356,7 +1368,9 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             let item = NSToolbarItem(itemIdentifier: .inspectorTabs)
             item.label = "Inspector"
             item.toolTip = "Switch between project files, search, changes, and info"
-            let host = NSHostingView(rootView: InspectorTabsToolbar().environmentObject(store))
+            let host = NSHostingView(rootView: InspectorTabsToolbar()
+                .environmentObject(store)
+                .environmentObject(store.settings))
             host.sizingOptions = [.intrinsicContentSize]
             item.view = host
             item.isBordered = false
@@ -1558,7 +1572,7 @@ private func buildMainMenu() -> NSMenu {
         command: .openProject
     )
     fileMenu.addItem(.separator())
-    // ⌘⇧W closes the whole window (⌘W is Close Pane, terminal-style — see View menu).
+    // ⌘⇧W closes the whole window (⌘W is Ungroup, terminal-style — see View menu).
     fileMenu.addItem(
         withTitle: "Close Window",
         action: #selector(AppDelegate.closeMainWindow(_:)),
@@ -1613,13 +1627,13 @@ private func buildMainMenu() -> NSMenu {
         action: #selector(AppDelegate.toggleSplitZoom(_:)),
         command: .splitZoom
     )
-    // ⌘W closes the focused *pane* (the layout slot), not the session, matching
-    // terminal convention; the last pane's ⌘W falls through to the window. The
+    // ⌘W ungroups the focused *pane* (the layout slot) — the session survives
+    // in the sidebar; the last pane's ⌘W falls through to the window. The
     // whole window is ⌘⇧W (File ▸ Close Window).
     viewMenu.addItem(
-        withTitle: "Close Pane",
-        action: #selector(AppDelegate.closeSplitPane(_:)),
-        command: .closePane
+        withTitle: "Ungroup",
+        action: #selector(AppDelegate.ungroupPane(_:)),
+        command: .ungroup
     )
     viewMenu.addItem(.separator())
     // ⌥⌘ arrows move focus between panes, scored on the split geometry.

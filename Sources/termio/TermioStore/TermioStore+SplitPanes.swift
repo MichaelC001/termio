@@ -58,21 +58,33 @@ extension TermioStore {
 
     /// Adds a session to a project and drops it in **beside** a visible pane as a
     /// split, instead of replacing the view the way `addSession` does. This is the
-    /// path the CLI / an agent spawning a sibling takes (`termio sessions start`):
+    /// path the CLI / an agent spawning a sibling takes (`termio sessions spawn`):
     /// there the whole point is to *see* the new agent next to the one you were
     /// watching, not to have it hijack the terminal area and push its predecessor
     /// off to a sidebar row.
     ///
-    /// The anchor is the pane you're looking at when it belongs to this project,
-    /// else the project's last session (a cross-project selection is ignored, so a
+    /// The anchor is the caller's own pane when one is passed (a CLI spawn from a
+    /// sibling agent lands beside that agent, wherever the user is looking), else
+    /// the pane you're looking at when it belongs to this project, else the
+    /// project's last session (a cross-project selection is ignored, so a
     /// background agent's sibling never gets dragged into another project's group).
     /// The split axis alternates across the anchor's current one, tiling-WM style —
     /// a lone anchor opens side by side. With no pane to anchor to (an empty
     /// project) it falls back to a plain `addSession`.
-    func addSplitSession(to projectID: Project.ID, agent: AgentPreset = .terminal) {
-        guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }) else { return }
+    ///
+    /// With `takeFocus` false the selection stays where the user put it: the new
+    /// pane is mounted invisibly instead (see `activateInBackground`), so its
+    /// surface still attaches and can take a queued prompt.
+    @discardableResult
+    func addSplitSession(
+        to projectID: Project.ID, agent: AgentPreset = .terminal,
+        anchor: Session.ID? = nil, takeFocus: Bool = true
+    ) -> Session.ID? {
+        guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }) else { return nil }
 
-        let anchorID = selectedSessionID.flatMap { id in
+        let anchorID = anchor.flatMap { id in
+            projects[projectIndex].sessions.contains { $0.id == id } ? id : nil
+        } ?? selectedSessionID.flatMap { id in
             projects[projectIndex].sessions.contains { $0.id == id } ? id : nil
         } ?? projects[projectIndex].sessions.last?.id
 
@@ -80,8 +92,7 @@ extension TermioStore {
               let anchorIndex = projects[projectIndex].sessions.firstIndex(where: { $0.id == anchorID })
         else {
             // Empty project — nothing to split against; behave like a normal add.
-            addSession(to: projectID, agent: agent)
-            return
+            return addSession(to: projectID, agent: agent, takeFocus: takeFocus)
         }
 
         let project = projects[projectIndex]
@@ -114,8 +125,13 @@ extension TermioStore {
                                                   first: .leaf(anchorID),
                                                   second: .leaf(newSession.id))))
         }
-        selectedSessionID = newSession.id
-        isPaneZoomed = false
+        if takeFocus {
+            selectedSessionID = newSession.id
+            isPaneZoomed = false
+        } else {
+            activateInBackground(newSession.id)
+        }
+        return newSession.id
     }
 
     // MARK: - Type switching (联合 ⇄ 独立)
@@ -141,12 +157,12 @@ extension TermioStore {
         }
     }
 
-    /// Pulls a pane out of its split group into a standalone session — VS Code's
-    /// "Unsplit Terminal" (联合 → 独立). The session itself is untouched (its shell
+    /// Pulls a pane out of its split group into a standalone session — the
+    /// sidebar's "Ungroup" (联合 → 独立). The session itself is untouched (its shell
     /// keeps running, its surface stays cached); it just leaves the tree, the
     /// group dissolves when a lone pane is left, and the selection *follows* the
     /// detached pane so you see it come up on its own (the difference from
-    /// `closeSelectedPane`, which hands focus to the neighbour it leaves behind).
+    /// `ungroupSelectedPane`, which hands focus to the neighbour it leaves behind).
     func detachFromSplit(_ id: Session.ID) {
         guard let group = groupIndex(containing: id) else { return }
         setGroup(at: group, to: splitGroups[group].removing(leaf: id))
@@ -218,12 +234,12 @@ extension TermioStore {
         projects[projectIndex].sessions.insert(row, at: anchorIndex + 1)
     }
 
-    /// Closes the focused *pane* — the layout operation, not the session one.
+    /// Ungroups the focused *pane* — the layout operation, not the session one.
     /// The session stays alive in the sidebar (its shell keeps running, its
     /// surface stays cached); it just leaves its group, and focus moves to its
-    /// layout neighbour. Killing the session outright remains the sidebar's
-    /// close, which prunes the groups through `pruneSessionsFromSplit`.
-    func closeSelectedPane() {
+    /// layout neighbour. Killing the session outright remains "Close Session",
+    /// which prunes the groups through `pruneSessionsFromSplit`.
+    func ungroupSelectedPane() {
         guard let focusedID = selectedSessionID,
               let group = groupIndex(containing: focusedID) else { return }
         let neighbor = neighborPane(of: focusedID, in: splitGroups[group])
