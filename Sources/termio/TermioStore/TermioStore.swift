@@ -120,6 +120,8 @@ final class TermioStore: ObservableObject {
             else {
                 openFileReadOnly = false
                 openFileLine = nil
+                previewSplitRatio = 0.5
+                openFileInSidePanel = false
             }
         }
     }
@@ -127,6 +129,16 @@ final class TermioStore: ObservableObject {
     /// The 1-based line the editor should reveal when it opens `openFileURL` — set by a
     /// content-search hit (see `FileSearchView`); `nil` for a plain open (top of file).
     @Published var openFileLine: Int?
+
+    /// Fraction of the terminal pane's width given to the file preview column when a file is
+    /// open (`openFileURL != nil`). The terminal group keeps the remaining width. Transient —
+    /// resets to 0.5 on every open so a very narrow / very wide preview doesn't stick around.
+    @Published var previewSplitRatio: CGFloat = 0.5
+
+    /// Whether `openFileURL` should open beside the terminal (right split pane) instead of
+    /// covering it. Set by the sidebar's "Open to the Side" action; a plain open leaves this
+    /// false so the historical overlay behaviour is unchanged. Cleared with `openFileURL`.
+    @Published var openFileInSidePanel: Bool = false
 
     /// Whether the open file should be shown read-only (no editing, no auto-save). Set when the file
     /// was opened by cmd-clicking a link in the terminal — a peek at the source, not an invitation to
@@ -941,6 +953,17 @@ final class TermioStore: ObservableObject {
     func openFileInEditor(_ url: URL, at line: Int? = nil) {
         openFileReadOnly = false
         openFileLine = line
+        openFileInSidePanel = false
+        openFileURL = url
+    }
+
+    /// The side-panel counterpart of `openFileInEditor`: opens `url` in the right split pane
+    /// beside the terminal instead of covering it, so the terminal stays visible and interactive.
+    /// Wired to the file-row context menu's "Open to the Side" action.
+    func openFileInSidePane(_ url: URL, at line: Int? = nil) {
+        openFileReadOnly = false
+        openFileLine = line
+        openFileInSidePanel = true
         openFileURL = url
     }
 

@@ -48,63 +48,34 @@ struct TerminalPane: View {
 
     var body: some View {
         GeometryReader { geo in
-            let bounds = CGRect(origin: .zero, size: geo.size)
-            // The split tree only ever computes *geometry* — the surfaces below
-            // stay flat, permanently-mounted siblings in this one ZStack (never
-            // re-parented into a recursive split view), so creating or removing
-            // splits can't tear down a running shell. Muxy gets the same
-            // guarantee with an NSView registry; termio's surface cache plus
-            // frame-driven layout is the equivalent with the existing pattern.
+            // A file open next to the terminal reserves the right slice of the pane; the
+            // terminal group is laid out into what's left. `previewSlice` is 0 when no file
+            // is open, so the single-terminal path (and every split-tree measurement below)
+            // is unchanged for users who never open a preview.
+            let previewSlice = previewColumnWidth(totalWidth: geo.size.width)
+            let dividerWidth: CGFloat = previewSlice > 0 ? 6 : 0
+            let termWidth = max(0, geo.size.width - previewSlice - dividerWidth)
+            let bounds = CGRect(origin: .zero, size: CGSize(width: termWidth, height: geo.size.height))
             let layout = store.splitRoot?.layout(in: bounds)
-            // Zoom collapses the split to just the selected pane at full size
-            // and hides the dividers — the layout is otherwise untouched, so
-            // un-zooming snaps straight back to the same ratios.
             let zoomed = store.isPaneZoomed && layout != nil
-            ZStack {
-                if mounted.isEmpty {
-                    WelcomeView()
-                }
-                ForEach(mounted, id: \.session.id) { item in
-                    let id = item.session.id
-                    let paneFrame = zoomed
-                        ? (id == store.selectedSessionID ? bounds : nil)
-                        : layout?.frames[id]
-                    let isVisible = paneFrame != nil
-                        || (layout == nil && store.selectedSessionID == id)
-                    // Hidden sessions keep the full pane size, so returning to
-                    // them single-pane is still resize-free.
-                    let rect = paneFrame ?? bounds
-                    ManagedTerminalSurface(
-                        id: id,
-                        context: store.surface(for: item.session, in: item.project),
-                        isSelected: store.selectedSessionID == id,
-                        isVisible: isVisible,
-                        onFocused: { selectFocusedSurface(id) },
-                        requestFocus: { reason in
-                            requestTerminalFocus(for: id, reason: reason)
-                        }
+            HStack(spacing: 0) {
+                terminalGroup(bounds: bounds, layout: layout, zoomed: zoomed)
+                    .frame(width: termWidth, height: geo.size.height)
+                    .coordinateSpace(name: Self.splitCoordinateSpace)
+                if previewSlice > 0, let url = store.openFileURL {
+                    PreviewSplitDivider(
+                        totalWidth: geo.size.width,
+                        currentRatio: store.previewSplitRatio,
+                        setRatio: { store.previewSplitRatio = $0 }
                     )
-                    .frame(width: rect.width, height: rect.height)
-                    .position(x: rect.midX, y: rect.midY)
-                    .opacity(isVisible ? 1 : 0)
-                    .allowsHitTesting(isVisible)
-                }
-                if let layout, !zoomed {
-                    // Identified by the (stable) branch id, so a divider keeps its
-                    // view identity — and its in-flight drag anchor — while its own
-                    // drag rewrites the ratio underneath it.
-                    ForEach(layout.dividers) { divider in
-                        SplitDividerHandle(spec: divider) { ratio in
-                            store.updateSplitRatio(branchID: divider.id, ratio: ratio)
-                        }
-                    }
+                    .frame(width: dividerWidth, height: geo.size.height)
+                    previewColumn(url: url)
+                        .frame(width: previewSlice, height: geo.size.height)
+                        .id(url)
+                        .transition(.opacity)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
-            // The dividers' drag gestures measure in this fixed space: a handle
-            // moves *with* its own drag, so a local-space translation chases its
-            // own coordinate origin and the divider oscillates under the cursor.
-            .coordinateSpace(name: Self.splitCoordinateSpace)
         }
         // Paint the terminal's own background behind the pane, extending up under the toolbar so
         // the system toolbar material picks up a terminal tint instead of a flat grey band.
@@ -120,11 +91,12 @@ struct TerminalPane: View {
             }
         }
         .animation(.easeOut(duration: 0.15), value: isDropTargeted)
-        // Double-clicking a file in the inspector covers the terminal pane with it (the surface
-        // keeps running underneath): an image/PDF/HTML in a read-only preview, anything else in the
-        // editor. Escape or the close button clears it and hands focus back to the selected session.
+        // Double-clicking / clicking a file in the sidebar covers the terminal pane with it (the
+        // surface keeps running underneath): an image/PDF/HTML in a read-only preview, anything
+        // else in the editor. Skipped when the user chose "Open to the Side" — that path renders
+        // the same content in the right split column instead of over the terminal.
         .overlay {
-            if let url = store.openFileURL {
+            if let url = store.openFileURL, !store.openFileInSidePanel {
                 let onClose = {
                     store.openFileURL = nil
                     requestSelectedTerminalFocus(reason: .overlayClosed)
@@ -142,10 +114,6 @@ struct TerminalPane: View {
                 .transition(.opacity)
             }
         }
-        // The fade is tied to presence (nil ↔ non-nil), NOT to the value: animating the
-        // value would crossfade content-to-content switches (arrow-key walking, clicking
-        // file after file), stacking two translucent copies — visible ghosting. Switching
-        // swaps instantly, Quick Look style; only open and close fade.
         .animation(.easeOut(duration: 0.12), value: store.openFileURL != nil)
         // Clicking a row in the inspector's Changes pane covers the terminal with that file's
         // unified diff (the surface keeps running underneath), the git counterpart of the editor
@@ -239,6 +207,78 @@ struct TerminalPane: View {
             else { return }
             requestSelectedTerminalFocus(reason: .windowBecameKey)
         }
+    }
+
+    /// The terminal-side ZStack: the flat mount for every terminal surface plus the split-tree
+    /// dividers. Extracted from `body` so it can be sized independently when a file preview
+    /// occupies the right column.
+    @ViewBuilder
+    private func terminalGroup(bounds: CGRect, layout: SplitNode.PaneLayout?, zoomed: Bool) -> some View {
+        ZStack {
+            if mounted.isEmpty {
+                WelcomeView()
+            }
+            ForEach(mounted, id: \.session.id) { item in
+                let id = item.session.id
+                let paneFrame = zoomed
+                    ? (id == store.selectedSessionID ? bounds : nil)
+                    : layout?.frames[id]
+                let isVisible = paneFrame != nil
+                    || (layout == nil && store.selectedSessionID == id)
+                let rect = paneFrame ?? bounds
+                ManagedTerminalSurface(
+                    id: id,
+                    context: store.surface(for: item.session, in: item.project),
+                    isSelected: store.selectedSessionID == id,
+                    isVisible: isVisible,
+                    onFocused: { selectFocusedSurface(id) },
+                    requestFocus: { reason in
+                        requestTerminalFocus(for: id, reason: reason)
+                    }
+                )
+                .frame(width: rect.width, height: rect.height)
+                .position(x: rect.midX, y: rect.midY)
+                .opacity(isVisible ? 1 : 0)
+                .allowsHitTesting(isVisible)
+            }
+            if let layout, !zoomed {
+                ForEach(layout.dividers) { divider in
+                    SplitDividerHandle(spec: divider) { ratio in
+                        store.updateSplitRatio(branchID: divider.id, ratio: ratio)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The right-hand file preview column. Reuses the existing `FilePreviewView` for opaque
+    /// binaries (image/PDF/HTML) and `FileEditorView` for editable text, so a click on any file
+    /// in the sidebar opens the same reader it would have as a full-window overlay — just now
+    /// beside the terminal instead of covering it.
+    @ViewBuilder
+    private func previewColumn(url: URL) -> some View {
+        let onClose = {
+            store.openFileURL = nil
+            requestSelectedTerminalFocus(reason: .overlayClosed)
+        }
+        if FileActivation.isPreviewable(url) {
+            FilePreviewView(url: url, settings: settings, onClose: onClose)
+        } else {
+            FileEditorView(url: url, settings: settings,
+                           readOnly: store.openFileReadOnly,
+                           jumpLine: store.openFileLine, onClose: onClose)
+        }
+    }
+
+    /// Fraction of the pane width taken by the preview column when a file is open. Clamped to
+    /// keep both the terminal and preview usable — the divider drag writes into the same range.
+    static let previewMinRatio: CGFloat = 0.2
+    static let previewMaxRatio: CGFloat = 0.8
+
+    private func previewColumnWidth(totalWidth: CGFloat) -> CGFloat {
+        guard store.openFileURL != nil, store.openFileInSidePanel, totalWidth > 0 else { return 0 }
+        let clamped = min(max(store.previewSplitRatio, Self.previewMinRatio), Self.previewMaxRatio)
+        return totalWidth * clamped
     }
 
     /// A surface becoming first responder is the source of truth for split selection.
@@ -725,5 +765,47 @@ private struct SplitDividerHandle: View {
                     .onEnded { _ in anchorRatio = nil }
             )
             .position(x: spec.frame.midX, y: spec.frame.midY)
+    }
+}
+
+/// The vertical divider between the terminal group and the file preview column. Sits in
+/// an HStack (not the split tree's ZStack), so it measures its drag in `.global` space and
+/// converts pixels into the pane-fraction the ratio store expects.
+private struct PreviewSplitDivider: View {
+    let totalWidth: CGFloat
+    let currentRatio: CGFloat
+    let setRatio: (CGFloat) -> Void
+    @State private var anchorRatio: CGFloat?
+    @State private var anchorX: CGFloat?
+
+    var body: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor))
+            .frame(width: 1)
+            .frame(maxHeight: .infinity)
+            .padding(.horizontal, 2.5) // widen the hit area without widening the hairline
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                    .onChanged { value in
+                        guard totalWidth > 0 else { return }
+                        if anchorX == nil { anchorX = value.startLocation.x }
+                        let deltaX = value.location.x - (anchorX ?? value.startLocation.x)
+                        // Divider drift is relative to the ratio snapshot at gesture start; the
+                        // ratio maps the *preview* width, so dragging right (positive delta)
+                        // shrinks the preview and drops the ratio.
+                        let start = anchorRatio ?? currentRatio
+                        if anchorRatio == nil { anchorRatio = start }
+                        let next = start - CGFloat(deltaX) / totalWidth
+                        setRatio(min(max(next, TerminalPane.previewMinRatio), TerminalPane.previewMaxRatio))
+                    }
+                    .onEnded { _ in
+                        anchorRatio = nil
+                        anchorX = nil
+                    }
+            )
     }
 }
