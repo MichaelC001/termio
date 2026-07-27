@@ -1,5 +1,96 @@
 import AppKit
+import Darwin
 import SwiftUI
+
+/// Owns one staged remote preview. Each lease has an atomic, private 0700
+/// directory and removes only that directory when released, so concurrent
+/// dev/release app processes cannot delete each other's active previews.
+@MainActor
+final class RemotePreviewLease {
+    let fileURL: URL
+    let displayName: String
+
+    private let directoryURL: URL
+
+    fileprivate init(fileURL: URL, displayName: String, directoryURL: URL) {
+        self.fileURL = fileURL
+        self.displayName = displayName
+        self.directoryURL = directoryURL
+    }
+
+    deinit {
+        let directory = directoryURL
+        try? FileManager.default.removeItem(at: directory)
+        Task { @MainActor in
+            RemotePreviewStorage.didRelease(directory)
+        }
+    }
+}
+
+@MainActor
+enum RemotePreviewStorage {
+    private static var liveDirectories: Set<URL> = []
+
+    static func stage(_ data: Data, named name: String) throws -> RemotePreviewLease {
+        guard isSafeComponent(name) else { throw SSHProviderError.unsupportedListing }
+
+        let parent = FileManager.default.temporaryDirectory
+        var template = Array(
+            parent.appendingPathComponent(
+                "termio-preview-\(getuid())\(AppChannel.suffix)-XXXXXX",
+                isDirectory: true
+            ).path.utf8CString)
+        let directoryPath: String? = template.withUnsafeMutableBufferPointer { buffer in
+            guard let base = buffer.baseAddress, mkdtemp(base) != nil else { return nil }
+            return String(cString: base)
+        }
+        guard let directoryPath else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+
+        let directory = URL(fileURLWithPath: directoryPath, isDirectory: true).standardizedFileURL
+        let ext = (name as NSString).pathExtension
+        let localName = ext.isEmpty ? "preview" : "preview.\(ext)"
+        guard isSafeComponent(localName) else {
+            try? FileManager.default.removeItem(at: directory)
+            throw SSHProviderError.unsupportedListing
+        }
+        let url = directory.appendingPathComponent(localName, isDirectory: false).standardizedFileURL
+        guard url.deletingLastPathComponent() == directory.standardizedFileURL else {
+            try? FileManager.default.removeItem(at: directory)
+            throw SSHProviderError.unsupportedListing
+        }
+        do {
+            try data.write(to: url, options: .atomic)
+            liveDirectories.insert(directory)
+            return RemotePreviewLease(
+                fileURL: url, displayName: name, directoryURL: directory)
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
+    }
+
+    static func isSafeComponent(_ name: String) -> Bool {
+        !name.isEmpty
+            && name != "."
+            && name != ".."
+            && !name.contains("/")
+            && !name.contains("\0")
+    }
+
+    fileprivate static func didRelease(_ directory: URL) {
+        liveDirectories.remove(directory)
+    }
+
+    static func cleanup() {
+        let directories = liveDirectories
+        liveDirectories.removeAll()
+        for directory in directories {
+            try? FileManager.default.removeItem(at: directory)
+        }
+    }
+}
 
 /// A node in the remote file tree — the SSH counterpart of `FileNode`. Same
 /// lazy shape: SwiftUI's `List(_:children:)` realizes a folder on first expand.
@@ -13,6 +104,7 @@ final class RemoteFileNode: Identifiable {
     let path: String
     let name: String
     let isDirectory: Bool
+    let canPreview: Bool
     // Nonisolated: `Identifiable.id` is a nonisolated requirement, and the path
     // is immutable — no main-actor state involved.
     nonisolated var id: String { path }
@@ -20,10 +112,17 @@ final class RemoteFileNode: Identifiable {
     fileprivate var loadedChildren: [RemoteFileNode]?
     private weak var model: RemoteFileBrowserModel?
 
-    fileprivate init(path: String, name: String, isDirectory: Bool, model: RemoteFileBrowserModel) {
+    fileprivate init(
+        path: String,
+        name: String,
+        isDirectory: Bool,
+        canPreview: Bool,
+        model: RemoteFileBrowserModel
+    ) {
         self.path = path
         self.name = name
         self.isDirectory = isDirectory
+        self.canPreview = canPreview
         self.model = model
     }
 
@@ -119,21 +218,20 @@ final class RemoteFileBrowserModel: ObservableObject {
     /// Downloads up to the preview cap into a uniquely-named temp file (keeping
     /// the remote file's name, so icon and syntax detection work) for the
     /// read-only overlay. Throws `SSHProviderError.tooLarge` past the cap.
-    func stageForPreview(_ node: RemoteFileNode) async throws -> URL {
+    func stageForPreview(_ node: RemoteFileNode) async throws -> RemotePreviewLease {
+        guard node.canPreview else {
+            throw SSHProviderError.commandFailed("Only regular files can be previewed.")
+        }
         let data = try await provider.read(node.path, limit: Self.previewByteLimit)
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("termio-remote-preview", isDirectory: true)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent(node.name)
-        try data.write(to: url)
-        return url
+        try Task.checkCancellation()
+        return try RemotePreviewStorage.stage(data, named: node.name)
     }
 
     /// Routes a failure into the pane's state: a dead socket becomes the
     /// reconnect state; anything else keeps an already-loaded tree up (a single
     /// folder failing shouldn't blank the pane) and only fails an empty one.
     func report(_ error: Error, context: String) {
+        if error is CancellationError { return }
         if case SSHProviderError.disconnected = error {
             phase = .disconnected
             return
@@ -149,7 +247,9 @@ final class RemoteFileBrowserModel: ObservableObject {
         return entries.map { entry in
             let node = RemoteFileNode(
                 path: base + entry.name, name: entry.name,
-                isDirectory: entry.isDirectory, model: self)
+                isDirectory: entry.isDirectory,
+                canPreview: entry.isPreviewable,
+                model: self)
             nodesByPath[node.path] = node
             return node
         }
@@ -157,8 +257,16 @@ final class RemoteFileBrowserModel: ObservableObject {
 
     private static func message(for error: Error) -> String {
         switch error {
+        case SSHProviderError.muxUnavailable:
+            return "The SSH sharing socket could not be created."
+        case SSHProviderError.timedOut:
+            return "The remote operation timed out."
         case SSHProviderError.unsupportedListing:
             return "This host's directory listing format isn't supported."
+        case SSHProviderError.listingTooLarge:
+            return "This directory has too many entries to browse safely."
+        case SSHProviderError.notRegularFile:
+            return "Only regular files can be previewed."
         case SSHProviderError.commandFailed(let detail) where !detail.isEmpty:
             return detail
         default:
@@ -179,6 +287,8 @@ struct RemoteFileTreeView: View {
     @StateObject private var model: RemoteFileBrowserModel
     @State private var selection: String?
     @State private var outlineView: NSOutlineView?
+    @State private var previewTask: Task<Void, Never>?
+    @State private var previewRequestID = 0
 
     init(host: String) {
         _model = StateObject(wrappedValue: RemoteFileBrowserModel(host: host))
@@ -190,6 +300,7 @@ struct RemoteFileTreeView: View {
             content
         }
         .onAppear { model.refresh() }
+        .onDisappear { cancelPreviewRequest() }
         // The refresh model (no remote watching): reload when the app comes back
         // to the front — the same reconcile trigger as the git pane — but only
         // while the pane is actually visible.
@@ -197,7 +308,11 @@ struct RemoteFileTreeView: View {
             if store.inspectorVisible { model.refresh() }
         }
         .onChange(of: store.inspectorVisible) { _, visible in
-            if visible { model.refresh() }
+            if visible {
+                model.refresh()
+            } else {
+                cancelPreviewRequest()
+            }
         }
         .onChange(of: selection) {
             // Selection IS the click handler, exactly like the local tree: a
@@ -205,8 +320,13 @@ struct RemoteFileTreeView: View {
             guard let path = selection, let node = model.node(at: path) else { return }
             if node.isDirectory {
                 toggleSelectedFolder()
-            } else {
+            } else if node.canPreview {
                 preview(node)
+                // Every click should be observable, including reopening the same
+                // file after the overlay was dismissed.
+                selection = nil
+            } else {
+                selection = nil
             }
         }
     }
@@ -286,19 +406,38 @@ struct RemoteFileTreeView: View {
     }
 
     private func preview(_ node: RemoteFileNode) {
-        Task {
+        previewTask?.cancel()
+        previewRequestID &+= 1
+        let requestID = previewRequestID
+        let presentationGeneration = store.filePresentationGeneration
+        previewTask = Task { @MainActor in
             do {
-                let url = try await model.stageForPreview(node)
-                store.presentFilePreview(url)
+                let lease = try await model.stageForPreview(node)
+                guard !Task.isCancelled, requestID == previewRequestID else { return }
+                // Adoption is conditional on no other local/remote presentation
+                // winning while the download was in flight. HTML/SVG is routed
+                // to source, and failed raster decoding never falls into WebKit.
+                _ = store.presentRemoteFilePreview(
+                    lease, expectedGeneration: presentationGeneration)
             } catch SSHProviderError.tooLarge {
+                guard !Task.isCancelled, requestID == previewRequestID else { return }
                 let alert = NSAlert()
                 alert.messageText = "“\(node.name)” is too large to preview."
                 alert.informativeText = "Remote preview is capped at 1 MB."
                 alert.runModal()
+            } catch is CancellationError {
+                return
             } catch {
+                guard !Task.isCancelled, requestID == previewRequestID else { return }
                 model.report(error, context: "read \(node.path)")
             }
         }
+    }
+
+    private func cancelPreviewRequest() {
+        previewRequestID &+= 1
+        previewTask?.cancel()
+        previewTask = nil
     }
 }
 
@@ -337,6 +476,8 @@ private struct RemoteFileRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
+        .opacity(node.isDirectory || node.canPreview ? 1 : 0.55)
+        .help(node.isDirectory || node.canPreview ? "" : "Special files can't be previewed")
         .background(OutlineSelectionStyleStripper())
         .background(OutlineViewCapture(onFound: captureOutline))
         .listRowBackground(

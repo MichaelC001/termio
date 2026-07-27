@@ -5,20 +5,36 @@ import Foundation
 /// are both built from these, so the tree, icons, and selection logic stay
 /// backend-agnostic.
 struct FileEntry: Sendable {
+    enum Kind: Sendable, Equatable {
+        case file
+        case directory
+        /// A symlink. Remote previews never chase it, even when its target is a
+        /// regular file or directory.
+        case symlink
+        /// FIFOs, sockets, devices, and any other non-previewable filesystem node.
+        case other
+    }
+
     let name: String
-    let isDirectory: Bool
-    /// Byte size, when the listing reports one (remote `ls`); local listings skip
-    /// it — nothing in the tree draws it yet.
+    let kind: Kind
+    var isDirectory: Bool { kind == .directory }
+    var isPreviewable: Bool { kind == .file }
+    /// Byte size, when a provider reports one. The tree does not draw it yet.
     let size: Int64?
-    /// Modification time, best-effort: remote listings parse it out of `ls`,
-    /// tolerating formats they don't recognize as `nil`.
+    /// Modification time, when a provider reports one.
     let modified: Date?
 
-    init(name: String, isDirectory: Bool, size: Int64? = nil, modified: Date? = nil) {
+    init(name: String, kind: Kind, size: Int64? = nil, modified: Date? = nil) {
         self.name = name
-        self.isDirectory = isDirectory
+        self.kind = kind
         self.size = size
         self.modified = modified
+    }
+
+    init(name: String, isDirectory: Bool, size: Int64? = nil, modified: Date? = nil) {
+        self.init(
+            name: name, kind: isDirectory ? .directory : .file,
+            size: size, modified: modified)
     }
 }
 

@@ -18,6 +18,8 @@ struct FileEditorView: View {
     /// The 1-based line to scroll to and flash on open — a content-search hit. `nil` opens at the
     /// top as always. Changing it while the same file is open re-scrolls (clicking another hit).
     let jumpLine: Int?
+    /// The original remote name when `url` is a randomized staged copy.
+    let displayName: String?
     /// Dismisses the overlay (clears `store.openFileURL`) and hands focus back to the terminal.
     let onClose: () -> Void
 
@@ -54,34 +56,44 @@ struct FileEditorView: View {
     /// The highlight.js language id, sniffed once from the file extension (`nil` lets highlight.js
     /// auto-detect). Stable for the lifetime of the open file.
     private let language: String?
+    /// A synthetic URL carrying the original remote name for icons and
+    /// extension/name-based language detection. File I/O always uses `url`.
+    private let displayURL: URL
     /// The file's path relative to its git root — shown next to the name like the diff header
     /// (`GitDiffView`), so the two overlays read the same. `nil` outside a repo.
     private let relativePath: String?
 
     init(url: URL, settings: AppSettings, readOnly: Bool = false, jumpLine: Int? = nil,
+         displayName: String? = nil,
          onClose: @escaping () -> Void) {
         self.url = url
         self.settings = settings
         self.readOnly = readOnly
         self.jumpLine = jumpLine
+        self.displayName = displayName
         self.onClose = onClose
+        let displayURL = displayName.map {
+            URL(fileURLWithPath: "/", isDirectory: true).appendingPathComponent($0)
+        } ?? url
+        self.displayURL = displayURL
         // No I/O here: SwiftUI re-runs this init on every parent render (the store's
         // session churn), and only the first init per `.id(url)` identity keeps its
         // state — a sync read would hit the disk over and over just to be discarded.
         // The actual load happens once, in `.task`.
         // A jump-to-line open (content-search hit, cmd-click) targets the *source*, so it
         // must land in Edit — Preview has no lines to jump to and would swallow the scroll.
-        _mode = State(initialValue: Self.isMarkdown(url) && jumpLine == nil ? .preview : .edit)
-        self.language = Self.highlightLanguage(for: url)
+        _mode = State(initialValue: Self.isMarkdown(displayURL) && jumpLine == nil ? .preview : .edit)
+        self.language = Self.highlightLanguage(for: displayURL)
         self.relativePath = Self.repoRelativePath(for: url)
     }
+    private var fileName: String { displayName ?? url.lastPathComponent }
 
     /// Markdown files get the Edit/Preview toggle; sniffed from the extension only (matching
     /// the `markdown` grammar in `highlightLanguage`).
     static func isMarkdown(_ url: URL) -> Bool {
         ["md", "markdown", "mdx"].contains(url.pathExtension.lowercased())
     }
-    private var isMarkdown: Bool { Self.isMarkdown(url) }
+    private var isMarkdown: Bool { Self.isMarkdown(displayURL) }
 
     /// The file's path relative to its git root (the form the diff header shows, e.g.
     /// `core 2/lib/fs.ts`). `nil` when the file isn't inside a git work tree.
@@ -125,7 +137,7 @@ struct FileEditorView: View {
                 ContentUnavailableView(
                     "Can't Open as Text",
                     huge: .fileQuestion,
-                    description: Text("\(url.lastPathComponent) isn't a UTF-8 text file.")
+                    description: Text("\(fileName) isn't a UTF-8 text file.")
                 )
             } else if !loaded {
                 // The bare background while the async read runs — small files land
@@ -188,7 +200,7 @@ struct FileEditorView: View {
             // The file's real language/tool logo (a Devicon mark) when bundled, else a
             // tinted SF Symbol — sized to match the diff header's leading status badge
             // (12–13pt in a 16-wide slot) so the editor and diff headers are the same height.
-            FileIconView(url: url, size: 15, symbolSize: 13)
+            FileIconView(url: displayURL, size: 15, symbolSize: 13)
                 .frame(width: 16)
             // The repo-relative path already ends in the file name, so showing the bare name
             // alongside it just repeats the same word — keep only the path as the header label.
@@ -199,7 +211,7 @@ struct FileEditorView: View {
                     .lineLimit(1)
                     .truncationMode(.head)
             } else {
-                Text(url.lastPathComponent)
+                Text(fileName)
                     .font(.system(size: 12.5, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)

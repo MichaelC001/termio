@@ -130,12 +130,21 @@ struct TerminalPane: View {
                     requestSelectedTerminalFocus(reason: .overlayClosed)
                 }
                 Group {
-                    if FileActivation.isPreviewable(url) {
-                        FilePreviewView(url: url, settings: settings, onClose: onClose)
+                    if FileActivation.isPreviewable(url)
+                        && (store.openFileAllowsActiveWebContent
+                            || !FileActivation.isActiveWebContent(url)) {
+                        FilePreviewView(
+                            url: url,
+                            settings: settings,
+                            displayName: store.openFileDisplayName,
+                            allowsWebFallback: store.openFileAllowsActiveWebContent,
+                            onClose: onClose)
                     } else {
                         FileEditorView(url: url, settings: settings,
                                        readOnly: store.openFileReadOnly,
-                                       jumpLine: store.openFileLine, onClose: onClose)
+                                       jumpLine: store.openFileLine,
+                                       displayName: store.openFileDisplayName,
+                                       onClose: onClose)
                     }
                 }
                 .id(url)

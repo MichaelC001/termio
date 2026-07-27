@@ -350,6 +350,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Delivered banners would outlive the sessions they point at.
         TaskNotificationCenter.shared.withdrawAll()
         store.terminateAllSessions()
+        SSHMux.cleanup()
+        RemotePreviewStorage.cleanup()
     }
 
     /// Builds the window's content: an `NSSplitViewController` with a native sidebar item
