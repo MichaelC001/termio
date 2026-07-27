@@ -321,6 +321,68 @@
     }
   }
 
+  /* Orchestration demo: a short dash travels the full beam path once per
+     pulse. The path is normalized with pathLength=100; the 200 gap keeps a
+     single dash visible, and the offset sweep walks it from before the start
+     (30) to past the end (-105). React re-keys the path per pulse to restart. */
+  @keyframes beam-pulse {
+    from {
+      stroke-dashoffset: 30;
+      opacity: 1;
+    }
+    85% {
+      opacity: 1;
+    }
+    to {
+      stroke-dashoffset: -105;
+      opacity: 0;
+    }
+  }
+  .beam-pulse {
+    stroke-dasharray: 30 200;
+    stroke-linecap: round;
+    animation: beam-pulse 1s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  }
+  @keyframes demo-cursor-blink {
+    50% {
+      opacity: 0;
+    }
+  }
+  .demo-cursor {
+    animation: demo-cursor-blink 1s step-end infinite;
+  }
+  @keyframes dot-pulse {
+    50% {
+      opacity: 0.35;
+    }
+  }
+  .dot-working {
+    animation: dot-pulse 1.6s ease-in-out infinite;
+  }
+  /* Output lines land all at once (not typed) but fade + rise in gently, so a
+     result "arriving" reads as a soft reveal rather than an abrupt pop. */
+  @keyframes line-in {
+    from {
+      opacity: 0;
+      transform: translateY(3px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  .line-in {
+    animation: line-in 0.32s var(--ease-apple) both;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .beam-pulse,
+    .demo-cursor,
+    .dot-working,
+    .line-in {
+      animation: none;
+    }
+  }
+
   /* Lightweight scroll-entrance: elements fade/slide in when revealed via IntersectionObserver. */
   .reveal {
     opacity: 0;
