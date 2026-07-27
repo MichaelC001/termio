@@ -43,6 +43,13 @@ enum GitService {
         await offMain { loadDiffText(change, repoRoot) }
     }
 
+    /// Parses ready-made unified-diff text (GitHub's inline PR `patch`) into rows off the
+    /// main thread — the same parser the local `git diff` path uses, so a PR file diffed
+    /// from the API renders identically without a subprocess or a checkout.
+    static func parseDiffText(_ text: String) async -> [DiffRow] {
+        await offMain { parseDiff(text) }
+    }
+
     /// Discards a whole selection in one confirmed action — the multi-select's
     /// "Discard N Files…". Sequential and best-effort per file, like the single form.
     static func discard(_ changes: [GitChange], in repoRoot: String) async {
@@ -568,9 +575,9 @@ enum GitService {
     private static func resolveRemotePage(_ dir: String) -> RemotePage? {
         guard let remote = run(["remote", "get-url", "origin"], in: dir)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
-            let (host, path) = parseRemote(remote),
-            let forge = Forge(host: host),
-            let repo = URL(string: "https://\(host)/\(path)") else { return nil }
+            let parsed = parseRemote(remote),
+            let forge = Forge(host: parsed.host),
+            let repo = URL(string: "https://\(parsed.host)/\(parsed.path)") else { return nil }
         guard run(["rev-parse", "--abbrev-ref", "@{upstream}"], in: dir) != nil,
               let branch = run(["rev-parse", "--abbrev-ref", "HEAD"], in: dir)?
                   .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -588,11 +595,51 @@ enum GitService {
         await offMain {
             guard let remote = run(["remote", "get-url", "origin"], in: dir)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-                let (host, path) = parseRemote(remote),
-                host == "github.com" || host == "www.github.com"
+                let parsed = parseRemote(remote)
             else { return nil }
-            return path
+            // A literal github.com host binds directly, whatever the transport.
+            if isGitHubHostName(parsed.host) { return parsed.path }
+            // Otherwise it may be an SSH `~/.ssh/config` alias (`Host github-work`
+            // → `HostName github.com`, the standard trick for juggling accounts).
+            // `sshTarget` is non-nil only for SSH remotes, so an HTTPS host never
+            // triggers `ssh -G` — which would be pointless and could fire a
+            // `Match exec` or falsely bind an unrelated repo to public GitHub.
+            guard let target = parsed.sshTarget,
+                  let resolved = resolveSSHHostName(target),
+                  isGitHubHostName(resolved)
+            else { return nil }
+            return parsed.path
         }
+    }
+
+    private static func isGitHubHostName(_ host: String) -> Bool {
+        let lower = host.lowercased()
+        return lower == "github.com" || lower == "www.github.com"
+    }
+
+    private nonisolated(unsafe) static var sshHostNameCache: [String: String] = [:]
+    private static let sshHostNameLock = NSLock()
+
+    /// The real hostname `ssh` resolves `target` (`[user@]host`) to, after alias /
+    /// Include / Match expansion — mirrors how `gh` (go-gh's SSH translator)
+    /// resolves the same case. `nil` when ssh can't be run or reports nothing; an
+    /// empty string is cached for "no answer" so a missing ssh isn't retried per
+    /// repo. The cache key keeps the target's case (OpenSSH matching is
+    /// case-sensitive), so `github-work` and `GitHub-Work` stay distinct.
+    private static func resolveSSHHostName(_ target: String) -> String? {
+        // The subprocess runs *outside* the lock (never hold a lock across a fork);
+        // a rare duplicate lookup just recomputes the same value.
+        if let cached = sshHostNameLock.withLock({ sshHostNameCache[target] }) {
+            return cached.isEmpty ? nil : cached
+        }
+        // `ssh -G <target>` prints the fully-resolved effective config; its
+        // `hostname <value>` line is the destination the alias points at.
+        let value = output(of: "/usr/bin/ssh", ["-G", target])?
+            .split(separator: "\n")
+            .first { $0.lowercased().hasPrefix("hostname ") }
+            .map { String($0.dropFirst("hostname ".count)).trimmingCharacters(in: .whitespaces) } ?? ""
+        sshHostNameLock.withLock { sshHostNameCache[target] = value }
+        return value.isEmpty ? nil : value
     }
 
     /// Fetches a pull request's head (`refs/pull/N/head` — GitHub serves every PR
@@ -636,26 +683,42 @@ enum GitService {
         }
     }
 
-    /// Splits a remote into web-addressable host + repo path, from either the scp-like
-    /// form (`git@host:owner/repo.git`) or a real URL (`https://…`, `ssh://…`). Ports
-    /// and userinfo are dropped — the web UI lives on plain https.
-    private static func parseRemote(_ remote: String) -> (host: String, path: String)? {
-        var host: String
+    /// A git remote split into its web-addressable host + repo path, plus the
+    /// `[user@]host` to hand `ssh -G` when git reaches it over SSH.
+    private struct ParsedRemote {
+        let host: String
+        let path: String
+        /// Present only for SSH remotes (scp-like or `ssh://`); `nil` for HTTPS /
+        /// git://. Case and userinfo are preserved so `Host` patterns and
+        /// `Match user` / `%r` rules resolve as git's own ssh would.
+        let sshTarget: String?
+    }
+
+    /// Splits a remote from either the scp-like form (`git@host:owner/repo.git`) or a
+    /// real URL (`https://…`, `ssh://…`). Ports and userinfo are dropped from `host` /
+    /// `path` — the web UI lives on plain https — but kept in `sshTarget`.
+    private static func parseRemote(_ remote: String) -> ParsedRemote? {
+        let host: String
         var path: String
+        var sshTarget: String?
         if !remote.contains("://"), remote.contains("@"), let colon = remote.firstIndex(of: ":") {
-            let hostPart = String(remote[..<colon])
+            let hostPart = String(remote[..<colon])   // user@host, original case
             host = hostPart.components(separatedBy: "@").last ?? hostPart
             path = String(remote[remote.index(after: colon)...])
+            sshTarget = hostPart
         } else if let url = URL(string: remote), let urlHost = url.host {
             host = urlHost
             path = url.path
+            if url.scheme == "ssh" {
+                sshTarget = url.user.map { "\($0)@\(urlHost)" } ?? urlHost
+            }
         } else {
             return nil
         }
         path = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if path.hasSuffix(".git") { path = String(path.dropLast(4)) }
         guard !host.isEmpty, !path.isEmpty else { return nil }
-        return (host, path)
+        return ParsedRemote(host: host, path: path, sshTarget: sshTarget)
     }
 
     // MARK: Stall detection
@@ -684,14 +747,21 @@ enum GitService {
         }
     }
 
-    /// Runs `git -C <dir> <args>` and returns stdout, or `nil` on launch failure (or a
-    /// non-zero exit unless `ignoreStatus`). stdout is drained *before* `waitUntilExit`
-    /// because a diff can exceed the 64 KB pipe buffer and otherwise deadlock the child;
-    /// stderr is sent to the null device so it can never fill either.
+    /// Runs `git -C <dir> <args>` and returns stdout, or `nil` on launch failure or a
+    /// non-zero exit (unless `ignoreStatus`).
     private static func run(_ args: [String], in dir: String, ignoreStatus: Bool = false) -> String? {
+        output(of: "/usr/bin/git", ["-C", dir] + args, ignoreStatus: ignoreStatus)
+    }
+
+    /// Runs an executable and returns stdout, or `nil` on launch failure or a non-zero
+    /// exit (unless `ignoreStatus`). stdout is drained *before* `waitUntilExit` because
+    /// output can exceed the 64 KB pipe buffer and otherwise deadlock the child; stderr
+    /// is sent to the null device so it can never fill either. The environment is
+    /// inherited, so ssh finds `~/.ssh/config`.
+    private static func output(of executable: String, _ args: [String], ignoreStatus: Bool = false) -> String? {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = ["-C", dir] + args
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = args
         let out = Pipe()
         process.standardOutput = out
         process.standardError = FileHandle.nullDevice
