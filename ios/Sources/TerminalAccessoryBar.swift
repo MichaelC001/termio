@@ -138,6 +138,9 @@ final class TerminalAccessoryBar: UIInputView {
     var onAttach: ((TerminalAttachSource) -> Void)?
     /// A viewport jump key was tapped — the owner scrolls the terminal view.
     var onScrollEdge: ((TerminalScrollEdge) -> Void)?
+    /// Voice dictation finished — the transcript to type into the terminal.
+    /// Never carries a newline: dictation fills the prompt, it never sends it.
+    var onVoiceTranscript: ((String) -> Void)?
 
     static let barHeight: CGFloat = 82
     private static let keyHeight: CGFloat = 32
@@ -146,6 +149,13 @@ final class TerminalAccessoryBar: UIInputView {
     private let haptic = UIImpactFeedbackGenerator(style: .light)
     private var stickyButtons: [TerminalStickyKey: UIButton] = [:]
     private let attachButton = UIButton(type: .system)
+
+    /// Voice dictation: the recorder/transcriber, the Messages-style pill that
+    /// replaces the two control-key rows while recording, and a reference to
+    /// those rows so they can be hidden (the QWERTY keyboard stays put).
+    private let voice = VoiceDictation()
+    private let voiceBar = VoiceRecordingBar()
+    private var keyPlane: UIStackView?
 
     init() {
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.barHeight),
@@ -181,12 +191,108 @@ final class TerminalAccessoryBar: UIInputView {
         plane.spacing = Self.keySpacing
         plane.translatesAutoresizingMaskIntoConstraints = false
         addSubview(plane)
+        keyPlane = plane
         NSLayoutConstraint.activate([
             plane.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             plane.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             plane.topAnchor.constraint(equalTo: topAnchor, constant: 6),
             plane.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
         ])
+
+        // The recording pill fills the bar band. It's hidden until Voice is
+        // picked; then the two key rows hide and it takes their place — the
+        // system QWERTY keyboard below stays put.
+        voiceBar.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(voiceBar)
+        NSLayoutConstraint.activate([
+            voiceBar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            voiceBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            voiceBar.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            voiceBar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+        ])
+        voiceBar.onCancel = { [weak self] in
+            self?.voice.cancel()
+            self?.voiceBar.dismiss()
+        }
+        voiceBar.onStop = { [weak self] in
+            guard let self else { return }
+            haptic.impactOccurred()
+            voiceBar.showTranscribing()
+            voice.stopAndTranscribe { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .success(let text):
+                    voiceBar.dismiss()
+                    onVoiceTranscript?(text)
+                case .failure(let failure):
+                    voiceBar.showError(failure.hudMessage)
+                }
+            }
+        }
+        // Every exit path (success, cancel, auto-dismissed error) cross-fades
+        // the control-key rows back in as the pill leaves.
+        voiceBar.onDismissed = { [weak self] in
+            self?.hideVoiceBar()
+        }
+    }
+
+    /// Picked Voice from the (+) menu: swap the two control-key rows for the
+    /// pill and start recording. A start failure (no key, mic denied) surfaces
+    /// in the pill itself. The QWERTY keyboard is untouched.
+    private func startVoiceRecording() {
+        haptic.impactOccurred()
+        showVoiceBar()
+        voice.start { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                voiceBar.beginRecording(levelProvider: { [weak self] in self?.voice.currentLevel() ?? 0 })
+            case .failure(let failure):
+                voiceBar.showError(failure.hudMessage)
+            }
+        }
+    }
+
+    /// Materialize the pill: it scales up from 0.96 + fades in while the key
+    /// rows fade out under it — critically damped, no overshoot (the pill
+    /// didn't come from a flick), under 300ms, ease-out for an entrance. Under
+    /// Reduce Motion it's a plain opacity cross-fade, no transform.
+    private func showVoiceBar() {
+        let reduce = UIAccessibility.isReduceMotionEnabled
+        bringSubviewToFront(voiceBar)
+        voiceBar.isHidden = false
+        voiceBar.alpha = 0
+        voiceBar.transform = reduce ? .identity : CGAffineTransform(scaleX: 0.96, y: 0.96)
+        UIView.animate(
+            withDuration: reduce ? 0.2 : 0.28, delay: 0,
+            usingSpringWithDamping: 1, initialSpringVelocity: 0,
+            options: [.curveEaseOut, .allowUserInteraction]
+        ) {
+            self.voiceBar.alpha = 1
+            self.voiceBar.transform = .identity
+            self.keyPlane?.alpha = 0
+        } completion: { _ in
+            self.keyPlane?.isHidden = true
+        }
+    }
+
+    /// Reverse of `showVoiceBar` — the pill fades/scales out along the same path
+    /// as the key rows fade back in, so the swap reads as one motion.
+    private func hideVoiceBar() {
+        let reduce = UIAccessibility.isReduceMotionEnabled
+        keyPlane?.alpha = 0
+        keyPlane?.isHidden = false
+        UIView.animate(
+            withDuration: reduce ? 0.2 : 0.24, delay: 0,
+            options: [.curveEaseOut, .allowUserInteraction]
+        ) {
+            self.voiceBar.alpha = 0
+            self.voiceBar.transform = reduce ? .identity : CGAffineTransform(scaleX: 0.96, y: 0.96)
+            self.keyPlane?.alpha = 1
+        } completion: { _ in
+            self.voiceBar.isHidden = true
+            self.voiceBar.transform = .identity
+        }
     }
 
     @available(*, unavailable)
@@ -234,11 +340,30 @@ final class TerminalAccessoryBar: UIInputView {
             self?.haptic.impactOccurred()
             self?.toggleAttachMenu()
         }, for: .touchUpInside)
+        // A quick dip on finger-down gives the key iMessage's tactile press
+        // before the menu even opens.
+        attachButton.addAction(UIAction { [weak self] _ in
+            UIView.animate(withDuration: 0.12, delay: 0, options: .allowUserInteraction) {
+                self?.attachButton.transform = CGAffineTransform(scaleX: 0.88, y: 0.88)
+            }
+        }, for: .touchDown)
+    }
+
+    /// Spins the (+) glyph into an (×) while the menu is up, and back on
+    /// close — plus a spring pop that releases the touch-down dip.
+    private func setAttachButtonOpen(_ open: Bool) {
+        UIView.animate(withDuration: 0.4, delay: 0, usingSpringWithDamping: 0.6,
+                       initialSpringVelocity: 0, options: .allowUserInteraction) {
+            self.attachButton.transform = .identity
+            self.attachButton.imageView?.transform =
+                open ? CGAffineTransform(rotationAngle: .pi / 4) : .identity
+        }
     }
 
     // MARK: - Attach source menu
 
     private var attachMenuScrim: UIControl?
+    private weak var attachMenuCard: UIView?
 
     private func toggleAttachMenu() {
         if attachMenuScrim != nil {
@@ -272,10 +397,18 @@ final class TerminalAccessoryBar: UIInputView {
         glass.layer.cornerRadius = 26
         glass.layer.cornerCurve = .continuous
 
+        // iMessage's (+) chips aren't flat — each is a diagonal gradient
+        // squircle. We mirror its palette: a dark camera lens, the Photos
+        // rainbow, a red-orange audio capsule, and the Files blue.
         let rows = UIStackView(arrangedSubviews: [
-            makeAttachRow(title: "Camera", symbol: "camera", source: .camera),
-            makeAttachRow(title: "Photos", symbol: "photo.on.rectangle", source: .photos),
-            makeAttachRow(title: "Files", symbol: "folder", source: .files),
+            makeMenuRow(title: "Camera", symbol: "camera.fill",
+                        colors: [Self.hex(0x8A8F98), Self.hex(0x3A3D42)]) { [weak self] in self?.onAttach?(.camera) },
+            makeMenuRow(title: "Photos", symbol: "photo.fill",
+                        colors: [Self.hex(0xFCC72E), Self.hex(0xF6499A), Self.hex(0x3E9BFE)]) { [weak self] in self?.onAttach?(.photos) },
+            makeMenuRow(title: "Voice", symbol: "waveform",
+                        colors: [Self.hex(0xFF8A5B), Self.hex(0xFB2C55)]) { [weak self] in self?.startVoiceRecording() },
+            makeMenuRow(title: "Files", symbol: "folder.fill",
+                        colors: [Self.hex(0x39B9FF), Self.hex(0x0A7BFF)]) { [weak self] in self?.onAttach?(.files) },
         ])
         rows.axis = .vertical
         rows.translatesAutoresizingMaskIntoConstraints = false
@@ -283,7 +416,7 @@ final class TerminalAccessoryBar: UIInputView {
 
         // Bottom-left corner of the card sits just above the (+) key.
         let anchor = attachButton.convert(attachButton.bounds, to: window)
-        let size = CGSize(width: 250, height: 3 * 46 + 12)
+        let size = CGSize(width: 258, height: 4 * 54 + 12)
         let card = UIView(frame: CGRect(
             x: max(8, anchor.minX),
             y: anchor.minY - size.height - 8,
@@ -309,52 +442,97 @@ final class TerminalAccessoryBar: UIInputView {
             rows.bottomAnchor.constraint(equalTo: glass.contentView.bottomAnchor, constant: -6),
         ])
         scrim.addSubview(card)
+        attachMenuCard = card
 
-        // UIMenu's entrance: grow from the anchor corner with a soft spring.
-        card.alpha = 0
-        card.transform = CGAffineTransform(scaleX: 0.4, y: 0.4)
+        // UIMenu's entrance: grow from the bottom-left corner (the (+) key)
+        // with a soft spring — the translate keeps that corner pinned while
+        // the card scales up out of it.
+        let collapsed = CGAffineTransform(scaleX: 0.4, y: 0.4)
             .translatedBy(x: -size.width * 0.5, y: size.height * 0.5)
-        UIView.animate(withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.8,
+        card.alpha = 0
+        card.transform = collapsed
+        UIView.animate(withDuration: 0.4, delay: 0, usingSpringWithDamping: 0.78,
                        initialSpringVelocity: 0) {
             card.alpha = 1
             card.transform = .identity
         }
+        setAttachButtonOpen(true)
     }
 
     private func dismissAttachMenu() {
-        attachMenuScrim?.removeFromSuperview()
+        setAttachButtonOpen(false)
+        guard let scrim = attachMenuScrim else { return }
         attachMenuScrim = nil
+        // Collapse back into the (+) key, mirroring the entrance.
+        let card = attachMenuCard
+        let size = card?.bounds.size ?? .zero
+        UIView.animate(withDuration: 0.2, delay: 0, options: .curveEaseIn) {
+            card?.alpha = 0
+            card?.transform = CGAffineTransform(scaleX: 0.4, y: 0.4)
+                .translatedBy(x: -size.width * 0.5, y: size.height * 0.5)
+        } completion: { _ in
+            scrim.removeFromSuperview()
+        }
     }
 
-    /// One native-menu row: 17pt title leading, SF symbol trailing — the
-    /// layout a real UIMenu row uses (icons ride the right edge on iOS).
-    /// No separators: iMessage/WhatsApp source menus are clean rows.
-    private func makeAttachRow(
-        title: String, symbol: String, source: TerminalAttachSource
+    /// One source row in the newest-Messages style: a filled SF symbol in a
+    /// tinted rounded chip on the leading edge, then the label — the iMessage
+    /// (+) app-row look, cleaner than the plain UIMenu icon-on-the-right shape.
+    private func makeMenuRow(
+        title: String, symbol: String, colors: [UIColor], handler: @escaping () -> Void
     ) -> UIView {
-        var config = UIButton.Configuration.plain()
-        config.title = title
-        config.image = UIImage(
-            systemName: symbol,
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-        )
-        config.imagePlacement = .trailing
-        config.baseForegroundColor = .label
-        config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 18, bottom: 0, trailing: 18)
-        config.titleTextAttributesTransformer = .init { attributes in
-            var attributes = attributes
-            attributes.font = .systemFont(ofSize: 17)
-            return attributes
-        }
-        let button = UIButton(configuration: config)
-        // .fill spreads title and trailing image to opposite edges.
-        button.contentHorizontalAlignment = .fill
-        button.heightAnchor.constraint(equalToConstant: 46).isActive = true
+        let button = UIButton(type: .system)
+        button.heightAnchor.constraint(equalToConstant: 54).isActive = true
         button.addAction(UIAction { [weak self] _ in
             self?.dismissAttachMenu()
-            self?.onAttach?(source)
+            handler()
         }, for: .touchUpInside)
+
+        let chip = GradientChipView(colors: colors)
+        chip.isUserInteractionEnabled = false
+        chip.translatesAutoresizingMaskIntoConstraints = false
+
+        let icon = UIImageView(image: UIImage(
+            systemName: symbol,
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
+        ))
+        icon.tintColor = .white
+        icon.contentMode = .center
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        chip.addSubview(icon)
+
+        let label = UILabel()
+        label.text = title
+        label.font = .systemFont(ofSize: 17)
+        label.textColor = .label
+        label.isUserInteractionEnabled = false
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        button.addSubview(chip)
+        button.addSubview(label)
+        button.accessibilityLabel = title
+        NSLayoutConstraint.activate([
+            chip.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 16),
+            chip.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+            chip.widthAnchor.constraint(equalToConstant: 34),
+            chip.heightAnchor.constraint(equalToConstant: 34),
+            icon.centerXAnchor.constraint(equalTo: chip.centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+            label.leadingAnchor.constraint(equalTo: chip.trailingAnchor, constant: 12),
+            label.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: button.trailingAnchor, constant: -16),
+        ])
         return button
+    }
+
+    /// 0xRRGGBB → UIColor, for the fixed iMessage-style chip palette.
+    static func hex(_ rgb: UInt32) -> UIColor {
+        UIColor(
+            red: CGFloat((rgb >> 16) & 0xFF) / 255,
+            green: CGFloat((rgb >> 8) & 0xFF) / 255,
+            blue: CGFloat(rgb & 0xFF) / 255,
+            alpha: 1
+        )
     }
 
     /// Shows the attach (+) — only sessions with a Mac behind them can
@@ -563,5 +741,28 @@ final class RepeatingKeyButton: UIButton {
             onFire?()
         }
         heldLongEnoughToRepeat = false
+    }
+}
+
+/// A rounded chip filled with a top-left→bottom-right gradient — the depth
+/// iMessage gives its (+) source icons, which a flat tint can't match.
+final class GradientChipView: UIView {
+    private let gradient = CAGradientLayer()
+
+    init(colors: [UIColor]) {
+        super.init(frame: .zero)
+        gradient.colors = colors.map(\.cgColor)
+        gradient.startPoint = CGPoint(x: 0, y: 0)
+        gradient.endPoint = CGPoint(x: 1, y: 1)
+        layer.addSublayer(gradient)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        gradient.frame = bounds
+        // iMessage's source chips are full circles, not rounded squares.
+        gradient.cornerRadius = bounds.height / 2
     }
 }

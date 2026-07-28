@@ -1,22 +1,72 @@
 import AVFoundation
 import UIKit
 
-/// Hold-to-talk voice dictation: record the mic while the user holds the
-/// composer's mic button, then transcribe the clip with OpenAI's
-/// `gpt-4o-transcribe` and hand the text back for the composer to drop into the
-/// draft (never auto-sent — the same "dictation can't fire a half-formed
-/// prompt" contract the composer already keeps).
-///
-/// The clip is short (a held button, seconds to a minute) and the text is
-/// wanted only after release, so this records-then-POSTs to
-/// `/v1/audio/transcriptions` rather than opening a realtime socket — see
-/// `docs/rfcs/push-to-talk-voice-dictation.md` for why that model wins here.
-final class VoiceDictation: NSObject {
-    /// The transcription model. `gpt-4o-transcribe` is the most accurate of
-    /// OpenAI's speech-to-text models — worth it for prompts dense with
-    /// identifiers and paths — at $0.006/min.
-    static let model = "gpt-4o-transcribe"
+/// One of the bring-your-own-key transcription services the user can pick in
+/// Settings ▸ Voice. Each owns its endpoint, auth header, request shape, and
+/// its own Keychain entry, so keys never cross providers.
+enum TranscriptionProvider: String, CaseIterable {
+    case openAI
+    case elevenLabs
 
+    /// Settings label.
+    var displayName: String {
+        switch self {
+        case .openAI: "OpenAI"
+        case .elevenLabs: "ElevenLabs"
+        }
+    }
+
+    /// The key editor's field placeholder.
+    var keyPlaceholder: String {
+        switch self {
+        case .openAI: "sk-..."
+        case .elevenLabs: "Your ElevenLabs API key"
+        }
+    }
+
+    /// The Key section's footer — which model does the transcribing.
+    var keyFooter: String {
+        switch self {
+        case .openAI: "Transcribed with OpenAI gpt-4o-transcribe."
+        case .elevenLabs: "Transcribed with ElevenLabs Scribe."
+        }
+    }
+
+    fileprivate var keychainService: String {
+        switch self {
+        case .openAI: "sh.termio.mobile.openai"
+        case .elevenLabs: "sh.termio.mobile.elevenlabs"
+        }
+    }
+
+    fileprivate var endpointURL: URL {
+        switch self {
+        case .openAI: URL(string: "https://api.openai.com/v1/audio/transcriptions")!
+        case .elevenLabs: URL(string: "https://api.elevenlabs.io/v1/speech-to-text")!
+        }
+    }
+
+    /// The transcription model id sent in the request. `gpt-4o-transcribe` is
+    /// OpenAI's most accurate speech model; `scribe_v2` is ElevenLabs' Scribe.
+    fileprivate var model: String {
+        switch self {
+        case .openAI: "gpt-4o-transcribe"
+        case .elevenLabs: "scribe_v2"
+        }
+    }
+}
+
+/// Voice dictation: record the mic while the recording pill is up (started
+/// from the terminal keyboard's (+) menu), then transcribe the clip with the
+/// provider the user picked in Settings ▸ Voice and hand the text back to drop
+/// into the terminal (never auto-sent — a dictation can't fire a half-formed
+/// prompt).
+///
+/// The clip is short (seconds to a minute) and the text is wanted only once the
+/// user taps stop, so this records-then-POSTs rather than opening a realtime
+/// socket — see `docs/rfcs/push-to-talk-voice-dictation.md` for why that model
+/// wins here.
+final class VoiceDictation: NSObject {
     enum Failure: Error {
         case missingKey
         case microphonePermissionDenied
@@ -25,10 +75,10 @@ final class VoiceDictation: NSObject {
         case network(String)
         case api(status: Int, message: String)
 
-        /// A short line fit for the recording HUD's error state.
+        /// A short line fit for the recording pill's error state.
         var hudMessage: String {
             switch self {
-            case .missingKey: "Add your OpenAI key in Settings ▸ Voice"
+            case .missingKey: "Add an API key in Settings ▸ Voice"
             case .microphonePermissionDenied: "Allow microphone access in Settings"
             case .recordingFailed: "Couldn't start recording"
             case .empty: "Didn't catch that — try again"
@@ -38,18 +88,26 @@ final class VoiceDictation: NSObject {
         }
     }
 
-    private var recorder: AVAudioRecorder?
+    private var engine: AVAudioEngine?
+    private var audioFile: AVAudioFile?
     private var fileURL: URL?
+    /// Frames the tap has written ÷ sample rate = the clip length, for the
+    /// too-short-jab guard. Written on the audio thread, read after teardown.
+    private var recordedFrames: AVAudioFramePosition = 0
+    private var inputSampleRate: Double = 48_000
+    /// Latest input level, 0…1, for the waveform. Written on the tap's audio
+    /// thread, read on the main thread — a benign race for a meter (aligned
+    /// 32-bit access), so no render-thread lock.
+    private var meterLevel: Float = 0
 
-    var isRecording: Bool { recorder?.isRecording ?? false }
+    var isRecording: Bool { engine?.isRunning ?? false }
 
     // MARK: - Recording
 
     /// Requests mic access if needed, then begins recording. `completion` fires
-    /// on the main queue once recording is actually underway (or with the
-    /// reason it couldn't start).
+    /// on the main queue once recording is underway (or with why it couldn't).
     func start(completion: @escaping (Result<Void, Failure>) -> Void) {
-        guard Self.apiKey?.isEmpty == false else {
+        guard Self.hasAPIKey(for: MobileSettings.shared.transcriptionProvider) else {
             completion(.failure(.missingKey))
             return
         }
@@ -63,62 +121,94 @@ final class VoiceDictation: NSObject {
                 try beginRecording()
                 completion(.success(()))
             } catch {
+                teardownEngine()
                 completion(.failure(.recordingFailed))
             }
         }
     }
 
+    /// Taps the mic through AVAudioEngine and writes straight to an AAC file.
+    /// Unlike AVAudioRecorder, stopping the engine flushes every frame the tap
+    /// has delivered, so the tail is never clipped and no drain delay is needed
+    /// — Apple's recommended path for recording.
     private func beginRecording() throws {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
         try session.setActive(true)
 
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0 else { throw Failure.recordingFailed }
+
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("termio-dictation-\(UUID().uuidString).m4a")
-        // AAC in an m4a container: one of OpenAI's accepted formats, and small.
-        // 24 kHz mono is plenty for speech and keeps uploads tiny.
+        // AAC in an m4a container (both providers accept it), written at the
+        // mic's own rate/channels so the tap buffers need no format conversion.
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 24_000,
-            AVNumberOfChannelsKey: 1,
+            AVSampleRateKey: format.sampleRate,
+            AVNumberOfChannelsKey: format.channelCount,
             AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
         ]
-        let recorder = try AVAudioRecorder(url: url, settings: settings)
-        recorder.isMeteringEnabled = true
-        guard recorder.record() else { throw Failure.recordingFailed }
-        self.recorder = recorder
+        let file = try AVAudioFile(forWriting: url, settings: settings)
+
+        recordedFrames = 0
+        inputSampleRate = format.sampleRate
+        meterLevel = 0
+        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
+            guard let self else { return }
+            try? file.write(from: buffer)
+            recordedFrames += AVAudioFramePosition(buffer.frameLength)
+            meterLevel = Self.level(of: buffer)
+        }
+
+        engine.prepare()
+        try engine.start()
+        self.engine = engine
+        self.audioFile = file
         self.fileURL = url
     }
 
-    /// The current input level, 0…1, for the HUD's waveform. Call while
-    /// recording; returns 0 otherwise.
-    func currentLevel() -> Float {
-        guard let recorder, recorder.isRecording else { return 0 }
-        recorder.updateMeters()
-        let decibels = recorder.averagePower(forChannel: 0)
-        // averagePower is roughly -160…0 dB; map the useful speech band to 0…1.
-        let floor: Float = -50
-        guard decibels > floor else { return 0 }
-        return min(1, (decibels - floor) / -floor)
+    /// RMS of a buffer mapped to 0…1 over the useful speech band. The band is
+    /// deliberately narrow — quiet room ≈ -55 dB, normal speech ≈ -30 dB, loud
+    /// ≈ -12 dB — so normal talking fills the bar instead of sitting near the
+    /// floor (0 dB is clipping, which speech never reaches).
+    private static func level(of buffer: AVAudioPCMBuffer) -> Float {
+        guard let data = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return 0 }
+        let count = Int(buffer.frameLength)
+        var sum: Float = 0
+        for i in 0..<count { let s = data[i]; sum += s * s }
+        let decibels = 20 * log10(max(sqrt(sum / Float(count)), 1e-7))
+        let floor: Float = -55
+        let ceiling: Float = -12
+        return min(1, max(0, (decibels - floor) / (ceiling - floor)))
     }
 
-    /// Discards the in-flight recording without transcribing (slide-to-cancel).
+    /// The current input level, 0…1, for the pill's waveform. Call while
+    /// recording; returns 0 otherwise.
+    func currentLevel() -> Float {
+        isRecording ? meterLevel : 0
+    }
+
+    /// Discards the in-flight recording without transcribing (the cancel ✕).
     func cancel() {
-        recorder?.stop()
+        teardownEngine()
         cleanUp()
     }
 
     /// Stops recording and transcribes the clip. `completion` fires on the main
-    /// queue with the transcript or the reason it failed.
+    /// queue with the transcript or the reason it failed. Stopping the engine
+    /// flushes the tap cleanly, so the whole clip is on disk — no drain wait.
     func stopAndTranscribe(completion: @escaping (Result<String, Failure>) -> Void) {
-        guard let recorder, let fileURL else {
+        guard let fileURL, engine != nil else {
             completion(.failure(.recordingFailed))
             return
         }
-        let duration = recorder.currentTime
-        recorder.stop()
-        self.recorder = nil
+        // Teardown first so the tap has stopped and recordedFrames is final.
+        teardownEngine()
         deactivateSession()
+        let duration = Double(recordedFrames) / inputSampleRate
 
         // A stab at the button (or a bump) isn't a dictation; drop it quietly.
         guard duration >= 0.4 else {
@@ -126,21 +216,30 @@ final class VoiceDictation: NSObject {
             completion(.failure(.empty))
             return
         }
-
-        guard let key = Self.apiKey, !key.isEmpty else {
+        let provider = MobileSettings.shared.transcriptionProvider
+        guard let key = Self.apiKey(for: provider), !key.isEmpty else {
             cleanUp()
             completion(.failure(.missingKey))
             return
         }
-        transcribe(fileURL: fileURL, apiKey: key) { [weak self] result in
+        transcribe(fileURL: fileURL, provider: provider, apiKey: key) { [weak self] result in
             self?.cleanUp()
             completion(result)
         }
     }
 
+    /// Stops the engine and closes the file, flushing every delivered frame.
+    private func teardownEngine() {
+        engine?.inputNode.removeTap(onBus: 0)
+        engine?.stop()
+        engine = nil
+        audioFile = nil   // closing the AVAudioFile flushes its remaining frames
+    }
+
     private func cleanUp() {
         if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
-        recorder = nil
+        engine = nil
+        audioFile = nil
         fileURL = nil
         deactivateSession()
     }
@@ -163,7 +262,7 @@ final class VoiceDictation: NSObject {
     // MARK: - Transcription
 
     private func transcribe(
-        fileURL: URL, apiKey: String,
+        fileURL: URL, provider: TranscriptionProvider, apiKey: String,
         completion: @escaping (Result<String, Failure>) -> Void
     ) {
         let audioData: Data
@@ -174,32 +273,7 @@ final class VoiceDictation: NSObject {
             return
         }
 
-        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/audio/transcriptions")!)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        let boundary = "termio-\(UUID().uuidString)"
-        request.setValue(
-            "multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type"
-        )
-
-        var body = Data()
-        func field(_ name: String, _ value: String) {
-            body.appendString("--\(boundary)\r\n")
-            body.appendString("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n")
-            body.appendString("\(value)\r\n")
-        }
-        field("model", Self.model)
-        // Plain-text response: the whole body is the transcript, no JSON to peel.
-        field("response_format", "text")
-        body.appendString("--\(boundary)\r\n")
-        body.appendString(
-            "Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n"
-        )
-        body.appendString("Content-Type: audio/m4a\r\n\r\n")
-        body.append(audioData)
-        body.appendString("\r\n--\(boundary)--\r\n")
-        request.httpBody = body
-
+        let request = provider.makeRequest(apiKey: apiKey, audioData: audioData)
         URLSession.shared.dataTask(with: request) { data, response, error in
             let result: Result<String, Failure>
             defer { DispatchQueue.main.async { completion(result) } }
@@ -212,67 +286,135 @@ final class VoiceDictation: NSObject {
                 result = .failure(.network("No response"))
                 return
             }
-            let bodyText = String(data: data, encoding: .utf8) ?? ""
             guard (200..<300).contains(http.statusCode) else {
                 result = .failure(.api(
-                    status: http.statusCode, message: Self.apiErrorMessage(from: data) ?? "Transcription failed"
+                    status: http.statusCode,
+                    message: provider.errorMessage(from: data) ?? "Transcription failed"
                 ))
                 return
             }
-            let transcript = bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let transcript = provider.transcript(from: data)
             result = transcript.isEmpty ? .failure(.empty) : .success(transcript)
         }.resume()
     }
 
-    /// OpenAI errors come back as `{ "error": { "message": ... } }`.
-    private static func apiErrorMessage(from data: Data) -> String? {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let error = json["error"] as? [String: Any],
-              let message = error["message"] as? String
-        else { return nil }
-        return message
-    }
-
     // MARK: - API key (Keychain)
 
-    private static let keychainService = "sh.termio.mobile.openai"
+    // One entry per provider (keyed by service), same account. Reads use the
+    // service the value was written under, so a key stored before providers
+    // were split out still resolves under `.openAI` unchanged.
     private static let keychainAccount = "api-key"
 
-    /// The OpenAI API key, stored in the Keychain (never UserDefaults). Setting
-    /// nil or empty removes it.
-    static var apiKey: String? {
-        get {
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: keychainService,
-                kSecAttrAccount as String: keychainAccount,
-                kSecReturnData as String: true,
-                kSecMatchLimit as String: kSecMatchLimitOne,
-            ]
-            var item: CFTypeRef?
-            guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-                  let data = item as? Data
-            else { return nil }
-            return String(data: data, encoding: .utf8)
-        }
-        set {
-            let base: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: keychainService,
-                kSecAttrAccount as String: keychainAccount,
-            ]
-            SecItemDelete(base as CFDictionary)
-            guard let value = newValue?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !value.isEmpty, let data = value.data(using: .utf8)
-            else { return }
-            var add = base
-            add[kSecValueData as String] = data
-            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            SecItemAdd(add as CFDictionary, nil)
-        }
+    /// The stored key for `provider`, or nil. Kept in the Keychain, never
+    /// UserDefaults.
+    static func apiKey(for provider: TranscriptionProvider) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: provider.keychainService,
+            kSecAttrAccount as String: keychainAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data
+        else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
-    static var hasAPIKey: Bool { apiKey?.isEmpty == false }
+    /// Stores the key for `provider`; a nil or empty value removes it.
+    static func setAPIKey(_ newValue: String?, for provider: TranscriptionProvider) {
+        let base: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: provider.keychainService,
+            kSecAttrAccount as String: keychainAccount,
+        ]
+        SecItemDelete(base as CFDictionary)
+        guard let value = newValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty, let data = value.data(using: .utf8)
+        else { return }
+        var add = base
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        SecItemAdd(add as CFDictionary, nil)
+    }
+
+    static func hasAPIKey(for provider: TranscriptionProvider) -> Bool {
+        apiKey(for: provider)?.isEmpty == false
+    }
+}
+
+private extension TranscriptionProvider {
+    /// Builds the multipart transcription POST for this provider.
+    func makeRequest(apiKey: String, audioData: Data) -> URLRequest {
+        var request = URLRequest(url: endpointURL)
+        request.httpMethod = "POST"
+        let boundary = "termio-\(UUID().uuidString)"
+        request.setValue(
+            "multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type"
+        )
+        switch self {
+        case .openAI:
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        case .elevenLabs:
+            request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
+        }
+
+        var body = Data()
+        func field(_ name: String, _ value: String) {
+            body.appendString("--\(boundary)\r\n")
+            body.appendString("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n")
+            body.appendString("\(value)\r\n")
+        }
+        switch self {
+        case .openAI:
+            field("model", model)
+            // Plain-text response: the whole body is the transcript, no JSON to peel.
+            field("response_format", "text")
+        case .elevenLabs:
+            field("model_id", model)
+        }
+        body.appendString("--\(boundary)\r\n")
+        body.appendString(
+            "Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n"
+        )
+        body.appendString("Content-Type: audio/m4a\r\n\r\n")
+        body.append(audioData)
+        body.appendString("\r\n--\(boundary)--\r\n")
+        request.httpBody = body
+        return request
+    }
+
+    /// Pulls the transcript out of a 2xx response body.
+    func transcript(from data: Data) -> String {
+        let text: String
+        switch self {
+        case .openAI:
+            // response_format=text: the body is the transcript verbatim.
+            text = String(data: data, encoding: .utf8) ?? ""
+        case .elevenLabs:
+            // JSON: { "text": "…", "language_code": …, "words": [...] }.
+            let json = try? JSONSerialization.jsonObject(with: data)
+            text = (json as? [String: Any])?["text"] as? String ?? ""
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// A human-readable message from an error response, if the body carries one.
+    func errorMessage(from data: Data) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        switch self {
+        case .openAI:
+            // { "error": { "message": … } }
+            return (json["error"] as? [String: Any])?["message"] as? String
+        case .elevenLabs:
+            // { "detail": "…" } or { "detail": { "message": … } }
+            if let detail = json["detail"] as? String { return detail }
+            return (json["detail"] as? [String: Any])?["message"] as? String
+        }
+    }
 }
 
 private extension Data {
@@ -281,59 +423,122 @@ private extension Data {
     }
 }
 
-/// The recording overlay shown over the composer's pill while the mic button is
-/// held: a pulsing red dot, an elapsed timer, a live waveform, and a hint that
-/// swaps to a cancel warning when the finger slides up into the cancel zone —
-/// Doubao's hold-to-talk affordances, pared to what a one-line composer can
-/// carry. It also renders a brief "transcribing…" and error state.
-final class VoiceRecordingHUD: UIView {
-    private let dot = UIView()
+/// The recording surface that takes over the terminal keyboard's accessory bar
+/// when the user picks Voice from the (+) menu — Apple Messages' audio-message
+/// aesthetic: a rounded capsule with a cancel (✕) on the left, an elapsed timer
+/// and a live waveform in the middle, and the signature red circular stop button
+/// (a white rounded square) on the right.
+/// Tap Voice to start, tap stop to finish — no hold. After stop it swaps to a
+/// "Transcribing…" spinner, then a brief red error line on failure.
+final class VoiceRecordingBar: UIView {
+    /// The cancel (✕) was tapped — discard the clip, don't transcribe.
+    var onCancel: (() -> Void)?
+    /// The stop button was tapped — finish recording and transcribe.
+    var onStop: (() -> Void)?
+    /// The pill hid itself (success, cancel, or an auto-dismissed error) — the
+    /// owner restores the keyboard here, on every exit path.
+    var onDismissed: (() -> Void)?
+
+    private let capsule = UIView()
+    private let cancelButton = UIButton(type: .system)
+    private let stopButton = UIButton(type: .system)
+    private let stopGlyph = UIView()
     private let timeLabel = UILabel()
-    private let hintLabel = UILabel()
+    private let statusLabel = UILabel()
     private let spinner = UIActivityIndicatorView(style: .medium)
     private let waveform = WaveformView()
 
+    /// Controls shown while recording; hidden once we're transcribing or errored.
+    private var recordingControls: [UIView] { [cancelButton, timeLabel, waveform, stopButton] }
+
     private var startDate: Date?
     private var timer: Timer?
+    /// Guards `onDismissed` to one fire per cycle — `showError` schedules a
+    /// delayed `dismiss()`, so a cycle must not restore the key rows twice.
+    /// Reset whenever the pill re-enters an active state.
+    private var hasDismissed = false
 
     init() {
         super.init(frame: .zero)
         isHidden = true
-        layer.cornerCurve = .continuous
 
-        dot.backgroundColor = .systemRed
-        dot.layer.cornerRadius = 4
+        capsule.backgroundColor = .secondarySystemBackground
+        capsule.layer.cornerCurve = .continuous
+        capsule.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(capsule)
+
+        // Cancel (✕): Messages' discard affordance, a plain grey circle.
+        var cancelConfig = UIButton.Configuration.plain()
+        cancelConfig.image = UIImage(
+            systemName: "xmark",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
+        )
+        cancelConfig.baseForegroundColor = .secondaryLabel
+        cancelButton.configuration = cancelConfig
+        cancelButton.backgroundColor = .tertiarySystemFill
+        cancelButton.accessibilityLabel = "Cancel recording"
+        cancelButton.addAction(UIAction { [weak self] _ in self?.onCancel?() }, for: .touchUpInside)
+
+        // Stop: the red circle with a white rounded square — Messages' stop.
+        stopButton.backgroundColor = .systemRed
+        stopButton.accessibilityLabel = "Stop and transcribe"
+        stopButton.addAction(UIAction { [weak self] _ in self?.onStop?() }, for: .touchUpInside)
+        stopGlyph.backgroundColor = .white
+        stopGlyph.layer.cornerRadius = 3.5
+        stopGlyph.layer.cornerCurve = .continuous
+        stopGlyph.isUserInteractionEnabled = false
+        stopGlyph.translatesAutoresizingMaskIntoConstraints = false
+        stopButton.addSubview(stopGlyph)
 
         timeLabel.font = .monospacedDigitSystemFont(ofSize: 15, weight: .medium)
         timeLabel.textColor = .label
         timeLabel.text = "0:00"
 
-        hintLabel.font = .systemFont(ofSize: 13, weight: .medium)
-        hintLabel.textColor = .secondaryLabel
-        hintLabel.text = "Slide up to cancel"
+        statusLabel.font = .systemFont(ofSize: 15, weight: .medium)
+        statusLabel.textColor = .secondaryLabel
+        statusLabel.textAlignment = .center
+        statusLabel.isHidden = true
 
         spinner.hidesWhenStopped = true
 
-        for subview in [dot, timeLabel, waveform, hintLabel, spinner] {
-            subview.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(subview)
+        for v in [cancelButton, timeLabel, waveform, stopButton, statusLabel, spinner] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            capsule.addSubview(v)
         }
         NSLayoutConstraint.activate([
-            dot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-            dot.centerYAnchor.constraint(equalTo: centerYAnchor),
-            dot.widthAnchor.constraint(equalToConstant: 8),
-            dot.heightAnchor.constraint(equalToConstant: 8),
-            timeLabel.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 8),
-            timeLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            waveform.leadingAnchor.constraint(equalTo: timeLabel.trailingAnchor, constant: 10),
-            waveform.centerYAnchor.constraint(equalTo: centerYAnchor),
-            waveform.heightAnchor.constraint(equalToConstant: 22),
-            waveform.widthAnchor.constraint(lessThanOrEqualToConstant: 120),
-            hintLabel.leadingAnchor.constraint(greaterThanOrEqualTo: waveform.trailingAnchor, constant: 10),
-            hintLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            hintLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            spinner.centerXAnchor.constraint(equalTo: centerXAnchor),
-            spinner.centerYAnchor.constraint(equalTo: centerYAnchor),
+            capsule.leadingAnchor.constraint(equalTo: leadingAnchor),
+            capsule.trailingAnchor.constraint(equalTo: trailingAnchor),
+            capsule.centerYAnchor.constraint(equalTo: centerYAnchor),
+            capsule.heightAnchor.constraint(equalToConstant: 52),
+
+            cancelButton.leadingAnchor.constraint(equalTo: capsule.leadingAnchor, constant: 6),
+            cancelButton.centerYAnchor.constraint(equalTo: capsule.centerYAnchor),
+            cancelButton.widthAnchor.constraint(equalToConstant: 40),
+            cancelButton.heightAnchor.constraint(equalToConstant: 40),
+
+            stopButton.trailingAnchor.constraint(equalTo: capsule.trailingAnchor, constant: -6),
+            stopButton.centerYAnchor.constraint(equalTo: capsule.centerYAnchor),
+            stopButton.widthAnchor.constraint(equalToConstant: 40),
+            stopButton.heightAnchor.constraint(equalToConstant: 40),
+            stopGlyph.centerXAnchor.constraint(equalTo: stopButton.centerXAnchor),
+            stopGlyph.centerYAnchor.constraint(equalTo: stopButton.centerYAnchor),
+            stopGlyph.widthAnchor.constraint(equalToConstant: 15),
+            stopGlyph.heightAnchor.constraint(equalToConstant: 15),
+
+            timeLabel.leadingAnchor.constraint(equalTo: cancelButton.trailingAnchor, constant: 14),
+            timeLabel.centerYAnchor.constraint(equalTo: capsule.centerYAnchor),
+
+            waveform.leadingAnchor.constraint(equalTo: timeLabel.trailingAnchor, constant: 12),
+            waveform.trailingAnchor.constraint(equalTo: stopButton.leadingAnchor, constant: -12),
+            waveform.centerYAnchor.constraint(equalTo: capsule.centerYAnchor),
+            waveform.heightAnchor.constraint(equalToConstant: 24),
+
+            statusLabel.leadingAnchor.constraint(equalTo: capsule.leadingAnchor, constant: 44),
+            statusLabel.trailingAnchor.constraint(equalTo: capsule.trailingAnchor, constant: -16),
+            statusLabel.centerYAnchor.constraint(equalTo: capsule.centerYAnchor),
+
+            spinner.trailingAnchor.constraint(equalTo: statusLabel.leadingAnchor, constant: -8),
+            spinner.centerYAnchor.constraint(equalTo: capsule.centerYAnchor),
         ])
     }
 
@@ -342,23 +547,22 @@ final class VoiceRecordingHUD: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        layer.cornerRadius = min(bounds.height, bounds.width) / 2
+        capsule.layer.cornerRadius = capsule.bounds.height / 2
+        cancelButton.layer.cornerRadius = cancelButton.bounds.height / 2
+        stopButton.layer.cornerRadius = stopButton.bounds.height / 2
     }
 
     /// Shows the recording state and starts the timer. `levelProvider` is polled
-    /// for the live waveform so the HUD never reaches into the recorder itself.
+    /// for the live waveform so the bar never reaches into the recorder itself.
     func beginRecording(levelProvider: @escaping () -> Float) {
+        hasDismissed = false
         isHidden = false
         spinner.stopAnimating()
-        waveform.isHidden = false
-        setCancelZone(false)
-        backgroundColor = Self.material
-        dot.isHidden = false
-        timeLabel.isHidden = false
+        statusLabel.isHidden = true
+        recordingControls.forEach { $0.isHidden = false }
         waveform.reset()
 
         startDate = Date()
-        pulseDot()
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             guard let self, let startDate else { return }
@@ -368,44 +572,41 @@ final class VoiceRecordingHUD: UIView {
         }
     }
 
-    /// Toggles the cancel-zone warning (finger slid up past the threshold).
-    func setCancelZone(_ active: Bool) {
-        hintLabel.text = active ? "Release to cancel" : "Slide up to cancel"
-        hintLabel.textColor = active ? .systemRed : .secondaryLabel
-        dot.backgroundColor = active ? .systemGray : .systemRed
-    }
-
-    /// Swaps to the "transcribing…" state after release.
+    /// Swaps to the "Transcribing…" state after stop.
     func showTranscribing() {
         stopTimer()
-        dot.isHidden = true
-        timeLabel.isHidden = true
-        waveform.isHidden = true
-        hintLabel.text = "Transcribing…"
-        hintLabel.textColor = .secondaryLabel
+        recordingControls.forEach { $0.isHidden = true }
+        statusLabel.text = "Transcribing…"
+        statusLabel.textColor = .secondaryLabel
+        statusLabel.isHidden = false
         spinner.startAnimating()
     }
 
-    /// Flashes an error line, then hides the HUD.
+    /// Flashes a red error line, then hides the bar. Can be reached without a
+    /// preceding `beginRecording` (a start failure), so it re-arms the guard.
     func showError(_ message: String) {
+        hasDismissed = false
         stopTimer()
         isHidden = false
         spinner.stopAnimating()
-        dot.isHidden = true
-        timeLabel.isHidden = true
-        waveform.isHidden = true
-        backgroundColor = Self.material
-        hintLabel.text = message
-        hintLabel.textColor = .systemRed
+        recordingControls.forEach { $0.isHidden = true }
+        statusLabel.text = message
+        statusLabel.textColor = .systemRed
+        statusLabel.isHidden = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [weak self] in
             self?.dismiss()
         }
     }
 
+    /// Marks the cycle done and hands off to the owner, which animates the pill
+    /// out (so the exit stays in sync with the key rows fading back in) — the
+    /// bar's own visibility is left to `onDismissed`.
     func dismiss() {
+        guard !hasDismissed else { return }
+        hasDismissed = true
         stopTimer()
         spinner.stopAnimating()
-        isHidden = true
+        onDismissed?()
     }
 
     private func stopTimer() {
@@ -413,24 +614,15 @@ final class VoiceRecordingHUD: UIView {
         timer = nil
         startDate = nil
     }
-
-    private func pulseDot() {
-        UIView.animate(
-            withDuration: 0.6, delay: 0, options: [.repeat, .autoreverse, .allowUserInteraction]
-        ) {
-            self.dot.alpha = 0.3
-        }
-    }
-
-    private static var material: UIColor { .secondarySystemBackground }
 }
 
 /// A row of bars whose heights trail a rolling buffer of input levels — the
 /// "I'm listening" waveform. Cheap: a handful of layers nudged each tick.
 private final class WaveformView: UIView {
-    private let barCount = 13
+    // Enough bars to fill the full-width capsule; they spread to fit whatever
+    // width Auto Layout hands us (no fixed width — the bar stretches).
+    private let barCount = 26
     private let barWidth: CGFloat = 3
-    private let spacing: CGFloat = 4
     private var bars: [CALayer] = []
     private var levels: [Float]
 
@@ -445,9 +637,6 @@ private final class WaveformView: UIView {
             bars.append(bar)
         }
         translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(
-            equalToConstant: CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * spacing
-        ).isActive = true
     }
 
     @available(*, unavailable)
@@ -476,6 +665,10 @@ private final class WaveformView: UIView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         let midY = bounds.midY
+        // Spread the bars evenly across the available width.
+        let spacing = bars.count > 1
+            ? max(0, (bounds.width - CGFloat(bars.count) * barWidth) / CGFloat(bars.count - 1))
+            : 0
         for (index, bar) in bars.enumerated() {
             let height = max(barWidth, CGFloat(levels[index]) * bounds.height)
             let x = CGFloat(index) * (barWidth + spacing)
