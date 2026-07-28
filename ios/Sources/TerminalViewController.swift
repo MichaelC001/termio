@@ -30,7 +30,21 @@ final class TerminalViewController: UIViewController {
     /// freed the surface and raced libghostty's render threads.
     var onRequestBack: (() -> Void)?
 
+    /// Interactive back-swipe hooks (set by RootContainerViewController). The
+    /// rightward drag is finger-tracked instead of a discrete pop: `Began`
+    /// starts the interactive transition, `Changed` reports the horizontal
+    /// finger offset (>= 0, measured in a stable space so moving the screen
+    /// doesn't feed back), `Ended` reports the release velocity and whether the
+    /// drag crossed the commit threshold.
+    var onBackBegan: (() -> Void)?
+    var onBackChanged: ((CGFloat) -> Void)?
+    var onBackEnded: ((_ velocityX: CGFloat, _ commit: Bool) -> Void)?
+
     private lazy var terminalView = DisplayTerminalView(frame: .zero)
+    /// Whether the terminal held the keyboard when an interactive back began, so a
+    /// cancelled (non-committed) swipe can hand focus back instead of leaving the
+    /// keyboard dismissed (the drag resigns it up front, matching `goBack()`).
+    private var terminalWasFirstResponderAtBackBegin = false
     /// Last size actually sent to the engine + the pending coalesced refit —
     /// see viewDidLayoutSubviews for why resizes are rationed.
     private var lastFittedSize: CGSize = .zero
@@ -853,14 +867,14 @@ final class TerminalViewController: UIViewController {
         dimView.alpha = 0.15 * openness
     }
 
-    func setDrawer(open: Bool, animated: Bool) {
+    func setDrawer(open: Bool, animated: Bool, initialVelocity: CGFloat = 0) {
         drawerOpen = open
         dimView.isUserInteractionEnabled = open
         if open { setTerminalFocused(false) }
         let animations = { self.layoutDrawer() }
         if animated {
             UIView.animate(withDuration: 0.35, delay: 0,
-                           usingSpringWithDamping: 0.9, initialSpringVelocity: 0,
+                           usingSpringWithDamping: 0.9, initialSpringVelocity: initialVelocity,
                            animations: animations)
         } else {
             animations()
@@ -877,10 +891,46 @@ final class TerminalViewController: UIViewController {
             openPanGoesBack = pan.velocity(in: view).x > 0
         }
         if openPanGoesBack {
-            guard pan.state == .ended else { return }
-            let fling = pan.velocity(in: view).x > 300
-            if fling || pan.translation(in: view).x > view.bounds.width * 0.3 {
-                goBack()
+            // Measure in the window, not `view`: the container drags `view`
+            // itself during the interactive back, so reading translation in a
+            // moving space would feed back on itself.
+            guard let ref = view.window, onBackChanged != nil else {
+                // No interactive host (e.g. a plain nav stack) — discrete pop.
+                if pan.state == .ended {
+                    let fling = pan.velocity(in: view).x > 300
+                    if fling || pan.translation(in: view).x > view.bounds.width * 0.3 {
+                        goBack()
+                    }
+                }
+                return
+            }
+            let tx = pan.translation(in: ref).x
+            switch pan.state {
+            case .began:
+                // Drop the keyboard as the drag starts, matching goBack() — but remember to hand
+                // it back if the swipe is cancelled.
+                terminalWasFirstResponderAtBackBegin = terminalView.isFirstResponder
+                terminalView.resignFirstResponder()
+                onBackBegan?()
+            case .changed:
+                onBackChanged?(max(0, tx))
+            case .ended, .cancelled:
+                let vx = pan.velocity(in: ref).x
+                // A decisive flick wins over position, in *either* direction: a hard left flick
+                // cancels even past the distance threshold. Position only decides a gentle release.
+                let commit: Bool
+                if pan.state == .ended {
+                    commit = abs(vx) > 300 ? vx > 0 : tx > view.bounds.width * 0.3
+                } else {
+                    commit = false
+                }
+                // A non-committed swipe returns to the terminal; restore the keyboard it had.
+                if !commit, terminalWasFirstResponderAtBackBegin {
+                    terminalView.becomeFirstResponder()
+                }
+                onBackEnded?(vx, commit)
+            default:
+                break
             }
             return
         }
@@ -891,8 +941,17 @@ final class TerminalViewController: UIViewController {
             layoutDrawer(progress: progress)
             dimView.isUserInteractionEnabled = true
         case .ended, .cancelled:
-            let fling = -pan.velocity(in: view).x > 300
-            setDrawer(open: fling || progress > 0.4, animated: true)
+            let vOpen = -pan.velocity(in: view).x   // + = toward open
+            // A decisive flick wins over position in either direction; position only decides a
+            // gentle release. Otherwise a hard flick back the other way still committed the old way.
+            let willOpen = abs(vOpen) > 300 ? vOpen > 0 : progress > 0.4
+            // Normalize the release speed to fractions of the remaining travel per second, toward
+            // the committed target, so a flick that direction carries through and a reversal /
+            // gentle release settles from rest.
+            let remaining = drawerWidth * (willOpen ? (1 - progress) : progress)
+            let towardTarget = willOpen ? vOpen : -vOpen
+            let v = remaining > 1 ? min(max(towardTarget / remaining, 0), 30) : 0
+            setDrawer(open: willOpen, animated: true, initialVelocity: v)
         default:
             break
         }
@@ -905,8 +964,13 @@ final class TerminalViewController: UIViewController {
         case .changed:
             layoutDrawer(progress: progress)
         case .ended, .cancelled:
-            let fling = pan.velocity(in: view).x > 300
-            setDrawer(open: !(fling || progress < 0.6), animated: true)
+            let vClose = pan.velocity(in: view).x   // + = toward close
+            let willClose = abs(vClose) > 300 ? vClose > 0 : progress < 0.6
+            let open = !willClose
+            let remaining = drawerWidth * (open ? (1 - progress) : progress)
+            let towardTarget = willClose ? vClose : -vClose
+            let v = remaining > 1 ? min(max(towardTarget / remaining, 0), 30) : 0
+            setDrawer(open: open, animated: true, initialVelocity: v)
         default:
             break
         }

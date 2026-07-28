@@ -189,12 +189,15 @@ final class HomeTabPill: UIView {
         // 48pt Lottie and replays it once on every select. Same idea, hand-
         // keyed in Core Animation per icon — in-place character moves with
         // overshoot, never a size pop.
-        if animated, changed, buttons.indices.contains(index) {
+        if animated, changed, !UIAccessibility.isReduceMotionEnabled,
+           buttons.indices.contains(index) {
             playSelectionAnimation(on: buttons[index], icon: icons[index])
         }
         layoutIfNeeded()
         let settle = { self.selection.frame = self.selectionFrame() }
-        if animated {
+        // Under Reduce Motion the indicator snaps rather than spring-travelling between tabs
+        // (the tint still cross-dissolves above, which Reduce Motion permits).
+        if animated, !UIAccessibility.isReduceMotionEnabled {
             UIView.animate(withDuration: 0.35, delay: 0,
                            usingSpringWithDamping: 0.8, initialSpringVelocity: 0.2,
                            options: .curveEaseOut, animations: settle)

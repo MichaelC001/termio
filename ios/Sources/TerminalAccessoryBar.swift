@@ -446,13 +446,15 @@ final class TerminalAccessoryBar: UIInputView {
 
         // UIMenu's entrance: grow from the bottom-left corner (the (+) key)
         // with a soft spring — the translate keeps that corner pinned while
-        // the card scales up out of it.
+        // the card scales up out of it. Under Reduce Motion it's a plain fade,
+        // no scale-from-corner (matches showVoiceBar's pattern).
+        let reduce = UIAccessibility.isReduceMotionEnabled
         let collapsed = CGAffineTransform(scaleX: 0.4, y: 0.4)
             .translatedBy(x: -size.width * 0.5, y: size.height * 0.5)
         card.alpha = 0
-        card.transform = collapsed
-        UIView.animate(withDuration: 0.4, delay: 0, usingSpringWithDamping: 0.78,
-                       initialSpringVelocity: 0) {
+        card.transform = reduce ? .identity : collapsed
+        UIView.animate(withDuration: reduce ? 0.2 : 0.4, delay: 0,
+                       usingSpringWithDamping: 0.78, initialSpringVelocity: 0) {
             card.alpha = 1
             card.transform = .identity
         }
@@ -466,10 +468,19 @@ final class TerminalAccessoryBar: UIInputView {
         // Collapse back into the (+) key, mirroring the entrance.
         let card = attachMenuCard
         let size = card?.bounds.size ?? .zero
+        // Decouple the shrink from the fade rather than easing both IN (which delayed the whole
+        // exit): the card collapses toward the (+) key on ease-OUT so the response is immediate,
+        // while its alpha rides ease-IN — staying opaque until the small end so no faint large
+        // "ghost" lingers. Under Reduce Motion it's a plain fade, no scale-into-the-corner.
+        let reduce = UIAccessibility.isReduceMotionEnabled
+        if !reduce {
+            UIView.animate(withDuration: 0.2, delay: 0, options: .curveEaseOut) {
+                card?.transform = CGAffineTransform(scaleX: 0.4, y: 0.4)
+                    .translatedBy(x: -size.width * 0.5, y: size.height * 0.5)
+            }
+        }
         UIView.animate(withDuration: 0.2, delay: 0, options: .curveEaseIn) {
             card?.alpha = 0
-            card?.transform = CGAffineTransform(scaleX: 0.4, y: 0.4)
-                .translatedBy(x: -size.width * 0.5, y: size.height * 0.5)
         } completion: { _ in
             scrim.removeFromSuperview()
         }
