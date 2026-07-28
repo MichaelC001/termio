@@ -83,6 +83,13 @@ final class CompanionServer {
     /// session before the next roster push), or nil when the start failed.
     private let startSession: (String, String?) -> (sessionID: String, agentID: String)?
     private let stopSession: (String) -> Bool
+    /// Opens a plain shell in the loose terminals funnel for the phone's
+    /// Terminals ＋ (`.startTerminal`); returns the `.started` echo, or nil on
+    /// failure. Project-less: the funnel is found-or-created on the Mac.
+    private let startScratchTerminal: () -> (sessionID: String, agentID: String)?
+    /// Opens an `ssh <host>` terminal for the phone's Terminals ＋ → SSH
+    /// (`.startSSH`); returns the `.started` echo, or nil on failure.
+    private let startSSHSession: (String) -> (sessionID: String, agentID: String)?
     /// Resolves a session's transcript path and display title for a `trace`
     /// request, or nil when the session has no readable transcript yet.
     private let traceProvider: (String) -> (path: String, title: String)?
@@ -109,6 +116,8 @@ final class CompanionServer {
         ptyForSession: @escaping (String) -> PTYProcess?,
         startSession: @escaping (String, String?) -> (sessionID: String, agentID: String)?,
         stopSession: @escaping (String) -> Bool,
+        startScratchTerminal: @escaping () -> (sessionID: String, agentID: String)?,
+        startSSHSession: @escaping (String) -> (sessionID: String, agentID: String)?,
         traceProvider: @escaping (String) -> (path: String, title: String)?
     ) {
         self.port = port
@@ -116,6 +125,8 @@ final class CompanionServer {
         self.ptyForSession = ptyForSession
         self.startSession = startSession
         self.stopSession = stopSession
+        self.startScratchTerminal = startScratchTerminal
+        self.startSSHSession = startSSHSession
         self.traceProvider = traceProvider
     }
 
@@ -310,6 +321,27 @@ final class CompanionServer {
                 )
             } else {
                 sendControl(.error(message: "could not start a session there"), to: connection)
+            }
+        case .startTerminal:
+            // "New Terminal": a plain shell in the loose terminals funnel, seeded
+            // on the Mac even if the phone has never seen one there yet.
+            if let started = startScratchTerminal() {
+                sendControl(
+                    .started(sessionID: started.sessionID, agent: started.agentID),
+                    to: connection
+                )
+            } else {
+                sendControl(.error(message: "could not open a terminal"), to: connection)
+            }
+        case .startSSH(let host):
+            // "New SSH": a terminal running `ssh <host>` in that same funnel.
+            if let started = startSSHSession(host) {
+                sendControl(
+                    .started(sessionID: started.sessionID, agent: started.agentID),
+                    to: connection
+                )
+            } else {
+                sendControl(.error(message: "could not open an SSH session"), to: connection)
             }
         case .stop(let sessionID):
             // Close on the Mac; the roster push drops the row on every phone.
@@ -970,6 +1002,29 @@ extension TermioStore {
         addSession(to: project.id, agent: preset)
         guard let sessionID = selectedSessionID?.uuidString else { return nil }
         return (sessionID, preset.wireName)
+    }
+
+    /// Open a plain login shell in the loose `.terminals` funnel for the phone's
+    /// Terminals-tab ＋ → "New Terminal" (`.startTerminal`). Unlike `.start` this
+    /// carries no project: `addScratchSession` finds-or-creates the funnel by
+    /// kind, so the phone can seed the very first terminal too. Returns the new
+    /// session's wire id and the `"terminal"` echo.
+    func companionStartScratchTerminal() -> (sessionID: String, agentID: String)? {
+        addScratchSession(agent: .terminal)
+        guard let sessionID = selectedSessionID?.uuidString else { return nil }
+        return (sessionID, AgentPreset.terminal.wireName)
+    }
+
+    /// Open an SSH terminal to `host` for the phone's Terminals-tab ＋ → "New
+    /// SSH" (`.startSSH`) — the same `addSSHSession` the desktop's SSH picker
+    /// uses. It lands in the `.terminals` funnel too, so it needs no project.
+    /// Returns the new session's wire id and the `"terminal"` echo.
+    func companionStartSSHSession(host: String) -> (sessionID: String, agentID: String)? {
+        let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty else { return nil }
+        addSSHSession(host: host)
+        guard let sessionID = selectedSessionID?.uuidString else { return nil }
+        return (sessionID, AgentPreset.terminal.wireName)
     }
 
     /// Close a session for a phone `stop` request — the same `closeSession`

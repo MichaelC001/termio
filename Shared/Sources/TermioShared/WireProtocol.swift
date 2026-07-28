@@ -35,6 +35,18 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     /// it for an agent-less start until the next roster push. nil from an
     /// older Mac; the client falls back to the agent it asked for.
     case started(sessionID: String, agent: String?)
+    /// The Terminals tab's ＋ → "New Terminal": open a plain login shell in the
+    /// Mac's loose `.terminals` funnel, the shell twin of the agent-less
+    /// `.start`. It carries no project because the funnel is found-or-created by
+    /// kind on the Mac (like ⌘T), so — unlike `.start` — the phone can seed the
+    /// very first terminal too. Answered with `.started` (agent `"terminal"`).
+    case startTerminal
+    /// The Terminals tab's ＋ → "New SSH": open a loose terminal that runs
+    /// `ssh <host>` instead of a local shell. `host` is a `~/.ssh/config` alias
+    /// (see `.sshConfigHosts`) or a bare `user@host`. Like `.startTerminal` it
+    /// gathers in the `.terminals` funnel and needs no project. Answered with
+    /// `.started`.
+    case startSSH(host: String)
     /// The client asks the Mac to close a session (the phone's swipe-to-remove).
     /// No success reply — the next roster push drops the row everywhere.
     case stop(sessionID: String)
@@ -115,6 +127,10 @@ public enum CompanionControl: Codable, Sendable, Equatable {
             var fields: [String: Any] = ["t": "started", "session": sessionID]
             if let agent { fields["agent"] = agent }
             return Self.json(fields)
+        case .startTerminal:
+            return #"{"t":"startTerminal"}"#
+        case .startSSH(let host):
+            return Self.json(["t": "startSSH", "host": host])
         case .stop(let sessionID):
             return #"{"t":"stop","session":"\#(sessionID)"}"#
         case .resize(let cols, let rows):
@@ -200,6 +216,11 @@ public enum CompanionControl: Codable, Sendable, Equatable {
         case "started":
             guard let sessionID = obj["session"] as? String else { return nil }
             return .started(sessionID: sessionID, agent: obj["agent"] as? String)
+        case "startTerminal":
+            return .startTerminal
+        case "startSSH":
+            guard let host = obj["host"] as? String else { return nil }
+            return .startSSH(host: host)
         case "stop":
             guard let sessionID = obj["session"] as? String else { return nil }
             return .stop(sessionID: sessionID)
