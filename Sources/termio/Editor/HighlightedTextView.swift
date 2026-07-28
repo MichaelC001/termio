@@ -24,6 +24,9 @@ struct HighlightedTextView: NSViewRepresentable {
     /// A 1-based line to scroll to and flash (a content-search hit). Applied once on creation and
     /// again whenever the value changes — clicking a different hit in the same file re-scrolls.
     var jumpToLine: Int? = nil
+    /// Appends a "Close" item to the right-click menu — the editor closes terminal-style, alongside
+    /// the toolbar button. Left off wherever the text view isn't the closable editor overlay.
+    var showsCloseMenuItem: Bool = false
     /// Invoked when the user presses ⌘S — flushes the buffer to disk immediately.
     let onSave: () -> Void
 
@@ -46,6 +49,7 @@ struct HighlightedTextView: NSViewRepresentable {
 
         let textView = SavingTextView(frame: .zero, textContainer: container)
         textView.onSave = onSave
+        textView.showsCloseMenuItem = showsCloseMenuItem
         textView.delegate = context.coordinator
         textView.isEditable = isEditable
         textView.isSelectable = true
@@ -96,6 +100,15 @@ struct HighlightedTextView: NSViewRepresentable {
         context.coordinator.observeFrame(of: textView)
         scrollView.contentView.postsBoundsChangedNotifications = true
         context.coordinator.observeScroll(of: scrollView)
+
+        // Claim first responder once the editor is in a window, so the Edit menu's Cut/Copy/Paste
+        // (and typing) act on this buffer instead of the terminal surface that held focus beneath
+        // the overlay. The terminal focus driver won't fight back — its `canFocus` bails while a
+        // file is open (see `requestTerminalFocus`).
+        DispatchQueue.main.async { [weak textView] in
+            guard let textView, let window = textView.window else { return }
+            window.makeFirstResponder(textView)
+        }
 
         // Reveal the requested line once the view has a real frame — at make time it hasn't been
         // laid out, so scrolling now would land nowhere.
@@ -243,6 +256,9 @@ struct HighlightedTextView: NSViewRepresentable {
 /// Xcode-style current-line band and washes the bracket pair beside the caret.
 private final class SavingTextView: NSTextView {
     var onSave: (() -> Void)?
+    /// When set, the right-click menu carries a trailing "Close" — the editor's only close
+    /// affordance now that it has no chrome button (terminal-style, matching how a session closes).
+    var showsCloseMenuItem = false
     /// Full-width wash under the caret's line; `.clear` (or a read-only buffer) draws nothing.
     var currentLineColor: NSColor = .clear { didSet { needsDisplay = true } }
     /// Background wash on a bracket pair when the caret sits against one of them.
@@ -261,6 +277,33 @@ private final class SavingTextView: NSTextView {
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    /// A deliberately minimal right-click menu — just the edit basics and a prominent Close —
+    /// instead of AppKit's full text menu (Look Up, Translate, Font, Substitutions, Speech,
+    /// Layout Orientation, Services…), which buried Close under a wall of items an editor covering
+    /// the terminal has no use for. `cut`/`copy`/`paste` route through the responder chain, so they
+    /// auto-enable off the selection and clipboard exactly like the native items did.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard showsCloseMenuItem else { return super.menu(for: event) }
+        let menu = NSMenu()
+        if isEditable {
+            menu.addItem(withTitle: "Cut", action: #selector(cut(_:)), keyEquivalent: "")
+        }
+        menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+        if isEditable {
+            menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
+        }
+        menu.addItem(.separator())
+        let close = NSMenuItem(title: "Close", action: #selector(closeEditorOverlay), keyEquivalent: "")
+        close.target = self
+        menu.addItem(close)
+        return menu
+    }
+
+    @objc private func closeEditorOverlay() {
+        // The same teardown the toolbar X used to post — `TerminalPane` flushes and clears the editor.
+        NotificationCenter.default.post(name: .termioCloseContentOverlay, object: nil)
     }
 
     // MARK: Current line
