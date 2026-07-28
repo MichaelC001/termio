@@ -319,6 +319,17 @@ private final class SavingTextView: NSTextView {
     /// moves within one line skip the repaint.
     private var lastCaretLineStart = -1
 
+    /// Turn off Core Graphics font smoothing before AppKit lays down glyphs. On a dark terminal
+    /// background CG "smoothing" fattens every stroke, so the same face reads heavier here than in
+    /// the Ghostty surface beside it (Ghostty draws its own glyphs and skips this). Killing it per
+    /// draw keeps the editor's weight matched to the terminal. (Xcode fought the same battle; its
+    /// modern answer is to defer to the system setting — we instead pin it off for in-window
+    /// consistency.)
+    override func draw(_ dirtyRect: NSRect) {
+        NSGraphicsContext.current?.cgContext.setShouldSmoothFonts(false)
+        super.draw(dirtyRect)
+    }
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if modifiers == .command, event.charactersIgnoringModifiers == "s" {
