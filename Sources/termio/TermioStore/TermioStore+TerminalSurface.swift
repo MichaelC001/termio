@@ -252,6 +252,15 @@ extension TermioStore {
             let agentID = session.agent.id
             let isAgentSession = session.agent != .terminal && !session.isSSH
             let statusTrace = ProcessInfo.processInfo.environment["TERMIO_STATUS_TRACE"] != nil
+            // Reads this session's ConEmu `OSC 9;4` progress out of the raw stream as
+            // a busy/idle signal (Grok emits it natively). Scanned on every chunk
+            // *before* the 1 s status throttle below — an agent's turn boundary is an
+            // edge, not something to sample once a second. The scan runs for every
+            // session (a plain terminal can be promoted to a hand-started Grok, whose
+            // sink was built while the row was still a shell); whether a transition is
+            // *acted on* is gated in `applyProgressActivity` by the session's live
+            // agent, so an unrelated shell's `wget`/`npm` progress bar can't move a dot.
+            var progressScanner = OSCProgressScanner()
             var lastPoke = Date.distantPast
             var lastScreenSignature: Int?
             // Bytes seen since the last poke, so the throttled tick can report the
@@ -260,6 +269,23 @@ extension TermioStore {
             var pendingBytes = 0
             pty.addSink { [weak self, weak inMemory, weak pty] data in
                 pendingBytes += data.count
+                for progress in progressScanner.scan(data) {
+                    if statusTrace {
+                        AgentStatusRules.trace(
+                            agent: "\(agentID).progress", session: session.id,
+                            activity: progress, matched: "OSC 9;4")
+                    }
+                    // Tie the event to the PTY that produced it. Unlike the title
+                    // channel — whose Combine subscription is torn down with the view
+                    // state on relaunch — this sink is only session-id-keyed, so a
+                    // same-agent relaunch could otherwise let a dead PTY's queued
+                    // `working` mark the replacement process. Applying only while this
+                    // PTY is still the session's live one drops that stale event.
+                    DispatchQueue.main.async { [weak pty] in
+                        guard let self, let pty, self.ptyProcesses[session.id] === pty else { return }
+                        self.applyProgressActivity(progress, for: session.id)
+                    }
+                }
                 let now = Date()
                 guard now.timeIntervalSince(lastPoke) >= 1 else { return }
                 lastPoke = now
