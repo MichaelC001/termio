@@ -103,9 +103,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // The full-window host that shows the active inspector detail blown up to cover everything
     // while `store.inspectorMaximized`; nil when the detail is docked in the inspector.
     private var maximizedDetailHost: NSHostingView<AnyView>?
-    // Whether *we* drove the window into native fullscreen when the detail was maximized, so restore
-    // exits only the fullscreen we entered — never one the user opened with the green button first.
-    private var maximizeDidEnterFullScreen = false
     // Coalesces the per-frame `windowDidResize` stream into a single settle so the inspector's
     // max thickness (and the tracking-separator re-bind it forces) is recomputed once the drag
     // stops, not on every intermediate frame.
@@ -248,6 +245,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if opened { self.revealInspectorForDetail() }
                     // Blow the detail up into a full-window host when maximized; tear it down otherwise.
                     self.setDetailMaximized(maximized)
+                    // The pane switch (Files/Search/Changes/Issues/Info) re-aims the inspector's list
+                    // column, which the full-window detail now covers — so while maximized the tabs
+                    // would act on something off-screen. Pull them from the toolbar for the duration
+                    // and restore them on the way back down (the inspector is still open behind the host).
+                    self.syncInspectorTabsVisibility()
                     // Revealing the inspector (open) or tearing down the maximize host (restore) both
                     // relayout around divider 1, which can leave the tracking separator inert (the
                     // centered-tabs / missing-divider glitch). Re-bind once layout settles.
@@ -813,6 +815,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         setInspectorSwitchVisible(!item.isCollapsed)
     }
 
+    /// Drives the pane switch's visibility from its two masters at once: the inspector must be open
+    /// *and* not maximized. A maximized detail covers the list column the switch re-aims, so the tabs
+    /// would act on something off-screen — pull them while maximized, restore them on the way back
+    /// down. Idempotent (`setInspectorSwitchVisible` no-ops when already in the target state), so the
+    /// overlay observer can call it on every store change.
+    func syncInspectorTabsVisibility() {
+        guard let item = filesInspectorItem else { return }
+        let maximized = store.inspectorMaximized && store.isDetailPresented
+        setInspectorSwitchVisible(!item.isCollapsed && !maximized)
+    }
+
     /// Inserts or removes the inspector pane switch as the panel opens/closes, so it is shown only
     /// while there is something to switch between. The tracking separator (which pins the switch to
     /// the inspector's left edge) is inserted and removed *with* the switch — otherwise it draws a
@@ -948,9 +961,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     /// Mounts (or removes) the full-window host that shows the active inspector detail blown up to
-    /// cover the whole content area. `InspectorDetailContent` is the same view the inspector docks;
-    /// while it is up the inspector hides its own copy (see `InspectorRoot`), so the detail renders
-    /// once. The toolbar stays above it, so its maximize button restores and Esc still closes.
+    /// cover the content area (the terminal + inspector region, *not* the project sidebar) — an
+    /// in-window maximize, *not* native macOS fullscreen: the window stays put in its Space, the
+    /// menu bar stays visible. The sidebar stays reachable, and toggling it slides the maximized
+    /// detail with it (see the leading constraint below).
+    /// `InspectorDetailContent` is the same view the inspector docks; while it is up the inspector
+    /// hides its own copy (see `InspectorRoot`), so the detail renders once. The toolbar stays above
+    /// it, so its maximize button restores and Esc still closes.
     private func setDetailMaximized(_ on: Bool) {
         guard let container = splitViewController?.view else { return }
         if on {
@@ -962,30 +979,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             ))
             host.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(host, positioned: .above, relativeTo: nil)
+            // Pin the leading edge to the *content* area (the terminal/inspector region), not the
+            // whole window — so the maximized detail sits beside the project sidebar rather than
+            // swallowing it. Item 1 is the terminal (0 is the sidebar, 2 the inspector); its leading
+            // tracks the split, so toggling the sidebar slides the maximized detail with it (it
+            // extends left when the sidebar collapses).
+            let items = splitViewController?.splitViewItems ?? []
+            let contentLeading = items.count > 1
+                ? items[1].viewController.view.leadingAnchor
+                : container.leadingAnchor
             NSLayoutConstraint.activate([
-                host.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                host.leadingAnchor.constraint(equalTo: contentLeading),
                 host.trailingAnchor.constraint(equalTo: container.trailingAnchor),
                 host.topAnchor.constraint(equalTo: container.topAnchor),
                 host.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             ])
             maximizedDetailHost = host
-            // Take the maximize all the way into native macOS fullscreen (own Space, hidden menu bar)
-            // for a truly immersive read — but only if the window isn't already fullscreen, so a
-            // green-button fullscreen the user set up themselves is left for them to exit.
-            if let window, !window.styleMask.contains(.fullScreen) {
-                window.toggleFullScreen(nil)
-                maximizeDidEnterFullScreen = true
-            }
         } else {
             maximizedDetailHost?.removeFromSuperview()
             maximizedDetailHost = nil
-            // Leave fullscreen only when this maximize is what entered it.
-            if maximizeDidEnterFullScreen {
-                if let window, window.styleMask.contains(.fullScreen) {
-                    window.toggleFullScreen(nil)
-                }
-                maximizeDidEnterFullScreen = false
-            }
         }
     }
 
