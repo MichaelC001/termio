@@ -49,7 +49,29 @@ contents_dir="$app_dir/Contents"
 macos_dir="$contents_dir/MacOS"
 resources_dir="$contents_dir/Resources"
 frameworks_dir="$contents_dir/Frameworks"
-sign_identity="${SIGN_IDENTITY:--}"
+# Signing identity resolution:
+#   - Explicit SIGN_IDENTITY always wins (the release runbook sets it).
+#   - Otherwise a dev build tries to auto-pick a real identity from the keychain,
+#     because local notifications (UNUserNotificationCenter) are rejected outright
+#     for an ad-hoc-signed app — dev builds can only banner when properly signed.
+#   - If no identity is present (e.g. a contributor without a signing cert), fall
+#     back to ad-hoc so the build STILL succeeds — you just don't get notifications.
+if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+    sign_identity="$SIGN_IDENTITY"
+elif [[ "$channel" == "dev" ]]; then
+    # Prefer a Developer ID cert: it is self-sufficient for notification
+    # authorization. An "Apple Development" cert needs a matching provisioning
+    # profile or usernoted answers "Notifications are not allowed", so it is only
+    # a last resort.
+    ids="$(security find-identity -v -p codesigning 2>/dev/null)"
+    sign_identity="$(printf '%s\n' "$ids" | grep -oE '"Developer ID Application:[^"]*"' | head -1 | tr -d '"')"
+    [[ -z "$sign_identity" ]] && sign_identity="$(printf '%s\n' "$ids" | grep -oE '"Apple Development:[^"]*"' | head -1 | tr -d '"')"
+    sign_identity="${sign_identity:--}"
+    [[ "$sign_identity" == "-" ]] \
+        && echo "==> No signing identity found — ad-hoc (notifications will not work in this dev build)"
+else
+    sign_identity="-"
+fi
 
 echo "==> Building $app_name ($configuration)"
 swift build -c "$configuration"
@@ -163,7 +185,10 @@ fi
 # the framework before the outer app, or codesign rejects the bundle.
 sign_args=(--force --sign "$sign_identity")
 if [[ "$sign_identity" != "-" ]]; then
-    sign_args+=(--options runtime --timestamp)
+    sign_args+=(--options runtime)
+    # A secure timestamp needs the network and only matters for notarized
+    # distribution; skip it for local dev builds so a rebuild works offline/fast.
+    [[ "$channel" == "dev" ]] || sign_args+=(--timestamp)
 fi
 
 echo "==> Signing with identity: $sign_identity"

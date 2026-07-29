@@ -62,6 +62,26 @@ final class TaskNotificationCenter: NSObject {
         self.store = store
         guard AppChannel.isBundledApp else { return }
         UNUserNotificationCenter.current().delegate = self
+        // Ask for authorization eagerly, at launch, when the feature is on.
+        // The lazy per-settle request (below) only ever fires while termio is
+        // *backgrounded* — so a user who watches their agents finish never
+        // trips it, the prompt never appears, and no grant is ever recorded
+        // (the failure is completely silent). Requesting here guarantees the
+        // prompt is offered once. `requestAuthorization` is idempotent: after
+        // the first decision it returns the recorded answer without
+        // re-prompting, so this is free on every later launch.
+        guard store.settings.notifyOnTaskCompletion else { return }
+        UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .sound]) { granted, error in
+                if let error {
+                    // An ad-hoc-signed dev build is rejected outright here
+                    // (UNErrorDomain 1) — dev builds can NEVER banner; test on
+                    // the release build. A user denial just reads granted=false.
+                    Log.app.error("notification authorization failed at launch: \(error.localizedDescription, privacy: .public)")
+                } else {
+                    Log.app.info("notification authorization at launch: granted=\(granted, privacy: .public)")
+                }
+            }
     }
 
     /// A session's turn began. Called from the status choke point on the
@@ -93,16 +113,23 @@ final class TaskNotificationCenter: NSObject {
         // policy Cursor and Codex both ship (`unfocused`-only). While termio is
         // frontmost, the sidebar dot and menu-bar pulse are the completion
         // channel; a banner would duplicate them in a louder one.
-        guard !NSApp.isActive else { return }
+        guard !NSApp.isActive else {
+            Log.app.debug("notification suppressed for \(id, privacy: .public): termio is frontmost")
+            return
+        }
         if status == .done {
             // A quick reply isn't worth an interruption; a blocked agent always is.
             if let since = turn?.workingSince,
                Date().timeIntervalSince(since) < Self.minimumTurnDuration {
+                Log.app.debug("notification suppressed for \(id, privacy: .public): turn shorter than \(Self.minimumTurnDuration, privacy: .public)s")
                 return
             }
             // Task vs chat: a turn that ran no tools produced an answer, not work.
             // Applied only to sessions with proven tool telemetry.
-            if let turn, turn.toolCapable, !turn.sawTool { return }
+            if let turn, turn.toolCapable, !turn.sawTool {
+                Log.app.debug("notification suppressed for \(id, privacy: .public): tool-capable turn ran no tool")
+                return
+            }
         }
 
         let content = UNMutableNotificationContent()
@@ -156,6 +183,50 @@ final class TaskNotificationCenter: NSObject {
                 center.add(request) { error in
                     if let error {
                         Log.app.error("notification post failed: \(error.localizedDescription, privacy: .public)")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Posts a notification on an agent's explicit request (`termio notify`),
+    /// bypassing the automatic path's policy gates — the agent asked for it, so it
+    /// fires whether or not termio is frontmost. When a calling session is known,
+    /// the banner is keyed to it (so a click focuses it and a later automatic
+    /// banner replaces rather than stacks) and carries the agent's icon; a
+    /// plain-shell caller posts a standalone, unlinked banner. Deliberately not
+    /// gated on `notifyOnTaskCompletion`: that switch governs the *automatic*
+    /// banners, whereas this is a direct, opt-in call.
+    func postManual(title: String, body: String, project: Project?, session: Session?) {
+        guard AppChannel.isBundledApp else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        if let project { content.subtitle = project.name }
+        content.body = body
+        if store?.settings.notificationSoundEnabled == true { content.sound = .default }
+        let agent = session.flatMap { store?.effectiveAgent(for: $0) }
+        let identifier: String
+        if let session {
+            content.userInfo = [Self.sessionKey: session.id.uuidString]
+            identifier = Self.identifier(for: session.id)
+        } else {
+            identifier = "task-manual.\(UUID().uuidString)"
+        }
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+            if let error {
+                Log.app.error("manual notification authorization failed: \(error.localizedDescription, privacy: .public)")
+            }
+            guard granted else { return }
+            DispatchQueue.main.async {
+                if let agent, let attachment = Self.agentIconAttachment(for: agent) {
+                    content.attachments = [attachment]
+                }
+                let request = UNNotificationRequest(
+                    identifier: identifier, content: content, trigger: nil)
+                center.add(request) { error in
+                    if let error {
+                        Log.app.error("manual notification post failed: \(error.localizedDescription, privacy: .public)")
                     }
                 }
             }

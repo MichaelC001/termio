@@ -33,6 +33,8 @@ usage:
   termio sessions close <agent>@<id> [...]   close session tabs
   termio sessions focus <agent>@<id>         select the session in the app
 
+  termio notify [--title T] "<message>"      post a macOS notification (e.g. "I'm done")
+
   termio agent report <state>                report this agent's activity (hook contract)
 
 options:
@@ -568,6 +570,50 @@ agent() {
     if [ "$reply" -eq 1 ]; then printf '{}'; fi
 }
 
+# `termio notify [--title T] "<message>"` — post a macOS notification on demand.
+# An agent calls this to ping the user ("tests passed", "I need input") without
+# waiting for the automatic task-completion banner, which only fires while termio
+# is backgrounded. The message is required; --title overrides the default (the
+# calling agent's name). Routed through the running app over the control socket so
+# the banner wears termio's identity and a click focuses the calling session.
+notify() {
+    format=text
+    title=""
+    body=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --json) format=json ;;
+            --title)
+                [ $# -ge 2 ] || { echo "termio: --title needs a value" >&2; exit 1; }
+                title="$2"; shift ;;
+            -h|--help)
+                cat <<'EOF'
+usage: termio notify [--title T] "<message>" [--json]
+
+Post a macOS notification from the running app. The agent uses this to ping you
+directly — "build finished", "need a decision" — regardless of whether termio is
+frontmost (unlike the automatic completion banner). --title overrides the default
+(the calling agent's name); the banner's subtitle is the project, and clicking it
+focuses the session that posted it.
+EOF
+                exit 0 ;;
+            *) body="${body:+$body }$1" ;;
+        esac
+        shift
+    done
+    if [ -z "$body" ]; then
+        echo "termio: notify needs a message (e.g. \`termio notify \"tests passed\"\`)" >&2
+        exit 1
+    fi
+    if [ ! -S "$SOCKET" ]; then
+        echo "termio: app is not running (no control socket at $SOCKET)" >&2
+        exit 1
+    fi
+    extra=""
+    [ -n "$title" ] && extra="\"title\":\"$(json_escape "$title")\""
+    request_once notify "$format" "" "" "$body" "$extra"
+}
+
 open_project() {
     dir="${1:-.}"
     if [ ! -d "$dir" ]; then
@@ -599,6 +645,11 @@ case "${1:-}" in
     agent)
         shift
         agent "$@"
+        exit 0
+        ;;
+    notify)
+        shift
+        notify "$@"
         exit 0
         ;;
     open)

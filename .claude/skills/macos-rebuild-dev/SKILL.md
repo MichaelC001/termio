@@ -29,8 +29,14 @@ All of this falls out of the `.dev` bundle-id suffix via `Sources/termio/Compani
 
 termio is a plain SwiftPM executable (`Package.swift` → `executableTarget` named
 `termio`); `swift build` alone produces a bare binary with **no Dock icon**. So this
-skill builds the real bundle via `scripts/build-app.sh` (ad-hoc signed; the app runs
-unsandboxed with `.exec` PTYs — see `CLAUDE.md`). The icon is `packaging/icon-static.svg`,
+skill builds the real bundle via `scripts/build-app.sh`. For a dev build the script
+auto-picks a real codesigning identity from **your own** keychain (any "Apple
+Development" / "Developer ID Application" cert — a free Apple ID gives you one) so the
+dev app can post macOS notifications; `usernoted` rejects an ad-hoc signature outright,
+so an unsigned dev build can **never** banner. A contributor with **no** signing cert
+falls back to ad-hoc automatically — the build still succeeds, they just don't get
+notifications. Set `SIGN_IDENTITY=…` to force a specific one. The app runs
+unsandboxed with `.exec` PTYs — see `CLAUDE.md`. The icon is `packaging/icon-static.svg`,
 rasterized to `packaging/AppIcon.png` by `scripts/render-icon.sh` (needs headless
 Chrome). Note: dev and release currently share the same icon art and differ only by
 name ("termio dev") — a tinted dev icon is a possible follow-up.

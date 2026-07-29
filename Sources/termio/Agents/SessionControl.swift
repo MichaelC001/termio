@@ -35,9 +35,12 @@ struct ControlRequest: Decodable {
     let wait: Bool?
     /// The `--wait` cap in milliseconds; clamped server-side. Nil uses the default.
     let timeoutMs: Int?
+    /// Optional banner title for the `notify` op; defaults to the calling agent's
+    /// name when absent.
+    let title: String?
 
     private enum CodingKeys: String, CodingKey {
-        case op, format, target, text, lines, agent, snapshot, wait
+        case op, format, target, text, lines, agent, snapshot, wait, title
         case callerSession = "caller_session"
         case callerCwd = "caller_cwd"
         case timeoutMs = "timeout_ms"

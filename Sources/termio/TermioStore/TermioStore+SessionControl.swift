@@ -46,9 +46,37 @@ extension TermioStore {
         case "close": return closeTab(request, in: project)
         case "focus": return focusSession(request, in: project)
         case "read": return readScreen(request, in: project)
+        case "notify": return notify(request, in: project)
         default:
             return controlError(request, "bad_op", "Unknown op '\(request.op)'.")
         }
+    }
+
+    /// `termio notify` — post a macOS notification on the agent's explicit request
+    /// ("I'm done", "I need input"). Unlike the automatic task-completion banner,
+    /// this carries no policy gate: the agent asked for it, so it fires whether or
+    /// not termio is frontmost and regardless of turn length. The calling session
+    /// rides in the banner so a click focuses it, and the project supplies the
+    /// subtitle. The body is the only required argument.
+    private func notify(_ request: ControlRequest, in project: Project) -> Data {
+        let body = (request.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else {
+            return controlError(request, "empty_body",
+                "notify needs a message, e.g. `termio notify \"tests passed\"`.")
+        }
+        // The calling session, when there is one, makes the banner clickable back to
+        // the agent that posted it. A plain-shell caller simply posts an unlinked one.
+        let caller = request.callerSession
+            .flatMap { UUID(uuidString: $0) }
+            .flatMap { session($0) }
+        let title = request.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedTitle = (title?.isEmpty == false)
+            ? title!
+            : caller.map { effectiveAgent(for: $0).displayName } ?? "termio"
+        TaskNotificationCenter.shared.postManual(
+            title: resolvedTitle, body: body, project: project, session: caller)
+        return control(request, ok: true, text: "notified",
+                       json: ["notified": true, "title": resolvedTitle])
     }
 
     /// Validates a `watch` subscription and returns the caller's project id to scope
