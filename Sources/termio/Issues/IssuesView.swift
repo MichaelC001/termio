@@ -624,6 +624,11 @@ struct IssueDetailView: View {
                 ),
                 background: settings.terminalBackgroundColor
             )
+            // Fill like the error/progress branches below: without this, SwiftUI can size the
+            // representable from the WKWebView's intrinsic (near-zero while it's mid-load), which
+            // collapses the detail to a sliver — and the empty area paints the window background
+            // (reads as a black window, most visibly across a minimize/restore relayout).
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let error = model.detailError {
             ContentUnavailableView("Couldn’t Load", huge: .github, description: Text(error))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -611,6 +611,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
 
+    func windowDidDeminiaturize(_ notification: Notification) {
+        // Restoring from the Dock can bring the window back under its content minimum, and leaves a
+        // tickless terminal surface (and a mid-load WKWebView in the Issues pane) unpainted — the
+        // "minimize while a GitHub issue loads → tiny + black" report. Clamp a shrunken frame back
+        // up (setFrame ignores contentMinSize), force a relayout, and nudge the surface to repaint.
+        guard let window else { return }
+        let minFrameHeight = window.frameRect(forContentRect:
+            NSRect(origin: .zero, size: window.contentMinSize)).height
+        if window.frame.height < minFrameHeight {
+            var frame = window.frame
+            frame.origin.y -= (minFrameHeight - frame.height)   // grow from the top, keep it fixed
+            frame.size.height = minFrameHeight
+            window.setFrame(frame, display: true)
+        }
+        window.contentView?.layoutSubtreeIfNeeded()
+        store.repaintSelectedSurface()
+    }
+
     /// Lets the right inspector grow with the window: its max width is the golden ratio (0.618)
     /// of the current content width, floored at 420pt so it never shrinks below the old fixed cap
     /// on narrow windows. A static `maximumThickness` capped the inspector at 420pt regardless of
