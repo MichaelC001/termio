@@ -33,7 +33,7 @@ struct IssuesView: View {
         // editor and diff), driven by `store.openIssueDetail`, not pushed in here.
         listPane
             .task(id: repoRoot) {
-                store.issuesModel = model
+                store.registerIssuesModel(model)
                 await model.start()
             }
             // Selection IS the open gesture; route it to the center overlay. Follow the

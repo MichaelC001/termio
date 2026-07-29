@@ -202,12 +202,27 @@ final class TermioStore: ObservableObject {
         persistInspectorSoon()
     }
 
-    /// The Issues pane's model, held here (in addition to the inspector view that owns it)
-    /// so an open PR/issue detail in the center keeps its data — conversation, PR files,
-    /// checkout — even when the inspector switches to another tab or collapses and its view
-    /// is torn down. `IssuesView` points this at its model on appear; `TerminalPane`'s
-    /// detail overlay reads it.
-    @Published var issuesModel: IssuesPanelModel?
+    /// The Issues pane's models, cached by repo root, held here (beyond the inspector view
+    /// that owns each) so an open PR/issue detail keeps its data — conversation, PR files,
+    /// checkout — even when the inspector switches tab / collapses and `IssuesView` is torn
+    /// down. `IssuesView` registers its model on appear; the detail overlay reads
+    /// `issuesModel`, which resolves to the *selected session's* repo. That pairing is what
+    /// makes per-session issue restore (issue #160) safe: returning to a session can never
+    /// render its saved issue against another repo's model.
+    @Published private(set) var issuesModels: [String: IssuesPanelModel] = [:]
+
+    /// Registers (or refreshes) the Issues model for its repo root. Called by `IssuesView`.
+    func registerIssuesModel(_ model: IssuesPanelModel) {
+        issuesModels[model.repoRoot] = model
+    }
+
+    /// The Issues model for the currently selected session's repo, or `nil` when none has
+    /// loaded yet — the detail overlay then falls back to the list rather than fetching an
+    /// issue against the wrong repo. Keyed on `inspectorProjectPath`, the exact string
+    /// `IssuesView` is created with (see `FileBrowserView.projectPath`).
+    var issuesModel: IssuesPanelModel? {
+        inspectorProjectPath.flatMap { issuesModels[$0] }
+    }
 
     /// Which pane the trailing inspector shows — the file tree or git changes. Set by the toolbar's
     /// segmented switch and read by `FileBrowserView`. (The inspector's open/closed state is owned by

@@ -998,6 +998,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } else {
             maximizedDetailHost?.removeFromSuperview()
             maximizedDetailHost = nil
+            // Removing the host re-exposes the terminal, but a tickless surface won't repaint
+            // itself — nudge it so a switch out of a maximized detail can't leave a blank.
+            store.repaintSelectedSurface()
         }
     }
 

@@ -844,6 +844,16 @@ extension TermioStore {
     /// than waiting for the next PTY-output wakeup. A fixed short pump is enough: a
     /// color/font reconfigure needs no reply-gated handshake the way a cold spawn
     /// does, so a handful of frames flush the new look.
+    /// Repaints the selected session's surface for a brief window. Used when a full-window
+    /// overlay — the maximized inspector detail — is torn down and re-exposes the terminal:
+    /// this embedding has no continuous tick (see `warmUpRendering`), so an uncovered surface
+    /// would otherwise sit on its stale last frame (a blank on a fresh session) until the next
+    /// PTY-output or focus event. This is issue #160's fullscreen blank-on-tab-switch.
+    func repaintSelectedSurface() {
+        guard let id = selectedSessionID, let state = surfaces[id] else { return }
+        pumpRendering(state, duration: 0.25)
+    }
+
     private func pumpRendering(_ state: TerminalViewState, duration: TimeInterval) {
         let started = Date()
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak state] timer in
