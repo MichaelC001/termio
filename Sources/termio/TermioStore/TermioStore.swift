@@ -29,8 +29,13 @@ final class TermioStore: ObservableObject {
             // (issue #160). This replaces the blanket overlay-clear that used to live in
             // `TerminalPane` — and, because we no longer tear the maximize host down to
             // nothing on every switch, it also removes the fullscreen blank-screen race.
-            if let old = oldValue { inspectorStates[old] = captureInspectorState() }
-            applyInspectorState(selectedSessionID.flatMap { inspectorStates[$0] } ?? InspectorState())
+            // Suppressed during launch restore: `restored()` seeds every session's layout
+            // and applies the selected one by hand, so capturing here would overwrite a
+            // just-seeded layout with the still-default live inspector.
+            if !isRestoringInspector {
+                if let old = oldValue { inspectorStates[old] = captureInspectorState() }
+                applyInspectorState(selectedSessionID.flatMap { inspectorStates[$0] } ?? InspectorState())
+            }
             if let id = selectedSessionID {
                 // A mid-turn `.working` keeps its spinner; only the resting
                 // "your turn" states are answered by looking.
@@ -192,6 +197,9 @@ final class TermioStore: ObservableObject {
             if inspectorMaximized { inspectorMaximized = false }
             if inspectorListCollapsed { inspectorListCollapsed = false }
         }
+        // Every detail change (and, via the tab's own clears, every tab switch) funnels
+        // through here, so it's the one place to schedule the durable-layout save.
+        persistInspectorSoon()
     }
 
     /// The Issues pane's model, held here (in addition to the inspector view that owns it)
@@ -270,6 +278,23 @@ final class TermioStore: ObservableObject {
     /// files but not transient views). Keyed by session, so a dead session's entry is
     /// pruned alongside its runtime in `syncRuntimes`.
     var inspectorStates: [Session.ID: InspectorState] = [:]
+
+    /// True only while `restored()` seeds the saved layouts and hand-applies the selected
+    /// one — it suppresses the capture/restore in `selectedSessionID`'s didSet so a
+    /// programmatic selection during launch can't overwrite a just-seeded layout.
+    private var isRestoringInspector = false
+
+    /// Debounced whole-state save for durable inspector edits (opening a file, switching
+    /// the tab). Unlike a session switch, these don't move `selectedSessionID`, so nothing
+    /// else persists them — without this, opening a file and quitting without switching
+    /// would lose it. Debounced so a burst of clicks writes once. Skipped during restore.
+    private func persistInspectorSoon() {
+        guard !isRestoringInspector else { return }
+        persistDebounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.persist() } }
+        persistDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
 
     /// Snapshots the inspector's current content into an `InspectorState`.
     private func captureInspectorState() -> InspectorState {
@@ -867,6 +892,9 @@ final class TermioStore: ObservableObject {
                 store.inspectorStates[id] = state
             }
         }
+        // Guard the selection change so its didSet neither captures the (still-default)
+        // live inspector over a just-seeded layout nor schedules a startup save.
+        store.isRestoringInspector = true
         if let id = snapshot.selectedSessionID, store.session(id) != nil {
             store.selectedSessionID = id
         }
@@ -876,6 +904,7 @@ final class TermioStore: ObservableObject {
         if let id = store.selectedSessionID, let state = store.inspectorStates[id] {
             store.applyInspectorState(state)
         }
+        store.isRestoringInspector = false
         // Restore the split groups, keeping only those whose panes all still
         // resolve to live sessions (a stale group is dropped whole rather than
         // patched — the user just re-splits). State files from before groups
