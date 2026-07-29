@@ -96,6 +96,41 @@ struct TraceView: View {
     @State private var loadError: String?
 
     var body: some View {
+        VStack(spacing: 0) {
+            header
+            content
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Match the editor/diff overlays: opaque terminal background bleeding under the titlebar.
+        .background(Color(nsColor: settings.terminalBackgroundColor).ignoresSafeArea())
+        .onExitCommand(perform: onClose)
+        .task(id: request) { await build() }
+        // Re-render if the user flips light/dark while the trace is open.
+        .onChange(of: colorScheme) { Task { await build() } }
+    }
+
+    /// The session title on the left, content-area window controls on the right — the
+    /// same native header layout as `IssueDetailView` (12pt medium title truncating at
+    /// the tail, 8pt horizontal padding, the shared top-bar height and bottom hairline),
+    /// so the trace and issue overlays read as one family. The HTML document drops its
+    /// own `<header>` on Mac (see `build()`); the phone keeps it.
+    private var header: some View {
+        HStack(spacing: 6) {
+            Text(request.title)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 6)
+            InspectorDetailChromeButtons()
+        }
+        .padding(.horizontal, 8)
+        .frame(height: GitChangesView.topBarHeight)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)
+        }
+    }
+
+    @ViewBuilder private var content: some View {
         Group {
             if let html {
                 TraceWebView(html: html, background: settings.terminalBackgroundColor)
@@ -106,24 +141,15 @@ struct TraceView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Match the editor/diff overlays: opaque terminal background bleeding under the titlebar.
-        .background(Color(nsColor: settings.terminalBackgroundColor).ignoresSafeArea())
-        // The trace has no header row, so the content-area controls float in the top-trailing corner.
-        .overlay(alignment: .topTrailing) {
-            InspectorDetailChromeButtons()
-                .padding(.top, 4)
-                .padding(.trailing, 8)
-        }
-        .onExitCommand(perform: onClose)
-        .task(id: request) { await build() }
-        // Re-render if the user flips light/dark while the trace is open.
-        .onChange(of: colorScheme) { Task { await build() } }
     }
 
     private func build() async {
         let theme = TraceTheme.resolve(settings: settings, colorScheme: colorScheme)
         do {
-            html = try SessionTraceRenderer.html(jsonlPath: request.jsonlPath, title: request.title, theme: theme)
+            // The Mac overlay draws its own native header (see `header`), so the HTML
+            // document omits its `<header>`; the phone (companion) keeps the default.
+            html = try SessionTraceRenderer.html(jsonlPath: request.jsonlPath, title: request.title,
+                                                 theme: theme, includeHeader: false)
             loadError = nil
         } catch {
             loadError = error.localizedDescription
