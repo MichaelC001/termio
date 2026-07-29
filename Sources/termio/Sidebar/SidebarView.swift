@@ -1119,9 +1119,13 @@ private struct SessionRow: View {
         // click-to-select doesn't commit for seconds (the drag machinery swallows
         // the mouseDown), which shipped as v0.19.0's dead sidebar clicks.
         .simultaneousGesture(TapGesture().onEnded {
-            // Tapping a session always returns to its terminal — close the file
-            // editor even when this row is already selected (no change to react to).
-            store.openFileURL = nil
+            // Re-tapping the row you're already on returns to its terminal, closing its
+            // open file editor. Tapping a *different* session must NOT clear here: the
+            // selection didSet captures the outgoing session's inspector layout first
+            // (issue #160), so clearing pre-capture would drop its open file.
+            if store.selectedSessionID == session.id {
+                store.openFileURL = nil
+            }
             store.selectedSessionID = session.id
             // Re-tapping the row you're already on still clears a resting
             // done/attention dot (the selection didSet only reacts to a change).

@@ -106,13 +106,10 @@ struct TerminalPane: View {
             if let id, !activated.contains(id) {
                 activated.append(id)
             }
-            // Switching sessions returns to the terminal: dismiss any open file editor so the
-            // newly selected session's surface is what's shown (the overlay's `.onDisappear`
-            // flushes any pending auto-save first). The diff overlay is dismissed for the same reason.
-            store.openFileURL = nil
-            store.openDiff = nil
-            store.openTrace = nil
-            store.openIssueDetail = nil
+            // The inspector layout now follows the session: `TermioStore.selectedSessionID`
+            // saves the outgoing session's open detail and restores the incoming one's
+            // (issue #160), so we no longer clear the overlays here. The editor overlay's
+            // `.onDisappear` still flushes any pending auto-save when a restore replaces it.
             requestSelectedTerminalFocus(reason: .selectionChanged)
         }
         // The toolbar's close button posts this; tear the overlay down the same way the overlay's
