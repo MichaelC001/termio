@@ -23,6 +23,9 @@ import SwiftUI
 struct InspectorTabsToolbar: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
+    /// Light vs dark decides the selected-pill material: a raised white chip in light
+    /// mode (like a native segmented control), a whitish overlay chip in dark.
+    @Environment(\.colorScheme) private var colorScheme
     /// Whether the current project's origin remote points at github.com — probed
     /// async per selection change; gates the Issues segment together with the
     /// General "GitHub" setting.
@@ -131,12 +134,22 @@ struct InspectorTabsToolbar: View {
 
     // MARK: Materials — flat capsule fills, no Liquid Glass
 
-    // A flat fill, no `.glassEffect` and no drop shadow: the glass pill cast an ambient shadow that
-    // read as stray chrome floating in the toolbar. The brighter fill alone (over the fainter track)
-    // marks the active pane. Built the same way as the file editor's mode toggle, so the two match.
+    // No `.glassEffect` and no *ambient* shadow: the glass pill's soft shadow read as stray chrome
+    // floating in the toolbar. Instead we mimic a native segmented control's selected segment — in
+    // light mode a raised *white* chip (a darker grey chip read as pressed/recessed, not selected),
+    // in dark mode a whitish overlay chip. A tight 1pt raised-chip shadow (light only) lifts the
+    // white off the near-white track without floating like the glass shadow did.
     private var selectionPill: some View {
         Capsule(style: .continuous)
-            .fill(Color.primary.opacity(0.14))
+            .fill(colorScheme == .dark ? Color.primary.opacity(0.16) : .white)
+            .overlay {
+                // A hairline edge separates the white chip from the pale track in light mode.
+                if colorScheme != .dark {
+                    Capsule(style: .continuous).strokeBorder(Color.black.opacity(0.05), lineWidth: 0.5)
+                }
+            }
+            .shadow(color: colorScheme == .dark ? .clear : Color.black.opacity(0.14),
+                    radius: 1, x: 0, y: 0.5)
             // Non-source: takes the frame + position of the currently selected segment.
             .matchedGeometryEffect(id: store.inspectorTab, in: pillNamespace, isSource: false)
     }
