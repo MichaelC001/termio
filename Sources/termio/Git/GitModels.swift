@@ -6,7 +6,7 @@ import SwiftUI
 /// Which inspector pane the trailing column is showing — the file tree, the file
 /// search, the git changes list, the issue tracker, or the session Info pane.
 /// Drives the segmented switch at the top of `FileBrowserView`.
-enum InspectorTab: Hashable, Sendable {
+enum InspectorTab: String, Hashable, Sendable, Codable {
     case files, search, changes, issues, info
 }
 

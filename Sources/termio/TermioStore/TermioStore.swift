@@ -24,6 +24,13 @@ final class TermioStore: ObservableObject {
         // "needs attention" (or unseen "done") is, by definition, answered.
         didSet {
             guard oldValue != selectedSessionID else { return }
+            // Save the inspector layout of the session we're leaving and restore the one
+            // we're arriving at, so each terminal tab keeps its own right-side context
+            // (issue #160). This replaces the blanket overlay-clear that used to live in
+            // `TerminalPane` — and, because we no longer tear the maximize host down to
+            // nothing on every switch, it also removes the fullscreen blank-screen race.
+            if let old = oldValue { inspectorStates[old] = captureInspectorState() }
+            applyInspectorState(selectedSessionID.flatMap { inspectorStates[$0] } ?? InspectorState())
             if let id = selectedSessionID {
                 // A mid-turn `.working` keeps its spinner; only the resting
                 // "your turn" states are answered by looking.
@@ -236,6 +243,67 @@ final class TermioStore: ObservableObject {
     /// spawning `git status` for a pane nobody could see.
     @Published var inspectorVisible = false
 
+    /// A per-session snapshot of the inspector's *content* — which tab is showing and
+    /// which detail (file / diff / trace / PR-issue) is open, plus the detail's
+    /// maximize / list-collapse chrome. Switching terminal tabs restores each session's
+    /// own right-side context instead of clearing it (issue #160): one session left on a
+    /// file, another on a PR, another on the changes list. The inspector's *width* and
+    /// *open/closed* state stay global — those belong to the AppKit split item; it's the
+    /// content that is session-specific.
+    struct InspectorState {
+        var tab: InspectorTab = .files
+        var openFileURL: URL?
+        var openFileLine: Int?
+        var openFileReadOnly = false
+        var openDiff: GitDiffRequest?
+        var openTrace: TraceRequest?
+        var openIssueDetail: IssueSummary?
+        var maximized = false
+        var listCollapsed = false
+    }
+
+    /// Each session's saved inspector layout, written when the selection leaves a
+    /// session and read back when it returns (see `selectedSessionID`'s didSet). Seeded
+    /// from `state.json` on launch for the tab + open-file subset; the live diff / trace
+    /// / PR details are in-memory only — they're snapshots of data that gets re-fetched,
+    /// so they don't survive a quit (matching VS Code's hot exit, which restores open
+    /// files but not transient views). Keyed by session, so a dead session's entry is
+    /// pruned alongside its runtime in `syncRuntimes`.
+    var inspectorStates: [Session.ID: InspectorState] = [:]
+
+    /// Snapshots the inspector's current content into an `InspectorState`.
+    private func captureInspectorState() -> InspectorState {
+        InspectorState(
+            tab: inspectorTab,
+            openFileURL: openFileURL,
+            openFileLine: openFileLine,
+            openFileReadOnly: openFileReadOnly,
+            openDiff: openDiff,
+            openTrace: openTrace,
+            openIssueDetail: openIssueDetail,
+            maximized: inspectorMaximized,
+            listCollapsed: inspectorListCollapsed
+        )
+    }
+
+    /// Restores a session's saved inspector layout (or the default when it has none).
+    /// Order is load-bearing: `inspectorTab`'s didSet clears the details, so the tab is
+    /// set first; the issue is set before the diff because a PR file diff deliberately
+    /// stacks on top of an open issue (see `openIssueDetail`); and the read-only flag /
+    /// jump line precede the file URL (see `openFileURL`).
+    private func applyInspectorState(_ state: InspectorState) {
+        inspectorTab = state.tab
+        openFileURL = nil; openDiff = nil; openTrace = nil; openIssueDetail = nil
+        openTrace = state.openTrace
+        openIssueDetail = state.openIssueDetail
+        openFileReadOnly = state.openFileReadOnly
+        openFileLine = state.openFileLine
+        openFileURL = state.openFileURL
+        openDiff = state.openDiff
+        inspectorMaximized = state.maximized
+        inspectorListCollapsed = state.listCollapsed
+    }
+
     /// Per-session high-frequency live state (status, running tool, live title, cwd),
     /// each held in its own `@Observable` `SessionRuntime` so a change re-renders only
     /// the owning sidebar row rather than the whole tree. Deliberately **not**
@@ -282,6 +350,8 @@ final class TermioStore: ObservableObject {
         let live = Set(projects.flatMap(\.sessions).map(\.id))
         for id in live where runtimes[id] == nil { runtimes[id] = SessionRuntime() }
         for id in runtimes.keys where !live.contains(id) { runtimes.removeValue(forKey: id) }
+        // A closed session's saved inspector layout goes with it.
+        for id in inspectorStates.keys where !live.contains(id) { inspectorStates.removeValue(forKey: id) }
     }
 
     /// Sets a session's status, no-op-guarded so a redundant same-value write (the hook
@@ -781,8 +851,30 @@ final class TermioStore: ObservableObject {
             projects: migratingScratchProject(migratingHomeProject(normalizingAgentTitles(snapshot.projects))),
             settings: settings
         )
+        // Seed each session's saved inspector layout (tab + open file). The file is
+        // validated for existence — a file deleted, or a worktree removed, while the app
+        // was closed silently falls back to no detail rather than an error overlay.
+        if let layouts = snapshot.inspectorLayouts {
+            let live = Set(store.projects.flatMap(\.sessions).map(\.id))
+            for (key, layout) in layouts {
+                guard let id = UUID(uuidString: key), live.contains(id) else { continue }
+                var state = InspectorState(tab: layout.tab)
+                if let path = layout.filePath, FileManager.default.fileExists(atPath: path) {
+                    state.openFileURL = URL(fileURLWithPath: path)
+                    state.openFileLine = layout.fileLine
+                    state.openFileReadOnly = layout.fileReadOnly ?? false
+                }
+                store.inspectorStates[id] = state
+            }
+        }
         if let id = snapshot.selectedSessionID, store.session(id) != nil {
             store.selectedSessionID = id
+        }
+        // The designated init set the selection without firing its didSet, and re-setting
+        // it to the same id above is a no-op, so apply the selected session's restored
+        // layout to the live inspector props explicitly.
+        if let id = store.selectedSessionID, let state = store.inspectorStates[id] {
+            store.applyInspectorState(state)
         }
         // Restore the split groups, keeping only those whose panes all still
         // resolve to live sessions (a stale group is dropped whole rather than
@@ -868,10 +960,26 @@ final class TermioStore: ObservableObject {
     }
 
     private func persist() {
+        // Fold the current selection's live inspector layout in — it isn't copied into
+        // `inspectorStates` until the selection leaves it.
+        var states = inspectorStates
+        if let id = selectedSessionID { states[id] = captureInspectorState() }
+        var layouts: [String: StateFile.InspectorLayout] = [:]
+        for (id, state) in states {
+            // Skip the plain default (Files tab, nothing open) to keep the file lean.
+            guard state.tab != .files || state.openFileURL != nil else { continue }
+            layouts[id.uuidString] = StateFile.InspectorLayout(
+                tab: state.tab,
+                filePath: state.openFileURL?.path,
+                fileLine: state.openFileLine,
+                fileReadOnly: state.openFileReadOnly
+            )
+        }
         stateFile.save(.init(
             projects: projects,
             selectedSessionID: selectedSessionID,
-            splitGroups: splitGroups
+            splitGroups: splitGroups,
+            inspectorLayouts: layouts.isEmpty ? nil : layouts
         ))
     }
 
