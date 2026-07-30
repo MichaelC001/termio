@@ -16,7 +16,8 @@ related:
 
 # Design: termiod — Agent-native session mux
 
-> **A session lives in a host. Viewers only attach.** Local is remote to localhost. Remote is the same host over a different pipe. termio wins on an **agent-native ADE** on that foundation — not by cloning Superlogical’s “multiplexer for all work.”
+> **A session lives in a host. Viewers only attach.**  
+> Architecture is **composable** and **direct** — Superlogical’s sequencing, termio’s agent-native wedge. Not a clone of “multiplexer for all work.”
 
 **Evidence policy:** Superlogical statements are **announced / pre-beta** unless marked shipped. Wire-protocol and SSH-custody details they have not published stay **unknown**. Revisit after their first beta or protocol devlog.
 
@@ -26,7 +27,17 @@ related:
 
 ### One sentence
 
-**`termiod` is the durable session host.** Clients (Mac, iOS, CLI) never own process death. Transport (Unix socket, SSH, …) is not the product — it is only how the protocol moves.
+**`termiod` is the durable session host.** Clients never own process death. Pipes only move the protocol.
+
+### Two adjectives
+
+| | **Composable** | **Direct** |
+| --- | --- | --- |
+| **Means** | Host · protocol · clients · transports plug independently; any client on any pipe to any host | One hop to authority: client → protocol → host → PTY. No second session owner, no nested WM, no product-level proxy |
+| **Allows** | Mac / iOS / CLI / tools as equal clients; Unix / SSH / WSS as equal pipes; agent events as protocol modules | Local-first; system SSH as pipe; keys stay in ssh-agent; no cloud required to attach |
+| **Forbids** | Special-case “remote code path” that reimplements attach | `ssh -tt host claude` as the product; app-owned PTYs; inventing crypto transport |
+
+Superlogical’s step 2 is *make everything composable*. We take that and add **direct**: composition must not insert indirection between the viewer and the host that owns the work.
 
 ### Three parts (and nothing else)
 
@@ -36,20 +47,18 @@ related:
 | **2. Protocol** | Session Protocol | attach/detach, I/O, resize, roster, status — **transport-agnostic** |
 | **3. Clients** | termio.app · iOS · CLI | Render, input, approvals — **stateless relative to the process** |
 
-Pipes (Unix socket / SSH / Tailscale / WSS) are **not a fourth product**. They plug under the protocol.
+Pipes (Unix socket / SSH / Tailscale / WSS) are **not a fourth product**. They plug under the protocol — **composable**. Each pipe is a straight byte path — **direct**.
 
 ### Three steps (Superlogical-shaped sequence, termio wedge)
 
-Like Superlogical’s *mux → composable → production*, we ship in three layers — narrower at each step:
-
-1. **Incredible host** — durable sessions; detach ≠ kill; multi-viewer; local + remote same model.  
-2. **Agent-native composition** — workstreams, `needs-you`, worktrees, `termio sessions` as a real client.  
-3. **Multi-device operable** — iOS intervention, discovery, optional share/relay — without a required cloud control plane.
+1. **Incredible host** — durable sessions; detach ≠ kill; multi-viewer; local + remote same model (**direct**).  
+2. **Composable agent surface** — workstreams, `needs-you`, worktrees, `termio sessions` as real clients of the same protocol (**composable**).  
+3. **Multi-device operable** — iOS, discovery, optional share/relay — still no required cloud control plane (**direct** + **composable**).
 
 ### Stance
 
-- **What we build:** the host + protocol; clients are thin.  
-- **Competitor at the mux layer:** Superlogical (announced). Overlap is real; differentiation is **agent-first ADE + local-first**, not denial.  
+- **What we build:** host + protocol; clients and pipes are replaceable.  
+- **Competitor at the mux layer:** Superlogical (announced). Overlap is real; differentiation is **agent-first ADE + local-first + direct**, not denial.  
 - **Supersedes:** interim `ssh -tt` remote projects once Phase 2 lands.  
 - **Do not invent:** crypto transport, nested window managers, “CLI tool” as the architecture story.
 

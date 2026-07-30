@@ -1,9 +1,9 @@
 # termiod — durable session host
 
 > **A session lives in a host. Viewers only attach.**  
-> Local is remote to localhost. Detach ≠ kill.
+> **Composable** · **Direct.** Local is remote to localhost. Detach ≠ kill.
 
-`termiod` is termio’s **session host** (the Superlogical-shaped foundation: a durable runtime around work). The CLI in this binary is a **reference client**, not the architecture.
+`termiod` is termio’s **session host**. Composable parts (host · protocol · clients · pipes). Direct path (client → host → PTY). The CLI is a **reference client**, not the architecture.
 
 Full model: [`ARCHITECTURE.md`](ARCHITECTURE.md) · design: `docs/design/termiod-session-mux.md` · epic [#164](https://github.com/jiweiyuan/termio/issues/164) · POC [#170](https://github.com/jiweiyuan/termio/issues/170)–[#172](https://github.com/jiweiyuan/termio/issues/172) · draft PR [#177](https://github.com/jiweiyuan/termio/pull/177).
 

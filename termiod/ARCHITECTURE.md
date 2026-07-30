@@ -1,9 +1,14 @@
 # termiod architecture
 
 > **A session lives in a host. Viewers only attach.**  
-> Local is remote to localhost. Remote is the same host over a different pipe.
+> **Composable** · **Direct.**
 
-This is the Superlogical-shaped foundation (durable session as the missing layer), cut for termio: **agent-native ADE** later, **local-first** always. Design source of truth: `docs/design/termiod-session-mux.md`.
+| | Composable | Direct |
+| --- | --- | --- |
+| | Host · protocol · clients · pipes plug independently | One hop: client → protocol → host → PTY |
+| | Any client, any pipe, any host | No second session owner, no nested WM, no invented crypto |
+
+Local is remote to localhost. Design: `docs/design/termiod-session-mux.md`.
 
 ## Three parts
 
@@ -85,8 +90,8 @@ Same protocol as local. Daemon on the VPS auto-starts (or runs under systemd `--
 
 ## Three-step product sequence
 
-1. **Incredible host** — durable multi-session runtime (this crate’s POC).  
-2. **Agent-native composition** — status, worktrees, `termio sessions` as a real client.  
-3. **Multi-device operable** — Mac/iOS attach, discovery, optional relay — no required cloud control plane.
+1. **Incredible host** — durable multi-session runtime (**direct**).  
+2. **Composable agent surface** — status, worktrees, tools as real protocol clients (**composable**).  
+3. **Multi-device operable** — Mac/iOS, discovery, optional relay — still direct pipes, no required cloud.
 
-That mirrors Superlogical’s *mux → composable → production* sequencing with a narrower, agent-first wedge.
+Superlogical: *mux → composable → production*. We keep **composable** and insist on **direct**.
