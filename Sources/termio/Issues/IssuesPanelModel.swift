@@ -44,11 +44,11 @@ final class IssuesPanelModel: ObservableObject {
     let repoRoot: String
     private var provider: GitHubIssueProvider?
 
-    /// The app-level detail cache (keyed by remote identity), injected by the store on register
-    /// so fetched detail outlives this — inherently transient — model instance. See
-    /// `IssueDetailCache` and `TermioStore.registerIssuesModel`.
-    private var detailCache: IssueDetailCache?
-    func attachDetailCache(_ cache: IssueDetailCache) { detailCache = cache }
+    /// The app-level cache (keyed by remote identity), injected by the store on register so the
+    /// fetched list + detail outlive this — inherently transient — model instance. See `IssueCache`
+    /// and `TermioStore.registerIssuesModel`.
+    private var cache: IssueCache?
+    func attachCache(_ cache: IssueCache) { self.cache = cache }
 
     init(repoRoot: String) {
         self.repoRoot = repoRoot
@@ -126,7 +126,7 @@ final class IssuesPanelModel: ObservableObject {
         detail = nil
         // The token is gone, so a later reconnect (possibly a different account) must not read
         // this account's cached private-repo detail.
-        detailCache?.clear()
+        cache?.clear()
         didStart = false
         // Re-resolve the binding on the next reconnect (possibly a different account/repo).
         didResolveContainer = false
@@ -182,31 +182,67 @@ final class IssuesPanelModel: ObservableObject {
         availableLabels = (try? await provider.availableLabels(in: container)) ?? []
     }
 
-    func loadList() async {
+    /// `force` bypasses the cache for an explicit user refresh (the toolbar button / Try Again),
+    /// which must always re-fetch; automatic loads (appear, session switch, filter change) leave it
+    /// `false` so they read the cache.
+    func loadList(force: Bool = false) async {
         guard let provider, let container, phase == .ready else { return }
         if availableLabels.isEmpty { Task { await loadLabels() } }
+        // Capture the query: a filter / kind change mid-fetch queues its own `loadList` (see the
+        // `query` didSet), so guard against publishing this fetch's result over that newer one.
+        let query = self.query
+
+        // Warm: render the cached list instantly (no spinner), then revalidate past the dedupe
+        // window — the same stale-while-revalidate the detail uses, so a session switch shows the
+        // list immediately instead of reloading it.
+        if !force, let cached = cache?.list(container, query) {
+            items = cached.items
+            errorMessage = nil
+            recovery = nil
+            guard Date().timeIntervalSince(cached.fetchedAt) >= Self.revalidateAfter else { return }
+            do {
+                let fresh = try await provider.issues(in: container, query: query)
+                guard self.query == query else { return }  // a newer loadList owns the list now
+                cache?.storeList(fresh, container, query)
+                if fresh != items { items = fresh }  // republish only on a real change — no flicker
+            } catch {
+                // Revalidation failed (offline, rate limit): keep the cached list, stay silent.
+            }
+            return
+        }
+
+        // Cold: spinner + fetch.
         isLoading = true
         errorMessage = nil
         recovery = nil
         do {
-            items = try await provider.issues(in: container, query: query)
+            let fetched = try await provider.issues(in: container, query: query)
+            guard self.query == query else { isLoading = false; return }
+            items = fetched
+            cache?.storeList(fetched, container, query)
         } catch {
-            // A revoked token must degrade to the connect zero state, not wedge.
-            if case GitHubIssueProvider.APIError.status(401) = error {
-                disconnect()
-            } else if case GitHubIssueProvider.APIError.status(403) = error {
-                // A genuine 403 (rate-limit 403s are classified as `.rateLimited` upstream) means
-                // the token is valid but has no rights to *this* repo — usually an org that hasn't
-                // authorized termio. This is the one case reconnect / grant-org access can fix.
-                errorMessage = error.localizedDescription
-                recovery = .reauthorize
-            } else {
-                // Rate limits, 404, 5xx, decode, network: reconnecting won't help — offer a retry.
-                errorMessage = error.localizedDescription
-                recovery = .retry
-            }
+            handleListError(error)
         }
         isLoading = false
+    }
+
+    /// Maps a list-fetch failure to the pane's error + recovery state (shared by the cold load;
+    /// a background revalidation swallows its errors and keeps the cached list instead).
+    private func handleListError(_ error: Error) {
+        // A revoked token must degrade to the connect zero state, not wedge.
+        if case GitHubIssueProvider.APIError.status(401) = error {
+            disconnect()
+        } else if case GitHubIssueProvider.APIError.status(403) = error {
+            // A genuine 403 (rate-limit 403s are classified as `.rateLimited` upstream) means the
+            // token is valid but has no rights to *this* repo — usually an org that hasn't authorized
+            // termio. This is the one case reconnect / grant-org access can fix.
+            errorMessage = error.localizedDescription
+            recovery = .reauthorize
+        } else {
+            // Rate limits, 404, 5xx, decode, network: reconnecting won't help — offer a retry.
+            errorMessage = error.localizedDescription
+            recovery = .retry
+        }
     }
 
     /// How long a cached entry counts as fresh enough to skip revalidation — the
@@ -231,7 +267,7 @@ final class IssuesPanelModel: ObservableObject {
         // Warm: a prior fetch of this remote item is cached — possibly by another session, a
         // different worktree of the same repo, or the model this replaced. Render it instantly:
         // no `detail = nil` wipe, no spinner.
-        if let cached = detailCache?.entry(container, item.number) {
+        if let cached = cache?.entry(container, item.number) {
             apply(cached)
             if item.kind == .pullRequest, !cached.filesLoaded {
                 // Only the conversation was cached (opened, then switched away before the file
@@ -243,7 +279,7 @@ final class IssuesPanelModel: ObservableObject {
                 do {
                     let fresh = try await fetchEntry(item, provider: provider, container: container)
                     guard openItem?.number == item.number else { return }
-                    detailCache?.store(fresh, container, item.number)
+                    cache?.store(fresh, container, item.number)
                     // Only republish on a real change, so an unchanged refresh never flickers.
                     if !fresh.sameContent(as: cached) { apply(fresh) }
                 } catch {
@@ -266,7 +302,7 @@ final class IssuesPanelModel: ObservableObject {
             detail = conversation
             // Cache the conversation the moment it lands — before a PR's heavy file list — so a
             // switch-away still warms the cache. `filesLoaded: false` marks the pending files.
-            detailCache?.store(
+            cache?.store(
                 .init(detail: conversation, prFiles: [], prFilePatches: [:], prInfo: nil,
                       filesLoaded: item.kind != .pullRequest, fetchedAt: Date()),
                 container, item.number)
@@ -295,7 +331,7 @@ final class IssuesPanelModel: ObservableObject {
             prInfo = prI
             prFiles = mapped.changes
             prFilePatches = mapped.patches
-            detailCache?.store(
+            cache?.store(
                 .init(detail: conversation, prFiles: mapped.changes, prFilePatches: mapped.patches,
                       prInfo: prI, filesLoaded: true, fetchedAt: Date()),
                 container, item.number)
@@ -319,7 +355,7 @@ final class IssuesPanelModel: ObservableObject {
     }
 
     /// Publishes a fetched entry into the pane's detail state.
-    private func apply(_ entry: IssueDetailCache.Entry) {
+    private func apply(_ entry: IssueCache.Entry) {
         detail = entry.detail
         prFiles = entry.prFiles
         prFilePatches = entry.prFilePatches
@@ -335,7 +371,7 @@ final class IssuesPanelModel: ObservableObject {
         _ item: IssueSummary,
         provider: GitHubIssueProvider,
         container: IssueContainer
-    ) async throws -> IssueDetailCache.Entry {
+    ) async throws -> IssueCache.Entry {
         if item.kind == .pullRequest {
             async let loadedDetail = provider.detail(item.number, in: container)
             async let info = provider.pullRequestGitInfo(item.number, in: container)

@@ -83,7 +83,7 @@ struct IssuesView: View {
         // VS Code codicon refresh — the two-arrow ring reads more refined than the Hugeicons
         // single-arrow one, and matches the File Explorer header's four codicon actions.
         TreeHeaderButton(codicon: .refresh, help: "Refresh") {
-            Task { await model.loadList() }
+            Task { await model.loadList(force: true) }
         }
     }
 
@@ -266,7 +266,7 @@ struct IssuesView: View {
                     title: "Couldn’t Load",
                     message: "Something went wrong loading this repository. Try again in a moment."
                 ) {
-                    Button("Try Again") { Task { await model.loadList() } }
+                    Button("Try Again") { Task { await model.loadList(force: true) } }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.regular)
                 }
