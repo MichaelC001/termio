@@ -303,6 +303,87 @@ termio's fork — system OpenSSH as a pipe to a user-run host — stays delibera
 smaller security scope, at the cost of some seamless-reconnect polish we buy
 back with ControlMaster and setup helpers.)*
 
+### D.1 QUIC binding — full design (v2, specified now so v1 aligns)
+
+Measured motivation (live `ukvps` run, 2026-07-30, v0.1 over system SSH):
+keystroke echo **12.1 ms median** — already local-feeling — but **65 ms p95**
+(TCP head-of-line under loss), **~230–300 ms** per cold SSH exec, and no
+roaming. QUIC's targets are exactly those three numbers plus the phone's
+network flips; the median needs no help.
+
+**Connection layout.** One QUIC connection per (client, host), ALPN
+`termiod/1`; never one connection per session (it forfeits handshake
+amortization and migration):
+
+```
+├─ bidi stream (first opened) → hello{role:"control"}          roster · subscribe · wait · send
+├─ bidi stream per attach     → hello{role:"attach", target}   that session's terminal plane
+└─ DATAGRAMs (RFC 9221)       → supersedable frames only: grid-diff repair, predictions
+```
+
+Same 5-byte framing inside every stream — a recorded Unix-socket transcript
+replays byte-identical over a QUIC stream (the §C.9 acceptance test).
+`hello` per stream keeps streams self-describing; QUIC deliberately does not
+order across streams, and nothing here needs it to. Per-stream delivery is
+the p95 fix: one session's retransmit can no longer stall another session or
+the control channel.
+
+**State-sync layer (the one real protocol addition).** v1.1 dirty-row diffs
+are *supersedable*: a newer version of a row obsoletes the older one, so
+reliable-ordered delivery of stale rows is wasted work. Binding: rows
+versioned by frame counter; diffs ride datagrams fire-and-forget; the client
+acks the highest contiguous frame on its attach stream; the host re-sends
+rows dirty-and-unacked past ~2×RTT *at their current version*; a periodic
+keyframe (full `S` on the reliable stream) bounds drift. This is mosh's SSP
+rebuilt on standard transport — datagrams, congestion control, encryption,
+and migration come from QUIC instead of invented UDP framing, so the
+no-invented-crypto rule survives. **Input never rides datagrams** —
+keystrokes are non-idempotent and stay on the reliable attach stream.
+Client-side predictive echo (capability `predict`) renders keystrokes
+immediately and lets authoritative diffs confirm or correct — the piece that
+makes a 100 ms+ RTT link *feel* local, which no transport can do alone.
+
+**Reattach and roaming.** 0-RTT resumption + `attach {target, last_seen}`:
+the host replies with diffs-since or a fresh snapshot if the window is gone —
+reattach drops from ~300 ms to ~1 RTT. 0-RTT safety rule: only `hello` and
+`attach` may ride early data (replay-safe); `D`/`send` wait for handshake
+completion. Connection migration is the iOS feature: Wi-Fi → 5G mid-session
+and attach streams simply continue — no protocol event, no torn TUI. SSH
+structurally cannot do this; it is the single strongest argument for QUIC
+existing in the roadmap.
+
+**Identity (decides when this ships).** QUIC mandates TLS and DIY PKI is
+banned, so trust is borrowed, in preference order:
+
+1. **Inside Tailscale** — tailnet is identity + ACL; TLS uses a
+   host-generated self-signed cert the client pins (the tunnel already
+   authenticated the machine).
+2. **Bootstrap over SSH** — first contact runs over the already-trusted SSH
+   pipe; through it the client fetches the host cert's SPKI fingerprint and a
+   client credential, then dials QUIC directly, pinning what SSH vouched
+   for; mutual TLS thereafter. "SSH is the trust plane, QUIC the performance
+   plane" as mechanism, not slogan — SSH never leaves, it just stops
+   carrying keystrokes.
+3. **Pairing ceremony** for the phone — the companion pairing flow upgraded
+   to exchange cert pins instead of bearer tokens.
+
+**Free housekeeping.** QUIC per-stream flow control replaces userland
+backlog rules (a slow observer just stops getting credit; the writer and
+other sessions are untouched; the host ring absorbs the gap). Idle timeout =
+clean implicit detach; PING replaces `ServerAliveInterval`. Protocol
+versioning stays in `hello`, transport-independent — the v0.1 message set
+runs over QUIC unchanged the day the binding lands.
+
+**Refused even in the "perfect" version:** per-session connections;
+everything-on-one-stream (recreates TCP HoL); input or `create` in datagrams
+or 0-RTT early data (replay hazards); WebTransport as the base binding (drags
+in HTTP/3 for no native benefit — revisit only if the web client becomes
+real, since browsers cannot speak raw QUIC); shipping any of this before v1
+snapshots exist. That last is the sequencing truth: the QUIC binding is ~80%
+"the v1/v1.1 snapshot+diff work already planned" and ~20% transport code —
+QUIC without v1 would be raw bytes with a fancier handshake, fixing nothing
+measured except the p95 hiccup.
+
 ## E. Comparison matrix
 
 | Dimension | **termio Session Protocol** | Superlogical | tmux | zmx | herdr-style remote | termio Companion wire (today) |
@@ -328,7 +409,7 @@ announced has `needs_you` on the wire.
 | 2 | **Does termio ever "own SSH"?** | No for v1–v2. Revisit only if ControlMaster + setup helper measurably fail on reconnect UX. Owning SSH in-process = key custody, agent forwarding, host-key policy — a security surface Superlogical chose (**Announced**, details **Unknown**) and we deliberately refuse. |
 | 3 | **Sharing ACL** | Out of protocol v1. The writer token + `hello` identity are the future hook; external identities (a colleague's device) need a pairing/ACL design that must not be improvised. |
 | 4 | **Relay threat model** | Relay is a blind pipe: no session semantics, no `hello` termination, no plaintext `env`/`D` unless the leg is user-owned (own cloudflared/tunnel today). True E2EE-through-untrusted-relay is future work; until then docs must say plainly which legs see plaintext. |
-| 5 | **Ring vs snapshot gap (v0→v1)** | v0 ring replay can tear TUIs on reattach (replayed escape torrent). Acceptable for POC; v1 snapshot is the fix — don't polish ring replay further. |
+| 5 | **Ring vs snapshot gap (v0→v1)** | v0 ring replay can tear TUIs on reattach (replayed escape torrent). Confirmed live 2026-07-30: reattaching to a remote `top`, the alt-screen enter (`ESC[?1049h`) had scrolled out of the 41 KB ring — `top` self-heals (periodic repaint), an idle TUI like vim would not. Acceptable for POC; v1 snapshot is the fix — don't polish ring replay further. |
 | 6 | **Linux host + libghostty-vt** | v1 bets on `libghostty-vt` building cleanly into the Rust host on Linux (zig cross-compile). De-risk with a spike before committing v1 dates; fallback is any correct VT with damage tracking, at the cost of cell-format alignment. |
 | 7 | **Event flood vs UI** | Protocol allows high-rate `E`; client discipline (per-session `SessionRuntime`, no roster replace per tick) is already law — see sidebar-scroll-performance. Host also coalesces status transitions (≤ ~10/s per session). |
 | 8 | **Superlogical ships first and defines expectations** | Their step 1 is an incredible mux (**Announced**). Our counter is not feature racing; it's landing #170–#172 so agents *survive the app* this quarter, with agent events they haven't announced. |
@@ -340,7 +421,7 @@ Mapped to the three-step sequence (§0 of the mux doc) and the GitHub epic
 
 | Step | Protocol work | Repo milestone |
 | --- | --- | --- |
-| **1 · Incredible host** | **v0 frozen** (shipped in POC, [#177](https://github.com/jiweiyuan/termio/pull/177)); live VPS smoke pass. **v0.1**: `hello`+caps, `seq`/`re`, error codes, `E` frames, `send`/`wait`, `workstream` in CreateSpec | #170 local host: Mac app attaches over Unix socket; sessions survive app quit. #171 SSH deploy helper. #172 remote open (same protocol, SSH pipe) |
+| **1 · Incredible host** | **v0 frozen** (shipped in POC, [#177](https://github.com/jiweiyuan/termio/pull/177)). **v0.1 implemented** (branch commit `6855552`): `hello`+caps, `seq`/`re`, error codes, `E` frames, `send`/`wait`, `workstream` in CreateSpec — 28 local + 8 fake-ssh smoke checks green. **Live VPS e2e passed 2026-07-30** on `ukvps` (aarch64, static-musl cross-compile deploy): detach ≠ kill across hard disconnect, send-without-attach, set-status; echo 12.1 ms median, throughput ≈ local | #170 local host: Mac app attaches over Unix socket; sessions survive app quit. #171 SSH deploy helper. #172 remote open (same protocol, SSH pipe) |
 | **2 · Composable agent surface** | **v1**: host-side vt authority, `S` snapshot on attach/resize, host-side status sources (hooks/OSC on the host, heuristics as fallback), approvals in events. `termio sessions` CLI re-based on control channel (retires transcript scraping) | Post-#172: iOS roster + needs-you from `subscribe`; unify companion semantics onto the protocol |
 | **3 · Multi-device operable** | **v1.1**: `G` dirty-row diffs (phone first); QUIC spike behind the channel abstraction; WSS relay binding with blind-pipe rule | Discovery providers (static SSH config, optional Tailscale); phone-direct decision falls due here |
 
