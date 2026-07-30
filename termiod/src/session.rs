@@ -147,6 +147,7 @@ impl Session {
 
 /// Spawn a session task. Returns a handle; on process exit the session id is
 /// sent on `on_exit` so the manager can drop it from the table.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     id: String,
     name: String,
@@ -249,7 +250,7 @@ async fn run(
         Some(w) => w.await.unwrap_or(-1),
         None => -1,
     };
-    for (_, entry) in &session.clients {
+    for entry in session.clients.values() {
         let _ = entry.out.send(ClientEvent::Exited(code));
     }
     let _ = on_exit.send(session.id.clone());

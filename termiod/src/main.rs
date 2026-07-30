@@ -122,8 +122,8 @@ async fn main() -> Result<()> {
                 println!("no sessions");
             } else {
                 println!(
-                    "{:<10} {:<14} {:>6} {:>7} {:>4}  {}",
-                    "ID", "NAME", "PID", "CLIENTS", "SIZE", "COMMAND"
+                    "{:<10} {:<14} {:>6} {:>7} {:>4}  COMMAND",
+                    "ID", "NAME", "PID", "CLIENTS", "SIZE"
                 );
                 for s in sessions {
                     println!(

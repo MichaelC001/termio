@@ -116,7 +116,7 @@ impl Manager {
                 }
             }
         }
-        infos.sort_by(|a, b| a.created_unix.cmp(&b.created_unix));
+        infos.sort_by_key(|a| a.created_unix);
         infos
     }
 
