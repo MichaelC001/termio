@@ -4,7 +4,9 @@
 //! logout). Fall back to a uid-scoped dir under the system temp dir. Either
 //! way the directory is created 0700 so no other user can connect.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+use std::io::{Read, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::PathBuf;
 
 /// Directory holding the socket (and, later, logs / pid files).
@@ -27,9 +29,70 @@ pub fn socket_path() -> Result<PathBuf> {
     Ok(runtime_dir()?.join("termiod.sock"))
 }
 
+/// Stable host identity, persisted beside the configured socket.
+pub fn host_id_path() -> Result<PathBuf> {
+    let socket = socket_path()?;
+    let parent = socket
+        .parent()
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    Ok(parent.join("host.id"))
+}
+
+fn read_host_id(path: &std::path::Path) -> Result<String> {
+    let id = std::fs::read_to_string(path)
+        .with_context(|| format!("reading host id {}", path.display()))?
+        .trim()
+        .to_string();
+    if id.len() != 34
+        || !id.starts_with("h_")
+        || !id[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        bail!("invalid host id in {}", path.display());
+    }
+    Ok(id)
+}
+
+/// Load the daemon's stable random 128-bit identity, minting it on first run.
+pub fn load_or_create_host_id() -> Result<String> {
+    let path = host_id_path()?;
+    if path.exists() {
+        return read_host_id(&path);
+    }
+
+    let mut random = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .context("opening OS random source")?
+        .read_exact(&mut random)
+        .context("reading OS random source")?;
+    let id = format!(
+        "h_{}",
+        random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            file.write_all(id.as_bytes())
+                .with_context(|| format!("writing host id {}", path.display()))?;
+            file.sync_all()
+                .with_context(|| format!("syncing host id {}", path.display()))?;
+            Ok(id)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_host_id(&path),
+        Err(error) => Err(error).with_context(|| format!("creating host id {}", path.display())),
+    }
+}
+
 /// Create the runtime dir with 0700 permissions if it does not exist.
 pub fn ensure_runtime_dir() -> Result<PathBuf> {
-    use std::os::unix::fs::DirBuilderExt;
     let dir = if let Some(explicit) = std::env::var_os("TERMIOD_SOCK") {
         PathBuf::from(explicit)
             .parent()

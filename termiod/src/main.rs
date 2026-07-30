@@ -76,6 +76,17 @@ enum Cmd {
         no_enter: bool,
     },
 
+    /// Set agent/workstream status metadata for a session.
+    SetStatus {
+        /// Session id or name.
+        target: String,
+        /// working, idle, needs_you, done, failed, or unknown.
+        status: String,
+        /// Optional display title.
+        #[arg(long)]
+        title: Option<String>,
+    },
+
     /// Attach to a session interactively (creating it if missing).
     Attach {
         /// Session id or name to attach to / create.
@@ -113,6 +124,7 @@ async fn main() -> Result<()> {
                 env: Vec::new(),
                 rows,
                 cols,
+                workstream: None,
             };
             let id = client::create(spec).await?;
             println!("{id}");
@@ -133,7 +145,7 @@ async fn main() -> Result<()> {
                 for s in sessions {
                     println!(
                         "{:<10} {:<14} {:>6} {:>7} {:>3}x{:<3} {}",
-                        s.id, s.name, s.pid, s.clients, s.rows, s.cols, s.command
+                        s.id, s.name, s.pid, s.attached_clients, s.rows, s.cols, s.command
                     );
                 }
             }
@@ -159,6 +171,15 @@ async fn main() -> Result<()> {
             Ok(())
         }
 
+        Cmd::SetStatus {
+            target,
+            status,
+            title,
+        } => {
+            client::set_status(&target, &status, title).await?;
+            Ok(())
+        }
+
         Cmd::Attach {
             target,
             cwd,
@@ -176,6 +197,7 @@ async fn main() -> Result<()> {
                     env: Vec::new(),
                     rows,
                     cols,
+                    workstream: None,
                 })
             };
             client::attach(&target, create_if_missing).await

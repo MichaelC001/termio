@@ -1,10 +1,10 @@
-//! The client side of protocol v0: one-shot control ops (create/list/kill/
-//! send) and the interactive `attach` bridge that puts the local terminal in
-//! raw mode and streams raw PTY bytes to/from the daemon.
+//! Reference client for Session Protocol v0.1. It negotiates `hello`, but
+//! reconnects in legacy mode when talking to a v0 daemon.
 
 use crate::paths;
 use crate::protocol::{
-    read_frame, write_control, write_data, write_resize, Control, CreateSpec, Frame, SessionInfo,
+    read_frame, write_control, write_data, write_resize, AttachMode, ChannelRole, Control,
+    CreateSpec, Frame, SessionInfo, PROTOCOL_VERSION,
 };
 use anyhow::{bail, Context, Result};
 use std::os::fd::AsRawFd;
@@ -53,7 +53,7 @@ fn spawn_daemon() -> Result<()> {
 }
 
 async fn request(msg: &Control) -> Result<Control> {
-    let mut stream = connect().await?;
+    let mut stream = connect_channel(ChannelRole::Control).await?;
     write_control(&mut stream, msg).await?;
     match read_frame(&mut stream).await? {
         Some(Frame::Control(c)) => Ok(c),
@@ -62,26 +62,55 @@ async fn request(msg: &Control) -> Result<Control> {
     }
 }
 
+async fn connect_channel(role: ChannelRole) -> Result<UnixStream> {
+    let mut stream = connect().await?;
+    write_control(
+        &mut stream,
+        &Control::Hello {
+            proto: PROTOCOL_VERSION,
+            min_proto: PROTOCOL_VERSION,
+            role,
+            caps: vec!["events".to_string(), "send_wait".to_string()],
+            client: format!("termiod-cli/{}", env!("CARGO_PKG_VERSION")),
+        },
+    )
+    .await?;
+    match read_frame(&mut stream).await {
+        Ok(Some(Frame::Control(Control::HelloOk { .. }))) => Ok(stream),
+        Ok(Some(Frame::Control(Control::HelloErr { code, supported }))) => {
+            bail!("protocol negotiation failed ({code:?}); host supports {supported:?}")
+        }
+        // A v0 host either closes on the unknown hello op or returns its
+        // legacy error. Reconnect and send the original v0-shaped request.
+        Ok(Some(_)) | Ok(None) | Err(_) => connect().await,
+    }
+}
+
 pub async fn create(spec: CreateSpec) -> Result<String> {
-    match request(&Control::Create(spec)).await? {
-        Control::Created { id } => Ok(id),
-        Control::Error { message } => bail!(message),
+    match request(&Control::Create { spec, seq: Some(1) }).await? {
+        Control::Created { id, .. } => Ok(id),
+        Control::Error { message, .. } => bail!(message),
         other => bail!("unexpected reply: {other:?}"),
     }
 }
 
 pub async fn list() -> Result<Vec<SessionInfo>> {
-    match request(&Control::List).await? {
-        Control::Sessions { sessions } => Ok(sessions),
-        Control::Error { message } => bail!(message),
+    match request(&Control::List { seq: Some(1) }).await? {
+        Control::Sessions { sessions, .. } => Ok(sessions),
+        Control::Error { message, .. } => bail!(message),
         other => bail!("unexpected reply: {other:?}"),
     }
 }
 
 pub async fn kill(id: &str) -> Result<()> {
-    match request(&Control::Kill { id: id.to_string() }).await? {
-        Control::Ok => Ok(()),
-        Control::Error { message } => bail!(message),
+    match request(&Control::Kill {
+        id: id.to_string(),
+        seq: Some(1),
+    })
+    .await?
+    {
+        Control::Ok { .. } => Ok(()),
+        Control::Error { message, .. } => bail!(message),
         other => bail!("unexpected reply: {other:?}"),
     }
 }
@@ -90,11 +119,27 @@ pub async fn send(id: &str, data: Vec<u8>) -> Result<()> {
     match request(&Control::Send {
         id: id.to_string(),
         data,
+        seq: Some(1),
     })
     .await?
     {
-        Control::Ok => Ok(()),
-        Control::Error { message } => bail!(message),
+        Control::Ok { .. } => Ok(()),
+        Control::Error { message, .. } => bail!(message),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+pub async fn set_status(id: &str, status: &str, title: Option<String>) -> Result<()> {
+    match request(&Control::SetStatus {
+        id: id.to_string(),
+        status: status.to_string(),
+        title,
+        seq: Some(1),
+    })
+    .await?
+    {
+        Control::Ok { .. } => Ok(()),
+        Control::Error { message, .. } => bail!(message),
         other => bail!("unexpected reply: {other:?}"),
     }
 }
@@ -152,7 +197,7 @@ impl Drop for RawMode {
 /// or the session's process exits.
 pub async fn attach(target: &str, create_if_missing: Option<CreateSpec>) -> Result<()> {
     let (rows, cols) = term_size();
-    let mut stream = connect().await?;
+    let mut stream = connect_channel(ChannelRole::Attach).await?;
     write_control(
         &mut stream,
         &Control::Attach {
@@ -160,16 +205,18 @@ pub async fn attach(target: &str, create_if_missing: Option<CreateSpec>) -> Resu
             create_if_missing,
             rows,
             cols,
+            mode: AttachMode::Interact,
+            seq: Some(1),
         },
     )
     .await?;
 
     let id = match read_frame(&mut stream).await? {
-        Some(Frame::Control(Control::Attached { id, name })) => {
+        Some(Frame::Control(Control::Attached { id, name, .. })) => {
             eprintln!("[attached to {name} ({id}) — detach with Ctrl-\\ ]\r");
             id
         }
-        Some(Frame::Control(Control::Error { message })) => bail!(message),
+        Some(Frame::Control(Control::Error { message, .. })) => bail!(message),
         other => bail!("unexpected attach reply: {other:?}"),
     };
 
@@ -248,7 +295,7 @@ pub async fn attach(target: &str, create_if_missing: Option<CreateSpec>) -> Resu
     }
 
     if detached {
-        let _ = write_control(&mut wr, &Control::Detach).await;
+        let _ = write_control(&mut wr, &Control::Detach { seq: None }).await;
         eprintln!("\r\n[detached — session {id} still running]");
     }
     reader.abort();

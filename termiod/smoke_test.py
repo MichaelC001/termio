@@ -13,9 +13,11 @@ Exits 0 if every check passes, 1 otherwise.
 """
 
 import fcntl
+import json
 import os
 import pty
 import select
+import socket
 import struct
 import subprocess
 import sys
@@ -43,6 +45,84 @@ def cli(*args):
 
 def cli_out(*args):
     return cli(*args).stdout.strip()
+
+
+def recv_exact(sock, size):
+    data = b""
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise EOFError("socket closed mid-frame")
+        data += chunk
+    return data
+
+
+class WireClient:
+    """Small protocol client used to test the v0.1 wire directly."""
+
+    def __init__(self, role="control", caps=None, hello=True, proto=1, min_proto=1):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(ENV["TERMIOD_SOCK"])
+        self.hello = None
+        if hello:
+            self.send_control(
+                {
+                    "op": "hello",
+                    "proto": proto,
+                    "min_proto": min_proto,
+                    "role": role,
+                    "caps": caps or [],
+                    "client": "smoke-test/0.1",
+                }
+            )
+            kind, self.hello = self.recv_frame()
+            assert kind == "C"
+
+    def send_frame(self, kind, payload):
+        if isinstance(payload, dict):
+            payload = json.dumps(payload, separators=(",", ":")).encode()
+        self.sock.sendall(kind.encode() + struct.pack(">I", len(payload)) + payload)
+
+    def send_control(self, message):
+        self.send_frame("C", message)
+
+    def send_data(self, data):
+        self.send_frame("D", data)
+
+    def recv_frame(self, timeout=3.0):
+        self.sock.settimeout(timeout)
+        header = recv_exact(self.sock, 5)
+        kind = chr(header[0])
+        payload = recv_exact(self.sock, struct.unpack(">I", header[1:])[0])
+        if kind in ("C", "E"):
+            payload = json.loads(payload)
+        return kind, payload
+
+    def recv_matching(self, predicate, timeout=4.0):
+        end = time.time() + timeout
+        seen = []
+        while time.time() < end:
+            try:
+                frame = self.recv_frame(max(0.05, end - time.time()))
+            except (socket.timeout, EOFError):
+                break
+            seen.append(frame)
+            if predicate(*frame):
+                return frame, seen
+        return None, seen
+
+    def drain(self, duration=0.25):
+        end = time.time() + duration
+        frames = []
+        while time.time() < end:
+            try:
+                frames.append(self.recv_frame(max(0.01, end - time.time())))
+            except (socket.timeout, EOFError):
+                break
+        return frames
+
+    def close(self):
+        self.sock.close()
 
 
 def set_winsize(fd, rows, cols):
@@ -102,8 +182,6 @@ def drain(master, dur=0.4):
 
 
 def session_pid(name):
-    import json
-
     try:
         rows = json.loads(cli_out("list", "--json"))
     except Exception:
@@ -115,8 +193,6 @@ def session_pid(name):
 
 
 def session_size(name):
-    import json
-
     for s in json.loads(cli_out("list", "--json")):
         if s["name"] == name or s["id"] == name:
             return (s["rows"], s["cols"])
@@ -124,8 +200,6 @@ def session_size(name):
 
 
 def cleanup():
-    import json
-
     try:
         for s in json.loads(cli_out("list", "--json")):
             cli("kill", s["id"])
@@ -208,6 +282,251 @@ def main():
     cli("kill", "inj")
     time.sleep(0.3)
     check("kill: session removed", session_pid("inj") is None)
+
+    print("\n# 4. v0.1 hello negotiation + legacy fallback + request ids")
+    h1 = WireClient(caps=["events", "not-a-host-cap"])
+    h2 = WireClient(caps=["events"])
+    check(
+        "hello: negotiates protocol and capability intersection",
+        h1.hello["op"] == "hello_ok"
+        and h1.hello["proto"] == 1
+        and h1.hello["caps"] == ["events"],
+    )
+    check(
+        "hello: host id is stable and client ids are connection-scoped",
+        h1.hello["host_id"] == h2.hello["host_id"]
+        and h1.hello["client_id"] != h2.hello["client_id"],
+    )
+    h1.close()
+    h2.close()
+
+    incompatible = WireClient(hello=False)
+    incompatible.send_control(
+        {
+            "op": "hello",
+            "proto": 2,
+            "min_proto": 2,
+            "role": "control",
+            "caps": [],
+            "client": "future-client",
+        }
+    )
+    kind, refused = incompatible.recv_frame()
+    try:
+        incompatible.sock.settimeout(1)
+        closed = incompatible.sock.recv(1) == b""
+    except socket.timeout:
+        closed = False
+    check(
+        "hello: incompatible range is refused and closed",
+        kind == "C"
+        and refused["op"] == "hello_err"
+        and refused["code"] == "incompatible"
+        and refused["supported"] == [1]
+        and closed,
+    )
+    incompatible.close()
+
+    legacy = WireClient(hello=False)
+    legacy.send_control({"op": "list"})
+    kind, legacy_reply = legacy.recv_frame()
+    check(
+        "legacy: first non-hello v0 request still works",
+        kind == "C" and legacy_reply["op"] == "sessions",
+    )
+    legacy.close()
+
+    sequenced = WireClient()
+    sequenced.send_control({"op": "list", "seq": 41})
+    kind, seq_reply = sequenced.recv_frame()
+    check(
+        "request ids: response echoes seq as re",
+        kind == "C" and seq_reply["op"] == "sessions" and seq_reply["re"] == 41,
+    )
+    sequenced.close()
+
+    print("\n# 5. v0.1 single-writer errors and writer events")
+    wire_id = cli_out("create", "--name", "wire-writer", "--", "cat")
+    w1 = WireClient(role="attach", caps=["events"])
+    w1.send_control(
+        {
+            "op": "attach",
+            "target": wire_id,
+            "mode": "interact",
+            "rows": 24,
+            "cols": 80,
+            "seq": 1,
+        }
+    )
+    attached1, _ = w1.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "attached"
+    )
+    w1.drain()
+
+    w2 = WireClient(role="attach", caps=["events"])
+    w2.send_control(
+        {
+            "op": "attach",
+            "target": wire_id,
+            "mode": "interact",
+            "rows": 30,
+            "cols": 100,
+            "seq": 2,
+        }
+    )
+    attached2, _ = w2.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "attached"
+    )
+    changed, _ = w1.recv_matching(
+        lambda kind, msg: kind == "E"
+        and msg.get("ev") == "writer_changed"
+        and msg.get("writer") == w2.hello["client_id"]
+    )
+    check(
+        "writer policy: newest interactive attach wins and emits writer_changed",
+        attached1 is not None
+        and attached2 is not None
+        and attached2[1]["writer"] is True
+        and changed is not None,
+    )
+    w1.send_data(b"REJECT_ME\r")
+    rejected, _ = w1.recv_matching(
+        lambda kind, msg: kind == "C"
+        and msg.get("op") == "error"
+        and msg.get("code") == "not_writer"
+    )
+    check(
+        "writer policy: non-writer D receives typed not_writer",
+        rejected is not None and rejected[1]["retryable"] is False,
+    )
+    w1.close()
+    w2.close()
+    cli("kill", wire_id)
+
+    print("\n# 6. v0.1 subscriptions, status metadata, and waits")
+    sub = WireClient(caps=["events", "send_wait"])
+    sub.send_control(
+        {"op": "subscribe", "events": ["roster", "status"], "seq": 50}
+    )
+    subscribed, _ = sub.recv_matching(
+        lambda kind, msg: kind == "C"
+        and msg.get("op") == "ok"
+        and msg.get("re") == 50
+    )
+    sub.send_control(
+        {
+            "op": "create",
+            "name": "metadata",
+            "argv": ["cat"],
+            "workstream": {
+                "agent_id": "codex",
+                "project": "termio",
+                "worktree": "termiod-v01",
+            },
+            "seq": 51,
+        }
+    )
+    created, seen = sub.recv_matching(
+        lambda kind, msg: kind == "C"
+        and msg.get("op") == "created"
+        and msg.get("re") == 51
+    )
+    metadata_id = created[1]["id"] if created else None
+    roster = next(
+        (
+            frame
+            for frame in seen
+            if frame[0] == "E"
+            and frame[1].get("ev") == "roster"
+            and frame[1].get("action") == "created"
+        ),
+        None,
+    )
+    if roster is None and metadata_id:
+        roster, _ = sub.recv_matching(
+            lambda kind, msg: kind == "E"
+            and msg.get("ev") == "roster"
+            and msg.get("action") == "created"
+            and msg.get("session") == metadata_id
+        )
+    check(
+        "subscribe: roster creation streams as an E frame",
+        subscribed is not None and metadata_id is not None and roster is not None,
+    )
+
+    sub.send_control(
+        {
+            "op": "set_status",
+            "id": metadata_id,
+            "status": "needs_you",
+            "title": "Review requested",
+            "seq": 52,
+        }
+    )
+    status_event, seen = sub.recv_matching(
+        lambda kind, msg: kind == "E"
+        and msg.get("ev") == "status"
+        and msg.get("session") == metadata_id
+        and msg.get("status") == "needs_you"
+    )
+    status_ok = any(
+        kind == "C" and msg.get("op") == "ok" and msg.get("re") == 52
+        for kind, msg in seen
+    )
+    if not status_ok:
+        ok_frame, _ = sub.recv_matching(
+            lambda kind, msg: kind == "C"
+            and msg.get("op") == "ok"
+            and msg.get("re") == 52
+        )
+        status_ok = ok_frame is not None
+    check(
+        "set_status: update fans out E status and correlates its reply",
+        status_event is not None
+        and status_event[1].get("title") == "Review requested"
+        and status_ok,
+    )
+    metadata = next(
+        (s for s in json.loads(cli_out("list", "--json")) if s["id"] == metadata_id),
+        {},
+    )
+    check(
+        "metadata: list exposes status, agent id, title, attachment roster",
+        metadata.get("status") == "needs_you"
+        and metadata.get("agent_id") == "codex"
+        and metadata.get("title") == "Review requested"
+        and metadata.get("attached_clients") == 0
+        and metadata.get("writer_client_id") is None,
+    )
+
+    wait_id = cli_out("create", "--name", "wait-exit", "--", "sleep", "30")
+    waiter = WireClient(caps=["send_wait"])
+    waiter.send_control(
+        {
+            "op": "wait",
+            "target": wait_id,
+            "until": ["exited"],
+            "timeout_ms": 5000,
+            "seq": 61,
+        }
+    )
+    time.sleep(0.1)
+    cli("kill", wait_id)
+    wait_result, _ = waiter.recv_matching(
+        lambda kind, msg: kind == "C"
+        and msg.get("op") == "wait_result"
+        and msg.get("re") == 61
+    )
+    check(
+        "wait: exited event resolves wait_result before timeout",
+        wait_result is not None
+        and wait_result[1]["status"] == "exited"
+        and wait_result[1].get("timed_out", False) is False,
+    )
+    waiter.close()
+    sub.close()
+    if metadata_id:
+        cli("kill", metadata_id)
 
     print()
     if FAILURES:

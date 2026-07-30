@@ -58,7 +58,7 @@ Local is remote to localhost. Design: `docs/design/termiod-session-mux.md`.
 
 The shipped binary is host **and** a reference CLI client (tmux/zmx packaging). That does not change the model: **`termiod serve` is the product core; `attach` is a client.**
 
-## Data path (v0 POC)
+## Data path (v0.1 POC)
 
 ```
 client ──► pipe ──► termiod ──► PTY ──► agent
@@ -68,7 +68,40 @@ client ──► pipe ──► termiod ──► PTY ──► agent
 ```
 
 - Hot path: raw PTY bytes over the pipe.  
+- Every negotiated channel starts with `hello`; a no-`hello` v0 control frame
+  enters legacy mode with no capabilities.
+- One interactive attachment owns the write/resize token. A newer interactive
+  claim demotes (but does not detach) the prior writer; observers never claim.
+- `E` frames fan out status, writer, resize, exit, and roster deltas. A
+  control channel can subscribe without attaching to a PTY.
 - VT / libghostty snapshot: **later** (host-side sidecar for resync), not in the critical path for every keystroke.
+
+## Protocol v0.1 contract
+
+```
+[ kind:u8 ][ len:u32 big-endian ][ payload ]
+```
+
+| Kind | Payload | Plane |
+| --- | --- | --- |
+| `C` | JSON object tagged by `op` | lifecycle/control |
+| `D` | raw bytes, ≤64 KiB per emitted frame | terminal |
+| `R` | `rows:u16 BE · cols:u16 BE` | terminal |
+| `E` | JSON object tagged by `ev` | events |
+
+Reads reject frames above 16 MiB. Unknown JSON operations/events are additive
+and ignored; unknown kinds close the channel after `proto_error`.
+
+Negotiated clients advertise a protocol range, channel role, and
+capabilities in `hello`. Protocol 1 currently offers `events` and
+`send_wait`. The reply supplies a stable random `host_id` (persisted as
+`host.id` beside the Unix socket) and a per-connection `client_id`.
+Incompatible ranges are refused; legacy v0 first operations remain accepted.
+
+Optional request `seq` is echoed by response `re`. The control channel stays
+open for multiplexed requests, roster/status subscriptions, and asynchronous
+wait results. Session records carry optional workstream metadata and live
+`status`, `title`, `attached_clients`, and `writer_client_id` fields.
 
 ## Remote
 
@@ -83,7 +116,7 @@ Same protocol as local. Daemon on the VPS auto-starts (or runs under systemd `--
 | Module | Part |
 | --- | --- |
 | `daemon.rs` · `session.rs` · `pty.rs` | Host |
-| `protocol.rs` | Protocol |
+| `protocol.rs` | v0/v0.1 codecs, handshake/control/event types, frame limits |
 | `client.rs` · CLI in `main.rs` | Reference client |
 | `remote.rs` | Transport helper (SSH deploy / stdio bridge) |
 | `paths.rs` | Socket location |
