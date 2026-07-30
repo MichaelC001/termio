@@ -13,8 +13,11 @@ use clap::Subcommand;
 use std::process::Command;
 
 /// Where the binary is installed on the remote host. `$HOME` is expanded by
-/// the remote shell.
-const REMOTE_BIN: &str = "$HOME/.local/bin/termiod";
+/// the remote shell. Overridable with `TERMIOD_REMOTE_BIN` for custom install
+/// paths (and to point tests at a local binary).
+fn remote_bin() -> String {
+    std::env::var("TERMIOD_REMOTE_BIN").unwrap_or_else(|_| "$HOME/.local/bin/termiod".to_string())
+}
 
 #[derive(Subcommand)]
 pub enum RemoteCmd {
@@ -79,8 +82,9 @@ fn run_blocking(cmd: RemoteCmd) -> Result<()> {
             Ok(())
         }
         RemoteCmd::List { host, json } => {
+            let bin = remote_bin();
             let flag = if json { " --json" } else { "" };
-            let status = ssh_interactive(&host, false, &format!("{REMOTE_BIN} list{flag}"))?;
+            let status = ssh_interactive(&host, false, &format!("{bin} list{flag}"))?;
             std::process::exit(status);
         }
         RemoteCmd::Attach { host, target, argv } => {
@@ -100,7 +104,8 @@ fn run_blocking(cmd: RemoteCmd) -> Result<()> {
 
 /// Build the remote `termiod attach` command line.
 fn build_attach_cmd(target: &str, argv: &[String]) -> String {
-    let mut s = format!("{REMOTE_BIN} attach {}", shell_quote(target));
+    let bin = remote_bin();
+    let mut s = format!("{bin} attach {}", shell_quote(target));
     if !argv.is_empty() {
         s.push_str(" --");
         for a in argv {
@@ -118,9 +123,10 @@ fn open(
     name: Option<&str>,
     no_deploy: bool,
 ) -> Result<()> {
+    let bin = remote_bin();
     if !no_deploy {
         // Deploy if the binary is missing (cheap idempotent check).
-        let present = ssh_capture(host, &format!("test -x {REMOTE_BIN} && echo yes || echo no"))?;
+        let present = ssh_capture(host, &format!("test -x {bin} && echo yes || echo no"))?;
         if present.trim() != "yes" {
             eprintln!("termiod not found on {host}; deploying…");
             deploy(host, None, None)?;
@@ -134,7 +140,7 @@ fn open(
     let session_name = name.unwrap_or(if argv.is_empty() { "shell" } else { agent });
 
     // Create the durable session on the remote host.
-    let mut create = format!("{REMOTE_BIN} create --name {}", shell_quote(session_name));
+    let mut create = format!("{bin} create --name {}", shell_quote(session_name));
     if let Some(dir) = cwd {
         create.push_str(&format!(" --cwd {}", shell_quote(dir)));
     }
@@ -151,7 +157,7 @@ fn open(
     }
     eprintln!("[remote {host}] created session {id} ({session_name}); attaching…");
 
-    let remote = format!("{REMOTE_BIN} attach {}", shell_quote(&id));
+    let remote = format!("{bin} attach {}", shell_quote(&id));
     let status = ssh_interactive(host, true, &remote)?;
     std::process::exit(status);
 }
@@ -175,7 +181,8 @@ fn deploy(host: &str, prebuilt: Option<&str>, target_override: Option<&str>) -> 
     run_cmd(Command::new("scp").args([&bin_path, &format!("{host}:.local/bin/termiod")]))?;
     run_cmd(Command::new("ssh").args([host, "chmod +x ~/.local/bin/termiod"]))?;
 
-    let version = ssh_capture(host, &format!("{REMOTE_BIN} --version"))?;
+    let bin = remote_bin();
+    let version = ssh_capture(host, &format!("{bin} --version"))?;
     eprintln!("[deploy] installed: {}", version.trim());
     eprintln!("[deploy] daemon auto-starts on first attach/list (no service needed).");
     Ok(())
