@@ -3,8 +3,9 @@ title: Session Daemon Architecture (termiod — one model for local, remote, mob
 status: draft
 type: design
 created: 2026-07-08
-updated: 2026-07-08
+updated: 2026-07-30
 related:
+  - termiod-session-mux.md
   - remote-projects.md
   - remote-access-relay-strategy.md
   - session-share.md
@@ -12,13 +13,14 @@ related:
 
 # Design: Session Daemon Architecture (`termiod`)
 
-> Collapse termio's four session code-paths (local, remote, phone, CLI) into **one**: a session daemon that owns every PTY, and stateless clients that attach to it. "Local" becomes the degenerate case of "remote to localhost over a pipe." Under this model remote VPS, session persistence, the phone companion, the CLI, and multi-human collab are all the *same* feature, not five.
+> **A session lives in a host. Viewers only attach.** Collapse four code-paths (local, remote, phone, CLI) into three parts: **host · protocol · clients**. Local is remote to localhost. Product/competitive framing: [termiod-session-mux.md](termiod-session-mux.md).
 
 ## 0. Conclusion first
 
 - **termio already has a PTY server — it's just implicit.** Today `PTYProcess` + the `.inMemory` backend + `libghostty-vt` all live in one process; the boundary between "who owns the bytes" and "who renders them" is a function call, never drawn explicitly. Every architectural mess in the project comes from that boundary being invisible.
-- **The clean architecture is one sentence:** a session is a first-class object living in a daemon (`termiod`); its lifecycle is independent of any viewer; all UIs (Mac window, iOS app, `termio sessions` CLI, a future web client) are **stateless clients that attach/detach**. **Local = "host is localhost, transport is a Unix socket."** There is only one code path.
-- **Remote VPS then costs almost nothing.** It is not a feature — it is *one transport implementation*: `ssh host termiod --attach <id>`. The daemon and protocol are identical to local; only the byte pipe changes. This is the direct answer to "make remote VPS easy": you stop building "remote" and instead build "the session boundary," after which remote is a 50-line transport.
+- **The clean architecture is one sentence:** a session is a first-class object living in a host (`termiod`); its lifecycle is independent of any viewer; all UIs (Mac window, iOS app, CLI, a future web client) are **stateless clients that attach/detach**. **Local = "host is localhost, transport is a Unix socket."** There is only one code path.
+- **Three parts only:** **Host** (owns PTYs) · **Protocol** (transport-agnostic) · **Clients** (viewers). SSH/WSS/Unix socket are pipes, not product modes.
+- **Remote VPS then costs almost nothing.** It is not a feature — it is *one transport implementation*: `ssh host → termiod attach`. The host and protocol are identical to local; only the byte pipe changes. This is the direct answer to "make remote VPS easy": you stop building "remote" and instead build "the session boundary," after which remote is a thin transport.
 - **The flicker problem dissolves too.** Clients render `libghostty-vt` grid diffs/snapshots, never the app's raw redraw torrent. Images, OSC 8, reflow, and no-flicker become uniform and free — not a remote-only patch. See [remote-projects.md](remote-projects.md) §Transport for why raw-byte-over-SSH flickers and grid-diff does not.
 - **Performance is a non-issue.** A local Unix socket hop is ~5–20 µs against a 16 ms frame budget (~0.06%), and only frame-rate-capped diffs cross it (not the byte torrent, which is absorbed server-side). tmux has shipped exactly this client/server-over-Unix-socket model, locally, for 15 years. The real tax is a new *failure surface*, not latency — and termio has already built the primitives for it (backpressure, ring-buffer replay, catch-up snapshot, heartbeat — see [host-pty notes]).
 - **It is not a rewrite-from-zero.** The boundary is drawn **once** (Phase 0, in-process, zero new features) and paid down incrementally, each phase shipping a real user-visible win: persistence → remote → unified mobile/CLI.

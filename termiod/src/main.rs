@@ -1,10 +1,11 @@
-//! termiod — a durable PTY session host (POC).
+//! termiod — durable session host (POC).
 //!
-//! One binary is both daemon and client. `termiod serve` runs the host;
-//! everything else is a thin client that talks protocol v0 over a Unix socket
-//! (auto-starting the daemon on first use). Detach never kills a session.
+//! Architecture (three parts): **host** · **protocol** · **clients**.
+//! `termiod serve` is the host; other subcommands are reference clients
+//! (or SSH transport helpers). Detach never kills a session.
+//! Local = remote to localhost over a Unix socket.
 //!
-//! See `README.md` in this crate for the design and a smoke test.
+//! See `ARCHITECTURE.md` and `README.md`.
 
 mod client;
 mod daemon;
@@ -22,7 +23,11 @@ use protocol::CreateSpec;
 #[command(
     name = "termiod",
     version,
-    about = "Durable PTY session host — detach ≠ kill (POC for termio issue #164)"
+    about = "Durable session host — viewers attach; detach ≠ kill (#164 POC)",
+    long_about = "termiod is a session host (not a window manager).\n\
+A session lives in the host; Mac/iOS/CLI only attach.\n\
+Local: Unix socket. Remote: SSH pipe to the same host binary.\n\
+See ARCHITECTURE.md."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -31,7 +36,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Run the daemon in the foreground (usually auto-started for you).
+    /// Run the session host in the foreground (usually auto-started).
     Serve,
 
     /// Create a new session and print its id.

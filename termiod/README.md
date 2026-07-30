@@ -1,114 +1,92 @@
-# termiod — durable PTY session host (Rust POC)
+# termiod — durable session host
 
-A minimal **session multiplexer** for termio: `termiod` owns PTYs so a session
-outlives every viewer. Quit your client, the shell/agent keeps running; attach
-again and it's still there. **Detach ≠ kill.**
+> **A session lives in a host. Viewers only attach.**  
+> Local is remote to localhost. Detach ≠ kill.
 
-This is the Rust language spike for termio issue **#164** and implements
-children **#170** (local durable host), **#171** (SSH deploy + remote attach),
-and **#172** (`remote open`). Design source of truth:
-`docs/design/termiod-session-mux.md` and `docs/design/session-daemon-architecture.md`.
+`termiod` is termio’s **session host** (the Superlogical-shaped foundation: a durable runtime around work). The CLI in this binary is a **reference client**, not the architecture.
 
-Scope is deliberately narrow (the zmx lesson): **session persistence only.** No
-panes/windows inside the daemon, no VT/grid snapshot — the hot path is **raw PTY
-bytes over a socket**. A libghostty-vt snapshot layer is a later phase, out of
-scope here.
+Full model: [`ARCHITECTURE.md`](ARCHITECTURE.md) · design: `docs/design/termiod-session-mux.md` · epic [#164](https://github.com/jiweiyuan/termio/issues/164) · POC [#170](https://github.com/jiweiyuan/termio/issues/170)–[#172](https://github.com/jiweiyuan/termio/issues/172) · draft PR [#177](https://github.com/jiweiyuan/termio/pull/177).
+
+```
+  clients (Mac / iOS / CLI)          host (termiod)
+         │                                │
+         │   Session Protocol             │ owns PTYs
+         ├──── Unix socket (local) ──────►│
+         └──── SSH pipe (remote) ────────►│──► shell / agent
+```
 
 ## Build
 
 ```sh
 cd termiod
-cargo build            # debug → ./target/debug/termiod
-cargo build --release  # optimized, small static-ish binary
+cargo build            # ./target/debug/termiod
+cargo build --release
 ```
 
-One binary is both the daemon and the client.
+One binary = **host** (`serve`) + **clients** (`attach`, `list`, …) + **SSH transport helpers** (`remote …`).
 
-## Use (local)
+## Host (local)
 
 ```sh
-# Attach to a session named "demo", creating it (login shell) if missing.
-# The daemon auto-starts on first use. Detach with Ctrl-\  (session lives on).
-termiod attach demo
-
-# Run a specific program instead of the login shell:
-termiod attach build -- npm run dev
-
-# From another terminal — a second viewer of the same session:
-termiod attach demo          # multi-client fan-out; newest attach is the writer
-
-termiod list                 # what's running
-termiod list --json
-termiod create --name api --cwd ~/proj -- bash   # create without attaching
-termiod send api "npm test"  # inject a command without attaching (adds Enter)
-termiod kill api             # end a session + its process group
+termiod serve          # foreground host (usually auto-started)
 ```
 
-Socket location: `$XDG_RUNTIME_DIR/termiod/termiod.sock`, else
-`/tmp/termiod-<uid>/termiod.sock` (dir is 0700, socket 0600). Override with
-`TERMIOD_SOCK` to run isolated daemons.
+Socket: `$XDG_RUNTIME_DIR/termiod/termiod.sock`, else `/tmp/termiod-<uid>/termiod.sock`  
+(`0700` dir, `0600` socket). Override: `TERMIOD_SOCK`.
+
+## Clients (local)
+
+```sh
+termiod attach demo                    # create-on-missing; Ctrl-\ detaches
+termiod attach build -- npm run dev
+termiod list
+termiod list --json
+termiod create --name api --cwd ~/proj -- bash
+termiod send api "npm test"            # inject without attach
+termiod kill api
+```
+
+Multi-client: several `attach` to the same session — output fans out; **newest client is the writer**; newest size wins resize.
 
 ## Protocol v0
 
-One framed, bidirectional stream. A frame is `[kind:u8][len:u32 BE][payload]`:
+Framed stream: `[kind:u8][len:u32 BE][payload]`
 
 | kind | payload | meaning |
 | --- | --- | --- |
-| `C` | JSON | control: `create` / `list` / `kill` / `send` / `attach` / `detach` / responses |
-| `D` | raw bytes | PTY output (daemon→client) and input (client→daemon) — the hot path |
-| `R` | `rows:u16, cols:u16` | window resize (TIOCSWINSZ), newest-client claim |
+| `C` | JSON | control: create / list / kill / send / attach / detach |
+| `D` | raw bytes | PTY I/O (hot path) |
+| `R` | `rows:u16, cols:u16` | resize (TIOCSWINSZ) |
 
-Rules: detach never kills; output fans out to all attached clients; input has a
-single writer (the newest attach); the newest client's size wins. On (re)attach
-the daemon replays a recent-output ring buffer so you see the current screen.
+Later: host-side vt snapshot / diffs (not in this POC). No panes inside the host (zmx lesson).
 
-## Remote over SSH (#171 / #172)
+## Remote (SSH is a pipe)
 
-Transport is **system OpenSSH only** — no custom crypto, no public listener.
-SSH is the transport *and* the ACL. The daemon auto-starts (detached via
-`setsid`) on the remote's first client op, so a session survives SSH
-disconnect for free.
+Transport is **system OpenSSH** only — no public listener. The **host still runs on the VPS**; SSH only reaches it.
 
 ```sh
-# Cross-compile for the host's arch and install to ~/.local/bin/termiod:
-termiod remote deploy my-vps
-#   …or hand it a prebuilt Linux binary instead of cross-compiling:
-termiod remote deploy my-vps --bin target/x86_64-unknown-linux-musl/release/termiod
-
-termiod remote list my-vps                     # sessions on the VPS
-termiod remote attach my-vps demo -- bash      # attach/create over ssh -t
-
-# One-shot (#172): ensure deployed → create durable session → attach:
+termiod remote deploy my-vps           # cross-compile musl → ~/.local/bin/termiod
+termiod remote list my-vps
+termiod remote attach my-vps demo -- bash
 termiod remote open my-vps --cwd '~/proj' --agent shell
 ```
 
-`<host>` is any `~/.ssh/config` alias (or `user@host`); keys stay in your
-ssh-agent. Close your laptop, reconnect, `remote attach` again — the agent
-kept running on the VPS. No tmux/zellij on the host.
-
-See [`DEPLOY.md`](DEPLOY.md) for cross-compile setup, an optional systemd
-`--user` unit, and the security model.
+`my-vps` = `~/.ssh/config` alias. Close the laptop; reattach — agent kept running on the VPS. See [`DEPLOY.md`](DEPLOY.md).
 
 ## Test
 
 ```sh
 cargo build
-python3 smoke_test.py        # 16 checks, exits non-zero on any failure
+python3 smoke_test.py          # #170 — 16 local host checks
+python3 remote_smoke_test.py   # #171/#172 — 8 checks via fake-ssh
 ```
-
-The smoke test drives real PTYs and asserts the #170 contract end-to-end:
-attach → type → detach → **session survives** → reattach sees the same process;
-multi-client fan-out; single-writer input; newest-client resize;
-inject-without-attach; kill.
 
 ## Layout
 
-| file | role |
+| path | part |
 | --- | --- |
-| `src/protocol.rs` | frame + control-message wire format |
-| `src/pty.rs` | open PTY, spawn with the `login_tty` shape, async read/write |
-| `src/session.rs` | one durable session actor (fan-out, ring buffer, writer arbitration) |
-| `src/daemon.rs` | session table + Unix-socket accept loop |
-| `src/client.rs` | connect/auto-start + raw-mode interactive attach |
-| `src/remote.rs` | SSH deploy + remote attach/open |
-| `src/main.rs` | CLI |
+| `src/daemon.rs` · `session.rs` · `pty.rs` | **Host** |
+| `src/protocol.rs` | **Protocol** |
+| `src/client.rs` · `main.rs` | **Reference client** |
+| `src/remote.rs` | **SSH transport** helpers |
+| `ARCHITECTURE.md` | Clean model |
