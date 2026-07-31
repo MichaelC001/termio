@@ -199,6 +199,13 @@ def session_size(name):
     return None
 
 
+def session_info(name):
+    for session in json.loads(cli_out("list", "--json")):
+        if session["name"] == name or session["id"] == name:
+            return session
+    return None
+
+
 def cleanup():
     try:
         for s in json.loads(cli_out("list", "--json")):
@@ -271,7 +278,66 @@ def main():
     a2p.wait(timeout=5)
     cli("kill", "fan")
 
-    print("\n# 3. inject-without-attach + kill")
+    print("\n# 3. observe streams full output without claiming writer")
+    observe_writer, observe_master = spawn_attach(
+        ["observe-pipe", "--", "bash", "--norc"]
+    )
+    read_until(observe_master, "attached to observe-pipe")
+    before_observe = session_info("observe-pipe") or {}
+    writer_before = before_observe.get("writer_client_id")
+
+    observer = subprocess.Popen(
+        [BIN, "attach", "observe-pipe", "--observe", "--no-create"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=ENV,
+    )
+    observer_attached = False
+    writer_unchanged = False
+    for _ in range(50):
+        observed = session_info("observe-pipe") or {}
+        if observed.get("attached_clients") == 2:
+            observer_attached = True
+            writer_unchanged = (
+                writer_before is not None
+                and observed.get("writer_client_id") == writer_before
+            )
+            break
+        time.sleep(0.05)
+    check(
+        "observe: stdin EOF does not detach the observer",
+        observer_attached and observer.poll() is None,
+    )
+    check("observe: writer ownership is unchanged", writer_unchanged)
+
+    observe_payload = (
+        "OBSERVE_FULL_0123456789" * 2048 + "OBSERVE_END_UNIQUE"
+    ).encode()
+    os.write(
+        observe_master,
+        b"python3 -c 'import sys;sys.stdout.write(\"OBSERVE_FULL_0123456789\"*2048+bytes([79,66,83,69,82,86,69,95,69,78,68,95,85,78,73,81,85,69]).decode());sys.stdout.flush()'\r",
+    )
+    read_until(observe_master, "OBSERVE_END_UNIQUE")
+    cli("kill", "observe-pipe")
+    try:
+        observed_stdout, _ = observer.communicate(timeout=5)
+        observer_clean = observer.returncode == 0
+    except subprocess.TimeoutExpired:
+        observer.kill()
+        observed_stdout, _ = observer.communicate()
+        observer_clean = False
+    check(
+        "observe: stdout pipe receives the full payload",
+        observer_clean and observe_payload in observed_stdout,
+    )
+    try:
+        observe_writer.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        observe_writer.kill()
+    os.close(observe_master)
+
+    print("\n# 4. inject-without-attach + kill")
     sid = cli_out("create", "--name", "inj", "--", "bash", "--norc")
     check("create returns an id", bool(sid))
     time.sleep(0.3)
@@ -283,7 +349,7 @@ def main():
     time.sleep(0.3)
     check("kill: session removed", session_pid("inj") is None)
 
-    print("\n# 4. v0.1 hello negotiation + legacy fallback + request ids")
+    print("\n# 5. v0.1 hello negotiation + legacy fallback + request ids")
     h1 = WireClient(caps=["events", "not-a-host-cap"])
     h2 = WireClient(caps=["events"])
     check(
@@ -345,7 +411,7 @@ def main():
     )
     sequenced.close()
 
-    print("\n# 5. v0.1 single-writer errors and writer events")
+    print("\n# 6. v0.1 single-writer errors and writer events")
     wire_id = cli_out("create", "--name", "wire-writer", "--", "cat")
     w1 = WireClient(role="attach", caps=["events"])
     w1.send_control(
@@ -403,7 +469,7 @@ def main():
     w2.close()
     cli("kill", wire_id)
 
-    print("\n# 6. v0.1 subscriptions, status metadata, and waits")
+    print("\n# 7. v0.1 subscriptions, status metadata, and waits")
     sub = WireClient(caps=["events", "send_wait"])
     sub.send_control(
         {"op": "subscribe", "events": ["roster", "status"], "seq": 50}

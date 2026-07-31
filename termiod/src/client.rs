@@ -192,6 +192,55 @@ impl Drop for RawMode {
     }
 }
 
+/// Observe a session without interacting with it. PTY data is copied directly
+/// to stdout until the session exits, the pipe closes, or SIGINT arrives.
+pub async fn observe(target: &str, create_if_missing: Option<CreateSpec>) -> Result<()> {
+    let mut stream = connect_channel(ChannelRole::Attach).await?;
+    write_control(
+        &mut stream,
+        &Control::Attach {
+            target: target.to_string(),
+            create_if_missing,
+            rows: 24,
+            cols: 80,
+            mode: AttachMode::Observe,
+            seq: Some(1),
+        },
+    )
+    .await?;
+
+    match read_frame(&mut stream).await? {
+        Some(Frame::Control(Control::Attached { .. })) => {}
+        Some(Frame::Control(Control::Error { message, .. })) => bail!(message),
+        other => bail!("unexpected attach reply: {other:?}"),
+    }
+
+    let mut stdout = tokio::io::stdout();
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+        .context("installing SIGINT handler")?;
+
+    loop {
+        tokio::select! {
+            _ = interrupt.recv() => return Ok(()),
+            frame = read_frame(&mut stream) => {
+                match frame {
+                    Ok(Some(Frame::Data(bytes))) => {
+                        if stdout.write_all(&bytes).await.is_err()
+                            || stdout.flush().await.is_err()
+                        {
+                            return Ok(());
+                        }
+                    }
+                    Ok(Some(Frame::Control(Control::Exited { .. }))) => return Ok(()),
+                    Ok(Some(_)) => {}
+                    Ok(None) => return Ok(()),
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+    }
+}
+
 /// Attach interactively. Creates the session first if `create_if_missing` is
 /// set and the target does not exist. Returns when the user detaches (Ctrl-\)
 /// or the session's process exits.

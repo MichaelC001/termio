@@ -87,7 +87,7 @@ enum Cmd {
         title: Option<String>,
     },
 
-    /// Attach to a session interactively (creating it if missing).
+    /// Attach to a session (interactively by default, or as an observer).
     Attach {
         /// Session id or name to attach to / create.
         target: String,
@@ -97,6 +97,9 @@ enum Cmd {
         /// Do not create the session if it does not already exist.
         #[arg(long)]
         no_create: bool,
+        /// Stream output without a tty, stdin, resize handling, or write access.
+        #[arg(long)]
+        observe: bool,
         /// Program + args if the session is created. Put after `--`.
         #[arg(last = true)]
         argv: Vec<String>,
@@ -184,12 +187,17 @@ async fn main() -> Result<()> {
             target,
             cwd,
             no_create,
+            observe,
             argv,
         } => {
             let create_if_missing = if no_create {
                 None
             } else {
-                let (rows, cols) = client::term_size();
+                let (rows, cols) = if observe {
+                    (24, 80)
+                } else {
+                    client::term_size()
+                };
                 Some(CreateSpec {
                     name: Some(target.clone()),
                     cwd,
@@ -200,7 +208,11 @@ async fn main() -> Result<()> {
                     workstream: None,
                 })
             };
-            client::attach(&target, create_if_missing).await
+            if observe {
+                client::observe(&target, create_if_missing).await
+            } else {
+                client::attach(&target, create_if_missing).await
+            }
         }
 
         Cmd::Remote { cmd } => remote::run(cmd).await,

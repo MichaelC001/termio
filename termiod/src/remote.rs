@@ -45,6 +45,9 @@ pub enum RemoteCmd {
         host: String,
         /// Session id or name.
         target: String,
+        /// Stream output without allocating an SSH tty or accepting input.
+        #[arg(long)]
+        observe: bool,
         /// Program + args if created. Put after `--`.
         #[arg(last = true)]
         argv: Vec<String>,
@@ -87,9 +90,14 @@ fn run_blocking(cmd: RemoteCmd) -> Result<()> {
             let status = ssh_interactive(&host, false, &format!("{bin} list{flag}"))?;
             std::process::exit(status);
         }
-        RemoteCmd::Attach { host, target, argv } => {
-            let remote = build_attach_cmd(&target, &argv);
-            let status = ssh_interactive(&host, true, &remote)?;
+        RemoteCmd::Attach {
+            host,
+            target,
+            observe,
+            argv,
+        } => {
+            let remote = build_attach_cmd(&target, observe, &argv);
+            let status = ssh_interactive(&host, !observe, &remote)?;
             std::process::exit(status);
         }
         RemoteCmd::Open {
@@ -103,9 +111,12 @@ fn run_blocking(cmd: RemoteCmd) -> Result<()> {
 }
 
 /// Build the remote `termiod attach` command line.
-fn build_attach_cmd(target: &str, argv: &[String]) -> String {
+fn build_attach_cmd(target: &str, observe: bool, argv: &[String]) -> String {
     let bin = remote_bin();
     let mut s = format!("{bin} attach {}", shell_quote(target));
+    if observe {
+        s.push_str(" --observe");
+    }
     if !argv.is_empty() {
         s.push_str(" --");
         for a in argv {
