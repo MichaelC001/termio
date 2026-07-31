@@ -4,7 +4,10 @@
 
 use crate::protocol::{Control, ErrorCode, Event, SessionInfo, WorkstreamSpec};
 use crate::pty::Pty;
+use bytes::Bytes;
 use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -13,11 +16,50 @@ pub type ClientId = String;
 
 const RING_CAP: usize = 128 * 1024;
 const READ_CHUNK: usize = 64 * 1024;
+const CLIENT_BACKLOG_CAP: usize = 4 * 1024 * 1024;
+
+/// Counts PTY bytes queued anywhere between a session and its socket writer.
+pub(crate) struct ClientBacklog {
+    outstanding: AtomicUsize,
+    dropped: AtomicBool,
+}
+
+impl ClientBacklog {
+    pub(crate) fn new() -> Self {
+        Self {
+            outstanding: AtomicUsize::new(0),
+            dropped: AtomicBool::new(false),
+        }
+    }
+
+    fn try_reserve(&self, bytes: usize) -> bool {
+        self.outstanding
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |outstanding| {
+                outstanding
+                    .checked_add(bytes)
+                    .filter(|total| *total <= CLIENT_BACKLOG_CAP)
+            })
+            .is_ok()
+    }
+
+    pub(crate) fn release(&self, bytes: usize) {
+        let previous = self.outstanding.fetch_sub(bytes, Ordering::Relaxed);
+        debug_assert!(previous >= bytes);
+    }
+
+    fn mark_dropped(&self) {
+        self.dropped.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_dropped(&self) -> bool {
+        self.dropped.load(Ordering::Acquire)
+    }
+}
 
 /// Pushed to an attached connection task.
 #[derive(Clone)]
 pub enum ClientEvent {
-    Data(Vec<u8>),
+    Data(Bytes),
     Control(Control),
     Event(Event),
     Exited(i32),
@@ -29,6 +71,7 @@ pub enum SessionMsg {
         id: ClientId,
         interactive: bool,
         out: mpsc::UnboundedSender<ClientEvent>,
+        backlog: Arc<ClientBacklog>,
         reply: oneshot::Sender<bool>,
     },
     RemoveClient {
@@ -74,6 +117,7 @@ impl SessionHandle {
 
 struct ClientEntry {
     out: mpsc::UnboundedSender<ClientEvent>,
+    backlog: Arc<ClientBacklog>,
     /// Interactive attach order. Highest sequence owns the write token.
     seq: u64,
     interactive: bool,
@@ -97,7 +141,8 @@ struct Session {
     clients: HashMap<ClientId, ClientEntry>,
     writer: Option<ClientId>,
     next_seq: u64,
-    ring: std::collections::VecDeque<u8>,
+    ring: VecDeque<Bytes>,
+    ring_bytes: usize,
     events: broadcast::Sender<Event>,
 }
 
@@ -131,17 +176,14 @@ impl Session {
             .map(|(id, _)| id.clone());
     }
 
-    fn push_ring(&mut self, data: &[u8]) {
-        if data.len() >= RING_CAP {
-            self.ring.clear();
-            self.ring.extend(&data[data.len() - RING_CAP..]);
-            return;
+    fn push_ring(&mut self, data: Bytes) {
+        self.ring_bytes += data.len();
+        self.ring.push_back(data);
+        while self.ring_bytes > RING_CAP {
+            if let Some(evicted) = self.ring.pop_front() {
+                self.ring_bytes -= evicted.len();
+            }
         }
-        let overflow = (self.ring.len() + data.len()).saturating_sub(RING_CAP);
-        for _ in 0..overflow {
-            self.ring.pop_front();
-        }
-        self.ring.extend(data);
     }
 
     fn remove_dead(&mut self, dead: Vec<ClientId>) {
@@ -199,17 +241,26 @@ impl Session {
     }
 
     /// Fan PTY output out to every attached client; drop dead ones.
-    fn fan_out(&mut self, data: &[u8]) {
-        self.push_ring(data);
+    fn fan_out(&mut self, data: Bytes) {
+        self.push_ring(data.clone());
         let dead = self
             .clients
             .iter()
             .filter_map(|(id, entry)| {
-                entry
-                    .out
-                    .send(ClientEvent::Data(data.to_vec()))
-                    .err()
-                    .map(|_| id.clone())
+                if !entry.backlog.try_reserve(data.len()) {
+                    entry.backlog.mark_dropped();
+                    eprintln!(
+                        "termiod: dropping slow client {id} from session {}: output backlog exceeded {} MiB",
+                        self.id,
+                        CLIENT_BACKLOG_CAP / (1024 * 1024)
+                    );
+                    return Some(id.clone());
+                }
+                if entry.out.send(ClientEvent::Data(data.clone())).is_err() {
+                    entry.backlog.release(data.len());
+                    return Some(id.clone());
+                }
+                None
             })
             .collect();
         self.remove_dead(dead);
@@ -284,7 +335,8 @@ pub fn spawn(
         clients: HashMap::new(),
         writer: None,
         next_seq: 0,
-        ring: std::collections::VecDeque::new(),
+        ring: VecDeque::new(),
+        ring_bytes: 0,
         events,
     };
 
@@ -324,8 +376,8 @@ async fn run(
                 match read {
                     Ok(0) => break,
                     Ok(n) => {
-                        let chunk = buf[..n].to_vec();
-                        session.fan_out(&chunk);
+                        let chunk = Bytes::copy_from_slice(&buf[..n]);
+                        session.fan_out(chunk);
                     }
                     // Linux delivers EIO when the slave side closes.
                     Err(e) if e.raw_os_error() == Some(libc::EIO) => break,
@@ -358,20 +410,26 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
             id,
             interactive,
             out,
+            backlog,
             reply,
         } => {
             let seq = session.next_seq;
             session.next_seq += 1;
             let old_writer = session.writer.clone();
 
-            if !session.ring.is_empty() {
-                let replay = session.ring.iter().copied().collect();
-                let _ = out.send(ClientEvent::Data(replay));
+            for replay in &session.ring {
+                if backlog.try_reserve(replay.len())
+                    && out.send(ClientEvent::Data(replay.clone())).is_err()
+                {
+                    backlog.release(replay.len());
+                    break;
+                }
             }
             session.clients.insert(
                 id.clone(),
                 ClientEntry {
                     out,
+                    backlog,
                     seq,
                     interactive,
                 },
@@ -450,4 +508,22 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ClientBacklog, CLIENT_BACKLOG_CAP};
+
+    #[test]
+    fn client_backlog_enforces_byte_cap() {
+        let backlog = ClientBacklog::new();
+
+        assert!(backlog.try_reserve(CLIENT_BACKLOG_CAP - 1));
+        assert!(backlog.try_reserve(1));
+        assert!(!backlog.try_reserve(1));
+
+        backlog.release(CLIENT_BACKLOG_CAP);
+        assert!(backlog.try_reserve(1));
+        backlog.release(1);
+    }
 }

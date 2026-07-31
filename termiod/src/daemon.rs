@@ -7,8 +7,9 @@ use crate::protocol::{
     read_frame, write_control, write_data, write_event, AttachMode, Control, ErrorCode, Event,
     Frame, SessionInfo, HOST_CAPABILITIES, PROTOCOL_VERSION, SUPPORTED_PROTOCOLS,
 };
-use crate::session::{self, ClientEvent, ClientId, SessionHandle, SessionMsg};
+use crate::session::{self, ClientBacklog, ClientEvent, ClientId, SessionHandle, SessionMsg};
 use anyhow::{Context, Result};
+use bytes::Bytes;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -348,18 +349,24 @@ struct Connection {
 
 enum Outbound {
     Control(Control),
-    Data(Vec<u8>),
+    Data(Bytes),
     Event(Event),
 }
 
 async fn write_outbound(
     mut wr: tokio::net::unix::OwnedWriteHalf,
     mut rx: mpsc::UnboundedReceiver<Outbound>,
+    backlog: Arc<ClientBacklog>,
 ) {
     while let Some(message) = rx.recv().await {
         let result = match message {
             Outbound::Control(control) => write_control(&mut wr, &control).await,
-            Outbound::Data(data) => write_data(&mut wr, &data).await,
+            Outbound::Data(data) => {
+                let len = data.len();
+                let result = write_data(&mut wr, &data).await;
+                backlog.release(len);
+                result
+            }
             Outbound::Event(event) => write_event(&mut wr, &event).await,
         };
         if result.is_err() {
@@ -459,9 +466,21 @@ async fn handle_conn(stream: UnixStream, manager: Manager) -> Result<()> {
     };
 
     let (out, out_rx) = mpsc::unbounded_channel();
-    let writer = tokio::spawn(write_outbound(wr, out_rx));
-    let result = run_connection(rd, out.clone(), connection, pending, manager).await;
+    let backlog = Arc::new(ClientBacklog::new());
+    let writer = tokio::spawn(write_outbound(wr, out_rx, backlog.clone()));
+    let result = run_connection(
+        rd,
+        out.clone(),
+        connection,
+        pending,
+        manager,
+        backlog.clone(),
+    )
+    .await;
     drop(out);
+    if backlog.is_dropped() {
+        writer.abort();
+    }
     let _ = writer.await;
     result
 }
@@ -486,6 +505,7 @@ async fn run_connection(
     connection: Connection,
     mut pending: Option<Control>,
     manager: Manager,
+    backlog: Arc<ClientBacklog>,
 ) -> Result<()> {
     let mut subscriptions = HashSet::new();
     let mut events = manager.events.subscribe();
@@ -505,7 +525,7 @@ async fn run_connection(
             {
                 ControlFlow::Continue => {}
                 ControlFlow::Attach(request) => {
-                    return run_attach(rd, out, request, connection).await;
+                    return run_attach(rd, out, request, connection, backlog).await;
                 }
                 ControlFlow::Close => return Ok(()),
             }
@@ -803,6 +823,7 @@ async fn run_attach(
     out: mpsc::UnboundedSender<Outbound>,
     request: AttachRequest,
     connection: Connection,
+    backlog: Arc<ClientBacklog>,
 ) -> Result<()> {
     let handle = request.handle;
     let client_id = connection.client_id;
@@ -812,6 +833,7 @@ async fn run_attach(
         id: client_id.clone(),
         interactive: request.mode == AttachMode::Interact,
         out: client_out,
+        backlog: backlog.clone(),
         reply: reply_tx,
     });
     let writer = reply_rx.await.unwrap_or(false);
@@ -842,18 +864,27 @@ async fn run_attach(
     let negotiated = connection.negotiated;
     let event_out = out.clone();
     let session_id = handle.id.clone();
-    let bridge = tokio::spawn(async move {
+    let bridge_backlog = backlog;
+    let mut bridge = tokio::spawn(async move {
         while let Some(event) = client_events.recv().await {
             match event {
                 ClientEvent::Data(bytes) => {
-                    let _ = event_out.send(Outbound::Data(bytes));
+                    let len = bytes.len();
+                    if event_out.send(Outbound::Data(bytes)).is_err() {
+                        bridge_backlog.release(len);
+                        break;
+                    }
                 }
                 ClientEvent::Control(control) if negotiated => {
-                    let _ = event_out.send(Outbound::Control(control));
+                    if event_out.send(Outbound::Control(control)).is_err() {
+                        break;
+                    }
                 }
                 ClientEvent::Control(_) => {}
                 ClientEvent::Event(event) if supports_events => {
-                    let _ = event_out.send(Outbound::Event(event));
+                    if event_out.send(Outbound::Event(event)).is_err() {
+                        break;
+                    }
                 }
                 ClientEvent::Event(_) => {}
                 ClientEvent::Exited(status) => {
@@ -868,7 +899,11 @@ async fn run_attach(
     });
 
     loop {
-        match read_frame(&mut rd).await {
+        let frame = tokio::select! {
+            _ = &mut bridge => break,
+            frame = read_frame(&mut rd) => frame,
+        };
+        match frame {
             Ok(Some(Frame::Data(data))) => {
                 handle.send(SessionMsg::Input {
                     id: client_id.clone(),
