@@ -13,7 +13,10 @@ related:
 <!-- 2026-07-31: hardened the input-replication vs state-sync framing (§A core
 mental model + anti-100× invariant), clarified the two roles of state transfer
 and the `S` snapshot triggers (§C.6), and linked the empirical anti-100×
-benchmark (termiod/bench). -->
+benchmark (termiod/bench). Later same day, folded in a Codex implementation
+review vs Mitchell's Superlogical talk: the authoritative-PTY-dimensions
+correctness requirement (§C.5), and risks #10 (unbounded per-client backlog)
+and #11 (resize is not a barrier). -->
 
 
 # Design: termiod Session Protocol
@@ -209,11 +212,27 @@ makes one control channel safely multiplexable. Ops marked ✦ exist in POC v0.
 
 1. channel opens → `hello` exchange (role `attach`)
 2. `attach {target, mode, rows, cols}`
-3. `attached {session_id, writer:true|false}`
+3. `attached {session_id, writer:true|false, rows, cols}` — **must carry the
+   authoritative PTY dimensions** (see below)
 4. resync: v0 = ring-buffer replay as `D` frames; v1 = one `S` snapshot
    (viewport + cursor + title + a scrollback slice), then live `D` (or `G`)
 5. steady state: `D`/`R` up, `D`/`S`/`G`/`E` down
 6. `detach` (or channel death — equivalent) → session unaffected
+
+**Every client parses at the authoritative PTY dimensions — this is a
+correctness requirement, not a preference.** Input replication is only
+deterministic if the replicas run the same state machine on the same input,
+and a VT parser's output depends on its *width*: wrap points, `\r\n` handling,
+and DECAWM autowrap all key off the column count. An observer whose terminal is
+a different size than the PTY will wrap the identical byte stream differently
+and diverge — the synchronized-state-machine guarantee silently breaks. So:
+`attached` (and the v1 `S` snapshot) **carry `rows`/`cols`**, and a smart client
+maintains an internal grid at *authoritative PTY dimensions* with its own
+*local* viewport layered on top (letterbox / scale / scroll) — never by parsing
+at its own window size. *(POC gap: `Attached` omits `rows`/`cols`
+(`protocol.rs`), and the reference client ignores `Resized`/`WriterChanged`
+(`client.rs`) — acceptable for a single same-size CLI, incorrect the moment a
+second differently-sized viewer attaches.)*
 
 **Writer policy — single writer, newest claim, observable.** Any
 `mode:"interact"` attach takes the write token; the previous writer stays
@@ -467,7 +486,9 @@ announced has `needs_you` on the wire.
 | 6 | **Linux host + libghostty-vt** | v1 bets on `libghostty-vt` building cleanly into the Rust host on Linux (zig cross-compile). De-risk with a spike before committing v1 dates; fallback is any correct VT with damage tracking, at the cost of cell-format alignment. |
 | 7 | **Event flood vs UI** | Protocol allows high-rate `E`; client discipline (per-session `SessionRuntime`, no roster replace per tick) is already law — see sidebar-scroll-performance. Host also coalesces status transitions (≤ ~10/s per session). |
 | 8 | **Superlogical ships first and defines expectations** | Their step 1 is an incredible mux (**Announced**). Our counter is not feature racing; it's landing #170–#172 so agents *survive the app* this quarter, with agent events they haven't announced. |
-| 9 | **No pipe-mode (non-tty) attach client** | The CLI `attach` assumes an interactive tty; driven non-interactively over a bare SSH channel it delivers **0 bytes** (confirmed 2026-07-31 on `ukvps`), which blocks scripting, piping, and honest WAN-throughput measurement. The protocol already has `mode:"observe"`; the fix is a CLI surface for it (`attach --observe`/`pipe` → raw `D` to stdout, no raw-mode, no stdin capture). Small, and needed before the Mac/iOS clients rely on the same read path. |
+| 9 | **No pipe-mode (non-tty) attach client** | The CLI `attach` assumes an interactive tty; driven non-interactively over a bare SSH channel it delivers **0 bytes** (confirmed 2026-07-31 on `ukvps`), which blocks scripting, piping, and honest WAN-throughput measurement. The protocol already has `mode:"observe"`; the fix is a CLI surface for it (`attach --observe`/`pipe` → raw `D` to stdout, no raw-mode, no stdin capture). Small, and needed before the Mac/iOS clients rely on the same read path. Note the sharper framing (Codex review 2026-07-31): today `remote attach` runs `ssh -t host termiod attach`, so the framed protocol lives *between the remote CLI and the remote socket* and never crosses SSH from a native client — the "same bytes over every transport" claim (§C.9) is **not yet exercised end-to-end**; a non-tty `termiod stdio` bridge is what makes it real. |
+| 10 | **Unbounded per-client backlog (the non-blocking hot path's shadow cost)** | The anti-100× invariant makes `fan_out` never block on a slow consumer — but per-client and outbound channels are **unbounded** (`daemon.rs`), so a stalled socket (a wedged phone, a paused SSH client) accumulates raw output without limit until it threatens the daemon. The fix pairs with the `bytes::Bytes` fan-out (single shared chunk, refcounted): give each client a **byte budget / sequence cursor**; when a client falls behind the retained window, **drop it (v0) or resnapshot it (v1)** rather than grow forever. One change closes both the (C+2)×n copy cost and this memory risk. |
+| 11 | **Resize is not a barrier; `pty.resize` errors ignored** | `handle_msg(Resize)` (`session.rs`) updates stored dims + emits `Resized` even if the `TIOCSWINSZ` ioctl failed, and a promoted writer after failover keeps stale dims and is not told to reclaim size. v1 must make resize the quiesce → resize → fresh `S` → resume barrier (§C.5) and surface ioctl failure. |
 
 ## G. Phased roadmap
 
