@@ -4,9 +4,9 @@
 
 use crate::paths;
 use crate::protocol::{
-    read_frame, write_control, write_data, write_event, write_history_payload, write_snapshot,
-    AttachMode, Control, ErrorCode, Event, Frame, SessionInfo, Snapshot, HOST_CAPABILITIES,
-    PROTOCOL_VERSION, SUPPORTED_PROTOCOLS,
+    read_frame, write_control, write_data, write_event, write_grid_payload, write_history_payload,
+    write_snapshot, AttachMode, Control, ErrorCode, Event, Frame, SessionInfo, Snapshot,
+    HOST_CAPABILITIES, PROTOCOL_VERSION, SUPPORTED_PROTOCOLS,
 };
 use crate::session::{self, ClientBacklog, ClientEvent, ClientId, SessionHandle, SessionMsg};
 use anyhow::{Context, Result};
@@ -354,6 +354,7 @@ enum Outbound {
     Event(Event),
     Snapshot(Snapshot),
     History(Bytes),
+    Grid(Bytes),
 }
 
 async fn write_outbound(
@@ -375,6 +376,12 @@ async fn write_outbound(
             Outbound::History(payload) => {
                 let len = payload.len();
                 let result = write_history_payload(&mut wr, &payload).await;
+                backlog.release(len);
+                result
+            }
+            Outbound::Grid(payload) => {
+                let len = payload.len();
+                let result = write_grid_payload(&mut wr, &payload).await;
                 backlog.release(len);
                 result
             }
@@ -422,11 +429,19 @@ async fn handle_conn(stream: UnixStream, manager: Manager) -> Result<()> {
                 return Ok(());
             }
             let mut seen = HashSet::new();
-            let negotiated_caps: Vec<String> = caps
+            let mut negotiated_caps: Vec<String> = caps
                 .into_iter()
                 .filter(|cap| HOST_CAPABILITIES.contains(&cap.as_str()))
                 .filter(|cap| seen.insert(cap.clone()))
                 .collect();
+            // The parsed plane uses S for bootstrap and recovery. A client
+            // offering grid_diff without snapshot therefore does not
+            // negotiate grid_diff.
+            if negotiated_caps.iter().any(|cap| cap == "grid_diff")
+                && !negotiated_caps.iter().any(|cap| cap == "snapshot")
+            {
+                negotiated_caps.retain(|cap| cap != "grid_diff");
+            }
             write_control(
                 &mut wr,
                 &Control::HelloOk {
@@ -564,6 +579,15 @@ async fn run_connection(
                             None,
                             ErrorCode::ProtoError,
                             "history frames are host-to-client only",
+                            false,
+                        )));
+                        return Ok(());
+                    }
+                    Ok(Some(Frame::Grid(_))) => {
+                        let _ = out.send(Outbound::Control(error(
+                            None,
+                            ErrorCode::ProtoError,
+                            "grid-diff frames are host-to-client only",
                             false,
                         )));
                         return Ok(());
@@ -866,6 +890,8 @@ async fn run_attach(
         snapshot: connection.capabilities.contains("snapshot"),
         scrollback: connection.capabilities.contains("snapshot")
             && connection.capabilities.contains("scrollback"),
+        grid_diff: connection.capabilities.contains("snapshot")
+            && connection.capabilities.contains("grid_diff"),
         reply: reply_tx,
     });
     let added = reply_rx.await.context("session ended while attaching")?;
@@ -897,6 +923,7 @@ async fn run_attach(
     let supports_events = connection.capabilities.contains("events");
     let supports_snapshot = connection.capabilities.contains("snapshot");
     let supports_scrollback = supports_snapshot && connection.capabilities.contains("scrollback");
+    let supports_grid_diff = supports_snapshot && connection.capabilities.contains("grid_diff");
     let negotiated = connection.negotiated;
     let event_out = out.clone();
     let session_id = handle.id.clone();
@@ -925,6 +952,14 @@ async fn run_attach(
                     }
                 }
                 ClientEvent::History(payload) => bridge_backlog.release(payload.len()),
+                ClientEvent::Grid(payload) if supports_grid_diff => {
+                    let len = payload.len();
+                    if event_out.send(Outbound::Grid(payload)).is_err() {
+                        bridge_backlog.release(len);
+                        break;
+                    }
+                }
+                ClientEvent::Grid(payload) => bridge_backlog.release(payload.len()),
                 ClientEvent::Control(control) if negotiated => {
                     if event_out.send(Outbound::Control(control)).is_err() {
                         break;
@@ -986,6 +1021,15 @@ async fn run_attach(
                     None,
                     ErrorCode::ProtoError,
                     "history frames are host-to-client only",
+                    false,
+                )));
+                break;
+            }
+            Ok(Some(Frame::Grid(_))) => {
+                let _ = out.send(Outbound::Control(error(
+                    None,
+                    ErrorCode::ProtoError,
+                    "grid-diff frames are host-to-client only",
                     false,
                 )));
                 break;

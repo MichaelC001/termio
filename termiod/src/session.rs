@@ -3,8 +3,9 @@
 //! connection — detach never kills it.
 
 use crate::protocol::{
-    encode_history_payload, Control, ErrorCode, Event, HistoryChunk, SessionInfo, Snapshot,
-    WireCell, WorkstreamSpec, HISTORY_HEADER_SIZE, MAX_HISTORY_FRAME_SIZE, SNAPSHOT_CELL_SIZE,
+    encode_grid_payload, encode_history_payload, Control, ErrorCode, Event, GridDiff, GridRow,
+    HistoryChunk, SessionInfo, Snapshot, WireCell, WorkstreamSpec, HISTORY_HEADER_SIZE,
+    MAX_HISTORY_FRAME_SIZE, SNAPSHOT_CELL_SIZE,
 };
 use crate::pty::Pty;
 use bytes::Bytes;
@@ -23,6 +24,7 @@ const RING_CAP: usize = 128 * 1024;
 const READ_CHUNK: usize = 64 * 1024;
 const CLIENT_BACKLOG_CAP: usize = 4 * 1024 * 1024;
 pub const SCROLLBACK_STAGE_MAX_BYTES: usize = 1024 * 1024;
+pub const KEYFRAME_EVERY_FRAMES: u32 = 256;
 
 /// Counts PTY bytes queued anywhere between a session and its socket writer.
 pub(crate) struct ClientBacklog {
@@ -68,6 +70,7 @@ pub enum ClientEvent {
     Data(Bytes),
     Snapshot(Snapshot),
     History(Bytes),
+    Grid(Bytes),
     Control(Control),
     Event(Event),
     Exited(i32),
@@ -88,6 +91,7 @@ pub enum SessionMsg {
         backlog: Arc<ClientBacklog>,
         snapshot: bool,
         scrollback: bool,
+        grid_diff: bool,
         reply: oneshot::Sender<AddClientReply>,
     },
     RemoveClient {
@@ -138,6 +142,7 @@ struct ClientEntry {
     seq: u64,
     interactive: bool,
     snapshot_capable: bool,
+    grid_diff: bool,
     delivery: ClientDelivery,
     /// Attach-only history staging. Resize barriers discard any remainder and
     /// deliberately do not restage it; resize/reflow history is a later policy.
@@ -164,13 +169,21 @@ enum SidecarCommand {
         request_id: u64,
         scrollback: bool,
     },
+    SetGridDiff(bool),
     Shutdown,
 }
 
-struct SidecarSnapshot {
-    client_id: ClientId,
-    request_id: u64,
-    result: Result<SidecarCapture, String>,
+/// Snapshot replies and live grid updates share this single FIFO channel.
+/// Separate channels could let a post-boundary G overtake its S and regress
+/// rows after the client applies the newer snapshot.
+enum SidecarResult {
+    Snapshot {
+        client_id: ClientId,
+        request_id: u64,
+        result: Result<SidecarCapture, String>,
+    },
+    Grid(GridDiff),
+    Keyframe(termiod_vt::Snapshot),
 }
 
 struct SidecarCapture {
@@ -260,6 +273,14 @@ impl Session {
         sent
     }
 
+    fn wants_grid_diffs(&self) -> bool {
+        self.clients.values().any(|entry| entry.grid_diff)
+    }
+
+    fn sync_grid_diff_interest(&mut self) {
+        self.send_sidecar(SidecarCommand::SetGridDiff(self.wants_grid_diffs()));
+    }
+
     fn begin_snapshot_barrier(&mut self) {
         let snapshot_clients: Vec<ClientId> = self
             .clients
@@ -333,6 +354,7 @@ impl Session {
         for id in dead {
             self.clients.remove(&id);
         }
+        self.sync_grid_diff_interest();
         self.recompute_writer();
         if self.writer != old_writer {
             self.emit_writer_changed(self.writer.clone());
@@ -386,6 +408,12 @@ impl Session {
             .clients
             .iter_mut()
             .filter_map(|(id, entry)| {
+                // The parsed plane is opt-in: G clients never reserve or
+                // receive downstream PTY bytes. Raw clients keep this exact
+                // byte-blind path regardless of sidecar lag.
+                if entry.grid_diff {
+                    return None;
+                }
                 if !entry.backlog.try_reserve(data.len()) {
                     entry.backlog.mark_dropped();
                     eprintln!(
@@ -405,6 +433,47 @@ impl Session {
                     ClientDelivery::SnapshotPending { data: buffered, .. } => {
                         buffered.push_back(data.clone());
                     }
+                }
+                None
+            })
+            .collect();
+        self.remove_dead(dead);
+    }
+
+    fn fan_out_grid(&mut self, grid: GridDiff) {
+        let payload = match encode_grid_payload(&grid) {
+            Ok(payload) => Bytes::from(payload),
+            Err(error) => {
+                eprintln!(
+                    "termiod: failed to encode grid diff for session {}: {error}",
+                    self.id
+                );
+                return;
+            }
+        };
+        let dead = self
+            .clients
+            .iter_mut()
+            .filter_map(|(id, entry)| {
+                if !entry.grid_diff
+                    || matches!(entry.delivery, ClientDelivery::SnapshotPending { .. })
+                {
+                    // An ordered G observed while pending precedes this
+                    // client's S boundary, so the S supersedes it.
+                    return None;
+                }
+                if !entry.backlog.try_reserve(payload.len()) {
+                    entry.backlog.mark_dropped();
+                    eprintln!(
+                        "termiod: dropping slow grid-diff client {id} from session {}: output backlog exceeded {} MiB",
+                        self.id,
+                        CLIENT_BACKLOG_CAP / (1024 * 1024)
+                    );
+                    return Some(id.clone());
+                }
+                if entry.out.send(ClientEvent::Grid(payload.clone())).is_err() {
+                    entry.backlog.release(payload.len());
+                    return Some(id.clone());
                 }
                 None
             })
@@ -525,6 +594,21 @@ impl Session {
         let capture = match result {
             Ok(capture) => capture,
             Err(error) => {
+                if entry.grid_diff {
+                    eprintln!(
+                        "termiod: grid-diff snapshot unavailable for client {client_id} in session {}: {error}; disconnecting client",
+                        self.id
+                    );
+                    release_buffered(&entry.backlog, data);
+                    let _ = entry.out.send(ClientEvent::Control(Control::Error {
+                        re: None,
+                        code: ErrorCode::Internal,
+                        message: format!("grid-diff sidecar unavailable: {error}"),
+                        retryable: true,
+                    }));
+                    self.remove_finished_client(client_id);
+                    return false;
+                }
                 self.fallback_snapshot(client_id, entry, data, deferred, &error);
                 return false;
             }
@@ -556,27 +640,7 @@ impl Session {
                 ),
             }
         }
-        let snapshot = Snapshot {
-            rows: engine.rows,
-            cols: engine.cols,
-            cursor_x: engine.cursor_x,
-            cursor_y: engine.cursor_y,
-            alt_screen: engine.alt_screen,
-            title: engine
-                .title
-                .or_else(|| self.title.clone())
-                .unwrap_or_else(|| self.name.clone()),
-            cells: engine
-                .cells
-                .into_iter()
-                .map(|cell| WireCell {
-                    codepoint: cell.codepoint,
-                    foreground: [cell.foreground.r, cell.foreground.g, cell.foreground.b],
-                    background: [cell.background.r, cell.background.g, cell.background.b],
-                    attributes: cell.attributes,
-                })
-                .collect(),
-        };
+        let snapshot = self.protocol_snapshot(engine);
 
         if entry.out.send(ClientEvent::Snapshot(snapshot)).is_err()
             || entry
@@ -616,6 +680,92 @@ impl Session {
         }
         self.clients.insert(client_id.to_string(), entry);
         history_pending
+    }
+
+    fn protocol_snapshot(&self, engine: termiod_vt::Snapshot) -> Snapshot {
+        Snapshot {
+            rows: engine.rows,
+            cols: engine.cols,
+            cursor_x: engine.cursor_x,
+            cursor_y: engine.cursor_y,
+            alt_screen: engine.alt_screen,
+            title: engine
+                .title
+                .or_else(|| self.title.clone())
+                .unwrap_or_else(|| self.name.clone()),
+            cells: engine
+                .cells
+                .into_iter()
+                .map(|cell| WireCell {
+                    codepoint: cell.codepoint,
+                    foreground: [cell.foreground.r, cell.foreground.g, cell.foreground.b],
+                    background: [cell.background.r, cell.background.g, cell.background.b],
+                    attributes: cell.attributes,
+                })
+                .collect(),
+        }
+    }
+
+    fn fan_out_keyframe(&mut self, engine: termiod_vt::Snapshot) {
+        let snapshot = self.protocol_snapshot(engine);
+        let dead = self
+            .clients
+            .iter_mut()
+            .filter_map(|(id, entry)| {
+                if !entry.grid_diff
+                    || matches!(entry.delivery, ClientDelivery::SnapshotPending { .. })
+                {
+                    return None;
+                }
+                (entry
+                    .out
+                    .send(ClientEvent::Snapshot(snapshot.clone()))
+                    .is_err()
+                    || entry
+                        .out
+                        .send(ClientEvent::Event(Event::Ready {
+                            session: self.id.clone(),
+                        }))
+                        .is_err())
+                .then(|| id.clone())
+            })
+            .collect();
+        self.remove_dead(dead);
+    }
+
+    fn disconnect_grid_clients(&mut self, error: &str) {
+        let ids: Vec<ClientId> = self
+            .clients
+            .iter()
+            .filter(|(_, entry)| entry.grid_diff)
+            .map(|(id, _)| id.clone())
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        eprintln!(
+            "termiod: disconnecting {} grid-diff client(s) from session {}: {error}",
+            ids.len(),
+            self.id
+        );
+        let old_writer = self.writer.clone();
+        for id in ids {
+            if let Some(entry) = self.clients.remove(&id) {
+                if let ClientDelivery::SnapshotPending { data, .. } = entry.delivery {
+                    release_buffered(&entry.backlog, data);
+                }
+                let _ = entry.out.send(ClientEvent::Control(Control::Error {
+                    re: None,
+                    code: ErrorCode::Internal,
+                    message: format!("grid-diff sidecar unavailable: {error}"),
+                    retryable: true,
+                }));
+            }
+        }
+        self.recompute_writer();
+        if self.writer != old_writer {
+            self.emit_writer_changed(self.writer.clone());
+        }
     }
 
     fn fallback_snapshot(
@@ -658,6 +808,7 @@ impl Session {
         if old_writer.as_deref() == Some(client_id) {
             self.recompute_writer();
         }
+        self.sync_grid_diff_interest();
         if self.writer != old_writer {
             self.emit_writer_changed(self.writer.clone());
         }
@@ -752,6 +903,37 @@ fn wire_cell(cell: termiod_vt::Cell) -> WireCell {
         background: [cell.background.r, cell.background.g, cell.background.b],
         attributes: cell.attributes,
     }
+}
+
+fn grid_from_damage(frame_seq: u32, damage: termiod_vt::Damage) -> GridDiff {
+    GridDiff {
+        frame_seq,
+        rows: damage.rows,
+        cols: damage.cols,
+        cursor_x: damage.cursor_x,
+        cursor_y: damage.cursor_y,
+        alt_screen: damage.alt_screen,
+        dirty_rows: damage
+            .dirty_rows
+            .into_iter()
+            .map(|row| GridRow {
+                row_index: row.row_index,
+                cells: row.cells.into_iter().map(wire_cell).collect(),
+            })
+            .collect(),
+    }
+}
+
+fn keyframe_every_frames() -> u32 {
+    std::env::var("TERMIOD_KEYFRAME_EVERY")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(KEYFRAME_EVERY_FRAMES)
+}
+
+fn should_emit_keyframe(frame_seq: u32, every: u32) -> bool {
+    every > 0 && frame_seq.is_multiple_of(every)
 }
 
 fn release_buffered(backlog: &ClientBacklog, data: VecDeque<Bytes>) {
@@ -853,14 +1035,14 @@ fn spawn_sidecar(
     cols: u16,
 ) -> anyhow::Result<(
     std_mpsc::Sender<SidecarCommand>,
-    mpsc::UnboundedReceiver<SidecarSnapshot>,
+    mpsc::UnboundedReceiver<SidecarResult>,
     JoinHandle<()>,
 )> {
     // Deliberately unbounded and fire-and-forget: PTY delivery must never wait
     // for VT parsing. The consumer drains adjacent Bytes writes in batches.
-    // v1.1's desync/resync path is where this lag risk will be bounded.
+    // Only opt-in grid-diff clients depend on this consumer's progress.
     let (command_tx, command_rx) = std_mpsc::channel::<SidecarCommand>();
-    let (snapshot_tx, snapshot_rx) = mpsc::unbounded_channel::<SidecarSnapshot>();
+    let (result_tx, result_rx) = mpsc::unbounded_channel::<SidecarResult>();
     let thread = std::thread::Builder::new()
         .name("termiod-vt".to_string())
         .spawn(move || {
@@ -875,6 +1057,9 @@ fn spawn_sidecar(
                 .is_none()
                 .then(|| "VT sidecar initialization failed".to_string());
             let mut pending = None;
+            let mut grid_diff_wanted = false;
+            let mut frame_seq = 0u32;
+            let keyframe_every = keyframe_every_frames();
 
             loop {
                 let command = match pending.take() {
@@ -902,6 +1087,38 @@ fn spawn_sidecar(
                                 }
                                 Err(std_mpsc::TryRecvError::Empty) => break,
                                 Err(std_mpsc::TryRecvError::Disconnected) => return,
+                            }
+                        }
+                        if grid_diff_wanted && fault.is_none() {
+                            let damage =
+                                match terminal.as_mut().expect("live VT terminal").take_damage() {
+                                    Ok(damage) => damage,
+                                    Err(error) => {
+                                        eprintln!("termiod: VT damage drain failed: {error}");
+                                        break;
+                                    }
+                                };
+                            if !damage.dirty_rows.is_empty() {
+                                frame_seq = frame_seq.wrapping_add(1);
+                                if frame_seq == 0 {
+                                    frame_seq = 1;
+                                }
+                                let result = if should_emit_keyframe(frame_seq, keyframe_every) {
+                                    match terminal.as_mut().expect("live VT terminal").snapshot() {
+                                        Ok(snapshot) => SidecarResult::Keyframe(snapshot),
+                                        Err(error) => {
+                                            eprintln!(
+                                                "termiod: VT keyframe capture failed: {error}"
+                                            );
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    SidecarResult::Grid(grid_from_damage(frame_seq, damage))
+                                };
+                                if result_tx.send(result).is_err() {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -937,8 +1154,8 @@ fn spawn_sidecar(
                             },
                             (None, None) => Err("VT sidecar is unavailable".to_string()),
                         };
-                        if snapshot_tx
-                            .send(SidecarSnapshot {
+                        if result_tx
+                            .send(SidecarResult::Snapshot {
                                 client_id,
                                 request_id,
                                 result,
@@ -948,12 +1165,13 @@ fn spawn_sidecar(
                             break;
                         }
                     }
+                    SidecarCommand::SetGridDiff(wanted) => grid_diff_wanted = wanted,
                     SidecarCommand::Shutdown => break,
                 }
             }
         })
         .map_err(|error| anyhow::anyhow!("spawning VT sidecar thread: {error}"))?;
-    Ok((command_tx, snapshot_rx, thread))
+    Ok((command_tx, result_rx, thread))
 }
 
 async fn run(
@@ -961,7 +1179,7 @@ async fn run(
     mut rx: mpsc::UnboundedReceiver<SessionMsg>,
     waiter: tokio::task::JoinHandle<i32>,
     on_exit: mpsc::UnboundedSender<String>,
-    mut sidecar_snapshots: mpsc::UnboundedReceiver<SidecarSnapshot>,
+    mut sidecar_results: mpsc::UnboundedReceiver<SidecarResult>,
     sidecar_thread: JoinHandle<()>,
 ) {
     let mut buf = vec![0u8; READ_CHUNK];
@@ -985,20 +1203,21 @@ async fn run(
                     break;
                 }
             }
-            result = sidecar_snapshots.recv(), if sidecar_results_open => {
+            result = sidecar_results.recv(), if sidecar_results_open => {
                 match result {
-                    Some(result) => {
-                        let client_id = result.client_id;
-                        if session.finish_snapshot(
-                            &client_id,
-                            result.request_id,
-                            result.result,
-                        ) {
+                    Some(SidecarResult::Snapshot { client_id, request_id, result }) => {
+                        if session.finish_snapshot(&client_id, request_id, result) {
                             history_stages.push_back(client_id);
                         }
                     }
+                    Some(SidecarResult::Grid(grid)) => session.fan_out_grid(grid),
+                    Some(SidecarResult::Keyframe(snapshot)) => {
+                        session.fan_out_keyframe(snapshot);
+                    }
                     None => {
                         sidecar_results_open = false;
+                        session.sidecar_tx.take();
+                        session.disconnect_grid_clients("VT sidecar response channel closed");
                         session.fallback_all_pending("VT sidecar response channel closed");
                     }
                 }
@@ -1053,12 +1272,14 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
             backlog,
             snapshot,
             scrollback,
+            grid_diff,
             reply,
         } => {
             let seq = session.next_seq;
             session.next_seq += 1;
             let old_writer = session.writer.clone();
             let snapshot_request = snapshot.then(|| session.allocate_snapshot_request());
+            let grid_diff = grid_diff && snapshot;
 
             if !snapshot {
                 for replay in &session.ring {
@@ -1078,6 +1299,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
                     seq,
                     interactive,
                     snapshot_capable: snapshot,
+                    grid_diff,
                     delivery: if let Some(request_id) = snapshot_request {
                         ClientDelivery::SnapshotPending {
                             request_id,
@@ -1090,6 +1312,9 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
                     staged_history: VecDeque::new(),
                 },
             );
+            // Enabling precedes this client's in-band Snapshot request, so
+            // later Writes can only produce G results after its S boundary.
+            session.sync_grid_diff_interest();
             if interactive {
                 session.writer = Some(id.clone());
             }
@@ -1122,6 +1347,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
         SessionMsg::RemoveClient { id } => {
             let old_writer = session.writer.clone();
             session.clients.remove(&id);
+            session.sync_grid_diff_interest();
             if old_writer.as_deref() == Some(id.as_str()) {
                 session.recompute_writer();
             }
@@ -1192,9 +1418,9 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        handle_msg, scrollback_row_limit, spawn_sidecar, ClientBacklog, ClientDelivery,
-        ClientEntry, ClientEvent, Session, SessionMsg, SidecarCommand, CLIENT_BACKLOG_CAP,
-        SCROLLBACK_STAGE_MAX_BYTES, SNAPSHOT_CELL_SIZE,
+        handle_msg, scrollback_row_limit, should_emit_keyframe, spawn_sidecar, ClientBacklog,
+        ClientDelivery, ClientEntry, ClientEvent, Session, SessionMsg, SidecarCommand,
+        SidecarResult, CLIENT_BACKLOG_CAP, SCROLLBACK_STAGE_MAX_BYTES, SNAPSHOT_CELL_SIZE,
     };
     use crate::protocol::{Control, ErrorCode};
     use crate::pty::Pty;
@@ -1227,6 +1453,14 @@ mod tests {
     }
 
     #[test]
+    fn keyframe_cadence_replaces_every_nth_grid_flush() {
+        assert!(!should_emit_keyframe(1, 4));
+        assert!(!should_emit_keyframe(3, 4));
+        assert!(should_emit_keyframe(4, 4));
+        assert!(should_emit_keyframe(8, 4));
+    }
+
+    #[test]
     fn resize_snapshot_request_is_an_exact_sidecar_fifo_boundary() {
         let (sidecar, mut snapshots, thread) = spawn_sidecar(2, 16).unwrap();
         sidecar
@@ -1246,9 +1480,14 @@ mod tests {
             .send(SidecarCommand::Write(Bytes::from_static(b"AFTER")))
             .unwrap();
 
-        let response = snapshots.blocking_recv().unwrap();
-        assert_eq!(response.request_id, 1);
-        let snapshot = response.result.unwrap().snapshot;
+        let SidecarResult::Snapshot {
+            request_id, result, ..
+        } = snapshots.blocking_recv().unwrap()
+        else {
+            panic!("snapshot request returned a grid result");
+        };
+        assert_eq!(request_id, 1);
+        let snapshot = result.unwrap().snapshot;
         assert_eq!((snapshot.rows, snapshot.cols), (3, 20));
         let screen: String = snapshot
             .cells
@@ -1292,6 +1531,7 @@ mod tests {
                     seq: 1,
                     interactive: true,
                     snapshot_capable: false,
+                    grid_diff: false,
                     delivery: ClientDelivery::Live,
                     staged_history: VecDeque::new(),
                 },
