@@ -63,10 +63,13 @@ async fn request(msg: &Control) -> Result<Control> {
 }
 
 async fn connect_channel(role: ChannelRole) -> Result<UnixStream> {
-    connect_channel_with_snapshot(role, false).await
+    Ok(connect_channel_with_identity(role, false).await?.0)
 }
 
-async fn connect_channel_with_snapshot(role: ChannelRole, snapshot: bool) -> Result<UnixStream> {
+async fn connect_channel_with_identity(
+    role: ChannelRole,
+    snapshot: bool,
+) -> Result<(UnixStream, Option<String>)> {
     let mut stream = connect().await?;
     let mut caps = vec!["events".to_string(), "send_wait".to_string()];
     if snapshot {
@@ -84,13 +87,15 @@ async fn connect_channel_with_snapshot(role: ChannelRole, snapshot: bool) -> Res
     )
     .await?;
     match read_frame(&mut stream).await {
-        Ok(Some(Frame::Control(Control::HelloOk { .. }))) => Ok(stream),
+        Ok(Some(Frame::Control(Control::HelloOk { client_id, .. }))) => {
+            Ok((stream, Some(client_id)))
+        }
         Ok(Some(Frame::Control(Control::HelloErr { code, supported }))) => {
             bail!("protocol negotiation failed ({code:?}); host supports {supported:?}")
         }
         // A v0 host either closes on the unknown hello op or returns its
         // legacy error. Reconnect and send the original v0-shaped request.
-        Ok(Some(_)) | Ok(None) | Err(_) => connect().await,
+        Ok(Some(_)) | Ok(None) | Err(_) => Ok((connect().await?, None)),
     }
 }
 
@@ -254,7 +259,8 @@ pub async fn observe(target: &str, create_if_missing: Option<CreateSpec>) -> Res
 /// or the session's process exits.
 pub async fn attach(target: &str, create_if_missing: Option<CreateSpec>) -> Result<()> {
     let (rows, cols) = term_size();
-    let mut stream = connect_channel_with_snapshot(ChannelRole::Attach, true).await?;
+    let (mut stream, negotiated_client_id) =
+        connect_channel_with_identity(ChannelRole::Attach, true).await?;
     write_control(
         &mut stream,
         &Control::Attach {
@@ -283,6 +289,7 @@ pub async fn attach(target: &str, create_if_missing: Option<CreateSpec>) -> Resu
     // Reader: daemon frames → stdout. Signals the main loop via `done_tx` when
     // the stream ends (session exited or closed), carrying any exit status.
     let (done_tx, mut done_rx) = tokio::sync::oneshot::channel::<Option<i32>>();
+    let (resize_claim_tx, mut resize_claim_rx) = tokio::sync::mpsc::unbounded_channel();
     let reader = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
         let mut status = None;
@@ -298,6 +305,12 @@ pub async fn attach(target: &str, create_if_missing: Option<CreateSpec>) -> Resu
                     if render_snapshot(&mut stdout, &snapshot).await.is_err() {
                         break;
                     }
+                }
+                Ok(Some(Frame::Control(Control::ResizeClaim {
+                    writer: Some(writer),
+                    ..
+                }))) if negotiated_client_id.as_deref() == Some(writer.as_str()) => {
+                    let _ = resize_claim_tx.send(());
                 }
                 Ok(Some(Frame::Control(Control::Exited { status: s, .. }))) => {
                     status = Some(s);
@@ -322,6 +335,10 @@ pub async fn attach(target: &str, create_if_missing: Option<CreateSpec>) -> Resu
     loop {
         tokio::select! {
             _ = winch.recv() => {
+                let (r, c) = term_size();
+                let _ = write_resize(&mut wr, r, c).await;
+            }
+            Some(()) = resize_claim_rx.recv() => {
                 let (r, c) = term_size();
                 let _ = write_resize(&mut wr, r, c).await;
             }

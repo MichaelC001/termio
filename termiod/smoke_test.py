@@ -120,6 +120,9 @@ class WireClient:
     def send_data(self, data):
         self.send_frame("D", data)
 
+    def send_resize(self, rows, cols):
+        self.send_frame("R", struct.pack(">HH", rows, cols))
+
     def recv_frame(self, timeout=3.0):
         self.sock.settimeout(timeout)
         header = recv_exact(self.sock, 5)
@@ -285,9 +288,9 @@ def main():
     cli("kill", "demo")
 
     print("\n# 2. multi-client fan-out + single-writer input")
-    a1p, a1 = spawn_attach(["fan", "--", "cat"])
+    a1p, a1 = spawn_attach(["fan", "--", "cat"], rows=26, cols=90)
     read_until(a1, "attached to fan")
-    a2p, a2 = spawn_attach(["fan"])  # second viewer, becomes newest ⇒ writer
+    a2p, a2 = spawn_attach(["fan"], rows=34, cols=110)  # newest ⇒ writer
     read_until(a2, "attached to fan")
 
     # Inject via `send` (always applied); cat echoes to *both* clients.
@@ -303,10 +306,18 @@ def main():
     os.write(a2, b"FROM_A2\r")
     check("single-writer: writer input applied", b"FROM_A2" in read_until(a2, "FROM_A2"))
 
-    os.write(a1, b"\x1c")
     os.write(a2, b"\x1c")
-    a1p.wait(timeout=5)
     a2p.wait(timeout=5)
+    deadline = time.time() + 3
+    while time.time() < deadline and session_size("fan") != (26, 90):
+        time.sleep(0.05)
+    check(
+        "writer failover: promoted reference client reclaims its size",
+        session_size("fan") == (26, 90),
+    )
+    drain(a1, 0.5)
+    os.write(a1, b"\x1c")
+    a1p.wait(timeout=5)
     cli("kill", "fan")
 
     print("\n# 3. observe streams full output without claiming writer")
@@ -511,6 +522,118 @@ def main():
     legacy_attach.close()
     cli("kill", snapshot_id)
 
+    barrier_id = cli_out("create", "--name", "resize-barrier", "--", "cat")
+    barrier_writer = WireClient(role="attach", caps=["events"])
+    barrier_writer.send_control(
+        {
+            "op": "attach",
+            "target": barrier_id,
+            "mode": "interact",
+            "rows": 24,
+            "cols": 80,
+            "seq": 72,
+        }
+    )
+    barrier_writer.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "attached"
+    )
+    barrier_writer.drain()
+
+    barrier_snapshot = WireClient(role="attach", caps=["snapshot", "events"])
+    barrier_snapshot.send_control(
+        {
+            "op": "attach",
+            "target": barrier_id,
+            "mode": "observe",
+            "rows": 24,
+            "cols": 80,
+            "seq": 73,
+        }
+    )
+    barrier_snapshot.recv_matching(
+        lambda kind, msg: kind == "E" and msg.get("ev") == "ready"
+    )
+
+    barrier_legacy = WireClient(role="attach", caps=["events"])
+    barrier_legacy.send_control(
+        {
+            "op": "attach",
+            "target": barrier_id,
+            "mode": "observe",
+            "rows": 24,
+            "cols": 80,
+            "seq": 74,
+        }
+    )
+    barrier_legacy.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "attached"
+    )
+    barrier_snapshot.drain()
+    barrier_legacy.drain()
+
+    barrier_writer.send_data(b"PRE_BARRIER\n")
+    barrier_snapshot.recv_matching(
+        lambda kind, payload: kind == "D" and b"PRE_BARRIER" in payload
+    )
+    barrier_legacy.recv_matching(
+        lambda kind, payload: kind == "D" and b"PRE_BARRIER" in payload
+    )
+    barrier_snapshot.drain()
+    barrier_legacy.drain()
+
+    barrier_writer.send_resize(31, 97)
+    barrier_writer.send_data(b"POST_BARRIER\n")
+    fresh_snapshot, snapshot_seen = barrier_snapshot.recv_matching(
+        lambda kind, payload: kind == "S", timeout=3.0
+    )
+    fresh_decoded = (
+        decode_snapshot(fresh_snapshot[1]) if fresh_snapshot is not None else None
+    )
+    check(
+        "resize barrier: fresh S has new dimensions and precedes post-resize D",
+        fresh_decoded is not None
+        and (fresh_decoded["rows"], fresh_decoded["cols"]) == (31, 97)
+        and all(kind != "D" for kind, _ in snapshot_seen[:-1]),
+    )
+    barrier_ready = barrier_snapshot.recv_frame()
+    post_resize, resumed_frames = barrier_snapshot.recv_matching(
+        lambda kind, payload: kind == "D" and b"POST_BARRIER" in payload,
+        timeout=3.0,
+    )
+    check(
+        "resize barrier: every S is followed by ready before D resumes",
+        barrier_ready[0] == "E"
+        and barrier_ready[1].get("ev") == "ready"
+        and barrier_ready[1].get("session") == barrier_id
+        and post_resize is not None,
+    )
+
+    legacy_resized, legacy_seen = barrier_legacy.recv_matching(
+        lambda kind, payload: kind == "E"
+        and payload.get("ev") == "resized"
+        and (payload.get("rows"), payload.get("cols")) == (31, 97),
+        timeout=3.0,
+    )
+    legacy_post, legacy_resumed = barrier_legacy.recv_matching(
+        lambda kind, payload: kind == "D" and b"POST_BARRIER" in payload,
+        timeout=3.0,
+    )
+    legacy_tail = barrier_legacy.drain()
+    check(
+        "resize barrier: v0 client gets resized and never S",
+        legacy_resized is not None
+        and legacy_post is not None
+        and all(
+            kind != "S"
+            for kind, _ in legacy_seen + legacy_resumed + legacy_tail
+        ),
+    )
+
+    barrier_writer.close()
+    barrier_snapshot.close()
+    barrier_legacy.close()
+    cli("kill", barrier_id)
+
     print("\n# 7. v0.1 single-writer errors and writer events")
     wire_id = cli_out("create", "--name", "wire-writer", "--", "cat")
     w1 = WireClient(role="attach", caps=["events"])
@@ -565,8 +688,17 @@ def main():
         "writer policy: non-writer D receives typed not_writer",
         rejected is not None and rejected[1]["retryable"] is False,
     )
-    w1.close()
     w2.close()
+    promoted, _ = w1.recv_matching(
+        lambda kind, msg: kind == "C"
+        and msg.get("op") == "resize_claim"
+        and msg.get("writer") == w1.hello["client_id"]
+    )
+    check(
+        "writer policy: promoted writer receives a resize claim",
+        promoted is not None,
+    )
+    w1.close()
     cli("kill", wire_id)
 
     print("\n# 8. v0.1 subscriptions, status metadata, and waits")
