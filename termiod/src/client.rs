@@ -8,6 +8,8 @@ use crate::protocol::{
 };
 use anyhow::{bail, Context, Result};
 use std::os::fd::AsRawFd;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
@@ -74,6 +76,7 @@ async fn connect_channel_with_identity(
     let mut caps = vec!["events".to_string(), "send_wait".to_string()];
     if snapshot {
         caps.push("snapshot".to_string());
+        caps.push("scrollback".to_string());
     }
     write_control(
         &mut stream,
@@ -298,6 +301,8 @@ pub async fn attach(target: &str, create_if_missing: Option<CreateSpec>) -> Resu
     // the stream ends (session exited or closed), carrying any exit status.
     let (done_tx, mut done_rx) = tokio::sync::oneshot::channel::<Option<i32>>();
     let (resize_claim_tx, mut resize_claim_rx) = tokio::sync::mpsc::unbounded_channel();
+    let scrollback_rows = Arc::new(AtomicUsize::new(0));
+    let reader_scrollback_rows = scrollback_rows.clone();
     let reader = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
         let mut status = None;
@@ -313,6 +318,10 @@ pub async fn attach(target: &str, create_if_missing: Option<CreateSpec>) -> Resu
                     if render_snapshot(&mut stdout, &snapshot).await.is_err() {
                         break;
                     }
+                }
+                Ok(Some(Frame::History(history))) => {
+                    reader_scrollback_rows
+                        .fetch_add(usize::from(history.row_count), Ordering::Relaxed);
                 }
                 Ok(Some(Frame::Control(Control::ResizeClaim {
                     writer: Some(writer),
@@ -376,6 +385,7 @@ pub async fn attach(target: &str, create_if_missing: Option<CreateSpec>) -> Resu
                 } else {
                     eprintln!("\r\n[disconnected]");
                 }
+                report_scrollback(scrollback_rows.load(Ordering::Relaxed));
                 return Ok(());
             }
         }
@@ -386,7 +396,14 @@ pub async fn attach(target: &str, create_if_missing: Option<CreateSpec>) -> Resu
         eprintln!("\r\n[detached — session {id} still running]");
     }
     reader.abort();
+    report_scrollback(scrollback_rows.load(Ordering::Relaxed));
     Ok(())
+}
+
+fn report_scrollback(rows: usize) {
+    if rows > 0 {
+        eprintln!("scrollback: {rows} rows staged");
+    }
 }
 
 async fn render_snapshot<W: AsyncWriteExt + Unpin>(
