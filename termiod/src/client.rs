@@ -208,6 +208,7 @@ impl Drop for RawMode {
 /// Observe a session without interacting with it. PTY data is copied directly
 /// to stdout until the session exits, the pipe closes, or SIGINT arrives.
 pub async fn observe(target: &str, create_if_missing: Option<CreateSpec>) -> Result<()> {
+    let (local_rows, local_cols) = term_size();
     let mut stream = connect_channel(ChannelRole::Attach).await?;
     write_control(
         &mut stream,
@@ -223,7 +224,14 @@ pub async fn observe(target: &str, create_if_missing: Option<CreateSpec>) -> Res
     .await?;
 
     match read_frame(&mut stream).await? {
-        Some(Frame::Control(Control::Attached { .. })) => {}
+        Some(Frame::Control(Control::Attached { rows, cols, .. })) => {
+            if (rows, cols) != (local_rows, local_cols) {
+                eprintln!(
+                    "session is {rows}x{cols}; your terminal is {local_rows}x{local_cols} \
+                     — display may wrap differently"
+                );
+            }
+        }
         Some(Frame::Control(Control::Error { message, .. })) => bail!(message),
         other => bail!("unexpected attach reply: {other:?}"),
     }
