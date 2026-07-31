@@ -47,6 +47,22 @@ pub struct Snapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirtyRow {
+    pub row_index: u16,
+    pub cells: Vec<Cell>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Damage {
+    pub rows: u16,
+    pub cols: u16,
+    pub cursor_x: u16,
+    pub cursor_y: u16,
+    pub alt_screen: bool,
+    pub dirty_rows: Vec<DirtyRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scrollback {
     pub total_rows: usize,
     /// Rows ordered newest-first, starting immediately above the viewport.
@@ -191,8 +207,10 @@ impl VtTerminal {
                 while ffi::ghostty_render_state_row_cells_next(self.row_cells) {
                     cells.push(self.current_cell(foreground, background)?);
                 }
+                self.clear_current_row_damage()?;
             }
         }
+        self.clear_global_damage()?;
 
         if cells.len() != expected {
             return Err(VtError(format!(
@@ -209,6 +227,94 @@ impl VtTerminal {
             alt_screen,
             title,
             cells,
+        })
+    }
+
+    /// Drain the render state's dirty viewport rows and reset both layers of
+    /// libghostty-vt damage tracking. A full-damage update returns every row.
+    pub fn take_damage(&mut self) -> Result<Damage> {
+        // SAFETY: Both handles are live and exclusively owned here.
+        unsafe {
+            check(
+                ffi::ghostty_render_state_update(self.render_state, self.terminal),
+                "ghostty_render_state_update",
+            )?;
+        }
+
+        let rows = self.terminal_u16(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS)?;
+        let cols = self.terminal_u16(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS)?;
+        let cursor_x =
+            self.terminal_u16(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_X)?;
+        let cursor_y =
+            self.terminal_u16(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_Y)?;
+        let alt_screen =
+            self.active_screen()? == ffi::GhosttyTerminalScreen_GHOSTTY_TERMINAL_SCREEN_ALTERNATE;
+        let foreground = self.terminal_rgb(
+            ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND,
+            Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
+        )?;
+        let background = self.terminal_rgb(
+            ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND,
+            Rgb::default(),
+        )?;
+        let dirty = self.global_damage()?;
+        let full = dirty == ffi::GhosttyRenderStateDirty_GHOSTTY_RENDER_STATE_DIRTY_FULL;
+
+        self.populate_rows()?;
+        let mut dirty_rows = Vec::new();
+        let mut row_index = 0u16;
+        // SAFETY: Iterators were populated from the live immutable render
+        // state, and remain valid until the next render-state update.
+        unsafe {
+            while ffi::ghostty_render_state_row_iterator_next(self.row_iterator) {
+                let mut row_dirty = false;
+                check(
+                    ffi::ghostty_render_state_row_get(
+                        self.row_iterator,
+                        ffi::GhosttyRenderStateRowData_GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY,
+                        (&mut row_dirty as *mut bool).cast::<c_void>(),
+                    ),
+                    "ghostty_render_state_row_get(dirty)",
+                )?;
+                if full || row_dirty {
+                    check(
+                        ffi::ghostty_render_state_row_get(
+                            self.row_iterator,
+                            ffi::GhosttyRenderStateRowData_GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,
+                            (&mut self.row_cells as *mut ffi::GhosttyRenderStateRowCells)
+                                .cast::<c_void>(),
+                        ),
+                        "ghostty_render_state_row_get(cells)",
+                    )?;
+                    let mut cells = Vec::with_capacity(usize::from(cols));
+                    while ffi::ghostty_render_state_row_cells_next(self.row_cells) {
+                        cells.push(self.current_cell(foreground, background)?);
+                    }
+                    if cells.len() != usize::from(cols) {
+                        return Err(VtError(format!(
+                            "dirty row {row_index} contained {} cells, expected {cols}",
+                            cells.len()
+                        )));
+                    }
+                    dirty_rows.push(DirtyRow { row_index, cells });
+                }
+                self.clear_current_row_damage()?;
+                row_index = row_index.saturating_add(1);
+            }
+        }
+        self.clear_global_damage()?;
+
+        Ok(Damage {
+            rows,
+            cols,
+            cursor_x,
+            cursor_y,
+            alt_screen,
+            dirty_rows,
         })
     }
 
@@ -266,6 +372,43 @@ impl VtTerminal {
             )
         };
         check(result, "ghostty_render_state_get(row iterator)")
+    }
+
+    fn global_damage(&self) -> Result<ffi::GhosttyRenderStateDirty> {
+        let mut dirty = ffi::GhosttyRenderStateDirty_GHOSTTY_RENDER_STATE_DIRTY_FALSE;
+        let result = unsafe {
+            ffi::ghostty_render_state_get(
+                self.render_state,
+                ffi::GhosttyRenderStateData_GHOSTTY_RENDER_STATE_DATA_DIRTY,
+                (&mut dirty as *mut ffi::GhosttyRenderStateDirty).cast::<c_void>(),
+            )
+        };
+        check(result, "ghostty_render_state_get(dirty)")?;
+        Ok(dirty)
+    }
+
+    fn clear_current_row_damage(&mut self) -> Result<()> {
+        let dirty = false;
+        let result = unsafe {
+            ffi::ghostty_render_state_row_set(
+                self.row_iterator,
+                ffi::GhosttyRenderStateRowOption_GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY,
+                (&dirty as *const bool).cast::<c_void>(),
+            )
+        };
+        check(result, "ghostty_render_state_row_set(dirty)")
+    }
+
+    fn clear_global_damage(&mut self) -> Result<()> {
+        let dirty = ffi::GhosttyRenderStateDirty_GHOSTTY_RENDER_STATE_DIRTY_FALSE;
+        let result = unsafe {
+            ffi::ghostty_render_state_set(
+                self.render_state,
+                ffi::GhosttyRenderStateOption_GHOSTTY_RENDER_STATE_OPTION_DIRTY,
+                (&dirty as *const ffi::GhosttyRenderStateDirty).cast::<c_void>(),
+            )
+        };
+        check(result, "ghostty_render_state_set(dirty)")
     }
 
     fn current_cell(&mut self, default_fg: Rgb, default_bg: Rgb) -> Result<Cell> {
@@ -562,7 +705,7 @@ fn style_color(color: ffi::GhosttyStyleColor, fallback: Rgb, palette: &[Rgb; 256
 
 #[cfg(test)]
 mod tests {
-    use super::VtTerminal;
+    use super::{DirtyRow, VtTerminal};
 
     #[test]
     fn snapshots_text_color_cursor_and_title() {
@@ -598,5 +741,31 @@ mod tests {
             .map(|cell| char::from_u32(cell.codepoint).unwrap_or(' '))
             .collect();
         assert!(text.starts_with("ROW1"));
+    }
+
+    #[test]
+    fn damage_drains_exact_dirty_rows_and_then_is_empty() {
+        let mut terminal = VtTerminal::new(3, 8).unwrap();
+        terminal.snapshot().unwrap();
+        terminal.vt_write(b"ONE\x1b[3;1HTWO");
+
+        let damage = terminal.take_damage().unwrap();
+        assert_eq!(
+            damage
+                .dirty_rows
+                .iter()
+                .map(|row| row.row_index)
+                .collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+        let text = |row: &DirtyRow| {
+            row.cells
+                .iter()
+                .map(|cell| char::from_u32(cell.codepoint).unwrap_or(' '))
+                .collect::<String>()
+        };
+        assert!(text(&damage.dirty_rows[0]).starts_with("ONE"));
+        assert!(text(&damage.dirty_rows[1]).starts_with("TWO"));
+        assert!(terminal.take_damage().unwrap().dirty_rows.is_empty());
     }
 }
