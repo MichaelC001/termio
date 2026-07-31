@@ -1,0 +1,534 @@
+---
+title: termiod Session Protocol
+status: draft
+type: design
+created: 2026-07-30
+updated: 2026-07-31
+related:
+  - termiod-session-mux.md
+  - session-daemon-architecture.md
+  - _research-session-protocol-brief.md
+---
+
+<!-- 2026-07-31: hardened the input-replication vs state-sync framing (§A core
+mental model + anti-100× invariant), clarified the two roles of state transfer
+and the `S` snapshot triggers (§C.6), and linked the empirical anti-100×
+benchmark (termiod/bench). -->
+
+
+# Design: termiod Session Protocol
+
+> One transport-agnostic protocol between attach clients and the `termiod`
+> session host: framed channels, `hello`-negotiated capabilities, raw-PTY hot
+> path staged toward snapshots and diffs, agent workstreams as first-class
+> events. Unix socket and SSH are the product transports; QUIC and WSS bind
+> the *same* messages later. Product/competitive framing:
+> [termiod-session-mux.md](termiod-session-mux.md); host architecture:
+> [session-daemon-architecture.md](session-daemon-architecture.md).
+
+**Evidence policy:** every Superlogical statement in this doc is labeled
+**Announced** (superlogical.com / Mitchell's post), **Inferred**, or
+**Unknown**. Superlogical has published no wire protocol, RPC schema, or
+SSH/QUIC internals; nothing here guesses at them.
+
+---
+
+## A. Executive recommendation
+
+The Session Protocol is a **small framed message contract over ordered,
+reliable, bidirectional byte channels** — not an RPC framework, not a
+transport. It has four nouns (host, session, workstream, client), two channel
+roles (control, attach), and three payload planes (control JSON, terminal
+bytes/diffs, agent events). Every transport — Unix socket, SSH stdio, QUIC,
+WSS — supplies channels; none of them ever changes a message.
+
+**The core mental model — input replication, not state synchronization.**
+A VT parser is a deterministic state machine: the same bytes in produce the
+same screen out. So the host keeps every viewer consistent by **shipping the
+log** (raw PTY bytes to every client, which each replay through their own
+`libghostty`) — *not* by shipping the state (a server-maintained grid diffed
+to clients). This is state-machine replication in the database sense: replicate
+the input, replay deterministically, and snapshot only to bootstrap a replica
+that missed the start. tmux does the opposite — it parses every byte into an
+authoritative grid and diffs *that* to clients — which is precisely why a slow
+middle emulator throttles the whole pipe. Our load-bearing invariant follows:
+
+> **Anti-100× invariant: byte delivery MUST NOT block on host-side VT parse.**
+> The host tees raw bytes to clients and to its ring the instant it reads them;
+> the authoritative VT (v1) is a **sidecar** consulted only to build snapshots,
+> off the hot path. Any design that puts a per-frame grid encoder between the
+> PTY and the pipe rebuilds the tmux tax and is rejected.
+
+Empirically confirmed: `termiod/bench/bench_100x.py` measures termiod at
+**4.4–6.0× tmux's throughput** on the same byte stream, and — the real tell —
+tmux's throughput falls ~50% from plain to ANSI-heavy payloads (a parser is
+content-sensitive) while termiod's barely moves (a tee is not). State sync is
+not the engine; it is two edge cases (§C.6): a one-shot bootstrap and an
+opt-in bad-network degrade.
+
+- **Now (v0.1):** freeze the POC's 5-byte framing; add `hello`/capabilities,
+  request ids, a typed error model, and an event frame kind. Transports:
+  Unix socket (local default), system SSH stdio (remote default).
+- **v1:** host-side `libghostty-vt` becomes terminal-state authority; attach
+  and resize resync via **snapshot** frames; raw bytes remain the steady-state
+  hot path.
+- **v1.1:** capability-gated **dirty-row diffs** replace raw bytes for clients
+  that negotiate them (phone first).
+- **Later, only if earned:** QUIC (roaming/multi-stream, identity borrowed
+  from Tailscale or pairing-pinned certs — never DIY PKI) and WSS relay
+  (phone through hostile NAT, relay as blind pipe).
+
+One-sentence differentiator vs Superlogical's mux layer: **Superlogical is
+building a general multiplexer for all work (Announced); termio's protocol is
+deliberately narrower — an agent-native session contract where `working` /
+`needs-you` / approvals are wire events, running local-first over pipes the
+user already trusts.**
+
+## B. Domain model
+
+```
+Host 1 ──< Session 1 ──? Workstream        (workstream = agent overlay, optional)
+              │
+              └──< Attachment >── Client   (N viewers per session, over channels)
+```
+
+| Noun | What it is | Identity | Lifetime |
+| --- | --- | --- | --- |
+| **Host** | One `termiod` process on one machine; owns every PTY and the session table | `host_id`: stable random 128-bit, minted on first run, stored beside the socket | Daemon process (launchd/systemd `--user`); survives all clients |
+| **Session** | Durable runtime: PTY + process + (v1) vt state + ring/scrollback | `session_id`: host-scoped ULID; `name` is a mutable human alias, never an identity | From `create` until process exit or `kill`. **Detach never ends it** |
+| **Workstream** | Agent metadata over a session: `agent_id`, project/worktree, `status` (`working·idle·needs_you·done·failed·unknown`), pending approval, title | Same `session_id`; workstream fields are session attributes, not a second object to address | Attached at create or promoted later (agent detection); removed on demotion to plain shell |
+| **Client** | One viewer/controller endpoint (Mac app, iOS, CLI, tool) | `client_id` per *connection*, assigned by host at `hello`; clients may also send a stable `client_name` for display | Connection lifetime; nothing a client holds is load-bearing |
+| **Transport endpoint** | Where a host is reachable: `unix:<path>` · `ssh:<host>` · later `quic:<addr>` · `wss:<url>` | Resolved by discovery (`HostRef → Endpoint`); opaque to the protocol | Config lifetime |
+
+**Detach vs kill:** `detach` closes an attachment; the session (and the
+agent inside it) keeps running and its terminal state keeps advancing.
+`kill` ends the process. The CLI verb mapping is `close` → kill,
+window-close → detach. This distinction is the whole point of the host and is
+non-negotiable in every client UI.
+
+**Why workstream ≠ session:** a plain shell has no workstream; an agent
+session has exactly one. Folding agent fields into the session record (rather
+than a second addressable object) keeps the protocol at four nouns and makes
+"agent-native" a *field set plus an event type*, not a parallel API.
+
+## C. Session Protocol specification
+
+### C.1 Channels and roles
+
+A **channel** is an ordered, reliable, bidirectional byte stream carrying
+frames. Transports provide channels; the protocol defines two roles, declared
+in `hello`:
+
+| Role | Purpose | Cardinality |
+| --- | --- | --- |
+| `control` | list / create / kill / `send` / roster subscription / agent events / waits | Usually one long-lived channel per client |
+| `attach` | Exactly one session's terminal plane: data, resize, snapshots, plus that session's events | One channel per attached session |
+
+This split is what lets a status tray, `termio sessions watch`, and an iOS
+roster exist **without a TTY attach** — and it maps 1:1 onto QUIC streams
+later (§D.3). A minimal client (the POC CLI today) may open only an `attach`
+channel; `attach` channels accept the lifecycle requests too, so v0 clients
+stay valid.
+
+### C.2 Framing (frozen from POC v0)
+
+```
+[ kind: u8 ][ len: u32 big-endian ][ payload: len bytes ]
+```
+
+| Kind | Byte | Payload | Plane | Since |
+| --- | --- | --- | --- | --- |
+| Control | `C` | JSON object (`op`-tagged) | control | v0 |
+| Data | `D` | raw PTY bytes, both directions | terminal | v0 |
+| Resize | `R` | rows u16 BE · cols u16 BE | terminal | v0 |
+| Event | `E` | JSON object (`ev`-tagged) | events | v0.1 |
+| Snapshot | `S` | binary: header + packed vt cells (§C.6) | terminal | v1 |
+| Diff | `G` | binary: dirty-row grid update (§C.6) | terminal | v1.1 |
+
+Rules: unknown *control ops* and *event types* are ignored (additive
+evolution); unknown *frame kinds* are a protocol error → `proto_error` +
+close (a frame kind changes how bytes parse; silently skipping risks
+desync). Max frame 16 MiB; `D` frames should stay ≤ 64 KiB (write coalescing,
+fair fan-out). JSON for control is deliberate: control is low-rate, and
+debuggability beats micro-efficiency. The hot path never pays for it — `D`,
+`S`, `G` are binary.
+
+### C.3 `hello` / capabilities / versioning
+
+First frame in each direction on **every** channel, before anything else:
+
+```json
+→ {"op":"hello","proto":1,"min_proto":1,"role":"attach",
+   "caps":["events","snapshot"],"client":"termio-mac/0.22.0"}
+← {"op":"hello_ok","proto":1,"caps":["events","snapshot"],
+   "host_id":"h_9f3k…","host":"termiod/0.3.0 linux-arm64","client_id":"c_41"}
+```
+
+- **`proto` is the protocol version; binary versions are cosmetic.** Host and
+  client each advertise `[min_proto, proto]`; the session runs at the highest
+  common version. No overlap → `hello_err {code:"incompatible", supported:[…]}`
+  and immediate close. **Hard refuse, never limp** — a half-understood session
+  stream corrupts terminals (the weak-IPC-upgrade failure mode the companion
+  wire taught us).
+- **`caps` are additive feature flags**, intersected: `events`, `snapshot`,
+  `grid_diff`, `send_wait`, `approvals`, later `share`, `file`, `git`. New
+  nouns arrive as capabilities inside `proto:1` for as long as additivity
+  holds; `proto:2` is reserved for breaking framing/semantics changes.
+- Compatibility matrix commitment: **old client × new host and new client ×
+  old host both work at the intersection** for all of `proto:1`. Golden-file
+  codec tests + a state-machine test that replays recorded attach/reattach/
+  resize transcripts against both directions of skew (POC smoke tests grow
+  into this).
+
+Frozen in v0: framing, `C`/`D`/`R` semantics, `Attach`/`Create`/`List`/
+`Kill`/`Send`/`Detach` ops. Deliberately unstable until v1 ships: snapshot
+encoding, event field details beyond `ev`/`session`, workstream field names.
+
+### C.4 Control catalog (proto 1)
+
+Requests carry `seq` (client-chosen int); responses echo `re` — this is what
+makes one control channel safely multiplexable. Ops marked ✦ exist in POC v0.
+
+| Op | Direction | Notes |
+| --- | --- | --- |
+| `hello` / `hello_ok` / `hello_err` | both | §C.3 |
+| `create` ✦ | c→h | `CreateSpec {name?, cwd?, argv, env, rows, cols, workstream?}` — `workstream {agent_id, project, worktree?}` is new |
+| `list` ✦ / `sessions` ✦ | c→h / h→c | `SessionInfo` gains `status`, `agent_id`, `title`, `attached_clients`, `writer_client_id` |
+| `attach` ✦ / `attached` ✦ | c→h / h→c | `{target, mode:"interact"|"observe", create_if_missing?, rows, cols}`; reply carries `session_id`, `writer` (bool), and (v1) is followed by one `S` frame |
+| `detach` ✦ | c→h | Leave stream; session lives |
+| `kill` ✦ | c→h | End process; every attachment gets `session_exited` |
+| `send` ✦ | c→h | Inject bytes without attaching — the `termio sessions send` path, now first-class |
+| `wait` | c→h | `{target, until:["needs_you","idle","done","exited"], timeout_ms}` → `wait_result`; gives `send --wait` real semantics instead of transcript polling |
+| `subscribe` | c→h | `{events:["roster","status"]}` on a control channel → stream of `E` frames for all sessions |
+| `resize_claim` | h→c | Informs a demoted client who owns size now (§C.5) |
+| `ok` ✦ / `error` ✦ | h→c | §C.7 |
+
+### C.5 Attach flow, writer policy, resize policy
+
+**Attach (same messages on every transport):**
+
+1. channel opens → `hello` exchange (role `attach`)
+2. `attach {target, mode, rows, cols}`
+3. `attached {session_id, writer:true|false}`
+4. resync: v0 = ring-buffer replay as `D` frames; v1 = one `S` snapshot
+   (viewport + cursor + title + a scrollback slice), then live `D` (or `G`)
+5. steady state: `D`/`R` up, `D`/`S`/`G`/`E` down
+6. `detach` (or channel death — equivalent) → session unaffected
+
+**Writer policy — single writer, newest claim, observable.** Any
+`mode:"interact"` attach takes the write token; the previous writer stays
+attached but demoted, and *everyone* on the session gets
+`E {ev:"writer_changed", writer:"c_41"}`. Observers' `D`/`R` frames are
+answered with `error {code:"not_writer"}` rather than dropped. This is the
+POC behavior formalized plus notification. CRDT/multi-caret input is
+explicitly rejected (§H); the write token is also the natural place a future
+share ACL plugs in without new message shapes.
+
+**Resize policy — the PTY has one size and the writer owns it.** `R` from the
+writer resizes PTY + vt and fan-outs `E {ev:"resized"}`; in v1 a resize is a
+barrier: quiesce, resize, emit fresh `S`, resume deltas (the ghostty-web
+lesson). `R` from observers → `not_writer`; observer UIs letterbox or scale
+client-side. Per-client server-side reflow is rejected — it means one vt per
+viewer per session, which is a nested-window-manager tax in disguise.
+
+### C.6 Terminal plane staging
+
+The steady state is **always raw `D` bytes** — input replication (§A). State
+transfer (`S`/`G`) appears in exactly two roles, both off the steady-state hot
+path: a one-shot **bootstrap** for a replica that missed the log, and (v1.1) an
+opt-in **bad-network degrade**.
+
+| Stage | Steady state | State transfer (when) | Who parses VT |
+| --- | --- | --- | --- |
+| v0 | raw `D` bytes | bootstrap = ring replay (`D`) on attach | every client |
+| v1 | raw `D` bytes | bootstrap = one `S` snapshot on attach/resize/resync | host (sidecar) + every client on live bytes |
+| v1.1 | raw `D` bytes, **or** `G` dirty-row diffs for clients that negotiate `grid_diff` | `S` keyframe + `G` deltas | host, only for `grid_diff` clients |
+
+**When state transfer fires (`S` snapshot triggers) — boundaries only, never
+per frame:** (1) **attach** — a new viewer missed the byte log, so bootstrap it
+with one state frame, then it follows raw `D`; (2) **resize** — the writer
+changes PTY size, a barrier quiesces, resizes, emits a fresh `S`, resumes
+deltas; (3) **desync / host restart recovery**; (4) in v1.1 diff mode only, a
+**periodic keyframe** to bound drift. Steady-state typing and output never
+snapshot — that would be the tmux tax.
+
+`S`/`G` encodings copy the `libghostty-vt` render-state read-out
+(`ghostty-web`'s model): packed 16-byte cells, per-row damage, one snapshot
+call — the C struct doubles as the wire cell. The vt is a **host-side
+authority/sidecar for resync**, never a per-keystroke re-encoder in the middle
+of every pipe (the anti-100× invariant, §A).
+
+**v1.1 `G` diffs are the bad-network degrade, not a faster default.** They are
+capability-gated (`grid_diff`), phone-first, and are the *same mechanism* as
+the QUIC state-sync layer in §D.1 — supersedable dirty rows where a newer row
+version obsoletes an older one, i.e. mosh's SSP rebuilt on standard transport.
+On a good link (LAN, good Wi-Fi) raw byte replication wins outright and no
+client should negotiate `grid_diff`; the diff path exists because a *reliable
+ordered* byte stream must deliver every intermediate byte in order, which a
+lossy high-RTT phone link cannot do cheaply — there, shipping "the latest row
+state" and dropping intermediate frames is the win. It coexists with the byte
+path; it never replaces it. Paired with client-side predictive echo (§D.1),
+this is what makes a 100 ms-RTT link *feel* local — the piece no transport
+choice (SSH or QUIC) can deliver alone.
+
+### C.7 Error model
+
+```json
+{"op":"error","re":7,"code":"no_such_session","message":"…","retryable":false}
+```
+
+Closed `code` vocabulary (extensible additively): `incompatible`,
+`proto_error`, `no_such_session`, `not_writer`, `already_exited`,
+`create_failed`, `denied`, `busy`, `internal`. Three severities: request
+errors (respond, keep channel), channel errors (`proto_error` → close channel,
+sessions unaffected), host errors (host restart → clients reconnect, sessions
+are the durable thing that makes this survivable). Channel death mid-frame is
+always safe: framing is self-delimiting and no request is applied twice
+(`create` idempotency via client-supplied `seq` + connection scope; `kill` is
+naturally idempotent).
+
+### C.8 Security-sensitive fields
+
+| Field | Risk | Rule |
+| --- | --- | --- |
+| `CreateSpec.env`, `argv` | API keys, tokens | Never logged; never echoed in `SessionInfo`; **never traverses a third-party relay un-encrypted-end-to-end** |
+| `D`/`S`/`G` payloads | The work itself | Same relay rule; host never persists beyond ring/scrollback |
+| `send.data` | Injected secrets | Same as `D` |
+| Approval payloads (tool args, diffs) | Code + paths | Carried only on channels whose transport authenticates the *user* (Unix perms, SSH identity, paired device) |
+| `host_id`, socket paths | Fingerprinting | Fine locally; don't publish through relays |
+
+Baseline stance (unchanged from the mux doc): default listen is **Unix socket
+only**, `0700` runtime dir; no TCP bind by default; relays are optional and
+blind (§D.4).
+
+### C.9 Wire example — same messages, three pipes
+
+```
+# local            : termio.app ── unix socket ──────────────► termiod (Mac)
+# remote           : termio.app ── ssh vps "termiod stdio" ──► termiod (VPS)
+# future QUIC      : termio.app ── quic stream N ────────────► termiod (VPS)
+
+→ hello {proto:1, role:"attach", caps:["events","snapshot"]}
+← hello_ok {proto:1, caps:["events","snapshot"], host_id:"h_9f3k", client_id:"c_7"}
+→ attach {target:"fix-issue-164", mode:"interact", rows:48, cols:180,
+          create_if_missing:{argv:["claude"], cwd:"~/work/termio-w1",
+          workstream:{agent_id:"claude", project:"termio", worktree:"w1"}}}
+← attached {session_id:"s_01J…", writer:true}
+← S ▸ snapshot: viewport 48×180 + cursor + title + scrollback slice   (v1)
+← D ▸ live PTY bytes …            → D ▸ keystrokes …    → R ▸ 50×190
+← E {ev:"status", session:"s_01J…", status:"needs_you",
+     approval:{id:"a_3", tool:"Bash", summary:"rm -rf node_modules"}}
+→ (control channel) send {target:"s_01J…", data:"1\n"}   ← ok
+```
+
+The transport rows differ; every frame after them is byte-identical. That is
+the acceptance test for "transport-agnostic": **a recorded local session
+transcript must replay verbatim against an SSH-piped host.**
+
+## D. Transport bindings
+
+| | Unix socket | SSH stdio | QUIC (later) | WSS + relay (later) |
+| --- | --- | --- | --- | --- |
+| **Auth** | Filesystem perms on `$XDG_RUNTIME_DIR/termiod/` (0700); peer-cred check optional | ssh-agent / `~/.ssh/config` — user's existing identity, keys never touch termio | Borrowed identity only: Tailscale tailnet, or pairing-pinned host cert (TOFU like SSH). **No DIY PKI** | Pairing token (companion model), scoped per device; tokens gate every connection |
+| **Channel mapping** | 1 connection = 1 channel | 1 exec (`termiod stdio`) = 1 channel; **ControlMaster** multiplexes execs over one TCP+auth session | 1 QUIC connection per (client, host); stream 0 = control, one bidi stream per attach — the roles were designed for this | 1 WebSocket = 1 channel (matches today's companion shape) |
+| **Failure / reconnect** | Retry connect; host down = launchd/systemd restarts it | TCP drop = detach, never kill; reattach replays ring / snapshot; ControlMaster + `ServerAliveInterval` for fast resume | Connection migration = roaming survives network flips; 0-RTT resume | Relay drop = detach; client re-pairs/reconnects; tiered ReconnectPolicy already exists on iOS |
+| **When (product)** | Local, always — the default | Remote VPS/devbox — the default remote through v1 | Only after measured pain: roaming phones, many-session attach fan-out, reconnect latency | Phone with no tailnet, hostile NAT — last resort, opt-in |
+
+**SSH vs QUIC — complementary planes, not a religion.** SSH's unbeatable
+asset is **deployed identity and trust**: every target VPS already has the
+user's key, agent, jump hosts, and ops muscle; using it means termio ships
+zero crypto and inherits every enterprise's existing audit story. Its real
+costs are per-connection process+handshake overhead (amortized by
+ControlMaster), TCP head-of-line blocking under loss (irrelevant on LAN,
+tolerable on good WAN), and no roaming (a phone changing networks
+re-handshakes). QUIC fixes exactly those three — streams, loss independence,
+connection migration, 0-RTT — but brings the one problem SSH had already
+solved: *who are you?* DIY certs would violate the no-invented-crypto rule.
+So the sequencing writes itself: **SSH is the trust/bootstrap plane and
+default remote; QUIC is a performance plane added later, borrowing identity
+from a tailnet (where QUIC-over-Tailscale gets migration for free) or from a
+pairing ceremony.** The protocol needs zero changes either way — that's what
+the channel abstraction buys. Raw TCP + DIY TLS as a third path stays
+rejected: it is QUIC's identity problem with none of QUIC's benefits.
+
+*(For reference: Superlogical says its mux "owns SSH" as a durable session
+resource — **Announced** in spirit, custody and implementation **Unknown**.
+termio's fork — system OpenSSH as a pipe to a user-run host — stays deliberate:
+smaller security scope, at the cost of some seamless-reconnect polish we buy
+back with ControlMaster and setup helpers.)*
+
+### D.1 QUIC binding — full design (v2, specified now so v1 aligns)
+
+Measured motivation (live `ukvps` run, 2026-07-30, v0.1 over system SSH):
+keystroke echo **12.1 ms median** — already local-feeling — but **65 ms p95**
+(TCP head-of-line under loss), **~230–300 ms** per cold SSH exec, and no
+roaming. QUIC's targets are exactly those three numbers plus the phone's
+network flips; the median needs no help.
+
+**Connection layout.** One QUIC connection per (client, host), ALPN
+`termiod/1`; never one connection per session (it forfeits handshake
+amortization and migration):
+
+```
+├─ bidi stream (first opened) → hello{role:"control"}          roster · subscribe · wait · send
+├─ bidi stream per attach     → hello{role:"attach", target}   that session's terminal plane
+└─ DATAGRAMs (RFC 9221)       → supersedable frames only: grid-diff repair, predictions
+```
+
+Same 5-byte framing inside every stream — a recorded Unix-socket transcript
+replays byte-identical over a QUIC stream (the §C.9 acceptance test).
+`hello` per stream keeps streams self-describing; QUIC deliberately does not
+order across streams, and nothing here needs it to. Per-stream delivery is
+the p95 fix: one session's retransmit can no longer stall another session or
+the control channel.
+
+**State-sync layer (the one real protocol addition).** v1.1 dirty-row diffs
+are *supersedable*: a newer version of a row obsoletes the older one, so
+reliable-ordered delivery of stale rows is wasted work. Binding: rows
+versioned by frame counter; diffs ride datagrams fire-and-forget; the client
+acks the highest contiguous frame on its attach stream; the host re-sends
+rows dirty-and-unacked past ~2×RTT *at their current version*; a periodic
+keyframe (full `S` on the reliable stream) bounds drift. This is mosh's SSP
+rebuilt on standard transport — datagrams, congestion control, encryption,
+and migration come from QUIC instead of invented UDP framing, so the
+no-invented-crypto rule survives. **Input never rides datagrams** —
+keystrokes are non-idempotent and stay on the reliable attach stream.
+Client-side predictive echo (capability `predict`) renders keystrokes
+immediately and lets authoritative diffs confirm or correct — the piece that
+makes a 100 ms+ RTT link *feel* local, which no transport can do alone.
+
+**Reattach and roaming.** 0-RTT resumption + `attach {target, last_seen}`:
+the host replies with diffs-since or a fresh snapshot if the window is gone —
+reattach drops from ~300 ms to ~1 RTT. 0-RTT safety rule: only `hello` and
+`attach` may ride early data (replay-safe); `D`/`send` wait for handshake
+completion. Connection migration is the iOS feature: Wi-Fi → 5G mid-session
+and attach streams simply continue — no protocol event, no torn TUI. SSH
+structurally cannot do this; it is the single strongest argument for QUIC
+existing in the roadmap.
+
+**Identity (decides when this ships).** QUIC mandates TLS and DIY PKI is
+banned, so trust is borrowed, in preference order:
+
+1. **Inside Tailscale** — tailnet is identity + ACL; TLS uses a
+   host-generated self-signed cert the client pins (the tunnel already
+   authenticated the machine).
+2. **Bootstrap over SSH** — first contact runs over the already-trusted SSH
+   pipe; through it the client fetches the host cert's SPKI fingerprint and a
+   client credential, then dials QUIC directly, pinning what SSH vouched
+   for; mutual TLS thereafter. "SSH is the trust plane, QUIC the performance
+   plane" as mechanism, not slogan — SSH never leaves, it just stops
+   carrying keystrokes.
+3. **Pairing ceremony** for the phone — the companion pairing flow upgraded
+   to exchange cert pins instead of bearer tokens.
+
+**Free housekeeping.** QUIC per-stream flow control replaces userland
+backlog rules (a slow observer just stops getting credit; the writer and
+other sessions are untouched; the host ring absorbs the gap). Idle timeout =
+clean implicit detach; PING replaces `ServerAliveInterval`. Protocol
+versioning stays in `hello`, transport-independent — the v0.1 message set
+runs over QUIC unchanged the day the binding lands.
+
+**Refused even in the "perfect" version:** per-session connections;
+everything-on-one-stream (recreates TCP HoL); input or `create` in datagrams
+or 0-RTT early data (replay hazards); WebTransport as the base binding (drags
+in HTTP/3 for no native benefit — revisit only if the web client becomes
+real, since browsers cannot speak raw QUIC); shipping any of this before v1
+snapshots exist. That last is the sequencing truth: the QUIC binding is ~80%
+"the v1/v1.1 snapshot+diff work already planned" and ~20% transport code —
+QUIC without v1 would be raw bytes with a fancier handshake, fixing nothing
+measured except the p95 hiccup.
+
+## E. Comparison matrix
+
+| Dimension | **termio Session Protocol** | Superlogical | tmux | zmx | herdr-style remote | termio Companion wire (today) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Durable host ≠ viewer | ✅ `termiod` | ✅ **Announced** (long-lived sessions, reconnect) | ✅ | ✅ | Partial (app/daemon hybrid) | ❌ host is the GUI |
+| Transport-agnostic protocol | ✅ channels over any pipe | **Unknown** (nothing published) | ❌ Unix socket only | ❌ local socket; SSH as workflow | ❌ bespoke per-feature | ❌ WSS-only, bespoke |
+| Terminal state authority | Host vt (v1), staged | **Inferred** server-side (web client implies it); details **Unknown** | Server-side (own VT) | Sidecar VT for reattach only | Client-side | Mac-side, ad-hoc (MirrorReportFilter…) |
+| Agent events on the wire | ✅ first-class (`status`, approvals, `wait`) | ❌ not announced; "supports agents, not agent-specific" — **Announced** | ❌ | ❌ | Partial (product events, not an open protocol) | Partial (roster pushes) |
+| Multi-client / writer policy | ✅ multi-viewer, single writer, observable claim | ✅ live sharing built in — **Announced**; policy **Unknown** | ✅ (size = smallest client — a known wart) | ✅ attach-only | Single app | 1 phone |
+| Versioning / capability negotiation | ✅ `hello` + caps, hard refuse | **Unknown** | ❌ (server/client must match) | ❌ minimal | ❌ | ❌ (skew caused real bugs) |
+| Nested window manager | ❌ by rule | ❌ blocks in *client*, mux not nested-terminal — **Inferred** from "architectural dead end" remark | ✅ (panes in server) | ❌ by design | ✅ (app-level) | ❌ |
+| Remote model | Same protocol, SSH pipe | Mux "owns SSH" — **Announced**, details **Unknown** | `ssh -t tmux` (nested) | `ssh` + local zmx | Product relay | Tunnel to Mac only |
+
+Reading of the matrix: the defensible, *unoccupied* cell is **agent events as
+an open, versioned protocol concern**. Everyone durable has sessions; nobody
+announced has `needs_you` on the wire.
+
+## F. Risks & open decisions
+
+| # | Risk / decision | Position |
+| --- | --- | --- |
+| 1 | **Phone→Mac gateway vs phone-direct-to-remote-termiod** | Start with Mac-as-gateway (reuses companion pairing + relay work; one trust decision for the user). Phone-direct is v2 via Tailscale, where identity comes free. Gateway's cost: Mac must be reachable — already a known constraint. **Needs product call (§ top-5).** |
+| 2 | **Does termio ever "own SSH"?** | No for v1–v2. Revisit only if ControlMaster + setup helper measurably fail on reconnect UX. Owning SSH in-process = key custody, agent forwarding, host-key policy — a security surface Superlogical chose (**Announced**, details **Unknown**) and we deliberately refuse. |
+| 3 | **Sharing ACL** | Out of protocol v1. The writer token + `hello` identity are the future hook; external identities (a colleague's device) need a pairing/ACL design that must not be improvised. |
+| 4 | **Relay threat model** | Relay is a blind pipe: no session semantics, no `hello` termination, no plaintext `env`/`D` unless the leg is user-owned (own cloudflared/tunnel today). True E2EE-through-untrusted-relay is future work; until then docs must say plainly which legs see plaintext. |
+| 5 | **Ring vs snapshot gap (v0→v1)** | v0 ring replay can tear TUIs on reattach (replayed escape torrent). Confirmed live 2026-07-30: reattaching to a remote `top`, the alt-screen enter (`ESC[?1049h`) had scrolled out of the 41 KB ring — `top` self-heals (periodic repaint), an idle TUI like vim would not. Acceptable for POC; v1 snapshot is the fix — don't polish ring replay further. |
+| 6 | **Linux host + libghostty-vt** | v1 bets on `libghostty-vt` building cleanly into the Rust host on Linux (zig cross-compile). De-risk with a spike before committing v1 dates; fallback is any correct VT with damage tracking, at the cost of cell-format alignment. |
+| 7 | **Event flood vs UI** | Protocol allows high-rate `E`; client discipline (per-session `SessionRuntime`, no roster replace per tick) is already law — see sidebar-scroll-performance. Host also coalesces status transitions (≤ ~10/s per session). |
+| 8 | **Superlogical ships first and defines expectations** | Their step 1 is an incredible mux (**Announced**). Our counter is not feature racing; it's landing #170–#172 so agents *survive the app* this quarter, with agent events they haven't announced. |
+| 9 | **No pipe-mode (non-tty) attach client** | The CLI `attach` assumes an interactive tty; driven non-interactively over a bare SSH channel it delivers **0 bytes** (confirmed 2026-07-31 on `ukvps`), which blocks scripting, piping, and honest WAN-throughput measurement. The protocol already has `mode:"observe"`; the fix is a CLI surface for it (`attach --observe`/`pipe` → raw `D` to stdout, no raw-mode, no stdin capture). Small, and needed before the Mac/iOS clients rely on the same read path. |
+
+## G. Phased roadmap
+
+Mapped to the three-step sequence (§0 of the mux doc) and the GitHub epic
+[#164](https://github.com/jiweiyuan/termio/issues/164):
+
+| Step | Protocol work | Repo milestone |
+| --- | --- | --- |
+| **1 · Incredible host** | **v0 frozen** (shipped in POC, [#177](https://github.com/jiweiyuan/termio/pull/177)). **v0.1 implemented** (branch commit `6855552`): `hello`+caps, `seq`/`re`, error codes, `E` frames, `send`/`wait`, `workstream` in CreateSpec — 28 local + 8 fake-ssh smoke checks green. **Live VPS e2e passed 2026-07-30** on `ukvps` (aarch64, static-musl cross-compile deploy): detach ≠ kill across hard disconnect, send-without-attach, set-status; echo 12.1 ms median, throughput ≈ local | #170 local host: Mac app attaches over Unix socket; sessions survive app quit. #171 SSH deploy helper. #172 remote open (same protocol, SSH pipe) |
+| **2 · Composable agent surface** | **v1**: host-side vt authority, `S` snapshot on attach/resize, host-side status sources (hooks/OSC on the host, heuristics as fallback), approvals in events. `termio sessions` CLI re-based on control channel (retires transcript scraping) | Post-#172: iOS roster + needs-you from `subscribe`; unify companion semantics onto the protocol |
+| **3 · Multi-device operable** | **v1.1**: `G` dirty-row diffs (phone first); QUIC spike behind the channel abstraction; WSS relay binding with blind-pipe rule | Discovery providers (static SSH config, optional Tailscale); phone-direct decision falls due here |
+
+Gate between steps: don't start v1 until the v0.1 skew test suite (old
+client × new host replay) is green — versioning discipline is cheap now and
+impossible retroactively.
+
+## H. What we reject (beautiful ideas we will not do)
+
+1. **gRPC/protobuf/CBOR for the hot path** — an IDL buys nothing for raw
+   bytes and packed cells; it buys codegen complexity on every client.
+2. **Protocol = shell over SSH** (`ssh -tt host claude` productized) — pipes
+   are not sessions; this was the founding rule.
+3. **Freezing raw-PTY forever** — v0 raw is a stage, not the contract;
+   `snapshot`/`grid_diff` capabilities are on the roadmap with dates.
+3a. **State sync on the hot path** — a server-maintained grid diffed to clients
+   as the *default* steady state (the tmux/VNC model). That reintroduces the
+   middle-emulator parse tax the whole design exists to avoid (measured 4–6× in
+   `termiod/bench`); `grid_diff` stays an opt-in bad-network degrade (§C.6),
+   never the default, and never blocks byte delivery (§A invariant).
+4. **Public `0.0.0.0` bind / raw TCP + DIY TLS** — Unix socket and SSH only
+   until QUIC arrives with borrowed identity.
+5. **CRDT multiplayer typing** — single writer with an observable claim;
+   sharing, if it comes, builds on the token, not on merged input.
+6. **Per-client PTY size / server-side per-viewer reflow** — one PTY, one
+   size, writer owns it; observers adapt client-side.
+7. **Nested window manager in the host** — no panes/tabs/layout in `termiod`,
+   ever; that's the tmux dead end both we and Superlogical (**Announced**)
+   are escaping.
+8. **Embedding an SSH or crypto library in the host/client** — system
+   OpenSSH, tailnets, and OS keychains are the security team we didn't hire.
+9. **A second protocol for the phone** — the companion wire is the cautionary
+   tale; iOS becomes a `grid_diff`-capable client of *this* protocol.
+10. **Guessing Superlogical's wire format** — we compete on our contract, not
+    on speculation about theirs (**Unknown** stays unknown).
+
+## Top 5 decisions that need a human product call
+
+1. **Phone path order:** Mac-as-gateway first (recommended) or jump straight
+   to phone-direct-to-remote-termiod — this decides whether iOS remote works
+   before discovery/QUIC lands, and what users must trust in between.
+2. **Sharing:** is live sharing with another *person* (Superlogical's
+   built-in headline feature, **Announced**) a v2 goal or a non-goal? The
+   protocol reserves the hooks either way, but positioning and ACL work are
+   product commitments.
+3. **Openness:** is the Session Protocol spec + `termiod` published as
+   open/self-hostable infrastructure (the composable-platform story from the
+   funding thesis), or kept as an app implementation detail? This changes how
+   hard we must version, document, and stabilize.
+4. **SSH custody line:** confirm the standing bet — system OpenSSH forever,
+   even if Superlogical's integrated remote UX is smoother — or budget a
+   future "termio manages the connection" mode with its key-custody cost.
+5. **Deprecation policy:** how long do v0-only clients (raw PTY, no `hello`)
+   stay supported once v1 ships — i.e., when may the host require `hello`?
+   This is a support/commercial promise, not an engineering choice.

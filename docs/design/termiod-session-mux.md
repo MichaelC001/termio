@@ -3,7 +3,7 @@ title: termiod — Agent-native session mux
 status: draft
 type: design
 created: 2026-07-30
-updated: 2026-07-30
+updated: 2026-07-31
 related:
   - session-daemon-architecture.md
   - sidebar-scroll-performance.md
@@ -248,7 +248,22 @@ Align with [session-daemon-architecture](session-daemon-architecture.md):
 
 **Rules:** detach ≠ kill · resize newest-client (v1) · multi-viewer observe yes · default **single writer** until §8 · capability negotiation on `hello`.
 
-Hot path stays **bytes (or diffs) over the pipe**. VT is a **host-side sidecar** for resync — not a man-in-the-middle that must reparse for every keystroke (zmx lesson).
+**Input replication, not state sync (the anti-100× core).** The host keeps
+viewers consistent by shipping the **log** (raw PTY bytes, each client replays
+through its own `libghostty` — a deterministic state machine), not by shipping
+the **state** (a server grid diffed to clients, the tmux model). State transfer
+(`S` snapshot) fires only to bootstrap a viewer that missed the log — on attach,
+resize, or resync — never per frame. This yields a hard invariant:
+
+> **Byte delivery MUST NOT block on host-side VT parse.** The authoritative VT
+> is a sidecar for snapshots, off the hot path (zmx lesson). Putting a per-frame
+> grid encoder between PTY and pipe rebuilds the middle-emulator tax and is
+> rejected.
+
+Confirmed empirically: `termiod/bench/bench_100x.py` — termiod sustains
+**4–6× tmux's throughput** on identical bytes, and tmux's throughput drops ~50%
+plain→ANSI (parser: content-sensitive) while termiod's holds (tee: not). Full
+protocol staging and the bad-network `grid_diff` degrade: [termiod-session-protocol.md](termiod-session-protocol.md) §C.6/§D.1.
 
 ### 4.4 Transport and discovery (pluggable, boring)
 
@@ -391,7 +406,7 @@ Native Apple clients alone are **table stakes** vs Superlogical; **ADE actions**
 2. Multi-viewer write policy (single writer vs lock vs CRDT — default single writer).
 3. Sharing with external identities: v1 non-goal or scoped feature?
 4. Phone → Mac gateway vs phone-direct-to-remote-termiod first.
-5. When to freeze Protocol v1 (snapshot) vs extend v0 raw too long.
+5. When to freeze Protocol v1 (snapshot) vs extend v0 raw too long. *(Anti-100× property already benchmarked on v0 raw: `termiod/bench`, 4–6× tmux — the raw path is the fast path, so there is no throughput reason to rush v1; snapshot is a correctness/reconnect fix, not a speed fix.)*
 6. Commercial: durable remote / relay free vs paid.
 
 ## 9. Success metrics
