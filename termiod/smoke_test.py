@@ -57,6 +57,37 @@ def recv_exact(sock, size):
     return data
 
 
+def decode_snapshot(payload):
+    """Decode the Phase 1a S payload enough to assert its visible grid."""
+    if len(payload) < 12 or payload[0] != 1:
+        raise ValueError("invalid snapshot header")
+    rows, cols, cursor_x, cursor_y = struct.unpack(">HHHH", payload[1:9])
+    alt_screen = payload[9] == 1
+    title_len = struct.unpack(">H", payload[10:12])[0]
+    cells_offset = 12 + title_len
+    title = payload[12:cells_offset].decode()
+    cell_bytes = payload[cells_offset:]
+    if len(cell_bytes) != rows * cols * 16:
+        raise ValueError("invalid snapshot cell count")
+    lines = []
+    for row in range(rows):
+        line = []
+        for col in range(cols):
+            offset = (row * cols + col) * 16
+            codepoint = struct.unpack(">I", cell_bytes[offset : offset + 4])[0]
+            line.append(chr(codepoint) if codepoint else " ")
+        lines.append("".join(line))
+    return {
+        "rows": rows,
+        "cols": cols,
+        "cursor_x": cursor_x,
+        "cursor_y": cursor_y,
+        "alt_screen": alt_screen,
+        "title": title,
+        "lines": lines,
+    }
+
+
 class WireClient:
     """Small protocol client used to test the v0.1 wire directly."""
 
@@ -411,7 +442,76 @@ def main():
     )
     sequenced.close()
 
-    print("\n# 6. v0.1 single-writer errors and writer events")
+    print("\n# 6. snapshot bootstrap boundary + legacy ring replay")
+    snapshot_id = cli_out(
+        "create",
+        "--name",
+        "snapshot-boundary",
+        "--",
+        "python3",
+        "-u",
+        "-c",
+        "import time; print('SNAPSHOT_KNOWN', flush=True); "
+        "time.sleep(1.5); print('LIVE_AFTER_READY', flush=True); time.sleep(30)",
+    )
+    time.sleep(0.3)
+
+    snapshot_client = WireClient(role="attach", caps=["snapshot"])
+    snapshot_client.send_control(
+        {
+            "op": "attach",
+            "target": snapshot_id,
+            "mode": "observe",
+            "rows": 24,
+            "cols": 80,
+            "seq": 70,
+        }
+    )
+    attached = snapshot_client.recv_frame()
+    snapshot_frame = snapshot_client.recv_frame()
+    ready_frame = snapshot_client.recv_frame()
+    decoded = (
+        decode_snapshot(snapshot_frame[1]) if snapshot_frame[0] == "S" else None
+    )
+    check(
+        "snapshot: attached is followed by S with the known grid, then ready",
+        attached[0] == "C"
+        and attached[1].get("op") == "attached"
+        and snapshot_frame[0] == "S"
+        and decoded is not None
+        and "SNAPSHOT_KNOWN" in "\n".join(decoded["lines"])
+        and ready_frame[0] == "E"
+        and ready_frame[1].get("ev") == "ready"
+        and ready_frame[1].get("session") == snapshot_id,
+    )
+    live, _ = snapshot_client.recv_matching(
+        lambda kind, payload: kind == "D" and b"LIVE_AFTER_READY" in payload,
+        timeout=3.0,
+    )
+    check("snapshot: live D starts only after ready", live is not None)
+    snapshot_client.close()
+
+    legacy_attach = WireClient(role="attach", caps=[])
+    legacy_attach.send_control(
+        {
+            "op": "attach",
+            "target": snapshot_id,
+            "mode": "observe",
+            "rows": 24,
+            "cols": 80,
+            "seq": 71,
+        }
+    )
+    legacy_frames = legacy_attach.drain(0.5)
+    check(
+        "snapshot: client without cap gets ring D and never S",
+        any(kind == "D" and b"SNAPSHOT_KNOWN" in payload for kind, payload in legacy_frames)
+        and all(kind != "S" for kind, _ in legacy_frames),
+    )
+    legacy_attach.close()
+    cli("kill", snapshot_id)
+
+    print("\n# 7. v0.1 single-writer errors and writer events")
     wire_id = cli_out("create", "--name", "wire-writer", "--", "cat")
     w1 = WireClient(role="attach", caps=["events"])
     w1.send_control(
@@ -469,7 +569,7 @@ def main():
     w2.close()
     cli("kill", wire_id)
 
-    print("\n# 7. v0.1 subscriptions, status metadata, and waits")
+    print("\n# 8. v0.1 subscriptions, status metadata, and waits")
     sub = WireClient(caps=["events", "send_wait"])
     sub.send_control(
         {"op": "subscribe", "events": ["roster", "status"], "seq": 50}

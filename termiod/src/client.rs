@@ -4,7 +4,7 @@
 use crate::paths;
 use crate::protocol::{
     read_frame, write_control, write_data, write_resize, AttachMode, ChannelRole, Control,
-    CreateSpec, Frame, SessionInfo, PROTOCOL_VERSION,
+    CreateSpec, Frame, SessionInfo, Snapshot, PROTOCOL_VERSION,
 };
 use anyhow::{bail, Context, Result};
 use std::os::fd::AsRawFd;
@@ -63,14 +63,22 @@ async fn request(msg: &Control) -> Result<Control> {
 }
 
 async fn connect_channel(role: ChannelRole) -> Result<UnixStream> {
+    connect_channel_with_snapshot(role, false).await
+}
+
+async fn connect_channel_with_snapshot(role: ChannelRole, snapshot: bool) -> Result<UnixStream> {
     let mut stream = connect().await?;
+    let mut caps = vec!["events".to_string(), "send_wait".to_string()];
+    if snapshot {
+        caps.push("snapshot".to_string());
+    }
     write_control(
         &mut stream,
         &Control::Hello {
             proto: PROTOCOL_VERSION,
             min_proto: PROTOCOL_VERSION,
             role,
-            caps: vec!["events".to_string(), "send_wait".to_string()],
+            caps,
             client: format!("termiod-cli/{}", env!("CARGO_PKG_VERSION")),
         },
     )
@@ -246,7 +254,7 @@ pub async fn observe(target: &str, create_if_missing: Option<CreateSpec>) -> Res
 /// or the session's process exits.
 pub async fn attach(target: &str, create_if_missing: Option<CreateSpec>) -> Result<()> {
     let (rows, cols) = term_size();
-    let mut stream = connect_channel(ChannelRole::Attach).await?;
+    let mut stream = connect_channel_with_snapshot(ChannelRole::Attach, true).await?;
     write_control(
         &mut stream,
         &Control::Attach {
@@ -285,6 +293,11 @@ pub async fn attach(target: &str, create_if_missing: Option<CreateSpec>) -> Resu
                         break;
                     }
                     let _ = stdout.flush().await;
+                }
+                Ok(Some(Frame::Snapshot(snapshot))) => {
+                    if render_snapshot(&mut stdout, &snapshot).await.is_err() {
+                        break;
+                    }
                 }
                 Ok(Some(Frame::Control(Control::Exited { status: s, .. }))) => {
                     status = Some(s);
@@ -348,5 +361,40 @@ pub async fn attach(target: &str, create_if_missing: Option<CreateSpec>) -> Resu
         eprintln!("\r\n[detached — session {id} still running]");
     }
     reader.abort();
+    Ok(())
+}
+
+async fn render_snapshot<W: AsyncWriteExt + Unpin>(
+    output: &mut W,
+    snapshot: &Snapshot,
+) -> Result<()> {
+    let mut rendered = Vec::with_capacity(snapshot.cells.len() + usize::from(snapshot.rows) * 2);
+    rendered.extend_from_slice(b"\x1b[2J\x1b[H");
+    for row in 0..snapshot.rows {
+        if row > 0 {
+            rendered.extend_from_slice(b"\r\n");
+        }
+        let start = usize::from(row) * usize::from(snapshot.cols);
+        let end = start + usize::from(snapshot.cols);
+        for cell in &snapshot.cells[start..end] {
+            let character = if cell.codepoint == 0 {
+                ' '
+            } else {
+                char::from_u32(cell.codepoint).unwrap_or('\u{fffd}')
+            };
+            let mut encoded = [0; 4];
+            rendered.extend_from_slice(character.encode_utf8(&mut encoded).as_bytes());
+        }
+    }
+    rendered.extend_from_slice(
+        format!(
+            "\x1b[{};{}H",
+            snapshot.cursor_y.saturating_add(1),
+            snapshot.cursor_x.saturating_add(1)
+        )
+        .as_bytes(),
+    );
+    output.write_all(&rendered).await?;
+    output.flush().await?;
     Ok(())
 }

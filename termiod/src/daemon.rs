@@ -4,8 +4,9 @@
 
 use crate::paths;
 use crate::protocol::{
-    read_frame, write_control, write_data, write_event, AttachMode, Control, ErrorCode, Event,
-    Frame, SessionInfo, HOST_CAPABILITIES, PROTOCOL_VERSION, SUPPORTED_PROTOCOLS,
+    read_frame, write_control, write_data, write_event, write_snapshot, AttachMode, Control,
+    ErrorCode, Event, Frame, SessionInfo, Snapshot, HOST_CAPABILITIES, PROTOCOL_VERSION,
+    SUPPORTED_PROTOCOLS,
 };
 use crate::session::{self, ClientBacklog, ClientEvent, ClientId, SessionHandle, SessionMsg};
 use anyhow::{Context, Result};
@@ -351,6 +352,7 @@ enum Outbound {
     Control(Control),
     Data(Bytes),
     Event(Event),
+    Snapshot(Snapshot),
 }
 
 async fn write_outbound(
@@ -368,6 +370,7 @@ async fn write_outbound(
                 result
             }
             Outbound::Event(event) => write_event(&mut wr, &event).await,
+            Outbound::Snapshot(snapshot) => write_snapshot(&mut wr, &snapshot).await,
         };
         if result.is_err() {
             break;
@@ -539,6 +542,15 @@ async fn run_connection(
                         // Events are host-authored. Unknown/inapplicable event
                         // types are ignored by the additive-evolution rule.
                         drop(event);
+                    }
+                    Ok(Some(Frame::Snapshot(_))) => {
+                        let _ = out.send(Outbound::Control(error(
+                            None,
+                            ErrorCode::ProtoError,
+                            "snapshot frames are host-to-client only",
+                            false,
+                        )));
+                        return Ok(());
                     }
                     Ok(Some(Frame::Data(_))) | Ok(Some(Frame::Resize { .. })) => {
                         let _ = out.send(Outbound::Control(error(
@@ -812,6 +824,7 @@ fn subscribed_to(subscriptions: &HashSet<String>, event: &Event) -> bool {
             subscriptions.contains("roster")
         }
         Event::Resized { .. } => false,
+        Event::Ready { .. } => false,
         Event::Unknown => false,
     }
 }
@@ -834,6 +847,7 @@ async fn run_attach(
         interactive: request.mode == AttachMode::Interact,
         out: client_out,
         backlog: backlog.clone(),
+        snapshot: connection.capabilities.contains("snapshot"),
         reply: reply_tx,
     });
     let writer = reply_rx.await.unwrap_or(false);
@@ -861,6 +875,7 @@ async fn run_attach(
     }
 
     let supports_events = connection.capabilities.contains("events");
+    let supports_snapshot = connection.capabilities.contains("snapshot");
     let negotiated = connection.negotiated;
     let event_out = out.clone();
     let session_id = handle.id.clone();
@@ -875,12 +890,23 @@ async fn run_attach(
                         break;
                     }
                 }
+                ClientEvent::Snapshot(snapshot) if supports_snapshot => {
+                    if event_out.send(Outbound::Snapshot(snapshot)).is_err() {
+                        break;
+                    }
+                }
+                ClientEvent::Snapshot(_) => {}
                 ClientEvent::Control(control) if negotiated => {
                     if event_out.send(Outbound::Control(control)).is_err() {
                         break;
                     }
                 }
                 ClientEvent::Control(_) => {}
+                ClientEvent::Event(event @ Event::Ready { .. }) if supports_snapshot => {
+                    if event_out.send(Outbound::Event(event)).is_err() {
+                        break;
+                    }
+                }
                 ClientEvent::Event(event) if supports_events => {
                     if event_out.send(Outbound::Event(event)).is_err() {
                         break;
@@ -916,6 +942,15 @@ async fn run_attach(
                     rows,
                     cols,
                 });
+            }
+            Ok(Some(Frame::Snapshot(_))) => {
+                let _ = out.send(Outbound::Control(error(
+                    None,
+                    ErrorCode::ProtoError,
+                    "snapshot frames are host-to-client only",
+                    false,
+                )));
+                break;
             }
             Ok(Some(Frame::Control(Control::Detach { .. }))) => break,
             Ok(Some(Frame::Control(Control::Unknown))) => {}

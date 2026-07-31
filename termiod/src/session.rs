@@ -2,13 +2,15 @@
 //! attached clients. It runs as an actor whose lifetime is independent of any
 //! connection — detach never kills it.
 
-use crate::protocol::{Control, ErrorCode, Event, SessionInfo, WorkstreamSpec};
+use crate::protocol::{Control, ErrorCode, Event, SessionInfo, Snapshot, WireCell, WorkstreamSpec};
 use crate::pty::Pty;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -60,6 +62,7 @@ impl ClientBacklog {
 #[derive(Clone)]
 pub enum ClientEvent {
     Data(Bytes),
+    Snapshot(Snapshot),
     Control(Control),
     Event(Event),
     Exited(i32),
@@ -72,6 +75,7 @@ pub enum SessionMsg {
         interactive: bool,
         out: mpsc::UnboundedSender<ClientEvent>,
         backlog: Arc<ClientBacklog>,
+        snapshot: bool,
         reply: oneshot::Sender<bool>,
     },
     RemoveClient {
@@ -121,6 +125,27 @@ struct ClientEntry {
     /// Interactive attach order. Highest sequence owns the write token.
     seq: u64,
     interactive: bool,
+    delivery: ClientDelivery,
+}
+
+enum ClientDelivery {
+    Live,
+    SnapshotPending {
+        data: VecDeque<Bytes>,
+        deferred: VecDeque<ClientEvent>,
+    },
+}
+
+enum SidecarCommand {
+    Write(Bytes),
+    Resize { rows: u16, cols: u16 },
+    Snapshot { client_id: ClientId },
+    Shutdown,
+}
+
+struct SidecarSnapshot {
+    client_id: ClientId,
+    result: Result<termiod_vt::Snapshot, String>,
 }
 
 struct Session {
@@ -144,6 +169,7 @@ struct Session {
     ring: VecDeque<Bytes>,
     ring_bytes: usize,
     events: broadcast::Sender<Event>,
+    sidecar_tx: Option<std_mpsc::Sender<SidecarCommand>>,
 }
 
 impl Session {
@@ -186,6 +212,27 @@ impl Session {
         }
     }
 
+    fn send_sidecar(&mut self, command: SidecarCommand) -> bool {
+        let sent = self
+            .sidecar_tx
+            .as_ref()
+            .is_some_and(|sender| sender.send(command).is_ok());
+        if !sent && self.sidecar_tx.take().is_some() {
+            eprintln!("termiod: VT sidecar for session {} stopped", self.id);
+        }
+        sent
+    }
+
+    fn queue_non_data(entry: &mut ClientEntry, event: ClientEvent) -> bool {
+        match &mut entry.delivery {
+            ClientDelivery::Live => entry.out.send(event).is_ok(),
+            ClientDelivery::SnapshotPending { deferred, .. } => {
+                deferred.push_back(event);
+                true
+            }
+        }
+    }
+
     fn remove_dead(&mut self, dead: Vec<ClientId>) {
         if dead.is_empty() {
             return;
@@ -205,13 +252,10 @@ impl Session {
         let _ = self.events.send(event.clone());
         let dead = self
             .clients
-            .iter()
+            .iter_mut()
             .filter_map(|(id, entry)| {
-                entry
-                    .out
-                    .send(ClientEvent::Event(event.clone()))
-                    .err()
-                    .map(|_| id.clone())
+                (!Self::queue_non_data(entry, ClientEvent::Event(event.clone())))
+                    .then(|| id.clone())
             })
             .collect();
         self.remove_dead(dead);
@@ -227,11 +271,14 @@ impl Session {
 
     fn emit_writer_changed(&mut self, demoted: Option<ClientId>) {
         if let Some(previous) = demoted {
-            if let Some(entry) = self.clients.get(&previous) {
-                let _ = entry.out.send(ClientEvent::Control(Control::ResizeClaim {
-                    session: self.id.clone(),
-                    writer: self.writer.clone(),
-                }));
+            if let Some(entry) = self.clients.get_mut(&previous) {
+                Self::queue_non_data(
+                    entry,
+                    ClientEvent::Control(Control::ResizeClaim {
+                        session: self.id.clone(),
+                        writer: self.writer.clone(),
+                    }),
+                );
             }
         }
         self.emit_event(Event::WriterChanged {
@@ -245,7 +292,7 @@ impl Session {
         self.push_ring(data.clone());
         let dead = self
             .clients
-            .iter()
+            .iter_mut()
             .filter_map(|(id, entry)| {
                 if !entry.backlog.try_reserve(data.len()) {
                     entry.backlog.mark_dropped();
@@ -256,9 +303,16 @@ impl Session {
                     );
                     return Some(id.clone());
                 }
-                if entry.out.send(ClientEvent::Data(data.clone())).is_err() {
-                    entry.backlog.release(data.len());
-                    return Some(id.clone());
+                match &mut entry.delivery {
+                    ClientDelivery::Live => {
+                        if entry.out.send(ClientEvent::Data(data.clone())).is_err() {
+                            entry.backlog.release(data.len());
+                            return Some(id.clone());
+                        }
+                    }
+                    ClientDelivery::SnapshotPending { data: buffered, .. } => {
+                        buffered.push_back(data.clone());
+                    }
                 }
                 None
             })
@@ -266,15 +320,153 @@ impl Session {
         self.remove_dead(dead);
     }
 
-    fn reject_not_writer(&self, id: &str) {
-        if let Some(entry) = self.clients.get(id) {
-            let _ = entry.out.send(ClientEvent::Control(Control::Error {
-                re: None,
-                code: ErrorCode::NotWriter,
-                message: "this attachment does not own the write token".to_string(),
-                retryable: false,
-            }));
+    fn reject_not_writer(&mut self, id: &str) {
+        if let Some(entry) = self.clients.get_mut(id) {
+            Self::queue_non_data(
+                entry,
+                ClientEvent::Control(Control::Error {
+                    re: None,
+                    code: ErrorCode::NotWriter,
+                    message: "this attachment does not own the write token".to_string(),
+                    retryable: false,
+                }),
+            );
         }
+    }
+
+    fn finish_snapshot(&mut self, client_id: &str, result: Result<termiod_vt::Snapshot, String>) {
+        let Some(mut entry) = self.clients.remove(client_id) else {
+            return;
+        };
+        let ClientDelivery::SnapshotPending {
+            mut data,
+            mut deferred,
+        } = std::mem::replace(&mut entry.delivery, ClientDelivery::Live)
+        else {
+            self.clients.insert(client_id.to_string(), entry);
+            return;
+        };
+
+        let engine = match result {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.fallback_snapshot(client_id, entry, data, deferred, &error);
+                return;
+            }
+        };
+        let snapshot = Snapshot {
+            rows: engine.rows,
+            cols: engine.cols,
+            cursor_x: engine.cursor_x,
+            cursor_y: engine.cursor_y,
+            alt_screen: engine.alt_screen,
+            title: engine
+                .title
+                .or_else(|| self.title.clone())
+                .unwrap_or_else(|| self.name.clone()),
+            cells: engine
+                .cells
+                .into_iter()
+                .map(|cell| WireCell {
+                    codepoint: cell.codepoint,
+                    foreground: [cell.foreground.r, cell.foreground.g, cell.foreground.b],
+                    background: [cell.background.r, cell.background.g, cell.background.b],
+                    attributes: cell.attributes,
+                })
+                .collect(),
+        };
+
+        if entry.out.send(ClientEvent::Snapshot(snapshot)).is_err()
+            || entry
+                .out
+                .send(ClientEvent::Event(Event::Ready {
+                    session: self.id.clone(),
+                }))
+                .is_err()
+        {
+            release_buffered(&entry.backlog, data);
+            self.remove_finished_client(client_id);
+            return;
+        }
+        while let Some(bytes) = data.pop_front() {
+            let len = bytes.len();
+            if entry.out.send(ClientEvent::Data(bytes)).is_err() {
+                entry.backlog.release(len);
+                release_buffered(&entry.backlog, data);
+                self.remove_finished_client(client_id);
+                return;
+            }
+        }
+        while let Some(event) = deferred.pop_front() {
+            if entry.out.send(event).is_err() {
+                self.remove_finished_client(client_id);
+                return;
+            }
+        }
+        self.clients.insert(client_id.to_string(), entry);
+    }
+
+    fn fallback_snapshot(
+        &mut self,
+        client_id: &str,
+        entry: ClientEntry,
+        buffered: VecDeque<Bytes>,
+        deferred: VecDeque<ClientEvent>,
+        error: &str,
+    ) {
+        eprintln!(
+            "termiod: VT snapshot unavailable for client {client_id} in session {}: {error}; falling back to ring replay",
+            self.id
+        );
+        release_buffered(&entry.backlog, buffered);
+
+        for replay in &self.ring {
+            if !entry.backlog.try_reserve(replay.len()) {
+                entry.backlog.mark_dropped();
+                self.remove_finished_client(client_id);
+                return;
+            }
+            if entry.out.send(ClientEvent::Data(replay.clone())).is_err() {
+                entry.backlog.release(replay.len());
+                self.remove_finished_client(client_id);
+                return;
+            }
+        }
+        for event in deferred {
+            if entry.out.send(event).is_err() {
+                self.remove_finished_client(client_id);
+                return;
+            }
+        }
+        self.clients.insert(client_id.to_string(), entry);
+    }
+
+    fn remove_finished_client(&mut self, client_id: &str) {
+        let old_writer = self.writer.clone();
+        if old_writer.as_deref() == Some(client_id) {
+            self.recompute_writer();
+        }
+        if self.writer != old_writer {
+            self.emit_writer_changed(None);
+        }
+    }
+
+    fn fallback_all_pending(&mut self, error: &str) {
+        let pending: Vec<ClientId> = self
+            .clients
+            .iter()
+            .filter(|(_, entry)| matches!(entry.delivery, ClientDelivery::SnapshotPending { .. }))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in pending {
+            self.finish_snapshot(&id, Err(error.to_string()));
+        }
+    }
+}
+
+fn release_buffered(backlog: &ClientBacklog, data: VecDeque<Bytes>) {
+    for bytes in data {
+        backlog.release(bytes.len());
     }
 }
 
@@ -317,6 +509,8 @@ pub fn spawn(
         }
     });
 
+    let (sidecar_tx, sidecar_snapshots, sidecar_thread) = spawn_sidecar(rows, cols)?;
+
     let (tx, rx) = mpsc::unbounded_channel();
     let session = Session {
         id: id.clone(),
@@ -338,6 +532,7 @@ pub fn spawn(
         ring: VecDeque::new(),
         ring_bytes: 0,
         events,
+        sidecar_tx: Some(sidecar_tx),
     };
 
     let waiter = tokio::task::spawn_blocking(move || {
@@ -351,8 +546,104 @@ pub fn spawn(
         }
     });
 
-    tokio::spawn(run(session, rx, waiter, on_exit));
+    tokio::spawn(run(
+        session,
+        rx,
+        waiter,
+        on_exit,
+        sidecar_snapshots,
+        sidecar_thread,
+    ));
     Ok(SessionHandle { id, tx })
+}
+
+fn spawn_sidecar(
+    rows: u16,
+    cols: u16,
+) -> anyhow::Result<(
+    std_mpsc::Sender<SidecarCommand>,
+    mpsc::UnboundedReceiver<SidecarSnapshot>,
+    JoinHandle<()>,
+)> {
+    // Deliberately unbounded and fire-and-forget: PTY delivery must never wait
+    // for VT parsing. The consumer drains adjacent Bytes writes in batches.
+    // v1.1's desync/resync path is where this lag risk will be bounded.
+    let (command_tx, command_rx) = std_mpsc::channel::<SidecarCommand>();
+    let (snapshot_tx, snapshot_rx) = mpsc::unbounded_channel::<SidecarSnapshot>();
+    let thread = std::thread::Builder::new()
+        .name("termiod-vt".to_string())
+        .spawn(move || {
+            let mut terminal = match termiod_vt::VtTerminal::new(rows, cols) {
+                Ok(terminal) => Some(terminal),
+                Err(error) => {
+                    eprintln!("termiod: failed to initialize VT sidecar: {error}");
+                    None
+                }
+            };
+            let mut fault = terminal
+                .is_none()
+                .then(|| "VT sidecar initialization failed".to_string());
+            let mut pending = None;
+
+            loop {
+                let command = match pending.take() {
+                    Some(command) => command,
+                    None => match command_rx.recv() {
+                        Ok(command) => command,
+                        Err(_) => break,
+                    },
+                };
+                match command {
+                    SidecarCommand::Write(bytes) => {
+                        if let Some(terminal) = terminal.as_mut() {
+                            terminal.vt_write(&bytes);
+                        }
+                        loop {
+                            match command_rx.try_recv() {
+                                Ok(SidecarCommand::Write(bytes)) => {
+                                    if let Some(terminal) = terminal.as_mut() {
+                                        terminal.vt_write(&bytes);
+                                    }
+                                }
+                                Ok(command) => {
+                                    pending = Some(command);
+                                    break;
+                                }
+                                Err(std_mpsc::TryRecvError::Empty) => break,
+                                Err(std_mpsc::TryRecvError::Disconnected) => return,
+                            }
+                        }
+                    }
+                    SidecarCommand::Resize { rows, cols } => {
+                        if fault.is_none() {
+                            if let Some(terminal) = terminal.as_mut() {
+                                if let Err(error) = terminal.resize(rows, cols) {
+                                    fault = Some(format!("VT resize failed: {error}"));
+                                }
+                            }
+                        }
+                    }
+                    SidecarCommand::Snapshot { client_id } => {
+                        let result = match (&fault, terminal.as_mut()) {
+                            (Some(error), _) => Err(error.clone()),
+                            (None, Some(terminal)) => {
+                                terminal.snapshot().map_err(|error| error.to_string())
+                            }
+                            (None, None) => Err("VT sidecar is unavailable".to_string()),
+                        };
+                        if snapshot_tx
+                            .send(SidecarSnapshot { client_id, result })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    SidecarCommand::Shutdown => break,
+                }
+            }
+        })
+        .map_err(|error| anyhow::anyhow!("spawning VT sidecar thread: {error}"))?;
+    Ok((command_tx, snapshot_rx, thread))
 }
 
 async fn run(
@@ -360,9 +651,12 @@ async fn run(
     mut rx: mpsc::UnboundedReceiver<SessionMsg>,
     waiter: tokio::task::JoinHandle<i32>,
     on_exit: mpsc::UnboundedSender<String>,
+    mut sidecar_snapshots: mpsc::UnboundedReceiver<SidecarSnapshot>,
+    sidecar_thread: JoinHandle<()>,
 ) {
     let mut buf = vec![0u8; READ_CHUNK];
     let mut waiter = Some(waiter);
+    let mut sidecar_results_open = true;
 
     loop {
         tokio::select! {
@@ -372,11 +666,23 @@ async fn run(
                     break;
                 }
             }
+            result = sidecar_snapshots.recv(), if sidecar_results_open => {
+                match result {
+                    Some(result) => session.finish_snapshot(&result.client_id, result.result),
+                    None => {
+                        sidecar_results_open = false;
+                        session.fallback_all_pending("VT sidecar response channel closed");
+                    }
+                }
+            }
             read = session.pty.read(&mut buf) => {
                 match read {
                     Ok(0) => break,
                     Ok(n) => {
                         let chunk = Bytes::copy_from_slice(&buf[..n]);
+                        // This refcount clone + unbounded send is strictly
+                        // fire-and-forget. Fan-out never waits for VT parsing.
+                        session.send_sidecar(SidecarCommand::Write(chunk.clone()));
                         session.fan_out(chunk);
                     }
                     // Linux delivers EIO when the slave side closes.
@@ -385,6 +691,11 @@ async fn run(
                 }
             }
         }
+    }
+
+    session.fallback_all_pending("session ended before the VT snapshot completed");
+    if let Some(sidecar_tx) = session.sidecar_tx.take() {
+        let _ = sidecar_tx.send(SidecarCommand::Shutdown);
     }
 
     let code = match waiter.take() {
@@ -400,6 +711,7 @@ async fn run(
         let _ = entry.out.send(ClientEvent::Event(exit_event.clone()));
         let _ = entry.out.send(ClientEvent::Exited(code));
     }
+    let _ = tokio::task::spawn_blocking(move || sidecar_thread.join()).await;
     let _ = on_exit.send(session.id.clone());
 }
 
@@ -411,18 +723,21 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
             interactive,
             out,
             backlog,
+            snapshot,
             reply,
         } => {
             let seq = session.next_seq;
             session.next_seq += 1;
             let old_writer = session.writer.clone();
 
-            for replay in &session.ring {
-                if backlog.try_reserve(replay.len())
-                    && out.send(ClientEvent::Data(replay.clone())).is_err()
-                {
-                    backlog.release(replay.len());
-                    break;
+            if !snapshot {
+                for replay in &session.ring {
+                    if backlog.try_reserve(replay.len())
+                        && out.send(ClientEvent::Data(replay.clone())).is_err()
+                    {
+                        backlog.release(replay.len());
+                        break;
+                    }
                 }
             }
             session.clients.insert(
@@ -432,6 +747,14 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
                     backlog,
                     seq,
                     interactive,
+                    delivery: if snapshot {
+                        ClientDelivery::SnapshotPending {
+                            data: VecDeque::new(),
+                            deferred: VecDeque::new(),
+                        }
+                    } else {
+                        ClientDelivery::Live
+                    },
                 },
             );
             if interactive {
@@ -439,6 +762,14 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
             }
             let is_writer = session.writer.as_deref() == Some(id.as_str());
             let _ = reply.send(is_writer);
+
+            if snapshot
+                && !session.send_sidecar(SidecarCommand::Snapshot {
+                    client_id: id.clone(),
+                })
+            {
+                session.finish_snapshot(&id, Err("VT sidecar is unavailable".to_string()));
+            }
 
             if session.writer != old_writer {
                 session.emit_writer_changed(old_writer);
@@ -467,7 +798,9 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
             if session.writer.as_ref() == Some(&id) {
                 session.rows = rows;
                 session.cols = cols;
-                let _ = session.pty.resize(rows, cols);
+                if session.pty.resize(rows, cols).is_ok() {
+                    session.send_sidecar(SidecarCommand::Resize { rows, cols });
+                }
                 session.emit_event(Event::Resized {
                     session: session.id.clone(),
                     rows,
@@ -512,7 +845,8 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientBacklog, CLIENT_BACKLOG_CAP};
+    use super::{spawn_sidecar, ClientBacklog, SidecarCommand, CLIENT_BACKLOG_CAP};
+    use bytes::Bytes;
 
     #[test]
     fn client_backlog_enforces_byte_cap() {
@@ -525,5 +859,34 @@ mod tests {
         backlog.release(CLIENT_BACKLOG_CAP);
         assert!(backlog.try_reserve(1));
         backlog.release(1);
+    }
+
+    #[test]
+    fn snapshot_request_is_an_exact_sidecar_fifo_boundary() {
+        let (sidecar, mut snapshots, thread) = spawn_sidecar(2, 16).unwrap();
+        sidecar
+            .send(SidecarCommand::Write(Bytes::from_static(b"BEFORE")))
+            .unwrap();
+        sidecar
+            .send(SidecarCommand::Snapshot {
+                client_id: "client".to_string(),
+            })
+            .unwrap();
+        sidecar
+            .send(SidecarCommand::Write(Bytes::from_static(b"AFTER")))
+            .unwrap();
+
+        let response = snapshots.blocking_recv().unwrap();
+        let snapshot = response.result.unwrap();
+        let screen: String = snapshot
+            .cells
+            .iter()
+            .map(|cell| char::from_u32(cell.codepoint).unwrap_or(' '))
+            .collect();
+        assert!(screen.starts_with("BEFORE"));
+        assert!(!screen.contains("AFTER"));
+
+        sidecar.send(SidecarCommand::Shutdown).unwrap();
+        thread.join().unwrap();
     }
 }
