@@ -62,6 +62,8 @@ server-maintained grid. This is what makes termiod fast; tmux does the opposite
 | `bd1ead5` | Corrected §C.6: libghostty-vt 1.3.2 cells are **opaque** — no wire-ready 16-byte cell; conversion required regardless of engine |
 | `5e956aa` | **DECISION:** v1 VT engine = **libghostty-vt** (overrode the spike's alacritty pick) — see §3 |
 | `1aa8d23` | **#181 Phase 0 done:** libghostty-vt FFI build proof `termiod/spike/vt-ffi` — builds, FFIs from Rust, produces the correct snapshot, cross-compiles to aarch64-musl. Verified independently on both Mac and VPS. |
+| `bc36438` | **#181 Phase 1a (part 1):** spike promoted to a real `termiod/vt` library crate (safe `VtTerminal` wrapper, vendored libghostty-vt, dual-target build.rs). |
+| `9f539b8` | **#181 Phase 1a done:** per-session VT sidecar thread (in-band FIFO commands — the snapshot request is an exact byte boundary, unit-proven), `S` frame (versioned 16-byte wire cells) + `ready` event, capability-gated with ring-replay fallback; `fan_out` untouched on the hot path. Verified independently: Mac (4+2 tests, 33 local + 8 remote smoke, musl cross-build) and ukvps native (build, tests, 33 smoke). |
 
 All of #180 and #179 were **deployed to the VPS `ukvps` and tested live**:
 no throughput regression (16–24×), the backlog drop fires ("dropping slow client
@@ -165,6 +167,13 @@ churn — resend it). This bit us twice; budget for it.
 ---
 
 ## 6. Next steps — Phase 1 (issue #181)
+
+**Phase 1a is DONE** (`bc36438` + `9f539b8`, 2026-07-31): snapshot-on-attach +
+`ready` ship exactly as specified below, capability-gated, smoke-verified on
+Mac and ukvps. Native-VPS gotcha discovered during verification: the
+checked-in `termiod/.cargo/config.toml` hardcodes the Mac's `ld.lld` path (a
+pre-existing #171 artifact, only for cross-from-Mac) — **delete/exclude it
+when building natively on Linux**; a portable fix is a small open follow-up.
 
 Phase 0 (build proof) is done. Phase 1 is wiring the libghostty-vt sidecar into
 the daemon. **Recommended smallest verifiable slice first (Phase 1a):**
