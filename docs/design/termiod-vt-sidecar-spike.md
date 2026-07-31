@@ -5,10 +5,11 @@ Status: de-risking result; this is not a v1 implementation
 
 ## Decision
 
-Use `alacritty_terminal` behind a termiod-owned sidecar interface for the first
-v1 implementation. Keep the packed 16-byte protocol cell owned and versioned
-by termiod, not by a VT engine. Re-evaluate `libghostty-vt` behind the same
-interface after the snapshot format and conformance corpus are frozen.
+**Phase 0 update:** §C.6 subsequently selected `libghostty-vt` for host/client
+fidelity parity, overriding this spike's initial build-convenience preference
+for `alacritty_terminal`. The standalone FFI gate passed; see §6. Keep the
+packed 16-byte protocol cell owned and versioned by termiod, not by the VT
+engine.
 
 `libghostty-vt` has the stronger fidelity story and its C API can produce both
 the `S` snapshot and the dirty-row input for `G`. It is not the zero-cost fit
@@ -280,6 +281,10 @@ from PTY bytes.
 
 ## 4. Recommendation and sequencing
 
+**Historical note:** §C.6 has superseded the engine choice in this section with
+`libghostty-vt`. The engine-neutral sidecar, wire-cell ownership, bounded tap,
+and conformance recommendations still apply.
+
 The recommendation is Rust-native first, specifically `alacritty_terminal`,
 with Ghostty retained as the fidelity benchmark and possible second engine.
 This is not a claim that Alacritty emulates more accurately. It is a sequencing
@@ -361,3 +366,117 @@ resize, snapshot traversal, cursor/dimensions, and dirty-row extraction. It
 does not prove the complete v1 protocol, snapshot packing, production load
 isolation, or exhaustive VT conformance; those are intentionally outside this
 de-risk spike.
+
+## 6. Phase 0 libghostty-vt FFI build proof
+
+Result: **passed**. The standalone crate at `termiod/spike/vt-ffi/` builds
+vendored libghostty-vt, bindgens `include/ghostty/vt.h`, links its static
+archive into Rust, runs the same snapshot scenario as §5, and cross-links a
+static AArch64 Linux-musl executable. Nothing under `termiod/src/` depends on
+the spike or changed for it.
+
+### Toolchain installation
+
+Zig was intentionally installed outside the repository and was not installed
+with Homebrew:
+
+- version: exactly `0.15.2`, enforced by `build.rs` before every Ghostty build;
+- official archive:
+  `https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz`;
+- published and verified SHA-256:
+  `3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b`;
+- host-local install:
+  `/Users/yuanjiwei/.local/share/termiod-toolchains/zig-0.15.2`; and
+- `zig version` output: `0.15.2`.
+
+The install directory is a machine-local toolchain and is not committed. Build
+commands pass its executable through `ZIG`, so the crate neither relies on
+Homebrew's current version nor silently accepts a different compiler.
+
+One host SDK compatibility issue was found and resolved without installing
+another SDK. Xcode 26.4's `libSystem.tbd` advertises `arm64e` rather than
+`arm64`, causing Zig 0.15.2's build runner to report unresolved libc/dispatch
+symbols. The already-installed Command Line Tools SDK 26.2 advertises
+`arm64`; builds select it with
+`DEVELOPER_DIR=/Library/Developer/CommandLineTools`. This environment
+requirement is part of the reproduced command below.
+
+### Vendoring and build shape
+
+`termiod/spike/vt-ffi/vendor/libghostty-vt/` contains the build-relevant
+libghostty-vt 1.3.2 source from the inspected Herdr distribution: `build.zig*`,
+`src/`, `pkg/`, `include/`, `VERSION`, and `LICENSE`. The adjacent
+`libghostty-vt.vendor.json` records source commit
+`c5a21edfcbc2d5b46540ad91b7980aca31f5f1f3` and distribution
+`1.3.2-HEAD-+c5a21edfc`.
+
+The crate mirrors Herdr's integration pattern:
+
+- `build.rs` maps Cargo targets to Zig targets, invokes
+  `zig build -Demit-lib-vt -Doptimize=ReleaseFast -Dcpu=baseline -Dsimd=true`,
+  and links `libghostty-vt.a`;
+- the Zig install prefix and cache live under Cargo's target-specific
+  `OUT_DIR`, so native and cross archives do not overwrite each other;
+- bindgen parses the vendored `include/ghostty/vt.h` and emits bindings into
+  `OUT_DIR`; and
+- on a cross build, bindgen deliberately parses the target-neutral public
+  header using Cargo's Apple-aarch64 host target. Both targets have 64-bit
+  `size_t`; this avoids requiring a separate musl C sysroot merely to find
+  `stddef.h`, while Zig independently compiles the archive for Linux-musl.
+
+Reproduced native command:
+
+```text
+$ cd termiod
+$ DEVELOPER_DIR=/Library/Developer/CommandLineTools \
+  ZIG=/Users/yuanjiwei/.local/share/termiod-toolchains/zig-0.15.2/zig \
+  LIBCLANG_PATH=/Applications/Xcode.app/Contents/Developer/Toolchains/\
+XcodeDefault.xctoolchain/usr/lib \
+  cargo run --manifest-path spike/vt-ffi/Cargo.toml
+```
+
+Snapshot output, directly comparable with §5:
+
+```text
+engine=libghostty-vt
+dims=16x5
+cursor=(4, 1)
+alt_screen=true
+dirty_rows=[1]
+green_cell_fg=rgb(181, 189, 104)
+grid:
+00 |ALT GREEN       |
+01 |blue            |
+02 |                |
+03 |                |
+04 |                |
+```
+
+This exercises `ghostty_terminal_new`, `ghostty_terminal_vt_write`,
+`ghostty_terminal_resize`, dimension/cursor/active-screen getters,
+`ghostty_render_state_update`, row/cell iteration, resolved foreground color,
+and independent global/per-row dirty clearing. After clearing the baseline
+damage and writing `blue`, Ghostty reports only row 1 dirty.
+
+Cross-build and artifact:
+
+```text
+$ DEVELOPER_DIR=/Library/Developer/CommandLineTools \
+  ZIG=/Users/yuanjiwei/.local/share/termiod-toolchains/zig-0.15.2/zig \
+  LIBCLANG_PATH=/Applications/Xcode.app/Contents/Developer/Toolchains/\
+XcodeDefault.xctoolchain/usr/lib \
+  cargo build --manifest-path spike/vt-ffi/Cargo.toml \
+    --target aarch64-unknown-linux-musl
+Finished `dev` profile ...
+
+$ file spike/vt-ffi/target/aarch64-unknown-linux-musl/debug/termiod-vt-ffi-spike
+ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked,
+with debug_info, not stripped
+```
+
+The unstripped Rust debug executable is 13 MiB. Its target-specific
+ReleaseFast/SIMD libghostty-vt archive is 15 MiB. There is no remaining Phase 0
+build blocker. Production integration still needs the engine-neutral wire-cell
+conversion, a reviewed safe Rust wrapper, CI provisioning/cache policy for
+Zig and libclang, and the bounded asynchronous sidecar tap; those remain out
+of scope here.
