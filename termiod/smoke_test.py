@@ -466,6 +466,9 @@ def main():
         "time.sleep(1.5); print('LIVE_AFTER_READY', flush=True); time.sleep(30)",
     )
     time.sleep(0.3)
+    snapshot_dims = session_size(snapshot_id)
+    requested_rows = 1 if snapshot_dims[0] != 1 else 2
+    requested_cols = 1 if snapshot_dims[1] != 1 else 2
 
     snapshot_client = WireClient(role="attach", caps=["snapshot"])
     snapshot_client.send_control(
@@ -473,8 +476,8 @@ def main():
             "op": "attach",
             "target": snapshot_id,
             "mode": "observe",
-            "rows": 24,
-            "cols": 80,
+            "rows": requested_rows,
+            "cols": requested_cols,
             "seq": 70,
         }
     )
@@ -483,6 +486,19 @@ def main():
     ready_frame = snapshot_client.recv_frame()
     decoded = (
         decode_snapshot(snapshot_frame[1]) if snapshot_frame[0] == "S" else None
+    )
+    check(
+        "attached: observer receives authoritative session dimensions",
+        attached[0] == "C"
+        and attached[1].get("op") == "attached"
+        and (attached[1].get("rows"), attached[1].get("cols")) == snapshot_dims
+        and (requested_rows, requested_cols) != snapshot_dims,
+    )
+    check(
+        "snapshot: attached dimensions match the S header",
+        decoded is not None
+        and (attached[1].get("rows"), attached[1].get("cols"))
+        == (decoded["rows"], decoded["cols"]),
     )
     check(
         "snapshot: attached is followed by S with the known grid, then ready",

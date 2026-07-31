@@ -850,7 +850,7 @@ async fn run_attach(
         snapshot: connection.capabilities.contains("snapshot"),
         reply: reply_tx,
     });
-    let writer = reply_rx.await.unwrap_or(false);
+    let added = reply_rx.await.context("session ended while attaching")?;
     let name = {
         let (tx, rx) = oneshot::channel();
         handle.send(SessionMsg::Info { reply: tx });
@@ -862,11 +862,13 @@ async fn run_attach(
         id: handle.id.clone(),
         name,
         session_id: handle.id.clone(),
-        writer,
+        writer: added.writer,
+        rows: added.rows,
+        cols: added.cols,
         re: request.re,
     }));
 
-    if writer {
+    if added.writer {
         handle.send(SessionMsg::Resize {
             id: client_id.clone(),
             rows: request.rows,

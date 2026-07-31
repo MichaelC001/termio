@@ -68,6 +68,12 @@ pub enum ClientEvent {
     Exited(i32),
 }
 
+pub struct AddClientReply {
+    pub writer: bool,
+    pub rows: u16,
+    pub cols: u16,
+}
+
 /// Messages accepted by a running session task.
 pub enum SessionMsg {
     AddClient {
@@ -76,7 +82,7 @@ pub enum SessionMsg {
         out: mpsc::UnboundedSender<ClientEvent>,
         backlog: Arc<ClientBacklog>,
         snapshot: bool,
-        reply: oneshot::Sender<bool>,
+        reply: oneshot::Sender<AddClientReply>,
     },
     RemoveClient {
         id: ClientId,
@@ -885,7 +891,11 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
                 session.writer = Some(id.clone());
             }
             let is_writer = session.writer.as_deref() == Some(id.as_str());
-            let _ = reply.send(is_writer);
+            let _ = reply.send(AddClientReply {
+                writer: is_writer,
+                rows: session.rows,
+                cols: session.cols,
+            });
 
             if let Some(request_id) = snapshot_request {
                 if !session.send_sidecar(SidecarCommand::Snapshot {

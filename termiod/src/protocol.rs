@@ -251,6 +251,10 @@ pub enum Control {
         session_id: String,
         #[serde(default)]
         writer: bool,
+        #[serde(default = "default_rows")]
+        rows: u16,
+        #[serde(default = "default_cols")]
+        cols: u16,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },
@@ -576,7 +580,35 @@ pub async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<Fra
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_snapshot_payload, encode_snapshot_payload, Snapshot, WireCell};
+    use super::{decode_snapshot_payload, encode_snapshot_payload, Control, Snapshot, WireCell};
+
+    #[test]
+    fn attached_dimensions_are_additive() {
+        let old_host = br#"{
+            "op":"attached",
+            "id":"s_1",
+            "name":"demo",
+            "session_id":"s_1",
+            "writer":false
+        }"#;
+        match serde_json::from_slice::<Control>(old_host).unwrap() {
+            Control::Attached { rows, cols, .. } => assert_eq!((rows, cols), (24, 80)),
+            _ => panic!("old attached payload decoded as the wrong control variant"),
+        }
+
+        let new_host = serde_json::to_value(Control::Attached {
+            id: "s_1".to_string(),
+            name: "demo".to_string(),
+            session_id: "s_1".to_string(),
+            writer: false,
+            rows: 48,
+            cols: 180,
+            re: Some(1),
+        })
+        .unwrap();
+        assert_eq!(new_host["rows"], 48);
+        assert_eq!(new_host["cols"], 180);
+    }
 
     #[test]
     fn snapshot_payload_round_trip() {
