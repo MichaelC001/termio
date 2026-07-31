@@ -17,7 +17,11 @@ import { AgentIcon } from "@/components/agent-icons";
 type TranscriptLine = {
   text?: string;
   prompt?: boolean;
-  json?: boolean;
+  // Output color semantics: plain (undefined) = neutral status text,
+  // "attention" = needs-you amber, "done" = completion sky — matching the
+  // node-status palette on the left so the colors mean the same thing on
+  // both sides.
+  tone?: "attention" | "done";
   blank?: boolean;
   id?: number; // stable key so a freshly-pushed line animates in exactly once
 };
@@ -107,7 +111,7 @@ const BEATS: readonly Beat[] = [
 
 // Static fallback / screen-reader copy: the whole pipeline in its done state.
 const DONE_SUMMARY: readonly TranscriptLine[] = BEATS.map((b) => ({
-  json: true,
+  tone: "done" as const,
   text: b.done,
 }));
 
@@ -126,17 +130,15 @@ const beamPathBack = (y: number) =>
   y === 170 ? "M184 170 L 104 170" : `M184 ${y} C 142 ${y}, 142 170, 104 170`;
 
 // Per-status pill styling for the worker nodes.
-const STATUS_BORDER: Record<Status, string> = {
-  idle: "rgba(255,255,255,0.1)",
-  working: "rgba(226,232,240,0.45)",
-  "needs-you": "rgba(251,191,36,0.6)",
-  done: "rgba(125,211,252,0.4)",
-};
-const STATUS_GLOW: Record<Status, string> = {
-  idle: "none",
-  working: "0 0 0 1px rgba(226,232,240,0.22), 0 0 14px rgba(226,232,240,0.12)",
-  "needs-you": "0 0 0 1px rgba(251,191,36,0.3), 0 0 14px rgba(251,191,36,0.18)",
-  done: "none",
+// Borderless light pills: status reads through a small colored dot inside the
+// pill (plus the idle dimming) — the same status language as termio's own
+// sidebar. Glows/box-shadows around foreignObject content clip into hard
+// blocks in some browsers, so no halo at all.
+const STATUS_DOT: Record<Status, string> = {
+  idle: "#cbd5e1",
+  working: "#64748b",
+  "needs-you": "#f59e0b",
+  done: "#0ea5e9",
 };
 
 const MAX_LINES = 8; // rolling transcript window (fits the reserved height)
@@ -210,12 +212,15 @@ export function OrchestrationDemo() {
           if (cancelled) return;
 
           if (beat.interaction) {
-            push({ json: true, text: beat.interaction.needsYou });
+            push({ tone: "attention", text: beat.interaction.needsYou });
             statuses[beat.worker] = "needs-you";
             patch({ statuses: [...statuses] });
             pulse("back", AMBER, w.y);
             await sleep(1600);
             if (cancelled) return;
+            // Blank separator so the answer command starts a fresh block, like
+            // every other typed command.
+            push({ blank: true });
             await type(beat.interaction.answer);
             if (cancelled) return;
             await sleep(320);
@@ -228,7 +233,7 @@ export function OrchestrationDemo() {
           }
 
           // Result streams back: node settles to done, beam pulses worker → hub.
-          push({ json: true, text: beat.done });
+          push({ tone: "done", text: beat.done });
           statuses[beat.worker] = "done";
           patch({ statuses: [...statuses] });
           pulse("back", SKY, w.y);
@@ -251,34 +256,32 @@ export function OrchestrationDemo() {
     : null;
 
   return (
-    // One terminal window: a solid near-black panel. The Paper grain-gradient
-    // glow lives only behind the left session graph (never behind the
-    // transcript, where it would fight the code). Title bar spans the top;
-    // below it the graph (left) and the live CLI transcript (right) sit side by
-    // side.
+    // One terminal window: a solid near-black panel with the Paper
+    // grain-gradient glow spanning the full window, behind both the session
+    // graph (left) and the live CLI transcript (right).
     <div
       ref={ref}
-      className="relative overflow-hidden rounded-3xl border border-white/10 bg-[#0b0e12] shadow-[0_24px_64px_rgba(10,12,16,0.45)]"
+      className="relative overflow-hidden rounded-3xl bg-[#0b0e12] shadow-[0_24px_64px_rgba(10,12,16,0.45)]"
     >
       <div className="relative">
-        <div className="grid lg:grid-cols-[minmax(0,3fr)_minmax(0,8fr)]">
+        {/* Grain-gradient glow spans the whole window, behind both panes. */}
+        <TerminalBackdrop />
+        <div className="relative grid lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
           {/* Left: the live session graph — claude code driving five workers,
               each a real brand logo. The active node lights and its beam pulses
               in sync with the command running on the right. */}
           <div
             aria-hidden="true"
-            className="relative flex items-center justify-center overflow-hidden border-b border-white/[0.06] p-5 sm:p-6 lg:border-b-0 lg:border-r"
+            className="relative flex items-center justify-center overflow-hidden border-b border-white/[0.12] p-5 sm:p-6 lg:border-b-0 lg:border-r"
           >
-            {/* Grain-gradient glow lives only here, behind the graph. */}
-            <TerminalBackdrop />
-            <svg viewBox="0 0 340 340" className="relative w-full max-w-[320px]" fill="none">
+            <svg viewBox="0 0 340 340" className="relative w-full max-w-[380px]" fill="none">
               {/* Static edges from the hub to each worker. */}
               {WORKERS.map((w) => (
                 <path
                   key={`edge-${w.handle}`}
                   d={beamPath(w.y)}
-                  stroke="rgba(255,255,255,0.09)"
-                  strokeWidth="1"
+                  stroke="rgba(255,255,255,0.18)"
+                  strokeWidth="1.5"
                 />
               ))}
               {frame.pulse && pulsePath && (
@@ -287,16 +290,18 @@ export function OrchestrationDemo() {
                   d={pulsePath}
                   pathLength={100}
                   stroke={frame.pulse.color}
-                  strokeWidth="1.5"
+                  strokeWidth="2"
                   className="beam-pulse"
                 />
               )}
 
               {/* Hub: the supervising claude-code session (real logo). */}
-              <foreignObject x="2" y="150" width="114" height="40">
-                <div className="flex h-10 items-center gap-2.5 rounded-full border border-white/20 bg-[#0b0e12]/85 px-3">
-                  <AgentIcon name="Claude Code" size={20} color />
-                  <span className="font-mono text-[13px] font-medium text-white/90">
+              <foreignObject x="0" y="148" width="120" height="44">
+                <div className="flex h-11 items-center gap-2.5 rounded-full bg-[#f8fafc] px-3.5">
+                  {/* Mono-only marks (Grok, Kimi) draw in currentColor, so the
+                      light pill needs a dark color context. */}
+                  <AgentIcon name="Claude Code" size={24} color className="text-[#172033]" />
+                  <span className="font-sans text-[15px] font-medium text-[#172033]">
                     claude
                   </span>
                 </div>
@@ -309,27 +314,35 @@ export function OrchestrationDemo() {
                 return (
                   <foreignObject
                     key={w.handle}
-                    x="182"
-                    y={w.y - 17}
-                    width="156"
-                    height="34"
+                    x="176"
+                    y={w.y - 20}
+                    width="164"
+                    height="40"
                     style={{
-                      opacity: status === "idle" ? 0.5 : 1,
+                      opacity: status === "idle" ? 0.6 : 1,
                       transition: "opacity 0.5s ease",
                     }}
                   >
-                    <div
-                      className="flex h-[34px] items-center gap-2 rounded-full border bg-[#0b0e12]/80 px-2.5"
-                      style={{
-                        borderColor: STATUS_BORDER[status],
-                        boxShadow: STATUS_GLOW[status],
-                        transition: "border-color 0.4s ease, box-shadow 0.4s ease",
-                      }}
-                    >
-                      <AgentIcon name={w.name} size={18} color />
-                      <span className="truncate font-mono text-[10px] text-white/75">
+                    <div className="flex h-10 items-center gap-2 rounded-full bg-[#eef3f8] px-3">
+                      {/* Kimi's color mark is blue-on-white and washes out on
+                          the light pill, so it uses the mono (currentColor)
+                          variant instead. */}
+                      <AgentIcon
+                        name={w.name}
+                        size={20}
+                        color={w.name !== "Kimi"}
+                        className="text-[#172033]"
+                      />
+                      <span className="truncate font-sans text-[12px] font-medium text-[#172033]">
                         {w.handle}
                       </span>
+                      <span
+                        className="ml-auto h-2 w-2 shrink-0 rounded-full"
+                        style={{
+                          backgroundColor: STATUS_DOT[status],
+                          transition: "background-color 0.4s ease",
+                        }}
+                      />
                     </div>
                   </foreignObject>
                 );
@@ -349,7 +362,7 @@ export function OrchestrationDemo() {
                 not grow line by line while typing. */}
             <pre
               aria-hidden="true"
-              className="min-h-[251px] overflow-x-auto p-5 font-mono text-[13px] leading-relaxed sm:min-h-[259px] sm:p-6"
+              className="min-h-[300px] overflow-x-auto p-5 font-mono text-[14px] leading-relaxed sm:min-h-[320px] sm:p-6"
             >
               {frame.lines.map((line, i) =>
                 line.blank ? (
@@ -367,11 +380,19 @@ export function OrchestrationDemo() {
                   >
                     {line.prompt ? (
                       <>
-                        <span className="select-none text-white/45">$ </span>
-                        <span className="text-white/90">{line.text}</span>
+                        <span className="select-none text-[#aebdce]">$ </span>
+                        <span className="text-[#f8fafc]">{line.text}</span>
                       </>
                     ) : (
-                      <span className={line.json ? "text-[#7dd3fc]/90" : "text-white/60"}>
+                      <span
+                        className={
+                          line.tone === "done"
+                            ? "text-[#7dd3fc]"
+                            : line.tone === "attention"
+                              ? "text-[#f6c453]"
+                              : "text-[#b8c7d9]"
+                        }
+                      >
                         {line.text}
                       </span>
                     )}
@@ -380,9 +401,9 @@ export function OrchestrationDemo() {
               )}
               {frame.typing !== null && (
                 <span className="block whitespace-pre">
-                  <span className="select-none text-white/45">$ </span>
-                  <span className="text-white/90">{frame.typing}</span>
-                  <span className="demo-cursor text-white/70">▋</span>
+                  <span className="select-none text-[#aebdce]">$ </span>
+                  <span className="text-[#f8fafc]">{frame.typing}</span>
+                  <span className="demo-cursor text-[#f8fafc]/80">▋</span>
                 </span>
               )}
             </pre>
