@@ -166,6 +166,18 @@ impl Pty {
         Ok((Pty { master, pid }, child))
     }
 
+    #[cfg(test)]
+    pub(crate) fn non_pty_for_resize_failure_test() -> Result<Pty> {
+        let (socket, peer) = std::os::unix::net::UnixStream::pair()?;
+        drop(peer);
+        socket.set_nonblocking(true)?;
+        let fd: OwnedFd = socket.into();
+        Ok(Pty {
+            master: AsyncFd::new(fd)?,
+            pid: 0,
+        })
+    }
+
     /// Push a new window size to the PTY (TIOCSWINSZ). The kernel delivers
     /// SIGWINCH to the foreground process group.
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {

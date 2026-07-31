@@ -125,12 +125,14 @@ struct ClientEntry {
     /// Interactive attach order. Highest sequence owns the write token.
     seq: u64,
     interactive: bool,
+    snapshot_capable: bool,
     delivery: ClientDelivery,
 }
 
 enum ClientDelivery {
     Live,
     SnapshotPending {
+        request_id: u64,
         data: VecDeque<Bytes>,
         deferred: VecDeque<ClientEvent>,
     },
@@ -138,13 +140,20 @@ enum ClientDelivery {
 
 enum SidecarCommand {
     Write(Bytes),
-    Resize { rows: u16, cols: u16 },
-    Snapshot { client_id: ClientId },
+    Resize {
+        rows: u16,
+        cols: u16,
+    },
+    Snapshot {
+        client_id: ClientId,
+        request_id: u64,
+    },
     Shutdown,
 }
 
 struct SidecarSnapshot {
     client_id: ClientId,
+    request_id: u64,
     result: Result<termiod_vt::Snapshot, String>,
 }
 
@@ -166,6 +175,7 @@ struct Session {
     clients: HashMap<ClientId, ClientEntry>,
     writer: Option<ClientId>,
     next_seq: u64,
+    next_snapshot_request: u64,
     ring: VecDeque<Bytes>,
     ring_bytes: usize,
     events: broadcast::Sender<Event>,
@@ -202,6 +212,12 @@ impl Session {
             .map(|(id, _)| id.clone());
     }
 
+    fn allocate_snapshot_request(&mut self) -> u64 {
+        let request_id = self.next_snapshot_request;
+        self.next_snapshot_request = self.next_snapshot_request.wrapping_add(1);
+        request_id
+    }
+
     fn push_ring(&mut self, data: Bytes) {
         self.ring_bytes += data.len();
         self.ring.push_back(data);
@@ -221,6 +237,56 @@ impl Session {
             eprintln!("termiod: VT sidecar for session {} stopped", self.id);
         }
         sent
+    }
+
+    fn begin_snapshot_barrier(&mut self) {
+        let snapshot_clients: Vec<ClientId> = self
+            .clients
+            .iter()
+            .filter(|(_, entry)| entry.snapshot_capable)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut requests = Vec::with_capacity(snapshot_clients.len());
+
+        for client_id in snapshot_clients {
+            let request_id = self.allocate_snapshot_request();
+            let entry = self
+                .clients
+                .get_mut(&client_id)
+                .expect("snapshot client disappeared during barrier setup");
+            let previous = std::mem::replace(&mut entry.delivery, ClientDelivery::Live);
+            let deferred = match previous {
+                ClientDelivery::Live => VecDeque::new(),
+                ClientDelivery::SnapshotPending { data, deferred, .. } => {
+                    // The new snapshot includes every write queued before the
+                    // resize, so replaying older buffered data would overlap.
+                    release_buffered(&entry.backlog, data);
+                    deferred
+                }
+            };
+            entry.delivery = ClientDelivery::SnapshotPending {
+                request_id,
+                data: VecDeque::new(),
+                deferred,
+            };
+            requests.push((client_id, request_id));
+        }
+
+        // The session actor cannot read the PTY while this handler runs, so
+        // these requests are adjacent to the Resize command in the sidecar
+        // FIFO, with no intervening Write command.
+        for (client_id, request_id) in requests {
+            if !self.send_sidecar(SidecarCommand::Snapshot {
+                client_id: client_id.clone(),
+                request_id,
+            }) {
+                self.finish_snapshot(
+                    &client_id,
+                    request_id,
+                    Err("VT sidecar is unavailable".to_string()),
+                );
+            }
+        }
     }
 
     fn queue_non_data(entry: &mut ClientEntry, event: ClientEvent) -> bool {
@@ -243,7 +309,7 @@ impl Session {
         }
         self.recompute_writer();
         if self.writer != old_writer {
-            self.emit_writer_changed(None);
+            self.emit_writer_changed(self.writer.clone());
         }
     }
 
@@ -269,9 +335,9 @@ impl Session {
         });
     }
 
-    fn emit_writer_changed(&mut self, demoted: Option<ClientId>) {
-        if let Some(previous) = demoted {
-            if let Some(entry) = self.clients.get_mut(&previous) {
+    fn emit_writer_changed(&mut self, resize_claim_target: Option<ClientId>) {
+        if let Some(target) = resize_claim_target {
+            if let Some(entry) = self.clients.get_mut(&target) {
                 Self::queue_non_data(
                     entry,
                     ClientEvent::Control(Control::ResizeClaim {
@@ -334,13 +400,52 @@ impl Session {
         }
     }
 
-    fn finish_snapshot(&mut self, client_id: &str, result: Result<termiod_vt::Snapshot, String>) {
+    fn reject_resize(&mut self, id: &str, error: &anyhow::Error) {
+        let message = format!("resize failed: {error}");
+        eprintln!(
+            "termiod: resize failed for writer {id} in session {}: {error}",
+            self.id
+        );
+        if let Some(entry) = self.clients.get_mut(id) {
+            Self::queue_non_data(
+                entry,
+                ClientEvent::Control(Control::Error {
+                    re: None,
+                    code: ErrorCode::Internal,
+                    message,
+                    retryable: true,
+                }),
+            );
+        }
+    }
+
+    /// Every successful snapshot, whether attach bootstrap or resize/resync
+    /// barrier, is followed immediately by `ready`; buffered live data follows.
+    fn finish_snapshot(
+        &mut self,
+        client_id: &str,
+        request_id: u64,
+        result: Result<termiod_vt::Snapshot, String>,
+    ) {
+        let is_current = self.clients.get(client_id).is_some_and(|entry| {
+            matches!(
+                entry.delivery,
+                ClientDelivery::SnapshotPending {
+                    request_id: current,
+                    ..
+                } if current == request_id
+            )
+        });
+        if !is_current {
+            return;
+        }
         let Some(mut entry) = self.clients.remove(client_id) else {
             return;
         };
         let ClientDelivery::SnapshotPending {
             mut data,
             mut deferred,
+            ..
         } = std::mem::replace(&mut entry.delivery, ClientDelivery::Live)
         else {
             self.clients.insert(client_id.to_string(), entry);
@@ -447,19 +552,23 @@ impl Session {
             self.recompute_writer();
         }
         if self.writer != old_writer {
-            self.emit_writer_changed(None);
+            self.emit_writer_changed(self.writer.clone());
         }
     }
 
     fn fallback_all_pending(&mut self, error: &str) {
-        let pending: Vec<ClientId> = self
+        let pending: Vec<(ClientId, u64)> = self
             .clients
             .iter()
-            .filter(|(_, entry)| matches!(entry.delivery, ClientDelivery::SnapshotPending { .. }))
-            .map(|(id, _)| id.clone())
+            .filter_map(|(id, entry)| match entry.delivery {
+                ClientDelivery::SnapshotPending { request_id, .. } => {
+                    Some((id.clone(), request_id))
+                }
+                ClientDelivery::Live => None,
+            })
             .collect();
-        for id in pending {
-            self.finish_snapshot(&id, Err(error.to_string()));
+        for (id, request_id) in pending {
+            self.finish_snapshot(&id, request_id, Err(error.to_string()));
         }
     }
 }
@@ -529,6 +638,7 @@ pub fn spawn(
         clients: HashMap::new(),
         writer: None,
         next_seq: 0,
+        next_snapshot_request: 1,
         ring: VecDeque::new(),
         ring_bytes: 0,
         events,
@@ -623,7 +733,10 @@ fn spawn_sidecar(
                             }
                         }
                     }
-                    SidecarCommand::Snapshot { client_id } => {
+                    SidecarCommand::Snapshot {
+                        client_id,
+                        request_id,
+                    } => {
                         let result = match (&fault, terminal.as_mut()) {
                             (Some(error), _) => Err(error.clone()),
                             (None, Some(terminal)) => {
@@ -632,7 +745,11 @@ fn spawn_sidecar(
                             (None, None) => Err("VT sidecar is unavailable".to_string()),
                         };
                         if snapshot_tx
-                            .send(SidecarSnapshot { client_id, result })
+                            .send(SidecarSnapshot {
+                                client_id,
+                                request_id,
+                                result,
+                            })
                             .is_err()
                         {
                             break;
@@ -668,7 +785,11 @@ async fn run(
             }
             result = sidecar_snapshots.recv(), if sidecar_results_open => {
                 match result {
-                    Some(result) => session.finish_snapshot(&result.client_id, result.result),
+                    Some(result) => session.finish_snapshot(
+                        &result.client_id,
+                        result.request_id,
+                        result.result,
+                    ),
                     None => {
                         sidecar_results_open = false;
                         session.fallback_all_pending("VT sidecar response channel closed");
@@ -729,6 +850,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
             let seq = session.next_seq;
             session.next_seq += 1;
             let old_writer = session.writer.clone();
+            let snapshot_request = snapshot.then(|| session.allocate_snapshot_request());
 
             if !snapshot {
                 for replay in &session.ring {
@@ -747,8 +869,10 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
                     backlog,
                     seq,
                     interactive,
-                    delivery: if snapshot {
+                    snapshot_capable: snapshot,
+                    delivery: if let Some(request_id) = snapshot_request {
                         ClientDelivery::SnapshotPending {
+                            request_id,
                             data: VecDeque::new(),
                             deferred: VecDeque::new(),
                         }
@@ -763,12 +887,17 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
             let is_writer = session.writer.as_deref() == Some(id.as_str());
             let _ = reply.send(is_writer);
 
-            if snapshot
-                && !session.send_sidecar(SidecarCommand::Snapshot {
+            if let Some(request_id) = snapshot_request {
+                if !session.send_sidecar(SidecarCommand::Snapshot {
                     client_id: id.clone(),
-                })
-            {
-                session.finish_snapshot(&id, Err("VT sidecar is unavailable".to_string()));
+                    request_id,
+                }) {
+                    session.finish_snapshot(
+                        &id,
+                        request_id,
+                        Err("VT sidecar is unavailable".to_string()),
+                    );
+                }
             }
 
             if session.writer != old_writer {
@@ -783,7 +912,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
                 session.recompute_writer();
             }
             if session.writer != old_writer {
-                session.emit_writer_changed(None);
+                session.emit_writer_changed(session.writer.clone());
             }
             session.emit_roster();
         }
@@ -796,11 +925,14 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
         }
         SessionMsg::Resize { id, rows, cols } => {
             if session.writer.as_ref() == Some(&id) {
+                if let Err(error) = session.pty.resize(rows, cols) {
+                    session.reject_resize(&id, &error);
+                    return false;
+                }
                 session.rows = rows;
                 session.cols = cols;
-                if session.pty.resize(rows, cols).is_ok() {
-                    session.send_sidecar(SidecarCommand::Resize { rows, cols });
-                }
+                session.send_sidecar(SidecarCommand::Resize { rows, cols });
+                session.begin_snapshot_barrier();
                 session.emit_event(Event::Resized {
                     session: session.id.clone(),
                     rows,
@@ -845,8 +977,16 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{spawn_sidecar, ClientBacklog, SidecarCommand, CLIENT_BACKLOG_CAP};
+    use super::{
+        handle_msg, spawn_sidecar, ClientBacklog, ClientDelivery, ClientEntry, ClientEvent,
+        Session, SessionMsg, SidecarCommand, CLIENT_BACKLOG_CAP,
+    };
+    use crate::protocol::{Control, ErrorCode};
+    use crate::pty::Pty;
     use bytes::Bytes;
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::{mpsc as std_mpsc, Arc};
+    use tokio::sync::{broadcast, mpsc};
 
     #[test]
     fn client_backlog_enforces_byte_cap() {
@@ -862,14 +1002,18 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_request_is_an_exact_sidecar_fifo_boundary() {
+    fn resize_snapshot_request_is_an_exact_sidecar_fifo_boundary() {
         let (sidecar, mut snapshots, thread) = spawn_sidecar(2, 16).unwrap();
         sidecar
             .send(SidecarCommand::Write(Bytes::from_static(b"BEFORE")))
             .unwrap();
         sidecar
+            .send(SidecarCommand::Resize { rows: 3, cols: 20 })
+            .unwrap();
+        sidecar
             .send(SidecarCommand::Snapshot {
                 client_id: "client".to_string(),
+                request_id: 1,
             })
             .unwrap();
         sidecar
@@ -877,7 +1021,9 @@ mod tests {
             .unwrap();
 
         let response = snapshots.blocking_recv().unwrap();
+        assert_eq!(response.request_id, 1);
         let snapshot = response.result.unwrap();
+        assert_eq!((snapshot.rows, snapshot.cols), (3, 20));
         let screen: String = snapshot
             .cells
             .iter()
@@ -888,5 +1034,81 @@ mod tests {
 
         sidecar.send(SidecarCommand::Shutdown).unwrap();
         thread.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_pty_resize_preserves_state_and_reports_error() {
+        let pty = Arc::new(Pty::non_pty_for_resize_failure_test().unwrap());
+        let (input_tx, _input_rx) = mpsc::unbounded_channel();
+        let (events, mut event_rx) = broadcast::channel(8);
+        let (client_tx, mut client_rx) = mpsc::unbounded_channel();
+        let backlog = Arc::new(ClientBacklog::new());
+        let (sidecar_tx, sidecar_rx) = std_mpsc::channel();
+        let mut session = Session {
+            id: "session".to_string(),
+            name: "test".to_string(),
+            cwd: String::new(),
+            command: "cat".to_string(),
+            pid: 0,
+            rows: 24,
+            cols: 80,
+            created_unix: 0,
+            status: "unknown".to_string(),
+            title: None,
+            workstream: None,
+            pty,
+            input_tx,
+            clients: HashMap::from([(
+                "writer".to_string(),
+                ClientEntry {
+                    out: client_tx,
+                    backlog,
+                    seq: 1,
+                    interactive: true,
+                    snapshot_capable: false,
+                    delivery: ClientDelivery::Live,
+                },
+            )]),
+            writer: Some("writer".to_string()),
+            next_seq: 2,
+            next_snapshot_request: 1,
+            ring: VecDeque::new(),
+            ring_bytes: 0,
+            events,
+            sidecar_tx: Some(sidecar_tx),
+        };
+
+        assert!(!handle_msg(
+            &mut session,
+            SessionMsg::Resize {
+                id: "writer".to_string(),
+                rows: 40,
+                cols: 120,
+            },
+        ));
+
+        assert_eq!((session.rows, session.cols), (24, 80));
+        assert!(matches!(
+            sidecar_rx.try_recv(),
+            Err(std_mpsc::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        match client_rx.recv().await.unwrap() {
+            ClientEvent::Control(Control::Error {
+                code,
+                message,
+                retryable,
+                ..
+            }) => {
+                assert_eq!(code, ErrorCode::Internal);
+                assert!(message.starts_with("resize failed: TIOCSWINSZ failed:"));
+                assert!(retryable);
+            }
+            _ => panic!("failed resize did not return a typed control error"),
+        }
+        assert!(client_rx.try_recv().is_err());
     }
 }
