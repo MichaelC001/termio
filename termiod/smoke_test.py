@@ -26,7 +26,12 @@ import time
 
 BIN = sys.argv[1] if len(sys.argv) > 1 else "./target/debug/termiod"
 SOCK_DIR = "/tmp/termiod-smoke"
-ENV = dict(os.environ, TERMIOD_SOCK=f"{SOCK_DIR}/termiod.sock", TERM="xterm-256color")
+ENV = dict(
+    os.environ,
+    TERMIOD_SOCK=f"{SOCK_DIR}/termiod.sock",
+    TERMIOD_KEYFRAME_EVERY="4",
+    TERM="xterm-256color",
+)
 
 FAILURES = []
 
@@ -111,6 +116,40 @@ def decode_history(payload):
         "first_offset": first_offset,
         "row_count": row_count,
         "lines": lines,
+    }
+
+
+def decode_grid(payload):
+    """Decode a Phase 1e G payload into its dirty full-width rows."""
+    if len(payload) < 16 or payload[0] != 1:
+        raise ValueError("invalid grid-diff header")
+    frame_seq = struct.unpack(">I", payload[1:5])[0]
+    rows, cols, cursor_x, cursor_y = struct.unpack(">HHHH", payload[5:13])
+    alt_screen = payload[13] == 1
+    row_count = struct.unpack(">H", payload[14:16])[0]
+    expected = 16 + row_count * (2 + cols * 16)
+    if len(payload) != expected:
+        raise ValueError("invalid grid-diff row count")
+    dirty_rows = []
+    offset = 16
+    for _ in range(row_count):
+        row_index = struct.unpack(">H", payload[offset : offset + 2])[0]
+        offset += 2
+        line = []
+        for col in range(cols):
+            cell_offset = offset + col * 16
+            codepoint = struct.unpack(">I", payload[cell_offset : cell_offset + 4])[0]
+            line.append(chr(codepoint) if codepoint else " ")
+        offset += cols * 16
+        dirty_rows.append((row_index, "".join(line)))
+    return {
+        "frame_seq": frame_seq,
+        "rows": rows,
+        "cols": cols,
+        "cursor_x": cursor_x,
+        "cursor_y": cursor_y,
+        "alt_screen": alt_screen,
+        "dirty_rows": dirty_rows,
     }
 
 
@@ -434,6 +473,13 @@ def main():
     h1.close()
     h2.close()
 
+    grid_without_snapshot = WireClient(caps=["grid_diff"])
+    check(
+        "hello: grid_diff is dropped unless snapshot is also negotiated",
+        "grid_diff" not in grid_without_snapshot.hello["caps"],
+    )
+    grid_without_snapshot.close()
+
     incompatible = WireClient(hello=False)
     incompatible.send_control(
         {
@@ -721,7 +767,152 @@ def main():
     barrier_legacy.close()
     cli("kill", barrier_id)
 
-    print("\n# 7. v0.1 single-writer errors and writer events")
+    print("\n# 7. capability-gated grid diffs + periodic keyframes")
+    grid_id = cli_out(
+        "create",
+        "--name",
+        "grid-diff",
+        "--",
+        "sh",
+        "-c",
+        "stty -echo; exec cat",
+    )
+    time.sleep(0.2)
+    grid_writer = WireClient(role="attach", caps=["events"])
+    grid_writer.send_control(
+        {
+            "op": "attach",
+            "target": grid_id,
+            "mode": "interact",
+            "rows": 24,
+            "cols": 80,
+            "seq": 80,
+        }
+    )
+    grid_writer.recv_matching(
+        lambda kind, payload: kind == "C" and payload.get("op") == "attached"
+    )
+    grid_writer.drain(0.3)
+
+    raw_peer = WireClient(role="attach", caps=[])
+    raw_peer.send_control(
+        {
+            "op": "attach",
+            "target": grid_id,
+            "mode": "observe",
+            "rows": 24,
+            "cols": 80,
+            "seq": 81,
+        }
+    )
+    raw_peer.recv_matching(
+        lambda kind, payload: kind == "C" and payload.get("op") == "attached"
+    )
+    raw_peer.drain()
+
+    grid_peer = WireClient(role="attach", caps=["snapshot", "grid_diff"])
+    grid_peer.send_control(
+        {
+            "op": "attach",
+            "target": grid_id,
+            "mode": "observe",
+            "rows": 24,
+            "cols": 80,
+            "seq": 82,
+        }
+    )
+    grid_bootstrap = [grid_peer.recv_frame() for _ in range(3)]
+    check(
+        "grid diff: attach bootstraps as attached -> S -> ready",
+        grid_bootstrap[0][0] == "C"
+        and grid_bootstrap[0][1].get("op") == "attached"
+        and grid_bootstrap[1][0] == "S"
+        and grid_bootstrap[2][0] == "E"
+        and grid_bootstrap[2][1].get("ev") == "ready",
+    )
+
+    for index in range(12):
+        grid_writer.send_data(f"GRID_DIFF_{index:02}\n".encode())
+        time.sleep(0.12)
+
+    raw_last, raw_seen = raw_peer.recv_matching(
+        lambda kind, payload: kind == "D" and b"GRID_DIFF_11" in payload,
+        timeout=4.0,
+    )
+    grid_live = grid_peer.drain(3.0)
+    decoded_grids = [decode_grid(payload) for kind, payload in grid_live if kind == "G"]
+    grid_text = "\n".join(
+        line for grid in decoded_grids for _, line in grid["dirty_rows"]
+    )
+    check(
+        "grid diff: known text arrives in G and no downstream D reaches the client",
+        "GRID_DIFF_00" in grid_text
+        and decoded_grids
+        and all(kind != "D" for kind, _ in grid_bootstrap + grid_live),
+    )
+    check(
+        "grid diff: raw and parsed planes coexist on one session",
+        raw_last is not None
+        and any(kind == "D" for kind, _ in raw_seen)
+        and decoded_grids,
+    )
+
+    keyframe_indexes = [
+        index for index, (kind, _) in enumerate(grid_live) if kind == "S"
+    ]
+    keyframe_ok = False
+    if keyframe_indexes:
+        keyframe_index = keyframe_indexes[0]
+        keyframe_ok = (
+            keyframe_index + 1 < len(grid_live)
+            and grid_live[keyframe_index + 1][0] == "E"
+            and grid_live[keyframe_index + 1][1].get("ev") == "ready"
+            and any(kind == "G" for kind, _ in grid_live[:keyframe_index])
+            and any(kind == "G" for kind, _ in grid_live[keyframe_index + 2 :])
+        )
+    frame_sequences = [grid["frame_seq"] for grid in decoded_grids]
+    check(
+        "grid diff: cadence=4 emits S + ready, then G resumes with increasing frame_seq",
+        keyframe_ok
+        and all(
+            newer > older
+            for older, newer in zip(frame_sequences, frame_sequences[1:])
+        ),
+    )
+
+    grid_peer.drain()
+    grid_writer.send_resize(29, 91)
+    grid_writer.send_data(b"GRID_RESIZE_0\n")
+    resize_keyframe, resize_seen = grid_peer.recv_matching(
+        lambda kind, payload: kind == "S", timeout=3.0
+    )
+    resize_ready = grid_peer.recv_frame() if resize_keyframe is not None else None
+    grid_writer.send_data(b"GRID_RESIZE_1\n")
+    time.sleep(0.12)
+    grid_writer.send_data(b"GRID_RESIZE_2\n")
+    resized_grid, _ = grid_peer.recv_matching(
+        lambda kind, payload: kind == "G"
+        and "GRID_RESIZE" in "\n".join(
+            line for _, line in decode_grid(payload)["dirty_rows"]
+        ),
+        timeout=3.0,
+    )
+    check(
+        "grid diff: resize discards pre-boundary G and resumes after S + ready",
+        resize_keyframe is not None
+        and all(kind != "G" for kind, _ in resize_seen[:-1])
+        and resize_ready is not None
+        and resize_ready[0] == "E"
+        and resize_ready[1].get("ev") == "ready"
+        and resized_grid is not None,
+    )
+
+    grid_writer.close()
+    raw_peer.close()
+    grid_peer.close()
+    cli("kill", grid_id)
+
+    print("\n# 8. v0.1 single-writer errors and writer events")
     wire_id = cli_out("create", "--name", "wire-writer", "--", "cat")
     w1 = WireClient(role="attach", caps=["events"])
     w1.send_control(
@@ -788,7 +979,7 @@ def main():
     w1.close()
     cli("kill", wire_id)
 
-    print("\n# 8. v0.1 subscriptions, status metadata, and waits")
+    print("\n# 9. v0.1 subscriptions, status metadata, and waits")
     sub = WireClient(caps=["events", "send_wait"])
     sub.send_control(
         {"op": "subscribe", "events": ["roster", "status"], "seq": 50}

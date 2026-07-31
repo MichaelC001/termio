@@ -100,6 +100,9 @@ enum Cmd {
         /// Stream output without a tty, stdin, resize handling, or write access.
         #[arg(long)]
         observe: bool,
+        /// Use capability-gated dirty-row grid diffs instead of downstream PTY bytes.
+        #[arg(long)]
+        grid_diff: bool,
         /// Program + args if the session is created. Put after `--`.
         #[arg(last = true)]
         argv: Vec<String>,
@@ -188,6 +191,7 @@ async fn main() -> Result<()> {
             cwd,
             no_create,
             observe,
+            grid_diff,
             argv,
         } => {
             let create_if_missing = if no_create {
@@ -209,9 +213,9 @@ async fn main() -> Result<()> {
                 })
             };
             if observe {
-                client::observe(&target, create_if_missing).await
+                client::observe(&target, create_if_missing, grid_diff).await
             } else {
-                client::attach(&target, create_if_missing).await
+                client::attach(&target, create_if_missing, grid_diff).await
             }
         }
 

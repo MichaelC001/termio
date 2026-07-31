@@ -4,7 +4,7 @@
 use crate::paths;
 use crate::protocol::{
     read_frame, write_control, write_data, write_resize, AttachMode, ChannelRole, Control,
-    CreateSpec, Frame, SessionInfo, Snapshot, PROTOCOL_VERSION,
+    CreateSpec, Frame, GridDiff, SessionInfo, Snapshot, WireCell, PROTOCOL_VERSION,
 };
 use anyhow::{bail, Context, Result};
 use std::os::fd::AsRawFd;
@@ -65,18 +65,22 @@ async fn request(msg: &Control) -> Result<Control> {
 }
 
 async fn connect_channel(role: ChannelRole) -> Result<UnixStream> {
-    Ok(connect_channel_with_identity(role, false).await?.0)
+    Ok(connect_channel_with_identity(role, false, false).await?.0)
 }
 
 async fn connect_channel_with_identity(
     role: ChannelRole,
     snapshot: bool,
+    grid_diff: bool,
 ) -> Result<(UnixStream, Option<String>)> {
     let mut stream = connect().await?;
     let mut caps = vec!["events".to_string(), "send_wait".to_string()];
     if snapshot {
         caps.push("snapshot".to_string());
         caps.push("scrollback".to_string());
+    }
+    if grid_diff {
+        caps.push("grid_diff".to_string());
     }
     write_control(
         &mut stream,
@@ -210,9 +214,19 @@ impl Drop for RawMode {
 
 /// Observe a session without interacting with it. PTY data is copied directly
 /// to stdout until the session exits, the pipe closes, or SIGINT arrives.
-pub async fn observe(target: &str, create_if_missing: Option<CreateSpec>) -> Result<()> {
+pub async fn observe(
+    target: &str,
+    create_if_missing: Option<CreateSpec>,
+    grid_diff: bool,
+) -> Result<()> {
     let (local_rows, local_cols) = term_size();
-    let mut stream = connect_channel(ChannelRole::Attach).await?;
+    let mut stream = if grid_diff {
+        connect_channel_with_identity(ChannelRole::Attach, true, true)
+            .await?
+            .0
+    } else {
+        connect_channel(ChannelRole::Attach).await?
+    };
     write_control(
         &mut stream,
         &Control::Attach {
@@ -243,6 +257,7 @@ pub async fn observe(target: &str, create_if_missing: Option<CreateSpec>) -> Res
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
         .context("installing SIGINT handler")?;
 
+    let mut grid = None;
     loop {
         tokio::select! {
             _ = interrupt.recv() => return Ok(()),
@@ -251,6 +266,20 @@ pub async fn observe(target: &str, create_if_missing: Option<CreateSpec>) -> Res
                     Ok(Some(Frame::Data(bytes))) => {
                         if stdout.write_all(&bytes).await.is_err()
                             || stdout.flush().await.is_err()
+                        {
+                            return Ok(());
+                        }
+                    }
+                    Ok(Some(Frame::Snapshot(snapshot))) if grid_diff => {
+                        grid = Some(GridView::from_snapshot(snapshot));
+                        if render_grid(&mut stdout, grid.as_ref().unwrap()).await.is_err() {
+                            return Ok(());
+                        }
+                    }
+                    Ok(Some(Frame::Grid(diff))) if grid_diff => {
+                        let Some(view) = grid.as_mut() else { continue };
+                        if view.apply(diff).is_err()
+                            || render_grid(&mut stdout, view).await.is_err()
                         {
                             return Ok(());
                         }
@@ -268,10 +297,14 @@ pub async fn observe(target: &str, create_if_missing: Option<CreateSpec>) -> Res
 /// Attach interactively. Creates the session first if `create_if_missing` is
 /// set and the target does not exist. Returns when the user detaches (Ctrl-\)
 /// or the session's process exits.
-pub async fn attach(target: &str, create_if_missing: Option<CreateSpec>) -> Result<()> {
+pub async fn attach(
+    target: &str,
+    create_if_missing: Option<CreateSpec>,
+    grid_diff: bool,
+) -> Result<()> {
     let (rows, cols) = term_size();
     let (mut stream, negotiated_client_id) =
-        connect_channel_with_identity(ChannelRole::Attach, true).await?;
+        connect_channel_with_identity(ChannelRole::Attach, true, grid_diff).await?;
     write_control(
         &mut stream,
         &Control::Attach {
@@ -306,6 +339,7 @@ pub async fn attach(target: &str, create_if_missing: Option<CreateSpec>) -> Resu
     let reader = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
         let mut status = None;
+        let mut grid = None;
         loop {
             match read_frame(&mut rd).await {
                 Ok(Some(Frame::Data(bytes))) => {
@@ -315,7 +349,19 @@ pub async fn attach(target: &str, create_if_missing: Option<CreateSpec>) -> Resu
                     let _ = stdout.flush().await;
                 }
                 Ok(Some(Frame::Snapshot(snapshot))) => {
-                    if render_snapshot(&mut stdout, &snapshot).await.is_err() {
+                    let rendered = if grid_diff {
+                        grid = Some(GridView::from_snapshot(snapshot));
+                        render_grid(&mut stdout, grid.as_ref().unwrap()).await
+                    } else {
+                        render_snapshot(&mut stdout, &snapshot).await
+                    };
+                    if rendered.is_err() {
+                        break;
+                    }
+                }
+                Ok(Some(Frame::Grid(diff))) if grid_diff => {
+                    let Some(view) = grid.as_mut() else { continue };
+                    if view.apply(diff).is_err() || render_grid(&mut stdout, view).await.is_err() {
                         break;
                     }
                 }
@@ -406,19 +452,88 @@ fn report_scrollback(rows: usize) {
     }
 }
 
+struct GridView {
+    rows: u16,
+    cols: u16,
+    cursor_x: u16,
+    cursor_y: u16,
+    cells: Vec<WireCell>,
+}
+
+impl GridView {
+    fn from_snapshot(snapshot: Snapshot) -> Self {
+        Self {
+            rows: snapshot.rows,
+            cols: snapshot.cols,
+            cursor_x: snapshot.cursor_x,
+            cursor_y: snapshot.cursor_y,
+            cells: snapshot.cells,
+        }
+    }
+
+    fn apply(&mut self, diff: GridDiff) -> Result<()> {
+        if (self.rows, self.cols) != (diff.rows, diff.cols) {
+            self.rows = diff.rows;
+            self.cols = diff.cols;
+            self.cells = vec![WireCell::default(); usize::from(diff.rows) * usize::from(diff.cols)];
+        }
+        for row in diff.dirty_rows {
+            if row.row_index >= self.rows || row.cells.len() != usize::from(self.cols) {
+                bail!("malformed grid-diff row {}", row.row_index);
+            }
+            let start = usize::from(row.row_index) * usize::from(self.cols);
+            self.cells[start..start + usize::from(self.cols)].clone_from_slice(&row.cells);
+        }
+        self.cursor_x = diff.cursor_x;
+        self.cursor_y = diff.cursor_y;
+        Ok(())
+    }
+}
+
 async fn render_snapshot<W: AsyncWriteExt + Unpin>(
     output: &mut W,
     snapshot: &Snapshot,
 ) -> Result<()> {
-    let mut rendered = Vec::with_capacity(snapshot.cells.len() + usize::from(snapshot.rows) * 2);
+    render_cells(
+        output,
+        snapshot.rows,
+        snapshot.cols,
+        snapshot.cursor_x,
+        snapshot.cursor_y,
+        &snapshot.cells,
+    )
+    .await
+}
+
+async fn render_grid<W: AsyncWriteExt + Unpin>(output: &mut W, grid: &GridView) -> Result<()> {
+    render_cells(
+        output,
+        grid.rows,
+        grid.cols,
+        grid.cursor_x,
+        grid.cursor_y,
+        &grid.cells,
+    )
+    .await
+}
+
+async fn render_cells<W: AsyncWriteExt + Unpin>(
+    output: &mut W,
+    rows: u16,
+    cols: u16,
+    cursor_x: u16,
+    cursor_y: u16,
+    cells: &[WireCell],
+) -> Result<()> {
+    let mut rendered = Vec::with_capacity(cells.len() + usize::from(rows) * 2);
     rendered.extend_from_slice(b"\x1b[2J\x1b[H");
-    for row in 0..snapshot.rows {
+    for row in 0..rows {
         if row > 0 {
             rendered.extend_from_slice(b"\r\n");
         }
-        let start = usize::from(row) * usize::from(snapshot.cols);
-        let end = start + usize::from(snapshot.cols);
-        for cell in &snapshot.cells[start..end] {
+        let start = usize::from(row) * usize::from(cols);
+        let end = start + usize::from(cols);
+        for cell in &cells[start..end] {
             let character = if cell.codepoint == 0 {
                 ' '
             } else {
@@ -431,8 +546,8 @@ async fn render_snapshot<W: AsyncWriteExt + Unpin>(
     rendered.extend_from_slice(
         format!(
             "\x1b[{};{}H",
-            snapshot.cursor_y.saturating_add(1),
-            snapshot.cursor_x.saturating_add(1)
+            cursor_y.saturating_add(1),
+            cursor_x.saturating_add(1)
         )
         .as_bytes(),
     );
