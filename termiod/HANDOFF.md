@@ -173,39 +173,41 @@ churn — resend it). This bit us twice; budget for it.
 
 ## 6. Next steps — Phase 1 (issue #181)
 
-**Phase 1a is DONE** (`bc36438` + `9f539b8`, 2026-07-31): snapshot-on-attach +
-`ready` ship exactly as specified below, capability-gated, smoke-verified on
-Mac and ukvps. Native-VPS gotcha discovered during verification: the
-checked-in `termiod/.cargo/config.toml` hardcodes the Mac's `ld.lld` path (a
-pre-existing #171 artifact, only for cross-from-Mac) — **delete/exclude it
-when building natively on Linux**; a portable fix is a small open follow-up.
+**ALL of Phase 1 is DONE (2026-07-31, single day, phases 1a–1e — see the §2
+table for commits and verification).** The #181 protocol ladder shipped whole:
+`S` snapshot-on-attach + `ready` (1a) · resize-as-barrier + TIOCSWINSZ
+surfacing + writer-failover size reclaim (1b) · authoritative `rows`/`cols` in
+`attached` (1c) · staged scrollback `H` frames (1d) · capability-gated `G`
+dirty-row diffs with keyframes, the v1.1 plane (1e). Suites: 48 local + 8
+remote smoke, 10+4 unit; everything dual-verified on macOS-arm64 and native
+aarch64-musl (`ukvps`). Hands-on Mac→Linux test steps: `DEPLOY.md`.
 
-Phase 0 (build proof) is done. Phase 1 is wiring the libghostty-vt sidecar into
-the daemon. **Recommended smallest verifiable slice first (Phase 1a):**
+### Remaining directions (each needs a human product call before dispatch)
 
-> A per-session **libghostty-vt sidecar** that consumes the same PTY bytes
-> **asynchronously** (fed from the `session.rs` read loop — must NOT gate
-> `fan_out`; e.g. a separate task/channel). On a client **attach**, produce one
-> **`S` snapshot** of the current screen (cells + cursor + title + authoritative
-> `rows`/`cols`) via the FFI, send it **before** live `D` frames, followed by a
-> **`ready`** marker. Add the `S` frame kind + a `snapshot` capability in `hello`.
-> Keep v0 raw clients valid (capability-gated).
->
-> **Acceptance:** attach to a session mid-output → receive a snapshot matching the
-> live screen → then live bytes. `smoke_test.py` + `remote_smoke_test.py` stay
-> green. `fan_out` still never blocks on the sidecar (anti-100× invariant).
-
-**Then, in order:** resize as a barrier (§C.5: quiesce → resize → fresh `S` →
-resume; check `TIOCSWINSZ` failure — §F #11) · `attached` carries `rows`/`cols`
-(§C.5, currently omitted) · staged scrollback newest-first after `ready` ·
-capability-gated `G` dirty-row diffs (phone-first, §C.6) · then the QUIC binding
-(§D.1) only when measured.
-
-**Integration mechanics to decide with the human (see §7):** the FFI crate is a
-spike (`spike/vt-ffi`); Phase 1 needs it as a real dependency of the `termiod`
-crate, and the `termiod` crate itself must be on the VPS for native dev (rsync it,
-like `vt-ffi`, or set up an authed clone). The `build.rs` must build for both
-macOS (local host) and aarch64-musl (remote host).
+1. **`termiod stdio` bridge — recommended next slice** (§F #9). A non-tty
+   subcommand speaking the framed protocol on stdin/stdout, bridged to the
+   local Unix socket. Today `remote attach` runs `ssh -t host termiod attach`,
+   so the framed protocol never actually crosses SSH — a native client cannot
+   attach remotely, `--grid-diff` is local-only, and the §C.9 "recorded
+   transcript replays byte-identical over SSH" acceptance test is untestable.
+   This small slice unlocks all three, plus Mac-as-remote-host (system OpenSSH
+   stays the trust plane; termio never ships an SSH server — §H #8).
+2. **Mac app integration (#170)** — the epic's actual product step: termiod as
+   a launchd user agent on the Mac, termio.app attaching over the Unix socket
+   (native Swift client of this protocol; the app's libghostty consumes `S`/
+   `D` directly). Sessions survive app quit/self-update. Bigger lift, Swift
+   side; coordinate with the app codebase, not this crate alone.
+3. **QUIC binding (§D.1)** — stays gated on measurement by design. With the
+   `G` plane now real, re-measure the three motivating numbers (p95 echo under
+   loss, cold-exec latency, roaming) before spending anything here.
+4. **Land the branch** — PR #177 is functionally complete and dual-verified;
+   promoting it from draft / merging to main is a release-timing call.
+5. **Small follow-ups (no product call needed, bundle opportunistically):**
+   portable `.cargo/config.toml` (Mac-absolute `ld.lld` path breaks native
+   Linux builds — delete/exclude it there; see gotcha in §2 table) ·
+   resize-time scrollback restaging (deliberately deferred in 1d) · H/G
+   delivery pacing beyond the 4 MiB backlog rule · keyframe cadence tuning
+   (256 is a guess).
 
 ---
 

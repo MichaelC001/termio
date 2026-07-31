@@ -5,6 +5,58 @@ own OpenSSH, and SSH is also the access-control boundary. The remote daemon
 listens on a **Unix socket only** — never a TCP port, never `0.0.0.0`. This
 covers issues **#171** (deploy + remote attach) and **#172** (`remote open`).
 
+## Hands-on: test the remote terminal from a Mac, step by step
+
+Everything below assumes an SSH alias in `~/.ssh/config` (the examples use
+`ukvps`) and the toolchain from "Cross-compiling on the Mac" below.
+
+```sh
+# 1. Build the CLI on the Mac (from the repo's termiod/ directory)
+export ZIG=$HOME/.local/share/termiod-toolchains/zig-0.15.2/zig
+export DEVELOPER_DIR=/Library/Developer/CommandLineTools
+cargo build
+alias tio=./target/debug/termiod
+
+# 2. Deploy to the VPS. Two gotchas: a RUNNING daemon keeps executing the old
+#    binary image (and scp onto a running binary fails with ETXTBSY), so stop
+#    it first. Existing sessions die with it — this is a dev-loop step.
+ssh ukvps pkill -x termiod || true
+tio remote deploy ukvps
+
+# 3. Open a durable session and attach (creates + attaches in one command;
+#    --agent claude/codex launches an agent instead of a shell)
+tio remote open ukvps --name demo
+
+# 4. Inside the session: start something long-lived, e.g. `top`.
+#    Detach with Ctrl-\  (the session KEEPS RUNNING on the VPS).
+#    Simulate a real drop instead: close the laptop lid or kill Wi-Fi —
+#    a dead SSH connection is also just a detach, never a kill.
+
+# 5. Proof of survival — same pid before and after:
+tio remote list ukvps
+
+# 6. Reattach. v1 bootstrap kicks in: one S snapshot repaints the CURRENT
+#    screen (top, mid-run, no replayed escape torrent), `ready`, then live
+#    bytes; scrollback is staged behind it (the CLI prints
+#    "scrollback: N rows staged" when you detach).
+tio remote attach ukvps demo
+
+# 7. Second read-only viewer (scripting/piping — no tty, no input):
+tio remote attach ukvps demo --observe | head -50
+
+# 8. Done? End the session for real:
+ssh ukvps '~/.local/bin/termiod kill demo'
+```
+
+What you are testing at each step: durable host (4–5), snapshot-on-attach
+(6, Phase 1a), staged scrollback (6, Phase 1d), single-writer + observer
+plane (7, #179). The resize barrier (1b) fires whenever you resize your
+terminal while attached as the writer — observers repaint from a fresh
+snapshot instead of parsing at the wrong width. The `grid_diff` plane (1e)
+has no remote CLI flag yet (`attach --grid-diff` is local-only today); it
+rides the same framed protocol, so it lights up remotely once `termiod stdio`
+lands (see the protocol doc's roadmap).
+
 ## The one-liner
 
 ```sh
@@ -20,12 +72,22 @@ termiod remote open my-vps            # deploy if needed, create a session, atta
 Close your laptop mid-session; the daemon on the VPS owns the PTY, so the agent
 keeps running. Reconnect with `termiod remote attach my-vps <id>` (or `open`).
 
-## Cross-compiling on the Mac (no external toolchain)
+## Cross-compiling on the Mac
 
-The crate is pure-Rust (only `libc` FFI, no C to compile), so it cross-links to
-a **static musl** Linux binary using the `rust-lld` that ships with every Rust
-toolchain — **no `musl-gcc`, no Docker, no zig**. That wiring lives in
-`.cargo/config.toml` (checked in). One-time target install:
+Since v1 the crate embeds **libghostty-vt** (the `termiod/vt` crate), which is
+built by **Zig 0.15.2** via `build.rs` — Zig doubles as the C cross-compiler,
+so the output is still a single **static musl** Linux binary and no
+`musl-gcc`/Docker is needed. Rust-side cross-linking uses the `rust-lld` that
+ships with the toolchain, wired in `.cargo/config.toml` (checked in; note its
+`linker` paths are Mac-specific — **building natively on Linux instead? delete
+that file**, the defaults work there). Required environment on the Mac:
+
+```sh
+export ZIG=$HOME/.local/share/termiod-toolchains/zig-0.15.2/zig
+export DEVELOPER_DIR=/Library/Developer/CommandLineTools   # avoids Xcode 26.4's arm64e-only SDK
+```
+
+One-time target install:
 
 ```sh
 rustup target add aarch64-unknown-linux-musl   # ARM VPS (Graviton, Ampere, Pi)
