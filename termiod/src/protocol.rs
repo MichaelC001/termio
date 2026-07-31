@@ -18,14 +18,18 @@ pub const KIND_DATA: u8 = b'D';
 pub const KIND_RESIZE: u8 = b'R';
 pub const KIND_EVENT: u8 = b'E';
 pub const KIND_SNAPSHOT: u8 = b'S';
+pub const KIND_HISTORY: u8 = b'H';
 
 pub const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 pub const MAX_DATA_FRAME_SIZE: usize = 64 * 1024;
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const SUPPORTED_PROTOCOLS: &[u32] = &[PROTOCOL_VERSION];
-pub const HOST_CAPABILITIES: &[&str] = &["events", "send_wait", "snapshot"];
+pub const HOST_CAPABILITIES: &[&str] = &["events", "send_wait", "snapshot", "scrollback"];
 pub const SNAPSHOT_FORMAT_VERSION: u8 = 1;
 pub const SNAPSHOT_CELL_SIZE: usize = 16;
+pub const HISTORY_FORMAT_VERSION: u8 = 1;
+pub const HISTORY_HEADER_SIZE: usize = 9;
+pub const MAX_HISTORY_FRAME_SIZE: usize = 64 * 1024;
 
 /// A single decoded frame off the wire.
 #[derive(Debug)]
@@ -35,6 +39,7 @@ pub enum Frame {
     Resize { rows: u16, cols: u16 },
     Event(Event),
     Snapshot(Snapshot),
+    History(HistoryChunk),
 }
 
 /// Engine-independent 16-byte cell representation used by snapshot v1.
@@ -54,6 +59,16 @@ pub struct Snapshot {
     pub cursor_y: u16,
     pub alt_screen: bool,
     pub title: String,
+    pub cells: Vec<WireCell>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryChunk {
+    pub cols: u16,
+    /// Distance above the snapshot viewport of this chunk's first row.
+    pub first_offset: u32,
+    pub row_count: u16,
+    /// Row-major cells, with rows ordered from newer to older.
     pub cells: Vec<WireCell>,
 }
 
@@ -412,6 +427,19 @@ pub async fn write_snapshot<W: AsyncWriteExt + Unpin>(
     write_frame(w, KIND_SNAPSHOT, &payload).await
 }
 
+pub async fn write_history_payload<W: AsyncWriteExt + Unpin>(
+    w: &mut W,
+    payload: &[u8],
+) -> Result<()> {
+    if payload.len() > MAX_HISTORY_FRAME_SIZE {
+        bail!(
+            "history payload too large: {} > {MAX_HISTORY_FRAME_SIZE}",
+            payload.len()
+        );
+    }
+    write_frame(w, KIND_HISTORY, payload).await
+}
+
 /// Snapshot payload v1:
 /// version:u8, rows/cols/cursor_x/cursor_y:u16be, alt_screen:u8,
 /// title_len:u16be, UTF-8 title, then row-major 16-byte cells. Each cell is
@@ -512,6 +540,88 @@ pub fn decode_snapshot_payload(payload: &[u8]) -> Result<Snapshot> {
     })
 }
 
+/// Scrollback payload v1: version:u8, cols:u16be, first_offset:u32be,
+/// row_count:u16be, then row-major 16-byte wire cells. Rows are newest-first.
+pub fn encode_history_payload(history: &HistoryChunk) -> Result<Vec<u8>> {
+    if history.cols == 0 || history.row_count == 0 {
+        bail!("history chunks require non-zero columns and rows");
+    }
+    let expected_cells = usize::from(history.cols) * usize::from(history.row_count);
+    if history.cells.len() != expected_cells {
+        bail!(
+            "history chunk has {} cells, expected {expected_cells}",
+            history.cells.len()
+        );
+    }
+    let payload_len = HISTORY_HEADER_SIZE
+        .checked_add(expected_cells * SNAPSHOT_CELL_SIZE)
+        .ok_or_else(|| anyhow::anyhow!("history payload length overflow"))?;
+    if payload_len > MAX_HISTORY_FRAME_SIZE {
+        bail!("history payload too large: {payload_len} > {MAX_HISTORY_FRAME_SIZE}");
+    }
+
+    let mut payload = Vec::with_capacity(payload_len);
+    payload.push(HISTORY_FORMAT_VERSION);
+    payload.extend_from_slice(&history.cols.to_be_bytes());
+    payload.extend_from_slice(&history.first_offset.to_be_bytes());
+    payload.extend_from_slice(&history.row_count.to_be_bytes());
+    for cell in &history.cells {
+        payload.extend_from_slice(&cell.codepoint.to_be_bytes());
+        payload.extend_from_slice(&cell.foreground);
+        payload.extend_from_slice(&cell.background);
+        payload.extend_from_slice(&cell.attributes.to_be_bytes());
+        payload.extend_from_slice(&[0; 4]);
+    }
+    Ok(payload)
+}
+
+pub fn decode_history_payload(payload: &[u8]) -> Result<HistoryChunk> {
+    if payload.len() < HISTORY_HEADER_SIZE {
+        bail!("malformed history header");
+    }
+    if payload.len() > MAX_HISTORY_FRAME_SIZE {
+        bail!(
+            "history payload too large: {} > {MAX_HISTORY_FRAME_SIZE}",
+            payload.len()
+        );
+    }
+    if payload[0] != HISTORY_FORMAT_VERSION {
+        bail!("unsupported history payload version {}", payload[0]);
+    }
+    let cols = u16::from_be_bytes([payload[1], payload[2]]);
+    let first_offset = u32::from_be_bytes([payload[3], payload[4], payload[5], payload[6]]);
+    let row_count = u16::from_be_bytes([payload[7], payload[8]]);
+    if cols == 0 || row_count == 0 {
+        bail!("history chunks require non-zero columns and rows");
+    }
+    let cell_count = usize::from(cols) * usize::from(row_count);
+    let expected_len = HISTORY_HEADER_SIZE
+        .checked_add(cell_count * SNAPSHOT_CELL_SIZE)
+        .ok_or_else(|| anyhow::anyhow!("history cell length overflow"))?;
+    if payload.len() != expected_len {
+        bail!(
+            "history payload has {} bytes, expected {expected_len}",
+            payload.len()
+        );
+    }
+
+    let mut cells = Vec::with_capacity(cell_count);
+    for bytes in payload[HISTORY_HEADER_SIZE..].chunks_exact(SNAPSHOT_CELL_SIZE) {
+        cells.push(WireCell {
+            codepoint: u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            foreground: [bytes[4], bytes[5], bytes[6]],
+            background: [bytes[7], bytes[8], bytes[9]],
+            attributes: u16::from_be_bytes([bytes[10], bytes[11]]),
+        });
+    }
+    Ok(HistoryChunk {
+        cols,
+        first_offset,
+        row_count,
+        cells,
+    })
+}
+
 /// Data is always split into fair-write chunks, including large ring replays.
 pub async fn write_data<W: AsyncWriteExt + Unpin>(w: &mut W, data: &[u8]) -> Result<()> {
     if data.is_empty() {
@@ -546,7 +656,7 @@ pub async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<Fra
     }
     if !matches!(
         kind,
-        KIND_CONTROL | KIND_DATA | KIND_RESIZE | KIND_EVENT | KIND_SNAPSHOT
+        KIND_CONTROL | KIND_DATA | KIND_RESIZE | KIND_EVENT | KIND_SNAPSHOT | KIND_HISTORY
     ) {
         bail!("unknown frame kind {kind:#x}");
     }
@@ -574,13 +684,41 @@ pub async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<Fra
             Ok(Some(Frame::Event(event)))
         }
         KIND_SNAPSHOT => Ok(Some(Frame::Snapshot(decode_snapshot_payload(&payload)?))),
+        KIND_HISTORY => Ok(Some(Frame::History(decode_history_payload(&payload)?))),
         _ => unreachable!("frame kind validated above"),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_snapshot_payload, encode_snapshot_payload, Control, Snapshot, WireCell};
+    use super::{
+        decode_history_payload, decode_snapshot_payload, encode_history_payload,
+        encode_snapshot_payload, Control, HistoryChunk, Snapshot, WireCell,
+    };
+
+    #[test]
+    fn history_payload_round_trip() {
+        let history = HistoryChunk {
+            cols: 2,
+            first_offset: 7,
+            row_count: 2,
+            cells: vec![
+                WireCell {
+                    codepoint: u32::from('D'),
+                    ..Default::default()
+                },
+                WireCell::default(),
+                WireCell {
+                    codepoint: u32::from('C'),
+                    ..Default::default()
+                },
+                WireCell::default(),
+            ],
+        };
+
+        let encoded = encode_history_payload(&history).unwrap();
+        assert_eq!(decode_history_payload(&encoded).unwrap(), history);
+    }
 
     #[test]
     fn attached_dimensions_are_additive() {

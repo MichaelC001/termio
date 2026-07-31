@@ -4,9 +4,9 @@
 
 use crate::paths;
 use crate::protocol::{
-    read_frame, write_control, write_data, write_event, write_snapshot, AttachMode, Control,
-    ErrorCode, Event, Frame, SessionInfo, Snapshot, HOST_CAPABILITIES, PROTOCOL_VERSION,
-    SUPPORTED_PROTOCOLS,
+    read_frame, write_control, write_data, write_event, write_history_payload, write_snapshot,
+    AttachMode, Control, ErrorCode, Event, Frame, SessionInfo, Snapshot, HOST_CAPABILITIES,
+    PROTOCOL_VERSION, SUPPORTED_PROTOCOLS,
 };
 use crate::session::{self, ClientBacklog, ClientEvent, ClientId, SessionHandle, SessionMsg};
 use anyhow::{Context, Result};
@@ -353,6 +353,7 @@ enum Outbound {
     Data(Bytes),
     Event(Event),
     Snapshot(Snapshot),
+    History(Bytes),
 }
 
 async fn write_outbound(
@@ -371,6 +372,12 @@ async fn write_outbound(
             }
             Outbound::Event(event) => write_event(&mut wr, &event).await,
             Outbound::Snapshot(snapshot) => write_snapshot(&mut wr, &snapshot).await,
+            Outbound::History(payload) => {
+                let len = payload.len();
+                let result = write_history_payload(&mut wr, &payload).await;
+                backlog.release(len);
+                result
+            }
         };
         if result.is_err() {
             break;
@@ -548,6 +555,15 @@ async fn run_connection(
                             None,
                             ErrorCode::ProtoError,
                             "snapshot frames are host-to-client only",
+                            false,
+                        )));
+                        return Ok(());
+                    }
+                    Ok(Some(Frame::History(_))) => {
+                        let _ = out.send(Outbound::Control(error(
+                            None,
+                            ErrorCode::ProtoError,
+                            "history frames are host-to-client only",
                             false,
                         )));
                         return Ok(());
@@ -848,6 +864,8 @@ async fn run_attach(
         out: client_out,
         backlog: backlog.clone(),
         snapshot: connection.capabilities.contains("snapshot"),
+        scrollback: connection.capabilities.contains("snapshot")
+            && connection.capabilities.contains("scrollback"),
         reply: reply_tx,
     });
     let added = reply_rx.await.context("session ended while attaching")?;
@@ -878,6 +896,7 @@ async fn run_attach(
 
     let supports_events = connection.capabilities.contains("events");
     let supports_snapshot = connection.capabilities.contains("snapshot");
+    let supports_scrollback = supports_snapshot && connection.capabilities.contains("scrollback");
     let negotiated = connection.negotiated;
     let event_out = out.clone();
     let session_id = handle.id.clone();
@@ -898,6 +917,14 @@ async fn run_attach(
                     }
                 }
                 ClientEvent::Snapshot(_) => {}
+                ClientEvent::History(payload) if supports_scrollback => {
+                    let len = payload.len();
+                    if event_out.send(Outbound::History(payload)).is_err() {
+                        bridge_backlog.release(len);
+                        break;
+                    }
+                }
+                ClientEvent::History(payload) => bridge_backlog.release(payload.len()),
                 ClientEvent::Control(control) if negotiated => {
                     if event_out.send(Outbound::Control(control)).is_err() {
                         break;
@@ -950,6 +977,15 @@ async fn run_attach(
                     None,
                     ErrorCode::ProtoError,
                     "snapshot frames are host-to-client only",
+                    false,
+                )));
+                break;
+            }
+            Ok(Some(Frame::History(_))) => {
+                let _ = out.send(Outbound::Control(error(
+                    None,
+                    ErrorCode::ProtoError,
+                    "history frames are host-to-client only",
                     false,
                 )));
                 break;

@@ -3,7 +3,7 @@ title: termiod Session Protocol
 status: draft
 type: design
 created: 2026-07-30
-updated: 2026-07-31
+updated: 2026-07-31T18:53:03+01:00
 related:
   - termiod-session-mux.md
   - session-daemon-architecture.md
@@ -146,6 +146,7 @@ stay valid.
 | Resize | `R` | rows u16 BE · cols u16 BE | terminal | v0 |
 | Event | `E` | JSON object (`ev`-tagged) | events | v0.1 |
 | Snapshot | `S` | binary: header + packed vt cells (§C.6) | terminal | v1 |
+| History | `H` | binary: newest-first scrollback rows (§C.6) | terminal | v1 |
 | Diff | `G` | binary: dirty-row grid update (§C.6) | terminal | v1.1 |
 
 Rules: unknown *control ops* and *event types* are ignored (additive
@@ -270,6 +271,12 @@ changes PTY size, a barrier quiesces, resizes, emits a fresh `S`, resumes
 deltas; (3) **desync / host restart recovery**; (4) in v1.1 diff mode only, a
 **periodic keyframe** to bound drift. Steady-state typing and output never
 snapshot — that would be the tmux tax.
+
+Clients that negotiate both `snapshot` and `scrollback` receive staged history
+on attach only. The sidecar captures it at the same in-band boundary as `S`,
+keeps at most 1 MiB of encoded rows with the newest rows winning, then emits
+small newest-first `H` chunks after `ready` so live `D` can interleave. Resize
+snapshots do not restage history; reflow semantics remain a later decision.
 
 `S`/`G` carry packed cells + per-row damage. **The wire cell is defined by
 termiod and is engine-independent — it is NOT the VT engine's in-memory cell**

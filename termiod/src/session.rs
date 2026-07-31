@@ -2,7 +2,10 @@
 //! attached clients. It runs as an actor whose lifetime is independent of any
 //! connection — detach never kills it.
 
-use crate::protocol::{Control, ErrorCode, Event, SessionInfo, Snapshot, WireCell, WorkstreamSpec};
+use crate::protocol::{
+    encode_history_payload, Control, ErrorCode, Event, HistoryChunk, SessionInfo, Snapshot,
+    WireCell, WorkstreamSpec, HISTORY_HEADER_SIZE, MAX_HISTORY_FRAME_SIZE, SNAPSHOT_CELL_SIZE,
+};
 use crate::pty::Pty;
 use bytes::Bytes;
 use std::collections::HashMap;
@@ -19,6 +22,7 @@ pub type ClientId = String;
 const RING_CAP: usize = 128 * 1024;
 const READ_CHUNK: usize = 64 * 1024;
 const CLIENT_BACKLOG_CAP: usize = 4 * 1024 * 1024;
+pub const SCROLLBACK_STAGE_MAX_BYTES: usize = 1024 * 1024;
 
 /// Counts PTY bytes queued anywhere between a session and its socket writer.
 pub(crate) struct ClientBacklog {
@@ -63,6 +67,7 @@ impl ClientBacklog {
 pub enum ClientEvent {
     Data(Bytes),
     Snapshot(Snapshot),
+    History(Bytes),
     Control(Control),
     Event(Event),
     Exited(i32),
@@ -82,6 +87,7 @@ pub enum SessionMsg {
         out: mpsc::UnboundedSender<ClientEvent>,
         backlog: Arc<ClientBacklog>,
         snapshot: bool,
+        scrollback: bool,
         reply: oneshot::Sender<AddClientReply>,
     },
     RemoveClient {
@@ -133,6 +139,9 @@ struct ClientEntry {
     interactive: bool,
     snapshot_capable: bool,
     delivery: ClientDelivery,
+    /// Attach-only history staging. Resize barriers discard any remainder and
+    /// deliberately do not restage it; resize/reflow history is a later policy.
+    staged_history: VecDeque<Bytes>,
 }
 
 enum ClientDelivery {
@@ -153,6 +162,7 @@ enum SidecarCommand {
     Snapshot {
         client_id: ClientId,
         request_id: u64,
+        scrollback: bool,
     },
     Shutdown,
 }
@@ -160,7 +170,12 @@ enum SidecarCommand {
 struct SidecarSnapshot {
     client_id: ClientId,
     request_id: u64,
-    result: Result<termiod_vt::Snapshot, String>,
+    result: Result<SidecarCapture, String>,
+}
+
+struct SidecarCapture {
+    snapshot: termiod_vt::Snapshot,
+    scrollback: Option<Result<termiod_vt::Scrollback, String>>,
 }
 
 struct Session {
@@ -260,6 +275,10 @@ impl Session {
                 .clients
                 .get_mut(&client_id)
                 .expect("snapshot client disappeared during barrier setup");
+            // Attach history is tied to its original snapshot boundary. A
+            // resize cancels any unfinished stage and does not recapture it;
+            // history reflow/restaging semantics are intentionally deferred.
+            entry.staged_history.clear();
             let previous = std::mem::replace(&mut entry.delivery, ClientDelivery::Live);
             let deferred = match previous {
                 ClientDelivery::Live => VecDeque::new(),
@@ -285,8 +304,9 @@ impl Session {
             if !self.send_sidecar(SidecarCommand::Snapshot {
                 client_id: client_id.clone(),
                 request_id,
+                scrollback: false,
             }) {
-                self.finish_snapshot(
+                let _ = self.finish_snapshot(
                     &client_id,
                     request_id,
                     Err("VT sidecar is unavailable".to_string()),
@@ -425,14 +445,58 @@ impl Session {
         }
     }
 
+    fn queue_history_chunk(
+        session_id: &str,
+        client_id: &str,
+        entry: &mut ClientEntry,
+    ) -> Result<bool, ()> {
+        let Some(payload) = entry.staged_history.front() else {
+            return Ok(false);
+        };
+        if !entry.backlog.try_reserve(payload.len()) {
+            entry.backlog.mark_dropped();
+            eprintln!(
+                "termiod: dropping slow client {client_id} from session {session_id}: scrollback backlog exceeded {} MiB",
+                CLIENT_BACKLOG_CAP / (1024 * 1024)
+            );
+            return Err(());
+        }
+        let payload = entry
+            .staged_history
+            .pop_front()
+            .expect("history payload disappeared after reservation");
+        let len = payload.len();
+        if entry.out.send(ClientEvent::History(payload)).is_err() {
+            entry.backlog.release(len);
+            return Err(());
+        }
+        Ok(!entry.staged_history.is_empty())
+    }
+
+    fn continue_history(&mut self, client_id: &str) -> bool {
+        let result = self
+            .clients
+            .get_mut(client_id)
+            .map(|entry| Self::queue_history_chunk(&self.id, client_id, entry));
+        match result {
+            Some(Ok(more)) => more,
+            Some(Err(())) => {
+                self.remove_dead(vec![client_id.to_string()]);
+                false
+            }
+            None => false,
+        }
+    }
+
     /// Every successful snapshot, whether attach bootstrap or resize/resync
-    /// barrier, is followed immediately by `ready`; buffered live data follows.
+    /// barrier, is followed immediately by `ready`. Attach-only history starts
+    /// after `ready`, with buffered live data allowed between staged chunks.
     fn finish_snapshot(
         &mut self,
         client_id: &str,
         request_id: u64,
-        result: Result<termiod_vt::Snapshot, String>,
-    ) {
+        result: Result<SidecarCapture, String>,
+    ) -> bool {
         let is_current = self.clients.get(client_id).is_some_and(|entry| {
             matches!(
                 entry.delivery,
@@ -443,10 +507,10 @@ impl Session {
             )
         });
         if !is_current {
-            return;
+            return false;
         }
         let Some(mut entry) = self.clients.remove(client_id) else {
-            return;
+            return false;
         };
         let ClientDelivery::SnapshotPending {
             mut data,
@@ -455,16 +519,43 @@ impl Session {
         } = std::mem::replace(&mut entry.delivery, ClientDelivery::Live)
         else {
             self.clients.insert(client_id.to_string(), entry);
-            return;
+            return false;
         };
 
-        let engine = match result {
-            Ok(snapshot) => snapshot,
+        let capture = match result {
+            Ok(capture) => capture,
             Err(error) => {
                 self.fallback_snapshot(client_id, entry, data, deferred, &error);
-                return;
+                return false;
             }
         };
+        let engine = capture.snapshot;
+        if let Some(scrollback) = capture.scrollback {
+            match scrollback {
+                Ok(scrollback) => {
+                    if scrollback.total_rows > scrollback.rows.len() {
+                        eprintln!(
+                            "termiod: scrollback stage for client {client_id} in session {} truncated from {} to {} rows at {} MiB",
+                            self.id,
+                            scrollback.total_rows,
+                            scrollback.rows.len(),
+                            SCROLLBACK_STAGE_MAX_BYTES / (1024 * 1024)
+                        );
+                    }
+                    match encode_scrollback_chunks(engine.cols, scrollback.rows) {
+                        Ok(chunks) => entry.staged_history = chunks,
+                        Err(error) => eprintln!(
+                            "termiod: scrollback stage unavailable for client {client_id} in session {}: {error}",
+                            self.id
+                        ),
+                    }
+                }
+                Err(error) => eprintln!(
+                    "termiod: scrollback capture unavailable for client {client_id} in session {}: {error}",
+                    self.id
+                ),
+            }
+        }
         let snapshot = Snapshot {
             rows: engine.rows,
             cols: engine.cols,
@@ -497,24 +588,34 @@ impl Session {
         {
             release_buffered(&entry.backlog, data);
             self.remove_finished_client(client_id);
-            return;
+            return false;
         }
+
+        let history_pending = match Self::queue_history_chunk(&self.id, client_id, &mut entry) {
+            Ok(more) => more,
+            Err(()) => {
+                release_buffered(&entry.backlog, data);
+                self.remove_finished_client(client_id);
+                return false;
+            }
+        };
         while let Some(bytes) = data.pop_front() {
             let len = bytes.len();
             if entry.out.send(ClientEvent::Data(bytes)).is_err() {
                 entry.backlog.release(len);
                 release_buffered(&entry.backlog, data);
                 self.remove_finished_client(client_id);
-                return;
+                return false;
             }
         }
         while let Some(event) = deferred.pop_front() {
             if entry.out.send(event).is_err() {
                 self.remove_finished_client(client_id);
-                return;
+                return false;
             }
         }
         self.clients.insert(client_id.to_string(), entry);
+        history_pending
     }
 
     fn fallback_snapshot(
@@ -576,6 +677,80 @@ impl Session {
         for (id, request_id) in pending {
             self.finish_snapshot(&id, request_id, Err(error.to_string()));
         }
+    }
+}
+
+fn scrollback_row_limit(cols: u16) -> usize {
+    let row_bytes = usize::from(cols).saturating_mul(SNAPSHOT_CELL_SIZE);
+    SCROLLBACK_STAGE_MAX_BYTES
+        .checked_div(row_bytes)
+        .unwrap_or(0)
+}
+
+fn encode_scrollback_chunks(
+    cols: u16,
+    rows: Vec<Vec<termiod_vt::Cell>>,
+) -> Result<VecDeque<Bytes>, String> {
+    if rows.is_empty() {
+        return Ok(VecDeque::new());
+    }
+    let row_bytes = usize::from(cols)
+        .checked_mul(SNAPSHOT_CELL_SIZE)
+        .ok_or_else(|| "scrollback row length overflow".to_string())?;
+    let rows_per_chunk = MAX_HISTORY_FRAME_SIZE
+        .checked_sub(HISTORY_HEADER_SIZE)
+        .and_then(|available| available.checked_div(row_bytes))
+        .unwrap_or(0)
+        .min(usize::from(u16::MAX));
+    if rows_per_chunk == 0 {
+        return Err(format!(
+            "one {cols}-column row cannot fit in a {MAX_HISTORY_FRAME_SIZE}-byte H frame"
+        ));
+    }
+
+    let mut rows = rows.into_iter();
+    let mut chunks = VecDeque::new();
+    let mut first_offset = 1u32;
+    loop {
+        let mut cells = Vec::with_capacity(rows_per_chunk * usize::from(cols));
+        let mut row_count = 0u16;
+        for _ in 0..rows_per_chunk {
+            let Some(row) = rows.next() else {
+                break;
+            };
+            if row.len() != usize::from(cols) {
+                return Err(format!(
+                    "scrollback row has {} cells, expected {cols}",
+                    row.len()
+                ));
+            }
+            cells.extend(row.into_iter().map(wire_cell));
+            row_count += 1;
+        }
+        if row_count == 0 {
+            break;
+        }
+        let payload = encode_history_payload(&HistoryChunk {
+            cols,
+            first_offset,
+            row_count,
+            cells,
+        })
+        .map_err(|error| error.to_string())?;
+        chunks.push_back(Bytes::from(payload));
+        first_offset = first_offset
+            .checked_add(u32::from(row_count))
+            .ok_or_else(|| "scrollback offset overflow".to_string())?;
+    }
+    Ok(chunks)
+}
+
+fn wire_cell(cell: termiod_vt::Cell) -> WireCell {
+    WireCell {
+        codepoint: cell.codepoint,
+        foreground: [cell.foreground.r, cell.foreground.g, cell.foreground.b],
+        background: [cell.background.r, cell.background.g, cell.background.b],
+        attributes: cell.attributes,
     }
 }
 
@@ -742,12 +917,24 @@ fn spawn_sidecar(
                     SidecarCommand::Snapshot {
                         client_id,
                         request_id,
+                        scrollback,
                     } => {
                         let result = match (&fault, terminal.as_mut()) {
                             (Some(error), _) => Err(error.clone()),
-                            (None, Some(terminal)) => {
-                                terminal.snapshot().map_err(|error| error.to_string())
-                            }
+                            (None, Some(terminal)) => match terminal.snapshot() {
+                                Ok(snapshot) => {
+                                    let history = scrollback.then(|| {
+                                        terminal
+                                            .scrollback(scrollback_row_limit(snapshot.cols))
+                                            .map_err(|error| error.to_string())
+                                    });
+                                    Ok(SidecarCapture {
+                                        snapshot,
+                                        scrollback: history,
+                                    })
+                                }
+                                Err(error) => Err(error.to_string()),
+                            },
                             (None, None) => Err("VT sidecar is unavailable".to_string()),
                         };
                         if snapshot_tx
@@ -780,9 +967,18 @@ async fn run(
     let mut buf = vec![0u8; READ_CHUNK];
     let mut waiter = Some(waiter);
     let mut sidecar_results_open = true;
+    let mut history_stages = VecDeque::<ClientId>::new();
 
     loop {
         tokio::select! {
+            _ = tokio::task::yield_now(), if !history_stages.is_empty() => {
+                let client_id = history_stages
+                    .pop_front()
+                    .expect("history stage queue became empty");
+                if session.continue_history(&client_id) {
+                    history_stages.push_back(client_id);
+                }
+            }
             msg = rx.recv() => {
                 let Some(msg) = msg else { break };
                 if handle_msg(&mut session, msg) {
@@ -791,11 +987,16 @@ async fn run(
             }
             result = sidecar_snapshots.recv(), if sidecar_results_open => {
                 match result {
-                    Some(result) => session.finish_snapshot(
-                        &result.client_id,
-                        result.request_id,
-                        result.result,
-                    ),
+                    Some(result) => {
+                        let client_id = result.client_id;
+                        if session.finish_snapshot(
+                            &client_id,
+                            result.request_id,
+                            result.result,
+                        ) {
+                            history_stages.push_back(client_id);
+                        }
+                    }
                     None => {
                         sidecar_results_open = false;
                         session.fallback_all_pending("VT sidecar response channel closed");
@@ -851,6 +1052,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
             out,
             backlog,
             snapshot,
+            scrollback,
             reply,
         } => {
             let seq = session.next_seq;
@@ -885,6 +1087,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
                     } else {
                         ClientDelivery::Live
                     },
+                    staged_history: VecDeque::new(),
                 },
             );
             if interactive {
@@ -901,8 +1104,9 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
                 if !session.send_sidecar(SidecarCommand::Snapshot {
                     client_id: id.clone(),
                     request_id,
+                    scrollback,
                 }) {
-                    session.finish_snapshot(
+                    let _ = session.finish_snapshot(
                         &id,
                         request_id,
                         Err("VT sidecar is unavailable".to_string()),
@@ -988,8 +1192,9 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        handle_msg, spawn_sidecar, ClientBacklog, ClientDelivery, ClientEntry, ClientEvent,
-        Session, SessionMsg, SidecarCommand, CLIENT_BACKLOG_CAP,
+        handle_msg, scrollback_row_limit, spawn_sidecar, ClientBacklog, ClientDelivery,
+        ClientEntry, ClientEvent, Session, SessionMsg, SidecarCommand, CLIENT_BACKLOG_CAP,
+        SCROLLBACK_STAGE_MAX_BYTES, SNAPSHOT_CELL_SIZE,
     };
     use crate::protocol::{Control, ErrorCode};
     use crate::pty::Pty;
@@ -1012,6 +1217,16 @@ mod tests {
     }
 
     #[test]
+    fn scrollback_stage_cap_is_measured_in_encoded_rows() {
+        let cols = 80u16;
+        let row_bytes = usize::from(cols) * SNAPSHOT_CELL_SIZE;
+        let rows = scrollback_row_limit(cols);
+
+        assert!(rows * row_bytes <= SCROLLBACK_STAGE_MAX_BYTES);
+        assert!((rows + 1) * row_bytes > SCROLLBACK_STAGE_MAX_BYTES);
+    }
+
+    #[test]
     fn resize_snapshot_request_is_an_exact_sidecar_fifo_boundary() {
         let (sidecar, mut snapshots, thread) = spawn_sidecar(2, 16).unwrap();
         sidecar
@@ -1024,6 +1239,7 @@ mod tests {
             .send(SidecarCommand::Snapshot {
                 client_id: "client".to_string(),
                 request_id: 1,
+                scrollback: false,
             })
             .unwrap();
         sidecar
@@ -1032,7 +1248,7 @@ mod tests {
 
         let response = snapshots.blocking_recv().unwrap();
         assert_eq!(response.request_id, 1);
-        let snapshot = response.result.unwrap();
+        let snapshot = response.result.unwrap().snapshot;
         assert_eq!((snapshot.rows, snapshot.cols), (3, 20));
         let screen: String = snapshot
             .cells
@@ -1077,6 +1293,7 @@ mod tests {
                     interactive: true,
                     snapshot_capable: false,
                     delivery: ClientDelivery::Live,
+                    staged_history: VecDeque::new(),
                 },
             )]),
             writer: Some("writer".to_string()),

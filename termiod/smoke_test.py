@@ -88,6 +88,32 @@ def decode_snapshot(payload):
     }
 
 
+def decode_history(payload):
+    """Decode the Phase 1d H payload into newest-first text rows."""
+    if len(payload) < 9 or payload[0] != 1:
+        raise ValueError("invalid history header")
+    cols = struct.unpack(">H", payload[1:3])[0]
+    first_offset = struct.unpack(">I", payload[3:7])[0]
+    row_count = struct.unpack(">H", payload[7:9])[0]
+    cell_bytes = payload[9:]
+    if len(payload) > 64 * 1024 or len(cell_bytes) != row_count * cols * 16:
+        raise ValueError("invalid history cell count")
+    lines = []
+    for row in range(row_count):
+        line = []
+        for col in range(cols):
+            offset = (row * cols + col) * 16
+            codepoint = struct.unpack(">I", cell_bytes[offset : offset + 4])[0]
+            line.append(chr(codepoint) if codepoint else " ")
+        lines.append("".join(line))
+    return {
+        "cols": cols,
+        "first_offset": first_offset,
+        "row_count": row_count,
+        "lines": lines,
+    }
+
+
 class WireClient:
     """Small protocol client used to test the v0.1 wire directly."""
 
@@ -462,15 +488,17 @@ def main():
         "python3",
         "-u",
         "-c",
-        "import time; print('SNAPSHOT_KNOWN', flush=True); "
+        "import time; "
+        "[print(f'HISTORY_{i:03}', flush=True) for i in range(80)]; "
+        "print('SNAPSHOT_KNOWN', flush=True); "
         "time.sleep(1.5); print('LIVE_AFTER_READY', flush=True); time.sleep(30)",
     )
-    time.sleep(0.3)
+    time.sleep(0.5)
     snapshot_dims = session_size(snapshot_id)
     requested_rows = 1 if snapshot_dims[0] != 1 else 2
     requested_cols = 1 if snapshot_dims[1] != 1 else 2
 
-    snapshot_client = WireClient(role="attach", caps=["snapshot"])
+    snapshot_client = WireClient(role="attach", caps=["snapshot", "scrollback"])
     snapshot_client.send_control(
         {
             "op": "attach",
@@ -511,12 +539,55 @@ def main():
         and ready_frame[1].get("ev") == "ready"
         and ready_frame[1].get("session") == snapshot_id,
     )
+    history_frames = snapshot_client.drain(0.5)
+    history_chunks = [
+        decode_history(payload) for kind, payload in history_frames if kind == "H"
+    ]
+    history_text = "\n".join(
+        line for chunk in history_chunks for line in chunk["lines"]
+    )
+    check(
+        "scrollback: H follows ready, is newest-first, and contains scrolled lines",
+        len(history_chunks) >= 2
+        and history_chunks[0]["first_offset"] == 1
+        and all(
+            newer["first_offset"] + newer["row_count"]
+            == older["first_offset"]
+            for newer, older in zip(history_chunks, history_chunks[1:])
+        )
+        and all(len(payload) <= 64 * 1024 for kind, payload in history_frames if kind == "H")
+        and "HISTORY_000" in history_text
+        and all(kind != "H" for kind, _ in (attached, snapshot_frame, ready_frame)),
+    )
     live, _ = snapshot_client.recv_matching(
         lambda kind, payload: kind == "D" and b"LIVE_AFTER_READY" in payload,
         timeout=3.0,
     )
     check("snapshot: live D starts only after ready", live is not None)
     snapshot_client.close()
+
+    snapshot_only = WireClient(role="attach", caps=["snapshot"])
+    snapshot_only.send_control(
+        {
+            "op": "attach",
+            "target": snapshot_id,
+            "mode": "observe",
+            "rows": 24,
+            "cols": 80,
+            "seq": 75,
+        }
+    )
+    snapshot_only_frames = snapshot_only.drain(0.5)
+    check(
+        "scrollback: snapshot-only client gets S and ready but never H",
+        any(kind == "S" for kind, _ in snapshot_only_frames)
+        and any(
+            kind == "E" and payload.get("ev") == "ready"
+            for kind, payload in snapshot_only_frames
+        )
+        and all(kind != "H" for kind, _ in snapshot_only_frames),
+    )
+    snapshot_only.close()
 
     legacy_attach = WireClient(role="attach", caps=[])
     legacy_attach.send_control(

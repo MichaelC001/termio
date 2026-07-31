@@ -3,6 +3,7 @@
 use std::ffi::c_void;
 use std::fmt;
 use std::marker::PhantomData;
+use std::mem;
 use std::ptr;
 use std::rc::Rc;
 
@@ -43,6 +44,13 @@ pub struct Snapshot {
     /// OSC 0/2 title reported by libghostty-vt, if one was set.
     pub title: Option<String>,
     pub cells: Vec<Cell>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scrollback {
+    pub total_rows: usize,
+    /// Rows ordered newest-first, starting immediately above the viewport.
+    pub rows: Vec<Vec<Cell>>,
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +212,50 @@ impl VtTerminal {
         })
     }
 
+    /// Copy at most `max_rows` rows of primary-screen history, newest-first.
+    /// Callers must invoke this in the same serialized boundary as `snapshot`
+    /// if the two results need to describe one terminal state.
+    pub fn scrollback(&self, max_rows: usize) -> Result<Scrollback> {
+        let total_rows =
+            self.terminal_usize(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)?;
+        let capture_rows = total_rows.min(max_rows);
+        if capture_rows == 0 {
+            return Ok(Scrollback {
+                total_rows,
+                rows: Vec::new(),
+            });
+        }
+
+        let cols = self.terminal_u16(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS)?;
+        let default_fg = self.terminal_rgb(
+            ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND,
+            Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
+        )?;
+        let default_bg = self.terminal_rgb(
+            ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND,
+            Rgb::default(),
+        )?;
+        let palette = self.terminal_palette()?;
+        let first_row = total_rows - capture_rows;
+        let mut rows = Vec::with_capacity(capture_rows);
+
+        for y in (first_row..total_rows).rev() {
+            let y = u32::try_from(y)
+                .map_err(|_| VtError("scrollback row exceeds u32 coordinate space".to_string()))?;
+            let mut row = Vec::with_capacity(usize::from(cols));
+            for x in 0..cols {
+                row.push(self.history_cell(x, y, default_fg, default_bg, &palette)?);
+            }
+            rows.push(row);
+        }
+
+        Ok(Scrollback { total_rows, rows })
+    }
+
     fn populate_rows(&mut self) -> Result<()> {
         let result = unsafe {
             ffi::ghostty_render_state_get(
@@ -285,6 +337,142 @@ impl VtTerminal {
         Ok(value)
     }
 
+    fn terminal_usize(&self, field: ffi::GhosttyTerminalData) -> Result<usize> {
+        let mut value = 0usize;
+        let result = unsafe {
+            ffi::ghostty_terminal_get(
+                self.terminal,
+                field,
+                (&mut value as *mut usize).cast::<c_void>(),
+            )
+        };
+        check(result, "ghostty_terminal_get(usize)")?;
+        Ok(value)
+    }
+
+    fn terminal_palette(&self) -> Result<[Rgb; 256]> {
+        let mut raw = [ffi::GhosttyColorRgb::default(); 256];
+        let result = unsafe {
+            ffi::ghostty_terminal_get(
+                self.terminal,
+                ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLOR_PALETTE,
+                raw.as_mut_ptr().cast::<c_void>(),
+            )
+        };
+        check(result, "ghostty_terminal_get(palette)")?;
+        Ok(raw.map(rgb))
+    }
+
+    fn history_cell(
+        &self,
+        x: u16,
+        y: u32,
+        default_fg: Rgb,
+        default_bg: Rgb,
+        palette: &[Rgb; 256],
+    ) -> Result<Cell> {
+        let point = ffi::GhosttyPoint {
+            tag: ffi::GhosttyPointTag_GHOSTTY_POINT_TAG_HISTORY,
+            value: ffi::GhosttyPointValue {
+                coordinate: ffi::GhosttyPointCoordinate { x, y },
+            },
+        };
+        let mut reference = ffi::GhosttyGridRef {
+            size: mem::size_of::<ffi::GhosttyGridRef>(),
+            ..Default::default()
+        };
+        let mut raw_cell = ffi::GhosttyCell::default();
+        let mut style = ffi::GhosttyStyle {
+            size: mem::size_of::<ffi::GhosttyStyle>(),
+            ..Default::default()
+        };
+
+        unsafe {
+            check(
+                ffi::ghostty_terminal_grid_ref(self.terminal, point, &mut reference),
+                "ghostty_terminal_grid_ref(history)",
+            )?;
+            check(
+                ffi::ghostty_grid_ref_cell(&reference, &mut raw_cell),
+                "ghostty_grid_ref_cell(history)",
+            )?;
+            check(
+                ffi::ghostty_grid_ref_style(&reference, &mut style),
+                "ghostty_grid_ref_style(history)",
+            )?;
+        }
+
+        let mut codepoint = 0u32;
+        let mut content_tag = ffi::GhosttyCellContentTag_GHOSTTY_CELL_CONTENT_CODEPOINT;
+        unsafe {
+            check(
+                ffi::ghostty_cell_get(
+                    raw_cell,
+                    ffi::GhosttyCellData_GHOSTTY_CELL_DATA_CODEPOINT,
+                    (&mut codepoint as *mut u32).cast::<c_void>(),
+                ),
+                "ghostty_cell_get(history codepoint)",
+            )?;
+            check(
+                ffi::ghostty_cell_get(
+                    raw_cell,
+                    ffi::GhosttyCellData_GHOSTTY_CELL_DATA_CONTENT_TAG,
+                    (&mut content_tag as *mut ffi::GhosttyCellContentTag).cast::<c_void>(),
+                ),
+                "ghostty_cell_get(history content tag)",
+            )?;
+        }
+
+        let mut foreground = style_color(style.fg_color, default_fg, palette);
+        let mut background = style_color(style.bg_color, default_bg, palette);
+        match content_tag {
+            ffi::GhosttyCellContentTag_GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE => {
+                let mut index = 0u8;
+                unsafe {
+                    check(
+                        ffi::ghostty_cell_get(
+                            raw_cell,
+                            ffi::GhosttyCellData_GHOSTTY_CELL_DATA_COLOR_PALETTE,
+                            (&mut index as *mut u8).cast::<c_void>(),
+                        ),
+                        "ghostty_cell_get(history background palette)",
+                    )?;
+                }
+                background = palette[usize::from(index)];
+            }
+            ffi::GhosttyCellContentTag_GHOSTTY_CELL_CONTENT_BG_COLOR_RGB => {
+                let mut color = ffi::GhosttyColorRgb::default();
+                unsafe {
+                    check(
+                        ffi::ghostty_cell_get(
+                            raw_cell,
+                            ffi::GhosttyCellData_GHOSTTY_CELL_DATA_COLOR_RGB,
+                            (&mut color as *mut ffi::GhosttyColorRgb).cast::<c_void>(),
+                        ),
+                        "ghostty_cell_get(history background rgb)",
+                    )?;
+                }
+                background = rgb(color);
+            }
+            _ => {}
+        }
+        if style.inverse {
+            mem::swap(&mut foreground, &mut background);
+        }
+        if style.invisible {
+            codepoint = 0;
+        }
+
+        Ok(Cell {
+            codepoint,
+            foreground,
+            background,
+            // Attribute mapping is shared with viewport snapshots and remains
+            // reserved for a later additive wire-format extension.
+            attributes: 0,
+        })
+    }
+
     fn terminal_rgb(&self, field: ffi::GhosttyTerminalData, fallback: Rgb) -> Result<Rgb> {
         let mut value = ffi::GhosttyColorRgb::default();
         let result = unsafe {
@@ -358,6 +546,20 @@ fn rgb(value: ffi::GhosttyColorRgb) -> Rgb {
     }
 }
 
+fn style_color(color: ffi::GhosttyStyleColor, fallback: Rgb, palette: &[Rgb; 256]) -> Rgb {
+    match color.tag {
+        ffi::GhosttyStyleColorTag_GHOSTTY_STYLE_COLOR_PALETTE => {
+            // SAFETY: The tag identifies the active union field.
+            palette[usize::from(unsafe { color.value.palette })]
+        }
+        ffi::GhosttyStyleColorTag_GHOSTTY_STYLE_COLOR_RGB => {
+            // SAFETY: The tag identifies the active union field.
+            rgb(unsafe { color.value.rgb })
+        }
+        _ => fallback,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::VtTerminal;
@@ -381,5 +583,20 @@ mod tests {
         terminal.vt_write(b"text");
 
         assert_eq!(terminal.snapshot().unwrap().title, None);
+    }
+
+    #[test]
+    fn scrollback_rows_are_newest_first_and_bounded() {
+        let mut terminal = VtTerminal::new(2, 16).unwrap();
+        terminal.vt_write(b"ROW0\r\nROW1\r\nROW2\r\nROW3");
+
+        let scrollback = terminal.scrollback(1).unwrap();
+        assert_eq!(scrollback.total_rows, 2);
+        assert_eq!(scrollback.rows.len(), 1);
+        let text: String = scrollback.rows[0]
+            .iter()
+            .map(|cell| char::from_u32(cell.codepoint).unwrap_or(' '))
+            .collect();
+        assert!(text.starts_with("ROW1"));
     }
 }
