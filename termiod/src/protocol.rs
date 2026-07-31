@@ -19,17 +19,21 @@ pub const KIND_RESIZE: u8 = b'R';
 pub const KIND_EVENT: u8 = b'E';
 pub const KIND_SNAPSHOT: u8 = b'S';
 pub const KIND_HISTORY: u8 = b'H';
+pub const KIND_GRID: u8 = b'G';
 
 pub const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 pub const MAX_DATA_FRAME_SIZE: usize = 64 * 1024;
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const SUPPORTED_PROTOCOLS: &[u32] = &[PROTOCOL_VERSION];
-pub const HOST_CAPABILITIES: &[&str] = &["events", "send_wait", "snapshot", "scrollback"];
+pub const HOST_CAPABILITIES: &[&str] =
+    &["events", "send_wait", "snapshot", "scrollback", "grid_diff"];
 pub const SNAPSHOT_FORMAT_VERSION: u8 = 1;
 pub const SNAPSHOT_CELL_SIZE: usize = 16;
 pub const HISTORY_FORMAT_VERSION: u8 = 1;
 pub const HISTORY_HEADER_SIZE: usize = 9;
 pub const MAX_HISTORY_FRAME_SIZE: usize = 64 * 1024;
+pub const GRID_FORMAT_VERSION: u8 = 1;
+pub const GRID_HEADER_SIZE: usize = 16;
 
 /// A single decoded frame off the wire.
 #[derive(Debug)]
@@ -40,6 +44,7 @@ pub enum Frame {
     Event(Event),
     Snapshot(Snapshot),
     History(HistoryChunk),
+    Grid(GridDiff),
 }
 
 /// Engine-independent 16-byte cell representation used by snapshot v1.
@@ -70,6 +75,23 @@ pub struct HistoryChunk {
     pub row_count: u16,
     /// Row-major cells, with rows ordered from newer to older.
     pub cells: Vec<WireCell>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GridRow {
+    pub row_index: u16,
+    pub cells: Vec<WireCell>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GridDiff {
+    pub frame_seq: u32,
+    pub rows: u16,
+    pub cols: u16,
+    pub cursor_x: u16,
+    pub cursor_y: u16,
+    pub alt_screen: bool,
+    pub dirty_rows: Vec<GridRow>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -440,6 +462,10 @@ pub async fn write_history_payload<W: AsyncWriteExt + Unpin>(
     write_frame(w, KIND_HISTORY, payload).await
 }
 
+pub async fn write_grid_payload<W: AsyncWriteExt + Unpin>(w: &mut W, payload: &[u8]) -> Result<()> {
+    write_frame(w, KIND_GRID, payload).await
+}
+
 /// Snapshot payload v1:
 /// version:u8, rows/cols/cursor_x/cursor_y:u16be, alt_screen:u8,
 /// title_len:u16be, UTF-8 title, then row-major 16-byte cells. Each cell is
@@ -473,13 +499,7 @@ pub fn encode_snapshot_payload(snapshot: &Snapshot) -> Result<Vec<u8>> {
     payload.push(u8::from(snapshot.alt_screen));
     payload.extend_from_slice(&title_len.to_be_bytes());
     payload.extend_from_slice(title);
-    for cell in &snapshot.cells {
-        payload.extend_from_slice(&cell.codepoint.to_be_bytes());
-        payload.extend_from_slice(&cell.foreground);
-        payload.extend_from_slice(&cell.background);
-        payload.extend_from_slice(&cell.attributes.to_be_bytes());
-        payload.extend_from_slice(&[0; 4]);
-    }
+    encode_cells(&mut payload, &snapshot.cells);
     Ok(payload)
 }
 
@@ -520,15 +540,7 @@ pub fn decode_snapshot_payload(payload: &[u8]) -> Result<Snapshot> {
         );
     }
 
-    let mut cells = Vec::with_capacity(cell_count);
-    for bytes in payload[cells_offset..].chunks_exact(SNAPSHOT_CELL_SIZE) {
-        cells.push(WireCell {
-            codepoint: u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-            foreground: [bytes[4], bytes[5], bytes[6]],
-            background: [bytes[7], bytes[8], bytes[9]],
-            attributes: u16::from_be_bytes([bytes[10], bytes[11]]),
-        });
-    }
+    let cells = decode_cells(&payload[cells_offset..]);
     Ok(Snapshot {
         rows,
         cols,
@@ -565,13 +577,7 @@ pub fn encode_history_payload(history: &HistoryChunk) -> Result<Vec<u8>> {
     payload.extend_from_slice(&history.cols.to_be_bytes());
     payload.extend_from_slice(&history.first_offset.to_be_bytes());
     payload.extend_from_slice(&history.row_count.to_be_bytes());
-    for cell in &history.cells {
-        payload.extend_from_slice(&cell.codepoint.to_be_bytes());
-        payload.extend_from_slice(&cell.foreground);
-        payload.extend_from_slice(&cell.background);
-        payload.extend_from_slice(&cell.attributes.to_be_bytes());
-        payload.extend_from_slice(&[0; 4]);
-    }
+    encode_cells(&mut payload, &history.cells);
     Ok(payload)
 }
 
@@ -605,21 +611,144 @@ pub fn decode_history_payload(payload: &[u8]) -> Result<HistoryChunk> {
         );
     }
 
-    let mut cells = Vec::with_capacity(cell_count);
-    for bytes in payload[HISTORY_HEADER_SIZE..].chunks_exact(SNAPSHOT_CELL_SIZE) {
-        cells.push(WireCell {
-            codepoint: u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-            foreground: [bytes[4], bytes[5], bytes[6]],
-            background: [bytes[7], bytes[8], bytes[9]],
-            attributes: u16::from_be_bytes([bytes[10], bytes[11]]),
-        });
-    }
+    let cells = decode_cells(&payload[HISTORY_HEADER_SIZE..]);
     Ok(HistoryChunk {
         cols,
         first_offset,
         row_count,
         cells,
     })
+}
+
+/// Grid-diff payload v1: version:u8, frame_seq:u32be,
+/// rows/cols/cursor_x/cursor_y:u16be, alt_screen:u8, row_count:u16be, then
+/// row_index:u16be plus `cols` 16-byte wire cells for each dirty row.
+pub fn encode_grid_payload(grid: &GridDiff) -> Result<Vec<u8>> {
+    if grid.rows == 0 || grid.cols == 0 {
+        bail!("grid diffs require non-zero dimensions");
+    }
+    let row_count = u16::try_from(grid.dirty_rows.len())
+        .map_err(|_| anyhow::anyhow!("grid diff has too many dirty rows"))?;
+    if row_count == 0 {
+        bail!("grid diffs require at least one dirty row");
+    }
+    let row_bytes = 2usize
+        .checked_add(usize::from(grid.cols) * SNAPSHOT_CELL_SIZE)
+        .ok_or_else(|| anyhow::anyhow!("grid row length overflow"))?;
+    let payload_len = GRID_HEADER_SIZE
+        .checked_add(usize::from(row_count) * row_bytes)
+        .ok_or_else(|| anyhow::anyhow!("grid payload length overflow"))?;
+    if payload_len > MAX_FRAME_SIZE {
+        bail!("grid payload too large: {payload_len} > {MAX_FRAME_SIZE}");
+    }
+
+    let mut payload = Vec::with_capacity(payload_len);
+    payload.push(GRID_FORMAT_VERSION);
+    payload.extend_from_slice(&grid.frame_seq.to_be_bytes());
+    payload.extend_from_slice(&grid.rows.to_be_bytes());
+    payload.extend_from_slice(&grid.cols.to_be_bytes());
+    payload.extend_from_slice(&grid.cursor_x.to_be_bytes());
+    payload.extend_from_slice(&grid.cursor_y.to_be_bytes());
+    payload.push(u8::from(grid.alt_screen));
+    payload.extend_from_slice(&row_count.to_be_bytes());
+    for row in &grid.dirty_rows {
+        if row.row_index >= grid.rows {
+            bail!("grid row {} exceeds {} rows", row.row_index, grid.rows);
+        }
+        if row.cells.len() != usize::from(grid.cols) {
+            bail!(
+                "grid row {} has {} cells, expected {}",
+                row.row_index,
+                row.cells.len(),
+                grid.cols
+            );
+        }
+        payload.extend_from_slice(&row.row_index.to_be_bytes());
+        encode_cells(&mut payload, &row.cells);
+    }
+    Ok(payload)
+}
+
+pub fn decode_grid_payload(payload: &[u8]) -> Result<GridDiff> {
+    if payload.len() < GRID_HEADER_SIZE {
+        bail!("malformed grid-diff header");
+    }
+    if payload[0] != GRID_FORMAT_VERSION {
+        bail!("unsupported grid-diff payload version {}", payload[0]);
+    }
+    let frame_seq = u32::from_be_bytes([payload[1], payload[2], payload[3], payload[4]]);
+    let rows = u16::from_be_bytes([payload[5], payload[6]]);
+    let cols = u16::from_be_bytes([payload[7], payload[8]]);
+    let cursor_x = u16::from_be_bytes([payload[9], payload[10]]);
+    let cursor_y = u16::from_be_bytes([payload[11], payload[12]]);
+    let alt_screen = match payload[13] {
+        0 => false,
+        1 => true,
+        other => bail!("invalid grid-diff alt-screen value {other}"),
+    };
+    let row_count = u16::from_be_bytes([payload[14], payload[15]]);
+    if rows == 0 || cols == 0 || row_count == 0 {
+        bail!("grid diffs require non-zero dimensions and dirty rows");
+    }
+    let row_bytes = 2usize
+        .checked_add(usize::from(cols) * SNAPSHOT_CELL_SIZE)
+        .ok_or_else(|| anyhow::anyhow!("grid row length overflow"))?;
+    let expected_len = GRID_HEADER_SIZE
+        .checked_add(usize::from(row_count) * row_bytes)
+        .ok_or_else(|| anyhow::anyhow!("grid payload length overflow"))?;
+    if payload.len() != expected_len {
+        bail!(
+            "grid-diff payload has {} bytes, expected {expected_len}",
+            payload.len()
+        );
+    }
+
+    let mut dirty_rows = Vec::with_capacity(usize::from(row_count));
+    let mut offset = GRID_HEADER_SIZE;
+    for _ in 0..row_count {
+        let row_index = u16::from_be_bytes([payload[offset], payload[offset + 1]]);
+        offset += 2;
+        if row_index >= rows {
+            bail!("grid row {row_index} exceeds {rows} rows");
+        }
+        let cells_end = offset + usize::from(cols) * SNAPSHOT_CELL_SIZE;
+        dirty_rows.push(GridRow {
+            row_index,
+            cells: decode_cells(&payload[offset..cells_end]),
+        });
+        offset = cells_end;
+    }
+    Ok(GridDiff {
+        frame_seq,
+        rows,
+        cols,
+        cursor_x,
+        cursor_y,
+        alt_screen,
+        dirty_rows,
+    })
+}
+
+fn encode_cells(payload: &mut Vec<u8>, cells: &[WireCell]) {
+    for cell in cells {
+        payload.extend_from_slice(&cell.codepoint.to_be_bytes());
+        payload.extend_from_slice(&cell.foreground);
+        payload.extend_from_slice(&cell.background);
+        payload.extend_from_slice(&cell.attributes.to_be_bytes());
+        payload.extend_from_slice(&[0; 4]);
+    }
+}
+
+fn decode_cells(payload: &[u8]) -> Vec<WireCell> {
+    payload
+        .chunks_exact(SNAPSHOT_CELL_SIZE)
+        .map(|bytes| WireCell {
+            codepoint: u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            foreground: [bytes[4], bytes[5], bytes[6]],
+            background: [bytes[7], bytes[8], bytes[9]],
+            attributes: u16::from_be_bytes([bytes[10], bytes[11]]),
+        })
+        .collect()
 }
 
 /// Data is always split into fair-write chunks, including large ring replays.
@@ -656,7 +785,13 @@ pub async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<Fra
     }
     if !matches!(
         kind,
-        KIND_CONTROL | KIND_DATA | KIND_RESIZE | KIND_EVENT | KIND_SNAPSHOT | KIND_HISTORY
+        KIND_CONTROL
+            | KIND_DATA
+            | KIND_RESIZE
+            | KIND_EVENT
+            | KIND_SNAPSHOT
+            | KIND_HISTORY
+            | KIND_GRID
     ) {
         bail!("unknown frame kind {kind:#x}");
     }
@@ -685,6 +820,7 @@ pub async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<Fra
         }
         KIND_SNAPSHOT => Ok(Some(Frame::Snapshot(decode_snapshot_payload(&payload)?))),
         KIND_HISTORY => Ok(Some(Frame::History(decode_history_payload(&payload)?))),
+        KIND_GRID => Ok(Some(Frame::Grid(decode_grid_payload(&payload)?))),
         _ => unreachable!("frame kind validated above"),
     }
 }
@@ -692,8 +828,9 @@ pub async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<Fra
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_history_payload, decode_snapshot_payload, encode_history_payload,
-        encode_snapshot_payload, Control, HistoryChunk, Snapshot, WireCell,
+        decode_grid_payload, decode_history_payload, decode_snapshot_payload, encode_grid_payload,
+        encode_history_payload, encode_snapshot_payload, Control, GridDiff, GridRow, HistoryChunk,
+        Snapshot, WireCell,
     };
 
     #[test]
@@ -785,5 +922,38 @@ mod tests {
         };
 
         assert!(encode_snapshot_payload(&snapshot).is_err());
+    }
+
+    #[test]
+    fn grid_payload_round_trip() {
+        let grid = GridDiff {
+            frame_seq: 42,
+            rows: 3,
+            cols: 2,
+            cursor_x: 1,
+            cursor_y: 2,
+            alt_screen: true,
+            dirty_rows: vec![
+                GridRow {
+                    row_index: 0,
+                    cells: vec![
+                        WireCell {
+                            codepoint: u32::from('A'),
+                            foreground: [1, 2, 3],
+                            background: [4, 5, 6],
+                            attributes: 7,
+                        },
+                        WireCell::default(),
+                    ],
+                },
+                GridRow {
+                    row_index: 2,
+                    cells: vec![WireCell::default(), WireCell::default()],
+                },
+            ],
+        };
+
+        let encoded = encode_grid_payload(&grid).unwrap();
+        assert_eq!(decode_grid_payload(&encoded).unwrap(), grid);
     }
 }

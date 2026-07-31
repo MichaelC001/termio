@@ -3,7 +3,7 @@ title: termiod Session Protocol
 status: draft
 type: design
 created: 2026-07-30
-updated: 2026-07-31T18:53:03+01:00
+updated: 2026-07-31T19:11:11+01:00
 related:
   - termiod-session-mux.md
   - session-daemon-architecture.md
@@ -147,7 +147,7 @@ stay valid.
 | Event | `E` | JSON object (`ev`-tagged) | events | v0.1 |
 | Snapshot | `S` | binary: header + packed vt cells (§C.6) | terminal | v1 |
 | History | `H` | binary: newest-first scrollback rows (§C.6) | terminal | v1 |
-| Diff | `G` | binary: dirty-row grid update (§C.6) | terminal | v1.1 |
+| Diff (POC shipped) | `G` | binary: dirty-row grid update (§C.6) | terminal | v1.1 |
 
 Rules: unknown *control ops* and *event types* are ignored (additive
 evolution); unknown *frame kinds* are a protocol error → `proto_error` +
@@ -253,10 +253,10 @@ viewer per session, which is a nested-window-manager tax in disguise.
 
 ### C.6 Terminal plane staging
 
-The steady state is **always raw `D` bytes** — input replication (§A). State
-transfer (`S`/`G`) appears in exactly two roles, both off the steady-state hot
-path: a one-shot **bootstrap** for a replica that missed the log, and (v1.1) an
-opt-in **bad-network degrade**.
+The default steady state is **raw `D` bytes** — input replication (§A). A v1.1
+client may instead opt into `G` after bootstrap; state transfer appears in two
+roles: a one-shot **bootstrap** for a replica that missed the log, and an opt-in
+**bad-network degrade**.
 
 | Stage | Steady state | State transfer (when) | Who parses VT |
 | --- | --- | --- | --- |
@@ -303,17 +303,25 @@ cross-compile to aarch64-musl. Phase 0 = an FFI build proof before daemon
 integration.
 
 **v1.1 `G` diffs are the bad-network degrade, not a faster default.** They are
-capability-gated (`grid_diff`), phone-first, and are the *same mechanism* as
-the QUIC state-sync layer in §D.1 — supersedable dirty rows where a newer row
-version obsoletes an older one, i.e. mosh's SSP rebuilt on standard transport.
+capability-gated (`grid_diff` requires `snapshot`), phone-first, and are the
+*same mechanism* as the QUIC state-sync layer in §D.1 — supersedable dirty rows
+where a newer row version obsoletes an older one. After `S` + `ready`, a
+grid-diff client receives no downstream `D`: each version-1 `G` carries a
+monotonic per-session `frame_seq`, authoritative rows/cols and cursor/screen
+state, then full 16-byte wire cells for each dirty row. Every 256 damage
+flushes by default (test-overridable with `TERMIOD_KEYFRAME_EVERY`), the host
+substitutes an ordered `S` + `ready` keyframe and then resumes increasing-seq
+`G`. This is mosh's SSP rebuilt on standard transport.
 On a good link (LAN, good Wi-Fi) raw byte replication wins outright and no
 client should negotiate `grid_diff`; the diff path exists because a *reliable
 ordered* byte stream must deliver every intermediate byte in order, which a
 lossy high-RTT phone link cannot do cheaply — there, shipping "the latest row
-state" and dropping intermediate frames is the win. It coexists with the byte
-path; it never replaces it. Paired with client-side predictive echo (§D.1),
-this is what makes a 100 ms-RTT link *feel* local — the piece no transport
-choice (SSH or QUIC) can deliver alone.
+state" is the win. The current reliable transport delivers every emitted `G`,
+but each `G` already coalesces source bytes into current full-row state; a QUIC
+binding may later discard superseded row versions (§D.1). It coexists with the
+byte path; it never replaces it. Paired with client-side predictive echo
+(§D.1), this is what makes a 100 ms-RTT link *feel* local — the piece no
+transport choice (SSH or QUIC) can deliver alone.
 
 ### C.7 Error model
 
