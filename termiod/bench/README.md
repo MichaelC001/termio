@@ -88,6 +88,16 @@ were *hiding* tmux's tax at ~6×; on the Ampere it is **16–24×**.
   bytes-over-ssh + ~0.01% framing, so it is network-bound like raw ssh; that
   claim stays *unmeasured*, not asserted.
 
+## Build-profile note (`opt-level`)
+
+The release profile is `opt-level = "z"` (size — the musl binary is ~1 MB). Re-running
+against an `opt-level = 3` build (`cargo build --release --config
+'profile.release.opt-level=3'`) showed **no material throughput change** for termiod
+(within run-to-run noise). That is itself a confirmation of the thesis: the hot path is
+memory-bandwidth / syscall bound (memcpy + refcount + socket write), not compute bound,
+so there is nothing for the optimizer to vectorize. `opt-level` *would* matter for a
+per-byte parser (e.g. tmux's) — which is precisely the work termiod doesn't do.
+
 ## Honesty note on "100x"
 
 Mitchell's "100+×" is a **peak / interactive-render** figure — a GPU terminal
