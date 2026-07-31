@@ -278,14 +278,22 @@ The earlier assumption that "the C struct doubles as the wire cell" is false:
 libghostty-vt 1.3.2 exposes render-state cell iteration + per-row dirty tracking
 (enough to *build* `S`/`G`) but its cells are **opaque**, with no wire-ready
 16-byte packed cell and no one-call viewport snapshot — a conversion step is
-required regardless of engine. **v1 engine recommendation: `alacritty_terminal`**
-(complete VT state machine + damage tracking, builds and cross-compiles to
-aarch64-musl with no Zig — proven by the spike); libghostty-vt is deferred (it
-needs Zig 0.15.2 + FFI *and* the same conversion, so its "shared cell format"
-edge does not exist). Keep the conversion behind an engine-neutral boundary so
-Ghostty can be swapped in later if fidelity testing justifies the cost. The vt
-stays a **host-side authority/sidecar for resync**, never a per-keystroke
-re-encoder in the middle of every pipe (the anti-100× invariant, §A).
+required regardless of engine. **v1 engine DECISION (2026-07-31): `libghostty-vt`**,
+FFI'd into the Rust host. The spike's build-convenience pick was
+`alacritty_terminal`, but that was overridden on a **correctness** ground: every
+termio client *is* libghostty (Mac embeds it, iOS mirrors it), and the
+"synchronized distributed state machines" model only holds if the host authority
+runs the **same** VT — a different engine (alacritty) can diverge on grapheme /
+width / autowrap / obscure-escape handling, so its `S` snapshot would not match
+what a libghostty client renders. Fidelity parity with the clients is the whole
+point (Mitchell's "assume libghostty everywhere"), so we accept the Zig 0.15.2 +
+FFI cost. Keep the opaque-cell → wire-cell conversion behind an engine-neutral
+boundary anyway. The vt stays a **host-side authority/sidecar for resync**, never
+a per-keystroke re-encoder in the middle of every pipe (the anti-100× invariant,
+§A). Build path (from the #181 spike): vendor libghostty-vt 1.3.2 + a `build.rs`
+that invokes Zig (herdr's pattern), bindgen `ghostty/vt.h`, link the static lib,
+cross-compile to aarch64-musl. Phase 0 = an FFI build proof before daemon
+integration.
 
 **v1.1 `G` diffs are the bad-network degrade, not a faster default.** They are
 capability-gated (`grid_diff`), phone-first, and are the *same mechanism* as
