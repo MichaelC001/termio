@@ -271,11 +271,21 @@ deltas; (3) **desync / host restart recovery**; (4) in v1.1 diff mode only, a
 **periodic keyframe** to bound drift. Steady-state typing and output never
 snapshot — that would be the tmux tax.
 
-`S`/`G` encodings copy the `libghostty-vt` render-state read-out
-(`ghostty-web`'s model): packed 16-byte cells, per-row damage, one snapshot
-call — the C struct doubles as the wire cell. The vt is a **host-side
-authority/sidecar for resync**, never a per-keystroke re-encoder in the middle
-of every pipe (the anti-100× invariant, §A).
+`S`/`G` carry packed cells + per-row damage. **The wire cell is defined by
+termiod and is engine-independent — it is NOT the VT engine's in-memory cell**
+(corrected 2026-07-31 by the #181 de-risk spike, `termiod-vt-sidecar-spike.md`).
+The earlier assumption that "the C struct doubles as the wire cell" is false:
+libghostty-vt 1.3.2 exposes render-state cell iteration + per-row dirty tracking
+(enough to *build* `S`/`G`) but its cells are **opaque**, with no wire-ready
+16-byte packed cell and no one-call viewport snapshot — a conversion step is
+required regardless of engine. **v1 engine recommendation: `alacritty_terminal`**
+(complete VT state machine + damage tracking, builds and cross-compiles to
+aarch64-musl with no Zig — proven by the spike); libghostty-vt is deferred (it
+needs Zig 0.15.2 + FFI *and* the same conversion, so its "shared cell format"
+edge does not exist). Keep the conversion behind an engine-neutral boundary so
+Ghostty can be swapped in later if fidelity testing justifies the cost. The vt
+stays a **host-side authority/sidecar for resync**, never a per-keystroke
+re-encoder in the middle of every pipe (the anti-100× invariant, §A).
 
 **v1.1 `G` diffs are the bad-network degrade, not a faster default.** They are
 capability-gated (`grid_diff`), phone-first, and are the *same mechanism* as
