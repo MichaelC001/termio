@@ -13,6 +13,11 @@ extension Notification.Name {
     /// made first responder, then deliberately resigned while the main window stays key.
     /// Fired from the command palette's "Debug: Orphan Terminal Focus".
     static let termioDebugOrphanFocus = Notification.Name("termio.debugOrphanFocus")
+
+    /// Dev-only: log the selected terminal's CALayer tree, to tell a doubled or
+    /// stale render layer from a presentation-timing artifact while a glitch is
+    /// on screen. Fired from the command palette's "Debug: Dump Terminal Layers".
+    static let termioDebugDumpLayers = Notification.Name("termio.debugDumpLayers")
 }
 
 /// Right column. Every session that has been opened stays *mounted* here for the
@@ -131,6 +136,9 @@ struct TerminalPane: View {
         // runloop, then uses the same orphan repair as a sibling-driven surface update.
         .onReceive(NotificationCenter.default.publisher(for: .termioDebugOrphanFocus)) { _ in
             injectTerminalFocusOrphan()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .termioDebugDumpLayers)) { _ in
+            dumpSelectedTerminalLayers()
         }
         // Window-key status is separate from surface focus, matching Ghostty. Becoming
         // key asks the driver to repair an orphan; it does not mutate a FocusState.
@@ -282,6 +290,15 @@ struct TerminalPane: View {
     /// POSIX way (`'\''`), so a dropped path is always one safe token.
     private static func shellQuoted(_ path: String) -> String {
         "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private func dumpSelectedTerminalLayers() {
+        guard AppChannel.isDev,
+              let id = store.selectedSessionID,
+              let session = store.session(id),
+              let project = store.project(for: id) else { return }
+        let state = store.surface(for: session, in: project)
+        focusDriver.dumpLayers(of: state, sessionID: id)
     }
 
     private struct MountedSession {
@@ -595,6 +612,33 @@ private final class TerminalFocusDriver {
                 repair()
             }
         }
+    }
+
+    /// Dev-only: log the resolved terminal view's layer tree. Emitted through
+    /// `print` as well as os_log so a dev app launched with `open --stdout`
+    /// lands the dump in the same file as the wrapper's own diagnostics.
+    func dumpLayers(of state: TerminalViewState, sessionID: Session.ID) {
+        func emit(_ message: String) {
+            print("[termio][layer dump] \(message)")
+            Log.app.notice("layer dump: \(message, privacy: .public)")
+        }
+        guard let window = mainWindow(), let root = window.contentView,
+              let target = terminalView(matching: state, under: root) else {
+            emit("no terminal view resolved for \(sessionID.uuidString.prefix(8))")
+            return
+        }
+        emit("session=\(sessionID.uuidString.prefix(8)) viewFrame=\(NSStringFromRect(target.frame)) bounds=\(NSStringFromRect(target.bounds))")
+        guard let rootLayer = target.layer else {
+            emit("view has no backing layer")
+            return
+        }
+        func describe(_ layer: CALayer, depth: Int) {
+            let indent = String(repeating: "  ", count: depth)
+            let cls = String(describing: type(of: layer))
+            emit("\(indent)\(cls) frame=\(NSStringFromRect(layer.frame)) scale=\(layer.contentsScale) hidden=\(layer.isHidden) opacity=\(layer.opacity) hasContents=\(layer.contents != nil)")
+            layer.sublayers?.forEach { describe($0, depth: depth + 1) }
+        }
+        describe(rootLayer, depth: 0)
     }
 
     private func isCurrent(_ strength: Strength, generation: Int) -> Bool {

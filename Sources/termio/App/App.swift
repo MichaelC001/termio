@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import GhosttyTerminal
 import Sparkle
 import SwiftUI
 import TermioShared
@@ -121,6 +122,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var terminalContextMenu: TerminalContextMenu?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Dev-only: `TERMIO_TERMINAL_DEBUG=1` turns on the GhosttyTerminal
+        // wrapper's own lifecycle + metrics diagnostics, printed to stdout.
+        if AppChannel.isDev,
+           ProcessInfo.processInfo.environment["TERMIO_TERMINAL_DEBUG"] != nil {
+            TerminalDebugLog.isEnabled = true
+            TerminalDebugLog.categories = [.lifecycle, .metrics]
+        }
         // Sweep up session processes a previous instance stranded (crash,
         // force-quit, dev rebuild's kill -9) before this run adds its own.
         PTYProcess.reapStrayOrphans()

@@ -358,6 +358,13 @@ struct CommandPaletteView: View {
                     NotificationCenter.default.post(name: .termioDebugOrphanFocus, object: nil)
                 }
             })
+            // Dumps the selected terminal's layer tree (stdout + `app` log) —
+            // run while a rendering glitch is on screen to tell a doubled or
+            // stale render layer from a presentation-timing artifact.
+            actions.append(.init(id: "debug-dump-layers", title: "Debug: Dump Terminal Layers",
+                                 icon: nil, symbol: "square.3.layers.3d", shortcut: nil) { _ in
+                NotificationCenter.default.post(name: .termioDebugDumpLayers, object: nil)
+            })
         }
         return actions
     }
