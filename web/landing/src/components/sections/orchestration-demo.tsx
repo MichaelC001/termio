@@ -55,16 +55,18 @@ const SKY = "#7dd3fc"; // sky-300 — done on dark (beam + transcript text)
 // The five workers, in pipeline order (index = story order = top-to-bottom in
 // the graph). Each drives one stage of shipping a change; the middle worker
 // (y=170) gets the straight beam. `name` keys the real brand logo.
-type Worker = { name: string; handle: string; y: number };
+// Sessions are addressed by termio://session/<uuid> links since 8b38709 (the
+// <agent>@<id> handle is gone); `id` is the first uuid segment of each demo
+// session's link — bare ids are valid CLI targets, and short enough that the
+// longest transcript line stays under ~70 chars (the right pane clips longer).
+type Worker = { name: string; id: string; y: number };
 
-// Handles use short 4-hex ids so the longest transcript line stays under
-// ~70 chars (the right pane clips longer) and the pills never truncate.
 const WORKERS: readonly Worker[] = [
-  { name: "Claude Code", handle: "claude@9b3e", y: 40 },
-  { name: "Codex", handle: "codex@7c1f", y: 105 },
-  { name: "DeepSeek", handle: "deepseek@5a77", y: 170 },
-  { name: "Grok", handle: "grok@d4e6", y: 235 },
-  { name: "Kimi", handle: "kimi@3f8a", y: 300 },
+  { name: "Claude Code", id: "9b3e11d0", y: 40 },
+  { name: "Codex", id: "7c1f2a4e", y: 105 },
+  { name: "DeepSeek", id: "5a77c0e2", y: 170 },
+  { name: "Grok", id: "d4e6b209", y: 235 },
+  { name: "Kimi", id: "3f8a2c11", y: 300 },
 ];
 
 // One story beat per worker. `interaction` (codex only) shows a needs-you round
@@ -77,41 +79,42 @@ type Beat = {
   done: string;
 };
 
+// Output lines use the sessions-watch text shape: link  [status]  detail.
 const BEATS: readonly Beat[] = [
   {
     worker: 0,
     cmd: 'termio sessions spawn "plan the auth refactor" --agent claude',
-    started: "started claude@9b3e — planning",
-    done: '{"handle":"claude@9b3e","status":"done","plan":"7 steps -> PLAN.md"}',
+    started: "termio://session/9b3e11d0  [working]  planning",
+    done: "termio://session/9b3e11d0  [done]  7 steps -> PLAN.md",
   },
   {
     worker: 1,
     cmd: 'termio sessions spawn "implement PLAN.md" --agent codex',
-    started: "started codex@7c1f — building",
+    started: "termio://session/7c1f2a4e  [working]  building",
     interaction: {
-      needsYou: '{"handle":"codex@7c1f","status":"needs-you","prompt":"run tests? y/n"}',
-      answer: 'termio sessions send codex@7c1f "y"',
-      sent: "sent to codex@7c1f",
+      needsYou: "termio://session/7c1f2a4e  [needs-you]  Run pnpm test? (y/n)",
+      answer: 'termio sessions send 7c1f2a4e "y"',
+      sent: "sent to termio://session/7c1f2a4e",
     },
-    done: '{"handle":"codex@7c1f","status":"done","diff":"+412 -128, tests pass"}',
+    done: "termio://session/7c1f2a4e  [done]  +412 -128, tests pass",
   },
   {
     worker: 2,
     cmd: 'termio sessions spawn "review the diff" --agent deepseek',
-    started: "started deepseek@5a77 — reviewing",
-    done: '{"handle":"deepseek@5a77","status":"done","review":"no blockers"}',
+    started: "termio://session/5a77c0e2  [working]  reviewing",
+    done: "termio://session/5a77c0e2  [done]  2 nits, 0 blockers",
   },
   {
     worker: 3,
     cmd: 'termio sessions spawn "security scan, then tag v0.22.0" --agent grok',
-    started: "started grok@d4e6 — scanning",
-    done: '{"handle":"grok@d4e6","status":"done","scan":"clean, tagged v0.22.0"}',
+    started: "termio://session/d4e6b209  [working]  scanning",
+    done: "termio://session/d4e6b209  [done]  clean, tagged v0.22.0",
   },
   {
     worker: 4,
     cmd: 'termio sessions spawn "summarize the week\'s feedback" --agent kimi',
-    started: "started kimi@3f8a — gathering",
-    done: '{"handle":"kimi@3f8a","status":"done","notes":"5 themes -> NOTES.md"}',
+    started: "termio://session/3f8a2c11  [working]  gathering",
+    done: "termio://session/3f8a2c11  [done]  5 themes -> FEEDBACK.md",
   },
 ];
 
@@ -288,7 +291,7 @@ export function OrchestrationDemo() {
               {/* Static edges from the hub to each worker. */}
               {WORKERS.map((w) => (
                 <path
-                  key={`edge-${w.handle}`}
+                  key={`edge-${w.id}`}
                   d={beamPath(w.y)}
                   stroke="rgba(255,255,255,0.18)"
                   strokeWidth="1.5"
@@ -326,7 +329,7 @@ export function OrchestrationDemo() {
                 const status = frame.statuses[i] ?? "idle";
                 return (
                   <foreignObject
-                    key={w.handle}
+                    key={w.id}
                     x="176"
                     y={w.y - 20}
                     width="164"
@@ -347,7 +350,7 @@ export function OrchestrationDemo() {
                         className="text-slate-900"
                       />
                       <span className="truncate font-sans text-[12px] font-medium text-slate-900">
-                        {w.handle}
+                        {w.id}
                       </span>
                       <span
                         className="ml-auto h-2 w-2 shrink-0 rounded-full"
