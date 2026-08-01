@@ -344,15 +344,18 @@ enum Termiod {
 
     // MARK: - Handshake and control channel
 
-    /// Sends `hello` and waits for `hello_ok`. No optional capability is
-    /// negotiated in this slice — see the type comment for why that is the
-    /// point, not an omission.
-    static func performHello(_ descriptor: Int32, role: String) throws {
+    /// Sends `hello` and waits for `hello_ok`. An attach channel offers the
+    /// `snapshot` capability so a reattach bootstraps from the daemon's
+    /// authoritative VT (one clean `S` repaint) instead of ring replay; the
+    /// control channel negotiates nothing. `scrollback`/`grid_diff` stay
+    /// unoffered — a byte-stream surface can neither inject history above the
+    /// viewport nor consume dirty-row diffs (a deeper libghostty integration).
+    static func performHello(_ descriptor: Int32, role: String, caps: [String] = []) throws {
         let hello = HelloOperation(
             proto: protocolVersion,
             minProto: protocolVersion,
             role: role,
-            caps: [],
+            caps: caps,
             client: "termio-mac/dev"
         )
         try writeFrame(descriptor, kind: .control, payload: encodeControl(hello))
@@ -529,7 +532,7 @@ final class TermiodSessionLink: @unchecked Sendable {
             do {
                 let socket = try Termiod.connectWithAutostart()
                 descriptor = socket
-                try Termiod.performHello(socket, role: "attach")
+                try Termiod.performHello(socket, role: "attach", caps: ["snapshot"])
                 let payload = try Termiod.attachPayload(
                     target: sessionName,
                     specification: specification,
@@ -690,11 +693,28 @@ final class TermiodSessionLink: @unchecked Sendable {
                 switch frame.kind {
                 case .data:
                     self.onOutput?(frame.payload)
+                case .snapshot:
+                    // The daemon guarantees `S` before any post-attach `D`, and
+                    // this reader is a single serial thread: synthesising the
+                    // repaint and emitting it here — before the next `readFrame`
+                    // pulls the first live `D` — preserves S-before-D through
+                    // the same `onOutput` seam, with no hold-back buffer needed.
+                    // A mid-session `S` (the resize barrier's fresh keyframe)
+                    // takes the same path and repaints idempotently.
+                    if let repaint = TermiodSnapshot.decode(frame.payload)
+                        .map(TermiodSnapshot.render) {
+                        self.onOutput?(repaint)
+                    } else {
+                        Log.termiod.error("""
+                        undecodable snapshot frame on \(self.sessionName, privacy: .public)
+                        """)
+                    }
                 case .control:
                     if self.handleControl(frame.payload) { return }
-                case .event, .resize, .snapshot, .history, .grid:
-                    // Nothing here is negotiated in this slice; anything the
-                    // daemon still sends is safe to skip.
+                case .event, .resize, .history, .grid:
+                    // `ready` (an `E` event) marks snapshot-complete but needs no
+                    // action — serial ordering already sequences S then D. The
+                    // rest is unnegotiated in this slice and safe to skip.
                     break
                 }
             }
