@@ -42,11 +42,12 @@ type Frame = {
   pulse: Pulse | null;
 };
 
-// Section palette — every color here comes from three Tailwind ramps and
-// nothing else: slate for neutrals (window ink, pills, idle/working), sky for
-// "done", amber for "needs-you". Each status hue has two steps: a bright one
-// for the dark pane (beam pulses, transcript text) and a solid -500 for the
-// dots on the light pills. No green anywhere.
+// Section palette — three hue families and nothing else: slate for neutrals
+// (window ink, idle/working), sky for "done", amber for "needs-you"; the pill
+// bases are aurora-tinted blue-greys (#d8e4ee/#c8d7e5) so they sit between the
+// dark pane and the slate-900 labels. Each status hue has two steps: a bright
+// one for the dark pane (beam pulses, transcript text) and a solid -500 for
+// the dots on the light pills. No green anywhere.
 const ACTIVE = "#e2e8f0"; // slate-200 — packet traveling the beam
 const AMBER = "#fbbf24"; // amber-400 — needs-you on dark (beam)
 const SKY = "#7dd3fc"; // sky-300 — done on dark (beam + transcript text)
@@ -300,7 +301,10 @@ export function OrchestrationDemo() {
 
               {/* Hub: the supervising claude-code session (real logo). */}
               <foreignObject x="0" y="148" width="120" height="44">
-                <div className="flex h-11 items-center gap-2.5 rounded-full bg-slate-50 px-3.5">
+                {/* Pill bases are blue-grey (not paper white) so they read as
+                    lit by the aurora rather than pasted over it; hub one step
+                    brighter than the workers. */}
+                <div className="flex h-11 items-center gap-2.5 rounded-full bg-[#d8e4ee] px-3.5">
                   {/* Mono-only marks (Grok, Kimi) draw in currentColor, so the
                       light pill needs a dark color context. */}
                   <AgentIcon name="Claude Code" size={24} color className="text-slate-900" />
@@ -322,11 +326,11 @@ export function OrchestrationDemo() {
                     width="164"
                     height="40"
                     style={{
-                      opacity: status === "idle" ? 0.6 : 1,
+                      opacity: status === "idle" ? 0.72 : 1,
                       transition: "opacity 0.5s ease",
                     }}
                   >
-                    <div className="flex h-10 items-center gap-2 rounded-full bg-slate-100 px-3">
+                    <div className="flex h-10 items-center gap-2 rounded-full bg-[#c8d7e5] px-3">
                       {/* Kimi's color mark is blue-on-white and washes out on
                           the light pill, so it uses the mono (currentColor)
                           variant instead. */}
