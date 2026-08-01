@@ -184,14 +184,23 @@ aarch64-musl (`ukvps`). Hands-on Mac→Linux test steps: `DEPLOY.md`.
 
 ### Remaining directions (each needs a human product call before dispatch)
 
-1. **`termiod stdio` bridge — recommended next slice** (§F #9). A non-tty
-   subcommand speaking the framed protocol on stdin/stdout, bridged to the
-   local Unix socket. Today `remote attach` runs `ssh -t host termiod attach`,
-   so the framed protocol never actually crosses SSH — a native client cannot
-   attach remotely, `--grid-diff` is local-only, and the §C.9 "recorded
-   transcript replays byte-identical over SSH" acceptance test is untestable.
-   This small slice unlocks all three, plus Mac-as-remote-host (system OpenSSH
-   stays the trust plane; termio never ships an SSH server — §H #8).
+1. **`termiod stdio` bridge — DONE (`cbe9e23`, 2026-08-01).** `termiod stdio`
+   is a transparent byte relay splicing stdin/stdout to the local daemon socket
+   (no frame parsing of its own); run as `ssh <host> termiod stdio` it puts the
+   framed protocol itself on the SSH pipe. Deterministic Rust integration test
+   (`tests/stdio_bridge.rs`) drives hello → attached → S → ready → live D
+   through the bridge and asserts byte-identical ordering — the §C.9 claim is
+   now real. The daemon auto-starts like every other verb. **Next, to make
+   remote work IN THE APP** (the differentiated demo — agent runs on a Linux
+   box, you attach from the Mac): give the Swift `TermiodSessionLink` a
+   transport seam so it can connect over `ssh <host> termiod stdio` instead of
+   the local Unix socket — the whole M2/M3 client (attach, snapshot repaint,
+   detach-not-kill) is reused unchanged; only the pipe differs. System OpenSSH
+   stays the trust plane; termio never ships an SSH server (§H #8).
+   Verification caveat worth keeping: driving the bridge from a Python
+   `subprocess` pipe is flaky at startup (a harness-side stdin/stdout timing
+   race, NOT a bridge bug — direct-socket and bridge both pass 6/6 on hello,
+   daemon logs clean); use the Rust integration test, not a Python pipe.
 2. **Mac app integration (#170) — IN PROGRESS (M2+M3 landed 2026-08-01,
    `29de132` + `508ace2`).** termio.app is now an opt-in attach client of the
    local daemon (`TERMIO_TERMIOD=1`), the demo's whole point — quit the app,
