@@ -206,6 +206,23 @@ aarch64-musl (`ukvps`). Hands-on Mac→Linux test steps: `DEPLOY.md`.
    sessions currently spawn a plain login shell (agent-on-remote — e.g. `claude`
    on the VPS — needs argv/env wired for the remote, and the agent installed
    there); the live GUI recording.
+   **UI landed (`55b2734` + `8e86866`, 2026-08-01):** per-project `+` ▸
+   **New Remote Terminal** submenu from `SSHConfig.hosts()` (~/.ssh/config, the
+   single host source), opening a `.terminal` session on the picked host;
+   per-session `Session.termiodRemoteHost`/`termiodRemoteCwd` (persisted,
+   `decodeIfPresent` back-compat) replace the global env as the source of truth
+   (env stays a fallback). `ensureRemoteReady` deploys termiod if missing +
+   reachability-gates before attach, with a HUD and typed failure alerts.
+   Project right-click **Clone on Remote…** → pick host → `ssh <host> 'cd ~ &&
+   git clone <origin> <name>'` (origin/unpushed-count via new
+   `GitService.cloneInfo`; unpushed-commits warning; `BatchMode=yes`; captures
+   the clone's absolute path via `printf $PWD/<name>` since the daemon chdir is
+   raw) → opens a remote terminal in the cloned dir. Flag-off/local paths stay
+   byte-identical (all gated behind `Termiod.isEnabled`). Verified: `swift
+   build` clean; the deploy probe, clone command shape, and daemon absolute-cwd
+   all confirmed against real `ukvps`. NOT yet verified (needs live GUI with
+   `TERMIO_TERMIOD=1`): the menu clicks, HUD/alert rendering, in-app attach over
+   `termiod stdio`, live snapshot repaint.
    Verification caveat worth keeping: driving the bridge from a Python
    `subprocess` pipe is flaky at startup (a harness-side stdin/stdout timing
    race, NOT a bridge bug — direct-socket and bridge both pass 6/6 on hello,
