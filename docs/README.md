@@ -10,7 +10,7 @@ page when you browse `docs/`.
   `competitive-analysis/`, …) are just loose grouping — the authoritative
   category is the front matter `type`, **not** the path.
 - **Product promo assets** (App Store shots, social covers) stay under
-  `maketing/` in this repo. **Strategy / pitch markdown** lives in the sibling
+  `marketing/` in this repo. **Strategy / pitch markdown** lives in the sibling
   `pitch` repo: `/Users/yuanjiwei/Documents/GitHub/pitch/termio`.
 - Each doc declares: `title`, `status`, `type`, `created`/`updated`, and optional
   `related`. The front matter is the **single source of truth** for status —
