@@ -57,12 +57,14 @@ const SKY = "#7dd3fc"; // sky-300 — done on dark (beam + transcript text)
 // (y=170) gets the straight beam. `name` keys the real brand logo.
 type Worker = { name: string; handle: string; y: number };
 
+// Handles use short 4-hex ids so the longest transcript line stays under
+// ~70 chars (the right pane clips longer) and the pills never truncate.
 const WORKERS: readonly Worker[] = [
-  { name: "Claude Code", handle: "claude@9b3e11d0", y: 40 },
-  { name: "Codex", handle: "codex@7c1f2a4e", y: 105 },
-  { name: "DeepSeek", handle: "deepseek@5a77c0e2", y: 170 },
-  { name: "Grok", handle: "grok@d4e6b209", y: 235 },
-  { name: "Kimi", handle: "kimi@3f8a2c11", y: 300 },
+  { name: "Claude Code", handle: "claude@9b3e", y: 40 },
+  { name: "Codex", handle: "codex@7c1f", y: 105 },
+  { name: "DeepSeek", handle: "deepseek@5a77", y: 170 },
+  { name: "Grok", handle: "grok@d4e6", y: 235 },
+  { name: "Kimi", handle: "kimi@3f8a", y: 300 },
 ];
 
 // One story beat per worker. `interaction` (codex only) shows a needs-you round
@@ -79,37 +81,37 @@ const BEATS: readonly Beat[] = [
   {
     worker: 0,
     cmd: 'termio sessions spawn "plan the auth refactor" --agent claude',
-    started: "started claude@9b3e11d0 — planning",
-    done: '{"handle":"claude@9b3e11d0","status":"done","plan":"7 steps -> PLAN.md"}',
+    started: "started claude@9b3e — planning",
+    done: '{"handle":"claude@9b3e","status":"done","plan":"7 steps -> PLAN.md"}',
   },
   {
     worker: 1,
     cmd: 'termio sessions spawn "implement PLAN.md" --agent codex',
-    started: "started codex@7c1f2a4e — building",
+    started: "started codex@7c1f — building",
     interaction: {
-      needsYou: '{"handle":"codex@7c1f2a4e","status":"needs-you","prompt":"Run pnpm test? (y/n)"}',
-      answer: 'termio sessions send codex@7c1f2a4e "y"',
-      sent: "sent to codex@7c1f2a4e",
+      needsYou: '{"handle":"codex@7c1f","status":"needs-you","prompt":"run tests? y/n"}',
+      answer: 'termio sessions send codex@7c1f "y"',
+      sent: "sent to codex@7c1f",
     },
-    done: '{"handle":"codex@7c1f2a4e","status":"done","diff":"+412 -128, tests pass"}',
+    done: '{"handle":"codex@7c1f","status":"done","diff":"+412 -128, tests pass"}',
   },
   {
     worker: 2,
     cmd: 'termio sessions spawn "review the diff" --agent deepseek',
-    started: "started deepseek@5a77c0e2 — reviewing",
-    done: '{"handle":"deepseek@5a77c0e2","status":"done","review":"2 nits, 0 blockers"}',
+    started: "started deepseek@5a77 — reviewing",
+    done: '{"handle":"deepseek@5a77","status":"done","review":"no blockers"}',
   },
   {
     worker: 3,
     cmd: 'termio sessions spawn "security scan, then tag v0.22.0" --agent grok',
-    started: "started grok@d4e6b209 — scanning",
-    done: '{"handle":"grok@d4e6b209","status":"done","secure":"clean, tagged v0.22.0"}',
+    started: "started grok@d4e6 — scanning",
+    done: '{"handle":"grok@d4e6","status":"done","scan":"clean, tagged v0.22.0"}',
   },
   {
     worker: 4,
     cmd: 'termio sessions spawn "summarize the week\'s feedback" --agent kimi',
-    started: "started kimi@3f8a2c11 — gathering",
-    done: '{"handle":"kimi@3f8a2c11","status":"done","feedback":"5 themes -> FEEDBACK.md"}',
+    started: "started kimi@3f8a — gathering",
+    done: '{"handle":"kimi@3f8a","status":"done","notes":"5 themes -> NOTES.md"}',
   },
 ];
 
@@ -270,7 +272,11 @@ export function OrchestrationDemo() {
       <div className="relative">
         {/* Grain-gradient glow spans the whole window, behind both panes. */}
         <TerminalBackdrop />
-        <div className="relative grid lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+        {/* minmax(0,…) everywhere: a plain implicit column would take the
+            transcript pre's min-content width (its longest unbreakable line),
+            blowing the column wider than the card on phones — the graph pane
+            then centers in that oversized column and clips at the card edge. */}
+        <div className="relative grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
           {/* Left: the live session graph — claude code driving five workers,
               each a real brand logo. The active node lights and its beam pulses
               in sync with the command running on the right. */}
@@ -366,10 +372,12 @@ export function OrchestrationDemo() {
             </pre>
 
             {/* min-height reserves the rolling window's space so the window does
-                not grow line by line while typing. */}
+                not grow line by line while typing. Phones hard-wrap at the pane
+                edge exactly like a real terminal (the JSON lines have no soft
+                break points); from sm up lines stay unwrapped and can scroll. */}
             <pre
               aria-hidden="true"
-              className="min-h-[300px] overflow-x-auto p-5 font-mono text-[14px] leading-relaxed sm:min-h-[320px] sm:p-6"
+              className="min-h-[340px] whitespace-pre-wrap break-all p-5 font-mono text-[13px] leading-relaxed sm:min-h-[320px] sm:whitespace-pre sm:break-normal sm:overflow-x-auto sm:p-6 sm:text-[14px]"
             >
               {frame.lines.map((line, i) =>
                 line.blank ? (
@@ -380,9 +388,9 @@ export function OrchestrationDemo() {
                     className={
                       // Output lines fade in on arrival; typed prompt lines
                       // are already animated by the typewriter, so they don't.
-                      line.prompt
-                        ? "block whitespace-pre"
-                        : "line-in block whitespace-pre"
+                      // Whitespace behavior inherits from the pre (wrap on
+                      // phones, pre from sm up).
+                      line.prompt ? "block" : "line-in block"
                     }
                   >
                     {line.prompt ? (
@@ -403,7 +411,7 @@ export function OrchestrationDemo() {
                 ),
               )}
               {frame.typing !== null && (
-                <span className="block whitespace-pre">
+                <span className="block">
                   <span className="select-none text-slate-400">$ </span>
                   <span className="text-slate-50">{frame.typing}</span>
                   <span className="demo-cursor text-slate-50/80">▋</span>
