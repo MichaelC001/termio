@@ -129,6 +129,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             TerminalDebugLog.isEnabled = true
             TerminalDebugLog.categories = [.lifecycle, .metrics]
         }
+        // Dev-only: focus-independent window snapshot for automated UI debugging
+        // (see DebugWindowSnapshot).
+        if AppChannel.isDev { DebugWindowSnapshot.installTrigger() }
         // Sweep up session processes a previous instance stranded (crash,
         // force-quit, dev rebuild's kill -9) before this run adds its own.
         PTYProcess.reapStrayOrphans()
@@ -1008,6 +1011,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     .environmentObject(store)
                     .environmentObject(settings)
             ))
+            // No SwiftUI-derived sizing constraints: the host is pinned to the content area
+            // below, and the default `.standardBounds` options let auto layout satisfy the
+            // root view's ideal size by resizing the *window* — the just-closed detail is an
+            // EmptyView (ideal height 0) for the one runloop before this host is torn down,
+            // which crushed the whole window to a ~90pt strip.
+            host.sizingOptions = []
             host.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(host, positioned: .above, relativeTo: nil)
             // Pin the leading edge to the *content* area (the terminal/inspector region), not the

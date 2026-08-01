@@ -365,6 +365,17 @@ struct CommandPaletteView: View {
                                  icon: nil, symbol: "square.3.layers.3d", shortcut: nil) { _ in
                 NotificationCenter.default.post(name: .termioDebugDumpLayers, object: nil)
             })
+            // Renders the main window into /tmp/termio-dev-window.png and writes the full
+            // AppKit view hierarchy (class, frame, hidden, layer bg) to
+            // /tmp/termio-dev-views.txt — self-rendering needs no Screen Recording grant,
+            // so an agent can "see" a layout glitch it reproduced. Delayed so the palette
+            // panel has closed and any transition has settled before the capture.
+            actions.append(.init(id: "debug-snapshot-window", title: "Debug: Snapshot Window",
+                                 icon: nil, symbol: "camera", shortcut: nil) { _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    DebugWindowSnapshot.capture()
+                }
+            })
         }
         return actions
     }
