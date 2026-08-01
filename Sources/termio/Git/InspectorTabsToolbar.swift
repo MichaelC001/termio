@@ -23,8 +23,9 @@ import SwiftUI
 struct InspectorTabsToolbar: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
-    /// Light vs dark decides the selected-pill material: a raised white chip in light
-    /// mode (like a native segmented control), a whitish overlay chip in dark.
+    /// Light vs dark decides the track + chip materials: a white glass track with a soft grey
+    /// selected chip in light mode (the macOS 26 Finder segmented control), a faint light track
+    /// with a brighter overlay chip in dark.
     @Environment(\.colorScheme) private var colorScheme
     /// Whether the current project's origin remote points at github.com — probed
     /// async per selection change; gates the Issues segment together with the
@@ -132,29 +133,31 @@ struct InspectorTabsToolbar: View {
         .animation(.snappy(duration: 0.28), value: store.inspectorTab)
     }
 
-    // MARK: Materials — flat capsule fills, no Liquid Glass
+    // MARK: Materials — macOS 26 (Tahoe) Finder segmented control
 
-    // No `.glassEffect` and no *ambient* shadow: the glass pill's soft shadow read as stray chrome
-    // floating in the toolbar. Instead we mimic a native segmented control's selected segment — in
-    // light mode a raised *white* chip (a darker grey chip read as pressed/recessed, not selected),
-    // in dark mode a whitish overlay chip. A tight 1pt raised-chip shadow (light only) lifts the
-    // white off the near-white track without floating like the glass shadow did.
+    // The track is the raised white *glass* panel; the selected segment is a soft **grey** chip
+    // recessed into it — the macOS 26 Finder / toolbar segmented look. (This inverts the earlier
+    // pass, where the track was grey and the chip white.) In dark mode the same relationship holds
+    // with light-on-dark values. The chip itself stays a flat fill, never `.glassEffect` — the
+    // glass pill's soft shadow read as stray chrome riding *inside* the track.
     private var selectionPill: some View {
         Capsule(style: .continuous)
-            .fill(colorScheme == .dark ? Color.primary.opacity(0.16) : .white)
-            .overlay {
-                // A hairline edge separates the white chip from the pale track in light mode.
-                if colorScheme != .dark {
-                    Capsule(style: .continuous).strokeBorder(Color.black.opacity(0.05), lineWidth: 0.5)
-                }
-            }
-            .shadow(color: colorScheme == .dark ? .clear : Color.black.opacity(0.14),
-                    radius: 1, x: 0, y: 0.5)
+            .fill(colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.07))
             // Non-source: takes the frame + position of the currently selected segment.
             .matchedGeometryEffect(id: store.inspectorTab, in: pillNamespace, isSource: false)
     }
 
+    // The track is real Liquid Glass on macOS 26 — the same `.regular` material as the native
+    // bordered toolbar buttons flanking it (collapse / +), so the whole toolbar row reads as one
+    // family of glass capsules instead of a painted white slab next to translucent buttons.
+    // Pre-26 there is no glass, so fall back to the flat fills.
+    @ViewBuilder
     private var trackBackground: some View {
-        Capsule(style: .continuous).fill(Color.primary.opacity(0.06))
+        if #available(macOS 26.0, *) {
+            Color.clear.glassEffect(.regular, in: .capsule)
+        } else {
+            Capsule(style: .continuous)
+                .fill(colorScheme == .dark ? Color.white.opacity(0.06) : Color.white)
+        }
     }
 }

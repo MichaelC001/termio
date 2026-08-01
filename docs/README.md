@@ -42,6 +42,7 @@ from the real front matter).
 | active | design | [iOS libghostty "non-functional" panel + teardown UAF — root-cause findings](design/ios-ghostty-renderer-panic-investigation-findings.md) |
 | active | design | [iOS terminal input & attachments](design/ios-terminal-input.md) |
 | active | design | [macOS release runbook — cut, notarize, publish termio.dmg](runbook/macos-release-runbook.md) |
+| active | design | [Research brief — termiod Session Protocol (for design agent)](design/_research-session-protocol-brief.md) |
 | active | design | [Sessions CLI v2 — reliability & command design](design/sessions-cli-v2.md) |
 | active | rfc | [Push-to-talk voice dictation — hold the space bar (iOS shipped, OpenAI)](rfcs/push-to-talk-voice-dictation.md) |
 | approved | design | [会话历史 · 搜索 · 恢复（Session History / Search / Resume）](design/session-history-search-resume.md) |
@@ -80,6 +81,8 @@ from the real front matter).
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/remote-projects.md) |
 | draft | design | [Session Daemon Architecture (termiod — one model for local, remote, mobile)](design/session-daemon-architecture.md) |
 | draft | design | [Sidebar scroll performance — per-session runtime state](design/sidebar-scroll-performance.md) |
+| draft | design | [termiod — Agent-native session mux](design/termiod-session-mux.md) |
+| draft | design | [termiod Session Protocol](design/termiod-session-protocol.md) |
 | draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/remote-access-relay-strategy.md) |
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/sandbox-seatbelt.md) |
 | draft | rfc | [Automation — scheduled agent runs](rfcs/automation-scheduled-agent-runs.md) |

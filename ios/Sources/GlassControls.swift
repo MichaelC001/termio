@@ -79,8 +79,9 @@ final class HomeTabPill: UIView, UIGestureRecognizerDelegate {
 
     private var buttons: [UIButton] = []
     private let titles: [String]
-    private let regularImages: [UIImage]
-    private let selectedImages: [UIImage]
+    /// One image per tab, same stroke weight in every state — selection is carried by ink color, the
+    /// grey enclosure chip, and the bolder title, not by thickening the glyph.
+    private let icons: [UIImage]
     private let selectionFeedback = UISelectionFeedbackGenerator()
     private var isDraggingSelection = false
     private var dragOriginIndex = 0
@@ -110,11 +111,10 @@ final class HomeTabPill: UIView, UIGestureRecognizerDelegate {
 
     init(items: [(title: String, icon: HugeIcon)]) {
         titles = items.map(\.title)
-        regularImages = items.map { $0.icon.strokeImage(boxSize: 21) }
-        // The reference uses outline → fill. Hugeicons deliberately remain
-        // outline-based across Termio, so a heavier selected stroke provides
-        // the equivalent shape cue without mixing icon families.
-        selectedImages = items.map { $0.icon.strokeImage(boxSize: 21, strokeWeight: 2.0) }
+        // Larger + a touch heavier than the 21/1.5 first pass: at 21 the glyphs read small and
+        // hairline in the glass pill next to the 34pt Mac toolbar weight, so lift the drawn box to
+        // 24 and the stroke to 1.7 for a firmer, more legible tab icon (same in every state).
+        icons = items.map { $0.icon.strokeImage(boxSize: 24, strokeWeight: 1.7) }
         super.init(frame: .zero)
         let glass = GlassChrome.makeView(interactive: true)
         glass.translatesAutoresizingMaskIntoConstraints = false
@@ -128,7 +128,7 @@ final class HomeTabPill: UIView, UIGestureRecognizerDelegate {
 
         buttons = items.enumerated().map { index, item in
             var config = UIButton.Configuration.plain()
-            config.image = regularImages[index]
+            config.image = icons[index]
             config.imagePlacement = .top
             config.imagePadding = 3
             config.attributedTitle = AttributedString(
@@ -208,7 +208,7 @@ final class HomeTabPill: UIView, UIGestureRecognizerDelegate {
             let selected = i == selectedIndex
             let update = {
                 var config = button.configuration
-                config?.image = selected ? self.selectedImages[i] : self.regularImages[i]
+                config?.image = self.icons[i]
                 config?.baseForegroundColor = selected ? .label : .secondaryLabel
                 config?.attributedTitle = AttributedString(
                     self.titles[i],

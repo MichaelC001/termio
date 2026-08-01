@@ -1,0 +1,194 @@
+<!doctype html>
+<!--
+  小红书视频封面 (1080×1440, 3:4)。视觉语言复用 web/landing/og-template.html
+  （同款黄昏渐变 + 仿 termio 终端窗口），在有 SF/苹方的 Mac 上用 headless
+  Chrome 渲染：
+
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless \
+      --disable-gpu --hide-scrollbars --force-device-scale-factor=2 \
+      --window-size=1080,1440 \
+      --screenshot=2026-07-30-agent-to-agent-cover.png \
+      "file://$PWD/2026-07-30-agent-to-agent-cover.html"
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root {
+        --ink: #ffffff;
+        --green: #27c93f;
+        --amber: #ffb764;
+        --red: #ff5252;
+        --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC",
+          "Helvetica Neue", Helvetica, Arial, sans-serif;
+        --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1080px; height: 1440px; }
+      body {
+        font-family: var(--font);
+        color: var(--ink);
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+        overflow: hidden;
+        position: relative;
+        background-image:
+          radial-gradient(70% 50% at 10% -8%, rgba(6, 11, 34, 0.78), transparent 55%),
+          linear-gradient(
+            165deg,
+            #2f63d4 0%, #3f6fdb 16%, #5a7fe0 30%, #8090df 46%,
+            #ab9ed7 60%, #c9b4d4 72%, #6f6486 86%, #0b0a10 100%
+          );
+      }
+      .card {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        padding: 76px 72px 72px;
+      }
+      .brand { display: flex; align-items: center; gap: 16px; }
+      .brand img { width: 54px; height: 54px; border-radius: 13px; }
+      .brand span {
+        font-size: 34px; font-weight: 600; letter-spacing: -0.02em;
+        color: #fff;
+      }
+      .headline {
+        margin-top: 64px;
+        font-size: 96px;
+        line-height: 1.12;
+        font-weight: 700;
+        letter-spacing: 0.005em;
+        text-shadow: 0 2px 40px rgba(0, 0, 0, 0.4);
+      }
+      .sub {
+        margin-top: 30px;
+        font-size: 36px;
+        line-height: 1.45;
+        font-weight: 400;
+        color: rgba(255, 255, 255, 0.85);
+        letter-spacing: 0.01em;
+      }
+
+      .stage {
+        margin-top: 56px;
+        flex: 1 1 auto;
+        position: relative;
+      }
+
+      .window {
+        position: absolute;
+        width: 850px;
+        background: #0c0c0f;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 22px;
+        box-shadow: 0 40px 90px -30px rgba(0, 0, 0, 0.6),
+          0 0 0 1px rgba(255, 255, 255, 0.04);
+        overflow: hidden;
+      }
+      .window.claude { left: 0; top: 0; }
+      .window.codex { right: 0; bottom: 24px; }
+      .titlebar {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 20px 22px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+      }
+      .dots { display: flex; gap: 9px; }
+      .dot { width: 14px; height: 14px; border-radius: 50%; }
+      .title {
+        font-family: var(--mono);
+        font-size: 17px;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .body {
+        padding: 24px 28px 30px;
+        font-family: var(--mono);
+        font-size: 24px;
+        line-height: 1.95;
+      }
+      .row { display: flex; gap: 13px; white-space: nowrap; align-items: baseline; }
+      .green { color: var(--green); }
+      .amber { color: var(--amber); }
+      .dim { color: rgba(255, 255, 255, 0.45); }
+      .ink { color: rgba(255, 255, 255, 0.92); }
+      .agent { color: #8fb6ff; }
+      .ask {
+        margin-top: 10px;
+        padding: 8px 14px;
+        border-radius: 12px;
+        background: rgba(255, 183, 100, 0.12);
+        border: 1px solid rgba(255, 183, 100, 0.35);
+      }
+      .pill {
+        display: inline-block;
+        margin-top: 16px;
+        padding: 5px 14px;
+        border-radius: 999px;
+        background: rgba(39, 201, 63, 0.14);
+        color: var(--green);
+        font-family: var(--mono);
+        font-size: 17px;
+      }
+
+      .trust {
+        margin-top: auto;
+        font-size: 27px;
+        font-weight: 500;
+        color: rgba(255, 255, 255, 0.68);
+        letter-spacing: 0.01em;
+      }
+      .trust b { color: var(--green); font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="brand">
+        <img src="../../../../web/landing/public/logo.png" alt="" />
+        <span>termio</span>
+      </div>
+
+      <div class="headline">让 Claude<br />指挥 Codex 干活</div>
+      <div class="sub">中途它们还会互相讨论 · 全程没碰键盘</div>
+
+      <div class="stage">
+        <div class="window claude">
+          <div class="titlebar">
+            <div class="dots">
+              <span class="dot" style="background:#ff5252"></span>
+              <span class="dot" style="background:#ffb764"></span>
+              <span class="dot" style="background:#27c93f"></span>
+            </div>
+            <span class="title">Claude Code — ~/my-app</span>
+          </div>
+          <div class="body">
+            <div class="row"><span class="green">➜</span><span class="ink">使用 Codex 帮我实施这个计划</span></div>
+            <div class="row"><span class="agent">●</span><span class="ink">好的，已把计划交给 Codex</span></div>
+            <div class="row"><span class="dim">⎿</span><span class="dim">termio sessions spawn --agent codex</span></div>
+          </div>
+        </div>
+
+        <div class="window codex">
+          <div class="titlebar">
+            <div class="dots">
+              <span class="dot" style="background:#ff5252"></span>
+              <span class="dot" style="background:#ffb764"></span>
+              <span class="dot" style="background:#27c93f"></span>
+            </div>
+            <span class="title">Codex — ~/my-app</span>
+          </div>
+          <div class="body">
+            <div class="row"><span class="agent">●</span><span class="ink">实施计划 · 步骤 2/5</span></div>
+            <div class="row"><span class="dim">⎿</span><span class="dim">Edited 3 files · ran tests</span></div>
+            <div class="row ask"><span class="amber">?</span><span class="ink">问 Claude：旧配置字段要保留吗</span></div>
+            <div class="row"><span class="green">✓</span><span class="ink">Claude：保留，标记 deprecated</span></div>
+            <span class="pill">agent ↔ agent</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="trust"><b>termio.sh</b> · 免费 · 不用注册</div>
+    </div>
+  </body>
+</html>
