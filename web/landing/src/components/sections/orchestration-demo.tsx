@@ -42,11 +42,14 @@ type Frame = {
   pulse: Pulse | null;
 };
 
-// Section palette — no green. Neutral light for "working" (a data packet
-// traveling the beam), sky for "done", amber for "needs-you".
-const ACTIVE = "#e2e8f0";
-const AMBER = "#fbbf24";
-const SKY = "#7dd3fc";
+// Section palette — every color here comes from three Tailwind ramps and
+// nothing else: slate for neutrals (window ink, pills, idle/working), sky for
+// "done", amber for "needs-you". Each status hue has two steps: a bright one
+// for the dark pane (beam pulses, transcript text) and a solid -500 for the
+// dots on the light pills. No green anywhere.
+const ACTIVE = "#e2e8f0"; // slate-200 — packet traveling the beam
+const AMBER = "#fbbf24"; // amber-400 — needs-you on dark (beam)
+const SKY = "#7dd3fc"; // sky-300 — done on dark (beam + transcript text)
 
 // The five workers, in pipeline order (index = story order = top-to-bottom in
 // the graph). Each drives one stage of shipping a change; the middle worker
@@ -135,10 +138,10 @@ const beamPathBack = (y: number) =>
 // sidebar. Glows/box-shadows around foreignObject content clip into hard
 // blocks in some browsers, so no halo at all.
 const STATUS_DOT: Record<Status, string> = {
-  idle: "#cbd5e1",
-  working: "#64748b",
-  "needs-you": "#f59e0b",
-  done: "#0ea5e9",
+  idle: "#cbd5e1", // slate-300
+  working: "#64748b", // slate-500
+  "needs-you": "#f59e0b", // amber-500
+  done: "#0ea5e9", // sky-500
 };
 
 const MAX_LINES = 8; // rolling transcript window (fits the reserved height)
@@ -297,11 +300,11 @@ export function OrchestrationDemo() {
 
               {/* Hub: the supervising claude-code session (real logo). */}
               <foreignObject x="0" y="148" width="120" height="44">
-                <div className="flex h-11 items-center gap-2.5 rounded-full bg-[#f8fafc] px-3.5">
+                <div className="flex h-11 items-center gap-2.5 rounded-full bg-slate-50 px-3.5">
                   {/* Mono-only marks (Grok, Kimi) draw in currentColor, so the
                       light pill needs a dark color context. */}
-                  <AgentIcon name="Claude Code" size={24} color className="text-[#172033]" />
-                  <span className="font-sans text-[15px] font-medium text-[#172033]">
+                  <AgentIcon name="Claude Code" size={24} color className="text-slate-900" />
+                  <span className="font-sans text-[15px] font-medium text-slate-900">
                     claude
                   </span>
                 </div>
@@ -323,7 +326,7 @@ export function OrchestrationDemo() {
                       transition: "opacity 0.5s ease",
                     }}
                   >
-                    <div className="flex h-10 items-center gap-2 rounded-full bg-[#eef3f8] px-3">
+                    <div className="flex h-10 items-center gap-2 rounded-full bg-slate-100 px-3">
                       {/* Kimi's color mark is blue-on-white and washes out on
                           the light pill, so it uses the mono (currentColor)
                           variant instead. */}
@@ -331,9 +334,9 @@ export function OrchestrationDemo() {
                         name={w.name}
                         size={20}
                         color={w.name !== "Kimi"}
-                        className="text-[#172033]"
+                        className="text-slate-900"
                       />
-                      <span className="truncate font-sans text-[12px] font-medium text-[#172033]">
+                      <span className="truncate font-sans text-[12px] font-medium text-slate-900">
                         {w.handle}
                       </span>
                       <span
@@ -380,13 +383,13 @@ export function OrchestrationDemo() {
                   >
                     {line.prompt ? (
                       <>
-                        <span className="select-none text-[#aebdce]">$ </span>
-                        <span className="text-[#f8fafc]">{line.text}</span>
+                        <span className="select-none text-slate-400">$ </span>
+                        <span className="text-slate-50">{line.text}</span>
                       </>
                     ) : (
                       <span
                         className={
-                          line.tone === "done" ? "text-[#7dd3fc]" : "text-[#b8c7d9]"
+                          line.tone === "done" ? "text-sky-300" : "text-slate-300"
                         }
                       >
                         {line.text}
@@ -397,9 +400,9 @@ export function OrchestrationDemo() {
               )}
               {frame.typing !== null && (
                 <span className="block whitespace-pre">
-                  <span className="select-none text-[#aebdce]">$ </span>
-                  <span className="text-[#f8fafc]">{frame.typing}</span>
-                  <span className="demo-cursor text-[#f8fafc]/80">▋</span>
+                  <span className="select-none text-slate-400">$ </span>
+                  <span className="text-slate-50">{frame.typing}</span>
+                  <span className="demo-cursor text-slate-50/80">▋</span>
                 </span>
               )}
             </pre>
