@@ -938,7 +938,11 @@ private struct SessionRow: View {
     /// there is a sibling to combine it with (独立 → 联合).
     private var menuItems: [SidebarMenuItem] {
         var items: [SidebarMenuItem] = [
-            .action("Rename…") { store.renameSession(session.id) }
+            .action("Rename…") { store.renameSession(session.id) },
+            .action("Copy Session Link") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(store.sessionLink(for: session), forType: .string)
+            },
         ]
         let targets = store.groupableTargets(for: session.id)
         if store.isInSplitGroup(session.id) || !targets.isEmpty { items.append(.separator) }

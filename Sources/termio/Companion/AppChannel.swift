@@ -24,6 +24,11 @@ enum AppChannel {
     /// shipped release app.
     static var isDev: Bool { !suffix.isEmpty }
 
+    /// The URL scheme this channel claims for session deep links (`termio://` /
+    /// `termio-dev://`), so dev and release never route each other's links.
+    /// Registered in Info.plist; `build-app.sh` rewrites it for the dev bundle.
+    static var urlScheme: String { "termio" + suffix }
+
     /// True when running from a real `.app` bundle (either channel). A bare SwiftPM
     /// binary (`swift run`, the test runner) has no bundle identifier, and
     /// bundle-dependent frameworks — `UNUserNotificationCenter` aborts with

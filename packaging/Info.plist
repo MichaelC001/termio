@@ -24,6 +24,20 @@
     <true/>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.developer-tools</string>
+    <!-- Session deep links (docs/design/session-deep-link.md). The dev bundle
+         claims termio-dev:// instead — build-app.sh rewrites the scheme — so
+         the two channels never route each other's links. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>sh.termio.app.session-link</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>termio</string>
+            </array>
+        </dict>
+    </array>
     <!-- The browser pane (BrowserPane.swift) points at dev servers, which speak
          plain http on loopback; ATS would refuse those loads without the local-
          networking exemption. Non-local plain http stays blocked by design — in

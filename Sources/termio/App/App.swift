@@ -505,12 +505,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return path
     }
 
-    /// Entry point for the `termio` CLI: macOS delivers the folder passed to
-    /// `open -b sh.termio.app <dir>` here. Because termio is single-instance, an
+    /// Entry point for the `termio` CLI and for session deep links: macOS
+    /// delivers both the folder passed to `open -b sh.termio.app <dir>` and any
+    /// clicked `termio://` link here. Because termio is single-instance, an
     /// already-running app receives this in place, so the project opens in the
     /// existing window rather than spawning a second one.
     func application(_ application: NSApplication, open urls: [URL]) {
-        openProjects(at: urls)
+        for url in urls where url.scheme == AppChannel.urlScheme {
+            store.openSessionLink(url)
+        }
+        let directories = urls.filter { $0.scheme != AppChannel.urlScheme }
+        if !directories.isEmpty { openProjects(at: directories) }
     }
 
     /// Adds each directory as a project in the one shared store and brings the

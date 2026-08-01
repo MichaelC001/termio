@@ -13,8 +13,9 @@ import Foundation
 ///   to the caller's own project. `callerSession` is the `TERMIO_SESSION` the PTY
 ///   carries; `callerCwd` (`$PWD`) is the fallback for a shell that isn't a termio
 ///   session but sits inside an open project's directory.
-/// - `target` — the session to act on: a `<agent>@<id>` handle from `list`, or a
-///   bare id / id prefix / title. Empty for `send` means "start a fresh session".
+/// - `target` — the session to act on: a `termio://session/<uuid>` link from
+///   `list`, or a bare id / id prefix / title. Empty for `send` means "start a
+///   fresh session".
 /// - `text` — the prompt (`send`) or menu answer (`answer`).
 /// - `agent` — the agent for a fresh session (`send` with no target).
 /// - `snapshot` — `watch` only: `false` skips the initial per-session status
@@ -242,7 +243,9 @@ final class SessionControlListener {
 /// writes off the main thread.
 struct SessionWatchEvent {
     let projectID: UUID
-    let handle: String
+    /// Canonical deep link (`termio://session/<uuid>`) — the address that
+    /// survives promotion (docs/design/session-deep-link.md).
+    let link: String
     /// Wire status token (`working` / `idle` / `done` / `needs-you`), or the
     /// watch-plane `stalled` — a supervision judgment broadcast without ever
     /// becoming the session's real status.
@@ -395,11 +398,11 @@ private extension SessionWatchEvent {
     var wireLine: Data {
         let suffix = title.isEmpty ? "" : "  \(title)"
         let detail = evidence.map { "  — \($0)" } ?? ""
-        return Data("\(handle)  [\(status)]\(suffix)\(detail)\n".utf8)
+        return Data("\(link)  [\(status)]\(suffix)\(detail)\n".utf8)
     }
     var jsonLine: Data {
         var object: [String: Any] = [
-            "schema_version": 1, "handle": handle, "status": status, "title": title,
+            "schema_version": 1, "link": link, "status": status, "title": title,
         ]
         // Omitted, not "": the runtime simply hasn't seen an OSC 7 yet, and an
         // empty string reads like a real (broken) path to a JSON consumer.
@@ -448,8 +451,8 @@ enum SessionSkillInstaller {
         You are running inside termio alongside other agent sessions in this same
         project. Coordinate with them through the `termio sessions` CLI. Every command
         is scoped to this project automatically; add `--json` for machine-readable
-        output. Sessions are addressed by the handle `list` prints: `<agent>@<id>`
-        (e.g. `claude@ab12cd34`).
+        output. Sessions are addressed by the link `list` prints:
+        `termio://session/<uuid>` (a bare id or unique id-prefix works too).
 
         - `termio sessions list` — siblings in this project, with status (working /
           idle / needs-you / done)
@@ -466,16 +469,16 @@ enum SessionSkillInstaller {
           detectable. Exits 0 on your Ctrl-C, 2 if termio itself went away.
         - `termio sessions spawn "<prompt>"` — start a NEW agent session on the
           prompt (`--agent codex` picks the agent; default: your own kind). Replies
-          immediately with the new session's handle — use it for every follow-up;
+          immediately with the new session's link — use it for every follow-up;
           the prompt itself is typed in once the agent finishes booting.
         - `termio sessions run "<command>"` — start a NEW plain terminal session
           typing that shell command (a dev server, a test run) into a visible pane —
           no LLM. Use it instead of your own background shell when the user should
           be able to see and take over the process.
-        - `termio sessions send <agent>@<id> "<text>"` — type text into that existing
+        - `termio sessions send <link> "<text>"` — type text into that existing
           sibling and submit it with a real Return keypress. Send a prompt to drive
           it, or a menu choice (`"1"`, `"yes"`) to answer a permission prompt.
-        - `termio sessions read <agent>@<id> [--lines N]` — the session's current
+        - `termio sessions read <link> [--lines N]` — the session's current
           screen. The result channel for `run` sessions (a plain command has no
           transcript; its screen is the result) — for agent replies keep using the
           transcript, not the screen.
@@ -488,12 +491,12 @@ enum SessionSkillInstaller {
           (`prompt_stalled` = the input showed no effect within 5s; `session_closed`
           / `agent_gone` = the target vanished mid-wait), 3 timed out (session still
           running — re-arm or read its transcript).
-        - `termio sessions close <agent>@<id> …` — close session tabs;
-          `termio sessions focus <agent>@<id>` — bring one to the front in the app
+        - `termio sessions close <link> …` — close session tabs;
+          `termio sessions focus <link>` — bring one to the front in the app
 
         ### Targeting discipline
 
-        - Copy handles verbatim from `list` or a `send` reply; never guess or
+        - Copy links verbatim from `list` or a `send` reply; never guess or
           construct one.
         - One request, one target. Never send the same prompt to several siblings,
           and never run multiple `send` commands in parallel — delegate to ONE
@@ -519,7 +522,7 @@ enum SessionSkillInstaller {
         this over assuming a sibling is finished — or collapse steps 1–2 into one call
         with `send --wait`, whose reply carries the final status and the exact
         `cursor`..`cursor_end` range to read. Supervising several at once? Block on
-        `termio sessions watch` instead of polling — it prints the handle the moment any
+        `termio sessions watch` instead of polling — it prints the link the moment any
         sibling turns `done` or `needs-you`, so you act on the transition, not a spin
         loop; its `--json` `needs-you` events carry the question in `prompt`, and `done`
         events carry `transcript` + `cursor_end`, so you can act straight from the event.

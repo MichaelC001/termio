@@ -80,6 +80,7 @@ from the real front matter).
 | draft | design | [Mac retention analytics (no app changes)](design/mac-retention-analytics.md) |
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/remote-projects.md) |
 | draft | design | [Session Daemon Architecture (termiod — one model for local, remote, mobile)](design/session-daemon-architecture.md) |
+| draft | design | [Session deep links (termio:// addresses)](design/session-deep-link.md) |
 | draft | design | [Sidebar scroll performance — per-session runtime state](design/sidebar-scroll-performance.md) |
 | draft | design | [termiod — Agent-native session mux](design/termiod-session-mux.md) |
 | draft | design | [termiod Session Protocol](design/termiod-session-protocol.md) |

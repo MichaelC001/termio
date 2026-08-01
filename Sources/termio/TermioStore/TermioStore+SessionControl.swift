@@ -10,11 +10,12 @@ import os
 /// see and drive its siblings, never sessions in unrelated projects — unpeel's
 /// "project-scoped by default" rule.
 ///
-/// Sessions are addressed by a handle, `<agent>@<8-char-id>` (`claude@ab12cd34`).
-/// Only the id part resolves; the agent name is a checksum validated against the
-/// session it finds, so a caller that mis-splices a name onto the wrong id gets an
-/// error instead of a silent misdelivery. `send` with *no* handle starts a fresh
-/// agent session — targeting an existing sibling is always an explicit act.
+/// Sessions are addressed by their id: canonically a deep link
+/// (`termio://session/<uuid>`, see docs/design/session-deep-link.md), or a bare
+/// id/prefix. The address names the pane, never its mutable contents, so any
+/// copied address survives the session promoting or demoting. `send` with *no*
+/// target starts a fresh agent session — targeting an existing sibling is
+/// always an explicit act.
 extension TermioStore {
     /// Per-op enter/exit timing for control requests, readable via
     /// `log stream --predicate 'category == "session-control"'`. The exit line's
@@ -97,7 +98,7 @@ extension TermioStore {
         let snapshot = project.sessions.map { session -> SessionWatchEvent in
             var event = SessionWatchEvent(
                 projectID: project.id,
-                handle: sessionHandle(for: session),
+                link: sessionLink(for: session),
                 status: Self.statusToken(status(for: session.id)),
                 title: displayTitle(for: session),
                 cwd: runtimes[session.id]?.workingDirectory ?? "",
@@ -126,18 +127,39 @@ extension TermioStore {
         }
     }
 
-    /// The address a caller drives a session by. The id half is the stable key
-    /// (minted at creation, never renumbered — unlike the sidebar's live labels);
-    /// the agent half makes the handle self-describing in logs and lets the
-    /// resolver catch a name spliced onto the wrong id.
-    func sessionHandle(for session: Session) -> String {
-        "\(effectiveAgent(for: session).wireName.lowercased())@\(Self.shortID(session.id))"
+    /// The canonical deep link for a session (docs/design/session-deep-link.md):
+    /// full UUID so a link written down anywhere stays unambiguous, channel
+    /// scheme so dev and release never claim each other's links.
+    func sessionLink(for session: Session) -> String {
+        "\(AppChannel.urlScheme)://session/\(session.id.uuidString.lowercased())"
+    }
+
+    /// Opens a session deep link. The local form (`termio://session/<id>`)
+    /// focuses that session; an endpoint form belongs to the termiod attach
+    /// client and is ignored until that lands.
+    func openSessionLink(_ url: URL) {
+        guard let host = url.host?.lowercased() else { return }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        let idToken: String
+        if host == "session", let id = parts.first {
+            idToken = id.lowercased()
+        } else {
+            if parts.first == "session" {
+                Log.app.info("session link for endpoint \(host, privacy: .public) ignored — remote attach not wired yet")
+            }
+            return
+        }
+        let matches = projects.flatMap(\.sessions).filter {
+            $0.id.uuidString.lowercased().hasPrefix(idToken)
+        }
+        guard matches.count == 1, let session = matches.first else { return }
+        revealSession(session.id)
     }
 
     private func listSessions(in project: Project, request: ControlRequest) -> Data {
         let entries = project.sessions.map { session -> [String: Any] in
             var entry: [String: Any] = [
-                "handle": sessionHandle(for: session),
+                "link": sessionLink(for: session),
                 "id": Self.shortID(session.id),
                 "title": displayTitle(for: session),
                 // The *effective* agent, so a plain terminal running a hand-started
@@ -155,14 +177,34 @@ extension TermioStore {
             }
             return entry
         }
-        let lines = project.sessions.map { session -> String in
-            let token = Self.statusToken(status(for: session.id))
-            let description = statusDescription(for: session.id)
-            let suffix = description.isEmpty ? "" : "  — \(description)"
-            return "\(sessionHandle(for: session))  [\(token)]  \(displayTitle(for: session))\(suffix)"
-        }
+        // Text output is a column table, the deep link first: the link IS the
+        // address (every verb takes it, and it stays self-describing pasted
+        // anywhere), while agent and status are display state and must never
+        // ride inside the address. The last column is unpadded so long titles
+        // never push a ragged right edge into every row.
         let header = "\(project.name) — \(project.sessions.count) session(s)"
-        let text = ([header] + lines).joined(separator: "\n")
+        var text = header
+        if !project.sessions.isEmpty {
+            let titles = ["LINK", "AGENT", "STATUS", "TITLE"]
+            let rows = project.sessions.map { session -> [String] in
+                let description = statusDescription(for: session.id)
+                let title = displayTitle(for: session)
+                return [
+                    sessionLink(for: session),
+                    effectiveAgent(for: session).wireName.lowercased(),
+                    Self.statusToken(status(for: session.id)),
+                    description.isEmpty ? title : "\(title) — \(description)",
+                ]
+            }
+            let widths = (0 ..< 3).map { col in
+                max(titles[col].count, rows.map { $0[col].count }.max() ?? 0)
+            }
+            let render: ([String]) -> String = { row in
+                (0 ..< 3).map { row[$0].padding(toLength: widths[$0], withPad: " ", startingAt: 0) }
+                    .joined(separator: "  ") + "  " + row[3]
+            }
+            text = ([header, render(titles)] + rows.map(render)).joined(separator: "\n")
+        }
         return control(request, ok: true, text: text, json: ["project": project.name, "sessions": entries])
     }
 
@@ -177,7 +219,7 @@ extension TermioStore {
             // session is a mistake, never a spawn.
             guard request.op == "send" else {
                 return controlError(request, "no_target",
-                    "answer needs a session handle — run `termio sessions list`.")
+                    "answer needs a session address — run `termio sessions list`.")
             }
             return await spawnAndSend(request, in: project, payload: payload)
         }
@@ -190,13 +232,10 @@ extension TermioStore {
         case .ambiguous:
             return controlError(request, "ambiguous",
                 "'\(request.target ?? "")' matches more than one session; use a longer id.")
-        case .mismatch(let expected):
-            return controlError(request, "wrong_agent",
-                "That id belongs to \(expected) — use that handle (copied verbatim from `list`).")
         }
     }
 
-    /// The no-handle `send` path: start a fresh agent session and hand it the
+    /// The no-target `send` path: start a fresh agent session and hand it the
     /// prompt. The agent defaults to the caller's own kind (a Claude asking for
     /// help gets a Claude), then to the user's preferred chat agent; `--agent`
     /// overrides both.
@@ -257,17 +296,17 @@ extension TermioStore {
             return await waitForReply(request, session: fresh,
                                       cursorAtSend: cursorAtSend, created: true)
         }
-        // Reply with the handle now; boot-settle + prompt delivery continue off the
+        // Reply with the address now; boot-settle + prompt delivery continue off the
         // reply path so no verb silently blocks (§4.2). A delivery failure has no
         // caller left to tell — it surfaces through the session's own status and
         // its visibly broken pane, which the caller is about to watch anyway.
-        let handle = sessionHandle(for: fresh)
+        let link = sessionLink(for: fresh)
         Task { [weak self] in
             guard let self else { return }
             await self.waitForBootSettle(of: state)
             if await !self.performDelivery(delivered, to: fresh, state: state) {
                 FileHandle.standardError.write(Data(
-                    "termio: session control could not deliver the queued prompt to \(handle)\n".utf8))
+                    "termio: session control could not deliver the queued prompt to \(link)\n".utf8))
             }
         }
         return spawnQueuedReply(request, fresh)
@@ -285,13 +324,13 @@ extension TermioStore {
     private func callerEnvelope(for request: ControlRequest) -> String? {
         guard let callerID = request.callerSession, let uuid = UUID(uuidString: callerID),
               let caller = session(uuid) else { return nil }
-        let callerHandle = sessionHandle(for: caller)
+        let callerLink = sessionLink(for: caller)
         return """
-        [termio] You were spawned by the sibling agent session \(callerHandle). \
+        [termio] You were spawned by the sibling agent session \(callerLink). \
         If you hit a question only they can answer, ask it mid-task with: \
-        termio sessions send \(callerHandle) "QUESTION: <your question>" — and when \
+        termio sessions send \(callerLink) "QUESTION: <your question>" — and when \
         you finish you may send at most one line: \
-        termio sessions send \(callerHandle) "DONE: <one line>". \
+        termio sessions send \(callerLink) "DONE: <one line>". \
         Use this channel for nothing else: no conversation, no status updates, and \
         never delegate tasks back to them. They read your actual results from your \
         transcript, so put everything that matters in your normal replies. \
@@ -405,12 +444,12 @@ extension TermioStore {
             try? await Task.sleep(for: .milliseconds(300))
             guard let live = self.session(session.id) else {
                 return controlError(request, "session_closed",
-                    "\(sessionHandle(for: session)) was closed while waiting on it.")
+                    "\(sessionLink(for: session)) was closed while waiting on it.")
             }
             let occupant = effectiveAgent(for: live)
             if occupantAtSend != .terminal, occupant.id != occupantAtSend.id {
                 var message = "The \(occupantAtSend.displayName) agent in "
-                    + "\(sessionHandle(for: session)) exited mid-wait; no reply is coming."
+                    + "\(sessionLink(for: session)) exited mid-wait; no reply is coming."
                 if let transcript = transcriptPaths[session.id] {
                     message += " Its transcript (\(transcript)) holds whatever it did first."
                 }
@@ -448,7 +487,7 @@ extension TermioStore {
                Double(cap) / 1_000 > stallWindow,
                now.timeIntervalSince(started) >= stallWindow {
                 return controlError(request, "prompt_stalled",
-                    "The prompt showed no effect in \(sessionHandle(for: session)) within "
+                    "The prompt showed no effect in \(sessionLink(for: session)) within "
                     + "\(Int(stallWindow))s — no status change, no screen change. The input "
                     + "was likely eaten (agent still booting, or a program that ignores "
                     + "typed text); check the pane before resending.")
@@ -478,10 +517,10 @@ extension TermioStore {
         _ request: ControlRequest, session: Session,
         cursorAtSend: Int?, created: Bool, settled: SessionStatus?
     ) -> Data {
-        let handle = sessionHandle(for: session)
+        let link = sessionLink(for: session)
         let statusToken = Self.statusToken(status(for: session.id))
         var json: [String: Any] = [
-            "target": handle,
+            "target": link,
             "title": displayTitle(for: session),
             "status": statusToken,
             "timed_out": settled == nil,
@@ -490,9 +529,9 @@ extension TermioStore {
 
         let headline: String
         switch settled {
-        case .needsAttention: headline = "\(handle) is waiting on you"
-        case .some: headline = "\(handle) finished (\(statusToken))"
-        case nil: headline = "\(handle) still \(statusToken) after the wait — timed out"
+        case .needsAttention: headline = "\(link) is waiting on you"
+        case .some: headline = "\(link) finished (\(statusToken))"
+        case nil: headline = "\(link) still \(statusToken) after the wait — timed out"
         }
         var text = headline
 
@@ -562,18 +601,15 @@ extension TermioStore {
             }
             if let cap = request.lines, cap > 0 { lines = Array(lines.suffix(cap)) }
             let screen = lines.joined(separator: "\n")
-            let handle = sessionHandle(for: session)
             return control(request, ok: true,
                 text: screen.isEmpty ? "(blank screen)" : screen,
-                json: ["target": handle, "title": displayTitle(for: session), "screen": screen])
+                json: ["target": sessionLink(for: session),
+                       "title": displayTitle(for: session), "screen": screen])
         case .notFound:
             return controlError(request, "not_found", targetNotFoundMessage(request.target))
         case .ambiguous:
             return controlError(request, "ambiguous",
                 "'\(request.target ?? "")' matches more than one session; use a longer id.")
-        case .mismatch(let expected):
-            return controlError(request, "wrong_agent",
-                "That id belongs to \(expected) — use that handle (copied verbatim from `list`).")
         }
     }
 
@@ -640,12 +676,12 @@ extension TermioStore {
     /// the caller can read the agent's response straight from its own structured log —
     /// the caller's file tools resume from `cursor`.
     private func sentReply(_ request: ControlRequest, _ session: Session) -> Data {
-        let handle = sessionHandle(for: session)
+        let link = sessionLink(for: session)
         var json: [String: Any] = [
-            "target": handle,
+            "target": link,
             "title": displayTitle(for: session),
         ]
-        var text = "sent to \(handle)"
+        var text = "sent to \(link)"
         if let transcript = transcriptPaths[session.id] {
             let cursor = Self.lineCount(of: transcript)
             json["transcript"] = transcript
@@ -655,24 +691,24 @@ extension TermioStore {
         return control(request, ok: true, text: text, json: json)
     }
 
-    /// The immediate reply for a fresh spawn: the handle is the payload, delivery is
+    /// The immediate reply for a fresh spawn: the address is the payload, delivery is
     /// still in flight (`queued`). A just-spawned session has no transcript yet — it
     /// appears in `list --json` once the agent's hook reports one. A `run` session
     /// never will: a plain command's results are read off its screen (`read`).
     private func spawnQueuedReply(_ request: ControlRequest, _ session: Session) -> Data {
-        let handle = sessionHandle(for: session)
+        let link = sessionLink(for: session)
         let json: [String: Any] = [
-            "target": handle,
+            "target": link,
             "title": displayTitle(for: session),
             "created": true,
             "queued": true,
         ]
         let text: String
         if effectiveAgent(for: session).isShell {
-            text = "started \(handle) — command queued; use this handle for follow-ups"
-                + "\n  (read its output with `termio sessions read \(handle)`)"
+            text = "started \(link) — command queued; use this address for follow-ups"
+                + "\n  (read its output with `termio sessions read \(link)`)"
         } else {
-            text = "started \(handle) — prompt queued; use this handle for follow-ups"
+            text = "started \(link) — prompt queued; use this address for follow-ups"
                 + "\n  (transcript path appears in `termio sessions list --json` once the agent reports it)"
         }
         return control(request, ok: true, text: text, json: json)
@@ -688,19 +724,16 @@ extension TermioStore {
     private func closeTab(_ request: ControlRequest, in project: Project) -> Data {
         switch resolveTarget(request.target, in: project) {
         case .found(let session):
-            let handle = sessionHandle(for: session)
+            let link = sessionLink(for: session)
             let title = displayTitle(for: session)
             closeSession(session.id)
-            return control(request, ok: true, text: "closed \(handle) (\(title))",
-                json: ["closed": handle, "title": title])
+            return control(request, ok: true, text: "closed \(link) (\(title))",
+                json: ["closed": link, "title": title])
         case .notFound:
             return controlError(request, "not_found", targetNotFoundMessage(request.target))
         case .ambiguous:
             return controlError(request, "ambiguous",
                 "'\(request.target ?? "")' matches more than one session; use a longer id.")
-        case .mismatch(let expected):
-            return controlError(request, "wrong_agent",
-                "That id belongs to \(expected) — use that handle (copied verbatim from `list`).")
         }
     }
 
@@ -709,17 +742,14 @@ extension TermioStore {
     private func focusSession(_ request: ControlRequest, in project: Project) -> Data {
         switch resolveTarget(request.target, in: project) {
         case .found(let session):
-            let handle = sessionHandle(for: session)
+            let link = sessionLink(for: session)
             revealSession(session.id)
-            return control(request, ok: true, text: "focused \(handle)", json: ["focused": handle])
+            return control(request, ok: true, text: "focused \(link)", json: ["focused": link])
         case .notFound:
             return controlError(request, "not_found", targetNotFoundMessage(request.target))
         case .ambiguous:
             return controlError(request, "ambiguous",
                 "'\(request.target ?? "")' matches more than one session; use a longer id.")
-        case .mismatch(let expected):
-            return controlError(request, "wrong_agent",
-                "That id belongs to \(expected) — use that handle (copied verbatim from `list`).")
         }
     }
 
@@ -749,35 +779,26 @@ extension TermioStore {
         case found(Session)
         case notFound
         case ambiguous
-        /// The id resolved, but the handle's agent name isn't that session's —
-        /// a mis-spliced handle. Carries the correct handle for the error message.
-        case mismatch(expected: String)
     }
 
-    /// Matches a target token within the caller's project. A `<agent>@<id>` handle
-    /// resolves by the id part alone (prefix match) and then checks the name part
-    /// against the session it found; a bare token keeps the pre-handle forms —
-    /// full id, id prefix, or display title (case-insensitive). Ambiguity is
-    /// reported rather than guessed.
+    /// Matches a target token within the caller's project. A deep link
+    /// (`termio://…/session/<id>`) reduces to its id (full UUID or prefix);
+    /// a bare token keeps the plain forms — full id, id prefix, or display
+    /// title (case-insensitive). Ambiguity is reported rather than guessed.
     private func resolveTarget(_ token: String?, in project: Project) -> TargetResolution {
         guard let token = token?.trimmingCharacters(in: .whitespaces).lowercased(), !token.isEmpty else {
             return .notFound
         }
-        if let at = token.firstIndex(of: "@"), at != token.startIndex {
-            let name = String(token[..<at])
-            let idPart = String(token[token.index(after: at)...])
-            guard !idPart.isEmpty, idPart.allSatisfy(\.isHexDigit) else { return .notFound }
+        if let idPart = Self.addressedID(in: token) {
+            guard !idPart.isEmpty, idPart.allSatisfy({ $0.isHexDigit || $0 == "-" }) else {
+                return .notFound
+            }
             let matches = project.sessions.filter {
                 $0.id.uuidString.lowercased().hasPrefix(idPart)
             }
             switch matches.count {
             case 0: return .notFound
-            case 1:
-                let session = matches[0]
-                guard agentNames(for: session).contains(name) else {
-                    return .mismatch(expected: sessionHandle(for: session))
-                }
-                return .found(session)
+            case 1: return .found(matches[0])
             default: return .ambiguous
             }
         }
@@ -799,22 +820,17 @@ extension TermioStore {
         }
     }
 
-    /// Every name a handle may carry for this session, lowercased: the declared
-    /// and the detected (effective) agent both count, so a handle minted before a
-    /// plain terminal was upgraded to the agent running inside it stays valid.
-    private func agentNames(for session: Session) -> Set<String> {
-        var names: Set<String> = []
-        for agent in [session.agent, effectiveAgent(for: session)] {
-            names.insert(agent.wireName.lowercased())
-            names.insert(agent.id.lowercased())
-            names.insert(agent.displayName.lowercased())
-            names.insert(agent.displayName.lowercased().replacingOccurrences(of: " ", with: "-"))
-        }
-        return names
+    /// The id half of a `termio://` link (any channel's scheme, any endpoint
+    /// authority): the path segment after `session/`. Nil for a bare token.
+    private static func addressedID(in token: String) -> String? {
+        guard let scheme = token.range(of: "://"), token.hasPrefix("termio") else { return nil }
+        let rest = token[scheme.upperBound...]
+        guard let marker = rest.range(of: "session/") else { return nil }
+        return String(rest[marker.upperBound...].prefix { $0 != "?" && $0 != "/" })
     }
 
     private func targetNotFoundMessage(_ token: String?) -> String {
-        "No session '\(token ?? "")' in this project. Run `termio sessions list` to see handles."
+        "No session '\(token ?? "")' in this project. Run `termio sessions list` to see the links."
     }
 
     private func control(_ request: ControlRequest, ok: Bool, text: String, json: [String: Any]) -> Data {

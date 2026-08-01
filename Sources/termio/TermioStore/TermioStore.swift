@@ -433,7 +433,7 @@ final class TermioStore: ObservableObject {
         if let session = session(id), let project = project(for: id) {
             var event = SessionWatchEvent(
                 projectID: project.id,
-                handle: sessionHandle(for: session),
+                link: sessionLink(for: session),
                 status: Self.statusToken(status),
                 title: displayTitle(for: session),
                 cwd: runtimes[id]?.workingDirectory ?? "")
