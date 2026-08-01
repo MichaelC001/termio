@@ -108,6 +108,13 @@ enum Cmd {
         argv: Vec<String>,
     },
 
+    /// Bridge the framed protocol over stdin/stdout to the local daemon.
+    ///
+    /// Non-interactive: no tty, no raw mode. Run as `ssh <host> termiod stdio`,
+    /// it lets a native client speak the same framed protocol to a remote host
+    /// that it speaks to a local Unix socket. The daemon auto-starts.
+    Stdio,
+
     /// Remote (SSH) deploy and attach — see `termiod remote --help`.
     Remote {
         #[command(subcommand)]
@@ -218,6 +225,8 @@ async fn main() -> Result<()> {
                 client::attach(&target, create_if_missing, grid_diff).await
             }
         }
+
+        Cmd::Stdio => client::stdio().await,
 
         Cmd::Remote { cmd } => remote::run(cmd).await,
     }

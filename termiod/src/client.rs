@@ -35,6 +35,43 @@ pub async fn connect() -> Result<UnixStream> {
     bail!("could not reach termiod at {}", sock.display());
 }
 
+/// Transparent stdio bridge: splice this process's stdin/stdout to the local
+/// daemon socket, byte for byte, understanding no frames of its own. Run as
+/// `ssh <host> termiod stdio`, it puts the *framed protocol itself* on the SSH
+/// pipe — so a native client (Mac app, iOS) speaks the exact same messages to a
+/// remote host that it speaks to a local Unix socket, and the §C.9 "recorded
+/// transcript replays byte-identical over SSH" claim becomes real. This is what
+/// today's `ssh -t host termiod attach` never did (that ran the client on the
+/// far end; the frames stopped at the remote socket).
+///
+/// The daemon auto-starts if it is not already running, exactly like every
+/// other client verb, so first contact over SSH brings the host up.
+pub async fn stdio() -> Result<()> {
+    let stream = connect().await?;
+    let (mut socket_read, mut socket_write) = stream.into_split();
+    let mut input = tokio::io::stdin();
+    let mut output = tokio::io::stdout();
+
+    // stdin closing (the SSH pipe dropped — client detached or died) half-closes
+    // the socket so the daemon sees a clean detach and keeps the session alive.
+    let upstream = async {
+        let _ = tokio::io::copy(&mut input, &mut socket_write).await;
+        let _ = socket_write.shutdown().await;
+    };
+    // The socket closing (the session exited or the daemon went away) ends the
+    // bridge so the remote `ssh … termiod stdio` command returns.
+    let downstream = async {
+        let _ = tokio::io::copy(&mut socket_read, &mut output).await;
+        let _ = output.flush().await;
+    };
+
+    tokio::select! {
+        _ = upstream => {}
+        _ = downstream => {}
+    }
+    Ok(())
+}
+
 fn spawn_daemon() -> Result<()> {
     let exe = std::env::current_exe().context("locating termiod binary")?;
     use std::os::unix::process::CommandExt;
