@@ -120,6 +120,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // The ghostty-style right-click menu over the terminal surfaces (Copy/Paste + splits);
     // owns the rightMouseDown monitor for the app's lifetime.
     private var terminalContextMenu: TerminalContextMenu?
+    // The ⌘⌥⇧ drag-to-rearrange gesture over the panes (issue #183); owns its
+    // mouse monitors for the app's lifetime.
+    private var paneDragRearrange: PaneDragRearrange?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Dev-only: `TERMIO_TERMINAL_DEBUG=1` turns on the GhosttyTerminal
@@ -296,6 +299,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
 
         terminalContextMenu = TerminalContextMenu(store: store)
+        paneDragRearrange = PaneDragRearrange(store: store)
 
         menuBar = MenuBarController(store: store) { [weak self] id in
             // The tray's "come look at this" — same verb as a notification click
