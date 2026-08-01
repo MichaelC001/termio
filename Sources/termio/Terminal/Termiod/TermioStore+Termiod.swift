@@ -357,9 +357,14 @@ extension TermioStore {
         // cwd; we capture it here rather than guess `$HOME`. Both the URL and name
         // are single-quoted for the remote shell (built on-main before dispatch;
         // `shellQuoted` is main-actor). `BatchMode=yes` stops a stuck credential
-        // prompt from hanging the clone.
+        // prompt from hanging the clone. The trailing `cd <name> && pwd` prints
+        // the clone's absolute path WITHOUT re-embedding `name` unquoted — every
+        // use of the URL and name is single-quoted, so a hostile origin URL whose
+        // last path component carries shell metacharacters (`$(…)`, backticks)
+        // cannot break out and execute code on the remote host.
+        let quotedName = Self.shellQuoted(name)
         let remoteCommand = "cd ~ && git clone \(Self.shellQuoted(info.originURL)) "
-            + "\(Self.shellQuoted(name)) && printf '%s\\n' \"$PWD/\(name)\""
+            + "\(quotedName) && cd \(quotedName) && pwd"
         DispatchQueue.global(qos: .userInitiated).async {
             let clone = Self.runProcess(
                 "/usr/bin/ssh",

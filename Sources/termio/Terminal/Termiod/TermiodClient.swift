@@ -141,7 +141,14 @@ enum Termiod {
         static func ssh(host: String) throws -> Transport {
             var toChild = [Int32](repeating: -1, count: 2) // app writes [1] → child stdin [0]
             var fromChild = [Int32](repeating: -1, count: 2) // child stdout [1] → app reads [0]
-            guard pipe(&toChild) == 0, pipe(&fromChild) == 0 else {
+            guard pipe(&toChild) == 0 else {
+                throw TermiodClientError.daemonUnreachable("ssh:\(host)")
+            }
+            // Close the first pair before bailing, or a second-pipe failure (most
+            // likely under fd exhaustion — exactly when it happens) leaks two fds.
+            guard pipe(&fromChild) == 0 else {
+                Darwin.close(toChild[0])
+                Darwin.close(toChild[1])
                 throw TermiodClientError.daemonUnreachable("ssh:\(host)")
             }
 
@@ -173,16 +180,31 @@ enum Termiod {
         }
 
         /// Detach: closing the pipe/socket ends the attach without killing the
-        /// session, and reaps the SSH child so it can't linger.
+        /// session, and reaps the SSH child so it can't linger. Closing the fds
+        /// is synchronous (it wakes the blocked reader); reaping the SSH child is
+        /// dispatched off the caller's thread so a wedged connection can never
+        /// beachball the app — `detach()` runs on the main actor at quit, once
+        /// per session, and a blocking `waitpid` on a network-stalled ssh would
+        /// hang Cmd-Q.
         func close() {
             Darwin.close(writeDescriptor)
             if readDescriptor != writeDescriptor {
                 Darwin.close(readDescriptor)
             }
-            if let sshPid {
+            guard let sshPid else { return }
+            DispatchQueue.global(qos: .utility).async {
                 kill(sshPid, SIGTERM)
+                // Bounded, non-blocking reap: SIGTERM then poll briefly, escalate
+                // to SIGKILL, and never block indefinitely. If it still lingers,
+                // it is reparented to launchd, which reaps it.
+                for _ in 0 ..< 20 {
+                    var ignored: Int32 = 0
+                    if waitpid(sshPid, &ignored, WNOHANG) != 0 { return }
+                    usleep(50_000)
+                }
+                kill(sshPid, SIGKILL)
                 var ignored: Int32 = 0
-                waitpid(sshPid, &ignored, 0)
+                _ = waitpid(sshPid, &ignored, WNOHANG)
             }
         }
     }
@@ -659,10 +681,14 @@ final class TermiodSessionLink: @unchecked Sendable {
                                            payload: Self.resizePayload(resize.rows, resize.cols))
                 }
                 pendingResize = nil
-                if !pendingInput.isEmpty {
+                // Only a writer may inject the keystrokes buffered during connect;
+                // an observer's input would be rejected frame-by-frame by the
+                // daemon. (This client always attaches `interact` today, so it is
+                // normally the writer — this keeps it correct if observe is used.)
+                if isWriter, !pendingInput.isEmpty {
                     try sendDataLocked(pendingInput)
-                    pendingInput.removeAll(keepingCapacity: false)
                 }
+                pendingInput.removeAll(keepingCapacity: false)
                 startReader(channel.readDescriptor)
             } catch {
                 Log.termiod.error("""
