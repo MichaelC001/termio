@@ -597,6 +597,10 @@ extension TermioStore {
         projects[projectIndex].sessions.remove(at: sessionIndex)
         ptyProcesses[id]?.terminate()
         ptyProcesses[id] = nil
+        // Close Session is the destroy verb, so a termiod-backed session is
+        // killed in the daemon too — unlike quit/detach, which keeps it alive.
+        termiodLinks[id]?.killAndClose()
+        termiodLinks[id] = nil
         surfaces[id] = nil
         monitors[id] = nil
         removeRuntime(for: id)
@@ -630,6 +634,11 @@ extension TermioStore {
         guard session(id) != nil else { return }
         ptyProcesses[id]?.terminate()
         ptyProcesses[id] = nil
+        // A respawn-in-place must not leave the old daemon-side process
+        // running under the same name, or the fresh surface would reattach to
+        // it instead of spawning the replacement.
+        termiodLinks[id]?.killAndClose()
+        termiodLinks[id] = nil
         surfaces[id] = nil
         monitors[id] = nil
         processSpawnedAt[id] = nil

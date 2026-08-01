@@ -191,6 +191,13 @@ extension TermioStore {
         // (Codex, Aider/Rich) are unaffected.
         env["FORCE_HYPERLINK"] = "1"
 
+        // Opt-in termiod backend (`TERMIO_TERMIOD=1`): the session runs inside
+        // the local daemon and this app instance merely attaches, so quitting
+        // detaches instead of killing. Flag off, the in-process PTY below is
+        // created exactly as before.
+        let termiodLink: TermiodSessionLink? = Termiod.isEnabled
+            ? makeTermiodLink(for: session, argv: argv, cwd: workspacePath, env: env)
+            : nil
         // The PTY is created first so the surface's `@Sendable` write/resize
         // callbacks can capture it directly (it is thread-safe: fd writes and
         // ioctl are atomic, sinks are lock-guarded).
@@ -198,10 +205,16 @@ extension TermioStore {
         // shell's first prompt is drawn at (usually) the window's actual width
         // and the first layout pass doesn't reflow it — the reflow that mangles
         // zsh's `PROMPT_SP` line into a stray `%` (see `lastHostGridColumns`).
-        let pty = PTYProcess(argv: argv, cwd: workspacePath, env: env,
-                             cols: lastHostGridColumns, rows: lastHostGridRows)
+        let pty: PTYProcess? = termiodLink != nil
+            ? nil
+            : PTYProcess(argv: argv, cwd: workspacePath, env: env,
+                         cols: lastHostGridColumns, rows: lastHostGridRows)
         let inMemory = InMemoryTerminalSession(
             write: { data in
+                if let termiodLink {
+                    termiodLink.send(data)
+                    return
+                }
                 // Typing on the Mac reclaims the winsize from an attached
                 // phone — the size follows the device being used.
                 pty?.claimHostOwnership()
@@ -210,11 +223,18 @@ extension TermioStore {
             resize: { [weak self] viewport in
                 let columns = Int(viewport.columns)
                 let rows = Int(viewport.rows)
-                pty?.resizeFromHost(cols: columns, rows: rows)
+                if let termiodLink {
+                    termiodLink.resize(rows: rows, cols: columns)
+                } else {
+                    pty?.resizeFromHost(cols: columns, rows: rows)
+                }
                 // Remember the host grid for the next session's initial size.
                 DispatchQueue.main.async { self?.rememberHostGrid(columns: columns, rows: rows) }
             }
         )
+        if let termiodLink {
+            attachTermiodLink(termiodLink, to: inMemory, for: session)
+        }
         if let pty {
             pty.addSink { [weak inMemory] data in inMemory?.receive(data) }
             // Tap the same stream as a working-status signal (see

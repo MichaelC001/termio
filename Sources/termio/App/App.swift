@@ -124,6 +124,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Sweep up session processes a previous instance stranded (crash,
         // force-quit, dev rebuild's kill -9) before this run adds its own.
         PTYProcess.reapStrayOrphans()
+        // Termiod mode: report which persisted sessions are still alive in the
+        // daemon (and will reattach when surfaced) before any pane mounts.
+        if Termiod.isEnabled {
+            store.logTermiodRoster()
+        }
         // Task-completion notifications: the delegate must be installed before a
         // notification click can arrive, so wire it before any session runs.
         TaskNotificationCenter.shared.activate(store: store)
