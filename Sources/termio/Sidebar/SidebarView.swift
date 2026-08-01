@@ -552,6 +552,8 @@ private struct ProjectHeader: View {
         ]
         if let worktree {
             items.append(.separator)
+            items.append(cloneOnRemoteMenuItem(store: store, folder: worktree.path))
+            items.append(.separator)
             items.append(.action(worktree.pinned ? "Unpin" : "Pin") {
                 store.toggleWorktreePinned(worktree.id)
             })
@@ -569,6 +571,7 @@ private struct ProjectHeader: View {
         // Only for git repositories (a worktree needs one; "—" marks a non-repo folder).
         if project.branch != "—" {
             items.append(.action("New Worktree") { store.addWorktree(from: project.id) })
+            items.append(cloneOnRemoteMenuItem(store: store, folder: project.path))
         }
         items.append(.separator)
         items.append(.action(project.pinned ? "Unpin" : "Pin to Top") {
@@ -712,6 +715,35 @@ func remoteTerminalMenuItem(store: TermioStore) -> SidebarMenuItem {
     }
     return .submenu("New Remote Terminal", hosts.map { host in
         .action(host.alias) { store.addRemoteTerminal(host: host.alias) }
+    })
+}
+
+/// The "Clone on Remote… ▸" submenu: pick an ssh-config host, and the project's
+/// `origin` is `git clone`d **on** that host, then a remote terminal opens inside
+/// the clone. Only meaningful for a git checkout with a remote — origin presence
+/// is resolved at click time (async), because the menu is built synchronously and
+/// a git call per right-click would stall the sidebar; a folder with no origin
+/// alerts instead of silently doing nothing. An empty ssh config disables it.
+@MainActor
+func cloneOnRemoteMenuItem(store: TermioStore, folder: String) -> SidebarMenuItem {
+    let hosts = SSHConfigFile.hosts()
+    guard !hosts.isEmpty else {
+        return .submenu("Clone on Remote", [.disabled("No SSH hosts in ~/.ssh/config")])
+    }
+    return .submenu("Clone on Remote", hosts.map { host in
+        .action(host.alias) {
+            // Resolve origin/unpushed off-main, then hand off to the store action;
+            // no origin means nothing to clone, so say so rather than no-op.
+            Task { @MainActor in
+                guard let info = await GitService.cloneInfo(in: folder) else {
+                    store.presentRemoteSetupFailure(
+                        host: host.alias,
+                        message: "This folder has no git \"origin\" remote to clone.")
+                    return
+                }
+                store.cloneOnRemote(host: host.alias, info: info)
+            }
+        }
     })
 }
 

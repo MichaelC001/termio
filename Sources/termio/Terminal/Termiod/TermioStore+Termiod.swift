@@ -293,6 +293,100 @@ extension TermioStore {
         alert.alertStyle = .warning
         alert.runModal()
     }
+
+    // MARK: - Clone on Remote
+
+    /// Clones a project's `origin` **onto** `host` (git clone runs on the remote,
+    /// not an rsync from the Mac — decided with the user), then opens a remote
+    /// terminal inside the freshly cloned directory. The clone is `ssh <host> 'git
+    /// clone <url> <name>'`, so the remote needs git and credentials for that
+    /// origin; a non-zero exit surfaces the remote's stderr verbatim (auth failure,
+    /// "already exists", …). If the local branch is ahead of its upstream those
+    /// commits won't be on the remote clone, so the user is warned first.
+    ///
+    /// `info` comes from `GitService.cloneInfo` (origin URL, derived repo name,
+    /// unpushed count). The whole feature is the termiod backend, so the flag-off
+    /// case explains instead of opening a dead pane.
+    func cloneOnRemote(host: String, info: GitService.CloneInfo) {
+        let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty else { return }
+        guard Termiod.isEnabled else {
+            presentTermiodDisabledAlert()
+            return
+        }
+
+        // Unpushed commits live only on this Mac and won't be in a fresh clone —
+        // warn before we clone what the remote can actually see, so the divergence
+        // isn't a silent surprise. `nil` (no upstream) skips the warning.
+        if let ahead = info.unpushedCommits, ahead > 0 {
+            let warn = NSAlert()
+            warn.messageText = "\(ahead) unpushed commit\(ahead == 1 ? "" : "s") won't be cloned"
+            warn.informativeText = "The remote clones from \(info.originURL). "
+                + "Commits you haven't pushed stay on this Mac. Clone anyway?"
+            warn.alertStyle = .warning
+            warn.addButton(withTitle: "Clone Anyway")
+            warn.addButton(withTitle: "Cancel")
+            guard warn.runModal() == .alertFirstButtonReturn else { return }
+        }
+
+        // The remote must have termiod for the terminal we open afterwards, so run
+        // the same deploy-if-missing gate first; it doubles as a reachability check
+        // before we attempt the (slower) clone.
+        ensureRemoteReady(host: host) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.presentRemoteSetupFailure(host: host, message: error.message)
+            case .success:
+                self.performRemoteClone(host: host, info: info)
+            }
+        }
+    }
+
+    /// The clone half: `ssh <host> git clone <url> <name>` off the main thread with
+    /// a "Cloning…" HUD, then opens a remote terminal in `~/<name>` on success.
+    private func performRemoteClone(host: String, info: GitService.CloneInfo) {
+        let hud = RemoteSetupHUD(message: "Cloning \(info.repositoryName) on \(host)…")
+        hud.show()
+        let name = info.repositoryName
+        // Clone into `$HOME` (an explicit `cd ~` first, so the destination is
+        // stable regardless of the ssh command's default directory), then print
+        // the clone's absolute path on its own trailing line. termiod spawns the
+        // shell with a raw `chdir` (no `~`/relative resolution — see
+        // termiod/src/session.rs `Pty::spawn`), so the terminal needs an absolute
+        // cwd; we capture it here rather than guess `$HOME`. Both the URL and name
+        // are single-quoted for the remote shell (built on-main before dispatch;
+        // `shellQuoted` is main-actor). `BatchMode=yes` stops a stuck credential
+        // prompt from hanging the clone.
+        let remoteCommand = "cd ~ && git clone \(Self.shellQuoted(info.originURL)) "
+            + "\(Self.shellQuoted(name)) && printf '%s\\n' \"$PWD/\(name)\""
+        DispatchQueue.global(qos: .userInitiated).async {
+            let clone = Self.runProcess(
+                "/usr/bin/ssh",
+                ["-o", "BatchMode=yes", host, remoteCommand]
+            )
+            DispatchQueue.main.async {
+                hud.dismiss()
+                guard let clone, clone.exitCode == 0 else {
+                    let detail = clone.map { output in
+                        (output.standardError + output.standardOutput)
+                            .split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+                            .last(where: { !$0.isEmpty }) ?? "clone failed"
+                    } ?? "couldn't run ssh"
+                    self.presentRemoteSetupFailure(
+                        host: host, message: "git clone failed on \(host).\n\(detail)")
+                    return
+                }
+                // The last non-empty stdout line is the absolute clone path we
+                // printed. termiod is already deployed (ensureRemoteReady ran), so
+                // create the session directly rather than re-probing.
+                let clonedPath = clone.standardOutput
+                    .split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+                    .last(where: { !$0.isEmpty })
+                self.createRemoteTerminalSession(host: host, cwd: clonedPath, title: name)
+            }
+        }
+    }
 }
 
 /// A small borderless "Setting up host…" panel shown while a remote deploy/clone
