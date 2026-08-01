@@ -192,11 +192,35 @@ aarch64-musl (`ukvps`). Hands-on Mac→Linux test steps: `DEPLOY.md`.
    transcript replays byte-identical over SSH" acceptance test is untestable.
    This small slice unlocks all three, plus Mac-as-remote-host (system OpenSSH
    stays the trust plane; termio never ships an SSH server — §H #8).
-2. **Mac app integration (#170)** — the epic's actual product step: termiod as
-   a launchd user agent on the Mac, termio.app attaching over the Unix socket
-   (native Swift client of this protocol; the app's libghostty consumes `S`/
-   `D` directly). Sessions survive app quit/self-update. Bigger lift, Swift
-   side; coordinate with the app codebase, not this crate alone.
+2. **Mac app integration (#170) — IN PROGRESS (M2+M3 landed 2026-08-01,
+   `29de132` + `508ace2`).** termio.app is now an opt-in attach client of the
+   local daemon (`TERMIO_TERMIOD=1`), the demo's whole point — quit the app,
+   the agent keeps running; relaunch, it reattaches with a clean repaint.
+   - **M2** (`29de132`): sessions run inside the daemon (attach with
+     `create_if_missing`, named by the app session UUID so relaunch rejoins by
+     name — same pid); output enters the surface at the same
+     `InMemoryTerminalSession.receive` seam the in-process PTY feeds; quit →
+     `detach()`, never kill; flag-off path is byte-identical to today. All new
+     code in `Sources/termio/Terminal/Termiod/` (`TermiodClient.swift`,
+     `TermioStore+Termiod.swift`).
+   - **M3** (`508ace2`): attach offers the `snapshot` cap; the `S` frame is
+     decoded (`TermiodSnapshot.swift`) and synthesised into a truecolor ANSI
+     repaint through the same seam, before live `D` (single serial reader
+     preserves order, no hold-back). Replaces M2's ring-replay tear with a
+     clean frame; the resize-barrier keyframe repaints idempotently.
+     Colors arrive resolved; `attributes` is reserved-zero so bold/underline
+     aren't carried yet.
+   - **Verified:** `swift build` green; decode+render unit-checked against both
+     a hand-built payload and a **real captured daemon S frame** (content +
+     ordering). **NOT yet verified live in the GUI** — the prod app wedged on
+     the SwiftUI main thread during M2 testing (see [[termio-split-flicker]]);
+     the ⌘Q→relaunch demo needs a running app to record.
+   - **Remaining for #170:** launchd user-agent plist (so the daemon is up
+     before the app and survives reboots) · `Close Session` verb wired to
+     `kill` (destroy path) · self-update relaunch story · the live GUI demo
+     recording. The `--grid-diff`/scrollback planes stay out of the app until a
+     deeper libghostty integration (a byte-stream surface can't inject history
+     above the viewport nor consume dirty-row diffs).
 3. **QUIC binding (§D.1)** — stays gated on measurement by design. With the
    `G` plane now real, re-measure the three motivating numbers (p95 echo under
    loss, cold-exec latency, roaming) before spending anything here.
