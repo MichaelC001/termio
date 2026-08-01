@@ -18,6 +18,15 @@ enum Termiod {
     /// mid-run change could not be honored anyway.
     static let isEnabled = ProcessInfo.processInfo.environment["TERMIO_TERMIOD"] == "1"
 
+    /// When set (with the flag on), new sessions run on this SSH host — reached
+    /// via `ssh <host> termiod stdio`, the exact same framed protocol as local.
+    /// The remote must already have `termiod` deployed (`termiod remote deploy`).
+    /// A single demo/dev host; per-session host selection is a UI follow-up.
+    static let remoteHost: String? = {
+        let host = ProcessInfo.processInfo.environment["TERMIO_TERMIOD_REMOTE"]
+        return (host?.isEmpty == false) ? host : nil
+    }()
+
     static let protocolVersion: UInt32 = 1
 
     /// Mirrors termiod/src/paths.rs exactly — both sides must derive the same
@@ -93,6 +102,89 @@ enum Termiod {
             if let descriptor = openSocket() { return descriptor }
         }
         throw TermiodClientError.daemonUnreachable(socketPath())
+    }
+
+    /// The remote `termiod` path invoked over SSH. Matches the CLI's deploy
+    /// target (`termiod remote deploy` installs to `~/.local/bin/termiod`);
+    /// overridable so a non-standard install still works.
+    static func remoteBinary() -> String {
+        ProcessInfo.processInfo.environment["TERMIOD_REMOTE_BIN"]
+            ?? "$HOME/.local/bin/termiod"
+    }
+
+    /// A bidirectional byte channel to a daemon. Local is one Unix-socket fd
+    /// used for both directions; SSH is a pipe pair around an `ssh <host>
+    /// termiod stdio` child — the exact same framed protocol either way, which
+    /// is the whole point of the stdio bridge. The frame helpers read from
+    /// `readDescriptor` and write to `writeDescriptor`.
+    final class Transport {
+        let readDescriptor: Int32
+        let writeDescriptor: Int32
+        private let sshPid: pid_t?
+
+        private init(readDescriptor: Int32, writeDescriptor: Int32, sshPid: pid_t?) {
+            self.readDescriptor = readDescriptor
+            self.writeDescriptor = writeDescriptor
+            self.sshPid = sshPid
+        }
+
+        /// Local Unix socket; the same fd serves both directions.
+        static func local() throws -> Transport {
+            let descriptor = try connectWithAutostart()
+            return Transport(readDescriptor: descriptor, writeDescriptor: descriptor, sshPid: nil)
+        }
+
+        /// `ssh <host> termiod stdio`: the framed protocol rides the SSH pipe,
+        /// so the remote daemon (auto-starting on first contact) is reached
+        /// with the identical messages. System OpenSSH is the trust plane; no
+        /// keys or crypto live in termio.
+        static func ssh(host: String) throws -> Transport {
+            var toChild = [Int32](repeating: -1, count: 2) // app writes [1] → child stdin [0]
+            var fromChild = [Int32](repeating: -1, count: 2) // child stdout [1] → app reads [0]
+            guard pipe(&toChild) == 0, pipe(&fromChild) == 0 else {
+                throw TermiodClientError.daemonUnreachable("ssh:\(host)")
+            }
+
+            var fileActions: posix_spawn_file_actions_t?
+            posix_spawn_file_actions_init(&fileActions)
+            defer { posix_spawn_file_actions_destroy(&fileActions) }
+            posix_spawn_file_actions_adddup2(&fileActions, toChild[0], 0)
+            posix_spawn_file_actions_adddup2(&fileActions, fromChild[1], 1)
+            // Child inherits stderr for SSH diagnostics; close the pipe ends it
+            // must not keep open.
+            posix_spawn_file_actions_addclose(&fileActions, toChild[1])
+            posix_spawn_file_actions_addclose(&fileActions, fromChild[0])
+
+            let command = "\(remoteBinary()) stdio"
+            let arguments = ["ssh", "-o", "ServerAliveInterval=15", host, command]
+            let argv: [UnsafeMutablePointer<CChar>?] = arguments.map { strdup($0) } + [nil]
+            defer { argv.forEach { free($0) } }
+
+            var pid: pid_t = 0
+            let status = posix_spawnp(&pid, "ssh", &fileActions, nil, argv, environ)
+            Darwin.close(toChild[0])
+            Darwin.close(fromChild[1])
+            guard status == 0 else {
+                Darwin.close(toChild[1])
+                Darwin.close(fromChild[0])
+                throw TermiodClientError.daemonSpawnFailed(status)
+            }
+            return Transport(readDescriptor: fromChild[0], writeDescriptor: toChild[1], sshPid: pid)
+        }
+
+        /// Detach: closing the pipe/socket ends the attach without killing the
+        /// session, and reaps the SSH child so it can't linger.
+        func close() {
+            Darwin.close(writeDescriptor)
+            if readDescriptor != writeDescriptor {
+                Darwin.close(readDescriptor)
+            }
+            if let sshPid {
+                kill(sshPid, SIGTERM)
+                var ignored: Int32 = 0
+                waitpid(sshPid, &ignored, 0)
+            }
+        }
     }
 
     /// Spawns `termiod serve` in its own session (`POSIX_SPAWN_SETSID`) with
@@ -350,7 +442,7 @@ enum Termiod {
     /// control channel negotiates nothing. `scrollback`/`grid_diff` stay
     /// unoffered — a byte-stream surface can neither inject history above the
     /// viewport nor consume dirty-row diffs (a deeper libghostty integration).
-    static func performHello(_ descriptor: Int32, role: String, caps: [String] = []) throws {
+    static func performHello(_ transport: Transport, role: String, caps: [String] = []) throws {
         let hello = HelloOperation(
             proto: protocolVersion,
             minProto: protocolVersion,
@@ -358,8 +450,8 @@ enum Termiod {
             caps: caps,
             client: "termio-mac/dev"
         )
-        try writeFrame(descriptor, kind: .control, payload: encodeControl(hello))
-        let reply = try readFrame(descriptor)
+        try writeFrame(transport.writeDescriptor, kind: .control, payload: encodeControl(hello))
+        let reply = try readFrame(transport.readDescriptor)
         guard reply.kind == .control else { throw TermiodClientError.malformedFrame }
         switch try decodeControl(reply.payload) {
         case .helloOk:
@@ -376,20 +468,21 @@ enum Termiod {
     /// One-shot control request: connect, hello as `control`, run `body`,
     /// close. Used for `list` at startup and `kill` on Close Session.
     private static func withControlChannel<Result>(
-        _ body: (Int32) throws -> Result
+        host: String? = nil,
+        _ body: (Transport) throws -> Result
     ) throws -> Result {
-        let descriptor = try connectWithAutostart()
-        defer { close(descriptor) }
-        try performHello(descriptor, role: "control")
-        return try body(descriptor)
+        let transport = try host.map(Transport.ssh(host:)) ?? Transport.local()
+        defer { transport.close() }
+        try performHello(transport, role: "control")
+        return try body(transport)
     }
 
-    static func listSessions() throws -> [SessionInformation] {
-        try withControlChannel { descriptor in
-            try writeFrame(descriptor, kind: .control,
+    static func listSessions(host: String? = nil) throws -> [SessionInformation] {
+        try withControlChannel(host: host) { transport in
+            try writeFrame(transport.writeDescriptor, kind: .control,
                            payload: encodeControl(ListOperation(seq: 1)))
             while true {
-                let frame = try readFrame(descriptor)
+                let frame = try readFrame(transport.readDescriptor)
                 guard frame.kind == .control else { continue }
                 switch try decodeControl(frame.payload) {
                 case .sessions(let payload):
@@ -406,15 +499,15 @@ enum Termiod {
     /// Ends a session for real — the explicit user-facing destroy verb, never
     /// part of quit/detach. The target may be a termiod id or name (the app
     /// uses the session UUID it named the session with).
-    static func killSession(target: String) {
+    static func killSession(target: String, host: String? = nil) {
         DispatchQueue.global(qos: .utility).async {
             do {
-                try withControlChannel { descriptor in
-                    try writeFrame(descriptor, kind: .control,
+                try withControlChannel(host: host) { transport in
+                    try writeFrame(transport.writeDescriptor, kind: .control,
                                    payload: encodeControl(KillOperation(id: target, seq: 1)))
                     // One reply either way; "no such session" just means the
                     // process already exited, which is fine for a destroy.
-                    _ = try readFrame(descriptor)
+                    _ = try readFrame(transport.readDescriptor)
                 }
             } catch {
                 Log.termiod.error("""
@@ -487,11 +580,15 @@ final class TermiodSessionLink: @unchecked Sendable {
 
     private let sessionName: String
     private let specification: Termiod.CreateSpecification
+    /// When set, the session lives on this SSH host (reached via
+    /// `ssh <host> termiod stdio`); when nil, on the local daemon. The framed
+    /// protocol and every other field are identical either way.
+    private let remoteHost: String?
     private let initialRows: UInt16
     private let initialCols: UInt16
     private let startedAt = Date()
 
-    private var descriptor: Int32 = -1
+    private var transport: Termiod.Transport?
     private var attached = false
     private var isWriter = false
     /// Keystrokes typed during the connect/attach window — flushed, in order,
@@ -517,10 +614,12 @@ final class TermiodSessionLink: @unchecked Sendable {
 
     init(sessionName: String,
          specification: Termiod.CreateSpecification,
+         remoteHost: String? = nil,
          rows: Int,
          cols: Int) {
         self.sessionName = sessionName
         self.specification = specification
+        self.remoteHost = remoteHost
         initialRows = UInt16(clamping: rows)
         initialCols = UInt16(clamping: cols)
     }
@@ -530,17 +629,18 @@ final class TermiodSessionLink: @unchecked Sendable {
     func start() {
         workQueue.async { [self] in
             do {
-                let socket = try Termiod.connectWithAutostart()
-                descriptor = socket
-                try Termiod.performHello(socket, role: "attach", caps: ["snapshot"])
+                let channel = try remoteHost.map(Termiod.Transport.ssh(host:))
+                    ?? Termiod.Transport.local()
+                transport = channel
+                try Termiod.performHello(channel, role: "attach", caps: ["snapshot"])
                 let payload = try Termiod.attachPayload(
                     target: sessionName,
                     specification: specification,
                     rows: pendingResize?.rows ?? initialRows,
                     cols: pendingResize?.cols ?? initialCols
                 )
-                try Termiod.writeFrame(socket, kind: .control, payload: payload)
-                let reply = try Termiod.readFrame(socket)
+                try Termiod.writeFrame(channel.writeDescriptor, kind: .control, payload: payload)
+                let reply = try Termiod.readFrame(channel.readDescriptor)
                 guard reply.kind == .control,
                       case .attached(let attachedPayload) = try Termiod.decodeControl(reply.payload)
                 else {
@@ -550,11 +650,12 @@ final class TermiodSessionLink: @unchecked Sendable {
                 isWriter = attachedPayload.writer
                 Log.termiod.info("""
                 attached session=\(self.sessionName, privacy: .public) \
+                host=\(self.remoteHost ?? "local", privacy: .public) \
                 writer=\(attachedPayload.writer, privacy: .public) \
                 \(attachedPayload.rows, privacy: .public)x\(attachedPayload.cols, privacy: .public)
                 """)
                 if let resize = pendingResize, isWriter {
-                    try Termiod.writeFrame(socket, kind: .resize,
+                    try Termiod.writeFrame(channel.writeDescriptor, kind: .resize,
                                            payload: Self.resizePayload(resize.rows, resize.cols))
                 }
                 pendingResize = nil
@@ -562,7 +663,7 @@ final class TermiodSessionLink: @unchecked Sendable {
                     try sendDataLocked(pendingInput)
                     pendingInput.removeAll(keepingCapacity: false)
                 }
-                startReader(socket)
+                startReader(channel.readDescriptor)
             } catch {
                 Log.termiod.error("""
                 attach session=\(self.sessionName, privacy: .public) failed: \
@@ -603,9 +704,9 @@ final class TermiodSessionLink: @unchecked Sendable {
             }
             // Observers must not resize the shared PTY out from under the
             // writer; the daemon would reject the frame anyway.
-            guard isWriter else { return }
+            guard isWriter, let transport else { return }
             do {
-                try Termiod.writeFrame(descriptor, kind: .resize,
+                try Termiod.writeFrame(transport.writeDescriptor, kind: .resize,
                                        payload: Self.resizePayload(size.rows, size.cols))
             } catch {
                 Log.termiod.error("""
@@ -621,12 +722,12 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// can rely on the detach frame being out before the process dies.
     func detach() {
         workQueue.sync { [self] in
-            guard !closed, descriptor >= 0 else {
+            guard !closed, let transport else {
                 closed = true
                 return
             }
             if let payload = try? Termiod.detachPayload() {
-                try? Termiod.writeFrame(descriptor, kind: .control, payload: payload)
+                try? Termiod.writeFrame(transport.writeDescriptor, kind: .control, payload: payload)
             }
             teardownLocked()
         }
@@ -634,17 +735,19 @@ final class TermiodSessionLink: @unchecked Sendable {
 
     /// The destroy verb: asks the daemon to kill the session, then closes.
     func killAndClose() {
-        Termiod.killSession(target: sessionName)
+        Termiod.killSession(target: sessionName, host: remoteHost)
         workQueue.async { [self] in
             teardownLocked()
         }
     }
 
     private func sendDataLocked(_ data: Data) throws {
+        guard let transport else { return }
         var offset = 0
         while offset < data.count {
             let end = min(offset + Termiod.maximumDataFrameSize, data.count)
-            try Termiod.writeFrame(descriptor, kind: .data, payload: data.subdata(in: offset ..< end))
+            try Termiod.writeFrame(transport.writeDescriptor, kind: .data,
+                                   payload: data.subdata(in: offset ..< end))
             offset = end
         }
     }
@@ -660,10 +763,8 @@ final class TermiodSessionLink: @unchecked Sendable {
 
     private func teardownLocked() {
         closed = true
-        if descriptor >= 0 {
-            close(descriptor)
-            descriptor = -1
-        }
+        transport?.close()
+        transport = nil
     }
 
     /// Must run on `workQueue` — `exitDelivered` is queue-confined state.

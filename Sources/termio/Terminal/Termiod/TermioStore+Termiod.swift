@@ -14,16 +14,28 @@ extension TermioStore {
     /// session with no live counterpart spawns fresh.
     func makeTermiodLink(for session: Session, argv: [String], cwd: String,
                          env: [String: String]) -> TermiodSessionLink {
-        let specification = Termiod.CreateSpecification(
-            cwd: cwd,
-            argv: argv,
-            env: env.map { [$0.key, $0.value] },
-            rows: UInt16(clamping: lastHostGridRows),
-            cols: UInt16(clamping: lastHostGridColumns)
-        )
+        // A remote session runs on the VPS, so the Mac's cwd, PATH-laden env,
+        // and shell path are all wrong there — hand the remote its own login
+        // shell (empty spec) and let it set up its own environment. Local
+        // sessions keep the full spec, unchanged.
+        let remoteHost = Termiod.remoteHost
+        let specification = remoteHost == nil
+            ? Termiod.CreateSpecification(
+                cwd: cwd,
+                argv: argv,
+                env: env.map { [$0.key, $0.value] },
+                rows: UInt16(clamping: lastHostGridRows),
+                cols: UInt16(clamping: lastHostGridColumns))
+            : Termiod.CreateSpecification(
+                cwd: "",
+                argv: [],
+                env: [],
+                rows: UInt16(clamping: lastHostGridRows),
+                cols: UInt16(clamping: lastHostGridColumns))
         return TermiodSessionLink(
             sessionName: session.id.uuidString,
             specification: specification,
+            remoteHost: remoteHost,
             rows: lastHostGridRows,
             cols: lastHostGridColumns
         )
@@ -69,7 +81,7 @@ extension TermioStore {
         })
         DispatchQueue.global(qos: .utility).async {
             do {
-                let live = try Termiod.listSessions()
+                let live = try Termiod.listSessions(host: Termiod.remoteHost)
                 for information in live where information.alive {
                     let verdict = persistedNames.contains(information.name)
                         ? "will reattach" : "no matching app session"
