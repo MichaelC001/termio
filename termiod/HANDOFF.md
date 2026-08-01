@@ -192,11 +192,20 @@ aarch64-musl (`ukvps`). Hands-on Mac→Linux test steps: `DEPLOY.md`.
    through the bridge and asserts byte-identical ordering — the §C.9 claim is
    now real. The daemon auto-starts like every other verb. **Next, to make
    remote work IN THE APP** (the differentiated demo — agent runs on a Linux
-   box, you attach from the Mac): give the Swift `TermiodSessionLink` a
-   transport seam so it can connect over `ssh <host> termiod stdio` instead of
-   the local Unix socket — the whole M2/M3 client (attach, snapshot repaint,
-   detach-not-kill) is reused unchanged; only the pipe differs. System OpenSSH
-   stays the trust plane; termio never ships an SSH server (§H #8).
+   box, you attach from the Mac): **DONE (`b91d180`, 2026-08-01).**
+   `TermiodSessionLink` now has a transport seam (`Termiod.Transport`): local
+   Unix socket, or an SSH pipe to `ssh <host> termiod stdio`. Set
+   `TERMIO_TERMIOD_REMOTE=<host>` with the flag on → new sessions run on that
+   Linux host, the Mac attaches over SSH; the whole M2/M3 client (attach,
+   snapshot repaint, detach-not-kill) reused unchanged, only the pipe differs.
+   Verified end-to-end against the real `ukvps` VPS: the Swift SSH transport
+   does hello → attached → S snapshot (24×80, decoded) → ready through
+   `ssh ukvps termiod stdio`. System OpenSSH is the trust plane; termio never
+   ships an SSH server (§H #8). **Remaining for the app remote demo:** a real
+   UI to pick the host per session (today it's one env-configured host); remote
+   sessions currently spawn a plain login shell (agent-on-remote — e.g. `claude`
+   on the VPS — needs argv/env wired for the remote, and the agent installed
+   there); the live GUI recording.
    Verification caveat worth keeping: driving the bridge from a Python
    `subprocess` pipe is flaky at startup (a harness-side stdin/stdout timing
    race, NOT a bridge bug — direct-socket and bridge both pass 6/6 on hello,
