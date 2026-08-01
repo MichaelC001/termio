@@ -712,7 +712,7 @@ extension TermioStore {
             + (transcriptLinesGrown == 1 ? "" : "s")
         var event = SessionWatchEvent(
             projectID: project.id,
-            handle: sessionHandle(for: session),
+            link: sessionLink(for: session),
             status: "stalled",
             title: displayTitle(for: session),
             cwd: runtimes[id]?.workingDirectory ?? "")

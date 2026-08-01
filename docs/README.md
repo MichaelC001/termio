@@ -10,7 +10,7 @@ page when you browse `docs/`.
   `competitive-analysis/`, …) are just loose grouping — the authoritative
   category is the front matter `type`, **not** the path.
 - **Product promo assets** (App Store shots, social covers) stay under
-  `maketing/` in this repo. **Strategy / pitch markdown** lives in the sibling
+  `marketing/` in this repo. **Strategy / pitch markdown** lives in the sibling
   `pitch` repo: `/Users/yuanjiwei/Documents/GitHub/pitch/termio`.
 - Each doc declares: `title`, `status`, `type`, `created`/`updated`, and optional
   `related`. The front matter is the **single source of truth** for status —
@@ -80,6 +80,7 @@ from the real front matter).
 | draft | design | [Mac retention analytics (no app changes)](design/mac-retention-analytics.md) |
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/remote-projects.md) |
 | draft | design | [Session Daemon Architecture (termiod — one model for local, remote, mobile)](design/session-daemon-architecture.md) |
+| draft | design | [Session deep links (termio:// addresses)](design/session-deep-link.md) |
 | draft | design | [Sidebar scroll performance — per-session runtime state](design/sidebar-scroll-performance.md) |
 | draft | design | [termiod — Agent-native session mux](design/termiod-session-mux.md) |
 | draft | design | [termiod Session Protocol](design/termiod-session-protocol.md) |

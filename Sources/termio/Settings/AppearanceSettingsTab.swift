@@ -52,9 +52,16 @@ struct AppearanceSettingsTab: View {
                 Stepper(value: $settings.fontSize, in: 8...32, step: 1) {
                     Text("Size: \(Int(settings.fontSize)) pt")
                 }
+                Stepper(value: $settings.codeLineHeight, in: 1.0...2.0, step: 0.1) {
+                    Text("Line height: \(settings.codeLineHeight, specifier: "%.1f")×")
+                }
                 Toggle("Thicken glyphs", isOn: $settings.fontThicken)
             } header: {
                 SectionHeaderLabel(title: "Font")
+            } footer: {
+                Text("Line height applies to the file editor and diffs; the terminal keeps the font's own.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section {
                 Picker("Style", selection: $settings.cursorStyle) {

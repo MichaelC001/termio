@@ -225,7 +225,8 @@ private struct PRFileDiffBody: View {
                     expanded.insert(id)
                     self.document = DiffDocument.build(
                         rows: rows, expanded: expanded,
-                        codeFont: settings.resolvedTerminalFont())
+                        codeFont: settings.resolvedTerminalFont(),
+                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
                 },
                 onWalk: onWalk,
                 onClose: onClose
@@ -254,7 +255,8 @@ private struct PRFileDiffBody: View {
         document = parsed.isEmpty
             ? nil
             : DiffDocument.build(rows: parsed, expanded: expanded,
-                                 codeFont: settings.resolvedTerminalFont())
+                                 codeFont: settings.resolvedTerminalFont(),
+                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
         isLoading = false
         await buildStyledLines(parsed)
     }
@@ -430,13 +432,15 @@ private struct FileDiffCard: View {
         document = parsed.isEmpty
             ? nil
             : DiffDocument.build(rows: parsed, expanded: expanded,
-                                 codeFont: settings.resolvedTerminalFont())
+                                 codeFont: settings.resolvedTerminalFont(),
+                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
         await buildStyled(parsed)
     }
 
     private func rebuildDocument() {
         document = DiffDocument.build(rows: rows, expanded: expanded,
-                                      codeFont: settings.resolvedTerminalFont())
+                                      codeFont: settings.resolvedTerminalFont(),
+                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
     }
 
     private func buildStyled(_ parsed: [DiffRow]) async {

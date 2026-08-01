@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import GhosttyTerminal
 import Sparkle
 import SwiftUI
 import TermioShared
@@ -119,8 +120,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // The ghostty-style right-click menu over the terminal surfaces (Copy/Paste + splits);
     // owns the rightMouseDown monitor for the app's lifetime.
     private var terminalContextMenu: TerminalContextMenu?
+    // The ⌘⌥⇧ drag-to-rearrange gesture over the panes (issue #183); owns its
+    // mouse monitors for the app's lifetime.
+    private var paneDragRearrange: PaneDragRearrange?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Dev-only: `TERMIO_TERMINAL_DEBUG=1` turns on the GhosttyTerminal
+        // wrapper's own lifecycle + metrics diagnostics, printed to stdout.
+        if AppChannel.isDev,
+           ProcessInfo.processInfo.environment["TERMIO_TERMINAL_DEBUG"] != nil {
+            TerminalDebugLog.isEnabled = true
+            TerminalDebugLog.categories = [.lifecycle, .metrics]
+        }
+        // Dev-only: focus-independent window snapshot for automated UI debugging
+        // (see DebugWindowSnapshot).
+        if AppChannel.isDev { DebugWindowSnapshot.installTrigger() }
         // Sweep up session processes a previous instance stranded (crash,
         // force-quit, dev rebuild's kill -9) before this run adds its own.
         PTYProcess.reapStrayOrphans()
@@ -290,6 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
 
         terminalContextMenu = TerminalContextMenu(store: store)
+        paneDragRearrange = PaneDragRearrange(store: store)
 
         menuBar = MenuBarController(store: store) { [weak self] id in
             // The tray's "come look at this" — same verb as a notification click
@@ -502,12 +517,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return path
     }
 
-    /// Entry point for the `termio` CLI: macOS delivers the folder passed to
-    /// `open -b sh.termio.app <dir>` here. Because termio is single-instance, an
+    /// Entry point for the `termio` CLI and for session deep links: macOS
+    /// delivers both the folder passed to `open -b sh.termio.app <dir>` and any
+    /// clicked `termio://` link here. Because termio is single-instance, an
     /// already-running app receives this in place, so the project opens in the
     /// existing window rather than spawning a second one.
     func application(_ application: NSApplication, open urls: [URL]) {
-        openProjects(at: urls)
+        for url in urls where url.scheme == AppChannel.urlScheme {
+            store.openSessionLink(url)
+        }
+        let directories = urls.filter { $0.scheme != AppChannel.urlScheme }
+        if !directories.isEmpty { openProjects(at: directories) }
     }
 
     /// Adds each directory as a project in the one shared store and brings the
@@ -1000,6 +1020,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     .environmentObject(store)
                     .environmentObject(settings)
             ))
+            // No SwiftUI-derived sizing constraints: the host is pinned to the content area
+            // below, and the default `.standardBounds` options let auto layout satisfy the
+            // root view's ideal size by resizing the *window* — the just-closed detail is an
+            // EmptyView (ideal height 0) for the one runloop before this host is torn down,
+            // which crushed the whole window to a ~90pt strip.
+            host.sizingOptions = []
             host.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(host, positioned: .above, relativeTo: nil)
             // Pin the leading edge to the *content* area (the terminal/inspector region), not the

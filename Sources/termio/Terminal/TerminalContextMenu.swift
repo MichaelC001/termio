@@ -95,12 +95,12 @@ final class TerminalContextMenu: NSObject {
         // `paste_from_clipboard` binding so bracketed paste is preserved.
         menu.addItem(surfaceItem("Copy", action: "copy:", symbol: "doc.on.doc"))
         menu.addItem(surfaceItem("Paste", action: "paste:", symbol: "doc.on.clipboard"))
-        // The session's CLI handle (`claude@ab12cd34`), shown verbatim in the
-        // title — the exact string `termio sessions send/read` takes, so wiring
-        // one agent to drive another is a right-click instead of a `list`
-        // round-trip.
-        if let handle = clickedHandle {
-            menu.addItem(storeItem("Copy “\(handle)”", action: #selector(copyHandle), symbol: "at"))
+        // The session's deep link (`termio://session/<uuid>`) — the canonical
+        // address every `termio sessions` command takes and the form that stays
+        // self-describing when pasted into an agent prompt, so wiring one agent
+        // to drive another is a right-click instead of a `list` round-trip.
+        if clickedSessionID != nil {
+            menu.addItem(storeItem("Copy Session Link", action: #selector(copyLink), symbol: "link"))
         }
         menu.addItem(.separator())
         menu.addItem(storeItem("Split Right", action: #selector(splitRight), symbol: "rectangle.split.2x1"))
@@ -165,18 +165,11 @@ final class TerminalContextMenu: NSObject {
         clickedView.flatMap(sessionID(for:))
     }
 
-    /// The clicked session's CLI handle (`<agent>@<8-char-id>`), the address
-    /// every `termio sessions` command takes.
-    private var clickedHandle: String? {
+    @objc private func copyLink() {
         guard let store, let session = clickedSessionID.flatMap(store.session(_:))
-        else { return nil }
-        return store.sessionHandle(for: session)
-    }
-
-    @objc private func copyHandle() {
-        guard let handle = clickedHandle else { return }
+        else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(handle, forType: .string)
+        NSPasteboard.general.setString(store.sessionLink(for: session), forType: .string)
     }
 
     @objc private func splitRight() { store?.splitSelectedPane(.horizontal) }

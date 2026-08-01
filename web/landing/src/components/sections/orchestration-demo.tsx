@@ -18,10 +18,10 @@ type TranscriptLine = {
   text?: string;
   prompt?: boolean;
   // Output color semantics: plain (undefined) = neutral status text,
-  // "attention" = needs-you amber, "done" = completion sky — matching the
-  // node-status palette on the left so the colors mean the same thing on
-  // both sides.
-  tone?: "attention" | "done";
+  // "done" = completion sky, matching the done dot on the left. needs-you
+  // moments stay neutral in the transcript — only the left status dot goes
+  // amber (colored text read as noise in the code pane).
+  tone?: "done";
   blank?: boolean;
   id?: number; // stable key so a freshly-pushed line animates in exactly once
 };
@@ -42,23 +42,31 @@ type Frame = {
   pulse: Pulse | null;
 };
 
-// Section palette — no green. Neutral light for "working" (a data packet
-// traveling the beam), sky for "done", amber for "needs-you".
-const ACTIVE = "#e2e8f0";
-const AMBER = "#fbbf24";
-const SKY = "#7dd3fc";
+// Section palette — three hue families and nothing else: slate for neutrals
+// (window ink, idle/working), sky for "done", amber for "needs-you"; the pill
+// bases are aurora-tinted blue-greys (#d8e4ee/#c8d7e5) so they sit between the
+// dark pane and the slate-900 labels. Each status hue has two steps: a bright
+// one for the dark pane (beam pulses, transcript text) and a solid -500 for
+// the dots on the light pills. No green anywhere.
+const ACTIVE = "#e2e8f0"; // slate-200 — packet traveling the beam
+const AMBER = "#fbbf24"; // amber-400 — needs-you on dark (beam)
+const SKY = "#7dd3fc"; // sky-300 — done on dark (beam + transcript text)
 
 // The five workers, in pipeline order (index = story order = top-to-bottom in
 // the graph). Each drives one stage of shipping a change; the middle worker
 // (y=170) gets the straight beam. `name` keys the real brand logo.
-type Worker = { name: string; handle: string; y: number };
+// Sessions are addressed by termio://session/<uuid> links since 8b38709 (the
+// <agent>@<id> handle is gone); `id` is the first uuid segment of each demo
+// session's link — bare ids are valid CLI targets, and short enough that the
+// longest transcript line stays under ~70 chars (the right pane clips longer).
+type Worker = { name: string; id: string; y: number };
 
 const WORKERS: readonly Worker[] = [
-  { name: "Claude Code", handle: "claude@9b3e11d0", y: 40 },
-  { name: "Codex", handle: "codex@7c1f2a4e", y: 105 },
-  { name: "DeepSeek", handle: "deepseek@5a77c0e2", y: 170 },
-  { name: "Grok", handle: "grok@d4e6b209", y: 235 },
-  { name: "Kimi", handle: "kimi@3f8a2c11", y: 300 },
+  { name: "Claude Code", id: "9b3e11d0", y: 40 },
+  { name: "Codex", id: "7c1f2a4e", y: 105 },
+  { name: "DeepSeek", id: "5a77c0e2", y: 170 },
+  { name: "Grok", id: "d4e6b209", y: 235 },
+  { name: "Kimi", id: "3f8a2c11", y: 300 },
 ];
 
 // One story beat per worker. `interaction` (codex only) shows a needs-you round
@@ -71,41 +79,42 @@ type Beat = {
   done: string;
 };
 
+// Output lines use the sessions-watch text shape: link  [status]  detail.
 const BEATS: readonly Beat[] = [
   {
     worker: 0,
     cmd: 'termio sessions spawn "plan the auth refactor" --agent claude',
-    started: "started claude@9b3e11d0 — planning",
-    done: '{"handle":"claude@9b3e11d0","status":"done","plan":"7 steps -> PLAN.md"}',
+    started: "termio://session/9b3e11d0  [working]  planning",
+    done: "termio://session/9b3e11d0  [done]  7 steps -> PLAN.md",
   },
   {
     worker: 1,
     cmd: 'termio sessions spawn "implement PLAN.md" --agent codex',
-    started: "started codex@7c1f2a4e — building",
+    started: "termio://session/7c1f2a4e  [working]  building",
     interaction: {
-      needsYou: '{"handle":"codex@7c1f2a4e","status":"needs-you","prompt":"Run pnpm test? (y/n)"}',
-      answer: 'termio sessions send codex@7c1f2a4e "y"',
-      sent: "sent to codex@7c1f2a4e",
+      needsYou: "termio://session/7c1f2a4e  [needs-you]  Run pnpm test? (y/n)",
+      answer: 'termio sessions send 7c1f2a4e "y"',
+      sent: "sent to termio://session/7c1f2a4e",
     },
-    done: '{"handle":"codex@7c1f2a4e","status":"done","diff":"+412 -128, tests pass"}',
+    done: "termio://session/7c1f2a4e  [done]  +412 -128, tests pass",
   },
   {
     worker: 2,
     cmd: 'termio sessions spawn "review the diff" --agent deepseek',
-    started: "started deepseek@5a77c0e2 — reviewing",
-    done: '{"handle":"deepseek@5a77c0e2","status":"done","review":"2 nits, 0 blockers"}',
+    started: "termio://session/5a77c0e2  [working]  reviewing",
+    done: "termio://session/5a77c0e2  [done]  2 nits, 0 blockers",
   },
   {
     worker: 3,
     cmd: 'termio sessions spawn "security scan, then tag v0.22.0" --agent grok',
-    started: "started grok@d4e6b209 — scanning",
-    done: '{"handle":"grok@d4e6b209","status":"done","secure":"clean, tagged v0.22.0"}',
+    started: "termio://session/d4e6b209  [working]  scanning",
+    done: "termio://session/d4e6b209  [done]  clean, tagged v0.22.0",
   },
   {
     worker: 4,
     cmd: 'termio sessions spawn "summarize the week\'s feedback" --agent kimi',
-    started: "started kimi@3f8a2c11 — gathering",
-    done: '{"handle":"kimi@3f8a2c11","status":"done","feedback":"5 themes -> FEEDBACK.md"}',
+    started: "termio://session/3f8a2c11  [working]  gathering",
+    done: "termio://session/3f8a2c11  [done]  5 themes -> FEEDBACK.md",
   },
 ];
 
@@ -135,10 +144,10 @@ const beamPathBack = (y: number) =>
 // sidebar. Glows/box-shadows around foreignObject content clip into hard
 // blocks in some browsers, so no halo at all.
 const STATUS_DOT: Record<Status, string> = {
-  idle: "#cbd5e1",
-  working: "#64748b",
-  "needs-you": "#f59e0b",
-  done: "#0ea5e9",
+  idle: "#cbd5e1", // slate-300
+  working: "#64748b", // slate-500
+  "needs-you": "#f59e0b", // amber-500
+  done: "#0ea5e9", // sky-500
 };
 
 const MAX_LINES = 8; // rolling transcript window (fits the reserved height)
@@ -212,7 +221,7 @@ export function OrchestrationDemo() {
           if (cancelled) return;
 
           if (beat.interaction) {
-            push({ tone: "attention", text: beat.interaction.needsYou });
+            push({ text: beat.interaction.needsYou });
             statuses[beat.worker] = "needs-you";
             patch({ statuses: [...statuses] });
             pulse("back", AMBER, w.y);
@@ -266,7 +275,11 @@ export function OrchestrationDemo() {
       <div className="relative">
         {/* Grain-gradient glow spans the whole window, behind both panes. */}
         <TerminalBackdrop />
-        <div className="relative grid lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+        {/* minmax(0,…) everywhere: a plain implicit column would take the
+            transcript pre's min-content width (its longest unbreakable line),
+            blowing the column wider than the card on phones — the graph pane
+            then centers in that oversized column and clips at the card edge. */}
+        <div className="relative grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
           {/* Left: the live session graph — claude code driving five workers,
               each a real brand logo. The active node lights and its beam pulses
               in sync with the command running on the right. */}
@@ -278,7 +291,7 @@ export function OrchestrationDemo() {
               {/* Static edges from the hub to each worker. */}
               {WORKERS.map((w) => (
                 <path
-                  key={`edge-${w.handle}`}
+                  key={`edge-${w.id}`}
                   d={beamPath(w.y)}
                   stroke="rgba(255,255,255,0.18)"
                   strokeWidth="1.5"
@@ -297,11 +310,14 @@ export function OrchestrationDemo() {
 
               {/* Hub: the supervising claude-code session (real logo). */}
               <foreignObject x="0" y="148" width="120" height="44">
-                <div className="flex h-11 items-center gap-2.5 rounded-full bg-[#f8fafc] px-3.5">
+                {/* Pill bases are blue-grey (not paper white) so they read as
+                    lit by the aurora rather than pasted over it; hub one step
+                    brighter than the workers. */}
+                <div className="flex h-11 items-center gap-2.5 rounded-full bg-[#d8e4ee] px-3.5">
                   {/* Mono-only marks (Grok, Kimi) draw in currentColor, so the
                       light pill needs a dark color context. */}
-                  <AgentIcon name="Claude Code" size={24} color className="text-[#172033]" />
-                  <span className="font-sans text-[15px] font-medium text-[#172033]">
+                  <AgentIcon name="Claude Code" size={24} color className="text-slate-900" />
+                  <span className="font-sans text-[15px] font-medium text-slate-900">
                     claude
                   </span>
                 </div>
@@ -313,17 +329,17 @@ export function OrchestrationDemo() {
                 const status = frame.statuses[i] ?? "idle";
                 return (
                   <foreignObject
-                    key={w.handle}
+                    key={w.id}
                     x="176"
                     y={w.y - 20}
                     width="164"
                     height="40"
                     style={{
-                      opacity: status === "idle" ? 0.6 : 1,
+                      opacity: status === "idle" ? 0.72 : 1,
                       transition: "opacity 0.5s ease",
                     }}
                   >
-                    <div className="flex h-10 items-center gap-2 rounded-full bg-[#eef3f8] px-3">
+                    <div className="flex h-10 items-center gap-2 rounded-full bg-[#c8d7e5] px-3">
                       {/* Kimi's color mark is blue-on-white and washes out on
                           the light pill, so it uses the mono (currentColor)
                           variant instead. */}
@@ -331,10 +347,10 @@ export function OrchestrationDemo() {
                         name={w.name}
                         size={20}
                         color={w.name !== "Kimi"}
-                        className="text-[#172033]"
+                        className="text-slate-900"
                       />
-                      <span className="truncate font-sans text-[12px] font-medium text-[#172033]">
-                        {w.handle}
+                      <span className="truncate font-sans text-[12px] font-medium text-slate-900">
+                        {w.id}
                       </span>
                       <span
                         className="ml-auto h-2 w-2 shrink-0 rounded-full"
@@ -359,10 +375,12 @@ export function OrchestrationDemo() {
             </pre>
 
             {/* min-height reserves the rolling window's space so the window does
-                not grow line by line while typing. */}
+                not grow line by line while typing. Phones hard-wrap at the pane
+                edge exactly like a real terminal (the JSON lines have no soft
+                break points); from sm up lines stay unwrapped and can scroll. */}
             <pre
               aria-hidden="true"
-              className="min-h-[300px] overflow-x-auto p-5 font-mono text-[14px] leading-relaxed sm:min-h-[320px] sm:p-6"
+              className="min-h-[340px] whitespace-pre-wrap break-all p-5 font-mono text-[13px] leading-relaxed sm:min-h-[320px] sm:whitespace-pre sm:break-normal sm:overflow-x-auto sm:p-6 sm:text-[14px]"
             >
               {frame.lines.map((line, i) =>
                 line.blank ? (
@@ -373,24 +391,20 @@ export function OrchestrationDemo() {
                     className={
                       // Output lines fade in on arrival; typed prompt lines
                       // are already animated by the typewriter, so they don't.
-                      line.prompt
-                        ? "block whitespace-pre"
-                        : "line-in block whitespace-pre"
+                      // Whitespace behavior inherits from the pre (wrap on
+                      // phones, pre from sm up).
+                      line.prompt ? "block" : "line-in block"
                     }
                   >
                     {line.prompt ? (
                       <>
-                        <span className="select-none text-[#aebdce]">$ </span>
-                        <span className="text-[#f8fafc]">{line.text}</span>
+                        <span className="select-none text-slate-400">$ </span>
+                        <span className="text-slate-50">{line.text}</span>
                       </>
                     ) : (
                       <span
                         className={
-                          line.tone === "done"
-                            ? "text-[#7dd3fc]"
-                            : line.tone === "attention"
-                              ? "text-[#f6c453]"
-                              : "text-[#b8c7d9]"
+                          line.tone === "done" ? "text-sky-300" : "text-slate-300"
                         }
                       >
                         {line.text}
@@ -400,10 +414,10 @@ export function OrchestrationDemo() {
                 ),
               )}
               {frame.typing !== null && (
-                <span className="block whitespace-pre">
-                  <span className="select-none text-[#aebdce]">$ </span>
-                  <span className="text-[#f8fafc]">{frame.typing}</span>
-                  <span className="demo-cursor text-[#f8fafc]/80">▋</span>
+                <span className="block">
+                  <span className="select-none text-slate-400">$ </span>
+                  <span className="text-slate-50">{frame.typing}</span>
+                  <span className="demo-cursor text-slate-50/80">▋</span>
                 </span>
               )}
             </pre>

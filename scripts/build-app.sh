@@ -150,6 +150,7 @@ if [[ "$channel" == "dev" ]]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${base_id}.dev" "$plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleName termio dev" "$plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName termio dev" "$plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleURLTypes:0:CFBundleURLSchemes:0 termio-dev" "$plist"
     /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$plist" 2>/dev/null || true
     /usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks false" "$plist" 2>/dev/null || true
 fi

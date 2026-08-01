@@ -6,17 +6,18 @@ import { cn } from "@/lib/utils";
 import { useInView } from "@/lib/use-in-view";
 
 // A slow Paper Shaders aurora that spans the whole orchestration window,
-// behind both the session graph and the transcript. Same MeshGradient and same
-// navy → blue → teal palette as the hero (see hero-gradient.tsx) — the user
-// liked the top/bottom auroras, so this is that look, not a desaturated
-// cousin. Legibility over 13–14px code comes from the layers, not the palette:
-// a radial edge mask so the window border reads, plus a top/bottom darkening
-// that protects the text rows.
+// behind both the session graph and the transcript. Same MeshGradient hue
+// family as the hero (see hero-gradient.tsx), but several stops darker: the
+// full-brightness hero palette floated the window off the black page, so this
+// one is dimmed until the glow sits *in* the dark instead of on top of it.
+// Legibility over 13–14px code comes from the layers too: a radial edge mask
+// so the window border reads, plus a top/bottom darkening that protects the
+// text rows.
 //
 // Motion + GPU work are fully gated: speed=0 (no rAF) when offscreen or when
 // the user prefers reduced motion, and pixel ratio/count are capped hard since
 // the gradient is soft and low-contrast.
-const PALETTE = ["#070710", "#102a5e", "#1f63b0", "#2f8aa0", "#191636"];
+const PALETTE = ["#070710", "#0e234e", "#1a508f", "#267083", "#161330"];
 
 export function TerminalBackdrop({ className }: { className?: string }) {
   const [mounted, setMounted] = useState(false);
@@ -55,17 +56,17 @@ export function TerminalBackdrop({ className }: { className?: string }) {
           speed={reduceMotion || !inView ? 0 : 0.3}
           distortion={0.55}
           swirl={0.22}
-          // Grainier than the hero's 0.16, but kept moderate so the 14px
-          // terminal text stays clean (0.9 was tried and read as noise).
-          grainOverlay={0.35}
+          // Light grain only: 0.35 muddied the mesh motion, 0.9 read as pure
+          // noise over 14px terminal text.
+          grainOverlay={0.24}
           minPixelRatio={1}
           maxPixelCount={1280 * 720}
-          className="h-full w-full opacity-75"
+          className="h-full w-full opacity-[0.64]"
         />
       </div>
-      {/* A gentle top-down darkening keeps the transcript readable while the
-          aurora stays lively toward the middle. */}
-      <div className="absolute inset-0 bg-gradient-to-b from-black/25 via-transparent to-black/20" />
+      {/* Dark anchors top and bottom, but the middle stays open so the mesh
+          motion actually reads. */}
+      <div className="absolute inset-0 bg-[linear-gradient(to_bottom,rgba(0,0,0,0.28),rgba(0,0,0,0.08)_48%,rgba(0,0,0,0.24))]" />
     </div>
   );
 }

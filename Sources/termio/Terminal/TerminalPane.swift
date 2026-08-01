@@ -13,6 +13,11 @@ extension Notification.Name {
     /// made first responder, then deliberately resigned while the main window stays key.
     /// Fired from the command palette's "Debug: Orphan Terminal Focus".
     static let termioDebugOrphanFocus = Notification.Name("termio.debugOrphanFocus")
+
+    /// Dev-only: log the selected terminal's CALayer tree, to tell a doubled or
+    /// stale render layer from a presentation-timing artifact while a glitch is
+    /// on screen. Fired from the command palette's "Debug: Dump Terminal Layers".
+    static let termioDebugDumpLayers = Notification.Name("termio.debugDumpLayers")
 }
 
 /// Right column. Every session that has been opened stays *mounted* here for the
@@ -132,6 +137,9 @@ struct TerminalPane: View {
         .onReceive(NotificationCenter.default.publisher(for: .termioDebugOrphanFocus)) { _ in
             injectTerminalFocusOrphan()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .termioDebugDumpLayers)) { _ in
+            dumpSelectedTerminalLayers()
+        }
         // Window-key status is separate from surface focus, matching Ghostty. Becoming
         // key asks the driver to repair an orphan; it does not mutate a FocusState.
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
@@ -180,6 +188,12 @@ struct TerminalPane: View {
                         store.updateSplitRatio(branchID: divider.id, ratio: ratio)
                     }
                 }
+            }
+            // The ⌘⌥⇧ drag's preview (issue #183): the drop-zone highlight is
+            // what resolves the ambiguity a drag-rearrange otherwise has — you
+            // see the half (or the swap) the release would commit.
+            if let drag = store.paneDrag, let layout, !zoomed {
+                PaneDragOverlay(drag: drag, layout: layout)
             }
         }
     }
@@ -282,6 +296,15 @@ struct TerminalPane: View {
     /// POSIX way (`'\''`), so a dropped path is always one safe token.
     private static func shellQuoted(_ path: String) -> String {
         "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private func dumpSelectedTerminalLayers() {
+        guard AppChannel.isDev,
+              let id = store.selectedSessionID,
+              let session = store.session(id),
+              let project = store.project(for: id) else { return }
+        let state = store.surface(for: session, in: project)
+        focusDriver.dumpLayers(of: state, sessionID: id)
     }
 
     private struct MountedSession {
@@ -597,6 +620,33 @@ private final class TerminalFocusDriver {
         }
     }
 
+    /// Dev-only: log the resolved terminal view's layer tree. Emitted through
+    /// `print` as well as os_log so a dev app launched with `open --stdout`
+    /// lands the dump in the same file as the wrapper's own diagnostics.
+    func dumpLayers(of state: TerminalViewState, sessionID: Session.ID) {
+        func emit(_ message: String) {
+            print("[termio][layer dump] \(message)")
+            Log.app.notice("layer dump: \(message, privacy: .public)")
+        }
+        guard let window = mainWindow(), let root = window.contentView,
+              let target = terminalView(matching: state, under: root) else {
+            emit("no terminal view resolved for \(sessionID.uuidString.prefix(8))")
+            return
+        }
+        emit("session=\(sessionID.uuidString.prefix(8)) viewFrame=\(NSStringFromRect(target.frame)) bounds=\(NSStringFromRect(target.bounds))")
+        guard let rootLayer = target.layer else {
+            emit("view has no backing layer")
+            return
+        }
+        func describe(_ layer: CALayer, depth: Int) {
+            let indent = String(repeating: "  ", count: depth)
+            let cls = String(describing: type(of: layer))
+            emit("\(indent)\(cls) frame=\(NSStringFromRect(layer.frame)) scale=\(layer.contentsScale) hidden=\(layer.isHidden) opacity=\(layer.opacity) hasContents=\(layer.contents != nil)")
+            layer.sublayers?.forEach { describe($0, depth: depth + 1) }
+        }
+        describe(rootLayer, depth: 0)
+    }
+
     private func isCurrent(_ strength: Strength, generation: Int) -> Bool {
         switch strength {
         case .replaceResponder: generation == replaceGeneration
@@ -632,6 +682,49 @@ private final class TerminalFocusDriver {
             // is occasionally skipped during SwiftUI/AppKit reconciliation.
             _ = previous.resignFirstResponder()
         }
+    }
+}
+
+/// The visual half of the ⌘⌥⇧ pane drag (issue #183): a wash over the lifted
+/// source pane plus a highlight over the region the release would commit —
+/// the half of the target the pane would occupy, or the whole target for a
+/// swap. Geometry comes straight from the tree's `layout`, so the preview and
+/// the drop can never disagree. The tint family is the file-drop wash's
+/// desaturated blue-grey, not accent blue.
+private struct PaneDragOverlay: View {
+    let drag: PaneDragState
+    let layout: SplitNode.PaneLayout
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var tint: Color {
+        colorScheme == .dark
+            ? Color(.sRGB, red: 0.62, green: 0.70, blue: 0.82, opacity: 1)
+            : Color(.sRGB, red: 0.40, green: 0.52, blue: 0.68, opacity: 1)
+    }
+
+    var body: some View {
+        ZStack {
+            // The source pane reads as "lifted": a faint wash, no border.
+            if let source = layout.frames[drag.source] {
+                Rectangle()
+                    .fill(tint.opacity(colorScheme == .dark ? 0.08 : 0.07))
+                    .frame(width: source.width, height: source.height)
+                    .position(x: source.midX, y: source.midY)
+            }
+            // Fill only, no border — the same restraint as the file-drop wash
+            // above (and ghostty's own split-drag overlay): the rect's edge
+            // already draws the zone boundary, a stroke would just say it twice.
+            if let target = drag.target, target != drag.source,
+               let zone = drag.zone, let frame = layout.frames[target] {
+                let rect = zone.highlightRect(in: frame)
+                Rectangle()
+                    .fill(tint.opacity(colorScheme == .dark ? 0.20 : 0.17))
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+            }
+        }
+        .allowsHitTesting(false)
+        .animation(.easeOut(duration: 0.12), value: drag)
     }
 }
 

@@ -76,6 +76,7 @@ final class AppSettings: ObservableObject {
         static let fontFamily = "appearance.fontFamily"
         static let fontSize = "appearance.fontSize"
         static let fontThicken = "appearance.fontThicken"
+        static let codeLineHeight = "appearance.codeLineHeight"
         static let appearanceMode = "appearance.mode"
         static let lightThemeName = "appearance.lightThemeName"
         static let darkThemeName = "appearance.darkThemeName"
@@ -128,6 +129,12 @@ final class AppSettings: ObservableObject {
     /// readability win on long agent transcripts.
     @Published var fontThicken: Bool {
         didSet { defaults.set(fontThicken, forKey: Key.fontThicken) }
+    }
+
+    /// Line height for the file editor and diffs, as a multiple of the font size
+    /// (VS Code's model). The terminal grid is ghostty's own and is unaffected.
+    @Published var codeLineHeight: Double {
+        didSet { defaults.set(codeLineHeight, forKey: Key.codeLineHeight) }
     }
 
     /// Whether termio follows the system appearance or pins itself to light or
@@ -403,6 +410,7 @@ final class AppSettings: ObservableObject {
             Key.fontFamily: "SF Mono",
             Key.fontSize: 13.0,
             Key.fontThicken: false,
+            Key.codeLineHeight: 1.5,
             Key.appearanceMode: "system",
             Key.lightThemeName: "",
             Key.darkThemeName: "",
@@ -432,6 +440,7 @@ final class AppSettings: ObservableObject {
         fontFamily = defaults.string(forKey: Key.fontFamily) ?? ""
         fontSize = defaults.double(forKey: Key.fontSize)
         fontThicken = defaults.bool(forKey: Key.fontThicken)
+        codeLineHeight = defaults.double(forKey: Key.codeLineHeight)
         appearanceMode = defaults.string(forKey: Key.appearanceMode).flatMap(AppearanceMode.init) ?? .system
         lightThemeName = defaults.string(forKey: Key.lightThemeName) ?? ""
         darkThemeName = defaults.string(forKey: Key.darkThemeName) ?? ""

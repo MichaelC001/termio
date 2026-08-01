@@ -92,6 +92,13 @@ extension AppSettings {
         return .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
+    /// Extra leading (points) lifting `font`'s natural line height to the configured
+    /// `codeLineHeight` multiple of its point size; zero when the font already provides it.
+    func codeLineSpacing(for font: NSFont) -> CGFloat {
+        let natural = NSLayoutManager().defaultLineHeight(for: font)
+        return max(0, (CGFloat(codeLineHeight) * font.pointSize - natural).rounded())
+    }
+
     /// Muted line-number ink shared by every code surface's gutter (file editor, diff view),
     /// chosen against the theme *background's* darkness via `ChromeTheme.overlayInk` — an
     /// earlier foreground-derived version sank into black backgrounds whenever the theme's
