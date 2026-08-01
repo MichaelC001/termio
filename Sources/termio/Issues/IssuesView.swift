@@ -843,7 +843,7 @@ private struct IssueWebView: NSViewRepresentable {
         // through the handler so it can attach the bearer WebKit can't add itself.
         config.setURLSchemeHandler(context.coordinator.assetHandler,
                                    forURLScheme: GitHubAssetSchemeHandler.scheme)
-        let view = WKWebView(frame: .zero, configuration: config)
+        let view = IssueDetailWKWebView(frame: .zero, configuration: config)
         view.setValue(false, forKey: "drawsBackground")
         view.navigationDelegate = context.coordinator
         view.loadHTMLString(html, baseURL: nil)
@@ -873,6 +873,28 @@ private struct IssueWebView: NSViewRepresentable {
             } else {
                 decisionHandler(.allow)
             }
+        }
+    }
+}
+
+/// A `WKWebView` for the issue/PR detail that strips its right-click menu down to the
+/// items that mean something over a rendered conversation, matching the file preview's
+/// `ContextMenuWebView`. AppKit otherwise injects a grab-bag onto a `WKWebView` menu
+/// (Look Up / Translate / Search / Copy Link with Highlight / Share / Speech / Services)
+/// — none of it fits a read-only issue thread. Whitelisting by identifier keeps Copy
+/// (text selection) plus Open/Copy Link (an actual link under the cursor) and drops all
+/// the rest.
+private final class IssueDetailWKWebView: WKWebView {
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        super.willOpenMenu(menu, with: event)
+        let keep: Set<String> = [
+            "WKMenuItemIdentifierCopy",
+            "WKMenuItemIdentifierOpenLink",
+            "WKMenuItemIdentifierCopyLink",
+        ]
+        menu.items = menu.items.filter { item in
+            guard let id = item.identifier?.rawValue else { return false }
+            return keep.contains(id)
         }
     }
 }
