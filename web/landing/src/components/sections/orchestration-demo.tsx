@@ -18,10 +18,10 @@ type TranscriptLine = {
   text?: string;
   prompt?: boolean;
   // Output color semantics: plain (undefined) = neutral status text,
-  // "attention" = needs-you amber, "done" = completion sky — matching the
-  // node-status palette on the left so the colors mean the same thing on
-  // both sides.
-  tone?: "attention" | "done";
+  // "done" = completion sky, matching the done dot on the left. needs-you
+  // moments stay neutral in the transcript — only the left status dot goes
+  // amber (colored text read as noise in the code pane).
+  tone?: "done";
   blank?: boolean;
   id?: number; // stable key so a freshly-pushed line animates in exactly once
 };
@@ -212,7 +212,7 @@ export function OrchestrationDemo() {
           if (cancelled) return;
 
           if (beat.interaction) {
-            push({ tone: "attention", text: beat.interaction.needsYou });
+            push({ text: beat.interaction.needsYou });
             statuses[beat.worker] = "needs-you";
             patch({ statuses: [...statuses] });
             pulse("back", AMBER, w.y);
@@ -386,11 +386,7 @@ export function OrchestrationDemo() {
                     ) : (
                       <span
                         className={
-                          line.tone === "done"
-                            ? "text-[#7dd3fc]"
-                            : line.tone === "attention"
-                              ? "text-[#f6c453]"
-                              : "text-[#b8c7d9]"
+                          line.tone === "done" ? "text-[#7dd3fc]" : "text-[#b8c7d9]"
                         }
                       >
                         {line.text}
