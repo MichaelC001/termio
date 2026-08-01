@@ -232,6 +232,24 @@ struct Session: Identifiable, Hashable, Codable {
 
     var isSSH: Bool { sshHost != nil }
 
+    /// When set, this session runs **inside a `termiod` daemon on an SSH host**
+    /// rather than locally: the Mac attaches over `ssh <host> termiod stdio` and
+    /// the shell/agent lives on the remote box (see `TermioStore.addRemoteTerminal`).
+    /// Unlike `sshHost` — which launches a plain `ssh <host>` in a *local* PTY —
+    /// this is the durable termiod path, so detach-not-kill and snapshot repaint
+    /// carry across the network. The value is a `~/.ssh/config` alias. Only
+    /// consulted on the opt-in termiod backend (`TERMIO_TERMIOD=1`); a nil value
+    /// keeps the session local. Persisted so a relaunch reattaches to the same
+    /// remote daemon session by name.
+    var termiodRemoteHost: String?
+
+    /// The remote working directory a `termiodRemoteHost` session spawns its shell
+    /// in — set by "Clone on Remote…" to the freshly cloned directory (`~/<repo>`)
+    /// so the terminal opens straight inside it. `nil` (the common case) lets the
+    /// remote login shell start at its own `$HOME`. Ignored when `termiodRemoteHost`
+    /// is nil.
+    var termiodRemoteCwd: String?
+
     /// The last working directory the shell reported over OSC 7, persisted for
     /// sessions in the loose-terminals container only: a loose terminal's identity
     /// is the session, its path is this mutable property — so a relaunched shell
@@ -261,7 +279,7 @@ struct Session: Identifiable, Hashable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, agent, createdAt, worktreePath, resumeID, launched, launchedAt,
-             liveTitle, lastWorkingDirectory, sshHost, pinned
+             liveTitle, lastWorkingDirectory, sshHost, pinned, termiodRemoteHost, termiodRemoteCwd
     }
 
     /// Custom decoding so state files written before the resume fields existed still
@@ -282,6 +300,8 @@ struct Session: Identifiable, Hashable, Codable {
         liveTitle = try container.decodeIfPresent(String.self, forKey: .liveTitle)
         lastWorkingDirectory = try container.decodeIfPresent(String.self, forKey: .lastWorkingDirectory)
         sshHost = try container.decodeIfPresent(String.self, forKey: .sshHost)
+        termiodRemoteHost = try container.decodeIfPresent(String.self, forKey: .termiodRemoteHost)
+        termiodRemoteCwd = try container.decodeIfPresent(String.self, forKey: .termiodRemoteCwd)
     }
 }
 

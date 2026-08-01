@@ -207,6 +207,7 @@ struct SidebarView: View {
                     toggleCollapsed: { toggleCollapsed(term.id) },
                     menuItems: [
                         .action("New Terminal") { store.addSession(to: term.id, agent: .terminal) },
+                        remoteTerminalMenuItem(store: store),
                         .separator,
                         .action("Close All Terminals") { store.removeProject(term.id) },
                     ]
@@ -537,12 +538,14 @@ private struct ProjectHeader: View {
         if isTerminalsHeader {
             return [
                 .action("New Terminal") { store.addSession(to: project.id, agent: .terminal) },
+                remoteTerminalMenuItem(store: store),
                 .separator,
                 .action("Close All Terminals") { store.removeProject(project.id) },
             ]
         }
         var items: [SidebarMenuItem] = [
             .action("New Terminal") { addSession(.terminal) },
+            remoteTerminalMenuItem(store: store),
             .submenu("New Agent Session", enabledAgentPresets(settings)
                 .filter { $0 != .terminal }
                 .map { preset in .agent(preset) { addSession(preset) } }),
@@ -696,6 +699,22 @@ func enabledAgentPresets(_ settings: AppSettings) -> [AgentPreset] {
     settings.orderedAgents(AgentPreset.allCases.filter(settings.isAgentEnabled))
 }
 
+/// The "New Remote Terminal ▸" submenu: one row per `~/.ssh/config` alias (the
+/// single source of truth for hosts), each opening a durable termiod session on
+/// that host. An empty config shows a disabled explainer instead of a dead
+/// submenu. `cwd` stays nil here — a `+`-menu remote terminal starts at the
+/// remote `$HOME`; only "Clone on Remote…" pins a directory.
+@MainActor
+func remoteTerminalMenuItem(store: TermioStore) -> SidebarMenuItem {
+    let hosts = SSHConfigFile.hosts()
+    guard !hosts.isEmpty else {
+        return .submenu("New Remote Terminal", [.disabled("No SSH hosts in ~/.ssh/config")])
+    }
+    return .submenu("New Remote Terminal", hosts.map { host in
+        .action(host.alias) { store.addRemoteTerminal(host: host.alias) }
+    })
+}
+
 /// A project-like header always offers a shell, followed by each coding agent the
 /// user has left enabled. Terminal is infrastructure rather than a disable-able
 /// agent choice here.
@@ -711,6 +730,9 @@ enum SidebarMenuItem {
     case action(String, () -> Void)
     case agent(AgentPreset, () -> Void)
     indirect case submenu(String, [SidebarMenuItem])
+    /// A greyed-out, non-actionable row — used to explain an empty submenu inline
+    /// (e.g. "No SSH hosts in ~/.ssh/config") rather than leaving a dead click.
+    case disabled(String)
     case separator
 }
 
@@ -789,6 +811,11 @@ private struct SidebarRowContextMenu: NSViewRepresentable {
                 switch item {
                 case .separator:
                     menu.addItem(.separator())
+                case let .disabled(title):
+                    // A nil action leaves the item greyed out and un-clickable.
+                    let menuItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                    menuItem.isEnabled = false
+                    menu.addItem(menuItem)
                 case let .action(title, handler):
                     let menuItem = NSMenuItem(title: title, action: #selector(invoke(_:)), keyEquivalent: "")
                     menuItem.target = self
