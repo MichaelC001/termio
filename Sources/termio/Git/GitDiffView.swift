@@ -199,7 +199,8 @@ struct GitDiffView: View {
                     expanded.insert(id)
                     self.document = DiffDocument.build(
                         rows: rows, expanded: expanded,
-                        codeFont: settings.resolvedTerminalFont())
+                        codeFont: settings.resolvedTerminalFont(),
+                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
                 },
                 onWalk: { walk($0) },
                 onClose: onClose,
@@ -247,7 +248,8 @@ struct GitDiffView: View {
         document = parsed.isEmpty
             ? nil
             : DiffDocument.build(rows: parsed, expanded: expanded,
-                                 codeFont: settings.resolvedTerminalFont())
+                                 codeFont: settings.resolvedTerminalFont(),
+                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
         isLoading = false
         await buildStyledLines(parsed)
     }

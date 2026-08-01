@@ -57,8 +57,6 @@ final class DiffDocument {
     static let bandFont = NSFont.systemFont(ofSize: 10.5, weight: .medium)
     /// Extra breathing room drawn around a band row (the fill is expanded to match).
     static let bandPadding: CGFloat = 3
-    /// Leading added between every line — a touch of air so the diff doesn't read as a dense wall.
-    static let codeLineSpacing: CGFloat = 4
 
     // MARK: Building
 
@@ -66,8 +64,10 @@ final class DiffDocument {
     /// string. Hunk plumbing disappears (its gap becomes a band), unchanged runs longer
     /// than a handful of lines collapse to a band keeping 3 lines of context on the
     /// side(s) that face a change, and `expanded` bands splice their lines back in.
-    static func build(rows: [DiffRow], expanded: Set<Int>, codeFont: NSFont) -> DiffDocument {
-        build(items: displayItems(rows: rows, expanded: expanded), allRows: rows, codeFont: codeFont)
+    static func build(rows: [DiffRow], expanded: Set<Int>, codeFont: NSFont,
+                      lineSpacing: CGFloat) -> DiffDocument {
+        build(items: displayItems(rows: rows, expanded: expanded), allRows: rows,
+              codeFont: codeFont, lineSpacing: lineSpacing)
     }
 
     /// Composes several files into one stacked document (github.com "Files changed"): each file's
@@ -76,7 +76,8 @@ final class DiffDocument {
     /// unambiguous. One document means one scroll, and selection / ⌘F run continuously across files.
     /// The shared assembly: lays the display items down as one attributed string with per-paragraph
     /// metadata. `allRows` sizes the gutter columns (which sides carry numbers, and the widest).
-    private static func build(items: [DisplayItem], allRows: [DiffRow], codeFont: NSFont) -> DiffDocument {
+    private static func build(items: [DisplayItem], allRows: [DiffRow], codeFont: NSFont,
+                              lineSpacing: CGFloat) -> DiffDocument {
         var text = String()
         text.reserveCapacity(items.reduce(0) { $0 + $1.textLength + 1 })
         var lines: [Line] = []
@@ -108,13 +109,13 @@ final class DiffDocument {
             .font: codeFont,
             .foregroundColor: NSColor.labelColor,
         ])
-        // A little air between lines — the diff reads tighter than prose, so a few points of leading
-        // lift the whole document. Bands and headers re-set their own styles below, with the same lift.
+        // Leading from the configured code line height — the same lift the file editor gets.
+        // Bands and headers re-set their own styles below, with the same spacing.
         let baseStyle = NSMutableParagraphStyle()
-        baseStyle.lineSpacing = codeLineSpacing
+        baseStyle.lineSpacing = lineSpacing
         attributed.addAttribute(.paragraphStyle, value: baseStyle,
                                 range: NSRange(location: 0, length: attributed.length))
-        styleBandsAndEmphasis(attributed, items: items, lines: lines)
+        styleBandsAndEmphasis(attributed, items: items, lines: lines, lineSpacing: lineSpacing)
 
         return DiffDocument(
             attributed: attributed,
@@ -150,10 +151,11 @@ final class DiffDocument {
     /// layout manager's washes paint underneath, and TextKit's own background pass
     /// composites the deeper tint on top.
     private static func styleBandsAndEmphasis(_ attributed: NSMutableAttributedString,
-                                              items: [DisplayItem], lines: [Line]) {
+                                              items: [DisplayItem], lines: [Line],
+                                              lineSpacing: CGFloat) {
         let bandStyle = NSMutableParagraphStyle()
         bandStyle.alignment = .center
-        bandStyle.lineSpacing = codeLineSpacing
+        bandStyle.lineSpacing = lineSpacing
         bandStyle.paragraphSpacingBefore = bandPadding
         bandStyle.paragraphSpacing = bandPadding
 

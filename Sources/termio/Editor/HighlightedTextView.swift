@@ -11,6 +11,8 @@ struct HighlightedTextView: NSViewRepresentable {
     let language: String?
     let theme: String
     let font: NSFont
+    /// Extra leading between lines (points), from the configured code line height.
+    let lineSpacing: CGFloat
     let backgroundColor: NSColor
     let caretColor: NSColor
     let lineNumberColor: NSColor
@@ -43,10 +45,12 @@ struct HighlightedTextView: NSViewRepresentable {
         let storage = context.coordinator.textStorage
         _ = storage.highlightr.setTheme(to: theme)
         storage.highlightr.theme.setCodeFont(font)
+        storage.highlightr.theme.codeParagraphStyle = Self.paragraphStyle(lineSpacing: lineSpacing)
         storage.language = language
         context.coordinator.appliedTheme = theme
         context.coordinator.appliedFont = font
         context.coordinator.appliedLanguage = language
+        context.coordinator.appliedLineSpacing = lineSpacing
 
         let layoutManager = NSLayoutManager()
         storage.addLayoutManager(layoutManager)
@@ -152,6 +156,11 @@ struct HighlightedTextView: NSViewRepresentable {
             coordinator.appliedFont = font
             needsRehighlight = true
         }
+        if coordinator.appliedLineSpacing != lineSpacing {
+            storage.highlightr.theme.codeParagraphStyle = Self.paragraphStyle(lineSpacing: lineSpacing)
+            coordinator.appliedLineSpacing = lineSpacing
+            needsRehighlight = true
+        }
         if coordinator.appliedLanguage != language {
             coordinator.appliedLanguage = language
             needsRehighlight = true
@@ -178,10 +187,21 @@ struct HighlightedTextView: NSViewRepresentable {
         coordinator.updateFind(query: findQuery, options: findOptions, focusedIndex: findFocusedIndex, in: textView)
     }
 
+    /// Shared between the theme's highlight attributes and the view's typing attributes so
+    /// freshly typed text lays out at the same height before its first highlight pass.
+    static func paragraphStyle(lineSpacing: CGFloat) -> NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = lineSpacing
+        return style
+    }
+
     private func apply(to textView: NSTextView) {
         textView.font = font
         textView.backgroundColor = backgroundColor
         textView.insertionPointColor = caretColor
+        let style = Self.paragraphStyle(lineSpacing: lineSpacing)
+        textView.defaultParagraphStyle = style
+        textView.typingAttributes[.paragraphStyle] = style
         if let saving = textView as? SavingTextView {
             saving.currentLineColor = currentLineColor
             // The matched pair glows in the caret's own accent, dimmed to a wash.
@@ -209,6 +229,7 @@ struct HighlightedTextView: NSViewRepresentable {
         /// / re-highlights when something genuinely changed (not on every keystroke).
         var appliedTheme: String?
         var appliedFont: NSFont?
+        var appliedLineSpacing: CGFloat?
         var appliedLanguage: String?
         /// The last jump target acted on, so `updateNSView` only re-scrolls on a genuine new hit.
         var appliedJumpLine: Int?

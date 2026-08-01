@@ -191,6 +191,7 @@ struct FileEditorView: View {
                 language: highlightDisabled ? nil : language,
                 theme: colorScheme == .dark ? "xcode-dark" : "xcode",
                 font: editorFont,
+                lineSpacing: settings.codeLineSpacing(for: editorFont),
                 backgroundColor: settings.terminalBackgroundColor,
                 caretColor: caretColor,
                 lineNumberColor: lineNumberColor,
