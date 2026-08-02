@@ -142,10 +142,16 @@ final class ProjectListViewController: UIViewController {
         refilter()
     }
 
-    private func presentSettings() {
+    private func presentSettings(deepLinkToConnectivity: Bool = false) {
         // The sheet inherits the window's app-wide Appearance override, same
         // as every other screen.
-        present(UINavigationController(rootViewController: SettingsViewController()), animated: true)
+        let nav = UINavigationController(rootViewController: SettingsViewController())
+        if deepLinkToConnectivity {
+            // "Connect a Mac" promises pairing, so land on the Connectivity
+            // page itself; back reveals full Settings, swipe-down dismisses.
+            nav.pushViewController(ConnectivitySettingsViewController(), animated: false)
+        }
+        present(nav, animated: true)
     }
 
     // MARK: - Table
@@ -295,7 +301,7 @@ final class ProjectListViewController: UIViewController {
     /// immediate reconnect and drop back to the "Connecting…" copy.
     private func emptyStateAction() {
         if case .unpaired = CompanionLink.state {
-            presentSettings()
+            presentSettings(deepLinkToConnectivity: true)
             return
         }
         reconnectStalled = false
