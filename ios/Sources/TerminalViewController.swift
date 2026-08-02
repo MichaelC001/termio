@@ -1115,18 +1115,17 @@ extension TerminalViewController: TerminalSurfaceTitleDelegate, TerminalSurfaceC
 }
 
 extension TerminalViewController: TerminalSurfaceTextSelectionRequestDelegate {
-    /// Long-press on the surface: the wrapper already snapshotted the viewport
-    /// and resolved the word under the finger — present the selection page.
-    /// (This conformance is also the switch: the wrapper's long-press
-    /// recognizer only begins when the delegate adopts it.)
+    /// Long-press on the surface: the wrapper has already snapshotted the
+    /// viewport and resolved the word under the finger — present the page.
+    /// This conformance is also the switch: the wrapper's long-press
+    /// recognizer only begins when the delegate adopts it.
     func terminalDidRequestTextSelection(_ request: TerminalTextSelectionRequest) {
         guard presentedViewController == nil else { return }
         let page = TerminalSelectionViewController(
             text: request.text, anchorRange: request.anchorRange
         )
-        // Multi-character `insertText` rides the wrapper's sendText, which
-        // wraps in bracketed paste only once the TUI enabled mode 2004 — the
-        // same delivery a Mac paste gets (see DisplayTerminalView.insertText).
+        // The same delivery hardware Cmd+V gets — see
+        // DisplayTerminalView.paste(_:) for why this must be insertText.
         page.onPaste = { [weak self] text in
             self?.terminalView.insertText(text)
         }
@@ -1286,12 +1285,8 @@ private final class DisplayTerminalView: UITerminalView {
         super.insertText(text)
     }
 
-    /// Hardware Cmd+V (UIKit routes the system Paste key command to the first
-    /// responder's `paste(_:)`). The clipboard goes through `insertText`,
-    /// whose multi-character path rides the wrapper's sendText — bracketed
-    /// paste applied only once the TUI enabled mode 2004, exactly like a Mac
-    /// paste. `hasStrings` gates availability without triggering the system
-    /// paste prompt; the actual read happens inside the user-initiated paste.
+    /// `hasStrings` gates the system Paste command without tripping the
+    /// paste prompt; the `.string` read waits for the user-initiated action.
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if action == #selector(UIResponderStandardEditActions.paste(_:)) {
             return UIPasteboard.general.hasStrings
@@ -1299,6 +1294,11 @@ private final class DisplayTerminalView: UITerminalView {
         return super.canPerformAction(action, withSender: sender)
     }
 
+    /// Every paste — hardware Cmd+V lands here, the selection page borrows
+    /// the same path — goes through `insertText`: its multi-character branch
+    /// rides the wrapper's sendText, which brackets the paste only once the
+    /// TUI enabled mode 2004. So a pasted newline never auto-submits in a
+    /// TUI, yet still executes in a plain shell — the Mac's paste semantics.
     override func paste(_ sender: Any?) {
         guard let text = UIPasteboard.general.string, !text.isEmpty else { return }
         insertText(text)

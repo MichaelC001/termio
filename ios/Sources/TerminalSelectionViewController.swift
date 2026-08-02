@@ -2,19 +2,17 @@ import UIKit
 
 /// The long-press "select text" page: a frozen snapshot of the terminal
 /// viewport in a plain text view, where iOS's own selection machinery —
-/// handles, magnifier, the system edit menu — does the work the Metal
-/// surface can't. The wrapper resolves the word under the finger before
-/// presenting, so the page opens with that word already selected and the
-/// user only adjusts the handles (the Termius/blink select-mode shape).
+/// handles, magnifier, edit menu — does the work the Metal surface can't
+/// (the blink/Termius select-mode shape). The word under the finger
+/// arrives pre-selected, so the page opens with the selection started.
 ///
-/// The page is also where touch users reach Paste: the bar's Paste button
-/// hands the clipboard back to the owner, who types it into the PTY. The
-/// page itself never touches the byte stream.
+/// Touch users also reach Paste here. Both actions stop at the owner:
+/// the page never touches the clipboard's destination or the byte stream.
 final class TerminalSelectionViewController: UIViewController {
     /// Clipboard text the user asked to type into the terminal.
     var onPaste: ((String) -> Void)?
-    /// The page left the screen by any route (Copy, Paste, swipe-down) —
-    /// the owner hands keyboard focus back to the terminal.
+    /// The page left the screen by any route — Copy, Paste, or swipe —
+    /// so the owner can hand keyboard focus back to the terminal.
     var onClosed: (() -> Void)?
 
     private let snapshotText: String
@@ -47,9 +45,8 @@ final class TerminalSelectionViewController: UIViewController {
             title: "Paste", style: .plain,
             target: self, action: #selector(pasteTapped)
         )
-        // `hasStrings` never triggers the system paste prompt; reading
-        // `.string` is deferred to the tap, where iOS grants it as a
-        // user-initiated paste.
+        // `hasStrings` never trips the system paste prompt; the `.string`
+        // read waits for the tap, where iOS treats it as user-initiated.
         navigationItem.leftBarButtonItem?.isEnabled = UIPasteboard.general.hasStrings
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             title: "Copy", style: .done,
