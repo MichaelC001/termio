@@ -1114,6 +1114,34 @@ extension TerminalViewController: TerminalSurfaceTitleDelegate, TerminalSurfaceC
     }
 }
 
+extension TerminalViewController: TerminalSurfaceTextSelectionRequestDelegate {
+    /// Long-press on the surface: the wrapper has already snapshotted the
+    /// viewport and resolved the word under the finger — present the page.
+    /// This conformance is also the switch: the wrapper's long-press
+    /// recognizer only begins when the delegate adopts it.
+    func terminalDidRequestTextSelection(_ request: TerminalTextSelectionRequest) {
+        guard presentedViewController == nil else { return }
+        let page = TerminalSelectionViewController(
+            text: request.text, anchorRange: request.anchorRange
+        )
+        // The same delivery hardware Cmd+V gets — see
+        // DisplayTerminalView.paste(_:) for why this must be insertText.
+        page.onPaste = { [weak self] text in
+            self?.terminalView.insertText(text)
+        }
+        page.onClosed = { [weak self] in
+            guard let self, !drawerOpen else { return }
+            focusInput()
+        }
+        let nav = UINavigationController(rootViewController: page)
+        if let sheet = nav.sheetPresentationController {
+            sheet.detents = [.large()]
+            sheet.prefersGrabberVisible = true
+        }
+        present(nav, animated: true)
+    }
+}
+
 extension TerminalViewController: TerminalSurfaceRendererHealthDelegate {
     /// libghostty flipped its renderer health. `healthy == false` means it just
     /// tripped the failsafe that paints the "This terminal is non-functional"
@@ -1255,6 +1283,25 @@ private final class DisplayTerminalView: UITerminalView {
             return
         }
         super.insertText(text)
+    }
+
+    /// `hasStrings` gates the system Paste command without tripping the
+    /// paste prompt; the `.string` read waits for the user-initiated action.
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(UIResponderStandardEditActions.paste(_:)) {
+            return UIPasteboard.general.hasStrings
+        }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    /// Every paste — hardware Cmd+V lands here, the selection page borrows
+    /// the same path — goes through `insertText`: its multi-character branch
+    /// rides the wrapper's sendText, which brackets the paste only once the
+    /// TUI enabled mode 2004. So a pasted newline never auto-submits in a
+    /// TUI, yet still executes in a plain shell — the Mac's paste semantics.
+    override func paste(_ sender: Any?) {
+        guard let text = UIPasteboard.general.string, !text.isEmpty else { return }
+        insertText(text)
     }
 
     // MARK: - Software-keyboard delete auto-repeat (phantom document)
