@@ -1,10 +1,11 @@
 import TermioShared
 import UIKit
 
-/// The shell: four home tabs — Projects (including its pushed project pages),
+/// The shell: four native tabs — Projects (including its pushed project pages),
 /// Chats, Terminals, and Settings — mirror the desktop app's main destinations.
-/// The switcher is a compact, centered glass pill floating above the home
-/// indicator (`HomeTabPill` — see there for why the system tab bar doesn't fit).
+/// A child `UITabBarController` owns those four home stacks, giving the app the
+/// system Liquid Glass tab bar while this outer container continues to own the
+/// live terminal overlays and their lifecycle.
 /// Screen-specific actions stay beside their page title, leaving the bottom
 /// edge to one stable navigation surface on every home screen, pushed project
 /// pages included.
@@ -48,18 +49,36 @@ final class RootContainerViewController: UIViewController {
     private lazy var settingsNav: UINavigationController = {
         let settings = SettingsViewController()
         settings.showsCloseButton = false
-        let nav = UINavigationController(rootViewController: settings)
-        // Keep the table's last rows clear of the floating pill.
-        nav.additionalSafeAreaInsets.bottom = 76
-        return nav
+        return UINavigationController(rootViewController: settings)
     }()
-    /// The floating switcher between the four top-level destinations.
-    private let tabPill = HomeTabPill(items: [
-        (title: "Projects", icon: .folder),
-        (title: "Chats", icon: .bubbleChat),
-        (title: "Terminals", icon: .terminal),
-        (title: "Settings", icon: .settings),
-    ])
+    /// UIKit owns the home destination switcher so iOS 26 can supply its full
+    /// Liquid Glass material, selection lens, press response, safe-area
+    /// behavior, and future platform updates. Keeping it as a child of this
+    /// outer container leaves terminal screens as siblings above it, so parked
+    /// libghostty surfaces stay installed in the window exactly as before.
+    private lazy var homeTabs: UITabBarController = {
+        let controller = UITabBarController()
+        let destinations: [(UIViewController, String, HugeIcon)] = [
+            (projectsNav, "Projects", .folder),
+            (chatsNav, "Chats", .bubbleChat),
+            (terminalsNav, "Terminals", .terminal),
+            (settingsNav, "Settings", .settings),
+        ]
+        for (index, destination) in destinations.enumerated() {
+            let (viewController, title, icon) = destination
+            let item = UITabBarItem(
+                title: title,
+                image: icon.strokeImage(boxSize: 24, strokeWeight: 1.7),
+                tag: index
+            )
+            item.accessibilityIdentifier = "home.tab.\(title.lowercased())"
+            viewController.tabBarItem = item
+        }
+        controller.setViewControllers(destinations.map(\.0), animated: false)
+        controller.tabBar.tintColor = .label
+        controller.tabBar.unselectedItemTintColor = .secondaryLabel
+        return controller
+    }()
 
     /// Every parked terminal is a live libghostty surface (scrollback + render
     /// buffers + a streaming socket) whose view stays in the window. On the
@@ -87,44 +106,14 @@ final class RootContainerViewController: UIViewController {
         super.viewDidLoad()
         themeObserver = installThemeBackdrop()
 
-        // All tab stacks are permanent base layers: added once, always behind
-        // any terminal, only ever toggled hidden — so each tab keeps its
-        // scroll position and pushed pages across switches.
-        let tabStacks: [UIViewController] = [projectsNav, chatsNav, terminalsNav, settingsNav]
-        for nav in tabStacks {
-            addChild(nav)
-            nav.view.frame = view.bounds
-            nav.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            view.addSubview(nav.view)
-            nav.didMove(toParent: self)
-            nav.view.isHidden = nav !== projectsNav
-        }
-
-        // The switcher floats over all of them; terminals slide in above it.
-        tabPill.onSelect = { [weak self] index in
-            guard let self else { return }
-            for (i, nav) in tabStacks.enumerated() {
-                nav.view.isHidden = i != index
-            }
-        }
-        tabPill.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(tabPill)
-        let phoneWidth = tabPill.widthAnchor.constraint(
-            equalTo: view.widthAnchor,
-            constant: -24
-        )
-        // Fill an iPhone's bottom edge while keeping the four destinations
-        // compact on iPad. The lower-priority fill constraint yields to the
-        // readable-width cap on a wide canvas.
-        phoneWidth.priority = .defaultHigh
-        NSLayoutConstraint.activate([
-            tabPill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            tabPill.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 12),
-            tabPill.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -12),
-            tabPill.widthAnchor.constraint(lessThanOrEqualToConstant: 520),
-            phoneWidth,
-            tabPill.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
-        ])
+        // The native tab controller is the permanent base layer. Its selected
+        // navigation stack can change without affecting terminal overlays,
+        // which remain children of this outer root and slide in above it.
+        addChild(homeTabs)
+        homeTabs.view.frame = view.bounds
+        homeTabs.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(homeTabs.view)
+        homeTabs.didMove(toParent: self)
 
         store.onOpenSession = { [weak self] session, companionURL in
             guard let self else { return }

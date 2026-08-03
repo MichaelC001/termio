@@ -383,8 +383,8 @@ final class TerminalAccessoryBar: UIInputView {
         let effect: UIVisualEffect
         if #available(iOS 26, *) {
             // `isInteractive` is what gives the glass its finger-tracking lens —
-            // the light-bending "magnify" the system menus (and our tab pill via
-            // GlassChrome) have. A plain UIGlassEffect renders flat/static.
+            // the light-bending "magnify" that system menus have. A plain
+            // UIGlassEffect renders flat/static.
             let glassEffect = UIGlassEffect(style: .regular)
             glassEffect.isInteractive = true
             effect = glassEffect
@@ -507,7 +507,7 @@ final class TerminalAccessoryBar: UIInputView {
         chip.translatesAutoresizingMaskIntoConstraints = false
 
         // The Hugeicons stroke glyph in label color — the same airy line family
-        // the tab pill and menu buttons use.
+        // the native tab bar and menu buttons use.
         let iconView = UIImageView(image: icon.strokeImage(boxSize: 28))
         iconView.tintColor = .label
         iconView.contentMode = .center
@@ -746,4 +746,3 @@ final class RepeatingKeyButton: UIButton {
         heldLongEnoughToRepeat = false
     }
 }
-

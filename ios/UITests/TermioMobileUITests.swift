@@ -76,19 +76,14 @@ final class TermioMobileUITests: XCTestCase {
         XCTAssertFalse(chats.isSelected)
     }
 
-    func testHomeTabSelectionCanBeDragged() {
+    func testHomeUsesNativeTabBar() {
         let app = launch("list")
-        let projects = app.buttons["home.tab.projects"]
-        let terminals = app.buttons["home.tab.terminals"]
-        XCTAssertTrue(projects.waitForExistence(timeout: 8))
-
-        let start = projects.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        let end = terminals.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        start.press(forDuration: 0.05, thenDragTo: end)
-
-        XCTAssertTrue(app.staticTexts["Terminals"].waitForExistence(timeout: 3))
-        XCTAssertTrue(terminals.isSelected)
-        XCTAssertFalse(projects.isSelected)
+        let tabBar = app.tabBars.firstMatch
+        XCTAssertTrue(tabBar.waitForExistence(timeout: 8))
+        XCTAssertTrue(tabBar.buttons["home.tab.projects"].isSelected)
+        XCTAssertTrue(tabBar.buttons["home.tab.chats"].exists)
+        XCTAssertTrue(tabBar.buttons["home.tab.terminals"].exists)
+        XCTAssertTrue(tabBar.buttons["home.tab.settings"].exists)
     }
 
     // MARK: - Session screen (direct terminal input)
