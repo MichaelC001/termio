@@ -6,6 +6,11 @@ import SwiftUI
 /// one giant expression alongside the drop target and Quick Look wiring.
 struct FileTreeList: View {
     let nodes: [FileNode]
+    /// Bumped by `FileBrowserView` after it mutates a realized directory's children
+    /// in place (see `applyTreeChanges`); the changed input is what makes SwiftUI
+    /// run an update pass over the outline, since `nodes` itself — same root node
+    /// references — compares unchanged after an incremental reload.
+    let revision: Int
     @Binding var selection: URL?
     let font: Font
     /// Moves/copies `sources` into a folder `destination`; returns whether the tree
@@ -21,6 +26,50 @@ struct FileTreeList: View {
     let captureOutline: (NSOutlineView?) -> Void
 
     var body: some View {
+        tree.equatable()
+    }
+
+    private var tree: EquatableTree {
+        EquatableTree(
+            nodes: nodes, revision: revision, selection: $selection,
+            selectionValue: selection, font: font,
+            onDrop: onDrop, rootURL: rootURL, actions: actions, captureOutline: captureOutline
+        )
+    }
+}
+
+/// The `List` itself behind an `Equatable` gate. The parent re-evaluates on every
+/// watcher token (the tokens are `@Published`), and a `List(children:)` update is
+/// never free — SwiftUI's outline coordinator re-walks every realized row even when
+/// nothing changed, which on a high-churn root (a home directory) burned the main
+/// thread continuously. Closure properties would make the plain view compare
+/// unequal every time, so equality is spelled out over the values that actually
+/// affect the rows; the closures are stable for the life of the pane and skipped.
+private struct EquatableTree: View, Equatable {
+    let nodes: [FileNode]
+    let revision: Int
+    @Binding var selection: URL?
+    /// The selection as a plain value. The binding can't serve equality — both
+    /// sides of `==` read the live storage and always agree — so the parent
+    /// snapshots the value at evaluation time; rows also render from this, keeping
+    /// what they show and what the gate compares the same thing.
+    let selectionValue: URL?
+    let font: Font
+    let onDrop: (_ sources: [URL], _ destination: URL) -> Bool
+    let rootURL: URL
+    let actions: FileTreeActions
+    let captureOutline: (NSOutlineView?) -> Void
+
+    static func == (lhs: EquatableTree, rhs: EquatableTree) -> Bool {
+        lhs.revision == rhs.revision
+            && lhs.selectionValue == rhs.selectionValue
+            && lhs.font == rhs.font
+            && lhs.rootURL == rhs.rootURL
+            && lhs.nodes.count == rhs.nodes.count
+            && zip(lhs.nodes, rhs.nodes).allSatisfy { $0 === $1 }
+    }
+
+    var body: some View {
         // Keep List's native `selection:` binding — it drives selection at the AppKit
         // layer, which coexists cleanly with `.draggable` (a SwiftUI tap gesture does
         // not, and makes the drag sticky/unreliable). The only downside of the native
@@ -28,7 +77,7 @@ struct FileTreeList: View {
         // outline view's `selectionHighlightStyle = .none` (see `FileRow`), leaving our
         // own `SidebarRowHighlight` as the sole, left-sidebar-matching selection cue.
         List(nodes, children: \.children, selection: $selection) { node in
-            FileRow(node: node, font: font, isSelected: selection == node.url, onDrop: onDrop, rootURL: rootURL, actions: actions, captureOutline: captureOutline)
+            FileRow(node: node, font: font, isSelected: selectionValue == node.url, onDrop: onDrop, rootURL: rootURL, actions: actions, captureOutline: captureOutline)
                 .listRowSeparator(.hidden)
         }
         .listStyle(.plain)

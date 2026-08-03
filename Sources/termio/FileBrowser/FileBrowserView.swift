@@ -21,9 +21,27 @@ struct FileBrowserView: View {
     /// Bumped to collapse the whole tree: it is the file list's `.id`, so changing it
     /// rebuilds the list fresh — and a fresh `List(children:)` starts fully collapsed.
     @State private var treeGeneration = 0
+    /// Bumped after `applyTreeChanges` mutates realized directories in place, so the
+    /// list runs an update pass and the mutation reaches the rows (the `root`
+    /// reference itself never changes on an incremental reload).
+    @State private var treeRevision = 0
+    /// Reload targets accumulated while a reload is already in flight, keyed by URL
+    /// so repeat events for one directory coalesce. Unioned rather than replaced —
+    /// a newer batch must never orphan an older disjoint one, or those directories
+    /// would stay stale until their next event. Drained by `runPendingReloads`.
+    @State private var pendingReloads: [URL: FileNode] = [:]
+    /// True while `runPendingReloads`'s serial loop is draining; batches arriving
+    /// meanwhile just extend `pendingReloads` and become the next lap.
+    @State private var reloadInFlight = false
     /// Watches the project root on disk and bumps its `changeToken` when anything under
     /// it changes, so the tree stays live with an agent's edits (see `onChange` below).
     @StateObject private var watcher = FileTreeWatcher()
+    /// A watcher bump that arrived while the inspector was collapsed. The view stays in
+    /// the hierarchy when the pane is hidden, so without parking, every disk change under
+    /// the project root would rebuild the tree (a full outline re-diff plus a `git status`)
+    /// that nobody can see — on a busy root that is a continuous main-thread drain. Same
+    /// parking pattern as `GitPanelModel`; replayed once when the pane is next visible.
+    @State private var pendingWatcherRefresh = false
 
     /// The directory the tree is rooted at — see `TermioStore.inspectorProjectPath`.
     private var projectPath: String? { store.inspectorProjectPath }
@@ -109,10 +127,32 @@ struct FileBrowserView: View {
             seedChangeCount()
             watcher.watch(projectPath)
         }
-        // The project root changed on disk (an agent wrote, renamed, or removed a
-        // file): rebuild the tree from disk. Keep the Changes badge fresh too, unless
-        // the Changes pane is open — it owns the count live while visible.
-        .onChange(of: watcher.changeToken) {
+        // Files changed under the root (an agent wrote, renamed, or removed some):
+        // reload just the realized directories that were touched. Never fires for
+        // version-control metadata (see `FileTreeWatcher`). Keep the Changes badge
+        // fresh too — edits move the dirty count — unless the Changes pane is open;
+        // it owns the count live while visible. A hidden pane parks one full refresh
+        // instead (see `pendingWatcherRefresh`).
+        .onChange(of: watcher.treeToken) {
+            guard store.inspectorVisible else {
+                pendingWatcherRefresh = true
+                return
+            }
+            applyTreeChanges()
+            if store.inspectorTab != .changes { seedChangeCount() }
+        }
+        // Git metadata moved meaningfully (a stage, commit, or checkout): the tree
+        // shows none of it, so only the Changes badge needs a re-count.
+        .onChange(of: watcher.gitToken) {
+            guard store.inspectorVisible else {
+                pendingWatcherRefresh = true
+                return
+            }
+            if store.inspectorTab != .changes { seedChangeCount() }
+        }
+        .onChange(of: store.inspectorVisible) { _, visible in
+            guard visible, pendingWatcherRefresh else { return }
+            pendingWatcherRefresh = false
             refresh()
             if store.inspectorTab != .changes { seedChangeCount() }
         }
@@ -173,6 +213,7 @@ struct FileBrowserView: View {
         if let root {
             FileTreeList(
                 nodes: root.children ?? [],
+                revision: treeRevision,
                 selection: $browserState.selection,
                 font: settings.interfaceFont,
                 onDrop: { sources, destination in receive(sources, into: destination) },
@@ -236,20 +277,86 @@ struct FileBrowserView: View {
     /// right before the user ever opens the Changes pane (which then keeps it fresh).
     private func seedChangeCount() {
         guard let repoRoot = projectPath else {
-            store.gitChangeCount = 0
+            if store.gitChangeCount != 0 { store.gitChangeCount = 0 }
             return
         }
-        Task { store.gitChangeCount = await GitService.changes(in: repoRoot).count }
+        Task {
+            let count = await GitService.changes(in: repoRoot).count
+            // The project may have moved while git ran; a stale repo's count must
+            // not land on the new project's badge.
+            guard projectPath == repoRoot else { return }
+            // Only publish a real change: this reruns on every settled watcher batch,
+            // and an unconditional write would invalidate every store observer (the
+            // whole window re-evaluates, and the file list's coordinator re-walks its
+            // rows) even when the badge didn't move — on a non-repo root that means
+            // re-publishing `0` several times a second, forever.
+            if store.gitChangeCount != count { store.gitChangeCount = count }
+        }
     }
 
     /// Rebuilds the tree from the current project path. Called on appear, whenever
-    /// the selected session moves to a different project, and after a drop.
+    /// the selected session moves to a different project, and after a drop. Watcher
+    /// batches accumulated so far are superseded by the full rebuild, so drop them.
     private func refresh() {
+        _ = watcher.drainTreeBatch()
+        pendingReloads.removeAll()
         guard let projectPath else {
             root = nil
             return
         }
         root = FileNode(url: URL(fileURLWithPath: projectPath), isDirectory: true)
+    }
+
+    /// Reloads just the realized directories a settled watcher batch touched — the
+    /// Zed/VS Code shape, instead of rebuilding the whole tree per change. Events in
+    /// directories nobody ever expanded are dropped outright (nothing on screen can
+    /// be stale), which is what makes a high-churn root — a home directory, an
+    /// `npm install` — cost nothing beyond this walk. The disk reads run off the
+    /// main thread; the merge lands back on main, keeps surviving nodes (and so the
+    /// outline's expansion state), and nudges `treeRevision` so the list re-diffs.
+    private func applyTreeChanges() {
+        let batch = watcher.drainTreeBatch()
+        // FSEvents overflowed (or the root moved): the paths no longer enumerate
+        // what changed, so incremental updating would go silently stale.
+        if batch.needsFullRescan {
+            refresh()
+            return
+        }
+        guard let root else { return }
+        var found = false
+        for path in batch.paths {
+            guard let node = root.loadedNode(for: path),
+                  node.isDirectory, node.isLoaded else { continue }
+            pendingReloads[node.url] = node
+            found = true
+        }
+        guard found, !reloadInFlight else { return }
+        runPendingReloads()
+    }
+
+    /// Drains `pendingReloads` serially: one disk pass in flight at a time, so
+    /// merges can never land out of order, and batches arriving mid-read simply
+    /// extend the queue and become the next lap.
+    private func runPendingReloads() {
+        reloadInFlight = true
+        Task {
+            while !pendingReloads.isEmpty {
+                guard let rootNow = root else { break }
+                let laps = pendingReloads
+                pendingReloads = [:]
+                let urls = Array(laps.keys)
+                let listings = await Task.detached(priority: .utility) {
+                    urls.map { FileNode.listContents(of: $0) }
+                }.value
+                // The project moved while we read: these nodes are orphans now.
+                // `refresh` already cleared the queue; the fresh root re-reads
+                // its directories as the outline realizes them.
+                guard root === rootNow else { break }
+                for (url, listing) in zip(urls, listings) { laps[url]?.applyReloaded(listing) }
+                treeRevision &+= 1
+            }
+            reloadInFlight = false
+        }
     }
 
     /// Places each dropped file into `destination` (a folder inside the tree, or the
