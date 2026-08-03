@@ -261,6 +261,7 @@ final class TerminalAccessoryBar: UIInputView {
     private func showVoiceBar() {
         let reduce = UIAccessibility.isReduceMotionEnabled
         bringSubviewToFront(voiceBar)
+        voiceBar.prepareToMaterialize(reduceMotion: reduce)
         voiceBar.isHidden = false
         voiceBar.alpha = 0
         voiceBar.transform = reduce ? .identity : CGAffineTransform(scaleX: 0.96, y: 0.96)
@@ -269,6 +270,7 @@ final class TerminalAccessoryBar: UIInputView {
             usingSpringWithDamping: 1, initialSpringVelocity: 0,
             options: [.curveEaseOut, .allowUserInteraction]
         ) {
+            self.voiceBar.setMaterialized(true, reduceMotion: reduce)
             self.voiceBar.alpha = 1
             self.voiceBar.transform = .identity
             self.keyPlane?.alpha = 0
@@ -287,12 +289,14 @@ final class TerminalAccessoryBar: UIInputView {
             withDuration: reduce ? 0.2 : 0.24, delay: 0,
             options: [.curveEaseOut, .allowUserInteraction]
         ) {
+            self.voiceBar.setMaterialized(false, reduceMotion: reduce)
             self.voiceBar.alpha = 0
             self.voiceBar.transform = reduce ? .identity : CGAffineTransform(scaleX: 0.96, y: 0.96)
             self.keyPlane?.alpha = 1
         } completion: { _ in
             self.voiceBar.isHidden = true
             self.voiceBar.transform = .identity
+            self.voiceBar.setMaterialized(true, reduceMotion: true)
         }
     }
 
