@@ -419,7 +419,9 @@ struct FileBrowserView: View {
             newFile: { createFile(in: $0) },
             newFolder: { createFolder(in: $0) },
             rename: { rename($0) },
-            delete: { delete($0) }
+            delete: { delete($0) },
+            addToChat: { _ = store.addPathToSelectedSessionPrompt($0) },
+            canAddToChat: { store.selectedSessionRunsAgent }
         )
     }
 
