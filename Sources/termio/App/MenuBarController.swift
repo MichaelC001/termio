@@ -251,6 +251,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         isMenuOpen = true
         guard !workingItems.isEmpty else { return }
         cometTimer?.invalidate()
+        // This timer bypasses the SwiftUI environment, so Reduce Motion has to be
+        // honored by hand (the sidebar's indicator handles it via `@Environment`):
+        // hold the frame the rows already carry instead of spinning.
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
         let interval = 1.0 / 15.0
         let period = 1.1  // matches the sidebar's WorkingIndicator
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
