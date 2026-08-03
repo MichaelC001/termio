@@ -1231,6 +1231,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func focusPaneRight(_ sender: Any?) { store.focusPane(.right) }
     @objc func focusPaneUp(_ sender: Any?) { store.focusPane(.up) }
     @objc func focusPaneDown(_ sender: Any?) { store.focusPane(.down) }
+
+    // Session ▸ Next/Previous — cycles the sidebar selection in its visual
+    // order, wrapping at the ends (see `selectAdjacentSession`).
+    @objc func nextSession(_ sender: Any?) { store.selectAdjacentSession(1) }
+    @objc func previousSession(_ sender: Any?) { store.selectAdjacentSession(-1) }
+
+    /// The Session menu rows currently marked working, so the comet timer can
+    /// advance them while the menu is open (see `menuWillOpen`). Rebuilt on
+    /// every `fillSessionMenu`.
+    private var sessionMenuWorkingItems: [NSMenuItem] = []
+    private var sessionMenuCometTimer: Timer?
+    private var sessionMenuCometPhase: Double = 0
+
+    /// A row of the Session menu's jump list (see `fillSessionMenu`).
+    @objc func revealSessionFromMenu(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let id = UUID(uuidString: raw) else { return }
+        store.revealSession(id)
+    }
+
+    /// The selected session's project when it's a real git folder — the target
+    /// of the Branch menu's verbs, GitHub Desktop's "current repository". The
+    /// loose Terminals/Chats funnels and non-repo folders ("—" branch) don't
+    /// qualify, so the Branch menu dims for them.
+    private var currentBranchProject: Project? {
+        guard let id = store.selectedSessionID,
+              let project = store.project(for: id),
+              project.kind == .folder, project.branch != "—" else { return nil }
+        return project
+    }
+
+    /// File ▸ New Worktree… — the sidebar context menu's verb promoted to the
+    /// menu bar (and a shortcut), so the agent-per-worktree loop doesn't need a
+    /// right-click. Acts on the selected session's project.
+    @objc func newWorktree(_ sender: Any?) {
+        guard let project = currentBranchProject else { return }
+        store.addWorktree(from: project.id)
+    }
+
+    /// File ▸ New Pull Request — GitHub Desktop's browser hand-off, verbatim:
+    /// opens the forge's compare page for the current branch (the session's
+    /// worktree branch when it lives in one). termio never authors the PR —
+    /// committing and pushing stay in the terminal — so an unpushed branch gets
+    /// an explainer, not a push.
+    @objc func newPullRequest(_ sender: Any?) {
+        guard let project = currentBranchProject,
+              let sessionID = store.selectedSessionID else { return }
+        let dir = store.session(sessionID)?.worktreePath ?? project.path
+        Task { @MainActor in
+            if let url = await GitService.newPullRequestPage(in: dir) {
+                NSWorkspace.shared.open(url)
+            } else {
+                let alert = NSAlert()
+                alert.messageText = "Couldn't open a pull request page"
+                alert.informativeText = "Push the current branch to the repository's "
+                    + "remote first, then try again. (The remote also needs to be a "
+                    + "forge termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)"
+                alert.alertStyle = .warning
+                alert.runModal()
+            }
+        }
+    }
 }
 
 /// The "New Chat ▸" parent item shared by the File menu and the toolbar `+`
@@ -1260,15 +1322,119 @@ private func makeNewSSHItem() -> NSMenuItem {
 }
 
 extension AppDelegate: NSMenuDelegate {
-    /// Fills the lazily-populated submenus this delegate serves, told apart by
-    /// title: New Chat and New SSH Connection.
+    /// Fills the lazily-populated menus this delegate serves, told apart by
+    /// title: the Session menu, New Chat, and New SSH Connection.
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        if menu.title == "New SSH Connection" {
+        switch menu.title {
+        case "Session":
+            fillSessionMenu(menu)
+        case "New SSH Connection":
             fillNewSSHMenu(menu)
-        } else {
+        default:
             fillNewChatMenu(menu)
         }
+    }
+
+    /// Fills the Session menu: the cycling and close verbs, then a live jump
+    /// list — one submenu per project holding its session rows, mirroring the
+    /// sidebar's hierarchy (the user's choice over Chrome's flat tab list).
+    /// Rows keep the tray roster's vocabulary (brand mark or working comet,
+    /// trailing green/amber dot, checkmark on the selected session); since a
+    /// submenu hides its dots until hovered, each project row rolls up its most
+    /// urgent resting cue (amber outranks green) and wears the checkmark for a
+    /// selection it contains. Rebuilt on every open so the list, the dots, and
+    /// the rebindable shortcuts are always current. Flattened order matches
+    /// `selectAdjacentSession`'s cycling exactly.
+    private func fillSessionMenu(_ menu: NSMenu) {
+        sessionMenuWorkingItems.removeAll()
+        menu.addItem(
+            withTitle: "Next Session",
+            action: #selector(nextSession(_:)),
+            command: .nextSession
+        )
+        menu.addItem(
+            withTitle: "Previous Session",
+            action: #selector(previousSession(_:)),
+            command: .previousSession
+        )
+
+        let groups = store.sidebarSessionGroups
+        var previousKind: ProjectKind?
+        for (project, sessions) in groups {
+            // The loose Terminals/Chats funnels and the real projects are
+            // different sections, as in the sidebar — a divider at each kind
+            // change keeps them read apart (and the first one separates the
+            // whole list from the verbs above).
+            if project.kind != previousKind { menu.addItem(.separator()) }
+            previousKind = project.kind
+            let projectItem = NSMenuItem(title: project.name, action: nil, keyEquivalent: "")
+            let submenu = NSMenu(title: project.name)
+            for session in sessions {
+                let status = store.status(for: session.id)
+                let title = store.displayTitle(for: session)
+                let item = NSMenuItem(
+                    title: title,
+                    action: #selector(revealSessionFromMenu(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = session.id.uuidString
+                // A working row swaps the brand mark for the sidebar's comet;
+                // the timer started in `menuWillOpen` spins it while the menu
+                // is open, exactly as the tray's roster does.
+                if status == .working {
+                    item.image = sessionCometImage(phase: sessionMenuCometPhase)
+                    sessionMenuWorkingItems.append(item)
+                } else {
+                    item.image = agentMenuImage(for: session.agent)
+                }
+                item.attributedTitle = sessionMenuRowTitle(title, status: status)
+                if session.id == store.selectedSessionID { item.state = .on }
+                submenu.addItem(item)
+            }
+            projectItem.submenu = submenu
+            let statuses = sessions.map { store.status(for: $0.id) }
+            let rollup: SessionStatus = statuses.contains(.needsAttention) ? .needsAttention
+                : statuses.contains(.done) ? .done
+                : .idle
+            projectItem.attributedTitle = sessionMenuRowTitle(project.name, status: rollup)
+            if sessions.contains(where: { $0.id == store.selectedSessionID }) {
+                projectItem.state = .on
+            }
+            menu.addItem(projectItem)
+        }
+    }
+
+    /// While a menu is open its modal event-tracking loop stops SwiftUI's
+    /// `TimelineView` clock, so the Session menu spins its working comets the
+    /// way the tray does: a timer registered for the tracking run-loop mode
+    /// advances one shared frame across every working row (submenu rows
+    /// included — their items are live while the parent menu tracks). Started
+    /// unconditionally: `menuWillOpen` can precede the `menuNeedsUpdate` fill,
+    /// so the working rows may not exist yet when the menu opens.
+    func menuWillOpen(_ menu: NSMenu) {
+        guard menu.title == "Session" else { return }
+        sessionMenuCometTimer?.invalidate()
+        let interval = 1.0 / 15.0
+        let period = 1.1  // matches the sidebar's WorkingIndicator
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !self.sessionMenuWorkingItems.isEmpty else { return }
+                self.sessionMenuCometPhase += interval / period
+                if self.sessionMenuCometPhase >= 1 { self.sessionMenuCometPhase -= 1 }
+                let frame = sessionCometImage(phase: self.sessionMenuCometPhase)
+                for item in self.sessionMenuWorkingItems { item.image = frame }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .eventTracking)
+        sessionMenuCometTimer = timer
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        guard menu.title == "Session" else { return }
+        sessionMenuCometTimer?.invalidate()
+        sessionMenuCometTimer = nil
     }
 
     /// Fills a New Chat submenu with one row per enabled agent — the user's own
@@ -1319,6 +1485,23 @@ extension AppDelegate: NSMenuDelegate {
             keyEquivalent: ""
         )
         add.target = self
+    }
+}
+
+extension AppDelegate: NSMenuItemValidation {
+    /// Auto-enablement for menu items targeting the delegate: the Session
+    /// cycling verbs need sessions to cycle, and the branch verbs a selected
+    /// session inside a real git project. Every other action stays enabled,
+    /// matching the pre-validation behavior.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(nextSession(_:)), #selector(previousSession(_:)):
+            return !store.sidebarSessionGroups.isEmpty
+        case #selector(newWorktree(_:)), #selector(newPullRequest(_:)):
+            return currentBranchProject != nil
+        default:
+            return true
+        }
     }
 }
 
@@ -1751,6 +1934,23 @@ private func buildMainMenu() -> NSMenu {
         command: .openProject
     )
     fileMenu.addItem(.separator())
+    // The two branch verbs that fit termio's read-only git surface, with
+    // GitHub Desktop's Branch-menu bindings: creating a worktree (termio's
+    // branch-creation verb, the sidebar context menu's action promoted) and
+    // the New Pull Request browser hand-off. Both act on the selected
+    // session's project and dim without one (see `validateMenuItem`) — too few
+    // to carry a top-level Branch menu, so they live with the project verbs.
+    fileMenu.addItem(
+        withTitle: "New Worktree…",
+        action: #selector(AppDelegate.newWorktree(_:)),
+        command: .newWorktree
+    )
+    fileMenu.addItem(
+        withTitle: "New Pull Request",
+        action: #selector(AppDelegate.newPullRequest(_:)),
+        command: .newPullRequest
+    )
+    fileMenu.addItem(.separator())
     // ⌘⇧W closes the whole window (⌘W is Ungroup, terminal-style — see View menu).
     fileMenu.addItem(
         withTitle: "Close Window",
@@ -1863,6 +2063,17 @@ private func buildMainMenu() -> NSMenu {
         command: .resetFontSize
     )
     viewItem.submenu = viewMenu
+
+    // Session menu — Chrome's Tab menu for termio's own navigation unit: the
+    // cycling verbs up top, then a live jump list of every open session grouped
+    // by project. Filled on open by the AppDelegate (see `fillSessionMenu`);
+    // an empty delegate-filled menu still resolves ⌘⇧]/⌘⇧[, because AppKit
+    // runs `menuNeedsUpdate` during its key-equivalent sweep too.
+    let sessionItem = NSMenuItem()
+    mainMenu.addItem(sessionItem)
+    let sessionMenu = NSMenu(title: "Session")
+    sessionMenu.delegate = NSApp.delegate as? AppDelegate
+    sessionItem.submenu = sessionMenu
 
     return mainMenu
 }

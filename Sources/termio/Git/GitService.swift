@@ -570,6 +570,19 @@ enum GitService {
             }
         }
 
+        /// The path that opens a pull/merge request from `branch`, relative to the
+        /// repo's web URL. GitHub/GitLab/Bitbucket default the base branch on
+        /// their own; Gitea's compare route wants it explicit, so the caller
+        /// passes one (only consulted there).
+        fileprivate func newPullRequestPath(branch: String, base: String) -> String {
+            switch self {
+            case .github: return "compare/\(branch)?expand=1"
+            case .gitlab: return "-/merge_requests/new?merge_request%5Bsource_branch%5D=\(branch)"
+            case .bitbucket: return "pull-requests/new?source=\(branch)"
+            case .gitea: return "compare/\(base)...\(branch)"
+            }
+        }
+
         /// Hostname → forge. Exact hosts cover the public instances; the substring
         /// checks cover the self-hosted convention (`gitlab.company.com`, `gitea.…`).
         fileprivate init?(host: String) {
@@ -610,6 +623,44 @@ enum GitService {
         else { return RemotePage(forge: forge, url: repo) }
         let branchURL = URL(string: "\(repo.absoluteString)/\(forge.branchPath(escaped))") ?? repo
         return RemotePage(forge: forge, url: branchURL)
+    }
+
+    /// The forge page for opening a pull request from `dir`'s current branch —
+    /// GitHub Desktop's Branch ▸ New Pull Request jump, verbatim: a browser
+    /// hand-off, so the PR itself is still authored on the forge, never in
+    /// termio. `nil` when the origin remote isn't a forge we can shape a URL
+    /// for, the checkout is detached, or the branch has no upstream yet (the
+    /// forge would 404 on a branch it has never seen — the caller tells the
+    /// user to push first).
+    static func newPullRequestPage(in dir: String) async -> URL? {
+        await offMain { resolveNewPullRequestPage(dir) }
+    }
+
+    private static func resolveNewPullRequestPage(_ dir: String) -> URL? {
+        guard let remote = run(["remote", "get-url", "origin"], in: dir)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            let parsed = parseRemote(remote),
+            let forge = Forge(host: parsed.host),
+            let repo = URL(string: "https://\(parsed.host)/\(parsed.path)"),
+            run(["rev-parse", "--abbrev-ref", "@{upstream}"], in: dir) != nil,
+            let branch = run(["rev-parse", "--abbrev-ref", "HEAD"], in: dir)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !branch.isEmpty, branch != "HEAD",
+            let escaped = branch.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+        else { return nil }
+        // Gitea's compare route is the only one needing an explicit base branch.
+        // `origin/HEAD` is the local record of the remote's default (unset in
+        // some clones — then "main" is the best guess).
+        var base = "main"
+        if forge == .gitea,
+           let head = run(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], in: dir)?
+               .trimmingCharacters(in: .whitespacesAndNewlines) {
+            // "origin/main" → "main" (keeping any slashes inside the branch name).
+            let short = head.split(separator: "/").dropFirst().joined(separator: "/")
+            if !short.isEmpty { base = short }
+        }
+        let path = forge.newPullRequestPath(branch: escaped, base: base)
+        return URL(string: "\(repo.absoluteString)/\(path)")
     }
 
     /// The `owner/repo` slug when the origin remote points at github.com — the
