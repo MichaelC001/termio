@@ -530,16 +530,32 @@ enum SessionSkillInstaller {
         """
     }
 
-    static func sync(enabled: Bool) {
+    /// Returns which instruction files ended up carrying the note, so the Settings
+    /// row can confirm the install; the uninstall path reports nothing, since no UI
+    /// asks about it.
+    @discardableResult
+    static func sync(enabled: Bool) -> InstallOutcome {
+        var outcome = InstallOutcome()
         for url in targets {
-            if enabled { install(into: url) } else { uninstall(from: url) }
+            if enabled {
+                outcome.record(displayPath(of: url), installed: install(into: url))
+            } else {
+                uninstall(from: url)
+            }
         }
+        return outcome
     }
 
-    private static func install(into url: URL) {
+    /// The target's path with the home directory abbreviated (`~/.claude/CLAUDE.md`)
+    /// — how the docs and the files themselves refer to it.
+    private static func displayPath(of url: URL) -> String {
+        (url.path as NSString).abbreviatingWithTildeInPath
+    }
+
+    private static func install(into url: URL) -> Bool {
         let stripped = strippedExisting(at: url)
         let separator = stripped.isEmpty ? "" : "\n\n"
-        write(stripped + separator + block + "\n", to: url)
+        return write(stripped + separator + block + "\n", to: url)
     }
 
     private static func uninstall(from url: URL) {
@@ -568,18 +584,23 @@ enum SessionSkillInstaller {
         return result.trimmingCharacters(in: .newlines)
     }
 
-    private static func write(_ contents: String, to url: URL) {
+    /// Returns whether the file now holds `contents` — true both for a fresh write
+    /// and for the skipped identical one, false only when the write threw.
+    @discardableResult
+    private static func write(_ contents: String, to url: URL) -> Bool {
         let data = Data(contents.utf8)
         // Don't rewrite an unchanged note on every launch: avoids churning a
         // user-owned instruction file and the race of clobbering a concurrent edit.
-        if (try? Data(contentsOf: url)) == data { return }
+        if (try? Data(contentsOf: url)) == data { return true }
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try data.write(to: url, options: .atomic)
+            return true
         } catch {
             FileHandle.standardError.write(
                 Data("termio: session skill could not write \(url.path): \(error)\n".utf8))
+            return false
         }
     }
 }
