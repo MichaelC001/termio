@@ -142,10 +142,16 @@ final class ProjectListViewController: UIViewController {
         refilter()
     }
 
-    private func presentSettings() {
+    private func presentSettings(deepLinkToConnectivity: Bool = false) {
         // The sheet inherits the window's app-wide Appearance override, same
         // as every other screen.
-        present(UINavigationController(rootViewController: SettingsViewController()), animated: true)
+        let nav = UINavigationController(rootViewController: SettingsViewController())
+        if deepLinkToConnectivity {
+            // "Connect a Mac" promises pairing, so land on the Connectivity
+            // page itself; back reveals full Settings, swipe-down dismisses.
+            nav.pushViewController(ConnectivitySettingsViewController(), animated: false)
+        }
+        present(nav, animated: true)
     }
 
     // MARK: - Table
@@ -171,10 +177,8 @@ final class ProjectListViewController: UIViewController {
             forHeaderFooterViewReuseIdentifier: SectionCapView.reuseID
         )
         tableView.translatesAutoresizingMaskIntoConstraints = false
-        // The floating tab pill sits over the list; reserve room so the last
-        // rows scroll clear of it (64pt pill + margins).
-        tableView.contentInset.bottom = 80
-        tableView.verticalScrollIndicatorInsets.bottom = 80
+        // The native tab controller contributes the correct safe-area and
+        // adjusted scroll insets for both the classic and Liquid Glass bars.
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 16),
@@ -295,7 +299,7 @@ final class ProjectListViewController: UIViewController {
     /// immediate reconnect and drop back to the "Connecting…" copy.
     private func emptyStateAction() {
         if case .unpaired = CompanionLink.state {
-            presentSettings()
+            presentSettings(deepLinkToConnectivity: true)
             return
         }
         reconnectStalled = false

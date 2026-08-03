@@ -82,18 +82,16 @@ final class TerminalListViewController: UIViewController {
     }
 
     /// The compose ＋ floats in the bottom-right corner as a glass FAB, above the
-    /// tab pill — thumb-reachable and clear of the large title. Added after the
-    /// table so it sits above the rows.
+    /// native tab bar — thumb-reachable and clear of the large title. Added
+    /// after the table so it sits above the rows.
     private func configureFab() {
         newTerminalButton.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(newTerminalButton)
         NSLayoutConstraint.activate([
             newTerminalButton.trailingAnchor.constraint(
                 equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
-            // Clear the 64pt tab pill (which sits 8pt off the safe-area bottom)
-            // with an 8pt gap above it: 64 + 8 + 8.
             newTerminalButton.bottomAnchor.constraint(
-                equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -80),
+                equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
             newTerminalButton.widthAnchor.constraint(equalToConstant: 52),
             newTerminalButton.heightAnchor.constraint(equalToConstant: 52),
         ])
@@ -153,10 +151,8 @@ final class TerminalListViewController: UIViewController {
         tableView.keyboardDismissMode = .onDrag
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "row")
         tableView.translatesAutoresizingMaskIntoConstraints = false
-        // The floating pill sits over the list; reserve room so the last rows
-        // scroll clear of it (64pt pill + margins).
-        tableView.contentInset.bottom = 80
-        tableView.verticalScrollIndicatorInsets.bottom = 80
+        // The native tab controller contributes the correct safe-area and
+        // adjusted scroll insets for both the classic and Liquid Glass bars.
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 16),

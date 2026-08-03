@@ -277,6 +277,34 @@ struct CommandPaletteView: View {
                 })
             }
         }
+        // The Session menu's cycling verbs, whenever there's something to cycle.
+        if !store.sidebarSessionGroups.isEmpty {
+            for (id, command, selector) in [
+                ("next-session", KeyCommandID.nextSession, #selector(AppDelegate.nextSession(_:))),
+                ("previous-session", .previousSession, #selector(AppDelegate.previousSession(_:))),
+            ] {
+                actions.append(.init(id: id, title: KeyCommandCatalog.info(command).title,
+                                     icon: .arrowsLeftRight,
+                                     shortcut: keys.display(for: command)) { _ in
+                    NSApp.sendAction(selector, to: nil, from: nil)
+                })
+            }
+        }
+        // The branch verbs (File menu), listed only when the selected session
+        // lives in a real git project — the menu bar's own enablement rule.
+        if let sid = store.selectedSessionID, let project = store.project(for: sid),
+           project.kind == .folder, project.branch != "—" {
+            actions.append(.init(id: "new-worktree", title: "New Worktree…",
+                                 icon: .gitBranch,
+                                 shortcut: keys.display(for: .newWorktree)) { _ in
+                NSApp.sendAction(#selector(AppDelegate.newWorktree(_:)), to: nil, from: nil)
+            })
+            actions.append(.init(id: "new-pull-request", title: "New Pull Request",
+                                 icon: .gitPullRequest,
+                                 shortcut: keys.display(for: .newPullRequest)) { _ in
+                NSApp.sendAction(#selector(AppDelegate.newPullRequest(_:)), to: nil, from: nil)
+            })
+        }
         actions.append(.init(id: "new-terminal", title: "New Terminal",
                              icon: .plusSquare, shortcut: keys.display(for: .newTerminal)) {
             $0.addScratchTerminal()

@@ -11,6 +11,12 @@ enum KeyCommandID: String, CaseIterable, Identifiable {
     // Navigation
     case openQuickly = "nav.open-quickly"
     case commandPalette = "nav.command-palette"
+    // Session
+    case nextSession = "session.next"
+    case previousSession = "session.previous"
+    // Branch
+    case newWorktree = "branch.new-worktree"
+    case newPullRequest = "branch.new-pull-request"
     // Panes
     case splitRight = "pane.split-right"
     case splitDown = "pane.split-down"
@@ -66,6 +72,21 @@ enum KeyCommandCatalog {
               defaultShortcut: .init(modifiers: [.command, .shift], key: .char("o"))),
         .init(id: .commandPalette, category: "Navigation", title: "Command Palette…",
               defaultShortcut: .init(modifiers: [.command, .shift], key: .char("p"))),
+        // Session — cycling follows the sidebar's visual order (see
+        // `selectAdjacentSession`). ⌘⇧]/⌘⇧[ is the iTerm2/Chrome tab-cycling
+        // convention; ghostty's own next/previous_tab on the same keys are
+        // unbound in the surface config (see `applyAppearance`) so they reach
+        // the menu.
+        .init(id: .nextSession, category: "Session", title: "Next Session",
+              defaultShortcut: .init(modifiers: [.command, .shift], key: .char("]"))),
+        .init(id: .previousSession, category: "Session", title: "Previous Session",
+              defaultShortcut: .init(modifiers: [.command, .shift], key: .char("["))),
+        // Branch — GitHub Desktop's Branch-menu bindings verbatim: New Branch
+        // is ⌘⇧N there, and termio's branch-creation verb is the worktree.
+        .init(id: .newWorktree, category: "Branch", title: "New Worktree…",
+              defaultShortcut: .init(modifiers: [.command, .shift], key: .char("n"))),
+        .init(id: .newPullRequest, category: "Branch", title: "New Pull Request",
+              defaultShortcut: .init(modifiers: [.command], key: .char("r"))),
         // Panes
         .init(id: .splitRight, category: "Panes", title: "Split Right",
               defaultShortcut: .init(modifiers: [.command], key: .char("d"))),

@@ -145,18 +145,16 @@ final class ProjectDetailViewController: UIViewController {
     // MARK: - Add button
 
     /// The compose ＋ floats in the bottom-right corner as a glass FAB, above
-    /// the tab pill — matching the Terminals/Chats lists. Added after the table
-    /// so it sits above the rows.
+    /// the native tab bar — matching the Terminals/Chats lists. Added after the
+    /// table so it sits above the rows.
     private func configureFab() {
         addButton.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(addButton)
         NSLayoutConstraint.activate([
             addButton.trailingAnchor.constraint(
                 equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
-            // Clear the 64pt tab pill (which sits 8pt off the safe-area bottom)
-            // with an 8pt gap above it: 64 + 8 + 8.
             addButton.bottomAnchor.constraint(
-                equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -80),
+                equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
             addButton.widthAnchor.constraint(equalToConstant: 52),
             addButton.heightAnchor.constraint(equalToConstant: 52),
         ])
@@ -199,10 +197,8 @@ final class ProjectDetailViewController: UIViewController {
         tableView.keyboardDismissMode = .onDrag
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "session")
         tableView.translatesAutoresizingMaskIntoConstraints = false
-        // The floating tab pill sits over the list; reserve room so the last
-        // rows scroll clear of it.
-        tableView.contentInset.bottom = 80
-        tableView.verticalScrollIndicatorInsets.bottom = 80
+        // The native tab controller contributes the correct safe-area and
+        // adjusted scroll insets for both the classic and Liquid Glass bars.
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 12),

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import TermioShared
 
 /// Renders an agent's brand mark as an `NSImage` for AppKit menu rows by reusing
 /// `AgentIconView`, so menus show the exact same glyphs as the sidebar. Rasterized
@@ -17,6 +18,53 @@ func agentMenuImage(for agent: AgentPreset, side: CGFloat = 15) -> NSImage? {
             content: AgentIconView(agent: agent, size: side - 2)
                 .frame(width: side, height: side)
                 .environment(\.colorScheme, isDark ? .dark : .light)
+        )
+        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+        guard let rendered = renderer.nsImage else { return false }
+        rendered.draw(in: rect)
+        return true
+    }
+}
+
+/// A session row title for AppKit menus — the menu-bar tray and the Session
+/// menu share it, so both speak the sidebar's exact dot vocabulary: a trailing
+/// green dot for a session that just finished, amber for one blocked on you.
+/// Working rows carry the comet mark in place of a dot and idle rows a plain
+/// title, so neither trails one.
+@MainActor
+func sessionMenuRowTitle(_ title: String, status: SessionStatus) -> NSAttributedString {
+    let result = NSMutableAttributedString(
+        string: title,
+        attributes: [.font: NSFont.menuFont(ofSize: 0)]
+    )
+    let color: NSColor
+    switch status {
+    case .idle, .working: return result
+    case .done: color = .systemGreen
+    case .needsAttention: color = .systemOrange
+    }
+    result.append(NSAttributedString(
+        string: "  ●",
+        attributes: [.foregroundColor: color, .font: NSFont.systemFont(ofSize: 8)]
+    ))
+    return result
+}
+
+/// The sidebar's orbiting-comet working mark, rasterised at a fixed phase so menu
+/// rows can show it (and the tray's timer can advance it frame by frame). Mirrors
+/// `agentMenuImage`'s deferred drawing-handler trick so the ink resolves under the
+/// menu's appearance (menu bar tint and menu theme can differ), passing the
+/// resolved black/white as the comet tint rather than relying on its adaptive-ink
+/// default.
+@MainActor
+func sessionCometImage(phase: Double) -> NSImage {
+    let side: CGFloat = 15
+    return NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+        let appearance = NSAppearance.currentDrawing()
+        let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        let renderer = ImageRenderer(
+            content: WorkingIndicator(tint: isDark ? .white : .black, phase: phase)
+                .frame(width: side, height: side)
         )
         renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
         guard let rendered = renderer.nsImage else { return false }

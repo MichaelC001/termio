@@ -6,6 +6,11 @@ import SwiftUI
 /// one giant expression alongside the drop target and Quick Look wiring.
 struct FileTreeList: View {
     let nodes: [FileNode]
+    /// Bumped by `FileBrowserView` after it mutates a realized directory's children
+    /// in place (see `applyTreeChanges`); the changed input is what makes SwiftUI
+    /// run an update pass over the outline, since `nodes` itself — same root node
+    /// references — compares unchanged after an incremental reload.
+    let revision: Int
     @Binding var selection: URL?
     let font: Font
     /// Moves/copies `sources` into a folder `destination`; returns whether the tree
@@ -21,6 +26,50 @@ struct FileTreeList: View {
     let captureOutline: (NSOutlineView?) -> Void
 
     var body: some View {
+        tree.equatable()
+    }
+
+    private var tree: EquatableTree {
+        EquatableTree(
+            nodes: nodes, revision: revision, selection: $selection,
+            selectionValue: selection, font: font,
+            onDrop: onDrop, rootURL: rootURL, actions: actions, captureOutline: captureOutline
+        )
+    }
+}
+
+/// The `List` itself behind an `Equatable` gate. The parent re-evaluates on every
+/// watcher token (the tokens are `@Published`), and a `List(children:)` update is
+/// never free — SwiftUI's outline coordinator re-walks every realized row even when
+/// nothing changed, which on a high-churn root (a home directory) burned the main
+/// thread continuously. Closure properties would make the plain view compare
+/// unequal every time, so equality is spelled out over the values that actually
+/// affect the rows; the closures are stable for the life of the pane and skipped.
+private struct EquatableTree: View, Equatable {
+    let nodes: [FileNode]
+    let revision: Int
+    @Binding var selection: URL?
+    /// The selection as a plain value. The binding can't serve equality — both
+    /// sides of `==` read the live storage and always agree — so the parent
+    /// snapshots the value at evaluation time; rows also render from this, keeping
+    /// what they show and what the gate compares the same thing.
+    let selectionValue: URL?
+    let font: Font
+    let onDrop: (_ sources: [URL], _ destination: URL) -> Bool
+    let rootURL: URL
+    let actions: FileTreeActions
+    let captureOutline: (NSOutlineView?) -> Void
+
+    static func == (lhs: EquatableTree, rhs: EquatableTree) -> Bool {
+        lhs.revision == rhs.revision
+            && lhs.selectionValue == rhs.selectionValue
+            && lhs.font == rhs.font
+            && lhs.rootURL == rhs.rootURL
+            && lhs.nodes.count == rhs.nodes.count
+            && zip(lhs.nodes, rhs.nodes).allSatisfy { $0 === $1 }
+    }
+
+    var body: some View {
         // Keep List's native `selection:` binding — it drives selection at the AppKit
         // layer, which coexists cleanly with `.draggable` (a SwiftUI tap gesture does
         // not, and makes the drag sticky/unreliable). The only downside of the native
@@ -28,7 +77,7 @@ struct FileTreeList: View {
         // outline view's `selectionHighlightStyle = .none` (see `FileRow`), leaving our
         // own `SidebarRowHighlight` as the sole, left-sidebar-matching selection cue.
         List(nodes, children: \.children, selection: $selection) { node in
-            FileRow(node: node, font: font, isSelected: selection == node.url, onDrop: onDrop, rootURL: rootURL, actions: actions, captureOutline: captureOutline)
+            FileRow(node: node, font: font, isSelected: selectionValue == node.url, onDrop: onDrop, rootURL: rootURL, actions: actions, captureOutline: captureOutline)
                 .listRowSeparator(.hidden)
         }
         .listStyle(.plain)
@@ -110,10 +159,10 @@ private struct FileRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
-        // Strip the source list's blue selection fill at the AppKit layer, so the only
-        // selection cue is our `SidebarRowHighlight` below. Lives in a row so it can
-        // walk up to the enclosing outline view.
-        .background(OutlineSelectionStyleStripper())
+        // Strip the source list's blue selection fill and restore the mouse-wheel
+        // scroll increment at the AppKit layer (see `OutlineViewFixups`). Lives in a
+        // row so it can walk up to the enclosing outline view.
+        .background(OutlineViewFixups())
         // Capture that same outline view (a row is the one place the walk-up reaches
         // it) so `FileBrowserView` can expand this folder on the click that selected it.
         .background(OutlineViewCapture(onFound: captureOutline))
@@ -240,6 +289,15 @@ private struct RowContextMenu: NSViewRepresentable {
         @objc private func showMenu(_ recognizer: NSClickGestureRecognizer) {
             guard let hostView else { return }
             let menu = NSMenu()
+            // Cursor's explorer verb, leading the menu: the row lands in the agent's
+            // prompt as a shell-quoted path — the same token a drag onto the terminal
+            // inserts. Gated live at open time; a plain shell has no chat to add to.
+            if actions?.canAddToChat() == true {
+                let add = menuItem("Add to Chat", #selector(addToChat))
+                add.image = NSImage(systemSymbolName: "plus.bubble", accessibilityDescription: nil)
+                menu.addItem(add)
+                menu.addItem(.separator())
+            }
             if isDirectory {
                 menu.addItem(menuItem("New File", #selector(newFile)))
                 menu.addItem(menuItem("New Folder", #selector(newFolder)))
@@ -254,6 +312,8 @@ private struct RowContextMenu: NSViewRepresentable {
             menu.addItem(menuItem("Delete", #selector(deleteItem)))
             menu.popUp(positioning: nil, at: recognizer.location(in: hostView), in: hostView)
         }
+
+        @objc private func addToChat() { actions?.addToChat(target) }
 
         private func menuItem(_ title: String, _ action: Selector) -> NSMenuItem {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
@@ -407,7 +467,7 @@ private struct EmptyAreaContextMenu: NSViewRepresentable {
 /// `FileBrowserView` can expand a folder programmatically when its row is selected —
 /// the click that selects a row is the only reliable signal (the outline view swallows
 /// primary-click recognizers in its own mouse tracking). Mounted *inside a row* (like
-/// `OutlineSelectionStyleStripper`), so the outline view is a real ancestor on its
+/// `OutlineViewFixups`), so the outline view is a real ancestor on its
 /// superview chain — a `.background` on the List sits in a sibling subtree and can't
 /// reach it.
 private struct OutlineViewCapture: NSViewRepresentable {
@@ -434,32 +494,44 @@ private struct OutlineViewCapture: NSViewRepresentable {
     }
 }
 
-/// A zero-size helper that finds the `NSOutlineView` hosting the file tree (by
-/// walking up from its own placement inside a row) and sets its
-/// `selectionHighlightStyle` to `.none`. That strips the source list's blue accent
-/// fill while leaving selection itself intact — so the List keeps native, drag-
-/// friendly selection and `SidebarRowHighlight` is the only thing that paints it.
-/// Re-applied on every update because each row mounts one, so any list rebuild
-/// reasserts the style. Shared with the left sidebar (`SidebarView`), which is the
-/// same `.sidebar`-style source list and needs the identical strip.
-struct OutlineSelectionStyleStripper: NSViewRepresentable {
+/// A zero-size helper that finds the `NSTableView`/`NSOutlineView` backing a List
+/// (by walking up from its own placement inside a row) and corrects two AppKit-layer
+/// details SwiftUI gets wrong for our lists. Re-applied on every update because each
+/// row mounts one, so any list rebuild reasserts both. Shared by the left sidebar,
+/// this file tree, and the Issues / PR-files / git-changes lists.
+///
+/// - `selectionHighlightStyle = .none` strips the source list's blue accent fill
+///   while leaving selection itself intact — the List keeps native, drag-friendly
+///   selection and `SidebarRowHighlight` is the only thing that paints it.
+/// - `verticalLineScroll = 24` restores mouse-wheel scrolling. These lists all set
+///   `defaultMinListRowHeight` to 1 so rows self-size, but SwiftUI writes that
+///   minimum into `NSTableView.rowHeight`, and AppKit mirrors `rowHeight` into the
+///   enclosing scroll view's `verticalLineScroll` — the per-line increment every
+///   non-precise (physical wheel) scroll event is multiplied by. At 1pt a wheel
+///   notch barely moves the list; 24 is what a default-height List gets, so wheels
+///   feel like every other Mac list. Trackpads send precise pixel deltas and never
+///   consult it.
+struct OutlineViewFixups: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
-        DispatchQueue.main.async { Self.strip(from: view) }
+        DispatchQueue.main.async { Self.apply(from: view) }
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async { Self.strip(from: nsView) }
+        DispatchQueue.main.async { Self.apply(from: nsView) }
     }
 
-    private static func strip(from view: NSView) {
+    private static func apply(from view: NSView) {
         var ancestor = view.superview
         while let current = ancestor {
             // NSOutlineView is an NSTableView subclass, so this catches the tree.
             if let table = current as? NSTableView {
                 if table.selectionHighlightStyle != .none {
                     table.selectionHighlightStyle = .none
+                }
+                if let scroll = table.enclosingScrollView, scroll.verticalLineScroll != 24 {
+                    scroll.verticalLineScroll = 24
                 }
                 return
             }

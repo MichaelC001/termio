@@ -837,6 +837,13 @@ extension TermioStore {
         builder.withCustom("keybind", "super+minus=unbind")
         builder.withCustom("keybind", "super+zero=unbind")
         builder.withCustom("keybind", "super+shift+enter=unbind")
+        // Session cycling lives on ⌘⇧[ / ⌘⇧] (Session menu). Ghostty binds both
+        // to previous/next_tab — no-ops in termio's tab-less embedding that would
+        // still swallow the keys before the menu sees them. The bare-character
+        // form matches ghostty's own default triggers (unicode '[' / ']'), which
+        // the named physical keys (bracket_left/right) would not.
+        builder.withCustom("keybind", "super+shift+[=unbind")
+        builder.withCustom("keybind", "super+shift+]=unbind")
     }
 
     /// The light/dark theme pair libghostty switches between as the system

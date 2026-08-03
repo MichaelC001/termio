@@ -36,6 +36,13 @@ struct HighlightedTextView: NSViewRepresentable {
     /// Appends a "Close" item to the right-click menu — the editor closes terminal-style, alongside
     /// the toolbar button. Left off wherever the text view isn't the closable editor overlay.
     var showsCloseMenuItem: Bool = false
+    /// "Add to Chat" in the right-click menu. The argument is the selected text, `nil`
+    /// when nothing is selected — the owner sends the selection as a pasted snippet, or
+    /// falls back to the document's path (Cursor's split: selection → snippet, file →
+    /// reference). Injected (the text view has no reach into the store); `canAddToChat`
+    /// is read at menu-open time, so a plain-shell session shows no item.
+    var addToChat: ((String?) -> Void)? = nil
+    var canAddToChat: (() -> Bool)? = nil
     /// Invoked when the user presses ⌘S — flushes the buffer to disk immediately.
     let onSave: () -> Void
 
@@ -61,6 +68,8 @@ struct HighlightedTextView: NSViewRepresentable {
         let textView = SavingTextView(frame: .zero, textContainer: container)
         textView.onSave = onSave
         textView.showsCloseMenuItem = showsCloseMenuItem
+        textView.addToChat = addToChat
+        textView.canAddToChat = canAddToChat
         textView.delegate = context.coordinator
         textView.isEditable = isEditable
         textView.isSelectable = true
@@ -329,6 +338,10 @@ private final class SavingTextView: NSTextView {
     /// When set, the right-click menu carries a trailing "Close" — the editor's only close
     /// affordance now that it has no chrome button (terminal-style, matching how a session closes).
     var showsCloseMenuItem = false
+    /// "Add to Chat": the argument is the selected text (`nil` = whole file, the owner
+    /// inserts its path). The gate is read at menu-open time; a plain shell shows no item.
+    var addToChat: ((String?) -> Void)?
+    var canAddToChat: (() -> Bool)?
     /// Full-width wash under the caret's line; `.clear` (or a read-only buffer) draws nothing.
     var currentLineColor: NSColor = .clear { didSet { needsDisplay = true } }
     /// Background wash on a bracket pair when the caret sits against one of them.
@@ -376,10 +389,49 @@ private final class SavingTextView: NSTextView {
             menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
         }
         menu.addItem(.separator())
+        if canAddToChat?() == true {
+            // One name everywhere (Cursor's): with a selection the selected text goes
+            // over as a pasted snippet, without one the document's path — the context
+            // says which, the label stays put.
+            let add = NSMenuItem(title: "Add to Chat", action: #selector(addToChatAction), keyEquivalent: "")
+            add.target = self
+            add.image = NSImage(systemSymbolName: "plus.bubble", accessibilityDescription: nil)
+            menu.addItem(add)
+        }
         let close = NSMenuItem(title: "Close", action: #selector(closeEditorOverlay), keyEquivalent: "")
         close.target = self
         menu.addItem(close)
         return menu
+    }
+
+    @objc private func addToChatAction() {
+        let range = selectedRange()
+        let selection = range.length > 0 ? (string as NSString).substring(with: range) : nil
+        addToChat?(selection)
+    }
+
+    /// AppKit appends AutoFill + Services to an EDITABLE text view's context menu after
+    /// BOTH `menu(for:)` and `willOpenMenu` — no override in that pipeline can strip
+    /// them (the read-only diff view never gets them, which is why its plain
+    /// `menu(for:)` sufficed). So the right-click menu is popped OUTSIDE the pipeline,
+    /// the file tree's `popUp` shape, which AppKit never augments.
+    override func rightMouseDown(with event: NSEvent) {
+        guard showsCloseMenuItem, let menu = menu(for: event) else {
+            return super.rightMouseDown(with: event)
+        }
+        menu.popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
+    }
+
+    /// The Services injector asks this before adding its submenu; refusing kills
+    /// Services at the source — it covers the ctrl-click path, which still runs
+    /// AppKit's own context-menu pipeline.
+    override func validRequestor(
+        forSendType sendType: NSPasteboard.PasteboardType?,
+        returnType: NSPasteboard.PasteboardType?
+    ) -> Any? {
+        showsCloseMenuItem
+            ? nil
+            : super.validRequestor(forSendType: sendType, returnType: returnType)
     }
 
     @objc private func closeEditorOverlay() {

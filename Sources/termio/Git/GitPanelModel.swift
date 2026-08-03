@@ -160,7 +160,7 @@ final class GitPanelModel: ObservableObject {
         watcher = FolderEventStream(
             paths: paths, latency: 0.4,
             queue: DispatchQueue(label: "sh.termio.gitpane.fsevents", qos: .utility)
-        ) { [weak self] eventPaths in
+        ) { [weak self] eventPaths, _ in
             // Build-product churn can't change the pane; don't let it spawn git.
             let relevant = eventPaths.filter { path in
                 !Self.isBuildProductEvent(path, underAny: paths)

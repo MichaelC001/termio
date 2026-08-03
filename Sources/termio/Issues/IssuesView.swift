@@ -34,18 +34,32 @@ struct IssuesView: View {
         listPane
             .task(id: repoRoot) {
                 store.registerIssuesModel(model)
+                // An already-open detail dictates the list it sits over: exiting a PR
+                // must reveal Pull Requests (a restored detail is the one case the
+                // registry can't cover — no predecessor model after a relaunch), with
+                // its row still selected. Pre-`start()` the kind write is inert: the
+                // query didSet's loadList bails until the phase is ready.
+                if let open = store.openIssueDetail {
+                    if model.query.kind != open.kind { model.query.kind = open.kind }
+                    if selection != open.number { selection = open.number }
+                }
                 await model.start()
             }
             // Selection IS the open gesture; route it to the center overlay. Follow the
-            // overlay back: when it closes, release the selection so the same row reopens.
+            // overlay back: when it closes, release the selection so the same row reopens
+            // — and revalidate the list, so an item whose state changed while its detail
+            // was up (a PR closed out of band) doesn't come back as a stale open row.
             .onChange(of: selection) { _, selected in
                 guard let selected,
                       let item = model.items.first(where: { $0.number == selected })
                 else { return }
                 store.openIssueDetail = item
             }
-            .onChange(of: store.openIssueDetail) { _, item in
-                if item == nil { selection = nil }
+            .onChange(of: store.openIssueDetail) { was, item in
+                if item == nil {
+                    selection = nil
+                    if was != nil { Task { await model.loadList(force: true) } }
+                }
             }
     }
 
@@ -286,7 +300,12 @@ struct IssuesView: View {
                     item: item,
                     font: settings.interfaceFont,
                     chrome: chrome,
+                    // `openItem` outlives the closed overlay, so the last-opened row
+                    // keeps the selected grey — back from a full-screen detail, the
+                    // list still shows which item it was. (`selection` itself is
+                    // released on close so clicking the same row can reopen it.)
                     isSelected: selection == item.number
+                        || model.openItem?.number == item.number
                 )
                 // Drag a row out as its GitHub URL — the terminal pane catches the
                 // drop and inserts the full link at the prompt (see
@@ -300,7 +319,14 @@ struct IssuesView: View {
                 // un-styleable accent border (the file tree learned the same, see
                 // `FileTreeList.RowContextMenu`). A secondary-click recognizer on the
                 // row's own view pops the menu, so nothing emphasizes the row.
-                .background(IssueRowContextMenu(url: item.url))
+                .background(IssueRowContextMenu(
+                    url: item.url,
+                    addToChat: { [weak store] in
+                        guard let url = item.url else { return }
+                        _ = store?.addPathToSelectedSessionPrompt(url)
+                    },
+                    canAddToChat: { [weak store] in store?.selectedSessionRunsAgent ?? false }
+                ))
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
@@ -379,7 +405,7 @@ private struct IssueRow: View {
         .padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .background(OutlineSelectionStyleStripper())
+        .background(OutlineViewFixups())
         .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
         .listRowBackground(
@@ -432,6 +458,11 @@ private extension View {
 /// menu is suppressed when there is none (mirrors `FileTreeList.RowContextMenu`).
 private struct IssueRowContextMenu: NSViewRepresentable {
     let url: URL?
+    /// "Add to Chat": types the item's GitHub URL into the selected agent session's
+    /// prompt — the same token dragging the row onto the terminal inserts. The gate
+    /// is read at menu-open time; a plain-shell session shows no item.
+    var addToChat: (() -> Void)? = nil
+    var canAddToChat: (() -> Bool)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -439,12 +470,16 @@ private struct IssueRowContextMenu: NSViewRepresentable {
         let view = NSView(frame: .zero)
         context.coordinator.owner = view
         context.coordinator.url = url
+        context.coordinator.addToChat = addToChat
+        context.coordinator.canAddToChat = canAddToChat
         context.coordinator.attach()
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.url = url
+        context.coordinator.addToChat = addToChat
+        context.coordinator.canAddToChat = canAddToChat
         context.coordinator.attach()
     }
 
@@ -456,6 +491,8 @@ private struct IssueRowContextMenu: NSViewRepresentable {
     final class Coordinator: NSObject {
         weak var owner: NSView?
         var url: URL?
+        var addToChat: (() -> Void)?
+        var canAddToChat: (() -> Bool)?
         private weak var hostView: NSView?
         private var recognizer: NSClickGestureRecognizer?
 
@@ -482,10 +519,19 @@ private struct IssueRowContextMenu: NSViewRepresentable {
         @objc private func showMenu(_ recognizer: NSClickGestureRecognizer) {
             guard let hostView, url != nil else { return }
             let menu = NSMenu()
+            // The agent verb leads, like the file tree's rows.
+            if canAddToChat?() == true {
+                let add = menuItem("Add to Chat", #selector(addToChatAction))
+                add.image = NSImage(systemSymbolName: "plus.bubble", accessibilityDescription: nil)
+                menu.addItem(add)
+                menu.addItem(.separator())
+            }
             menu.addItem(menuItem("Copy Link", #selector(copyLink)))
             menu.addItem(menuItem("Open in Browser", #selector(openInBrowser)))
             menu.popUp(positioning: nil, at: recognizer.location(in: hostView), in: hostView)
         }
+
+        @objc private func addToChatAction() { addToChat?() }
 
         private func menuItem(_ title: String, _ action: Selector) -> NSMenuItem {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
@@ -538,6 +584,10 @@ struct IssueDetailView: View {
     @ObservedObject var settings: AppSettings
     let onBack: () -> Void
 
+    /// For the conversation's right-click "Add to Chat": the gate and the prompt
+    /// insertion live on the store.
+    @EnvironmentObject private var store: TermioStore
+
     @Environment(\.colorScheme) private var colorScheme
 
     private enum Tab: Hashable { case conversation, files }
@@ -562,8 +612,21 @@ struct IssueDetailView: View {
         .task(id: DetailTaskKey(number: item.number, model: ObjectIdentifier(model))) {
             await model.loadDetail(for: item)
         }
+        // GitHub Desktop's focus-refresh: coming back to the app re-confirms the open
+        // item, so a PR closed on github.com while this detail sat on screen updates
+        // its state badge instead of holding a stale Open.
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification
+        )) { _ in
+            Task { await model.revalidateOpenDetail() }
+        }
         .onExitCommand(perform: onBack)
     }
+
+    /// The freshest identity we hold for the open item: the fetched detail's summary when it
+    /// has landed (it carries state changes — open → closed/merged — that the immutable
+    /// `item` passed in at open time cannot), else that opening summary.
+    private var current: IssueSummary { model.detail?.summary ?? item }
 
     /// The item identity on the left; actions on the right — all buttons are
     /// `TreeHeaderButton`s (the explorer header's quiet hover style), so they
@@ -573,9 +636,9 @@ struct IssueDetailView: View {
     private var header: some View {
         HStack(spacing: 6) {
             OcticonView(
-                icon: item.state.octicon(for: item.kind),
+                icon: current.state.octicon(for: current.kind),
                 size: 14,
-                color: item.state.tint(for: item.kind)
+                color: current.state.tint(for: current.kind)
             )
             .frame(width: 15)
             Text(item.identifier)
@@ -634,7 +697,18 @@ struct IssueDetailView: View {
                     detail,
                     theme: TraceTheme.resolve(settings: settings, colorScheme: colorScheme)
                 ),
-                background: settings.terminalBackgroundColor
+                background: settings.terminalBackgroundColor,
+                // Selected conversation text goes over as the pasted snippet; a
+                // selection-less click hands the agent the item's GitHub URL — the
+                // same token dragging the list row inserts.
+                addToChat: { selection in
+                    if let selection {
+                        _ = store.addSnippetToSelectedSessionPrompt(selection)
+                    } else if let url = item.url {
+                        _ = store.addPathToSelectedSessionPrompt(url)
+                    }
+                },
+                canAddToChat: { store.selectedSessionRunsAgent }
             )
             // Fill like the error/progress branches below: without this, SwiftUI can size the
             // representable from the WKWebView's intrinsic (near-zero while it's mid-load), which
@@ -836,6 +910,11 @@ private enum IssueDetailHTML {
 private struct IssueWebView: NSViewRepresentable {
     let html: String
     let background: NSColor
+    /// "Add to Chat" in the conversation's right-click menu — selection as pasted
+    /// snippet, `nil` (no selection) as the item's GitHub URL. Injected by
+    /// `IssueDetailView`, which holds both the item and the store.
+    var addToChat: ((String?) -> Void)? = nil
+    var canAddToChat: (() -> Bool)? = nil
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -844,6 +923,8 @@ private struct IssueWebView: NSViewRepresentable {
         config.setURLSchemeHandler(context.coordinator.assetHandler,
                                    forURLScheme: GitHubAssetSchemeHandler.scheme)
         let view = IssueDetailWKWebView(frame: .zero, configuration: config)
+        view.addToChat = addToChat
+        view.canAddToChat = canAddToChat
         view.setValue(false, forKey: "drawsBackground")
         view.navigationDelegate = context.coordinator
         view.loadHTMLString(html, baseURL: nil)
@@ -851,6 +932,10 @@ private struct IssueWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: WKWebView, context: Context) {
+        // Re-assign per update: the closures capture the open item, which a list
+        // click swaps in place.
+        (view as? IssueDetailWKWebView)?.addToChat = addToChat
+        (view as? IssueDetailWKWebView)?.canAddToChat = canAddToChat
         if context.coordinator.lastHTML != html {
             context.coordinator.lastHTML = html
             view.loadHTMLString(html, baseURL: nil)
@@ -889,6 +974,11 @@ private struct IssueWebView: NSViewRepresentable {
 /// that would load the target *inside* this webview (unauthenticated), replacing the
 /// conversation. A left-click already opens links in the browser, so the item is redundant.
 private final class IssueDetailWKWebView: WKWebView {
+    /// "Add to Chat": the argument is the selected conversation text (`nil` = no
+    /// selection, the owner inserts the item's GitHub URL). Gate read at menu-open.
+    var addToChat: ((String?) -> Void)?
+    var canAddToChat: (() -> Bool)?
+
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         super.willOpenMenu(menu, with: event)
         let keep: Set<String> = [
@@ -898,6 +988,22 @@ private final class IssueDetailWKWebView: WKWebView {
         menu.items = menu.items.filter { item in
             guard let id = item.identifier?.rawValue else { return false }
             return keep.contains(id)
+        }
+        if canAddToChat?() == true {
+            if !menu.items.isEmpty { menu.addItem(.separator()) }
+            let add = NSMenuItem(title: "Add to Chat", action: #selector(addToChatAction), keyEquivalent: "")
+            add.target = self
+            add.image = NSImage(systemSymbolName: "plus.bubble", accessibilityDescription: nil)
+            menu.addItem(add)
+        }
+    }
+
+    /// The web view's selection lives in the WebContent process, so it's read via JS
+    /// at click time: non-empty selection → snippet, else `nil` for the item's URL.
+    @objc private func addToChatAction() {
+        evaluateJavaScript("window.getSelection().toString()") { [weak self] result, _ in
+            let text = (result as? String).flatMap { $0.isEmpty ? nil : $0 }
+            self?.addToChat?(text)
         }
     }
 }

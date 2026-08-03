@@ -226,6 +226,16 @@ final class TermioStore: ObservableObject {
     /// previously fetched list + detail instead of hitting GitHub again. Called by `IssuesView`.
     func registerIssuesModel(_ model: IssuesPanelModel) {
         model.attachCache(issueCache)
+        // The list DATA survives a remount through the cache, but the query — the
+        // Issues/Pull Requests kind, the filters — lives on the model instance. Hand it
+        // to the successor, or every remount (session switch, tab switch) snaps the pane
+        // back to the default Issues kind under whatever detail is open.
+        if let outgoing = issuesModels[model.repoRoot], outgoing !== model {
+            model.query = outgoing.query
+            // And the last-opened item: its row keeps the selected grey after the
+            // detail closes, a memory that must survive the same remounts.
+            model.openItem = outgoing.openItem
+        }
         issuesModels[model.repoRoot] = model
     }
 
@@ -235,6 +245,60 @@ final class TermioStore: ObservableObject {
     /// `IssuesView` is created with (see `FileBrowserView.projectPath`).
     var issuesModel: IssuesPanelModel? {
         inspectorProjectPath.flatMap { issuesModels[$0] }
+    }
+
+    /// The git pane's inner mode (Changes / History) per repo root — the same continuity
+    /// the Issues pane's kind gets through its model registry: an inspector tab flip or
+    /// session switch remounts `GitChangesView` with its `@State` mode back at Changes,
+    /// so the pane resumes from here instead. In-memory only, like the registry.
+    var gitPaneModes: [String: GitPaneMode] = [:]
+
+    /// Whether the selected session is running a coding agent (not a plain shell) —
+    /// gates the file tree's "Add to Chat" row action.
+    var selectedSessionRunsAgent: Bool {
+        guard let id = selectedSessionID, let session = session(id) else { return false }
+        return !session.agent.isShell
+    }
+
+    /// Types a file's shell-quoted path (plus a trailing space) into the selected
+    /// session's terminal — the file tree's "Add to Chat", the menu twin of dropping
+    /// the row on the terminal (`TerminalPane.sendPaths`, which shares these tokens).
+    @discardableResult
+    func addPathToSelectedSessionPrompt(_ url: URL) -> Bool {
+        guard let id = selectedSessionID, let session = session(id),
+              let project = project(for: id) else { return false }
+        return surface(for: session, in: project).send(Self.promptToken(for: url) + " ")
+    }
+
+    /// Pastes selected text into the selected session's prompt, wrapped in bracketed
+    /// paste so its newlines land as one pasted block instead of submitting line by
+    /// line. Unconditional wrapping is safe here because every caller is gated on the
+    /// session running a coding agent, and agent TUIs all enable mode 2004 — the same
+    /// convention the iOS upload path relies on.
+    ///
+    /// The bytes go RAW into the PTY (the backend session's input), NOT through
+    /// `state.send`: that routes into `ghostty_surface_text`, whose input encoder
+    /// re-encodes the ESC of a hand-written `\e[200~` as an escape KEYPRESS (CSI 27u
+    /// under the kitty keyboard protocol agents enable) — the TUI then shows a
+    /// literal `[200~`. Bracketed-paste framing only means anything as verbatim
+    /// PTY input.
+    @discardableResult
+    func addSnippetToSelectedSessionPrompt(_ text: String) -> Bool {
+        guard let id = selectedSessionID, let session = session(id),
+              let project = project(for: id) else { return false }
+        let state = surface(for: session, in: project)
+        guard case let .inMemory(backend) = state.configuration.backend else { return false }
+        backend.sendInput(Data(("\u{1B}[200~" + text + "\u{1B}[201~").utf8))
+        return true
+    }
+
+    /// The shell-quoted token to insert at a prompt for a URL. A `file://` URL becomes
+    /// its local path (the file-tree/Finder case, so the prompt gets a usable path);
+    /// any other scheme — an https GitHub issue/PR dragged from the Issues pane —
+    /// keeps its full `absoluteString`, since stripping to `.path` would drop the
+    /// scheme and host and leave a meaningless `/owner/repo/issues/123` fragment.
+    static func promptToken(for url: URL) -> String {
+        shellQuoted(url.isFileURL ? url.path : url.absoluteString)
     }
 
     /// Which pane the trailing inspector shows — the file tree or git changes. Set by the toolbar's

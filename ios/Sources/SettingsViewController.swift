@@ -26,7 +26,7 @@ final class SettingsViewController: UITableViewController {
         }
 
         /// The row glyph, from the shared Hugeicons set so the Settings page
-        /// matches the tab pill and the Mac settings sidebar.
+        /// matches the native tab bar and the Mac settings sidebar.
         var icon: HugeIcon {
             switch self {
             case .connectivity: .wireless

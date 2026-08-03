@@ -16,6 +16,11 @@ struct MarkdownReaderView: View {
     let fileURL: URL
     @ObservedObject var settings: AppSettings
     let colorScheme: ColorScheme
+    /// "Add to Chat" in the reader's right-click menu — injected by `FileEditorView`
+    /// alongside the editor's, so both faces of the overlay offer the same verb. The
+    /// argument is the reader's selected text, `nil` when nothing is selected.
+    var addToChat: ((String?) -> Void)? = nil
+    var canAddToChat: (() -> Bool)? = nil
 
     var body: some View {
         let theme = TraceTheme.resolveReader(settings: settings, colorScheme: colorScheme)
@@ -24,7 +29,9 @@ struct MarkdownReaderView: View {
             html: MarkdownReaderRenderer.document(source, theme: theme, fontFamily: settings.fontFamily),
             baseURL: fileURL.deletingLastPathComponent(),
             fileURL: fileURL,
-            background: settings.terminalBackgroundColor
+            background: settings.terminalBackgroundColor,
+            addToChat: addToChat,
+            canAddToChat: canAddToChat
         )
     }
 }
@@ -38,6 +45,8 @@ private struct MarkdownReaderWebView: NSViewRepresentable {
     let baseURL: URL
     let fileURL: URL
     let background: NSColor
+    var addToChat: ((String?) -> Void)?
+    var canAddToChat: (() -> Bool)?
 
     /// `loadHTMLString` pages get no filesystem access in the WebContent process, so a
     /// `file://` image would silently 404 (same reason the reader fonts are embedded as
@@ -58,6 +67,8 @@ private struct MarkdownReaderWebView: NSViewRepresentable {
         config.setURLSchemeHandler(LocalFileSchemeHandler(), forURLScheme: Self.fileScheme)
         let view = ContextMenuWebView(frame: .zero, configuration: config)
         view.fileURL = fileURL
+        view.addToChat = addToChat
+        view.canAddToChat = canAddToChat
         view.setValue(false, forKey: "drawsBackground")
         view.navigationDelegate = context.coordinator
         view.loadHTMLString(html, baseURL: schemeBaseURL)
@@ -124,6 +135,11 @@ private struct MarkdownReaderWebView: NSViewRepresentable {
 private final class ContextMenuWebView: WKWebView {
     /// The document on disk, so the menu can reveal it in Finder (like the file tree's row menu).
     var fileURL: URL?
+    /// "Add to Chat": the argument is the reader's selected text (`nil` = no selection,
+    /// the owner inserts the document's path instead). The gate is read at menu-open
+    /// time; a plain-shell session shows no item.
+    var addToChat: ((String?) -> Void)?
+    var canAddToChat: (() -> Bool)?
 
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         super.willOpenMenu(menu, with: event)
@@ -134,6 +150,12 @@ private final class ContextMenuWebView: WKWebView {
         // and a prominent Close so it isn't buried.
         menu.items = menu.items.filter { $0.identifier?.rawValue == "WKMenuItemIdentifierCopy" }
         menu.addItem(.separator())
+        if canAddToChat?() == true {
+            let add = NSMenuItem(title: "Add to Chat", action: #selector(addToChatAction), keyEquivalent: "")
+            add.target = self
+            add.image = NSImage(systemSymbolName: "plus.bubble", accessibilityDescription: nil)
+            menu.addItem(add)
+        }
         if fileURL != nil {
             let reveal = NSMenuItem(title: "Reveal in Finder", action: #selector(revealInFinder), keyEquivalent: "")
             reveal.target = self
@@ -142,6 +164,15 @@ private final class ContextMenuWebView: WKWebView {
         let close = NSMenuItem(title: "Close", action: #selector(closeEditorOverlay), keyEquivalent: "")
         close.target = self
         menu.addItem(close)
+    }
+
+    /// The web view's selection lives in the WebContent process, so it's read via JS at
+    /// click time: a non-empty selection goes over as the snippet, else `nil` for the path.
+    @objc private func addToChatAction() {
+        evaluateJavaScript("window.getSelection().toString()") { [weak self] result, _ in
+            let text = (result as? String).flatMap { $0.isEmpty ? nil : $0 }
+            self?.addToChat?(text)
+        }
     }
 
     @objc private func revealInFinder() {
