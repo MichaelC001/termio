@@ -44,7 +44,10 @@ struct GeneralSettingsTab: View {
                 if settings.agentHooksEnabled {
                     // For re-applying after the user (or another tool) has edited
                     // ~/.claude/settings.json; install is idempotent.
-                    Button("Reinstall hooks") { AgentStatusHooks.sync(enabled: true) }
+                    InstallButtonRow(title: "Reinstall hooks") {
+                        .summarizing(AgentStatusHooks.sync(enabled: true),
+                                     headline: "Hooks reinstalled", unit: "agents")
+                    }
                 }
             } header: {
                 SectionHeaderLabel(title: "Status")
@@ -59,7 +62,10 @@ struct GeneralSettingsTab: View {
                 }
                 .toggleStyle(.switch)
                 if settings.sessionControlEnabled {
-                    Button("Reinstall note") { SessionSkillInstaller.sync(enabled: true) }
+                    InstallButtonRow(title: "Reinstall note") {
+                        .summarizing(SessionSkillInstaller.sync(enabled: true),
+                                     headline: "Note reinstalled", unit: "files")
+                    }
                 }
             } header: {
                 SectionHeaderLabel(title: "Orchestration")
@@ -139,16 +145,51 @@ private struct NotificationPermissionRow: View {
 /// the install action so the button and caption update in place.
 private struct CommandLineToolRow: View {
     @State private var status: CommandLineTool.Status = .notInstalled
+    @State private var state = InstallFeedbackState()
 
     var body: some View {
-        HStack(spacing: 10) {
-            SettingsLabel(.huge(.terminal), title: "Command-line tool", subtext: description)
-            Spacer()
-            if let title = buttonTitle {
-                Button(title) { status = CommandLineTool.install() }
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                SettingsLabel(.huge(.terminal), title: "Command-line tool", subtext: description)
+                Spacer()
+                if let title = buttonTitle {
+                    Button(title) { install() }
+                }
+            }
+            if let feedback = state.feedback {
+                // Aligned under the caption, past the row's icon badge.
+                InstallFeedbackLabel(feedback: feedback)
+                    .padding(.leading, 32)
             }
         }
         .onAppear { status = CommandLineTool.audit() }
+        .autoDismissing($state)
+    }
+
+    /// Installs, then reports the fresh audit. The caption alone can't carry this:
+    /// a declined admin prompt leaves the row reading exactly as it did before the
+    /// click, so success and cancellation would be indistinguishable. The
+    /// confirmation stays short — the caption above it already names the path — and
+    /// echoes the verb of the button that was pressed.
+    private func install() {
+        // Echo the verb the button offered: an "Update" that lands says "Updated."
+        let wasStale: Bool
+        if case .stale = status { wasStale = true } else { wasStale = false }
+        let result = CommandLineTool.install()
+        withAnimation {
+            status = result
+            switch result {
+            case .installed:
+                state.show(.success(wasStale ? "Updated." : "Installed."))
+            case .conflict:
+                state.show(.failure("Something else already owns \(CommandLineTool.installURL.path)."))
+            case .unavailable:
+                state.show(.failure("No bundled tool to install from."))
+            case .notInstalled, .stale:
+                let directory = CommandLineTool.installURL.deletingLastPathComponent().path
+                state.show(.failure("Couldn’t link `\(CommandLineTool.toolName)` into \(directory)."))
+            }
+        }
     }
 
     private var description: String {

@@ -216,23 +216,35 @@ enum AgentStatusHooks {
     ]
 
     /// Re-applies every agent's integration (or removes them all) to match `enabled`.
-    static func sync(enabled: Bool) {
+    /// Returns which agents' configs took the hooks, so a Settings row can confirm
+    /// the install rather than leaving the click silent; the uninstall path reports
+    /// nothing, since no UI asks about it.
+    @discardableResult
+    static func sync(enabled: Bool) -> InstallOutcome {
         // Every hook references the channel-stable CLI copy, so make sure it carries
         // this build's content before (re)stamping its path anywhere.
         CommandLineTool.refreshSupportCopy()
+        var outcome = InstallOutcome()
         if enabled {
             // A full user override may intentionally remove/redirect a shipped hook.
             // Remove that old managed wiring before installing the merged catalog.
             for installer in staleBundledInstallers { installer.uninstall() }
-            for installer in installers { installer.install() }
+            for (name, installer) in installers {
+                outcome.record(name, installed: installer.install())
+            }
         } else {
             for installer in allKnownInstallers { installer.uninstall() }
         }
+        return outcome
     }
 
-    private static var installers: [AgentStatusInstaller] {
+    /// Each hook-carrying agent's display name paired with its installer, so an
+    /// install result can be reported per agent rather than as one opaque total.
+    private static var installers: [(name: String, installer: AgentStatusInstaller)] {
         AgentCatalog.shared.all.compactMap { agent in
-            agent.hookSpec.flatMap { installer(id: agent.id, spec: $0) }
+            agent.hookSpec
+                .flatMap { installer(id: agent.id, spec: $0) }
+                .map { (agent.displayName, $0) }
         }
     }
 
@@ -342,7 +354,11 @@ enum AgentStatusHooks {
 }
 
 private protocol AgentStatusInstaller {
-    func install()
+    /// Whether the agent's config carries termio's current hooks afterwards —
+    /// including the common no-op case where it already did. `false` means the
+    /// config was left alone on purpose (unparseable, or not ours to overwrite) or
+    /// the write failed; the reason is logged.
+    func install() -> Bool
     func uninstall()
 }
 
@@ -425,14 +441,14 @@ private struct JSONHookFile: AgentStatusInstaller {
         case ok([String: Any])
     }
 
-    func install() {
+    func install() -> Bool {
         let root: [String: Any]
         switch readState(at: url) {
         case .ok(let dictionary): root = dictionary
         case .missing: root = [:]
         case .unreadable:
             AgentStatusHooks.log("refusing to modify unparseable \(url.path)")
-            return
+            return false
         }
 
         var settings = root
@@ -464,14 +480,15 @@ private struct JSONHookFile: AgentStatusInstaller {
             hooks[event.name] = groups
         }
         settings["hooks"] = hooks
-        write(settings, to: url)
+        guard write(settings, to: url) else { return false }
 
         // Publish the replacement before removing its predecessor. If the new file
         // could not be written, retain the working legacy integration for next launch.
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
         for legacyURL in legacyURLs {
             uninstall(at: legacyURL, removeFileWhenEmpty: true)
         }
+        return true
     }
 
     func uninstall() {
@@ -561,7 +578,10 @@ private struct JSONHookFile: AgentStatusInstaller {
         return .ok(dictionary)
     }
 
-    private func write(_ settings: [String: Any], to destinationURL: URL) {
+    /// Returns whether the file now holds `settings` — true both for a fresh write
+    /// and for the skipped identical one, false only when the write threw.
+    @discardableResult
+    private func write(_ settings: [String: Any], to destinationURL: URL) -> Bool {
         do {
             try FileManager.default.createDirectory(
                 at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -572,10 +592,12 @@ private struct JSONHookFile: AgentStatusInstaller {
             // there (the common case on every launch): avoids needless churn on a
             // user-owned file and shrinks the window where this atomic write could
             // clobber a concurrent hand-edit. `.sortedKeys` makes the bytes stable.
-            if (try? Data(contentsOf: destinationURL)) == data { return }
+            if (try? Data(contentsOf: destinationURL)) == data { return true }
             try data.write(to: destinationURL, options: .atomic)
+            return true
         } catch {
             AgentStatusHooks.log("could not write \(destinationURL.path): \(error)")
+            return false
         }
     }
 }
@@ -624,7 +646,7 @@ private struct PluginFile: AgentStatusInstaller {
             legacyURLs: [directoryURL.appendingPathComponent(legacyFilename)])
     }
 
-    func install() {
+    func install() -> Bool {
         let data = Data(contents.utf8)
         if FileManager.default.fileExists(atPath: url.path) {
             // `termio.js` is a deliberately simple name, so never claim a user's
@@ -633,7 +655,7 @@ private struct PluginFile: AgentStatusInstaller {
                   existing == contents || isOwned(existing)
             else {
                 AgentStatusHooks.log("refusing to overwrite non-termio plugin \(url.path)")
-                return
+                return false
             }
         }
         if (try? Data(contentsOf: url)) != data {
@@ -643,12 +665,13 @@ private struct PluginFile: AgentStatusInstaller {
                 try data.write(to: url, options: .atomic)
             } catch {
                 AgentStatusHooks.log("could not write \(url.path): \(error)")
-                return
+                return false
             }
         }
         for legacyURL in legacyURLs {
             removeOwnedFile(at: legacyURL)
         }
+        return true
     }
 
     func uninstall() {
@@ -842,12 +865,12 @@ private struct TOMLHookBlock: AgentStatusInstaller {
             events: spec.events)
     }
 
-    func install() {
+    func install() -> Bool {
         let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
         let base = Self.stripBlock(from: existing).trimmingCharacters(in: .newlines)
         let block = Self.render(events: events)
         let updated = base.isEmpty ? block + "\n" : base + "\n\n" + block + "\n"
-        Self.write(updated, to: url)
+        return Self.write(updated, to: url)
     }
 
     func uninstall() {
@@ -888,16 +911,19 @@ private struct TOMLHookBlock: AgentStatusInstaller {
         return result
     }
 
-    private static func write(_ contents: String, to url: URL) {
+    @discardableResult
+    private static func write(_ contents: String, to url: URL) -> Bool {
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let data = Data(contents.utf8)
             // No-op when the result is byte-identical (the common case each launch).
-            if (try? Data(contentsOf: url)) == data { return }
+            if (try? Data(contentsOf: url)) == data { return true }
             try data.write(to: url, options: .atomic)
+            return true
         } catch {
             AgentStatusHooks.log("could not write \(url.path): \(error)")
+            return false
         }
     }
 }
