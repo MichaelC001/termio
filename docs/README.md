@@ -76,6 +76,8 @@ from the real front matter).
 | draft | design | [移动端 Agent UI 协议 —— PTY 之上的旁路结构面（ACP 词汇）](design/mobile-agent-ui-protocol.md) |
 | draft | design | [调研：下一批 AgentAdapter 的落盘格式（OpenCode / Pi / Amp / Cursor / Kimi）](design/agent-transcript-survey.md) |
 | draft | design | ["Markdown preview — Apple-grade reading typography"](design/markdown-preview-reading-typography.md) |
+| draft | design | [Device Architecture — one server per device, every UI a client](design/termiod-device-architecture.md) |
+| draft | design | [Hot path, attach join point, and client classes](design/termiod-hot-path-and-client-classes.md) |
 | draft | design | [Issue Triage → 本地 agent（GitHub / Linear 事件驱动 termio session）](design/issue-triage-local-agent.md) |
 | draft | design | [Mac retention analytics (no app changes)](design/mac-retention-analytics.md) |
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/remote-projects.md) |
