@@ -134,6 +134,16 @@ extension TermioStore {
         "\(AppChannel.urlScheme)://session/\(session.id.uuidString.lowercased())"
     }
 
+    /// The inverse of `sessionLink`: the session id a canonical link names, or
+    /// `nil` for anything else. Exact full-UUID match only (no prefix search) —
+    /// this is the machine-to-machine reading, used where a link arrives as an
+    /// identifier rather than as something a human typed.
+    nonisolated static func sessionID(fromLink link: String) -> UUID? {
+        let prefix = "\(AppChannel.urlScheme)://session/"
+        guard link.hasPrefix(prefix) else { return nil }
+        return UUID(uuidString: String(link.dropFirst(prefix.count)))
+    }
+
     /// Opens a session deep link. The local form (`termio://session/<id>`)
     /// focuses that session; an endpoint form belongs to the termiod attach
     /// client and is ignored until that lands.
@@ -820,17 +830,35 @@ extension TermioStore {
         }
     }
 
-    /// The id half of a `termio://` link (any channel's scheme, any endpoint
-    /// authority): the path segment after `session/`. Nil for a bare token.
+    /// The id half of a link in *this channel's* scheme (any endpoint authority):
+    /// the path segment after `session/`. Nil for a bare token — and for another
+    /// channel's scheme, whose ids address a different app's sessions entirely.
+    /// Accepting those would let a `termio-dev://` link prefix-match a release
+    /// session; `targetNotFoundMessage` names the mismatch instead.
     private static func addressedID(in token: String) -> String? {
-        guard let scheme = token.range(of: "://"), token.hasPrefix("termio") else { return nil }
-        let rest = token[scheme.upperBound...]
+        guard let separator = token.range(of: "://"),
+              token[token.startIndex..<separator.lowerBound] == AppChannel.urlScheme.lowercased()
+        else { return nil }
+        let rest = token[separator.upperBound...]
         guard let marker = rest.range(of: "session/") else { return nil }
         return String(rest[marker.upperBound...].prefix { $0 != "?" && $0 != "/" })
     }
 
     private func targetNotFoundMessage(_ token: String?) -> String {
-        "No session '\(token ?? "")' in this project. Run `termio sessions list` to see the links."
+        let raw = token ?? ""
+        // A well-formed link in the *other* channel's scheme is not a bad address,
+        // it's an address for the other app — so say that, rather than sending the
+        // caller off to re-check an id that was right all along.
+        if let separator = raw.range(of: "://") {
+            let scheme = raw[raw.startIndex..<separator.lowerBound].lowercased()
+            if scheme.hasPrefix("termio"), scheme != AppChannel.urlScheme {
+                return """
+                    '\(raw)' addresses the \(scheme) channel; this app owns \
+                    \(AppChannel.urlScheme):// links. Use that channel's CLI instead.
+                    """
+            }
+        }
+        return "No session '\(raw)' in this project. Run `termio sessions list` to see the links."
     }
 
     private func control(_ request: ControlRequest, ok: Bool, text: String, json: [String: Any]) -> Data {

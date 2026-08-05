@@ -242,9 +242,22 @@ build_request() {
 CLIENT_TIMEOUT="${TERMIO_CLI_TIMEOUT:-15}"
 request_once() {
     request=$(build_request "$1" "$2" "$3" "$4" "$5" "${6:-}")
-    response=$(printf '%s' "$request" | nc -w "$CLIENT_TIMEOUT" -U "$SOCKET") || true
+    if response=$(printf '%s' "$request" | nc -w "$CLIENT_TIMEOUT" -U "$SOCKET" 2>/dev/null); then
+        reach=0
+    else
+        reach=$?
+    fi
     if [ -z "$response" ]; then
-        echo "termio: no reply from the app within ${CLIENT_TIMEOUT}s — it may be busy or wedged; check the app, or raise TERMIO_CLI_TIMEOUT" >&2
+        # A refused connect and a live-but-silent app are different failures with
+        # different fixes, and nc's exit code is the only thing that tells them
+        # apart. Reporting a refusal as a timeout sends the reader off to diagnose
+        # a wedged app that is in fact running fine behind a socket file whose
+        # owner is gone — raising TERMIO_CLI_TIMEOUT can never help.
+        if [ "$reach" -ne 0 ]; then
+            echo "termio: nothing is listening at $SOCKET (connection refused) — the socket file outlived the app that made it; restart termio" >&2
+        else
+            echo "termio: no reply from the app within ${CLIENT_TIMEOUT}s — it may be busy or wedged; check the app, or raise TERMIO_CLI_TIMEOUT" >&2
+        fi
         return 1
     fi
     printf '%s\n' "$response"
