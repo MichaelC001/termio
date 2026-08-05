@@ -3,7 +3,7 @@ title: termiod Session Protocol
 status: draft
 type: design
 created: 2026-07-30
-updated: 2026-07-31T19:11:11+01:00
+updated: 2026-08-04
 related:
   - termiod-session-mux.md
   - session-daemon-architecture.md
@@ -16,7 +16,11 @@ and the `S` snapshot triggers (§C.6), and linked the empirical anti-100×
 benchmark (termiod/bench). Later same day, folded in a Codex implementation
 review vs Mitchell's Superlogical talk: the authoritative-PTY-dimensions
 correctness requirement (§C.5), and risks #10 (unbounded per-client backlog)
-and #11 (resize is not a barrier). -->
+and #11 (resize is not a barrier).
+2026-08-04: added §C.10 resumable subscriptions — the terminal plane's
+durable-object-plus-cursor pattern generalised so files/git/agent state inherit
+one reconnect story; added Workspace and Resource to §B and the two verbs to
+§C.4. Implemented for `fs:` in `termiod/src/resource.rs`. -->
 
 
 # Design: termiod Session Protocol
@@ -90,9 +94,10 @@ user already trusts.**
 ## B. Domain model
 
 ```
-Host 1 ──< Session 1 ──? Workstream        (workstream = agent overlay, optional)
-              │
-              └──< Attachment >── Client   (N viewers per session, over channels)
+Host 1 ──< Workspace 1 ──< Session 1 ──? Workstream   (workstream = agent overlay, optional)
+    │                          │
+    │                          └──< Attachment >── Client  (N viewers per session)
+    └──< Resource >── Client                        (§C.10, resumable, workspace-scoped)
 ```
 
 | Noun | What it is | Identity | Lifetime |
@@ -100,6 +105,8 @@ Host 1 ──< Session 1 ──? Workstream        (workstream = agent overlay, 
 | **Host** | One `termiod` process on one machine; owns every PTY and the session table | `host_id`: stable random 128-bit, minted on first run, stored beside the socket | Daemon process (launchd/systemd `--user`); survives all clients |
 | **Session** | Durable runtime: PTY + process + (v1) vt state + ring/scrollback | `session_id`: host-scoped ULID; `name` is a mutable human alias, never an identity | From `create` until process exit or `kill`. **Detach never ends it** |
 | **Workstream** | Agent metadata over a session: `agent_id`, project/worktree, `status` (`working·idle·needs_you·done·failed·unknown`), pending approval, title | Same `session_id`; workstream fields are session attributes, not a second object to address | Attached at create or promoted later (agent detection); removed on demotion to plain shell |
+| **Workspace** | A directory root on the host that sessions and non-terminal state are scoped to (a project or worktree). Not a container for processes — a *scope* for filesystem, git, and watch state | Canonicalised absolute path; two spellings of one root are one workspace | Implicit: exists while anything references it. Never created or destroyed explicitly |
+| **Resource** | Durable host-side state a client subscribes to with a replayable cursor (§C.10): `fs:<workspace>` in v1, git/status later | `<kind>:<scope>`; `seq` is its monotonic cursor | Independent of any connection **or** client; lingers past its last subscriber |
 | **Client** | One viewer/controller endpoint (Mac app, iOS, CLI, tool) | `client_id` per *connection*, assigned by host at `hello`; clients may also send a stable `client_name` for display | Connection lifetime; nothing a client holds is load-bearing |
 | **Transport endpoint** | Where a host is reachable: `unix:<path>` · `ssh:<host>` · later `quic:<addr>` · `wss:<url>` | Resolved by discovery (`HostRef → Endpoint`); opaque to the protocol | Config lifetime |
 
@@ -204,6 +211,8 @@ makes one control channel safely multiplexable. Ops marked ✦ exist in POC v0.
 | `send` ✦ | c→h | Inject bytes without attaching — the `termio sessions send` path, now first-class |
 | `wait` | c→h | `{target, until:["needs_you","idle","done","exited"], timeout_ms}` → `wait_result`; gives `send --wait` real semantics instead of transcript polling |
 | `subscribe` | c→h | `{events:["roster","status"]}` on a control channel → stream of `E` frames for all sessions |
+| `subscribe_resource` / `subscribed` | c→h / h→c | §C.10. `{resource, since?}` → `{resource, seq, gap}`; replayed `E` frames follow the reply. Gated on the `resources` capability |
+| `unsubscribe_resource` | c→h | Release interest; the resource lingers for other subscribers and for this client's own return |
 | `resize_claim` | h→c | Informs a demoted client who owns size now (§C.5) |
 | `ok` ✦ / `error` ✦ | h→c | §C.7 |
 
@@ -302,6 +311,28 @@ that invokes Zig (herdr's pattern), bindgen `ghostty/vt.h`, link the static lib,
 cross-compile to aarch64-musl. Phase 0 = an FFI build proof before daemon
 integration.
 
+**The `S` snapshot carries VT sequences, not resolved cells (format v2).** The
+host serialises the screen with libghostty-vt's own formatter
+(`ghostty_formatter_*`, `emit = VT`) and the client feeds those bytes straight
+into its terminal. This is not an encoding preference — it is the boundary the
+whole architecture rests on: **the client's libghostty is the style authority,
+never the host.** Packed 16-byte cells (v1) forced the host to resolve every
+colour against *its* palette, which overrode the viewer's theme, silently
+dropped bold/underline (the `attributes` field was reserved-zero) and lost
+OSC 8. Concretely the formatter emits `38;5;N` palette indices, so the viewer's
+own ANSI colours apply; `palette` (OSC 4) is deliberately **off**, because
+emitting it would push the host's colours onto every client. Measured on a
+10×40 screen: 559 bytes of VT against 6,504 bytes of cells — 11.6× smaller and
+strictly more faithful.
+
+One caveat worth keeping: the formatter emits the cursor's CUP *before* state
+extras, and some extras move the cursor as a side effect (`tabstops` walks the
+row with CHA/HTS; DECSTBM homes it). The host re-asserts the true position with
+a trailing CUP.
+
+Format v1 survives **only** for `grid_diff` clients, whose model is explicitly
+server-side state and which need cells to seed their grid.
+
 **v1.1 `G` diffs are the bad-network degrade, not a faster default.** They are
 capability-gated (`grid_diff` requires `snapshot`), phone-first, and are the
 *same mechanism* as the QUIC state-sync layer in §D.1 — supersedable dirty rows
@@ -316,7 +347,31 @@ On a good link (LAN, good Wi-Fi) raw byte replication wins outright and no
 client should negotiate `grid_diff`; the diff path exists because a *reliable
 ordered* byte stream must deliver every intermediate byte in order, which a
 lossy high-RTT phone link cannot do cheaply — there, shipping "the latest row
-state" is the win. The current reliable transport delivers every emitted `G`,
+state" is the win.
+
+**Measured, so nobody re-derives it the hard way** (2026-08-05, framed protocol
+over SSH to the `ukvps` aarch64 host, identical 300-line scrolling burst):
+
+| Plane | Bytes on the wire | Frames |
+| --- | --- | --- |
+| raw `D` | **50,423** | 16 |
+| `G` dirty rows | **435,573** | 18 |
+
+`G` cost **8.6× more**, not less. Two compounding reasons, both structural:
+scrolling output dirties *every* row, so dirty-row filtering filters nothing;
+and each cell is 16 wire bytes against roughly one byte of source text, so what
+remains is a ~16× encoding inflation. Terminal output is dominated by
+scrolling, so this is the common case, not a corner.
+
+The consequence for transport policy: **"remote ⇒ prefer `G`" is wrong.** `G`
+is not a bandwidth optimisation at all. It buys two other things: a *bound*
+(cost is capped at frame-rate × screen regardless of how much the PTY emits, so
+a `yes` flood cannot melt a metered link) and *catch-up* (a client that has
+fallen behind skips intermediate states instead of replaying them). Select it
+on backlog pressure or measured loss — never on "this connection is remote".
+A worthwhile future change is compressing the wire cell (run-length spans,
+style separated from text); at 16 bytes per cell the format, not the idea, is
+what makes `G` expensive. The current reliable transport delivers every emitted `G`,
 but each `G` already coalesces source bytes into current full-row state; a QUIC
 binding may later discard superseded row versions (§D.1). It coexists with the
 byte path; it never replaces it. Paired with client-side predictive echo
@@ -376,6 +431,70 @@ blind (§D.4).
 The transport rows differ; every frame after them is byte-identical. That is
 the acceptance test for "transport-agnostic": **a recorded local session
 transcript must replay verbatim against an SSH-piped host.**
+
+### C.10 Resumable subscriptions (the generalised reconnect)
+
+The terminal plane already solved reconnect once: a session is a durable object
+with an id, a monotonic cursor, a bounded ring, and `S` to bootstrap a replica
+that missed the start. **§C.10 makes that one mechanism instead of one
+terminal feature**, so every later plane — files, git, agent state — inherits
+the same reconnect story rather than inventing its own. Without it, the file
+plane grows a bespoke "re-sync on reconnect" path and we have rebuilt the
+four-code-paths disease *inside* the host.
+
+**A resource** is durable host-side state a client observes. It has:
+
+| Property | Rule |
+| --- | --- |
+| **Id** | `<kind>:<scope>`, host-unique and stable across connections. v1 kind: `fs:<canonical workspace root>` |
+| **Cursor** | `seq`, monotonic per resource, starting at 1. Never reused, never rewound |
+| **Ring** | A bounded replay buffer of recent batches. Overflow is *reported*, never silent |
+| **Lifetime** | Independent of any connection **or client**. A watch outlives its last subscriber by a linger window — detach ≠ kill, applied to the resource plane |
+
+**The one verb:**
+
+```
+→ subscribe_resource {resource:"/work/termio", since?:41}
+← subscribed {resource:"fs:/work/termio", seq:44, gap:false}
+← E {ev:"fs_changed", resource:"fs:/work/termio", seq:42, paths:["/work/termio/src"]}
+← E {ev:"fs_changed", …, seq:43, git_meta:true}
+← E {ev:"fs_changed", …, seq:44, paths:["/work/termio/docs"]}
+   … then live batches continue from 45
+```
+
+`gap:true` means the client's baseline is unusable and it must do a full scan
+before applying anything further. It is returned for a first subscribe, for a
+`since` that has aged out of the ring, and for a `since` ahead of the host.
+**The reply always precedes replayed events**, so a client knows whether to
+rescan before it starts applying them.
+
+**Reconnect is therefore not a feature.** It is: open a pipe, re-subscribe each
+resource at the last `seq` you applied. There is no retry ceiling, because a
+retry loses nothing — which is the substantive difference from Zed's bounded
+`MAX_RECONNECT_ATTEMPTS` and from VS Code's reconnection tokens, which die with
+the server PID. Cursors survive the *client*, not just the connection: quit the
+Mac app, open the phone, resume the same cursor.
+
+**Workspace scope.** `fs:` resources are keyed by **canonicalised** root, so two
+clients naming one repo differently share a single watcher. This is what keeps
+five sessions in one repo at one OS watch rather than five — the failure mode
+that exhausts Linux `max_user_watches`.
+
+**`fs_changed` semantics** (chosen to match the Mac client's existing
+`FileTreeWatcher`, so the consumer needs no new model):
+
+| Field | Meaning |
+| --- | --- |
+| `paths` | Directories whose listing changed. Re-read only realized ones |
+| `full_rescan` | The path set is **not** authoritative — re-walk. Set on watcher overflow (the wire form of FSEvents `MustScanSubDirs`), on watch-limit exhaustion, and on a change storm exceeding the per-batch path cap |
+| `git_meta` | Index / HEAD / refs moved → re-read git status. Object-store and packfile churn is dropped host-side and never appears at all |
+
+Batches are debounced host-side (300 ms quiet window, matching the client's own
+FSEvents coalescing) so a `git checkout` publishes one batch, not one per file.
+
+**Invariant:** resources live on the control plane and are **never** on the
+terminal hot path (§A). A resource flush must never delay `fan_out`. Capability
+`resources` gates the verb; `fs_watch` gates the `fs:` kind.
 
 ## D. Transport bindings
 
