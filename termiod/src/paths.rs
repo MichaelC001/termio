@@ -29,14 +29,21 @@ pub fn socket_path() -> Result<PathBuf> {
     Ok(runtime_dir()?.join("termiod.sock"))
 }
 
-/// Stable host identity, persisted beside the configured socket.
-pub fn host_id_path() -> Result<PathBuf> {
-    let socket = socket_path()?;
-    let parent = socket
+/// The directory the *configured* socket lives in — which is not always
+/// `runtime_dir()`, because `TERMIOD_SOCK` may point anywhere. Anything that
+/// belongs to one daemon (its identity, its graveyard) must hang off this, or
+/// two daemons on two sockets silently share one file and report each other's
+/// sessions as their own.
+pub fn state_dir() -> Result<PathBuf> {
+    Ok(socket_path()?
         .parent()
         .map(|path| path.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
-    Ok(parent.join("host.id"))
+        .unwrap_or_else(|| PathBuf::from(".")))
+}
+
+/// Stable host identity, persisted beside the configured socket.
+pub fn host_id_path() -> Result<PathBuf> {
+    Ok(state_dir()?.join("host.id"))
 }
 
 fn read_host_id(path: &std::path::Path) -> Result<String> {

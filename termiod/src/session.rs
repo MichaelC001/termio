@@ -122,6 +122,17 @@ pub enum SessionMsg {
     Kill,
 }
 
+/// What the manager needs to bury a session (§6). The session actor is the last
+/// thing that can answer `Info` — by the time the manager hears about the exit
+/// the actor is gone — so the record travels *with* the notification instead of
+/// being asked for afterwards.
+pub struct SessionEnded {
+    pub info: SessionInfo,
+    pub status: i32,
+    /// A client asked for this end (`kill`), rather than the process choosing it.
+    pub killed: bool,
+}
+
 /// Cheap, cloneable reference to a session task.
 #[derive(Clone)]
 pub struct SessionHandle {
@@ -188,6 +199,9 @@ enum SidecarResult {
 
 struct SidecarCapture {
     snapshot: termiod_vt::Snapshot,
+    /// The same screen serialised back to VT sequences. `None` only if the
+    /// formatter failed, in which case delivery falls back to packed cells.
+    vt: Option<Vec<u8>>,
     scrollback: Option<Result<termiod_vt::Scrollback, String>>,
 }
 
@@ -614,6 +628,10 @@ impl Session {
             }
         };
         let engine = capture.snapshot;
+        // Raw-plane clients get VT sequences so their own libghostty decides
+        // colour (their theme, their palette, full SGR). Grid-diff clients are
+        // server-state by design and need packed cells to seed the grid.
+        let snapshot_vt = if entry.grid_diff { None } else { capture.vt };
         if let Some(scrollback) = capture.scrollback {
             match scrollback {
                 Ok(scrollback) => {
@@ -640,7 +658,7 @@ impl Session {
                 ),
             }
         }
-        let snapshot = self.protocol_snapshot(engine);
+        let snapshot = self.protocol_snapshot(engine, snapshot_vt);
 
         if entry.out.send(ClientEvent::Snapshot(snapshot)).is_err()
             || entry
@@ -682,8 +700,9 @@ impl Session {
         history_pending
     }
 
-    fn protocol_snapshot(&self, engine: termiod_vt::Snapshot) -> Snapshot {
+    fn protocol_snapshot(&self, engine: termiod_vt::Snapshot, vt: Option<Vec<u8>>) -> Snapshot {
         Snapshot {
+            vt,
             rows: engine.rows,
             cols: engine.cols,
             cursor_x: engine.cursor_x,
@@ -707,7 +726,8 @@ impl Session {
     }
 
     fn fan_out_keyframe(&mut self, engine: termiod_vt::Snapshot) {
-        let snapshot = self.protocol_snapshot(engine);
+        // Keyframes only reach grid-diff clients, which want cells.
+        let snapshot = self.protocol_snapshot(engine, None);
         let dead = self
             .clients
             .iter_mut()
@@ -955,7 +975,7 @@ pub fn spawn(
     rows: u16,
     cols: u16,
     workstream: Option<WorkstreamSpec>,
-    on_exit: mpsc::UnboundedSender<String>,
+    on_exit: mpsc::UnboundedSender<SessionEnded>,
     events: broadcast::Sender<Event>,
 ) -> anyhow::Result<SessionHandle> {
     let cwd_opt = if cwd.is_empty() {
@@ -1145,8 +1165,12 @@ fn spawn_sidecar(
                                             .scrollback(scrollback_row_limit(snapshot.cols))
                                             .map_err(|error| error.to_string())
                                     });
+                                    // Captured at the same FIFO boundary as the
+                                    // cell snapshot so both describe one screen.
+                                    let vt = terminal.format_vt().ok();
                                     Ok(SidecarCapture {
                                         snapshot,
+                                        vt,
                                         scrollback: history,
                                     })
                                 }
@@ -1178,7 +1202,7 @@ async fn run(
     mut session: Session,
     mut rx: mpsc::UnboundedReceiver<SessionMsg>,
     waiter: tokio::task::JoinHandle<i32>,
-    on_exit: mpsc::UnboundedSender<String>,
+    on_exit: mpsc::UnboundedSender<SessionEnded>,
     mut sidecar_results: mpsc::UnboundedReceiver<SidecarResult>,
     sidecar_thread: JoinHandle<()>,
 ) {
@@ -1186,6 +1210,7 @@ async fn run(
     let mut waiter = Some(waiter);
     let mut sidecar_results_open = true;
     let mut history_stages = VecDeque::<ClientId>::new();
+    let mut killed = false;
 
     loop {
         tokio::select! {
@@ -1200,6 +1225,9 @@ async fn run(
             msg = rx.recv() => {
                 let Some(msg) = msg else { break };
                 if handle_msg(&mut session, msg) {
+                    // `handle_msg` only asks to stop for `Kill`, so this is the
+                    // one end a client chose — the distinction a tombstone keeps.
+                    killed = true;
                     break;
                 }
             }
@@ -1259,7 +1287,15 @@ async fn run(
         let _ = entry.out.send(ClientEvent::Exited(code));
     }
     let _ = tokio::task::spawn_blocking(move || sidecar_thread.join()).await;
-    let _ = on_exit.send(session.id.clone());
+    // `alive: false` — this record only ever describes a session that has ended,
+    // and a tombstone built from it must not claim otherwise.
+    let mut info = session.info();
+    info.alive = false;
+    let _ = on_exit.send(SessionEnded {
+        info,
+        status: code,
+        killed,
+    });
 }
 
 /// Returns true if the session should terminate (`kill`).

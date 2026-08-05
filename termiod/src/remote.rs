@@ -15,8 +15,42 @@ use std::process::Command;
 /// Where the binary is installed on the remote host. `$HOME` is expanded by
 /// the remote shell. Overridable with `TERMIOD_REMOTE_BIN` for custom install
 /// paths (and to point tests at a local binary).
-fn remote_bin() -> String {
+pub fn remote_bin() -> String {
     std::env::var("TERMIOD_REMOTE_BIN").unwrap_or_else(|_| "$HOME/.local/bin/termiod".to_string())
+}
+
+/// SSH options shared by every outbound connection.
+///
+/// `ControlMaster` is the load-bearing one for cloud use: the first connection
+/// to a host opens a master, and every later channel — another session, the
+/// resource plane, a `list` — rides it for about one round trip instead of a
+/// fresh TCP and key exchange. Zed does the same thing; unlike Zed we take the
+/// user's own `ControlPath` when they have set one rather than overriding it.
+pub fn ssh_multiplex_args() -> Vec<String> {
+    let mut args = vec![
+        "-o".into(),
+        "ServerAliveInterval=15".into(),
+        "-o".into(),
+        "ControlMaster=auto".into(),
+        "-o".into(),
+        "ControlPersist=10m".into(),
+    ];
+    if std::env::var_os("TERMIOD_SSH_KEEP_CONTROLPATH").is_none() {
+        if let Some(path) = control_path() {
+            args.push("-o".into());
+            args.push(format!("ControlPath={path}"));
+        }
+    }
+    args
+}
+
+/// `%C` is a hash of (host, port, user), so one path template serves every
+/// host without collisions.
+fn control_path() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let dir = std::path::Path::new(&home).join(".termio").join("ssh");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("%C").display().to_string())
 }
 
 #[derive(Subcommand)]
@@ -267,8 +301,31 @@ fn ssh_interactive(host: &str, tty: bool, remote_cmd: &str) -> Result<i32> {
 }
 
 /// Run an SSH command and capture stdout (for create/list/version probes).
+/// One host's session table, for the cross-host view. Failure is returned per
+/// host rather than aborting the sweep — a cloud fleet always has one box
+/// that is rebooting, and that must not blank the other rows.
+pub async fn list_json(host: &str) -> (String, Result<Vec<crate::protocol::SessionInfo>>) {
+    let owned = host.to_string();
+    let probe = owned.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let out = ssh_capture(&probe, &format!("{} list --json", remote_bin()))?;
+        serde_json::from_str::<Vec<crate::protocol::SessionInfo>>(&out)
+            .context("parsing remote session list")
+    })
+    .await;
+    match result {
+        Ok(inner) => (owned, inner),
+        Err(e) => (owned, Err(anyhow::anyhow!("{e}"))),
+    }
+}
+
 fn ssh_capture(host: &str, remote_cmd: &str) -> Result<String> {
-    let out = Command::new("ssh")
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-o").arg("BatchMode=yes");
+    for arg in ssh_multiplex_args() {
+        cmd.arg(arg);
+    }
+    let out = cmd
         .args([host, remote_cmd])
         .output()
         .context("spawning ssh")?;

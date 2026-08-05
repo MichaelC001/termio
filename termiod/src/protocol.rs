@@ -25,9 +25,25 @@ pub const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 pub const MAX_DATA_FRAME_SIZE: usize = 64 * 1024;
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const SUPPORTED_PROTOCOLS: &[u32] = &[PROTOCOL_VERSION];
-pub const HOST_CAPABILITIES: &[&str] =
-    &["events", "send_wait", "snapshot", "scrollback", "grid_diff"];
+pub const HOST_CAPABILITIES: &[&str] = &[
+    "events",
+    "send_wait",
+    "snapshot",
+    "scrollback",
+    "grid_diff",
+    "resources",
+    "fs_watch",
+];
 pub const SNAPSHOT_FORMAT_VERSION: u8 = 1;
+/// Snapshot payload carrying **VT sequences** instead of packed cells.
+///
+/// This is the correct shape for the raw plane: the host says *what is on the
+/// screen* in the terminal's own language and the client's libghostty decides
+/// how it looks. Packed cells (v1) force the host to resolve colour, which
+/// overrides the viewer's theme and silently drops bold/underline/OSC 8. v1 is
+/// retained only for `grid_diff` clients, whose whole model is server-side
+/// state and which need cells to seed their grid.
+pub const SNAPSHOT_FORMAT_VT: u8 = 2;
 pub const SNAPSHOT_CELL_SIZE: usize = 16;
 pub const HISTORY_FORMAT_VERSION: u8 = 1;
 pub const HISTORY_HEADER_SIZE: usize = 9;
@@ -58,6 +74,9 @@ pub struct WireCell {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
+    /// VT-sequence repaint (format v2). When set, `cells` is empty and the
+    /// client feeds these bytes straight into its own terminal.
+    pub vt: Option<Vec<u8>>,
     pub rows: u16,
     pub cols: u16,
     pub cursor_x: u16,
@@ -248,6 +267,21 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// Resumable subscription to a durable host resource (§C.10). `since` is
+    /// the highest `seq` the client has already applied; omit it on a first
+    /// subscribe. Requires the `resources` capability.
+    SubscribeResource {
+        resource: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    UnsubscribeResource {
+        resource: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
     Wait {
         target: String,
         until: Vec<String>,
@@ -276,6 +310,13 @@ pub enum Control {
     },
     Sessions {
         sessions: Vec<SessionInfo>,
+        /// Sessions that have died, newest first (§6). Sent with the live list
+        /// rather than behind a second verb because the question a client is
+        /// asking — "what is running?" — has a wrong answer when a daemon crash
+        /// silently turned it into an empty list. Additive: a client that does
+        /// not know the field ignores it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tombstones: Vec<crate::tombstone::Tombstone>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },
@@ -292,6 +333,19 @@ pub enum Control {
         rows: u16,
         #[serde(default = "default_cols")]
         cols: u16,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
+    /// Reply to `subscribe_resource`. `seq` is the resource's current cursor —
+    /// what to pass back as `since` after a reconnect. `gap` means the client's
+    /// baseline is unusable and it must do a full scan before applying further
+    /// events (a first subscribe, or a `since` that aged out of the ring).
+    /// Replayed batches arrive as events *after* this reply, in seq order.
+    Subscribed {
+        resource: String,
+        seq: u64,
+        #[serde(default)]
+        gap: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },
@@ -336,6 +390,8 @@ impl Control {
             | Control::Attach { seq, .. }
             | Control::Detach { seq }
             | Control::Subscribe { seq, .. }
+            | Control::SubscribeResource { seq, .. }
+            | Control::UnsubscribeResource { seq, .. }
             | Control::Wait { seq, .. }
             | Control::SetStatus { seq, .. } => *seq,
             _ => None,
@@ -369,6 +425,21 @@ pub enum Event {
     SessionExited {
         session: String,
         status: i32,
+    },
+    /// A filesystem batch for an `fs:` resource (§C.10). `seq` is monotonic per
+    /// resource and is what a reconnecting client passes back as `since`.
+    /// `full_rescan` means the path set is not authoritative — re-walk what is
+    /// realized. `git_meta` means index/HEAD/refs moved; object-store churn is
+    /// dropped host-side and never appears here.
+    FsChanged {
+        resource: String,
+        seq: u64,
+        #[serde(default)]
+        paths: Vec<String>,
+        #[serde(default)]
+        full_rescan: bool,
+        #[serde(default)]
+        git_meta: bool,
     },
     /// Roster delta used by control-channel `subscribe`.
     Roster {
@@ -472,8 +543,9 @@ pub async fn write_grid_payload<W: AsyncWriteExt + Unpin>(w: &mut W, payload: &[
 /// codepoint:u32be, foreground RGB, background RGB, attributes:u16be, and
 /// four reserved zero bytes.
 pub fn encode_snapshot_payload(snapshot: &Snapshot) -> Result<Vec<u8>> {
+    let vt = snapshot.vt.as_deref();
     let expected_cells = usize::from(snapshot.rows) * usize::from(snapshot.cols);
-    if snapshot.cells.len() != expected_cells {
+    if vt.is_none() && snapshot.cells.len() != expected_cells {
         bail!(
             "snapshot has {} cells, expected {expected_cells}",
             snapshot.cells.len()
@@ -482,16 +554,24 @@ pub fn encode_snapshot_payload(snapshot: &Snapshot) -> Result<Vec<u8>> {
     let title = snapshot.title.as_bytes();
     let title_len =
         u16::try_from(title.len()).map_err(|_| anyhow::anyhow!("snapshot title too long"))?;
+    let body_len = match vt {
+        Some(bytes) => 4 + bytes.len(),
+        None => expected_cells * SNAPSHOT_CELL_SIZE,
+    };
     let payload_len = 12usize
         .checked_add(title.len())
-        .and_then(|len| len.checked_add(expected_cells * SNAPSHOT_CELL_SIZE))
+        .and_then(|len| len.checked_add(body_len))
         .ok_or_else(|| anyhow::anyhow!("snapshot payload length overflow"))?;
     if payload_len > MAX_FRAME_SIZE {
         bail!("snapshot payload too large: {payload_len} > {MAX_FRAME_SIZE}");
     }
 
     let mut payload = Vec::with_capacity(payload_len);
-    payload.push(SNAPSHOT_FORMAT_VERSION);
+    payload.push(if vt.is_some() {
+        SNAPSHOT_FORMAT_VT
+    } else {
+        SNAPSHOT_FORMAT_VERSION
+    });
     payload.extend_from_slice(&snapshot.rows.to_be_bytes());
     payload.extend_from_slice(&snapshot.cols.to_be_bytes());
     payload.extend_from_slice(&snapshot.cursor_x.to_be_bytes());
@@ -499,7 +579,15 @@ pub fn encode_snapshot_payload(snapshot: &Snapshot) -> Result<Vec<u8>> {
     payload.push(u8::from(snapshot.alt_screen));
     payload.extend_from_slice(&title_len.to_be_bytes());
     payload.extend_from_slice(title);
-    encode_cells(&mut payload, &snapshot.cells);
+    match vt {
+        Some(bytes) => {
+            let len = u32::try_from(bytes.len())
+                .map_err(|_| anyhow::anyhow!("snapshot vt payload too long"))?;
+            payload.extend_from_slice(&len.to_be_bytes());
+            payload.extend_from_slice(bytes);
+        }
+        None => encode_cells(&mut payload, &snapshot.cells),
+    }
     Ok(payload)
 }
 
@@ -507,9 +595,11 @@ pub fn decode_snapshot_payload(payload: &[u8]) -> Result<Snapshot> {
     if payload.len() < 12 {
         bail!("malformed snapshot header");
     }
-    if payload[0] != SNAPSHOT_FORMAT_VERSION {
-        bail!("unsupported snapshot payload version {}", payload[0]);
-    }
+    let is_vt = match payload[0] {
+        SNAPSHOT_FORMAT_VERSION => false,
+        SNAPSHOT_FORMAT_VT => true,
+        other => bail!("unsupported snapshot payload version {other}"),
+    };
     let rows = u16::from_be_bytes([payload[1], payload[2]]);
     let cols = u16::from_be_bytes([payload[3], payload[4]]);
     let cursor_x = u16::from_be_bytes([payload[5], payload[6]]);
@@ -529,6 +619,31 @@ pub fn decode_snapshot_payload(payload: &[u8]) -> Result<Snapshot> {
     let title = std::str::from_utf8(&payload[12..cells_offset])
         .map_err(|error| anyhow::anyhow!("snapshot title is not UTF-8: {error}"))?
         .to_string();
+    if is_vt {
+        let body = &payload[cells_offset..];
+        if body.len() < 4 {
+            bail!("malformed snapshot vt length");
+        }
+        let vt_len = u32::from_be_bytes([body[0], body[1], body[2], body[3]]) as usize;
+        if body.len() != 4 + vt_len {
+            bail!(
+                "snapshot vt payload has {} bytes, expected {}",
+                body.len() - 4,
+                vt_len
+            );
+        }
+        return Ok(Snapshot {
+            rows,
+            cols,
+            cursor_x,
+            cursor_y,
+            alt_screen,
+            title,
+            cells: Vec::new(),
+            vt: Some(body[4..].to_vec()),
+        });
+    }
+
     let cell_count = usize::from(rows) * usize::from(cols);
     let expected_len = cells_offset
         .checked_add(cell_count * SNAPSHOT_CELL_SIZE)
@@ -549,6 +664,7 @@ pub fn decode_snapshot_payload(payload: &[u8]) -> Result<Snapshot> {
         alt_screen,
         title,
         cells,
+        vt: None,
     })
 }
 
@@ -888,6 +1004,7 @@ mod tests {
     #[test]
     fn snapshot_payload_round_trip() {
         let snapshot = Snapshot {
+            vt: None,
             rows: 1,
             cols: 2,
             cursor_x: 1,
@@ -912,6 +1029,7 @@ mod tests {
     #[test]
     fn snapshot_payload_rejects_wrong_cell_count() {
         let snapshot = Snapshot {
+            vt: None,
             rows: 1,
             cols: 1,
             cursor_x: 0,

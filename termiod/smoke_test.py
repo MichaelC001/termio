@@ -16,7 +16,9 @@ import fcntl
 import json
 import os
 import pty
+import re
 import select
+import shutil
 import socket
 import struct
 import subprocess
@@ -63,14 +65,45 @@ def recv_exact(sock, size):
 
 
 def decode_snapshot(payload):
-    """Decode the Phase 1a S payload enough to assert its visible grid."""
-    if len(payload) < 12 or payload[0] != 1:
+    """Decode an S payload enough to assert its visible grid.
+
+    Two formats share one header. v2 (raw-plane clients) carries VT sequences —
+    the host describes content and the *client* decides colour, so there is no
+    cell grid to walk; the visible text is recovered by stripping escapes. v1
+    (grid_diff clients) carries packed cells and is walked directly.
+    """
+    if len(payload) < 12 or payload[0] not in (1, 2):
         raise ValueError("invalid snapshot header")
+    is_vt = payload[0] == 2
     rows, cols, cursor_x, cursor_y = struct.unpack(">HHHH", payload[1:9])
     alt_screen = payload[9] == 1
     title_len = struct.unpack(">H", payload[10:12])[0]
     cells_offset = 12 + title_len
     title = payload[12:cells_offset].decode()
+    if is_vt:
+        body = payload[cells_offset:]
+        if len(body) < 4:
+            raise ValueError("invalid snapshot vt length")
+        vt_len = struct.unpack(">I", body[0:4])[0]
+        if len(body) != 4 + vt_len:
+            raise ValueError("invalid snapshot vt payload")
+        vt = body[4:].decode("utf-8", "replace")
+        plain = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "", vt)
+        plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", plain)
+        plain = re.sub(r"\x1b[()][A-Za-z0-9]", "", plain)
+        plain = plain.replace("\x1b", "")
+        lines = [line.rstrip("\r") for line in plain.split("\n")]
+        lines += [""] * max(0, rows - len(lines))
+        return {
+            "rows": rows,
+            "cols": cols,
+            "cursor_x": cursor_x,
+            "cursor_y": cursor_y,
+            "alt_screen": alt_screen,
+            "title": title,
+            "lines": lines,
+            "vt": vt,
+        }
     cell_bytes = payload[cells_offset:]
     if len(cell_bytes) != rows * cols * 16:
         raise ValueError("invalid snapshot cell count")
@@ -156,9 +189,9 @@ def decode_grid(payload):
 class WireClient:
     """Small protocol client used to test the v0.1 wire directly."""
 
-    def __init__(self, role="control", caps=None, hello=True, proto=1, min_proto=1):
+    def __init__(self, role="control", caps=None, hello=True, proto=1, min_proto=1, path=None):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.connect(ENV["TERMIOD_SOCK"])
+        self.sock.connect(path or ENV["TERMIOD_SOCK"])
         self.hello = None
         if hello:
             self.send_control(
@@ -1103,6 +1136,120 @@ def main():
     sub.close()
     if metadata_id:
         cli("kill", metadata_id)
+
+    print("\n# 10. tombstones: a dead session says what happened to it (§6)")
+    # Its own daemon on its own socket, because this section kills a daemon
+    # outright and the sections above share the suite's one.
+    grave_dir = "/tmp/termiod-smoke-graves"
+    shutil.rmtree(grave_dir, ignore_errors=True)
+    os.makedirs(grave_dir, exist_ok=True)
+    grave_sock = f"{grave_dir}/termiod.sock"
+    grave_env = dict(ENV, TERMIOD_SOCK=grave_sock)
+
+    def grave_daemon():
+        proc = subprocess.Popen(
+            [BIN, "serve"], env=grave_env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        for _ in range(100):
+            if os.path.exists(grave_sock):
+                break
+            time.sleep(0.05)
+        time.sleep(0.25)
+        return proc
+
+    grave_seq = [500]
+
+    def grave_request(client, message):
+        # Distinct request ids per call: the daemon caches replies by id for
+        # idempotent retry, so reusing one replays the earlier answer.
+        grave_seq[0] += 1
+        client.send_control({**message, "seq": grave_seq[0]})
+        while True:
+            kind, reply = client.recv_frame()
+            if kind == "C" and reply.get("op") in ("sessions", "created", "ok", "error"):
+                return reply
+
+    def grave_list(client):
+        return grave_request(client, {"op": "list"})
+
+    def grave_create(client, name, command):
+        reply = grave_request(client, {
+            "op": "create", "argv": ["/bin/sh", "-c", command],
+            "rows": 24, "cols": 80, "name": name,
+        })
+        return reply.get("id")
+
+    def graves_by_name(client):
+        return {t["name"]: t for t in grave_list(client).get("tombstones", [])}
+
+    daemon = grave_daemon()
+    client = WireClient(path=grave_sock)
+    grave_create(client, "victim", "sleep 300")
+    time.sleep(0.3)
+    check(
+        "tombstones: a live session is not a tombstone",
+        [s["name"] for s in grave_list(client)["sessions"]] == ["victim"]
+        and not grave_list(client).get("tombstones"),
+    )
+
+    # SIGKILL, not SIGTERM: the daemon must not get to run any shutdown code,
+    # or the crash path would be tested against a graceful exit.
+    daemon.kill()
+    daemon.wait()
+    client.close()
+    if os.path.exists(grave_sock):
+        os.remove(grave_sock)
+
+    daemon = grave_daemon()
+    client = WireClient(path=grave_sock)
+    listing = grave_list(client)
+    lost = {t["name"]: t for t in listing.get("tombstones", [])}
+    check(
+        "tombstones: a session the daemon died under is reported, not silently gone",
+        listing["sessions"] == [] and "victim" in lost,
+    )
+    check(
+        "tombstones: a lost session is daemon_lost with no invented exit status",
+        lost.get("victim", {}).get("reason") == "daemon_lost"
+        and lost.get("victim", {}).get("exit_status") is None,
+    )
+
+    doomed = grave_create(client, "doomed", "sleep 300")
+    time.sleep(0.3)
+    grave_request(client, {"op": "kill", "id": doomed})
+    time.sleep(0.6)
+    killed = graves_by_name(client).get("doomed", {})
+    check("tombstones: an explicit kill is recorded as killed", killed.get("reason") == "killed")
+
+    grave_create(client, "quitter", "exit 7")
+    time.sleep(0.6)
+    exited = graves_by_name(client).get("quitter", {})
+    check(
+        "tombstones: a process that exits keeps its exit status",
+        exited.get("reason") == "exited" and exited.get("exit_status") == 7,
+    )
+    check(
+        "tombstones: newest death sorts first",
+        [t["name"] for t in grave_list(client).get("tombstones", [])][0] == "quitter",
+    )
+
+    client.close()
+    daemon.terminate()
+    daemon.wait()
+    if os.path.exists(grave_sock):
+        os.remove(grave_sock)
+    daemon = grave_daemon()
+    client = WireClient(path=grave_sock)
+    reasons = {name: t["reason"] for name, t in graves_by_name(client).items()}
+    check(
+        "tombstones: history survives a restart without re-mourning the buried",
+        reasons == {"victim": "daemon_lost", "doomed": "killed", "quitter": "exited"},
+    )
+    client.close()
+    daemon.terminate()
+    daemon.wait()
+    shutil.rmtree(grave_dir, ignore_errors=True)
 
     print()
     if FAILURES:

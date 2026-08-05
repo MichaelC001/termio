@@ -8,7 +8,11 @@ use crate::protocol::{
     write_snapshot, AttachMode, Control, ErrorCode, Event, Frame, SessionInfo, Snapshot,
     HOST_CAPABILITIES, PROTOCOL_VERSION, SUPPORTED_PROTOCOLS,
 };
-use crate::session::{self, ClientBacklog, ClientEvent, ClientId, SessionHandle, SessionMsg};
+use crate::resource::Registry;
+use crate::session::{
+    self, ClientBacklog, ClientEvent, ClientId, SessionEnded, SessionHandle, SessionMsg,
+};
+use crate::tombstone::{EndReason, Graveyard};
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use std::collections::{HashMap, HashSet};
@@ -29,13 +33,24 @@ struct ManagerInner {
 pub struct Manager {
     inner: Arc<Mutex<ManagerInner>>,
     next_client_id: Arc<AtomicU64>,
-    on_exit: mpsc::UnboundedSender<String>,
+    on_exit: mpsc::UnboundedSender<SessionEnded>,
     events: broadcast::Sender<Event>,
     host_id: Arc<String>,
+    /// Durable non-session state clients can resume against (§C.10). Shared by
+    /// every connection so one workspace costs one watcher, not one per client.
+    resources: Registry,
+    /// What died and why (§6). The daemon is now the only PTY owner, so its own
+    /// death has to leave evidence — an empty session list otherwise reads as
+    /// "nothing was running" rather than "everything was lost".
+    graveyard: Arc<Graveyard>,
 }
 
 impl Manager {
-    fn new(on_exit: mpsc::UnboundedSender<String>, host_id: String) -> Manager {
+    fn new(
+        on_exit: mpsc::UnboundedSender<SessionEnded>,
+        host_id: String,
+        graveyard: Arc<Graveyard>,
+    ) -> Manager {
         let (events, _) = broadcast::channel(EVENT_BUFFER);
         Manager {
             inner: Arc::new(Mutex::new(ManagerInner {
@@ -46,6 +61,8 @@ impl Manager {
             on_exit,
             events,
             host_id: Arc::new(host_id),
+            resources: Registry::new(),
+            graveyard,
         }
     }
 
@@ -133,11 +150,16 @@ impl Manager {
         let Some(handle) = self.find(id) else {
             return;
         };
-        let info = self.info(&handle).await.map(Box::new);
+        let info = self.info(&handle).await;
+        // The roster file is what lets the *next* daemon notice this session was
+        // never buried. Recorded at creation, cleared at burial.
+        if let Some(info) = &info {
+            self.graveyard.note_live(info);
+        }
         self.publish(Event::Roster {
             session: id.to_string(),
             action: "created".to_string(),
-            info,
+            info: info.map(Box::new),
         });
     }
 
@@ -300,13 +322,26 @@ pub async fn serve() -> Result<()> {
     std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600))?;
 
     let host_id = paths::load_or_create_host_id()?;
-    let (on_exit_tx, mut on_exit_rx) = mpsc::unbounded_channel::<String>();
-    let manager = Manager::new(on_exit_tx, host_id);
+    // Opening the graveyard is also the crash check: anything the previous
+    // daemon left on its roster is adopted as `daemon_lost` here, before this
+    // one accepts a single connection.
+    let graveyard = Arc::new(Graveyard::open(&paths::state_dir()?)?);
+    let (on_exit_tx, mut on_exit_rx) = mpsc::unbounded_channel::<SessionEnded>();
+    let manager = Manager::new(on_exit_tx, host_id, graveyard);
 
     {
         let manager = manager.clone();
         tokio::spawn(async move {
-            while let Some(id) = on_exit_rx.recv().await {
+            while let Some(ended) = on_exit_rx.recv().await {
+                let id = ended.info.id.clone();
+                let reason = if ended.killed {
+                    EndReason::Killed
+                } else {
+                    EndReason::Exited
+                };
+                manager
+                    .graveyard
+                    .bury(&ended.info, reason, Some(ended.status));
                 if manager.remove(&id) {
                     manager.publish_removed(&id);
                 }
@@ -493,6 +528,8 @@ async fn handle_conn(stream: UnixStream, manager: Manager) -> Result<()> {
     let (out, out_rx) = mpsc::unbounded_channel();
     let backlog = Arc::new(ClientBacklog::new());
     let writer = tokio::spawn(write_outbound(wr, out_rx, backlog.clone()));
+    let departing = connection.client_id.clone();
+    let resources = manager.resources.clone();
     let result = run_connection(
         rd,
         out.clone(),
@@ -502,6 +539,9 @@ async fn handle_conn(stream: UnixStream, manager: Manager) -> Result<()> {
         backlog.clone(),
     )
     .await;
+    // Resource subscriptions are per-connection: a dropped client releases its
+    // interest, and the last one out stops the underlying watch.
+    resources.drop_client(&departing);
     drop(out);
     if backlog.is_dropped() {
         writer.abort();
@@ -535,6 +575,9 @@ async fn run_connection(
     let mut subscriptions = HashSet::new();
     let mut events = manager.events.subscribe();
     let mut response_cache: HashMap<u64, Control> = HashMap::new();
+    // Resource events are addressed to this connection alone, so they take a
+    // dedicated channel rather than the roster broadcast every client sees.
+    let (resource_tx, mut resource_rx) = mpsc::unbounded_channel::<Event>();
 
     loop {
         if let Some(control) = pending.take() {
@@ -545,6 +588,7 @@ async fn run_connection(
                 &manager,
                 &mut subscriptions,
                 &mut response_cache,
+                &resource_tx,
             )
             .await?
             {
@@ -624,6 +668,9 @@ async fn run_connection(
                     Err(broadcast::error::RecvError::Closed) => return Ok(()),
                 }
             }
+            Some(event) = resource_rx.recv() => {
+                let _ = out.send(Outbound::Event(event));
+            }
         }
     }
 }
@@ -636,6 +683,7 @@ async fn process_control(
     manager: &Manager,
     subscriptions: &mut HashSet<String>,
     response_cache: &mut HashMap<u64, Control>,
+    resource_tx: &mpsc::UnboundedSender<Event>,
 ) -> Result<ControlFlow> {
     let seq = control.seq();
     if let Some(cached) = seq.and_then(|id| response_cache.get(&id)) {
@@ -660,7 +708,11 @@ async fn process_control(
                 out,
                 response_cache,
                 seq,
-                Control::Sessions { sessions, re: seq },
+                Control::Sessions {
+                    sessions,
+                    tombstones: manager.graveyard.all(),
+                    re: seq,
+                },
             );
         }
         Control::Kill { id, seq } => {
@@ -761,6 +813,58 @@ async fn process_control(
                 send_response(out, response_cache, seq, Control::Ok { re: seq });
             }
         }
+        Control::SubscribeResource {
+            resource,
+            since,
+            seq,
+        } => {
+            let response = if !connection.capabilities.contains("resources") {
+                error(
+                    seq,
+                    ErrorCode::Denied,
+                    "the resources capability was not negotiated",
+                    false,
+                )
+            } else {
+                // Clients name a workspace root; the host canonicalises it, so
+                // two spellings of one repo share a single watch.
+                match crate::resource::Registry::fs_resource_id(&resource)
+                    .and_then(|id| {
+                        manager
+                            .resources
+                            .subscribe(
+                                &id,
+                                connection.client_id.clone(),
+                                resource_tx.clone(),
+                                since,
+                            )
+                            .map(|reply| (id, reply))
+                    }) {
+                    Ok((id, reply)) => {
+                        // The reply lands before any replayed batch, so the
+                        // client learns whether to rescan before applying them.
+                        let ack = Control::Subscribed {
+                            resource: id,
+                            seq: reply.seq,
+                            gap: reply.gap,
+                            re: seq,
+                        };
+                        for event in reply.replay {
+                            let _ = resource_tx.send(event);
+                        }
+                        ack
+                    }
+                    Err(e) => error(seq, ErrorCode::Denied, format!("{e:#}"), false),
+                }
+            };
+            send_response(out, response_cache, seq, response);
+        }
+        Control::UnsubscribeResource { resource, seq } => {
+            let id = crate::resource::Registry::fs_resource_id(&resource)
+                .unwrap_or_else(|_| resource.clone());
+            manager.resources.unsubscribe(&id, &connection.client_id);
+            send_response(out, response_cache, seq, Control::Ok { re: seq });
+        }
         Control::Wait {
             target,
             until,
@@ -840,6 +944,7 @@ async fn process_control(
         | Control::Exited { .. }
         | Control::WaitResult { .. }
         | Control::ResizeClaim { .. }
+        | Control::Subscribed { .. }
         | Control::Error { .. } => {}
     }
     Ok(ControlFlow::Continue)
@@ -865,6 +970,9 @@ fn subscribed_to(subscriptions: &HashSet<String>, event: &Event) -> bool {
         }
         Event::Resized { .. } => false,
         Event::Ready { .. } => false,
+        // Resource events are delivered on the subscriber's own channel, not
+        // through the roster broadcast, so they never match here.
+        Event::FsChanged { .. } => false,
         Event::Unknown => false,
     }
 }

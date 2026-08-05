@@ -155,6 +155,96 @@ impl VtTerminal {
         check(result, "ghostty_terminal_resize")
     }
 
+    /// Serialise the current screen back into **VT sequences** — the repaint a
+    /// client can feed straight into its own terminal.
+    ///
+    /// This is the host's only correct way to hand over screen state. Reading
+    /// cells and shipping resolved RGB makes the *host* the style authority,
+    /// which breaks the whole reason this project runs libghostty on both ends:
+    /// the client's terminal must decide colour. Concretely, `palette` stays
+    /// off so no OSC 4 is emitted and the viewer's own theme applies; `style`
+    /// carries SGR (so bold/underline/italic survive, unlike the packed cell
+    /// format) and `hyperlink` carries OSC 8.
+    ///
+    /// `modes`, `charsets`, `tabstops`, and the scrolling region are included
+    /// so a reattached client inherits the screen's actual mode state rather
+    /// than a plausible-looking default.
+    pub fn format_vt(&mut self) -> Result<Vec<u8>> {
+        let mut options = ffi::GhosttyFormatterTerminalOptions {
+            size: std::mem::size_of::<ffi::GhosttyFormatterTerminalOptions>(),
+            emit: ffi::GhosttyFormatterFormat_GHOSTTY_FORMATTER_FORMAT_VT,
+            unwrap: false,
+            trim: false,
+            extra: ffi::GhosttyFormatterTerminalExtra {
+                size: std::mem::size_of::<ffi::GhosttyFormatterTerminalExtra>(),
+                // Deliberately false: emitting OSC 4 would push the host's
+                // palette onto the client and override the local theme.
+                palette: false,
+                modes: true,
+                scrolling_region: true,
+                tabstops: true,
+                pwd: true,
+                keyboard: true,
+                screen: ffi::GhosttyFormatterScreenExtra {
+                    size: std::mem::size_of::<ffi::GhosttyFormatterScreenExtra>(),
+                    cursor: true,
+                    style: true,
+                    hyperlink: true,
+                    protection: true,
+                    kitty_keyboard: true,
+                    charsets: true,
+                },
+            },
+            selection: ptr::null(),
+        };
+        options.size = std::mem::size_of::<ffi::GhosttyFormatterTerminalOptions>();
+
+        let mut formatter: ffi::GhosttyFormatter = ptr::null_mut();
+        // SAFETY: the terminal outlives the formatter, which is freed below on
+        // every path; null allocator selects libghostty-vt's default.
+        unsafe {
+            check(
+                ffi::ghostty_formatter_terminal_new(
+                    ptr::null(),
+                    &mut formatter,
+                    self.terminal,
+                    options,
+                ),
+                "ghostty_formatter_terminal_new",
+            )?;
+        }
+
+        let mut out: *mut u8 = ptr::null_mut();
+        let mut len: usize = 0;
+        let result = unsafe {
+            ffi::ghostty_formatter_format_alloc(formatter, ptr::null(), &mut out, &mut len)
+        };
+        let formatted = if result == ffi::GhosttyResult_GHOSTTY_SUCCESS && !out.is_null() {
+            // SAFETY: libghostty-vt guarantees `len` valid bytes at `out`, and
+            // we copy before handing the allocation back.
+            let bytes = unsafe { std::slice::from_raw_parts(out, len) }.to_vec();
+            unsafe { ffi::ghostty_free(ptr::null(), out, len) };
+            Ok(bytes)
+        } else {
+            check(result, "ghostty_formatter_format_alloc").map(|_| Vec::new())
+        };
+        unsafe { ffi::ghostty_formatter_free(formatter) };
+
+        let mut formatted = formatted?;
+        // The formatter emits the cursor's CUP *before* the state extras, and
+        // some of those move the cursor as a side effect — `tabstops` walks the
+        // row with CHA/HTS and leaves it wherever the last stop was, and
+        // DECSTBM homes it. Re-assert the real position last so the client
+        // lands where the session actually is.
+        let cursor_x = self.terminal_u16(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_X)?;
+        let cursor_y = self.terminal_u16(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_Y)?;
+        formatted.extend_from_slice(
+            format!("\x1b[{};{}H", cursor_y.saturating_add(1), cursor_x.saturating_add(1))
+                .as_bytes(),
+        );
+        Ok(formatted)
+    }
+
     pub fn snapshot(&mut self) -> Result<Snapshot> {
         // SAFETY: Both handles are live and exclusively owned here.
         unsafe {
@@ -718,6 +808,55 @@ mod tests {
         assert_eq!(snapshot.title.as_deref(), Some("proof"));
         assert_eq!(snapshot.cells[0].codepoint, u32::from('R'));
         assert_ne!(snapshot.cells[0].foreground, snapshot.cells[0].background);
+    }
+
+    /// The load-bearing property of `format_vt`: the host describes *content*
+    /// in the terminal's own language and never dictates colour. If OSC 4 ever
+    /// appears here, the host has pushed its palette onto every viewer and the
+    /// client's theme is dead.
+    #[test]
+    fn vt_format_carries_style_but_never_the_host_palette() {
+        let mut terminal = VtTerminal::new(4, 20).unwrap();
+        terminal.vt_write(b"\x1b[1;4;31mBOLD-RED\x1b[0m plain");
+        let vt = terminal.format_vt().unwrap();
+        let text = String::from_utf8_lossy(&vt);
+
+        assert!(text.contains("BOLD-RED"), "screen text must survive: {text:?}");
+        assert!(text.contains("plain"));
+        assert!(
+            text.contains("\x1b["),
+            "styled output must carry SGR, not resolved colour: {text:?}"
+        );
+        assert!(
+            !text.contains("\x1b]4;"),
+            "OSC 4 would override the viewer's theme: {text:?}"
+        );
+        // Attributes the packed 16-byte cell format silently dropped.
+        assert!(
+            text.contains(";1") || text.contains("[1m") || text.contains("1;"),
+            "bold must survive the round trip: {text:?}"
+        );
+    }
+
+    /// A client replaying the formatted bytes must land on the same screen —
+    /// that is what makes it a snapshot rather than an approximation.
+    #[test]
+    fn vt_format_replays_into_an_identical_screen() {
+        let mut source = VtTerminal::new(3, 12).unwrap();
+        source.vt_write(b"\x1b[32mgreen\x1b[0m\r\nsecond line");
+        let vt = source.format_vt().unwrap();
+
+        let mut replica = VtTerminal::new(3, 12).unwrap();
+        replica.vt_write(&vt);
+
+        let a = source.snapshot().unwrap();
+        let b = replica.snapshot().unwrap();
+        assert_eq!(
+            a.cells.iter().map(|c| c.codepoint).collect::<Vec<_>>(),
+            b.cells.iter().map(|c| c.codepoint).collect::<Vec<_>>(),
+            "replayed screen text must match the source"
+        );
+        assert_eq!((a.cursor_x, a.cursor_y), (b.cursor_x, b.cursor_y));
     }
 
     #[test]

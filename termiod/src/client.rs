@@ -4,7 +4,7 @@
 use crate::paths;
 use crate::protocol::{
     read_frame, write_control, write_data, write_resize, AttachMode, ChannelRole, Control,
-    CreateSpec, Frame, GridDiff, SessionInfo, Snapshot, WireCell, PROTOCOL_VERSION,
+    CreateSpec, Event, Frame, GridDiff, SessionInfo, Snapshot, WireCell, PROTOCOL_VERSION,
 };
 use anyhow::{bail, Context, Result};
 use std::os::fd::AsRawFd;
@@ -140,6 +140,82 @@ async fn connect_channel_with_identity(
         // A v0 host either closes on the unknown hello op or returns its
         // legacy error. Reconnect and send the original v0-shaped request.
         Ok(Some(_)) | Ok(None) | Err(_) => Ok((connect().await?, None)),
+    }
+}
+
+/// Subscribe to a workspace's filesystem resource and stream its batches
+/// (§C.10). `since` resumes from a cursor a previous run printed; without it
+/// the host reports `gap`, meaning "scan before applying anything".
+///
+/// This is the reference consumer of resumable subscriptions: kill it, let the
+/// tree change, restart with `--since <seq>`, and the missed batches replay.
+pub async fn watch(root: &str, since: Option<u64>) -> Result<()> {
+    let mut stream = connect().await?;
+    write_control(
+        &mut stream,
+        &Control::Hello {
+            proto: PROTOCOL_VERSION,
+            min_proto: PROTOCOL_VERSION,
+            role: ChannelRole::Control,
+            caps: vec!["events".to_string(), "resources".to_string()],
+            client: format!("termiod-cli/{}", env!("CARGO_PKG_VERSION")),
+        },
+    )
+    .await?;
+    match read_frame(&mut stream).await {
+        Ok(Some(Frame::Control(Control::HelloOk { caps, .. }))) => {
+            if !caps.iter().any(|c| c == "resources") {
+                bail!("this host does not support resource subscriptions");
+            }
+        }
+        Ok(Some(Frame::Control(Control::HelloErr { code, supported }))) => {
+            bail!("protocol negotiation failed ({code:?}); host supports {supported:?}")
+        }
+        _ => bail!("this host does not support resource subscriptions"),
+    }
+
+    write_control(
+        &mut stream,
+        &Control::SubscribeResource {
+            resource: root.to_string(),
+            since,
+            seq: Some(1),
+        },
+    )
+    .await?;
+
+    loop {
+        match read_frame(&mut stream).await? {
+            Some(Frame::Control(Control::Subscribed { resource, seq, gap, .. })) => {
+                println!("subscribed {resource} seq={seq} gap={gap}");
+                if gap {
+                    println!("  (no usable baseline — a real client scans here)");
+                }
+            }
+            Some(Frame::Control(Control::Error { message, .. })) => bail!(message),
+            Some(Frame::Event(Event::FsChanged {
+                seq,
+                paths,
+                full_rescan,
+                git_meta,
+                ..
+            })) => {
+                if full_rescan {
+                    println!("seq={seq} FULL RESCAN (git_meta={git_meta})");
+                } else {
+                    println!(
+                        "seq={seq} git_meta={git_meta} dirs={}",
+                        if paths.is_empty() {
+                            "-".to_string()
+                        } else {
+                            paths.join(", ")
+                        }
+                    );
+                }
+            }
+            Some(_) => {}
+            None => return Ok(()),
+        }
     }
 }
 
@@ -331,19 +407,99 @@ pub async fn observe(
     }
 }
 
+type LinkRead = Box<dyn tokio::io::AsyncRead + Unpin + Send>;
+type LinkWrite = Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
+
+/// Open an attach channel to a **remote** host: the framed protocol itself
+/// rides `ssh <host> termiod stdio`, so this process is a full protocol client
+/// of the remote daemon — not a terminal watching a remote CLI's tty. That
+/// distinction is what makes the parsed plane (`S` + `G`) reachable over the
+/// network at all.
+async fn open_ssh_attach_link(
+    host: &str,
+    grid_diff: bool,
+) -> Result<(LinkRead, LinkWrite, tokio::process::Child, Option<String>)> {
+    let mut cmd = tokio::process::Command::new("ssh");
+    cmd.arg("-o").arg("BatchMode=yes");
+    for arg in crate::remote::ssh_multiplex_args() {
+        cmd.arg(arg);
+    }
+    cmd.arg(host)
+        .arg(format!("{} stdio", crate::remote::remote_bin()))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .kill_on_drop(true);
+    let mut child = cmd.spawn().context("spawning ssh")?;
+    let mut rd: LinkRead = Box::new(child.stdout.take().context("ssh stdout")?);
+    let mut wr: LinkWrite = Box::new(child.stdin.take().context("ssh stdin")?);
+
+    let mut caps = vec![
+        "events".to_string(),
+        "send_wait".to_string(),
+        "snapshot".to_string(),
+        "scrollback".to_string(),
+    ];
+    if grid_diff {
+        caps.push("grid_diff".to_string());
+    }
+    write_control(
+        &mut wr,
+        &Control::Hello {
+            proto: PROTOCOL_VERSION,
+            min_proto: PROTOCOL_VERSION,
+            role: ChannelRole::Attach,
+            caps,
+            client: format!("termiod-cli/{}", env!("CARGO_PKG_VERSION")),
+        },
+    )
+    .await?;
+    let client_id = match read_frame(&mut rd).await {
+        Ok(Some(Frame::Control(Control::HelloOk {
+            caps, client_id, ..
+        }))) => {
+            if grid_diff && !caps.iter().any(|c| c == "grid_diff") {
+                // Better to say so than to silently stream unbounded bytes over
+                // a metered link.
+                eprintln!("[warning: {host} did not negotiate grid_diff — falling back to raw bytes]");
+            }
+            Some(client_id)
+        }
+        Ok(Some(Frame::Control(Control::HelloErr { code, supported }))) => {
+            bail!("{host}: protocol negotiation failed ({code:?}); host supports {supported:?}")
+        }
+        _ => bail!("{host}: no protocol reply — is termiod deployed there? try `termiod remote deploy {host}`"),
+    };
+    Ok((rd, wr, child, client_id))
+}
+
 /// Attach interactively. Creates the session first if `create_if_missing` is
 /// set and the target does not exist. Returns when the user detaches (Ctrl-\)
 /// or the session's process exits.
+///
+/// With `host`, the protocol rides an SSH pipe to that host's daemon; without
+/// it, the local Unix socket. Local and remote differ only in the pipe.
 pub async fn attach(
     target: &str,
     create_if_missing: Option<CreateSpec>,
     grid_diff: bool,
+    host: Option<&str>,
 ) -> Result<()> {
     let (rows, cols) = term_size();
-    let (mut stream, negotiated_client_id) =
-        connect_channel_with_identity(ChannelRole::Attach, true, grid_diff).await?;
+    let (mut rd, mut wr, _ssh, negotiated_client_id) = match host {
+        Some(host) => {
+            let (rd, wr, child, id) = open_ssh_attach_link(host, grid_diff).await?;
+            (rd, wr, Some(child), id)
+        }
+        None => {
+            let (stream, id) =
+                connect_channel_with_identity(ChannelRole::Attach, true, grid_diff).await?;
+            let (r, w) = stream.into_split();
+            (Box::new(r) as LinkRead, Box::new(w) as LinkWrite, None, id)
+        }
+    };
     write_control(
-        &mut stream,
+        &mut wr,
         &Control::Attach {
             target: target.to_string(),
             create_if_missing,
@@ -355,7 +511,7 @@ pub async fn attach(
     )
     .await?;
 
-    let id = match read_frame(&mut stream).await? {
+    let id = match read_frame(&mut rd).await? {
         Some(Frame::Control(Control::Attached { id, name, .. })) => {
             eprintln!("[attached to {name} ({id}) — detach with Ctrl-\\ ]\r");
             id
@@ -365,7 +521,6 @@ pub async fn attach(
     };
 
     let _raw = RawMode::enable()?;
-    let (mut rd, mut wr) = stream.into_split();
 
     // Reader: daemon frames → stdout. Signals the main loop via `done_tx` when
     // the stream ends (session exited or closed), carrying any exit status.
@@ -531,6 +686,15 @@ async fn render_snapshot<W: AsyncWriteExt + Unpin>(
     output: &mut W,
     snapshot: &Snapshot,
 ) -> Result<()> {
+    // Format v2: the host already expressed the screen as VT sequences. Write
+    // them through untouched — synthesising anything here would put this client
+    // back in the business of deciding colour.
+    if let Some(vt) = &snapshot.vt {
+        output.write_all(b"\x1b[2J\x1b[H").await?;
+        output.write_all(vt).await?;
+        output.flush().await?;
+        return Ok(());
+    }
     render_cells(
         output,
         snapshot.rows,
