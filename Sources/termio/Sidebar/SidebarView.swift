@@ -109,6 +109,8 @@ struct SidebarView: View {
     @State private var pinnedCollapsed = false
     /// Whether the "Projects" section is folded shut.
     @State private var projectsCollapsed = false
+    /// Whether the "Remote" section (the machines) is folded shut.
+    @State private var hostsCollapsed = false
 
     // Chrome colors borrowed from the selected terminal theme; `nil` keeps the
     // default system look untouched.
@@ -134,6 +136,10 @@ struct SidebarView: View {
         let ordered = store.orderedProjects
         let terminals = ordered.filter { $0.kind == .terminals }
         let chats = ordered.filter { $0.kind == .chats }
+        // One block per machine, in the Remote section. A host with no sessions left
+        // is dropped the same way the funnels are — closing a box's last session
+        // closes the box (reopening it is one click in New SSH Connection).
+        let hosts = ordered.filter { $0.kind == .host && !$0.sessions.isEmpty }
         // Only real `.folder` projects populate the Pinned working set and the Projects
         // list; the two loose funnels (Terminals, Chats) render as their own sections.
         let pinnedProjects = ordered.filter { $0.kind == .folder && $0.pinned }
@@ -158,6 +164,7 @@ struct SidebarView: View {
         let hasPinned = !pinnedProjects.isEmpty || !pinnedWorktrees.isEmpty || !pinnedSessions.isEmpty
         let hasTerminals = terminals.contains { !$0.sessions.isEmpty }
         let hasChats = chats.contains { !$0.sessions.isEmpty }
+        let hasHosts = !hosts.isEmpty
         return List {
             // Nudge when agents are running but the status hooks are off — without them
             // the sidebar spinner stays dark. One tap enables (and reinstalls) them.
@@ -247,6 +254,24 @@ struct SidebarView: View {
                     }
                 }
             }
+            // The machines, under their own section — one block per host, each with
+            // its sessions nested. A remote box is a *place* you work, peer to a
+            // project rather than a variant of one, so it gets a container of its own
+            // instead of being filed among loose local terminals.
+            if hasHosts {
+                SidebarSectionHeader(
+                    title: "Remote",
+                    chrome: chrome,
+                    isCollapsed: hostsCollapsed,
+                    isFirstSection: !hasPinned && !hasTerminals && !hasChats,
+                    toggleCollapsed: {
+                        withAnimation(.easeInOut(duration: 0.18)) { hostsCollapsed.toggle() }
+                    }
+                )
+                if !hostsCollapsed {
+                    ForEach(hosts) { hostBlock($0) }
+                }
+            }
             // The user's opened projects, under their own section header — the same
             // section treatment as Terminals and Pinned, one tier above the folder rows.
             if !others.isEmpty {
@@ -254,7 +279,7 @@ struct SidebarView: View {
                     title: "Projects",
                     chrome: chrome,
                     isCollapsed: projectsCollapsed,
-                    isFirstSection: !hasPinned && !hasTerminals && !hasChats,
+                    isFirstSection: !hasPinned && !hasTerminals && !hasChats && !hasHosts,
                     toggleCollapsed: {
                         withAnimation(.easeInOut(duration: 0.18)) { projectsCollapsed.toggle() }
                     }
@@ -313,6 +338,26 @@ struct SidebarView: View {
                         )
                     }
                 }
+            }
+        }
+    }
+
+    /// One machine's rows: its header, then (unless folded) its sessions. A host has
+    /// no worktrees — git layout is a local-disk concern, and the remote checkout a
+    /// session works in is the session's own `termiodRemoteCwd` — so the block is
+    /// flatter than a project's.
+    @ViewBuilder
+    private func hostBlock(_ host: Project) -> some View {
+        ProjectHeader(
+            project: host,
+            isCollapsed: collapsedProjects.contains(host.id),
+            toggleCollapsed: { toggleCollapsed(host.id) },
+            chrome: chrome
+        )
+        if !collapsedProjects.contains(host.id) {
+            let marks = splitLinkMarks(for: host.sessions)
+            ForEach(host.sessions) { session in
+                SessionRow(session: session, chrome: chrome, splitLink: marks[session.id])
             }
         }
     }
@@ -484,6 +529,12 @@ private struct ProjectHeader: View {
         worktree == nil && project.kind == .terminals
     }
 
+    /// A machine's header. Like the Terminals funnel it is not a folder — its path
+    /// is on the other box — so it offers no worktree, Finder, or git actions.
+    private var isHostHeader: Bool {
+        worktree == nil && project.kind == .host
+    }
+
     private var targetPath: String {
         worktree?.path ?? project.path
     }
@@ -496,6 +547,11 @@ private struct ProjectHeader: View {
     }
 
     private var headerHelp: String {
+        // A host's tooltip names the machine and where its sessions work on it —
+        // `targetPath` alone would read as a local directory.
+        if isHostHeader, let alias = project.sshHost {
+            return project.path == "~" ? alias : "\(alias):\(project.path)"
+        }
         guard let worktree,
               store.isDetachedHead(forFolder: worktree.path),
               let commit = store.branch(forFolder: worktree.path)
@@ -510,6 +566,9 @@ private struct ProjectHeader: View {
     /// sidebar size, and a plain folder keeps the two header kinds visually one family.
     private var headerIcon: HugeIcon {
         if isTerminalsHeader { return .terminal }
+        // A machine, not a directory: the server mark is what distinguishes a host
+        // block from a folder at a glance, which is the whole point of the section.
+        if isHostHeader { return .serverStack }
         return isCollapsed ? .folder : .folderOpen
     }
 
@@ -521,7 +580,7 @@ private struct ProjectHeader: View {
     /// the hovered label can fade out exactly under them rather than guessing.
     /// Zero for the Terminals section, which offers no agent quick-add cluster.
     private var quickAddClusterWidth: CGFloat {
-        guard !isTerminalsHeader else { return 0 }
+        guard !isTerminalsHeader, !isHostHeader else { return 0 }
         let count = headerSessionPresets(settings).count
         guard count > 0 else { return 0 }
         return CGFloat(count) * 22 + CGFloat(count - 1) * 3
@@ -543,16 +602,30 @@ private struct ProjectHeader: View {
                 .action("Close All Terminals") { store.removeProject(project.id) },
             ]
         }
+        // A machine's menu names the machine: both terminal kinds it can host (the
+        // durable termiod session and the plain `ssh` shell), then Close All. No
+        // worktree/Finder/git rows — none of them mean anything for a box over there.
+        if isHostHeader, let alias = project.sshHost {
+            return [
+                .action("New Remote Terminal") {
+                    store.addRemoteTerminal(host: alias, cwd: project.path == "~" ? nil : project.path)
+                },
+                .action("New SSH Shell") { store.addSSHSession(host: alias) },
+                .separator,
+                .action("Close All Sessions on \(alias)") { store.removeProject(project.id) },
+            ]
+        }
         var items: [SidebarMenuItem] = [
             .action("New Terminal") { addSession(.terminal) },
-            remoteTerminalMenuItem(store: store),
+            remoteTerminalMenuItem(store: store, project: project),
             .submenu("New Agent Session", enabledAgentPresets(settings)
                 .filter { $0 != .terminal }
                 .map { preset in .agent(preset) { addSession(preset) } }),
         ]
         if let worktree {
             items.append(.separator)
-            items.append(cloneOnRemoteMenuItem(store: store, folder: worktree.path))
+            items.append(
+                cloneOnRemoteMenuItem(store: store, folder: worktree.path, project: project.id))
             items.append(.separator)
             items.append(.action(worktree.pinned ? "Unpin" : "Pin") {
                 store.toggleWorktreePinned(worktree.id)
@@ -571,7 +644,8 @@ private struct ProjectHeader: View {
         // Only for git repositories (a worktree needs one; "—" marks a non-repo folder).
         if project.branch != "—" {
             items.append(.action("New Worktree") { store.addWorktree(from: project.id) })
-            items.append(cloneOnRemoteMenuItem(store: store, folder: project.path))
+            items.append(
+                cloneOnRemoteMenuItem(store: store, folder: project.path, project: project.id))
         }
         items.append(.separator)
         items.append(.action(project.pinned ? "Unpin" : "Pin to Top") {
@@ -660,8 +734,10 @@ private struct ProjectHeader: View {
         // lifecycle actions live in the right-click menu rather than inline.
         .overlay(alignment: .trailing) {
             // The Terminals section gets no agent cluster — an agent loose in `$HOME`
-            // is exactly what the scoped scratch workspace exists to prevent.
-            if !isTerminalsHeader {
+            // is exactly what the scoped scratch workspace exists to prevent. A host
+            // gets none either: `addSession` builds a *local* session, so a quick-add
+            // there would silently start the agent on this Mac, not on the box.
+            if !isTerminalsHeader, !isHostHeader {
                 HStack(spacing: 3) {
                     ForEach(headerSessionPresets(settings)) { preset in
                         AgentQuickAddButton(preset: preset, chrome: chrome) {
@@ -705,16 +781,35 @@ func enabledAgentPresets(_ settings: AppSettings) -> [AgentPreset] {
 /// The "New Remote Terminal ▸" submenu: one row per `~/.ssh/config` alias (the
 /// single source of truth for hosts), each opening a durable termiod session on
 /// that host. An empty config shows a disabled explainer instead of a dead
-/// submenu. `cwd` stays nil here — a `+`-menu remote terminal starts at the
-/// remote `$HOME`; only "Clone on Remote…" pins a directory.
+/// submenu.
+///
+/// Scope follows the row it hangs off. From a **project** row it means "this
+/// repo, over there": the session opens in the checkout `Clone on Remote…`
+/// recorded for that host and appears under that project. From the Terminals
+/// section (`project == nil`) it is host-scoped and starts at the remote
+/// `$HOME`. Hosts the project hasn't been cloned to are shown but explain
+/// themselves on click, rather than being hidden — the fix (`Clone on Remote…`)
+/// is one menu away and hiding the row would just look broken.
 @MainActor
-func remoteTerminalMenuItem(store: TermioStore) -> SidebarMenuItem {
+func remoteTerminalMenuItem(store: TermioStore, project: Project? = nil) -> SidebarMenuItem {
     let hosts = SSHConfigFile.hosts()
     guard !hosts.isEmpty else {
         return .submenu("New Remote Terminal", [.disabled("No SSH hosts in ~/.ssh/config")])
     }
+    let projectID = project?.id
     return .submenu("New Remote Terminal", hosts.map { host in
-        .action(host.alias) { store.addRemoteTerminal(host: host.alias) }
+        // Checkouts are keyed by device, but a menu is built synchronously and has
+        // no connection to spend resolving the alias — so ask the registry for a
+        // device learned earlier, and let the lookup fall back to the alias when
+        // this box has never been reached.
+        let deviceID = TermiodDeviceRegistry.shared.deviceID(for: .ssh(host.alias))
+        let cloned = project?.remoteCheckout(device: deviceID, alias: host.alias) != nil
+        // A project row shows which hosts already hold this repo, so the menu
+        // answers "where does this exist?" before you click.
+        let label = project == nil || cloned ? host.alias : "\(host.alias) — not cloned yet"
+        return .action(label) {
+            store.addRemoteTerminal(host: host.alias, project: projectID)
+        }
     })
 }
 
@@ -725,7 +820,11 @@ func remoteTerminalMenuItem(store: TermioStore) -> SidebarMenuItem {
 /// a git call per right-click would stall the sidebar; a folder with no origin
 /// alerts instead of silently doing nothing. An empty ssh config disables it.
 @MainActor
-func cloneOnRemoteMenuItem(store: TermioStore, folder: String) -> SidebarMenuItem {
+func cloneOnRemoteMenuItem(
+    store: TermioStore,
+    folder: String,
+    project projectID: UUID? = nil
+) -> SidebarMenuItem {
     let hosts = SSHConfigFile.hosts()
     guard !hosts.isEmpty else {
         return .submenu("Clone on Remote", [.disabled("No SSH hosts in ~/.ssh/config")])
@@ -741,7 +840,7 @@ func cloneOnRemoteMenuItem(store: TermioStore, folder: String) -> SidebarMenuIte
                         message: "This folder has no git \"origin\" remote to clone.")
                     return
                 }
-                store.cloneOnRemote(host: host.alias, info: info)
+                store.cloneOnRemote(host: host.alias, info: info, project: projectID)
             }
         }
     })

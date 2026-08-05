@@ -15,11 +15,13 @@ extension TermioStore {
     /// session with no live counterpart spawns fresh.
     func makeTermiodLink(for session: Session, argv: [String], cwd: String,
                          env: [String: String]) -> TermiodSessionLink {
-        // The remote host is per-session (the `+` ▸ New Remote Terminal picker
-        // and "Clone on Remote…" set `session.termiodRemoteHost`), with the old
-        // single-host `TERMIO_TERMIOD_REMOTE` env kept only as a fallback default
-        // so an env-configured demo host still works when no session sets one.
-        let remoteHost = session.termiodRemoteHost ?? Termiod.remoteHost
+        // The session is the only source of truth for where it runs. There used
+        // to be a `TERMIO_TERMIOD_REMOTE` fallback here from before the picker
+        // existed, but it silently turned *every* session without an explicit
+        // host — including plain "New Terminal" — into a remote one. A local
+        // terminal must never become remote because of an environment variable.
+        let route = TermiodRoute(sshAlias: session.termiodRemoteHost)
+        let remoteHost = session.termiodRemoteHost
         // A remote session runs on the VPS, so the Mac's cwd, PATH-laden env,
         // and shell path are all wrong there — hand the remote its own login
         // shell (empty argv/env) and let it set up its own environment. The one
@@ -43,7 +45,7 @@ extension TermioStore {
         return TermiodSessionLink(
             sessionName: session.id.uuidString,
             specification: specification,
-            remoteHost: remoteHost,
+            route: route,
             rows: lastHostGridRows,
             cols: lastHostGridColumns
         )
@@ -57,6 +59,12 @@ extension TermioStore {
                            for session: Session) {
         let isAgentSession = session.agent != .terminal && !session.isSSH
         link.onOutput = { [weak inMemory] data in inMemory?.receive(data) }
+        // The attach handshake is the cheapest device discovery there is — it was
+        // going to happen anyway — so every surfaced session teaches the app which
+        // machine it is on, with no extra round trip.
+        link.onDevice = { [weak self] device in
+            self?.adoptDevice(device, forRoute: link.route)
+        }
         link.onExit = { [weak self, weak inMemory] code, runtimeMilliseconds in
             self?.termiodLinks[session.id] = nil
             self?.lastScreenActivity[session.id] = nil
@@ -79,17 +87,79 @@ extension TermioStore {
         link.start()
     }
 
+    // MARK: - Device identity
+
+    /// Backfills the identity a handshake just revealed: everything reached over
+    /// `route` runs on `device`, so record that on the sessions and containers
+    /// that took it.
+    ///
+    /// This is the a-priori → a-posteriori transition. State is authored against
+    /// an SSH alias because that is all the app has before it connects: a
+    /// container must exist the instant a session is created, and most aliases in
+    /// a `~/.ssh/config` have never been reached. The first `hello_ok` is the only
+    /// moment that alias becomes a machine, and this is where the machine is
+    /// written down.
+    ///
+    /// It does **not** merge two containers that turn out to be one device. That
+    /// rule is specified in §9.5 of docs/design/termiod-device-architecture.md and
+    /// left unexecuted on purpose — merging is a step to add once the identities
+    /// are recorded, not a rewrite, and it must not happen before the conflict
+    /// case (a cloned VM carrying a duplicate `host_id`) has an answer.
+    func adoptDevice(_ device: TermiodDevice, forRoute route: TermiodRoute) {
+        let alias = route.sshAlias
+        for index in projects.indices {
+            // A checkout recorded before checkouts were device-keyed sits under
+            // the alias. Promote it the moment the alias resolves, so an old state
+            // file keeps working and stops being old.
+            if let alias, let legacy = projects[index].remoteCheckouts[alias],
+               projects[index].remoteCheckouts[device.id] == nil {
+                projects[index].remoteCheckouts[device.id] = legacy
+                projects[index].remoteCheckouts[alias] = nil
+            }
+            // The container keeps being matched by alias — that is B's contract and
+            // it is untouched here. This only records what the alias turned out to
+            // reach, which is what a later merge will read.
+            if projects[index].kind == .host, projects[index].sshHost == alias,
+               projects[index].deviceID != device.id {
+                projects[index].deviceID = device.id
+            }
+            for sessionIndex in projects[index].sessions.indices
+            where projects[index].sessions[sessionIndex].termiodRemoteHost == alias
+                && projects[index].sessions[sessionIndex].deviceID != device.id {
+                projects[index].sessions[sessionIndex].deviceID = device.id
+            }
+        }
+    }
+
     /// Startup roster check over a control-role channel: which persisted
     /// sessions have a live counterpart in the daemon (and will therefore
     /// reattach when surfaced) versus which will spawn fresh. Purely
     /// diagnostic — the attach-by-name above is what actually decides.
+    ///
+    /// Only this Mac's own device is asked. Reaching every known route at launch
+    /// would put an SSH round trip (216–292 ms cold) on the startup path for a
+    /// diagnostic; the cross-device roster is a deliberate later step, not a
+    /// side effect of logging.
     func logTermiodRoster() {
         let persistedNames = Set(projects.flatMap { project in
             project.sessions.map { $0.id.uuidString }
         })
+        let route = TermiodRoute(sshAlias: Termiod.remoteHost)
         DispatchQueue.global(qos: .utility).async {
             do {
-                let live = try Termiod.listSessions(host: Termiod.remoteHost)
+                let live = try Termiod.listSessions(route: route)
+                // The handshake `listSessions` just performed recorded this
+                // route's device; naming it here is the visible proof that the
+                // app knows *which machine* it is talking to, not just a socket.
+                if let device = TermiodDeviceRegistry.shared.device(for: route) {
+                    Log.termiod.info("""
+                    device \(device.id, privacy: .public) \
+                    running \(device.daemonVersion, privacy: .public) \
+                    reachable via \(route.description, privacy: .public); \
+                    known routes: \
+                    \(device.routes.map(\.description).joined(separator: ", "), privacy: .public)
+                    """)
+                }
                 for information in live where information.alive {
                     let verdict = persistedNames.contains(information.name)
                         ? "will reattach" : "no matching app session"
@@ -128,48 +198,115 @@ extension TermioStore {
     /// `cwd` (used by "Clone on Remote…") is the remote directory the shell spawns
     /// in; `title` overrides the sidebar label (the host alias by default, or a
     /// repo name for a clone).
-    func addRemoteTerminal(host: String, cwd: String? = nil, title: String? = nil) {
+    func addRemoteTerminal(
+        host: String,
+        cwd: String? = nil,
+        title: String? = nil,
+        project projectID: UUID? = nil
+    ) {
         let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { return }
         guard Termiod.isEnabled else {
             presentTermiodDisabledAlert()
             return
         }
+
+        // The checkout is resolved *after* readiness, not before, because it is
+        // keyed by device and only the handshake knows which device this alias
+        // reaches. Deciding from the alias is the bug the device model exists to
+        // remove: the same clone, reached over `vps-wan` instead of `vps-lan`,
+        // would read as "not cloned yet".
         ensureRemoteReady(host: host) { [weak self] result in
             guard let self else { return }
             switch result {
-            case .success:
-                self.createRemoteTerminalSession(host: host, cwd: cwd, title: title)
             case .failure(let error):
                 self.presentRemoteSetupFailure(host: host, message: error.message)
+            case .success(let device):
+                var cwd = cwd
+                var title = title
+                // Opened from a project row: the user means "this repo, on that
+                // machine". The local path doesn't exist over there, so the only
+                // honest answer is the checkout `Clone on Remote…` recorded.
+                // Without one, say so rather than silently dropping a `$HOME`
+                // shell into the Terminals bucket — that mismatch between where
+                // you clicked and what you got is exactly the confusion this
+                // replaces.
+                if let projectID, let project = self.projects.first(where: { $0.id == projectID }) {
+                    guard let checkout = project.remoteCheckout(device: device.id, alias: host)
+                    else {
+                        self.presentRemoteCheckoutMissing(host: host, project: project.name)
+                        return
+                    }
+                    cwd = checkout
+                    title = title ?? "\(project.name) · \(host)"
+                }
+                self.createRemoteTerminalSession(
+                    host: host, device: device.id, cwd: cwd, title: title, project: projectID
+                )
             }
         }
     }
 
-    /// Creates the remote `.terminal` session in the Terminals funnel (a remote
-    /// terminal isn't tied to a local project, same as `addSSHSession`), tagging it
-    /// with the per-session remote host + cwd that `makeTermiodLink` threads through.
-    private func createRemoteTerminalSession(host: String, cwd: String?, title: String?) {
+    /// The project has never been cloned to this host, so there is nothing to
+    /// `cd` into. Name the action that would fix it.
+    private func presentRemoteCheckoutMissing(host: String, project: String) {
+        let alert = NSAlert()
+        alert.messageText = "\(project) isn't on \(host) yet"
+        alert.informativeText =
+            "Use \"Clone on Remote… ▸ \(host)\" first. termio then remembers where the "
+            + "clone lives and opens future remote terminals inside it."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    /// Creates the remote `.terminal` session under the machine it runs on — the
+    /// host's own `.host` container, same as `addSSHSession` — tagging it with the
+    /// per-session remote host + cwd that `makeTermiodLink` threads through.
+    private func createRemoteTerminalSession(
+        host: String,
+        device deviceID: String,
+        cwd: String?,
+        title: String?,
+        project projectID: UUID? = nil
+    ) {
         var session = Session(title: title ?? host, agent: .terminal)
         session.termiodRemoteHost = host
+        // Known up front here, unusually: the session is only created once
+        // readiness has already shaken hands with the machine. Every other session
+        // learns its device on first attach.
+        session.deviceID = deviceID
         session.termiodRemoteCwd = cwd
 
-        if let index = projects.firstIndex(where: { $0.kind == .terminals }) {
+        // A remote terminal opened from a project belongs to that project — the
+        // row you clicked is the row it appears under. Everything else belongs to
+        // the machine: `hostContainer` finds or creates that box's own block, so a
+        // remote session is never filed as a loose local terminal.
+        if let projectID, let index = projects.firstIndex(where: { $0.id == projectID }) {
             projects[index].sessions.append(session)
-        } else {
-            let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
-            projects.append(Project(
-                name: "Terminals", path: home, branch: "—",
-                sessions: [session], kind: .terminals
-            ))
+            selectedSessionID = session.id
+            return
         }
+
+        let containerID = hostContainer(for: host, remoteRoot: cwd)
+        guard let index = projects.firstIndex(where: { $0.id == containerID }) else { return }
+        // Inside the host's own block the alias is already the header, so an
+        // unnamed session numbers itself like any project terminal instead of
+        // repeating the machine name down the column (`ukvps ▸ ukvps`).
+        if title == nil {
+            let count = projects[index].sessions.filter { $0.agent == .terminal }.count
+            session.title = "Terminal \(count + 1)"
+        }
+        projects[index].sessions.append(session)
         selectedSessionID = session.id
     }
 
     /// A remote-setup outcome carrying a human message on failure (host
     /// unreachable, deploy failed) so the caller can show exactly what went wrong.
+    /// Success carries the **device** that answered: readiness and identity are
+    /// learned by the same handshake, so a caller never has to ask twice.
     enum RemoteSetupResult {
-        case success
+        case success(TermiodDevice)
         case failure(RemoteSetupError)
     }
 
@@ -188,8 +325,14 @@ extension TermioStore {
         hud.show()
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Self.performRemoteReadyCheck(host: host)
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 hud.dismiss()
+                // Whatever the caller does next, the alias has now resolved to a
+                // machine — write that down before handing back, so state keyed by
+                // device is addressable by the time it is read.
+                if case .success(let device) = result {
+                    self?.adoptDevice(device, forRoute: .ssh(host))
+                }
                 completion(result)
             }
         }
@@ -200,6 +343,13 @@ extension TermioStore {
     /// `nonisolated` because it is invoked from a background queue and touches only
     /// process/filesystem primitives — never `TermioStore`'s main-actor state.
     private nonisolated static func performRemoteReadyCheck(host: String) -> RemoteSetupResult {
+        // Which device is behind this alias, asked with a hello and hung up. The
+        // handshake is the only thing that can answer it, and it is the same
+        // handshake the attach would run anyway.
+        func identify() -> Result<TermiodDevice, Error> {
+            Result { try Termiod.probeDevice(route: .ssh(host)) }
+        }
+
         // A quick reachability + presence probe. `BatchMode=yes` keeps it from
         // hanging on a password prompt (the user's key/agent must already work,
         // exactly as `ssh <host>` in a plain terminal would need). The remote path
@@ -222,7 +372,17 @@ extension TermioStore {
                 message: "Couldn't reach \(host) over SSH.\n\(detail)"))
         }
         if probe.standardOutput.contains("yes") {
-            return .success // Already deployed — the common case after first use.
+            // Already deployed — the common case after first use.
+            switch identify() {
+            case .success(let device):
+                return .success(device)
+            case .failure(let error):
+                // The binary is there but will not shake hands: a stale daemon, a
+                // protocol mismatch, a half-written deploy. Say so rather than
+                // opening a pane that dies on attach for an unexplained reason.
+                return .failure(RemoteSetupError(
+                    message: "termiod on \(host) didn't answer.\n\(error.localizedDescription)"))
+            }
         }
 
         // Missing: deploy via the local termiod binary's `remote deploy`, which
@@ -243,7 +403,14 @@ extension TermioStore {
             return .failure(RemoteSetupError(
                 message: "Couldn't deploy termiod to \(host).\n\(detail)"))
         }
-        return .success
+        switch identify() {
+        case .success(let device):
+            return .success(device)
+        case .failure(let error):
+            return .failure(RemoteSetupError(
+                message: "Deployed termiod to \(host), but it didn't answer.\n"
+                    + error.localizedDescription))
+        }
     }
 
     /// A captured subprocess result — exit code plus drained stdout/stderr.
@@ -307,7 +474,7 @@ extension TermioStore {
     /// `info` comes from `GitService.cloneInfo` (origin URL, derived repo name,
     /// unpushed count). The whole feature is the termiod backend, so the flag-off
     /// case explains instead of opening a dead pane.
-    func cloneOnRemote(host: String, info: GitService.CloneInfo) {
+    func cloneOnRemote(host: String, info: GitService.CloneInfo, project projectID: UUID? = nil) {
         let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { return }
         guard Termiod.isEnabled else {
@@ -337,15 +504,21 @@ extension TermioStore {
             switch result {
             case .failure(let error):
                 self.presentRemoteSetupFailure(host: host, message: error.message)
-            case .success:
-                self.performRemoteClone(host: host, info: info)
+            case .success(let device):
+                self.performRemoteClone(
+                    host: host, device: device.id, info: info, project: projectID)
             }
         }
     }
 
     /// The clone half: `ssh <host> git clone <url> <name>` off the main thread with
     /// a "Cloning…" HUD, then opens a remote terminal in `~/<name>` on success.
-    private func performRemoteClone(host: String, info: GitService.CloneInfo) {
+    private func performRemoteClone(
+        host: String,
+        device deviceID: String,
+        info: GitService.CloneInfo,
+        project projectID: UUID? = nil
+    ) {
         let hud = RemoteSetupHUD(message: "Cloning \(info.repositoryName) on \(host)…")
         hud.show()
         let name = info.repositoryName
@@ -388,7 +561,18 @@ extension TermioStore {
                 let clonedPath = clone.standardOutput
                     .split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
                     .last(where: { !$0.isEmpty })
-                self.createRemoteTerminalSession(host: host, cwd: clonedPath, title: name)
+                // Record the local↔remote correspondence this clone just
+                // established, so it is a lasting link rather than a one-shot
+                // action: later remote terminals for this project land here
+                // without cloning again. Keyed by the *machine*, so reaching it by
+                // a different alias tomorrow still finds the clone.
+                if let projectID, let path = clonedPath,
+                   let index = self.projects.firstIndex(where: { $0.id == projectID }) {
+                    self.projects[index].remoteCheckouts[deviceID] = path
+                }
+                self.createRemoteTerminalSession(
+                    host: host, device: deviceID, cwd: clonedPath, title: name, project: projectID
+                )
             }
         }
     }

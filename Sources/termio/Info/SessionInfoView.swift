@@ -22,12 +22,26 @@ struct SessionInfoView: View {
     /// rather than the container's `$HOME` fallback.
     private var workingDirectory: String? {
         guard let project else { return nil }
+        // A session on a remote host has no *local* directory — Reveal in Finder and
+        // Open in <editor> would act on this Mac's filesystem. It reports its remote
+        // location separately (`remoteLocation`) instead.
+        if project.kind == .host { return nil }
         if project.kind == .terminals, let id = store.selectedSessionID {
             return store.workingDirectory(for: id)
                 ?? session?.lastWorkingDirectory
                 ?? project.path
         }
         return session?.worktreePath ?? project.path
+    }
+
+    /// Where a remote session runs, as `host:path` — the remote counterpart of
+    /// `workingDirectory`, shown as plain copyable text because none of the local
+    /// file actions apply to it. `nil` for every local session.
+    private var remoteLocation: String? {
+        guard let project, project.kind == .host, let alias = project.sshHost else { return nil }
+        let path = session?.termiodRemoteCwd ?? (project.path == "~" ? nil : project.path)
+        guard let path else { return alias }
+        return "\(alias):\(path)"
     }
 
     /// The agent's conversation log for this session (`TermioStore.transcriptPaths`) —
@@ -62,10 +76,14 @@ struct SessionInfoView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let session, let workingDirectory {
+        if let session, workingDirectory != nil || remoteLocation != nil {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
-                    workingDirectorySection(workingDirectory)
+                    if let workingDirectory {
+                        workingDirectorySection(workingDirectory)
+                    } else if let remoteLocation {
+                        remoteLocationSection(remoteLocation)
+                    }
                     if session.agent != .terminal {
                         agentSection(session)
                     }
@@ -111,6 +129,21 @@ struct SessionInfoView: View {
                         editor.open(URL(fileURLWithPath: path))
                     }
                 }
+            }
+        }
+    }
+
+    // MARK: Remote
+
+    /// A remote session's `host:path`, with the one action that still means something
+    /// for a directory on another machine: copy it. Reveal in Finder and the editor
+    /// rows are deliberately absent — they would open this Mac's filesystem.
+    private func remoteLocationSection(_ location: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionLabel("Remote Location")
+
+            VStack(alignment: .leading, spacing: 1) {
+                InfoRow(huge: .serverStack, title: location) { copy(location) }
             }
         }
     }

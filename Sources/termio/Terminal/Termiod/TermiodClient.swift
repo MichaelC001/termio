@@ -18,10 +18,12 @@ enum Termiod {
     /// mid-run change could not be honored anyway.
     static let isEnabled = ProcessInfo.processInfo.environment["TERMIO_TERMIOD"] == "1"
 
-    /// When set (with the flag on), new sessions run on this SSH host — reached
-    /// via `ssh <host> termiod stdio`, the exact same framed protocol as local.
-    /// The remote must already have `termiod` deployed (`termiod remote deploy`).
-    /// A single demo/dev host; per-session host selection is a UI follow-up.
+    /// A dev/diagnostic host: which daemon `logTermiodRoster` inspects.
+    ///
+    /// It deliberately does **not** decide where sessions run. Host selection is
+    /// per-session (`Session.termiodRemoteHost`, set by the New Remote Terminal
+    /// picker and "Clone on Remote…"); when this was also a fallback it turned
+    /// every ordinary local terminal into a remote one.
     static let remoteHost: String? = {
         let host = ProcessInfo.processInfo.environment["TERMIO_TERMIOD_REMOTE"]
         return (host?.isEmpty == false) ? host : nil
@@ -120,18 +122,34 @@ enum Termiod {
     final class Transport {
         let readDescriptor: Int32
         let writeDescriptor: Int32
+        /// Which road this pipe took. Carried on the transport rather than passed
+        /// alongside it so `performHello` cannot record a `host_id` against the
+        /// wrong route — the pipe knows where it went.
+        let route: TermiodRoute
         private let sshPid: pid_t?
 
-        private init(readDescriptor: Int32, writeDescriptor: Int32, sshPid: pid_t?) {
+        private init(readDescriptor: Int32, writeDescriptor: Int32,
+                     route: TermiodRoute, sshPid: pid_t?) {
             self.readDescriptor = readDescriptor
             self.writeDescriptor = writeDescriptor
+            self.route = route
             self.sshPid = sshPid
         }
 
         /// Local Unix socket; the same fd serves both directions.
         static func local() throws -> Transport {
             let descriptor = try connectWithAutostart()
-            return Transport(readDescriptor: descriptor, writeDescriptor: descriptor, sshPid: nil)
+            return Transport(readDescriptor: descriptor, writeDescriptor: descriptor,
+                             route: .local, sshPid: nil)
+        }
+
+        /// Opens whichever kind of pipe the route names — the one place local and
+        /// SSH differ, so no caller above this line has to branch on it.
+        static func open(_ route: TermiodRoute) throws -> Transport {
+            switch route {
+            case .local: return try local()
+            case .ssh(let alias): return try ssh(host: alias)
+            }
         }
 
         /// `ssh <host> termiod stdio`: the framed protocol rides the SSH pipe,
@@ -176,7 +194,8 @@ enum Termiod {
                 Darwin.close(fromChild[0])
                 throw TermiodClientError.daemonSpawnFailed(status)
             }
-            return Transport(readDescriptor: fromChild[0], writeDescriptor: toChild[1], sshPid: pid)
+            return Transport(readDescriptor: fromChild[0], writeDescriptor: toChild[1],
+                             route: .ssh(host), sshPid: pid)
         }
 
         /// Detach: closing the pipe/socket ends the attach without killing the
@@ -385,6 +404,31 @@ enum Termiod {
         let op: String
     }
 
+    /// The daemon's answer to `hello`, and the only place a device's identity
+    /// comes from: `hostId` is the machine, `host` is the daemon's version and
+    /// platform banner (`termiod/0.1.0 macos-aarch64` — not a hostname), and
+    /// `clientId` names this connection (per-connection, never load-bearing).
+    struct HelloOkPayload: Decodable {
+        let hostId: String
+        let host: String
+        let clientId: String
+        /// Capabilities the daemon accepted. Absent on an older daemon, so it
+        /// defaults rather than failing the handshake — negotiate, never lockstep.
+        let caps: [String]
+
+        private enum CodingKeys: String, CodingKey {
+            case hostId, host, clientId, caps
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            hostId = try container.decode(String.self, forKey: .hostId)
+            host = try container.decode(String.self, forKey: .host)
+            clientId = try container.decode(String.self, forKey: .clientId)
+            caps = try container.decodeIfPresent([String].self, forKey: .caps) ?? []
+        }
+    }
+
     struct AttachedPayload: Decodable {
         let sessionId: String
         let writer: Bool
@@ -419,7 +463,7 @@ enum Termiod {
     /// ops, responses this slice doesn't consume — becomes `.unknown` and is
     /// ignored, matching the protocol's additive-evolution rule.
     enum IncomingControl {
-        case helloOk
+        case helloOk(HelloOkPayload)
         case helloError(String)
         case attached(AttachedPayload)
         case exited(ExitedPayload)
@@ -440,7 +484,7 @@ enum Termiod {
         let tag = try decoder.decode(ControlTag.self, from: payload)
         switch tag.op {
         case "hello_ok":
-            return .helloOk
+            return .helloOk(try decoder.decode(HelloOkPayload.self, from: payload))
         case "hello_err":
             return .helloError("protocol negotiation failed")
         case "attached":
@@ -464,7 +508,14 @@ enum Termiod {
     /// control channel negotiates nothing. `scrollback`/`grid_diff` stay
     /// unoffered — a byte-stream surface can neither inject history above the
     /// viewport nor consume dirty-row diffs (a deeper libghostty integration).
-    static func performHello(_ transport: Transport, role: String, caps: [String] = []) throws {
+    ///
+    /// Returns the **device** on the other end. This is the only moment a route's
+    /// destination is knowable: a handshake is what turns `ssh vps-wan` from a
+    /// string into a machine, and recording it here means every path that reaches
+    /// a daemon — attach, list, kill — teaches the registry for free.
+    @discardableResult
+    static func performHello(_ transport: Transport, role: String,
+                             caps: [String] = []) throws -> TermiodDevice {
         let hello = HelloOperation(
             proto: protocolVersion,
             minProto: protocolVersion,
@@ -476,8 +527,9 @@ enum Termiod {
         let reply = try readFrame(transport.readDescriptor)
         guard reply.kind == .control else { throw TermiodClientError.malformedFrame }
         switch try decodeControl(reply.payload) {
-        case .helloOk:
-            return
+        case .helloOk(let payload):
+            return TermiodDeviceRegistry.shared.record(
+                hostID: payload.hostId, daemonVersion: payload.host, route: transport.route)
         case .helloError(let message):
             throw TermiodClientError.handshakeRejected(message)
         case .error(let payload):
@@ -490,17 +542,27 @@ enum Termiod {
     /// One-shot control request: connect, hello as `control`, run `body`,
     /// close. Used for `list` at startup and `kill` on Close Session.
     private static func withControlChannel<Result>(
-        host: String? = nil,
+        route: TermiodRoute = .local,
         _ body: (Transport) throws -> Result
     ) throws -> Result {
-        let transport = try host.map(Transport.ssh(host:)) ?? Transport.local()
+        let transport = try Transport.open(route)
         defer { transport.close() }
         try performHello(transport, role: "control")
         return try body(transport)
     }
 
-    static func listSessions(host: String? = nil) throws -> [SessionInformation] {
-        try withControlChannel(host: host) { transport in
+    /// Connect, shake hands, hang up: the cheapest question you can ask a route,
+    /// and the only way to learn which device is behind it. Measured at 0.2 ms
+    /// locally, so it is affordable to ask before trusting a stale mapping.
+    @discardableResult
+    static func probeDevice(route: TermiodRoute) throws -> TermiodDevice {
+        let transport = try Transport.open(route)
+        defer { transport.close() }
+        return try performHello(transport, role: "control")
+    }
+
+    static func listSessions(route: TermiodRoute = .local) throws -> [SessionInformation] {
+        try withControlChannel(route: route) { transport in
             try writeFrame(transport.writeDescriptor, kind: .control,
                            payload: encodeControl(ListOperation(seq: 1)))
             while true {
@@ -521,10 +583,10 @@ enum Termiod {
     /// Ends a session for real — the explicit user-facing destroy verb, never
     /// part of quit/detach. The target may be a termiod id or name (the app
     /// uses the session UUID it named the session with).
-    static func killSession(target: String, host: String? = nil) {
+    static func killSession(target: String, route: TermiodRoute = .local) {
         DispatchQueue.global(qos: .utility).async {
             do {
-                try withControlChannel(host: host) { transport in
+                try withControlChannel(route: route) { transport in
                     try writeFrame(transport.writeDescriptor, kind: .control,
                                    payload: encodeControl(KillOperation(id: target, seq: 1)))
                     // One reply either way; "no such session" just means the
@@ -602,10 +664,10 @@ final class TermiodSessionLink: @unchecked Sendable {
 
     private let sessionName: String
     private let specification: Termiod.CreateSpecification
-    /// When set, the session lives on this SSH host (reached via
-    /// `ssh <host> termiod stdio`); when nil, on the local daemon. The framed
-    /// protocol and every other field are identical either way.
-    private let remoteHost: String?
+    /// The road to the device this session lives on — `.local` for this Mac's
+    /// daemon, `.ssh(alias)` for another box. The framed protocol and every other
+    /// field are identical either way; only how the pipe is opened differs.
+    let route: TermiodRoute
     private let initialRows: UInt16
     private let initialCols: UInt16
     private let startedAt = Date()
@@ -628,6 +690,10 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// reader thread; the consumer (`InMemoryTerminalSession.receive`) is
     /// thread-safe.
     var onOutput: ((Data) -> Void)?
+    /// Fired on the main queue once the handshake reveals which device this
+    /// session actually runs on. A session knows its *route* from the start but
+    /// cannot know its *device* until something answers — this is that moment.
+    var onDevice: ((TermiodDevice) -> Void)?
     /// Fired once on the main queue with the exit status and elapsed
     /// milliseconds since this link started (the daemon does not report the
     /// child's true runtime; elapsed-since-attach serves ghostty's
@@ -636,12 +702,12 @@ final class TermiodSessionLink: @unchecked Sendable {
 
     init(sessionName: String,
          specification: Termiod.CreateSpecification,
-         remoteHost: String? = nil,
+         route: TermiodRoute = .local,
          rows: Int,
          cols: Int) {
         self.sessionName = sessionName
         self.specification = specification
-        self.remoteHost = remoteHost
+        self.route = route
         initialRows = UInt16(clamping: rows)
         initialCols = UInt16(clamping: cols)
     }
@@ -651,10 +717,10 @@ final class TermiodSessionLink: @unchecked Sendable {
     func start() {
         workQueue.async { [self] in
             do {
-                let channel = try remoteHost.map(Termiod.Transport.ssh(host:))
-                    ?? Termiod.Transport.local()
+                let channel = try Termiod.Transport.open(route)
                 transport = channel
-                try Termiod.performHello(channel, role: "attach", caps: ["snapshot"])
+                let device = try Termiod.performHello(channel, role: "attach", caps: ["snapshot"])
+                DispatchQueue.main.async { [self] in onDevice?(device) }
                 let payload = try Termiod.attachPayload(
                     target: sessionName,
                     specification: specification,
@@ -672,7 +738,8 @@ final class TermiodSessionLink: @unchecked Sendable {
                 isWriter = attachedPayload.writer
                 Log.termiod.info("""
                 attached session=\(self.sessionName, privacy: .public) \
-                host=\(self.remoteHost ?? "local", privacy: .public) \
+                device=\(device.id, privacy: .public) \
+                route=\(self.route.description, privacy: .public) \
                 writer=\(attachedPayload.writer, privacy: .public) \
                 \(attachedPayload.rows, privacy: .public)x\(attachedPayload.cols, privacy: .public)
                 """)
@@ -761,7 +828,7 @@ final class TermiodSessionLink: @unchecked Sendable {
 
     /// The destroy verb: asks the daemon to kill the session, then closes.
     func killAndClose() {
-        Termiod.killSession(target: sessionName, host: remoteHost)
+        Termiod.killSession(target: sessionName, route: route)
         workQueue.async { [self] in
             teardownLocked()
         }

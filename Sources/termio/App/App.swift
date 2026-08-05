@@ -814,6 +814,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.addSSHSession(host: alias)
     }
 
+    /// A host row of the New Remote Terminal submenu (File menu and the toolbar
+    /// `+` share it). No project context here, so the session is host-scoped:
+    /// remote `$HOME`, grouped under Terminals like any loose shell. Unlike
+    /// `newSSHHost`, the session lives in that host's `termiod` and survives
+    /// both the connection and this app quitting.
+    @objc func newRemoteTerminalHost(_ sender: NSMenuItem) {
+        guard let alias = sender.representedObject as? String else { return }
+        store.addRemoteTerminal(host: alias)
+    }
+
     /// The submenu's trailing "Add Host…" row — the same Add Host form Settings ▸
     /// SSH carries, presented as a sheet over the main window, then connecting to
     /// the host it just appended to `~/.ssh/config` (from this menu the point of
@@ -1314,6 +1324,20 @@ private func makeNewChatItem() -> NSMenuItem {
     return item
 }
 
+/// The "New Remote Terminal ▸" parent item, filled the same lazy way as the
+/// others. Host-scoped here: a global `+` has no project context, so the session
+/// starts at the remote `$HOME` and lands in the Terminals section — exactly
+/// what "New Terminal" does locally. The project-scoped variant (which opens
+/// inside that repo's remote checkout) lives on the sidebar's project rows.
+@MainActor
+private func makeNewRemoteTerminalItem() -> NSMenuItem {
+    let item = NSMenuItem(title: "New Remote Terminal", action: nil, keyEquivalent: "")
+    let submenu = NSMenu(title: "New Remote Terminal")
+    submenu.delegate = NSApp.delegate as? AppDelegate
+    item.submenu = submenu
+    return item
+}
+
 /// The "New SSH Connection ▸" parent item, shared the same way as `makeNewChatItem`.
 /// Its submenu lists the connectable `Host` aliases from `~/.ssh/config`, filled on
 /// every open, so a config edit shows up without any change-notification plumbing.
@@ -1336,6 +1360,8 @@ extension AppDelegate: NSMenuDelegate {
             fillSessionMenu(menu)
         case "New SSH Connection":
             fillNewSSHMenu(menu)
+        case "New Remote Terminal":
+            fillNewRemoteTerminalMenu(menu)
         default:
             fillNewChatMenu(menu)
         }
@@ -1491,6 +1517,30 @@ extension AppDelegate: NSMenuDelegate {
         )
         add.target = self
     }
+
+    /// One row per `~/.ssh/config` alias, opening a durable termiod session on
+    /// that host. An empty config says so rather than showing a dead submenu.
+    private func fillNewRemoteTerminalMenu(_ menu: NSMenu) {
+        let hosts = SSHConfigFile.hosts()
+        guard !hosts.isEmpty else {
+            let empty = menu.addItem(
+                withTitle: "No SSH hosts in ~/.ssh/config",
+                action: nil,
+                keyEquivalent: ""
+            )
+            empty.isEnabled = false
+            return
+        }
+        for host in hosts {
+            let item = menu.addItem(
+                withTitle: host.alias,
+                action: #selector(newRemoteTerminalHost(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = host.alias
+        }
+    }
 }
 
 extension AppDelegate: NSMenuItemValidation {
@@ -1613,6 +1663,8 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
         let terminal = NSMenuItem(title: "New Terminal", action: #selector(newTerminal(_:)), keyEquivalent: "")
         terminal.target = self
         menu.addItem(terminal)
+        // Directly under New Terminal: same verb, other machine.
+        menu.addItem(makeNewRemoteTerminalItem())
         menu.addItem(makeNewChatItem())
         menu.addItem(makeNewSSHItem())
         let folder = NSMenuItem(title: "Open Project…", action: #selector(openFolder(_:)), keyEquivalent: "")
@@ -1929,6 +1981,10 @@ private func buildMainMenu() -> NSMenu {
     // sits on the resolved default's row, so the shortcut stays one-press and the
     // menu names the agent it will open.
     fileMenu.addItem(makeNewChatItem())
+    // New Remote Terminal ▸ a durable termiod session on an ssh-config host —
+    // the remote counterpart of New Terminal, and unlike New SSH Connection it
+    // outlives both the connection and the app.
+    fileMenu.addItem(makeNewRemoteTerminalItem())
     // New SSH Connection ▸ one row per `~/.ssh/config` host, plus Add Host… for
     // machines not in it yet (filled on open by the AppDelegate — see `makeNewSSHItem`).
     fileMenu.addItem(makeNewSSHItem())

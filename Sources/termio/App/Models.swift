@@ -20,10 +20,18 @@ struct RecentProject: Identifiable, Hashable, Codable {
 /// aren't tied to a real project, gathered under one section rooted at the scoped
 /// scratch workspace (`~/.termio/chats`) — agents can't be turned loose in `$HOME`,
 /// which is exactly why they get their own funnel rather than joining `.terminals`.
+///
+/// `.host` is the fourth kind and the only one whose identity isn't a local path:
+/// it is a *machine* (a `~/.ssh/config` alias), peer to a folder rather than a
+/// variant of one. Every session that runs somewhere else — a plain `ssh` terminal
+/// or a durable termiod session — gathers under its host's container. Before it
+/// existed, remote sessions fell into `.terminals` for want of anywhere else to
+/// put them, which rendered a box you SSH into as if it were a loose local shell.
 enum ProjectKind: String, Codable {
     case folder
     case terminals
     case chats
+    case host
 }
 
 /// A linked git checkout owned by a project. Sessions remain flat on the parent
@@ -74,13 +82,56 @@ struct Project: Identifiable, Hashable, Codable {
     var pinned: Bool = false
 
     /// `.folder` for an opened directory, `.terminals` for the loose-terminals
-    /// container (at most one exists; it always sorts first in the sidebar).
+    /// container (at most one exists; it always sorts first in the sidebar),
+    /// `.host` for a remote machine's container.
     var kind: ProjectKind = .folder
+
+    /// The `~/.ssh/config` alias (or `user@host`) this container was created for,
+    /// for `.host` containers only — `nil` for every local kind. `path` on a host
+    /// container is the remote root the box's sessions work in (`~` unless a clone
+    /// supplied one) and is **never** a local path: the local PTY spawns at `$HOME`
+    /// instead (see `surface(for:in:)`), and the local-disk panes (file tree, git,
+    /// Finder actions) are switched off for `.host`.
+    ///
+    /// **This is the container's bootstrap identity, not its stable one.** A
+    /// container has to exist the moment a session is created, synchronously,
+    /// before any handshake has run — and most aliases in a `~/.ssh/config` have
+    /// never been connected to at all. So a container is *born* from the alias, and
+    /// matched by it (`hostContainer(for:)`) until a first `hello_ok` supplies the
+    /// device it actually reaches. From then on `deviceID` is the identity and the
+    /// alias is demoted to **one route among several** — merging two aliases that
+    /// resolve to one device is a later step, specified in §9.5 of
+    /// docs/design/termiod-device-architecture.md and deliberately not performed yet.
+    var sshHost: String?
+
+    /// The device (`host_id`) this container's alias was found to lead to, filled in
+    /// after the first successful handshake and `nil` until then. Two containers
+    /// sharing a `deviceID` are two names for one machine — which is what makes the
+    /// merge in §9.5 possible without re-probing every alias.
+    var deviceID: String?
+
+    /// Where this project lives on each **device** it has been cloned to, keyed
+    /// by that device's `host_id` → absolute remote path.
+    ///
+    /// This is what makes "New Remote Terminal" from a *project* row mean "this
+    /// repo, over there" rather than "a shell in the remote `$HOME`". The local
+    /// `path` is meaningless on the remote box, so the correspondence has to be
+    /// recorded when `Clone on Remote…` establishes it.
+    ///
+    /// Keyed by device rather than by SSH alias because one machine commonly
+    /// answers to several aliases (`vps-lan`, `vps-wan`, a tailnet name): keyed by
+    /// alias, the day the user changes networks the same clone becomes invisible
+    /// and the repo looks un-cloned. State files written before this carry alias
+    /// keys; `remoteCheckout(device:alias:)` still answers from them, and
+    /// `TermioStore.adoptDevice` promotes each one the first time its alias
+    /// resolves to a device.
+    var remoteCheckouts: [String: String] = [:]
 }
 
 extension Project {
     private enum CodingKeys: String, CodingKey {
-        case id, name, path, branch, sessions, worktrees, pinned, kind
+        case id, name, path, branch, sessions, worktrees, pinned, kind, remoteCheckouts, sshHost,
+             deviceID
     }
 
     /// Missing collection and flag keys take their pre-feature defaults so older
@@ -97,6 +148,23 @@ extension Project {
         worktrees = try container.decodeIfPresent([Worktree].self, forKey: .worktrees) ?? []
         pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         kind = try container.decodeIfPresent(ProjectKind.self, forKey: .kind) ?? .folder
+        remoteCheckouts =
+            try container.decodeIfPresent([String: String].self, forKey: .remoteCheckouts) ?? [:]
+        sshHost = try container.decodeIfPresent(String.self, forKey: .sshHost)
+        deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
+    }
+
+    /// The recorded checkout for one machine, addressed by device where the app
+    /// knows which device an alias leads to.
+    ///
+    /// `deviceID` is `nil` until something has connected — nothing can resolve a
+    /// route to a machine without a handshake — and a sidebar menu is built
+    /// synchronously, with no connection to spend. Falling back to the legacy
+    /// alias key there is better than reporting a repo as un-cloned because the
+    /// app has not yet been told which box the alias reaches.
+    func remoteCheckout(device deviceID: String?, alias: String) -> String? {
+        if let deviceID, let path = remoteCheckouts[deviceID] { return path }
+        return remoteCheckouts[alias]
     }
 }
 
@@ -243,6 +311,16 @@ struct Session: Identifiable, Hashable, Codable {
     /// remote daemon session by name.
     var termiodRemoteHost: String?
 
+    /// The **device** this session was last found to be running on — the `host_id`
+    /// its daemon reported at handshake, recorded because a session belongs to a
+    /// machine, not to the road taken to reach it. `termiodRemoteHost` says which
+    /// road was tried; this says where it arrived, and the two disagree the moment
+    /// the user reaches the same box by a different alias.
+    ///
+    /// `nil` until the session has attached at least once — a route cannot be
+    /// resolved to a device without connecting.
+    var deviceID: String?
+
     /// The remote working directory a `termiodRemoteHost` session spawns its shell
     /// in — set by "Clone on Remote…" to the freshly cloned directory (`~/<repo>`)
     /// so the terminal opens straight inside it. `nil` (the common case) lets the
@@ -279,7 +357,8 @@ struct Session: Identifiable, Hashable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, agent, createdAt, worktreePath, resumeID, launched, launchedAt,
-             liveTitle, lastWorkingDirectory, sshHost, pinned, termiodRemoteHost, termiodRemoteCwd
+             liveTitle, lastWorkingDirectory, sshHost, pinned, termiodRemoteHost, termiodRemoteCwd,
+             deviceID
     }
 
     /// Custom decoding so state files written before the resume fields existed still
@@ -302,6 +381,7 @@ struct Session: Identifiable, Hashable, Codable {
         sshHost = try container.decodeIfPresent(String.self, forKey: .sshHost)
         termiodRemoteHost = try container.decodeIfPresent(String.self, forKey: .termiodRemoteHost)
         termiodRemoteCwd = try container.decodeIfPresent(String.self, forKey: .termiodRemoteCwd)
+        deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
     }
 }
 

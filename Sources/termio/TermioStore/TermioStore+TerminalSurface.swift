@@ -132,7 +132,15 @@ extension TermioStore {
                 return exists && isDirectory.boolValue ? path : nil
             }
             : nil
-        let workspacePath = session.worktreePath ?? restoredCwd ?? project.path
+        // A `.host` container's `path` is a path on *that box* (`~`, or a clone's
+        // directory) — handing it to the local PTY would `chdir` somewhere that
+        // doesn't exist here, or worse, somewhere that does. The remote cwd travels
+        // separately: `session.termiodRemoteCwd` for a termiod session, the remote
+        // login shell's own default for a plain `ssh`. Locally these spawn at `$HOME`.
+        let localRoot = project.kind == .host
+            ? FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+            : project.path
+        let workspacePath = session.worktreePath ?? restoredCwd ?? localRoot
 
         // Resolve the launch command *with* any resume arguments, so a session that was
         // running when the app last quit picks its conversation back up instead of

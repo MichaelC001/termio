@@ -350,27 +350,53 @@ extension TermioStore {
         resolveBranchLabel(for: project.id, at: path)
     }
 
-    /// Opens an **SSH terminal** to `host` — a loose terminal that launches
-    /// `ssh <host>` instead of a local shell (see `Session.sshHost`). It gathers in
-    /// the same Terminals container as scratch shells (an SSH session isn't tied to a
-    /// local project either), titled by the host so the sidebar row reads `myserver`
-    /// rather than `Terminal N`. `host` is a `~/.ssh/config` alias or a bare
+    /// The `.host` container for `alias`, created on first use. One block per
+    /// machine, matched by `sshHost` rather than by name or path, so the container
+    /// survives a rename and two sessions on the same box always land together.
+    ///
+    /// `remoteRoot` records where on that box the sessions work; the first caller to
+    /// name a real directory wins (a `Clone on Remote…` knows the checkout path, a
+    /// bare terminal only knows `~`), so opening a shell later never demotes a host
+    /// that already points at a repo.
+    @discardableResult
+    func hostContainer(for alias: String, remoteRoot: String? = nil) -> Project.ID {
+        if let index = projects.firstIndex(where: { $0.sshHost == alias && $0.kind == .host }) {
+            if let remoteRoot, projects[index].path == "~" { projects[index].path = remoteRoot }
+            return projects[index].id
+        }
+        let project = Project(
+            name: alias,
+            // A remote root, never a local path — `localWorkspacePath(for:)` is what
+            // keeps this away from the local PTY's `chdir`.
+            path: remoteRoot ?? "~",
+            branch: "—",
+            sessions: [],
+            kind: .host,
+            sshHost: alias
+        )
+        projects.append(project)
+        return project.id
+    }
+
+    /// Opens an **SSH terminal** to `host` — a terminal that launches `ssh <host>`
+    /// in a local PTY instead of a local shell (see `Session.sshHost`). It gathers
+    /// under that machine's own `.host` container, so an `ssh` shell and a durable
+    /// termiod session on the same box sit in one block rather than scattering
+    /// among loose local terminals. `host` is a `~/.ssh/config` alias or a bare
     /// `user@host`.
     func addSSHSession(host: String) {
         let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { return }
-        var session = Session(title: host, agent: .terminal)
+        // Named for what it is, not for the box — the block header already says
+        // which machine. The distinction matters inside a host block: an "SSH Shell"
+        // dies with the connection, while the numbered rows beside it are durable
+        // termiod sessions that survive a detach.
+        var session = Session(title: "SSH Shell", agent: .terminal)
         session.sshHost = host
 
-        if let index = projects.firstIndex(where: { $0.kind == .terminals }) {
-            projects[index].sessions.append(session)
-        } else {
-            let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
-            projects.append(Project(
-                name: "Terminals", path: home, branch: "—",
-                sessions: [session], kind: .terminals
-            ))
-        }
+        let containerID = hostContainer(for: host)
+        guard let index = projects.firstIndex(where: { $0.id == containerID }) else { return }
+        projects[index].sessions.append(session)
         selectedSessionID = session.id
     }
 

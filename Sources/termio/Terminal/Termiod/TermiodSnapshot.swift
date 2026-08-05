@@ -35,6 +35,9 @@ enum TermiodSnapshot {
         var alternateScreen: Bool
         var title: String
         var cells: [Cell]
+        /// Set for payload v2 — the repaint, already in the terminal's own
+        /// language. When present, `cells` is empty and `render` is a pass-through.
+        var vt: Data?
     }
 
     /// Snapshot payload v1 (see `encode_snapshot_payload` in `protocol.rs`):
@@ -42,11 +45,19 @@ enum TermiodSnapshot {
     /// title_len:u16be, UTF-8 title, then row-major 16-byte cells —
     /// codepoint:u32be, fg RGB, bg RGB, attributes:u16be, 4 reserved bytes.
     static let formatVersion: UInt8 = 1
+    /// Payload v2 carries VT sequences instead of packed cells. Preferred: the
+    /// host describes screen *content* and this client's libghostty decides how
+    /// it looks, so the local theme, the ANSI palette, and bold/underline/OSC 8
+    /// all survive. v1 resolved colour host-side and overrode the theme.
+    static let vtFormatVersion: UInt8 = 2
     static let cellSize = 16
 
     static func decode(_ payload: Data) -> Frame? {
         let bytes = [UInt8](payload)
-        guard bytes.count >= 12, bytes[0] == formatVersion else { return nil }
+        guard bytes.count >= 12,
+              bytes[0] == formatVersion || bytes[0] == vtFormatVersion
+        else { return nil }
+        let isVT = bytes[0] == vtFormatVersion
 
         func u16(_ offset: Int) -> Int { Int(bytes[offset]) << 8 | Int(bytes[offset + 1]) }
         let rows = u16(1)
@@ -60,6 +71,22 @@ enum TermiodSnapshot {
         guard cellsOffset <= bytes.count,
               let title = String(bytes: bytes[12..<cellsOffset], encoding: .utf8)
         else { return nil }
+
+        if isVT {
+            // Format v2: the host serialised the screen back into VT sequences.
+            // Nothing to synthesise — the bytes go straight to libghostty, which
+            // is what lets the *viewer's* theme, palette and SGR handling apply.
+            guard bytes.count >= cellsOffset + 4 else { return nil }
+            let length = Int(bytes[cellsOffset]) << 24 | Int(bytes[cellsOffset + 1]) << 16
+                | Int(bytes[cellsOffset + 2]) << 8 | Int(bytes[cellsOffset + 3])
+            let start = cellsOffset + 4
+            guard bytes.count == start + length else { return nil }
+            return Frame(
+                rows: rows, cols: cols, cursorX: cursorX, cursorY: cursorY,
+                alternateScreen: alternateScreen, title: title, cells: [],
+                vt: Data(bytes[start..<(start + length)])
+            )
+        }
 
         let cellCount = rows * cols
         guard bytes.count == cellsOffset + cellCount * cellSize else { return nil }
@@ -89,6 +116,19 @@ enum TermiodSnapshot {
     /// idempotent — feeding it again repaints the same frame — so a mid-session
     /// keyframe (the resize barrier's fresh `S`) can reuse it verbatim.
     static func render(_ frame: Frame) -> Data {
+        // v2: the host already produced the repaint. Clear, then replay it
+        // verbatim — deciding anything about colour here is exactly the bug
+        // this format exists to fix.
+        if let vt = frame.vt {
+            var output = Data()
+            if frame.alternateScreen {
+                output.append(contentsOf: Array("\u{1b}[?1049h".utf8))
+            }
+            output.append(contentsOf: Array("\u{1b}[2J\u{1b}[H".utf8))
+            output.append(vt)
+            return output
+        }
+
         var output = String()
         // Alt-screen frames (vim, top) must repaint on the alternate buffer, or
         // the redraw lands on the primary screen and the live TUI paints over a

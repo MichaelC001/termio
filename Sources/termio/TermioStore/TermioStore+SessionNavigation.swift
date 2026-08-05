@@ -5,7 +5,7 @@ import Foundation
 /// what "next" means always agree.
 extension TermioStore {
     /// Sessions grouped by project in sidebar display order: the Terminals
-    /// funnel first, then Chats, then the folder projects as `orderedProjects`
+    /// funnel first, then Chats, then Remote hosts, then the folder projects as `orderedProjects`
     /// sorts them; within a project the primary checkout's sessions precede each
     /// worktree's, mirroring the sidebar's nesting. Projects with no sessions
     /// are skipped — the menu is a jump list, not a project browser. (Sessions
@@ -15,6 +15,7 @@ extension TermioStore {
         let ordered = orderedProjects
         let partitioned = ordered.filter { $0.kind == .terminals }
             + ordered.filter { $0.kind == .chats }
+            + ordered.filter { $0.kind == .host }
             + ordered.filter { $0.kind == .folder }
         return partitioned.compactMap { project in
             guard !project.sessions.isEmpty else { return nil }
