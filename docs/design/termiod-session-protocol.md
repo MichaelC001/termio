@@ -3,12 +3,25 @@ title: termiod Session Protocol
 status: draft
 type: design
 created: 2026-07-30
-updated: 2026-07-30
+updated: 2026-08-04
 related:
   - termiod-session-mux.md
   - session-daemon-architecture.md
   - _research-session-protocol-brief.md
 ---
+
+<!-- 2026-07-31: hardened the input-replication vs state-sync framing (§A core
+mental model + anti-100× invariant), clarified the two roles of state transfer
+and the `S` snapshot triggers (§C.6), and linked the empirical anti-100×
+benchmark (termiod/bench). Later same day, folded in a Codex implementation
+review vs Mitchell's Superlogical talk: the authoritative-PTY-dimensions
+correctness requirement (§C.5), and risks #10 (unbounded per-client backlog)
+and #11 (resize is not a barrier).
+2026-08-04: added §C.10 resumable subscriptions — the terminal plane's
+durable-object-plus-cursor pattern generalised so files/git/agent state inherit
+one reconnect story; added Workspace and Resource to §B and the two verbs to
+§C.4. Implemented for `fs:` in `termiod/src/resource.rs`. -->
+
 
 # Design: termiod Session Protocol
 
@@ -36,6 +49,30 @@ roles (control, attach), and three payload planes (control JSON, terminal
 bytes/diffs, agent events). Every transport — Unix socket, SSH stdio, QUIC,
 WSS — supplies channels; none of them ever changes a message.
 
+**The core mental model — input replication, not state synchronization.**
+A VT parser is a deterministic state machine: the same bytes in produce the
+same screen out. So the host keeps every viewer consistent by **shipping the
+log** (raw PTY bytes to every client, which each replay through their own
+`libghostty`) — *not* by shipping the state (a server-maintained grid diffed
+to clients). This is state-machine replication in the database sense: replicate
+the input, replay deterministically, and snapshot only to bootstrap a replica
+that missed the start. tmux does the opposite — it parses every byte into an
+authoritative grid and diffs *that* to clients — which is precisely why a slow
+middle emulator throttles the whole pipe. Our load-bearing invariant follows:
+
+> **Anti-100× invariant: byte delivery MUST NOT block on host-side VT parse.**
+> The host tees raw bytes to clients and to its ring the instant it reads them;
+> the authoritative VT (v1) is a **sidecar** consulted only to build snapshots,
+> off the hot path. Any design that puts a per-frame grid encoder between the
+> PTY and the pipe rebuilds the tmux tax and is rejected.
+
+Empirically confirmed: `termiod/bench/bench_100x.py` measures termiod at
+**4.4–6.0× tmux's throughput** on the same byte stream, and — the real tell —
+tmux's throughput falls ~50% from plain to ANSI-heavy payloads (a parser is
+content-sensitive) while termiod's barely moves (a tee is not). State sync is
+not the engine; it is two edge cases (§C.6): a one-shot bootstrap and an
+opt-in bad-network degrade.
+
 - **Now (v0.1):** freeze the POC's 5-byte framing; add `hello`/capabilities,
   request ids, a typed error model, and an event frame kind. Transports:
   Unix socket (local default), system SSH stdio (remote default).
@@ -57,9 +94,10 @@ user already trusts.**
 ## B. Domain model
 
 ```
-Host 1 ──< Session 1 ──? Workstream        (workstream = agent overlay, optional)
-              │
-              └──< Attachment >── Client   (N viewers per session, over channels)
+Host 1 ──< Workspace 1 ──< Session 1 ──? Workstream   (workstream = agent overlay, optional)
+    │                          │
+    │                          └──< Attachment >── Client  (N viewers per session)
+    └──< Resource >── Client                        (§C.10, resumable, workspace-scoped)
 ```
 
 | Noun | What it is | Identity | Lifetime |
@@ -67,6 +105,8 @@ Host 1 ──< Session 1 ──? Workstream        (workstream = agent overlay, 
 | **Host** | One `termiod` process on one machine; owns every PTY and the session table | `host_id`: stable random 128-bit, minted on first run, stored beside the socket | Daemon process (launchd/systemd `--user`); survives all clients |
 | **Session** | Durable runtime: PTY + process + (v1) vt state + ring/scrollback | `session_id`: host-scoped ULID; `name` is a mutable human alias, never an identity | From `create` until process exit or `kill`. **Detach never ends it** |
 | **Workstream** | Agent metadata over a session: `agent_id`, project/worktree, `status` (`working·idle·needs_you·done·failed·unknown`), pending approval, title | Same `session_id`; workstream fields are session attributes, not a second object to address | Attached at create or promoted later (agent detection); removed on demotion to plain shell |
+| **Workspace** | A directory root on the host that sessions and non-terminal state are scoped to (a project or worktree). Not a container for processes — a *scope* for filesystem, git, and watch state | Canonicalised absolute path; two spellings of one root are one workspace | Implicit: exists while anything references it. Never created or destroyed explicitly |
+| **Resource** | Durable host-side state a client subscribes to with a replayable cursor (§C.10): `fs:<workspace>` in v1, git/status later | `<kind>:<scope>`; `seq` is its monotonic cursor | Independent of any connection **or** client; lingers past its last subscriber |
 | **Client** | One viewer/controller endpoint (Mac app, iOS, CLI, tool) | `client_id` per *connection*, assigned by host at `hello`; clients may also send a stable `client_name` for display | Connection lifetime; nothing a client holds is load-bearing |
 | **Transport endpoint** | Where a host is reachable: `unix:<path>` · `ssh:<host>` · later `quic:<addr>` · `wss:<url>` | Resolved by discovery (`HostRef → Endpoint`); opaque to the protocol | Config lifetime |
 
@@ -113,7 +153,8 @@ stay valid.
 | Resize | `R` | rows u16 BE · cols u16 BE | terminal | v0 |
 | Event | `E` | JSON object (`ev`-tagged) | events | v0.1 |
 | Snapshot | `S` | binary: header + packed vt cells (§C.6) | terminal | v1 |
-| Diff | `G` | binary: dirty-row grid update (§C.6) | terminal | v1.1 |
+| History | `H` | binary: newest-first scrollback rows (§C.6) | terminal | v1 |
+| Diff (POC shipped) | `G` | binary: dirty-row grid update (§C.6) | terminal | v1.1 |
 
 Rules: unknown *control ops* and *event types* are ignored (additive
 evolution); unknown *frame kinds* are a protocol error → `proto_error` +
@@ -170,6 +211,8 @@ makes one control channel safely multiplexable. Ops marked ✦ exist in POC v0.
 | `send` ✦ | c→h | Inject bytes without attaching — the `termio sessions send` path, now first-class |
 | `wait` | c→h | `{target, until:["needs_you","idle","done","exited"], timeout_ms}` → `wait_result`; gives `send --wait` real semantics instead of transcript polling |
 | `subscribe` | c→h | `{events:["roster","status"]}` on a control channel → stream of `E` frames for all sessions |
+| `subscribe_resource` / `subscribed` | c→h / h→c | §C.10. `{resource, since?}` → `{resource, seq, gap}`; replayed `E` frames follow the reply. Gated on the `resources` capability |
+| `unsubscribe_resource` | c→h | Release interest; the resource lingers for other subscribers and for this client's own return |
 | `resize_claim` | h→c | Informs a demoted client who owns size now (§C.5) |
 | `ok` ✦ / `error` ✦ | h→c | §C.7 |
 
@@ -179,11 +222,27 @@ makes one control channel safely multiplexable. Ops marked ✦ exist in POC v0.
 
 1. channel opens → `hello` exchange (role `attach`)
 2. `attach {target, mode, rows, cols}`
-3. `attached {session_id, writer:true|false}`
+3. `attached {session_id, writer:true|false, rows, cols}` — **must carry the
+   authoritative PTY dimensions** (see below)
 4. resync: v0 = ring-buffer replay as `D` frames; v1 = one `S` snapshot
    (viewport + cursor + title + a scrollback slice), then live `D` (or `G`)
 5. steady state: `D`/`R` up, `D`/`S`/`G`/`E` down
 6. `detach` (or channel death — equivalent) → session unaffected
+
+**Every client parses at the authoritative PTY dimensions — this is a
+correctness requirement, not a preference.** Input replication is only
+deterministic if the replicas run the same state machine on the same input,
+and a VT parser's output depends on its *width*: wrap points, `\r\n` handling,
+and DECAWM autowrap all key off the column count. An observer whose terminal is
+a different size than the PTY will wrap the identical byte stream differently
+and diverge — the synchronized-state-machine guarantee silently breaks. So:
+`attached` (and the v1 `S` snapshot) **carry `rows`/`cols`**, and a smart client
+maintains an internal grid at *authoritative PTY dimensions* with its own
+*local* viewport layered on top (letterbox / scale / scroll) — never by parsing
+at its own window size. *(POC gap: `Attached` omits `rows`/`cols`
+(`protocol.rs`), and the reference client ignores `Resized`/`WriterChanged`
+(`client.rs`) — acceptable for a single same-size CLI, incorrect the moment a
+second differently-sized viewer attaches.)*
 
 **Writer policy — single writer, newest claim, observable.** Any
 `mode:"interact"` attach takes the write token; the previous writer stays
@@ -203,19 +262,121 @@ viewer per session, which is a nested-window-manager tax in disguise.
 
 ### C.6 Terminal plane staging
 
-| Stage | Steady state | Resync on attach/resize | Who parses VT |
-| --- | --- | --- | --- |
-| v0 | raw `D` bytes | ring replay (`D`) | every client |
-| v1 | raw `D` bytes | one `S` snapshot | host authoritatively; clients still parse live bytes |
-| v1.1 | `G` dirty-row diffs @ ≤120 fps (per-client cap negotiable) | `S` | host only, for `grid_diff` clients |
+The default steady state is **raw `D` bytes** — input replication (§A). A v1.1
+client may instead opt into `G` after bootstrap; state transfer appears in two
+roles: a one-shot **bootstrap** for a replica that missed the log, and an opt-in
+**bad-network degrade**.
 
-`S`/`G` encodings copy the `libghostty-vt` render-state read-out
-(`ghostty-web`'s model): packed 16-byte cells, per-row damage, one snapshot
-call — the C struct doubles as the wire cell. The hot path stays cheap:
-raw bytes today, frame-capped diffs tomorrow; the vt is a **host-side
-authority/sidecar for resync**, never a per-keystroke re-encoder in the
-middle of every pipe. v1.1 is where the phone stops needing a full VT engine
-and flicker-free reattach becomes structural.
+| Stage | Steady state | State transfer (when) | Who parses VT |
+| --- | --- | --- | --- |
+| v0 | raw `D` bytes | bootstrap = ring replay (`D`) on attach | every client |
+| v1 | raw `D` bytes | bootstrap = one `S` snapshot on attach/resize/resync | host (sidecar) + every client on live bytes |
+| v1.1 | raw `D` bytes, **or** `G` dirty-row diffs for clients that negotiate `grid_diff` | `S` keyframe + `G` deltas | host, only for `grid_diff` clients |
+
+**When state transfer fires (`S` snapshot triggers) — boundaries only, never
+per frame:** (1) **attach** — a new viewer missed the byte log, so bootstrap it
+with one state frame, then it follows raw `D`; (2) **resize** — the writer
+changes PTY size, a barrier quiesces, resizes, emits a fresh `S`, resumes
+deltas; (3) **desync / host restart recovery**; (4) in v1.1 diff mode only, a
+**periodic keyframe** to bound drift. Steady-state typing and output never
+snapshot — that would be the tmux tax.
+
+Clients that negotiate both `snapshot` and `scrollback` receive staged history
+on attach only. The sidecar captures it at the same in-band boundary as `S`,
+keeps at most 1 MiB of encoded rows with the newest rows winning, then emits
+small newest-first `H` chunks after `ready` so live `D` can interleave. Resize
+snapshots do not restage history; reflow semantics remain a later decision.
+
+`S`/`G` carry packed cells + per-row damage. **The wire cell is defined by
+termiod and is engine-independent — it is NOT the VT engine's in-memory cell**
+(corrected 2026-07-31 by the #181 de-risk spike, `termiod-vt-sidecar-spike.md`).
+The earlier assumption that "the C struct doubles as the wire cell" is false:
+libghostty-vt 1.3.2 exposes render-state cell iteration + per-row dirty tracking
+(enough to *build* `S`/`G`) but its cells are **opaque**, with no wire-ready
+16-byte packed cell and no one-call viewport snapshot — a conversion step is
+required regardless of engine. **v1 engine DECISION (2026-07-31): `libghostty-vt`**,
+FFI'd into the Rust host. The spike's build-convenience pick was
+`alacritty_terminal`, but that was overridden on a **correctness** ground: every
+termio client *is* libghostty (Mac embeds it, iOS mirrors it), and the
+"synchronized distributed state machines" model only holds if the host authority
+runs the **same** VT — a different engine (alacritty) can diverge on grapheme /
+width / autowrap / obscure-escape handling, so its `S` snapshot would not match
+what a libghostty client renders. Fidelity parity with the clients is the whole
+point (Mitchell's "assume libghostty everywhere"), so we accept the Zig 0.15.2 +
+FFI cost. Keep the opaque-cell → wire-cell conversion behind an engine-neutral
+boundary anyway. The vt stays a **host-side authority/sidecar for resync**, never
+a per-keystroke re-encoder in the middle of every pipe (the anti-100× invariant,
+§A). Build path (from the #181 spike): vendor libghostty-vt 1.3.2 + a `build.rs`
+that invokes Zig (herdr's pattern), bindgen `ghostty/vt.h`, link the static lib,
+cross-compile to aarch64-musl. Phase 0 = an FFI build proof before daemon
+integration.
+
+**The `S` snapshot carries VT sequences, not resolved cells (format v2).** The
+host serialises the screen with libghostty-vt's own formatter
+(`ghostty_formatter_*`, `emit = VT`) and the client feeds those bytes straight
+into its terminal. This is not an encoding preference — it is the boundary the
+whole architecture rests on: **the client's libghostty is the style authority,
+never the host.** Packed 16-byte cells (v1) forced the host to resolve every
+colour against *its* palette, which overrode the viewer's theme, silently
+dropped bold/underline (the `attributes` field was reserved-zero) and lost
+OSC 8. Concretely the formatter emits `38;5;N` palette indices, so the viewer's
+own ANSI colours apply; `palette` (OSC 4) is deliberately **off**, because
+emitting it would push the host's colours onto every client. Measured on a
+10×40 screen: 559 bytes of VT against 6,504 bytes of cells — 11.6× smaller and
+strictly more faithful.
+
+One caveat worth keeping: the formatter emits the cursor's CUP *before* state
+extras, and some extras move the cursor as a side effect (`tabstops` walks the
+row with CHA/HTS; DECSTBM homes it). The host re-asserts the true position with
+a trailing CUP.
+
+Format v1 survives **only** for `grid_diff` clients, whose model is explicitly
+server-side state and which need cells to seed their grid.
+
+**v1.1 `G` diffs are the bad-network degrade, not a faster default.** They are
+capability-gated (`grid_diff` requires `snapshot`), phone-first, and are the
+*same mechanism* as the QUIC state-sync layer in §D.1 — supersedable dirty rows
+where a newer row version obsoletes an older one. After `S` + `ready`, a
+grid-diff client receives no downstream `D`: each version-1 `G` carries a
+monotonic per-session `frame_seq`, authoritative rows/cols and cursor/screen
+state, then full 16-byte wire cells for each dirty row. Every 256 damage
+flushes by default (test-overridable with `TERMIOD_KEYFRAME_EVERY`), the host
+substitutes an ordered `S` + `ready` keyframe and then resumes increasing-seq
+`G`. This is mosh's SSP rebuilt on standard transport.
+On a good link (LAN, good Wi-Fi) raw byte replication wins outright and no
+client should negotiate `grid_diff`; the diff path exists because a *reliable
+ordered* byte stream must deliver every intermediate byte in order, which a
+lossy high-RTT phone link cannot do cheaply — there, shipping "the latest row
+state" is the win.
+
+**Measured, so nobody re-derives it the hard way** (2026-08-05, framed protocol
+over SSH to the `ukvps` aarch64 host, identical 300-line scrolling burst):
+
+| Plane | Bytes on the wire | Frames |
+| --- | --- | --- |
+| raw `D` | **50,423** | 16 |
+| `G` dirty rows | **435,573** | 18 |
+
+`G` cost **8.6× more**, not less. Two compounding reasons, both structural:
+scrolling output dirties *every* row, so dirty-row filtering filters nothing;
+and each cell is 16 wire bytes against roughly one byte of source text, so what
+remains is a ~16× encoding inflation. Terminal output is dominated by
+scrolling, so this is the common case, not a corner.
+
+The consequence for transport policy: **"remote ⇒ prefer `G`" is wrong.** `G`
+is not a bandwidth optimisation at all. It buys two other things: a *bound*
+(cost is capped at frame-rate × screen regardless of how much the PTY emits, so
+a `yes` flood cannot melt a metered link) and *catch-up* (a client that has
+fallen behind skips intermediate states instead of replaying them). Select it
+on backlog pressure or measured loss — never on "this connection is remote".
+A worthwhile future change is compressing the wire cell (run-length spans,
+style separated from text); at 16 bytes per cell the format, not the idea, is
+what makes `G` expensive. The current reliable transport delivers every emitted `G`,
+but each `G` already coalesces source bytes into current full-row state; a QUIC
+binding may later discard superseded row versions (§D.1). It coexists with the
+byte path; it never replaces it. Paired with client-side predictive echo
+(§D.1), this is what makes a 100 ms-RTT link *feel* local — the piece no
+transport choice (SSH or QUIC) can deliver alone.
 
 ### C.7 Error model
 
@@ -270,6 +431,70 @@ blind (§D.4).
 The transport rows differ; every frame after them is byte-identical. That is
 the acceptance test for "transport-agnostic": **a recorded local session
 transcript must replay verbatim against an SSH-piped host.**
+
+### C.10 Resumable subscriptions (the generalised reconnect)
+
+The terminal plane already solved reconnect once: a session is a durable object
+with an id, a monotonic cursor, a bounded ring, and `S` to bootstrap a replica
+that missed the start. **§C.10 makes that one mechanism instead of one
+terminal feature**, so every later plane — files, git, agent state — inherits
+the same reconnect story rather than inventing its own. Without it, the file
+plane grows a bespoke "re-sync on reconnect" path and we have rebuilt the
+four-code-paths disease *inside* the host.
+
+**A resource** is durable host-side state a client observes. It has:
+
+| Property | Rule |
+| --- | --- |
+| **Id** | `<kind>:<scope>`, host-unique and stable across connections. v1 kind: `fs:<canonical workspace root>` |
+| **Cursor** | `seq`, monotonic per resource, starting at 1. Never reused, never rewound |
+| **Ring** | A bounded replay buffer of recent batches. Overflow is *reported*, never silent |
+| **Lifetime** | Independent of any connection **or client**. A watch outlives its last subscriber by a linger window — detach ≠ kill, applied to the resource plane |
+
+**The one verb:**
+
+```
+→ subscribe_resource {resource:"/work/termio", since?:41}
+← subscribed {resource:"fs:/work/termio", seq:44, gap:false}
+← E {ev:"fs_changed", resource:"fs:/work/termio", seq:42, paths:["/work/termio/src"]}
+← E {ev:"fs_changed", …, seq:43, git_meta:true}
+← E {ev:"fs_changed", …, seq:44, paths:["/work/termio/docs"]}
+   … then live batches continue from 45
+```
+
+`gap:true` means the client's baseline is unusable and it must do a full scan
+before applying anything further. It is returned for a first subscribe, for a
+`since` that has aged out of the ring, and for a `since` ahead of the host.
+**The reply always precedes replayed events**, so a client knows whether to
+rescan before it starts applying them.
+
+**Reconnect is therefore not a feature.** It is: open a pipe, re-subscribe each
+resource at the last `seq` you applied. There is no retry ceiling, because a
+retry loses nothing — which is the substantive difference from Zed's bounded
+`MAX_RECONNECT_ATTEMPTS` and from VS Code's reconnection tokens, which die with
+the server PID. Cursors survive the *client*, not just the connection: quit the
+Mac app, open the phone, resume the same cursor.
+
+**Workspace scope.** `fs:` resources are keyed by **canonicalised** root, so two
+clients naming one repo differently share a single watcher. This is what keeps
+five sessions in one repo at one OS watch rather than five — the failure mode
+that exhausts Linux `max_user_watches`.
+
+**`fs_changed` semantics** (chosen to match the Mac client's existing
+`FileTreeWatcher`, so the consumer needs no new model):
+
+| Field | Meaning |
+| --- | --- |
+| `paths` | Directories whose listing changed. Re-read only realized ones |
+| `full_rescan` | The path set is **not** authoritative — re-walk. Set on watcher overflow (the wire form of FSEvents `MustScanSubDirs`), on watch-limit exhaustion, and on a change storm exceeding the per-batch path cap |
+| `git_meta` | Index / HEAD / refs moved → re-read git status. Object-store and packfile churn is dropped host-side and never appears at all |
+
+Batches are debounced host-side (300 ms quiet window, matching the client's own
+FSEvents coalescing) so a `git checkout` publishes one batch, not one per file.
+
+**Invariant:** resources live on the control plane and are **never** on the
+terminal hot path (§A). A resource flush must never delay `fan_out`. Capability
+`resources` gates the verb; `fs_watch` gates the `fs:` kind.
 
 ## D. Transport bindings
 
@@ -413,6 +638,9 @@ announced has `needs_you` on the wire.
 | 6 | **Linux host + libghostty-vt** | v1 bets on `libghostty-vt` building cleanly into the Rust host on Linux (zig cross-compile). De-risk with a spike before committing v1 dates; fallback is any correct VT with damage tracking, at the cost of cell-format alignment. |
 | 7 | **Event flood vs UI** | Protocol allows high-rate `E`; client discipline (per-session `SessionRuntime`, no roster replace per tick) is already law — see sidebar-scroll-performance. Host also coalesces status transitions (≤ ~10/s per session). |
 | 8 | **Superlogical ships first and defines expectations** | Their step 1 is an incredible mux (**Announced**). Our counter is not feature racing; it's landing #170–#172 so agents *survive the app* this quarter, with agent events they haven't announced. |
+| 9 | **No pipe-mode (non-tty) attach client** | The CLI `attach` assumes an interactive tty; driven non-interactively over a bare SSH channel it delivers **0 bytes** (confirmed 2026-07-31 on `ukvps`), which blocks scripting, piping, and honest WAN-throughput measurement. The protocol already has `mode:"observe"`; the fix is a CLI surface for it (`attach --observe`/`pipe` → raw `D` to stdout, no raw-mode, no stdin capture). Small, and needed before the Mac/iOS clients rely on the same read path. Note the sharper framing (Codex review 2026-07-31): today `remote attach` runs `ssh -t host termiod attach`, so the framed protocol lives *between the remote CLI and the remote socket* and never crosses SSH from a native client — the "same bytes over every transport" claim (§C.9) is **not yet exercised end-to-end**; a non-tty `termiod stdio` bridge is what makes it real. |
+| 10 | **Unbounded per-client backlog (the non-blocking hot path's shadow cost)** | The anti-100× invariant makes `fan_out` never block on a slow consumer — but per-client and outbound channels are **unbounded** (`daemon.rs`), so a stalled socket (a wedged phone, a paused SSH client) accumulates raw output without limit until it threatens the daemon. The fix pairs with the `bytes::Bytes` fan-out (single shared chunk, refcounted): give each client a **byte budget / sequence cursor**; when a client falls behind the retained window, **drop it (v0) or resnapshot it (v1)** rather than grow forever. One change closes both the (C+2)×n copy cost and this memory risk. |
+| 11 | **Resize is not a barrier; `pty.resize` errors ignored** | `handle_msg(Resize)` (`session.rs`) updates stored dims + emits `Resized` even if the `TIOCSWINSZ` ioctl failed, and a promoted writer after failover keeps stale dims and is not told to reclaim size. v1 must make resize the quiesce → resize → fresh `S` → resume barrier (§C.5) and surface ioctl failure. |
 
 ## G. Phased roadmap
 
@@ -437,6 +665,11 @@ impossible retroactively.
    are not sessions; this was the founding rule.
 3. **Freezing raw-PTY forever** — v0 raw is a stage, not the contract;
    `snapshot`/`grid_diff` capabilities are on the roadmap with dates.
+3a. **State sync on the hot path** — a server-maintained grid diffed to clients
+   as the *default* steady state (the tmux/VNC model). That reintroduces the
+   middle-emulator parse tax the whole design exists to avoid (measured 4–6× in
+   `termiod/bench`); `grid_diff` stays an opt-in bad-network degrade (§C.6),
+   never the default, and never blocks byte delivery (§A invariant).
 4. **Public `0.0.0.0` bind / raw TCP + DIY TLS** — Unix socket and SSH only
    until QUIC arrives with borrowed identity.
 5. **CRDT multiplayer typing** — single writer with an observable claim;
