@@ -926,10 +926,6 @@ private struct SessionRow: View {
     /// in-flight session could legally land here (`store.canReorder`).
     @State private var isDropTarget = false
 
-    /// Namespace prefix for the drag payload, so the row's drop accepts only a
-    /// session drag (a session id) and never arbitrary dropped text.
-    private static let dragPrefix = "termio-session:"
-
     private var isSelected: Bool { store.selectedSessionID == session.id }
 
     /// The row's right-click menu. Rename/Pin/Close Session are always present; the two
@@ -1072,7 +1068,12 @@ private struct SessionRow: View {
         // *simultaneous* tap (below) — an exclusive `.onTapGesture` kills the drag.
         .onDrag {
             store.draggingSessionID = session.id
-            return NSItemProvider(object: (Self.dragPrefix + session.id.uuidString) as NSString)
+            // The payload is the session's canonical deep link, not a private
+            // token: a drag carries plain text, so any text target — a terminal,
+            // an editor, a text field — will accept it. Shipping the link means a
+            // stray drop pastes something that works (`termio://session/<uuid>`,
+            // what `termio sessions` takes) instead of leaking an internal id.
+            return NSItemProvider(object: store.sessionLink(for: session) as NSString)
         } preview: {
             // The drag preview is just the row's identity (icon + title), so the
             // floating chip never carries the hover-only close button. `.fixedSize`
@@ -1095,15 +1096,15 @@ private struct SessionRow: View {
                     .fill(.regularMaterial)
             )
         }
-        // Reorder on drop: the prefix filter rejects non-session text, a self-drop is
-        // ignored, and a cross-bucket drop is a no-op in the store.
+        // Reorder on drop: only a payload that parses as a session link counts, so
+        // arbitrary dropped text is still rejected — a self-drop is ignored, and a
+        // cross-bucket drop is a no-op in the store.
         .dropDestination(for: String.self) { payloads, _ in
             store.draggingSessionID = nil
             // Clear the drop lift the instant we commit so it can't linger on this row
             // (or ghost onto its new neighbour) as the list settles the move.
             isDropTarget = false
-            guard let payload = payloads.first(where: { $0.hasPrefix(Self.dragPrefix) }),
-                  let moved = UUID(uuidString: String(payload.dropFirst(Self.dragPrefix.count))),
+            guard let moved = payloads.lazy.compactMap(TermioStore.sessionID(fromLink:)).first,
                   moved != session.id
             else { return false }
             store.reorderSession(moved, relativeTo: session.id)
