@@ -272,6 +272,16 @@ final class ProjectListViewController: UIViewController {
                 actionTitle: nil,
                 busy: false
             )
+        case .failed(let reason):
+            stopConnectingGraceTimer()
+            reconnectStalled = false
+            emptyState.configure(
+                icon: .wifiError,
+                title: "Connection failed",
+                message: reason,
+                actionTitle: "Open Settings",
+                busy: false
+            )
         }
     }
 
@@ -299,6 +309,10 @@ final class ProjectListViewController: UIViewController {
     /// immediate reconnect and drop back to the "Connecting…" copy.
     private func emptyStateAction() {
         if case .unpaired = CompanionLink.state {
+            presentSettings(deepLinkToConnectivity: true)
+            return
+        }
+        if case .failed = CompanionLink.state {
             presentSettings(deepLinkToConnectivity: true)
             return
         }

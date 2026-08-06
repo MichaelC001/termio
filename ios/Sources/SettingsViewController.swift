@@ -127,6 +127,7 @@ final class SettingsViewController: UITableViewController {
         case .unpaired: (.tertiaryLabel, "Not Paired")
         case .connecting: (.systemOrange, "Reconnecting…")
         case .connected: (.systemGreen, "Connected")
+        case .failed: (.systemRed, "Connection Failed")
         }
         // The dot is a drawn image in an NSTextAttachment, not a glyph:
         // mixed-size text runs never sit still (a ● run smaller than the text

@@ -344,12 +344,15 @@ extension Notification.Name {
 /// socket and keeps `state` current; other screens (the Connectivity settings
 /// page, the sidebar's presence dot) observe `stateDidChange` and read it.
 enum CompanionLink {
-    enum State {
+    enum State: Equatable {
         /// No Mac address saved.
         case unpaired
         /// Paired, but the socket is down — connecting or in backoff retry.
         case connecting
         case connected
+        /// The Mac answered but refused this pairing. The reason is rendered by
+        /// the existing link-status surfaces so reconnecting cannot hide it.
+        case failed(String)
     }
 
     static var state: State = .unpaired {
