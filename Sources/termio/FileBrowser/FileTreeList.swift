@@ -294,7 +294,6 @@ private struct RowContextMenu: NSViewRepresentable {
             // inserts. Gated live at open time; a plain shell has no chat to add to.
             if actions?.canAddToChat() == true {
                 let add = menuItem("Add to Chat", #selector(addToChat))
-                add.image = NSImage(systemSymbolName: "plus.bubble", accessibilityDescription: nil)
                 menu.addItem(add)
                 menu.addItem(.separator())
             }

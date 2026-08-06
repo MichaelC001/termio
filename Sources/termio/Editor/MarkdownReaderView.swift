@@ -65,7 +65,12 @@ private struct MarkdownReaderWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(LocalFileSchemeHandler(), forURLScheme: Self.fileScheme)
+        let bridge = WebContextMenuBridge()
+        bridge.install(on: config)
         let view = ContextMenuWebView(frame: .zero, configuration: config)
+        bridge.attach(to: view) { [weak view] click in
+            view?.contextMenu(for: click) ?? NSMenu()
+        }
         view.fileURL = fileURL
         view.addToChat = addToChat
         view.canAddToChat = canAddToChat
@@ -130,7 +135,8 @@ private struct MarkdownReaderWebView: NSViewRepresentable {
     }
 }
 
-/// A `WKWebView` that appends a "Close" to its right-click menu, so the Markdown preview closes
+/// A `WKWebView` whose right-click menu is termio's, not WebKit's: `WebContextMenuBridge`
+/// suppresses the page's native menu and hands the click here, so the Markdown preview closes
 /// terminal-style like the source editor — the overlay has no chrome button.
 private final class ContextMenuWebView: WKWebView {
     /// The document on disk, so the menu can reveal it in Finder (like the file tree's row menu).
@@ -141,38 +147,38 @@ private final class ContextMenuWebView: WKWebView {
     var addToChat: ((String?) -> Void)?
     var canAddToChat: (() -> Bool)?
 
-    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
-        super.willOpenMenu(menu, with: event)
-        // Strip the reader's menu down to Copy — a read-only document doesn't need Reload / Look Up
-        // / Translate / Share, and the OS-injected AutoFill / Services grab-bag is meaningless over
-        // a rendered doc. Whitelisting Copy by identifier drops all of it. Then add the actions that
-        // *do* fit a file preview: Reveal in Finder (an explicit item, not a flaky Services shortcut)
-        // and a prominent Close so it isn't buried.
-        menu.items = menu.items.filter { $0.identifier?.rawValue == "WKMenuItemIdentifierCopy" }
-        menu.addItem(.separator())
+    /// The reader's menu, built from the page's own right-click: Copy for a selection, then the
+    /// actions that fit a file preview — Reveal in Finder (an explicit item, not a flaky Services
+    /// shortcut) and a prominent Close, since the overlay has no chrome button.
+    func contextMenu(for click: WebContextMenuBridge.Click) -> NSMenu {
+        let menu = NSMenu()
+        if !click.selection.isEmpty {
+            menu.addPlainItem("Copy", target: self, action: #selector(copySelection(_:)),
+                              representedObject: click.selection)
+            menu.addItem(.separator())
+        }
         if canAddToChat?() == true {
-            let add = NSMenuItem(title: "Add to Chat", action: #selector(addToChatAction), keyEquivalent: "")
-            add.target = self
-            add.image = NSImage(systemSymbolName: "plus.bubble", accessibilityDescription: nil)
-            menu.addItem(add)
+            menu.addPlainItem("Add to Chat", target: self, action: #selector(addToChatAction(_:)),
+                              representedObject: click.selection)
         }
         if fileURL != nil {
-            let reveal = NSMenuItem(title: "Reveal in Finder", action: #selector(revealInFinder), keyEquivalent: "")
-            reveal.target = self
-            menu.addItem(reveal)
+            menu.addPlainItem("Reveal in Finder", target: self, action: #selector(revealInFinder))
         }
-        let close = NSMenuItem(title: "Close", action: #selector(closeEditorOverlay), keyEquivalent: "")
-        close.target = self
-        menu.addItem(close)
+        menu.addPlainItem("Close", target: self, action: #selector(closeEditorOverlay))
+        return menu
     }
 
-    /// The web view's selection lives in the WebContent process, so it's read via JS at
-    /// click time: a non-empty selection goes over as the snippet, else `nil` for the path.
-    @objc private func addToChatAction() {
-        evaluateJavaScript("window.getSelection().toString()") { [weak self] result, _ in
-            let text = (result as? String).flatMap { $0.isEmpty ? nil : $0 }
-            self?.addToChat?(text)
-        }
+    @objc private func copySelection(_ sender: NSMenuItem) {
+        guard let text = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    /// A non-empty selection goes over as the snippet, an empty one as `nil` — the owner inserts
+    /// the document's path instead.
+    @objc private func addToChatAction(_ sender: NSMenuItem) {
+        let selection = (sender.representedObject as? String).flatMap { $0.isEmpty ? nil : $0 }
+        addToChat?(selection)
     }
 
     @objc private func revealInFinder() {
