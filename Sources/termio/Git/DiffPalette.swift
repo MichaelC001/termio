@@ -1,21 +1,11 @@
 import AppKit
 
-// MARK: - Diff palette
-
 /// The diff's add/delete tints, mixed into the pane's actual background rather than
-/// composited over it with an alpha.
-///
-/// Alpha compositing in sRGB is the obvious way to tint a row and the wrong one: the
-/// result drifts in hue and lightness with whatever terminal background the user picked,
-/// so the same alpha reads as a firm wash on one theme and as nothing on another, and the
-/// add and delete sides stop being equally legible against each other. Mixing a fixed
-/// fraction of the base color into the real background in a perceptually uniform space
-/// keeps both sides at the same apparent strength on any background.
-///
-/// The space is Oklab. CSS's `color-mix(in lab, …)` is the same idea; Oklab is the better
-/// behaved of the two for exactly this (tinting toward a saturated hue) and, unlike the
-/// web, AppKit has no engine bug pushing us off it.
-struct DiffPalette: Equatable {
+/// composited over it with an alpha. An alpha wash drifts in hue and strength with
+/// whatever terminal background is configured — firm on one theme, invisible on the next,
+/// and rarely equal between the add and delete sides. A fixed fraction mixed in Oklab
+/// holds both sides at the same apparent strength on any background.
+struct DiffPalette {
     /// Full-row washes, painted by the layout manager behind the text.
     let additionWash: NSColor
     let deletionWash: NSColor
@@ -29,12 +19,11 @@ struct DiffPalette: Equatable {
     /// the same flat tint running edge to edge, and the digits stay in neutral ink.
     let additionGutter: NSColor
     let deletionGutter: NSColor
-    /// A collapsed band's row fill, the filled gutter cell that acts as its button, and
-    /// the ink of the arrow drawn in that cell. Neutral rather than github.com's blue —
-    /// an accent-colored block would be the one loud thing in the pane.
+    /// A collapsed band's row fill, and the filled gutter cell that acts as its button.
+    /// Neutral rather than github.com's blue — an accent-colored block would be the one
+    /// loud thing in the pane.
     let bandFill: NSColor
     let bandControlFill: NSColor
-    let bandControlInk: NSColor
 
     /// Bases are picked per appearance rather than lightened from one color: a green that
     /// reads as green on white is muddy on black, and a red that reads on black glares on
@@ -62,7 +51,28 @@ struct DiffPalette: Equatable {
         deletionGutter = Self.mix(background, deletion, washAmount * 1.6)
         bandFill = Self.mix(background, ink, 0.05)
         bandControlFill = Self.mix(background, ink, 0.11)
-        bandControlInk = Self.mix(background, ink, 0.55)
+    }
+
+    /// The fill behind a row's text.
+    func wash(for role: DiffDocument.Line.Role) -> NSColor? {
+        switch role {
+        case .code(.addition): return additionWash
+        case .code(.deletion): return deletionWash
+        case .band: return bandFill
+        case .code: return nil
+        }
+    }
+
+    /// The fill behind a row's gutter — a step stronger than its body, the way github.com
+    /// anchors the number cell. A band's gutter only becomes the button cell when there is
+    /// a button in it: an empty raised box on an inert band reads as a control that broke.
+    func gutterFill(for role: DiffDocument.Line.Role) -> NSColor? {
+        switch role {
+        case .code(.addition): return additionGutter
+        case .code(.deletion): return deletionGutter
+        case .band(let controls): return controls.isEmpty ? bandFill : bandControlFill
+        case .code: return nil
+        }
     }
 
     /// `amount` of `tint` mixed into `base`, interpolated in Oklab. Colors that cannot be
@@ -78,8 +88,6 @@ struct DiffPalette: Equatable {
         ).color
     }
 }
-
-// MARK: - Oklab
 
 /// Björn Ottosson's Oklab, enough of it to interpolate two opaque colors. Kept here
 /// rather than in a general color utility because the diff is its only client.

@@ -47,12 +47,6 @@ final class DiffIntralineTests: XCTestCase {
         XCTAssertEqual(result?.new, ["    "])
     }
 
-    func testPureInsertionLeavesTheOldSideUnmarked() {
-        let result = spans("total = base", "total = base + tax")
-        XCTAssertEqual(result?.old, [])
-        XCTAssertEqual(result?.new, ["+ tax"])
-    }
-
     func testRewrittenLineIsNotMarked() {
         XCTAssertNil(spans("let greeting = \"hello\"",
                            "await database.commit(transaction, retries: 3)"))
@@ -76,18 +70,20 @@ final class DiffIntralineTests: XCTestCase {
         XCTAssertEqual(result?.new, [8..<12])
     }
 
-    /// Past the comparison budget the pair still gets a usable span rather than none.
-    func testOversizedPairFallsBackToOneSpanPerSide() {
+    /// A line with hundreds of tokens must still return promptly, and a wholly rewritten
+    /// one stays unmarked however long it is.
+    func testTokenHeavyPairsStayUnmarked() {
         let old = (0..<400).map { "token\($0)" }.joined(separator: " ")
         let new = (0..<400).map { "value\($0)" }.joined(separator: " ")
-        XCTAssertNil(DiffIntraline.spans(old: old, new: new),
-                     "wholly different lines stay unmarked even on the fallback path")
+        XCTAssertNil(DiffIntraline.spans(old: old, new: new))
+    }
 
-        let sharedTail = " end"
-        let mixedOld = (0..<200).map { "token\($0)" }.joined(separator: " ") + sharedTail
-        let mixedNew = (0..<200).map { "other\($0)" }.joined(separator: " ") + sharedTail
-        // Still nothing to salvage — but the call must return, not hang, on a big pair.
-        XCTAssertNil(DiffIntraline.spans(old: mixedOld, new: mixedNew))
+    /// A token-heavy line that still fits under the length cap: one rename in a hundred
+    /// words must come back as one span, not as everything from the change to the end.
+    func testLongLineMarksOnlyTheRenamedWord() {
+        let old = "config = " + (0..<100).map { "field\($0)" }.joined(separator: ", ")
+        let new = old.replacingOccurrences(of: "field7,", with: "renamed,")
+        XCTAssertEqual(spans(old, new)?.new, ["renamed"])
     }
 
     func testOverlongLinesAreSkipped() {

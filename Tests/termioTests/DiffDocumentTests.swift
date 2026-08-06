@@ -91,27 +91,22 @@ final class DiffDocumentTests: XCTestCase {
     }
 
     func testShortRunsAreNotFoldedAtAll() {
-        let document = DiffDocument.build(
-            rows: rows(context: 8), expansion: DiffExpansion(), palette: palette,
-            codeFont: .monospacedSystemFont(ofSize: 12, weight: .regular), lineSpacing: 0)
-        XCTAssertFalse(document.lines.contains { $0.isBand })
+        XCTAssertFalse(document(DiffExpansion(), context: 8).lines.contains { $0.isBand })
     }
 
-    // MARK: Hunk headings
-
     func testHunkHeadingIsTheSectionAfterTheRanges() {
-        XCTAssertEqual(DiffDocument.hunkHeading("@@ -8,7 +8,7 @@ func reload() {"),
+        XCTAssertEqual(GitService.hunkHeading("@@ -8,7 +8,7 @@ func reload() {"),
                        "func reload() {")
     }
 
     func testHunkHeadingIsNilWhenGitOffersNone() {
-        XCTAssertNil(DiffDocument.hunkHeading("@@ -8,7 +8,7 @@"))
-        XCTAssertNil(DiffDocument.hunkHeading("@@ -8,7 +8,7 @@   "))
+        XCTAssertNil(GitService.hunkHeading("@@ -8,7 +8,7 @@"))
+        XCTAssertNil(GitService.hunkHeading("@@ -8,7 +8,7 @@   "))
     }
 
     /// A heading can itself contain `@@` — an operator, a string, a comment.
     func testHunkHeadingKeepsAtSignsInsideTheHeading() {
-        XCTAssertEqual(DiffDocument.hunkHeading("@@ -1,2 +1,2 @@ let mark = \"@@\""),
+        XCTAssertEqual(GitService.hunkHeading("@@ -1,2 +1,2 @@ let mark = \"@@\""),
                        "let mark = \"@@\"")
     }
 }

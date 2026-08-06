@@ -1,7 +1,5 @@
 import AppKit
 
-// MARK: - Band expansion
-
 /// Which end of a collapsed run a click reveals. The chevron points the way the reader is
 /// looking: `up` pulls down the lines nearest the code *below* the band, `down` the lines
 /// nearest the code above it. `all` drops the band entirely.
@@ -13,29 +11,27 @@ enum DiffBandDirection {
 /// id. The anchor is the run's first hidden row, which is stable as the run shrinks: the
 /// always-shown context lines on either side never move, so revealing from one end never
 /// renames the band.
-struct DiffExpansion: Equatable {
+struct DiffExpansion {
     /// Lines revealed per click, matching the step every other review surface uses.
     /// Revealing a 400-line gap in one jump loses the reader's place.
     static let step = 20
 
-    private struct Reveal: Equatable {
+    private struct Reveal {
         var head = 0
         var tail = 0
-        var all = false
     }
 
     private var reveals: [Int: Reveal] = [:]
 
     init() {}
 
-    var isEmpty: Bool { reveals.isEmpty }
-
     mutating func reveal(_ anchor: Int, _ direction: DiffBandDirection) {
         var reveal = reveals[anchor] ?? Reveal()
         switch direction {
         case .down: reveal.head += Self.step
         case .up: reveal.tail += Self.step
-        case .all: reveal.all = true
+        // Halved rather than `Int.max`, so a later step-click still adds without trapping.
+        case .all: reveal.head = Int.max / 2
         }
         reveals[anchor] = reveal
     }
@@ -43,7 +39,6 @@ struct DiffExpansion: Equatable {
     /// How many of a run's `count` hidden lines to splice back in at each end.
     func revealed(_ anchor: Int, of count: Int) -> (head: Int, tail: Int) {
         guard let reveal = reveals[anchor] else { return (0, 0) }
-        if reveal.all { return (count, 0) }
         let head = min(reveal.head, count)
         return (head, min(reveal.tail, count - head))
     }
@@ -96,6 +91,9 @@ final class DiffDocument {
             if case .band(let controls) = role { return controls }
             return []
         }
+
+        /// Whether a click anywhere on this row reveals the run it stands for.
+        var isRevealable: Bool { !bandControls.isEmpty }
     }
 
     let attributed: NSAttributedString
@@ -147,9 +145,12 @@ final class DiffDocument {
         var lines: [Line] = []
         lines.reserveCapacity(items.count)
         var maxLineNumber = 0
+        // Tracked rather than re-measured: `(text as NSString).length` is only O(1) while
+        // the accumulated string stays ASCII, so one curly quote anywhere in the file
+        // turned this loop quadratic — and the reveal buttons rebuild on every click.
+        var location = 0
 
         for item in items {
-            let location = (text as NSString).length
             switch item {
             case .line(let row):
                 text += row.text
@@ -157,6 +158,7 @@ final class DiffDocument {
                 let length = (row.text as NSString).length + 1
                 lines.append(Line(role: .code(row.kind), range: NSRange(location: location, length: length),
                                   rowId: row.id, oldLine: row.oldLine, newLine: row.newLine))
+                location += length
                 maxLineNumber = max(maxLineNumber, row.oldLine ?? 0, row.newLine ?? 0)
             case .band(let id, let label, let controls):
                 text += label
@@ -165,6 +167,7 @@ final class DiffDocument {
                 lines.append(Line(role: .band(controls: controls),
                                   range: NSRange(location: location, length: length),
                                   rowId: id, oldLine: nil, newLine: nil))
+                location += length
             }
         }
 
@@ -281,25 +284,10 @@ final class DiffDocument {
     /// expander row carries the `@@` header and its section heading for the same reason:
     /// a line range tells the reader what they are jumping over, while "137 unchanged
     /// lines" only describes the widget they are looking at.
-    private static func bandLabel(first: Int?, last: Int?, heading: String? = nil) -> String {
-        var label = ""
-        if let first, let last {
-            label = first == last ? "\(first)" : "\(first)–\(last)"
-        }
-        if let heading, !heading.isEmpty {
-            label += label.isEmpty ? heading : "   \(heading)"
-        }
-        return label
-    }
-
-    /// The section heading git appends to a hunk header (`@@ -a,b +c,d @@ func foo() {`) —
-    /// the enclosing scope of the lines that follow.
-    static func hunkHeading(_ text: String) -> String? {
-        let parts = text.components(separatedBy: "@@")
-        guard parts.count >= 3 else { return nil }
-        let heading = parts[2...].joined(separator: "@@")
-            .trimmingCharacters(in: .whitespaces)
-        return heading.isEmpty ? nil : heading
+    private static func bandLabel(first: Int, last: Int, heading: String? = nil) -> String {
+        let range = first == last ? "\(first)" : "\(first)–\(last)"
+        guard let heading, !heading.isEmpty else { return range }
+        return "\(range)   \(heading)"
     }
 
     private static func displayItems(rows: [DiffRow], expansion: DiffExpansion) -> [DisplayItem] {
@@ -327,11 +315,13 @@ final class DiffDocument {
             if !stillHidden.isEmpty {
                 // A button only points somewhere there is code to continue from.
                 var controls: Line.BandControls = []
-                if head > 0 || revealed.head > 0 || !items.isEmpty { controls.insert(.down) }
-                if tail > 0 || revealed.tail > 0 || !isLast { controls.insert(.up) }
-                let label = bandLabel(first: stillHidden.first?.newLine ?? stillHidden.first?.oldLine,
-                                      last: stillHidden.last?.newLine ?? stillHidden.last?.oldLine)
-                items.append(.band(id: anchor, label: label, controls: controls))
+                if !items.isEmpty { controls.insert(.down) }
+                if !isLast || revealed.tail > 0 { controls.insert(.up) }
+                // Context rows always carry both numbers, so the range is never partial.
+                let first = stillHidden.first?.newLine ?? stillHidden.first?.oldLine ?? 0
+                let last = stillHidden.last?.newLine ?? stillHidden.last?.oldLine ?? 0
+                items.append(.band(id: anchor, label: bandLabel(first: first, last: last),
+                                   controls: controls))
             }
             items += hiddenRows.suffix(revealed.tail).map(DisplayItem.line)
             items += run.suffix(tail).map(DisplayItem.line)
@@ -345,7 +335,7 @@ final class DiffDocument {
                     // The hidden lines were never fetched, so this band cannot be revealed
                     // — but git's own section heading still says what is being skipped.
                     let label = bandLabel(first: lastNewLine + 1, last: start - 1,
-                                          heading: hunkHeading(row.text))
+                                          heading: GitService.hunkHeading(row.text))
                     items.append(.band(id: row.id, label: label, controls: []))
                 }
             case .context:

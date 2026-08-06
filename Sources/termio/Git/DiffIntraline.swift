@@ -1,7 +1,5 @@
 import Foundation
 
-// MARK: - Intraline emphasis
-
 /// Marks the changed spans inside a modified line pair (Critique's and Xcode's intraline
 /// highlight).
 ///
@@ -16,22 +14,19 @@ enum DiffIntraline {
     /// Longer lines are left plain rather than diffed — the pathological cases here are
     /// minified bundles and embedded data, where every span would be noise anyway.
     private static let maximumLineLength = 2000
-    /// The word diff is quadratic in tokens. Past this many comparisons the pair falls
-    /// back to one span per side covering everything between the first and last change,
-    /// which is what prefix/suffix stripping produced before.
-    private static let maximumComparisons = 4096
 
     /// The changed spans of a deletion/addition line pair, or `nil` when the two share so
     /// little that spans would be noise (a rewritten line reads better as a plain
     /// add/delete pair than as one line-long highlight).
     static func spans(old oldText: String, new newText: String)
         -> (old: [Range<Int>], new: [Range<Int>])? {
-        guard oldText != newText,
-              oldText.count <= maximumLineLength, newText.count <= maximumLineLength
-        else { return nil }
+        guard oldText != newText else { return nil }
+        let oldCharacters = Array(oldText), newCharacters = Array(newText)
+        guard oldCharacters.count <= maximumLineLength,
+              newCharacters.count <= maximumLineLength else { return nil }
 
-        let oldTokens = tokenize(Array(oldText))
-        let newTokens = tokenize(Array(newText))
+        let oldTokens = tokenize(oldCharacters)
+        let newTokens = tokenize(newCharacters)
 
         var prefix = 0
         while prefix < oldTokens.count, prefix < newTokens.count,
@@ -49,21 +44,14 @@ enum DiffIntraline {
         let newCore = Array(newTokens[prefix..<(newTokens.count - suffix)])
         guard !oldCore.isEmpty || !newCore.isEmpty else { return nil }
 
-        let changed: (old: [Bool], new: [Bool])
-        if oldCore.count * newCore.count > maximumComparisons {
-            changed = (Array(repeating: true, count: oldCore.count),
-                       Array(repeating: true, count: newCore.count))
-        } else {
-            changed = changedTokens(oldCore, newCore)
-        }
-
+        let changed = changedTokens(oldCore, newCore)
         let oldSpans = spans(of: oldCore, changed: changed.old)
         let newSpans = spans(of: newCore, changed: changed.new)
 
         // The same "too different to be worth marking" test the prefix/suffix pass used,
         // now measured on what the word diff actually kept: at least a fifth of the
         // shorter line must survive unchanged.
-        let shorter = min(oldText.count, newText.count)
+        let shorter = min(oldCharacters.count, newCharacters.count)
         let changedCharacters = max(oldSpans.reduce(0) { $0 + $1.count },
                                     newSpans.reduce(0) { $0 + $1.count })
         guard shorter == 0 || (shorter - min(changedCharacters, shorter)) * 5 >= shorter
@@ -72,11 +60,8 @@ enum DiffIntraline {
         return (oldSpans, newSpans)
     }
 
-    // MARK: Tokens
-
-    /// One token and the character range it occupies in its line.
     private struct Token {
-        let text: [Character]
+        let text: String
         let range: Range<Int>
         let isBlank: Bool
     }
@@ -98,7 +83,7 @@ enum DiffIntraline {
             } else {
                 index += 1
             }
-            tokens.append(Token(text: Array(characters[start..<index]),
+            tokens.append(Token(text: String(characters[start..<index]),
                                 range: start..<index,
                                 isBlank: character == " " || character == "\t"))
         }
@@ -111,33 +96,17 @@ enum DiffIntraline {
         return scalar.value < 0x2E80
     }
 
-    // MARK: Diff
-
-    /// Which tokens on each side are outside the longest common subsequence.
+    /// Which tokens on each side fall outside the longest common subsequence. The
+    /// stdlib's Myers diff answers exactly this, and answers it in O(ND) — a hand-rolled
+    /// LCS table needed a comparison cap to bound its memory, and that cap degraded long
+    /// lines to a single span.
     private static func changedTokens(_ old: [Token], _ new: [Token]) -> (old: [Bool], new: [Bool]) {
-        var lengths = Array(repeating: Array(repeating: 0, count: new.count + 1),
-                            count: old.count + 1)
-        for i in stride(from: old.count - 1, through: 0, by: -1) {
-            for j in stride(from: new.count - 1, through: 0, by: -1) {
-                lengths[i][j] = old[i].text == new[j].text
-                    ? lengths[i + 1][j + 1] + 1
-                    : max(lengths[i + 1][j], lengths[i][j + 1])
-            }
-        }
-
-        var oldChanged = Array(repeating: true, count: old.count)
-        var newChanged = Array(repeating: true, count: new.count)
-        var i = 0, j = 0
-        while i < old.count, j < new.count {
-            if old[i].text == new[j].text {
-                oldChanged[i] = false
-                newChanged[j] = false
-                i += 1
-                j += 1
-            } else if lengths[i + 1][j] >= lengths[i][j + 1] {
-                i += 1
-            } else {
-                j += 1
+        var oldChanged = Array(repeating: false, count: old.count)
+        var newChanged = Array(repeating: false, count: new.count)
+        for change in new.map(\.text).difference(from: old.map(\.text)) {
+            switch change {
+            case .remove(let offset, _, _): oldChanged[offset] = true
+            case .insert(let offset, _, _): newChanged[offset] = true
             }
         }
         return (oldChanged, newChanged)

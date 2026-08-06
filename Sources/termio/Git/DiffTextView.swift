@@ -405,7 +405,7 @@ final class DiffTextView: NSTextView {
         let padding = DiffDocument.bandPadding
         guard local.y >= fragment.minY - padding, local.y <= fragment.maxY + padding else { return nil }
         let character = layoutManager.characterIndexForGlyph(at: glyph)
-        guard let line = document.line(at: character), !line.bandControls.isEmpty else { return nil }
+        guard let line = document.line(at: character), line.isRevealable else { return nil }
         return line.rowId
     }
 
@@ -469,7 +469,7 @@ final class DiffWashLayoutManager: NSLayoutManager {
                 let line = document.lines[index]
                 index += 1
                 if line.range.location >= NSMaxRange(charRange) { break }
-                guard let fill = Self.fill(for: line.role, palette: document.palette) else { continue }
+                guard let fill = document.palette.wash(for: line.role) else { continue }
                 let glyphs = glyphRange(forCharacterRange: line.range, actualCharacterRange: nil)
                 var rect = boundingRect(forGlyphRange: glyphs, in: container)
                 rect.origin.x = 0
@@ -481,17 +481,5 @@ final class DiffWashLayoutManager: NSLayoutManager {
             }
         }
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
-    }
-
-    /// The tints are opaque and pre-mixed into the pane's background by `DiffPalette`,
-    /// not alpha-composited here: a wash whose strength depends on the terminal
-    /// background is not the same wash from theme to theme.
-    static func fill(for role: DiffDocument.Line.Role, palette: DiffPalette) -> NSColor? {
-        switch role {
-        case .code(.addition): return palette.additionWash
-        case .code(.deletion): return palette.deletionWash
-        case .band: return palette.bandFill
-        case .code: return nil
-        }
     }
 }

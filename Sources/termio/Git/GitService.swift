@@ -499,6 +499,17 @@ enum GitService {
         return false
     }
 
+    /// The section heading git appends to a hunk header (`@@ -a,b +c,d @@ func foo() {`) —
+    /// the enclosing scope of the lines that follow, which the diff's collapsed bands show
+    /// to say what is being skipped. Lives beside `parseHunkHeader` so the header's grammar
+    /// is read in one file.
+    static func hunkHeading(_ text: String) -> String? {
+        let parts = text.components(separatedBy: "@@")
+        guard parts.count >= 3 else { return nil }
+        let heading = parts[2...].joined(separator: "@@").trimmingCharacters(in: .whitespaces)
+        return heading.isEmpty ? nil : heading
+    }
+
     /// Pulls the starting old and new line numbers out of `@@ -a,b +c,d @@`.
     private static func parseHunkHeader(_ line: String) -> (Int, Int)? {
         let parts = line.split(separator: " ")

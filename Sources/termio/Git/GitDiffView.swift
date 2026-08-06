@@ -25,12 +25,6 @@ struct GitDiffView: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
-    /// Tints mixed into the pane's own background, so the wash reads the same on any
-    /// terminal theme.
-    private var palette: DiffPalette {
-        DiffPalette(background: settings.terminalBackgroundColor, isDark: colorScheme == .dark)
-    }
-
     @State private var rows: [DiffRow] = []
     @State private var document: DiffDocument?
     @State private var isLoading = true
@@ -208,7 +202,7 @@ struct GitDiffView: View {
                 onExpand: { anchor, direction in
                     expansion.reveal(anchor, direction)
                     self.document = DiffDocument.build(
-                        rows: rows, expansion: expansion, palette: palette,
+                        rows: rows, expansion: expansion, palette: settings.diffPalette(for: colorScheme),
                         codeFont: settings.resolvedTerminalFont(),
                         lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
                 },
@@ -269,7 +263,7 @@ struct GitDiffView: View {
         rows = parsed
         document = parsed.isEmpty
             ? nil
-            : DiffDocument.build(rows: parsed, expansion: expansion, palette: palette,
+            : DiffDocument.build(rows: parsed, expansion: expansion, palette: settings.diffPalette(for: colorScheme),
                                  codeFont: settings.resolvedTerminalFont(),
                                  lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
         isLoading = false

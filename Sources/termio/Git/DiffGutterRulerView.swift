@@ -21,6 +21,7 @@ final class DiffGutterRulerView: NSRulerView {
     private var numberColor: NSColor = .quaternaryLabelColor
     private var oldColumnWidth: CGFloat = 0
     private var newColumnWidth: CGFloat = 0
+    private var numberAttributes: [NSAttributedString.Key: Any] = [:]
 
     /// Where each visible reveal button landed, refreshed every draw and read by
     /// `mouseDown`. Only visible rows are drawn, so this stays a handful of entries.
@@ -63,6 +64,9 @@ final class DiffGutterRulerView: NSRulerView {
         numberFont = .monospacedDigitSystemFont(ofSize: max(9, codeFont.pointSize - 1.5),
                                                 weight: .regular)
         signFont = codeFont
+        // Digits stay in the shared muted ink on every row — the cell behind them carries
+        // the add/delete signal, and the sign column names it outright.
+        numberAttributes = [.font: numberFont, .foregroundColor: numberColor]
         let digits = max(2, String(max(document?.maxLineNumber ?? 0, 1)).count)
         let digitWidth = ("8" as NSString).size(withAttributes: [.font: numberFont]).width
         let columnWidth = (digitWidth * CGFloat(digits)).rounded(.up)
@@ -91,7 +95,7 @@ final class DiffGutterRulerView: NSRulerView {
               let layoutManager = textView.layoutManager,
               let container = textView.textContainer else { return }
 
-        let previousHits = buttonHits
+        let hadButtons = !buttonHits.isEmpty
         buttonHits = []
 
         let inset = textView.textContainerInset.height
@@ -117,7 +121,7 @@ final class DiffGutterRulerView: NSRulerView {
             // Continue the row's fill across the gutter, over every wrapped fragment of the
             // paragraph — one step stronger than the body's, so the gutter reads as the
             // row's anchor and, on a band, as the block its buttons sit in.
-            if let fill = Self.gutterFill(for: line.role, palette: document.palette) {
+            if let fill = document.palette.gutterFill(for: line.role) {
                 var band = layoutManager.boundingRect(forGlyphRange: glyphs, in: container)
                 band.origin.y += inset + yOffset
                 band.origin.x = 0
@@ -144,38 +148,21 @@ final class DiffGutterRulerView: NSRulerView {
 
             switch line.role {
             case .band:
-                drawRevealButtons(for: line, y: y, height: fragment.height,
-                                  palette: document.palette)
-            case .code(let kind):
-                drawNumbers(for: line, kind: kind, y: y)
+                drawRevealButtons(for: line, y: y, height: fragment.height)
+            case .code:
+                drawNumbers(for: line, y: y)
             }
         }
 
-        // Cursor rects are only rebuilt when the buttons actually moved — invalidating on
-        // every scroll tick would thrash for no visible gain.
-        if !sameHits(previousHits, buttonHits) {
+        // The rects move with the scroll offset, so any draw with a band on screen has
+        // stale ones; only a draw with no band at either end can skip the invalidation.
+        if hadButtons || !buttonHits.isEmpty {
             window?.invalidateCursorRects(for: self)
         }
     }
 
-    /// The gutter's fill for a row. Changed rows take a stronger mix than their body;
-    /// a band takes the button cell's fill, which is what makes it look pressable.
-    private static func gutterFill(for role: DiffDocument.Line.Role,
-                                   palette: DiffPalette) -> NSColor? {
-        switch role {
-        case .code(.addition): return palette.additionGutter
-        case .code(.deletion): return palette.deletionGutter
-        case .band: return palette.bandControlFill
-        case .code: return nil
-        }
-    }
-
-    private func drawNumbers(for line: DiffDocument.Line, kind: DiffRow.Kind, y: CGFloat) {
-        // Digits stay in the shared muted ink on every row — the cell behind them carries
-        // the add/delete signal, and the sign column names it outright.
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: numberFont, .foregroundColor: numberColor,
-        ]
+    private func drawNumbers(for line: DiffDocument.Line, y: CGFloat) {
+        let attrs = numberAttributes
         var x = Self.leadingPad
         if oldColumnWidth > 0 {
             if let number = line.oldLine {
@@ -189,11 +176,9 @@ final class DiffGutterRulerView: NSRulerView {
             }
             x += newColumnWidth + Self.columnGap
         }
-        if let sign = Self.sign(for: kind) {
-            sign.text.draw(at: NSPoint(x: x, y: y), withAttributes: [
-                .font: signFont, .foregroundColor: sign.color,
-            ])
-        }
+        guard case .code(let kind) = line.role, let sign = Self.sign(for: kind) else { return }
+        sign.text.draw(at: NSPoint(x: x, y: y),
+                       withAttributes: [.font: signFont, .foregroundColor: sign.color])
     }
 
     private static func sign(for kind: DiffRow.Kind) -> (text: NSString, color: NSColor)? {
@@ -208,8 +193,7 @@ final class DiffGutterRulerView: NSRulerView {
     /// stand for the hidden lines and the arrow for the direction they come from — up
     /// pulls down the lines nearest the code *below* the band, down those nearest the code
     /// above. A band that can only be read from one side draws only that button.
-    private func drawRevealButtons(for line: DiffDocument.Line, y: CGFloat, height: CGFloat,
-                                   palette: DiffPalette) {
+    private func drawRevealButtons(for line: DiffDocument.Line, y: CGFloat, height: CGFloat) {
         let controls = line.bandControls
         guard !controls.isEmpty else { return }
 
@@ -225,7 +209,7 @@ final class DiffGutterRulerView: NSRulerView {
         var x = Self.leadingPad
         for direction in directions {
             let hit = NSRect(x: x, y: y - padding, width: cell, height: height + padding * 2)
-            drawRevealIcon(direction, in: hit, ink: palette.bandControlInk)
+            drawRevealIcon(direction, in: hit, ink: numberColor)
             buttonHits.append(ButtonHit(rect: hit, anchor: line.rowId, direction: direction))
             x += cell
         }
@@ -241,21 +225,21 @@ final class DiffGutterRulerView: NSRulerView {
         let pointsUp = direction == .up
         let block = NSRect(x: originX, y: rect.midY - (arrowHeight + gap + dotWidth) / 2,
                            width: width, height: arrowHeight + gap + dotWidth)
-        let arrowBottom = pointsUp ? block.maxY - arrowHeight : block.minY
         let dotsY = pointsUp ? block.minY : block.maxY - dotWidth
+        let tipY = pointsUp ? block.maxY : block.minY
+        let tailY = pointsUp ? block.maxY - arrowHeight : block.minY + arrowHeight
+        let barbY = pointsUp ? tipY - 2.4 : tipY + 2.4
 
         ink.setStroke()
         let arrow = NSBezierPath()
         arrow.lineWidth = 1.2
         arrow.lineCapStyle = .round
         arrow.lineJoinStyle = .round
-        let tipY = pointsUp ? arrowBottom + arrowHeight : arrowBottom
-        let tailY = pointsUp ? arrowBottom : arrowBottom + arrowHeight
         arrow.move(to: NSPoint(x: block.midX, y: tailY))
         arrow.line(to: NSPoint(x: block.midX, y: tipY))
-        arrow.move(to: NSPoint(x: block.minX + 1, y: pointsUp ? tipY - 2.4 : tipY + 2.4))
+        arrow.move(to: NSPoint(x: block.minX + 1, y: barbY))
         arrow.line(to: NSPoint(x: block.midX, y: tipY))
-        arrow.line(to: NSPoint(x: block.maxX - 1, y: pointsUp ? tipY - 2.4 : tipY + 2.4))
+        arrow.line(to: NSPoint(x: block.maxX - 1, y: barbY))
         arrow.stroke()
 
         ink.setFill()
@@ -273,9 +257,7 @@ final class DiffGutterRulerView: NSRulerView {
         string.draw(at: NSPoint(x: rightEdge - width, y: y), withAttributes: attrs)
     }
 
-    // MARK: Button hits
-
-    override func mouseDown(with event: NSEvent) {
+        override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         guard let hit = buttonHits.first(where: { $0.rect.contains(point) }) else {
             super.mouseDown(with: event)
@@ -289,10 +271,5 @@ final class DiffGutterRulerView: NSRulerView {
         for hit in buttonHits {
             addCursorRect(hit.rect, cursor: .pointingHand)
         }
-    }
-
-    private func sameHits(_ lhs: [ButtonHit], _ rhs: [ButtonHit]) -> Bool {
-        guard lhs.count == rhs.count else { return false }
-        return zip(lhs, rhs).allSatisfy { $0.rect == $1.rect && $0.anchor == $1.anchor }
     }
 }

@@ -9,6 +9,14 @@ import XCTest
 /// step away from the background whether the background is black, white, or something in
 /// between.
 final class DiffPaletteTests: XCTestCase {
+    /// Perceptual distance between two colors — how far a wash sits from its background.
+    private func distance(_ from: Oklab, _ to: Oklab) -> CGFloat {
+        let dl = to.lightness - from.lightness
+        let da = to.a - from.a
+        let db = to.b - from.b
+        return (dl * dl + da * da + db * db).squareRoot()
+    }
+
     private func components(_ color: NSColor) -> (CGFloat, CGFloat, CGFloat) {
         guard let srgb = color.usingColorSpace(.sRGB) else { return (-1, -1, -1) }
         return (srgb.redComponent, srgb.greenComponent, srgb.blueComponent)
@@ -69,18 +77,11 @@ final class DiffPaletteTests: XCTestCase {
             guard let base = Oklab(background),
                   let addition = Oklab(palette.additionWash),
                   let deletion = Oklab(palette.deletionWash) else { return XCTFail("no components") }
-
-            func distance(_ other: Oklab) -> CGFloat {
-                let dl = other.lightness - base.lightness
-                let da = other.a - base.a
-                let db = other.b - base.b
-                return (dl * dl + da * da + db * db).squareRoot()
-            }
-            XCTAssertGreaterThan(distance(addition), 0.02, "addition wash vanished")
-            XCTAssertGreaterThan(distance(deletion), 0.02, "deletion wash vanished")
+            XCTAssertGreaterThan(distance(base, addition), 0.02, "addition wash vanished")
+            XCTAssertGreaterThan(distance(base, deletion), 0.02, "deletion wash vanished")
             // Neither side may read as the louder one — that is what makes a diff
             // lopsided, and it is exactly what a fixed alpha stops guaranteeing.
-            XCTAssertEqual(distance(addition), distance(deletion), accuracy: 0.035,
+            XCTAssertEqual(distance(base, addition), distance(base, deletion), accuracy: 0.035,
                            "add and delete washes are not the same strength")
         }
     }
