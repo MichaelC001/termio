@@ -1,12 +1,19 @@
 import AppKit
 
 /// The diff's gutter, following `LineNumberRulerView`'s ruler precedent (including its
-/// hard-won full-redraw-on-scroll invalidation, wired up by the pane's coordinator):
-/// old and new line-number columns in the shared muted gutter ink plus the `+`/`−` sign, drawn at
-/// each paragraph's first line fragment. Living in the ruler — outside the text view —
-/// is what keeps the numbers out of selection and the clipboard. The add/delete washes
-/// and band fills continue across it so each row reads as one full-width band.
+/// hard-won full-redraw-on-scroll invalidation, wired up by the pane's coordinator): old
+/// and new line-number columns, the `+`/`−` sign, and — on a collapsed band — the reveal
+/// buttons. Living in the ruler — outside the text view — is what keeps the numbers out of
+/// selection and the clipboard.
+///
+/// The washes continue across it so each row reads edge to edge, but a changed row's
+/// gutter is mixed one step stronger than its body, which is how github.com anchors the
+/// number cell. On a band, the whole gutter becomes one filled cell holding the buttons:
+/// a control needs a block to sit in, or it reads as a glyph stranded in empty space.
 final class DiffGutterRulerView: NSRulerView {
+    /// Reveals part of a collapsed run — the buttons are the ruler's only controls.
+    var onExpand: ((Int, DiffBandDirection) -> Void)?
+
     private var document: DiffDocument?
     private var numberFont: NSFont = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
     private var signFont: NSFont = .monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -14,6 +21,15 @@ final class DiffGutterRulerView: NSRulerView {
     private var numberColor: NSColor = .quaternaryLabelColor
     private var oldColumnWidth: CGFloat = 0
     private var newColumnWidth: CGFloat = 0
+
+    /// Where each visible reveal button landed, refreshed every draw and read by
+    /// `mouseDown`. Only visible rows are drawn, so this stays a handful of entries.
+    private struct ButtonHit {
+        let rect: NSRect
+        let anchor: Int
+        let direction: DiffBandDirection
+    }
+    private var buttonHits: [ButtonHit] = []
 
     private static let leadingPad: CGFloat = 8
     private static let columnGap: CGFloat = 8
@@ -75,12 +91,12 @@ final class DiffGutterRulerView: NSRulerView {
               let layoutManager = textView.layoutManager,
               let container = textView.textContainer else { return }
 
+        let previousHits = buttonHits
+        buttonHits = []
+
         let inset = textView.textContainerInset.height
         // Maps the text view's y-coordinates into the ruler's (carries the scroll offset).
         let yOffset = convert(NSPoint.zero, from: textView).y
-        let numberAttrs: [NSAttributedString.Key: Any] = [
-            .font: numberFont, .foregroundColor: numberColor,
-        ]
         // Numbers stranded in the strip above the content clip would ghost over the
         // header; anything at or above the ruler's top edge stays undrawn.
         let topClipInset = window.map { 1 / $0.backingScaleFactor } ?? 0
@@ -98,9 +114,10 @@ final class DiffGutterRulerView: NSRulerView {
             let glyphs = layoutManager.glyphRange(forCharacterRange: line.range,
                                                   actualCharacterRange: nil)
 
-            // Continue the row's wash/band fill across the gutter, over every wrapped
-            // fragment of the paragraph, so the tint reads edge-to-edge.
-            if let fill = DiffWashLayoutManager.fill(for: line.role) {
+            // Continue the row's fill across the gutter, over every wrapped fragment of the
+            // paragraph — one step stronger than the body's, so the gutter reads as the
+            // row's anchor and, on a band, as the block its buttons sit in.
+            if let fill = Self.gutterFill(for: line.role, palette: document.palette) {
                 var band = layoutManager.boundingRect(forGlyphRange: glyphs, in: container)
                 band.origin.y += inset + yOffset
                 band.origin.x = 0
@@ -120,30 +137,132 @@ final class DiffGutterRulerView: NSRulerView {
                 }
             }
 
-            guard case .code(let kind) = line.role else { continue }
             let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyphs.location,
                                                           effectiveRange: nil)
             let y = fragment.minY + inset + yOffset
             guard y > bounds.minY + topClipInset else { continue }
 
-            var x = Self.leadingPad
-            if oldColumnWidth > 0 {
-                if let number = line.oldLine {
-                    drawNumber(number, rightEdge: x + oldColumnWidth, y: y, attrs: numberAttrs)
-                }
-                x += oldColumnWidth + Self.columnGap
+            switch line.role {
+            case .band:
+                drawRevealButtons(for: line, y: y, height: fragment.height,
+                                  palette: document.palette)
+            case .code(let kind):
+                drawNumbers(for: line, kind: kind, y: y)
             }
-            if newColumnWidth > 0 {
-                if let number = line.newLine {
-                    drawNumber(number, rightEdge: x + newColumnWidth, y: y, attrs: numberAttrs)
-                }
-                x += newColumnWidth + Self.columnGap
+        }
+
+        // Cursor rects are only rebuilt when the buttons actually moved — invalidating on
+        // every scroll tick would thrash for no visible gain.
+        if !sameHits(previousHits, buttonHits) {
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+
+    /// The gutter's fill for a row. Changed rows take a stronger mix than their body;
+    /// a band takes the button cell's fill, which is what makes it look pressable.
+    private static func gutterFill(for role: DiffDocument.Line.Role,
+                                   palette: DiffPalette) -> NSColor? {
+        switch role {
+        case .code(.addition): return palette.additionGutter
+        case .code(.deletion): return palette.deletionGutter
+        case .band: return palette.bandControlFill
+        case .code: return nil
+        }
+    }
+
+    private func drawNumbers(for line: DiffDocument.Line, kind: DiffRow.Kind, y: CGFloat) {
+        // Digits stay in the shared muted ink on every row — the cell behind them carries
+        // the add/delete signal, and the sign column names it outright.
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: numberFont, .foregroundColor: numberColor,
+        ]
+        var x = Self.leadingPad
+        if oldColumnWidth > 0 {
+            if let number = line.oldLine {
+                drawNumber(number, rightEdge: x + oldColumnWidth, y: y, attrs: attrs)
             }
-            if let sign = Self.sign(for: kind) {
-                sign.text.draw(at: NSPoint(x: x, y: y), withAttributes: [
-                    .font: signFont, .foregroundColor: sign.color,
-                ])
+            x += oldColumnWidth + Self.columnGap
+        }
+        if newColumnWidth > 0 {
+            if let number = line.newLine {
+                drawNumber(number, rightEdge: x + newColumnWidth, y: y, attrs: attrs)
             }
+            x += newColumnWidth + Self.columnGap
+        }
+        if let sign = Self.sign(for: kind) {
+            sign.text.draw(at: NSPoint(x: x, y: y), withAttributes: [
+                .font: signFont, .foregroundColor: sign.color,
+            ])
+        }
+    }
+
+    private static func sign(for kind: DiffRow.Kind) -> (text: NSString, color: NSColor)? {
+        switch kind {
+        case .addition: return ("+", .systemGreen)
+        case .deletion: return ("−", .systemRed)
+        case .context, .hunk: return nil
+        }
+    }
+
+    /// A band's reveal buttons: an arrow over a dotted line, github.com's shape. The dots
+    /// stand for the hidden lines and the arrow for the direction they come from — up
+    /// pulls down the lines nearest the code *below* the band, down those nearest the code
+    /// above. A band that can only be read from one side draws only that button.
+    private func drawRevealButtons(for line: DiffDocument.Line, y: CGFloat, height: CGFloat,
+                                   palette: DiffPalette) {
+        let controls = line.bandControls
+        guard !controls.isEmpty else { return }
+
+        var directions: [DiffBandDirection] = []
+        if controls.contains(.down) { directions.append(.down) }
+        if controls.contains(.up) { directions.append(.up) }
+
+        // Side by side rather than github.com's stacked pair: its expander is double
+        // height to fit two 16pt icons, and a diff row here is barely taller than its text.
+        let padding = DiffDocument.bandPadding
+        let cell = (ruleThickness - Self.leadingPad - Self.trailingPad)
+            / CGFloat(directions.count)
+        var x = Self.leadingPad
+        for direction in directions {
+            let hit = NSRect(x: x, y: y - padding, width: cell, height: height + padding * 2)
+            drawRevealIcon(direction, in: hit, ink: palette.bandControlInk)
+            buttonHits.append(ButtonHit(rect: hit, anchor: line.rowId, direction: direction))
+            x += cell
+        }
+    }
+
+    private func drawRevealIcon(_ direction: DiffBandDirection, in rect: NSRect, ink: NSColor) {
+        let width: CGFloat = 7
+        let arrowHeight: CGFloat = 5
+        let gap: CGFloat = 2.5
+        let dotWidth: CGFloat = 1.2
+        let originX = (rect.midX - width / 2).rounded()
+        // The arrow leans toward the code it reveals, the dots sit on the hidden side.
+        let pointsUp = direction == .up
+        let block = NSRect(x: originX, y: rect.midY - (arrowHeight + gap + dotWidth) / 2,
+                           width: width, height: arrowHeight + gap + dotWidth)
+        let arrowBottom = pointsUp ? block.maxY - arrowHeight : block.minY
+        let dotsY = pointsUp ? block.minY : block.maxY - dotWidth
+
+        ink.setStroke()
+        let arrow = NSBezierPath()
+        arrow.lineWidth = 1.2
+        arrow.lineCapStyle = .round
+        arrow.lineJoinStyle = .round
+        let tipY = pointsUp ? arrowBottom + arrowHeight : arrowBottom
+        let tailY = pointsUp ? arrowBottom : arrowBottom + arrowHeight
+        arrow.move(to: NSPoint(x: block.midX, y: tailY))
+        arrow.line(to: NSPoint(x: block.midX, y: tipY))
+        arrow.move(to: NSPoint(x: block.minX + 1, y: pointsUp ? tipY - 2.4 : tipY + 2.4))
+        arrow.line(to: NSPoint(x: block.midX, y: tipY))
+        arrow.line(to: NSPoint(x: block.maxX - 1, y: pointsUp ? tipY - 2.4 : tipY + 2.4))
+        arrow.stroke()
+
+        ink.setFill()
+        var dotX = block.minX
+        while dotX < block.maxX {
+            NSRect(x: dotX, y: dotsY, width: dotWidth, height: dotWidth).fill()
+            dotX += dotWidth * 2
         }
     }
 
@@ -154,11 +273,26 @@ final class DiffGutterRulerView: NSRulerView {
         string.draw(at: NSPoint(x: rightEdge - width, y: y), withAttributes: attrs)
     }
 
-    private static func sign(for kind: DiffRow.Kind) -> (text: NSString, color: NSColor)? {
-        switch kind {
-        case .addition: return ("+", .systemGreen)
-        case .deletion: return ("−", .systemRed)
-        case .context, .hunk: return nil
+    // MARK: Button hits
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let hit = buttonHits.first(where: { $0.rect.contains(point) }) else {
+            super.mouseDown(with: event)
+            return
         }
+        onExpand?(hit.anchor, hit.direction)
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        for hit in buttonHits {
+            addCursorRect(hit.rect, cursor: .pointingHand)
+        }
+    }
+
+    private func sameHits(_ lhs: [ButtonHit], _ rhs: [ButtonHit]) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        return zip(lhs, rhs).allSatisfy { $0.rect == $1.rect && $0.anchor == $1.anchor }
     }
 }

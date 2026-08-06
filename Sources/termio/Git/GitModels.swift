@@ -141,9 +141,10 @@ struct DiffRow: Identifiable, Sendable {
     let text: String
     let oldLine: Int?
     let newLine: Int?
-    /// The changed span within a paired deletion/addition line, in `Character`
+    /// The changed spans within a paired deletion/addition line, in `Character`
     /// offsets — rendered with a stronger background so a one-word edit in a long
-    /// line reads at a glance. `nil` when the line has no counterpart or the two
-    /// sides share too little for a span to mean anything.
-    var emphasis: Range<Int>? = nil
+    /// line reads at a glance. A line with two separate edits carries two spans.
+    /// Empty when the line has no counterpart or the two sides share too little for
+    /// spans to mean anything.
+    var emphasis: [Range<Int>] = []
 }

@@ -469,10 +469,9 @@ enum GitService {
         return rows
     }
 
-    /// Marks the changed span inside modified lines (Critique/Xcode's intraline
-    /// highlight): within each hunk, a run of deletions immediately followed by a run
-    /// of additions is paired index-wise, and each pair gets its common prefix/suffix
-    /// stripped to leave the span that actually changed.
+    /// Marks the changed spans inside modified lines: within each hunk, a run of
+    /// deletions immediately followed by a run of additions is paired index-wise, and
+    /// each pair is word-diffed by `DiffIntraline`.
     private static func applyIntraline(_ rows: inout [DiffRow]) {
         var i = 0
         while i < rows.count {
@@ -482,47 +481,13 @@ enum GitService {
             let addStart = i
             while i < rows.count, rows[i].kind == .addition { i += 1 }
             for k in 0..<min(addStart - delStart, i - addStart) {
-                guard let (old, new) = emphasisRanges(rows[delStart + k].text, rows[addStart + k].text)
+                guard let spans = DiffIntraline.spans(old: rows[delStart + k].text,
+                                                      new: rows[addStart + k].text)
                 else { continue }
-                rows[delStart + k].emphasis = old
-                rows[addStart + k].emphasis = new
+                rows[delStart + k].emphasis = spans.old
+                rows[addStart + k].emphasis = spans.new
             }
         }
-    }
-
-    /// The changed spans of a deletion/addition line pair: common prefix and suffix
-    /// are peeled off, then the boundaries snap outward to whole words so renaming
-    /// `newValue` → `oldValue` highlights the identifiers, not a `ldValue` tail.
-    /// Returns `nil` when the sides share under a fifth of the shorter line — a
-    /// rewrite, where span-highlighting the whole line would just be noise.
-    private static func emphasisRanges(_ oldText: String, _ newText: String) -> (Range<Int>, Range<Int>)? {
-        guard oldText != newText, oldText.count <= 2000, newText.count <= 2000 else { return nil }
-        let o = Array(oldText), n = Array(newText)
-        var prefix = 0
-        while prefix < o.count, prefix < n.count, o[prefix] == n[prefix] { prefix += 1 }
-        var suffix = 0
-        while suffix < o.count - prefix, suffix < n.count - prefix,
-              o[o.count - 1 - suffix] == n[n.count - 1 - suffix] { suffix += 1 }
-        guard (prefix + suffix) * 5 >= min(o.count, n.count) else { return nil }
-
-        // CJK scripts have no intra-word boundaries, so snapping there would swallow
-        // the whole run — every ideograph/kana counts as its own boundary instead.
-        func isWord(_ c: Character) -> Bool {
-            guard c.isLetter || c.isNumber || c == "_" else { return false }
-            guard let scalar = c.unicodeScalars.first else { return false }
-            return scalar.value < 0x2E80
-        }
-        while prefix > 0, isWord(o[prefix - 1]),
-              (prefix < o.count - suffix && isWord(o[prefix]))
-                || (prefix < n.count - suffix && isWord(n[prefix])) {
-            prefix -= 1
-        }
-        while suffix > 0, isWord(o[o.count - suffix]),
-              (o.count - suffix > prefix && isWord(o[o.count - suffix - 1]))
-                || (n.count - suffix > prefix && isWord(n[n.count - suffix - 1])) {
-            suffix -= 1
-        }
-        return (prefix..<(o.count - suffix), prefix..<(n.count - suffix))
     }
 
     private static func isFileHeader(_ line: String) -> Bool {

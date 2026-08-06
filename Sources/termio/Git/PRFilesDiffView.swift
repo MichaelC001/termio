@@ -18,6 +18,7 @@ struct PRFilesSplitView: View {
     let onClose: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
+
     @State private var selection: String?
 
     /// The changed-files rail width for a given pane width — a third of the pane, clamped so neither
@@ -154,10 +155,16 @@ private struct PRFileDiffBody: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
+    /// Tints mixed into the pane's own background, so the wash reads the same on any
+    /// terminal theme.
+    private var palette: DiffPalette {
+        DiffPalette(background: settings.terminalBackgroundColor, isDark: colorScheme == .dark)
+    }
+
     @State private var rows: [DiffRow] = []
     @State private var document: DiffDocument?
     @State private var styledLines: [Int: NSAttributedString] = [:]
-    @State private var expanded: Set<Int> = []
+    @State private var expansion = DiffExpansion()
     @State private var isLoading = true
 
     var body: some View {
@@ -221,12 +228,12 @@ private struct PRFileDiffBody: View {
                 font: settings.resolvedTerminalFont(),
                 backgroundColor: settings.terminalBackgroundColor,
                 numberColor: settings.gutterInk(for: colorScheme),
-                onExpand: { id in
-                    expanded.insert(id)
+                onExpand: { anchor, direction in
+                    expansion.reveal(anchor, direction)
                     self.document = DiffDocument.build(
-                        rows: rows, expanded: expanded,
+                        rows: rows, expansion: expansion, palette: palette,
                         codeFont: settings.resolvedTerminalFont(),
-                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
+                        lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
                 },
                 onWalk: onWalk,
                 onClose: onClose
@@ -254,7 +261,7 @@ private struct PRFileDiffBody: View {
         rows = parsed
         document = parsed.isEmpty
             ? nil
-            : DiffDocument.build(rows: parsed, expanded: expanded,
+            : DiffDocument.build(rows: parsed, expansion: expansion, palette: palette,
                                  codeFont: settings.resolvedTerminalFont(),
                                  lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
         isLoading = false
@@ -333,10 +340,16 @@ private struct FileDiffCard: View {
     let onClose: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
+
+    /// Tints mixed into the pane's own background, so the wash reads the same on any
+    /// terminal theme.
+    private var palette: DiffPalette {
+        DiffPalette(background: settings.terminalBackgroundColor, isDark: colorScheme == .dark)
+    }
     @State private var rows: [DiffRow] = []
     @State private var document: DiffDocument?
     @State private var styledLines: [Int: NSAttributedString] = [:]
-    @State private var expanded: Set<Int> = []
+    @State private var expansion = DiffExpansion()
     @State private var contentHeight: CGFloat = 0
     @State private var loaded = false
 
@@ -402,7 +415,10 @@ private struct FileDiffCard: View {
                 font: settings.resolvedTerminalFont(),
                 backgroundColor: settings.terminalBackgroundColor,
                 numberColor: settings.gutterInk(for: colorScheme),
-                onExpand: { id in expanded.insert(id); rebuildDocument() },
+                onExpand: { anchor, direction in
+                    expansion.reveal(anchor, direction)
+                    rebuildDocument()
+                },
                 onWalk: { _ in false },
                 onClose: onClose,
                 embedded: true,
@@ -431,16 +447,16 @@ private struct FileDiffCard: View {
         rows = parsed
         document = parsed.isEmpty
             ? nil
-            : DiffDocument.build(rows: parsed, expanded: expanded,
+            : DiffDocument.build(rows: parsed, expansion: expansion, palette: palette,
                                  codeFont: settings.resolvedTerminalFont(),
                                  lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
         await buildStyled(parsed)
     }
 
     private func rebuildDocument() {
-        document = DiffDocument.build(rows: rows, expanded: expanded,
+        document = DiffDocument.build(rows: rows, expansion: expansion, palette: palette,
                                       codeFont: settings.resolvedTerminalFont(),
-                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
+                                      lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
     }
 
     private func buildStyled(_ parsed: [DiffRow]) async {

@@ -25,6 +25,12 @@ struct GitDiffView: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
+    /// Tints mixed into the pane's own background, so the wash reads the same on any
+    /// terminal theme.
+    private var palette: DiffPalette {
+        DiffPalette(background: settings.terminalBackgroundColor, isDark: colorScheme == .dark)
+    }
+
     @State private var rows: [DiffRow] = []
     @State private var document: DiffDocument?
     @State private var isLoading = true
@@ -34,8 +40,8 @@ struct GitDiffView: View {
     /// Syntax-colored line content per row id, filled by a background pass after the
     /// rows land; the document renders plain until then.
     @State private var styledLines: [Int: NSAttributedString] = [:]
-    /// Ids (first hidden row) of the collapsed bands the user has expanded.
-    @State private var expanded: Set<Int> = []
+    /// How much of each collapsed run the reader has revealed.
+    @State private var expansion = DiffExpansion()
 
     // Find bar — the same `FileFindBar` the code editor uses, over the diff's read-only text.
     @State private var findBarVisible = false
@@ -199,12 +205,12 @@ struct GitDiffView: View {
                 font: settings.resolvedTerminalFont(),
                 backgroundColor: settings.terminalBackgroundColor,
                 numberColor: settings.gutterInk(for: colorScheme),
-                onExpand: { id in
-                    expanded.insert(id)
+                onExpand: { anchor, direction in
+                    expansion.reveal(anchor, direction)
                     self.document = DiffDocument.build(
-                        rows: rows, expanded: expanded,
+                        rows: rows, expansion: expansion, palette: palette,
                         codeFont: settings.resolvedTerminalFont(),
-                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
+                        lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
                 },
                 onWalk: { walk($0) },
                 onClose: onClose,
@@ -263,7 +269,7 @@ struct GitDiffView: View {
         rows = parsed
         document = parsed.isEmpty
             ? nil
-            : DiffDocument.build(rows: parsed, expanded: expanded,
+            : DiffDocument.build(rows: parsed, expansion: expansion, palette: palette,
                                  codeFont: settings.resolvedTerminalFont(),
                                  lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
         isLoading = false
