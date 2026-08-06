@@ -346,14 +346,16 @@ final class DiffTextView: NSTextView {
     /// of it, matching the editor's and reader's stripped menus.
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
-        menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+        menu.allowsContextMenuPlugIns = false
+        // Not `copy:`: macOS 26 decorates the standard editing selectors with a system symbol
+        // that `image = nil` cannot clear, and the rest of this menu is plain text.
+        menu.addItem(withTitle: "Copy", action: #selector(copySelection), keyEquivalent: "")
         if canAddToChat?() == true {
             menu.addItem(.separator())
             // One name everywhere (Cursor's): a selection goes over as the pasted
             // snippet, none means the diffed file's path — context says which.
             let add = NSMenuItem(title: "Add to Chat", action: #selector(addToChatAction), keyEquivalent: "")
             add.target = self
-            add.image = NSImage(systemSymbolName: "plus.bubble", accessibilityDescription: nil)
             menu.addItem(add)
         }
         if onClose != nil {
@@ -372,6 +374,13 @@ final class DiffTextView: NSTextView {
     }
 
     @objc private func closeFromMenu() { onClose?() }
+
+    @objc private func copySelection(_ sender: Any?) { copy(sender) }
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(copySelection) { return selectedRange().length > 0 }
+        return super.validateUserInterfaceItem(item)
+    }
 
     override func mouseDown(with event: NSEvent) {
         if let anchor = expandableBand(at: event) {

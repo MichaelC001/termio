@@ -376,17 +376,22 @@ private final class SavingTextView: NSTextView {
     /// A deliberately minimal right-click menu — just the edit basics and a prominent Close —
     /// instead of AppKit's full text menu (Look Up, Translate, Font, Substitutions, Speech,
     /// Layout Orientation, Services…), which buried Close under a wall of items an editor covering
-    /// the terminal has no use for. `cut`/`copy`/`paste` route through the responder chain, so they
-    /// auto-enable off the selection and clipboard exactly like the native items did.
+    /// the terminal has no use for.
+    ///
+    /// The edit items go through private wrappers rather than `cut:` / `copy:` / `paste:` because
+    /// macOS 26 decorates the standard editing selectors with a system symbol that cannot be
+    /// cleared — `item.image = nil` reads back as the symbol again. The wrappers forward to the
+    /// real actions and `validateUserInterfaceItem` restores the selection / clipboard gating the
+    /// responder chain used to do.
     override func menu(for event: NSEvent) -> NSMenu? {
         guard showsCloseMenuItem else { return super.menu(for: event) }
         let menu = NSMenu()
         if isEditable {
-            menu.addItem(withTitle: "Cut", action: #selector(cut(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: "Cut", action: #selector(cutSelection), keyEquivalent: "")
         }
-        menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "Copy", action: #selector(copySelection), keyEquivalent: "")
         if isEditable {
-            menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: "Paste", action: #selector(pasteClipboard), keyEquivalent: "")
         }
         menu.addItem(.separator())
         if canAddToChat?() == true {
@@ -395,7 +400,6 @@ private final class SavingTextView: NSTextView {
             // says which, the label stays put.
             let add = NSMenuItem(title: "Add to Chat", action: #selector(addToChatAction), keyEquivalent: "")
             add.target = self
-            add.image = NSImage(systemSymbolName: "plus.bubble", accessibilityDescription: nil)
             menu.addItem(add)
         }
         let close = NSMenuItem(title: "Close", action: #selector(closeEditorOverlay), keyEquivalent: "")
@@ -408,6 +412,23 @@ private final class SavingTextView: NSTextView {
         let range = selectedRange()
         let selection = range.length > 0 ? (string as NSString).substring(with: range) : nil
         addToChat?(selection)
+    }
+
+    @objc private func cutSelection(_ sender: Any?) { cut(sender) }
+    @objc private func copySelection(_ sender: Any?) { copy(sender) }
+    @objc private func pasteClipboard(_ sender: Any?) { paste(sender) }
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        switch item.action {
+        case #selector(cutSelection):
+            return isEditable && selectedRange().length > 0
+        case #selector(copySelection):
+            return selectedRange().length > 0
+        case #selector(pasteClipboard):
+            return isEditable && NSPasteboard.general.canReadObject(forClasses: [NSString.self], options: nil)
+        default:
+            return super.validateUserInterfaceItem(item)
+        }
     }
 
     /// AppKit appends AutoFill + Services to an EDITABLE text view's context menu after
