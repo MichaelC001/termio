@@ -1,5 +1,24 @@
 import Foundation
 
+/// The companion wire contract's revision. One monotonically increasing
+/// integer, bumped when either end needs to make a compatibility decision — a
+/// new request, a changed meaning for an existing field, a new byte mode — not
+/// for additive fields that already have a safe default.
+///
+/// History:
+///   0: pre-versioning. No `wire` field on the wire; any peer that omits it.
+///   1: 2026-08-07: `wire` declared on `.auth` and `CompanionRoster`.
+public enum Wire {
+    /// A peer that predates the field entirely. Absent decodes to this.
+    public static let legacy = 0
+    /// This build's revision.
+    public static let current = 1
+    /// Oldest Mac this phone will talk to.
+    public static let minimumServer = 0
+    /// Oldest phone this Mac will serve.
+    public static let minimumClient = 0
+}
+
 /// The companion wire protocol, shared by the Mac companion server and the iOS
 /// client so the two never drift. v1 is deliberately tiny:
 ///
@@ -16,7 +35,7 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     /// pairing token from the Mac's QR code. Until it lands, the server sends
     /// nothing and refuses every other message — the port may sit behind a
     /// public tunnel URL, where "connected" must not mean "trusted".
-    case auth(token: String)
+    case auth(token: String, wire: Int)
     /// The client asks to bridge a specific session's PTY (roster session id).
     /// Sent once, immediately after the socket opens; the server replays its
     /// recent output and starts streaming.
@@ -127,8 +146,8 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     public func encoded() -> String {
         // Small, hand-stable JSON so both ends agree without a schema tool.
         switch self {
-        case .auth(let token):
-            return Self.json(["t": "auth", "token": token])
+        case .auth(let token, let wire):
+            return Self.json(["t": "auth", "token": token, "wire": wire])
         case .attach(let sessionID):
             return #"{"t":"attach","session":"\#(sessionID)"}"#
         case .start(let projectID, let agent):
@@ -239,7 +258,7 @@ public enum CompanionControl: Codable, Sendable, Equatable {
         switch type {
         case "auth":
             guard let token = obj["token"] as? String else { return nil }
-            return .auth(token: token)
+            return .auth(token: token, wire: obj["wire"] as? Int ?? Wire.legacy)
         case "attach":
             guard let sessionID = obj["session"] as? String else { return nil }
             return .attach(sessionID: sessionID)
@@ -609,6 +628,7 @@ public struct RosterAgent: Codable, Sendable, Equatable {
 /// `"roster"` so it coexists with the small `CompanionControl` messages.
 public struct CompanionRoster: Codable, Sendable, Equatable {
     public let t: String
+    public let wire: Int
     public let projects: [RosterProject]
     /// The agents the Mac has enabled in Settings ▸ Agents, in preset order —
     /// the phone's new-session menu mirrors this instead of a fixed list. Empty
@@ -616,17 +636,21 @@ public struct CompanionRoster: Codable, Sendable, Equatable {
     /// falls back to its built-in defaults).
     public let agents: [RosterAgent]
 
-    public init(projects: [RosterProject], agents: [RosterAgent] = []) {
+    public init(
+        projects: [RosterProject], agents: [RosterAgent] = [], wire: Int = Wire.current
+    ) {
         t = "roster"
+        self.wire = wire
         self.projects = projects
         self.agents = agents
     }
 
-    private enum CodingKeys: String, CodingKey { case t, projects, agents }
+    private enum CodingKeys: String, CodingKey { case t, wire, projects, agents }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         t = try c.decode(String.self, forKey: .t)
+        wire = try c.decodeIfPresent(Int.self, forKey: .wire) ?? Wire.legacy
         projects = try c.decodeIfPresent([RosterProject].self, forKey: .projects) ?? []
         agents = try c.decodeIfPresent([RosterAgent].self, forKey: .agents) ?? []
     }

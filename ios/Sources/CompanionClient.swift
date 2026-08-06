@@ -191,7 +191,12 @@ final class CompanionClient: NSObject {
             case .success(let message):
                 if case .string(let text) = message {
                     if let roster = CompanionRoster.decode(text) {
-                        onRoster?(roster)
+                        if roster.wire < Wire.minimumServer {
+                            onError?("Update termio on your Mac to connect this phone.")
+                            stop()
+                        } else {
+                            onRoster?(roster)
+                        }
                     } else {
                         switch CompanionControl.decode(text) {
                         case .started(let sessionID, let agent): onStarted?(sessionID, agent)
@@ -228,7 +233,9 @@ extension CompanionClient: URLSessionWebSocketDelegate {
         Log.companion.notice("roster link connected to \(self.url.host ?? "?", privacy: .public)")
         // Auth rides first on every connect; the roster is the server's reply.
         if let token = CompanionLink.token(of: url) {
-            task.send(.string(CompanionControl.auth(token: token).encoded())) { _ in }
+            task.send(
+                .string(CompanionControl.auth(token: token, wire: Wire.current).encoded())
+            ) { _ in }
         } else {
             // No `?t=` on the paired URL: the socket opens, but the Mac refuses
             // it after its ~10s auth grace window, so the link loops
