@@ -1,3 +1,5 @@
+@AGENTS.md
+
 # termio
 
 ## What termio is
