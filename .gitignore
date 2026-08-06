@@ -22,9 +22,6 @@ sandbox-helper/.build/
 # Vercel project link (local credentials/metadata)
 .vercel/
 
-# SwiftPM build artifacts inside the companion package
-companion/.build/
-
 # xcodebuild derived data for the iOS dev-run script
 ios/build/
 ios/build-sim/
