@@ -6,6 +6,8 @@ DerivedData/
 termio.app/
 termio-dev.app/
 .claude/settings.local.json
+.claude/worktrees/
+.claude/scheduled_tasks.lock
 
 # Local state from the omo agent tool (run-continuation cache); not project source.
 .omo/
