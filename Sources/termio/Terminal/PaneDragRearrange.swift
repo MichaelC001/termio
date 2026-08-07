@@ -1,57 +1,77 @@
 import AppKit
 import GhosttyTerminal
 
-/// A pane drag in flight: the lifted pane, plus the pane and drop zone under
-/// the pointer right now. `PaneDragRearrange` writes it, `TerminalPane` draws
-/// it — the store's published copy is what keeps the two in step.
+/// Which pane is showing its grab handle, and whether the pointer is on the
+/// handle itself rather than in the band that reveals it — ghostty dims the
+/// glyph in the band and brightens it under the pointer.
+struct PaneHandleHover: Equatable {
+    var pane: Session.ID
+    var overHandle: Bool
+}
+
+/// A point inside a pane, in that pane's top-left-origin space.
+struct PanePointer: Equatable {
+    var pane: Session.ID
+    var local: CGPoint
+}
+
+/// A pane drag in flight: the lifted pane, plus the pane and drop zone under the
+/// pointer right now. `PaneDragRearrange` writes it, `TerminalPane` draws it —
+/// the store's published copy keeps the two in step.
 struct PaneDragState: Equatable {
-    /// The pane being dragged.
     var source: Session.ID
-    /// The visible pane under the pointer — `nil` over a divider, outside the
-    /// terminal area, or off the window. The source pane itself is a valid
-    /// hover but never a valid drop.
+    /// The visible pane under the pointer — nil over a divider, outside the
+    /// terminal area, or off the window. The source pane is a valid hover but
+    /// never a valid drop.
     var target: Session.ID?
     var zone: PaneDropZone?
+    /// Where the pointer is, in the form the hit test already produces — enough
+    /// for the overlay to place the drag preview without a second coordinate
+    /// bridge.
+    var pointer: PanePointer?
 }
 
 /// Direct-manipulation rearrange (issue #183) through ghostty's grab handle: a
-/// short strip at the top of each pane, revealed when the pointer nears it, that
-/// drags the pane onto a drop zone on another — release to re-split (edge
-/// halves) or swap (center).
+/// strip at the top of each pane, revealed as the pointer reaches it, that drags
+/// the pane onto a drop zone on another — release to re-split (edge halves) or
+/// swap (center).
 ///
 /// The gesture used to be a ⌘⌥⇧ chord over the pane body, which worked and
-/// nobody could find. Ghostty's answer to the same problem — chromeless
-/// surfaces with no title bar to grab — is a visible handle
-/// (`SurfaceGrabHandle`), and a handle explains itself. The strip stays small
-/// and only exists while a split is on screen, so what it costs the terminal is
-/// bounded: clicks land in it only where there is a pane to rearrange.
+/// nobody could find. Ghostty's answer to the same problem — chromeless surfaces
+/// with no title bar to grab — is a visible handle (`SurfaceGrabHandle`), and a
+/// handle explains itself.
 ///
-/// The wrapper instantiates its own view class, so — like `TerminalContextMenu`
-/// — this hooks in one level up: local event monitors held for the app's
-/// lifetime. Hit-testing the handle here rather than mounting a view over the
-/// surface is what keeps the press from ever reaching a mouse-reporting TUI.
-/// The drag itself is plain geometry against the visible panes; the release is
-/// one `dropPane` call into the store, which owns the tree mutation.
+/// Like `TerminalContextMenu`, this hooks in one level above the wrapper's own
+/// view class: local event monitors held for the app's lifetime. Hit-testing the
+/// handle here rather than mounting a view over the surface is what keeps the
+/// press from ever reaching a mouse-reporting TUI. The drag is plain geometry
+/// against the visible panes; the release is one `dropPane` call into the store,
+/// which owns the tree mutation.
 @MainActor
 final class PaneDragRearrange {
     private weak var store: TermioStore?
     // Held for the app's lifetime; never removed.
     private var monitors: [Any] = []
-    /// True from the chorded press to the release. Esc cancels the drag but
-    /// leaves this set, so the tail of the gesture (the remaining dragged/up
-    /// events) is still swallowed instead of leaking into the terminal.
+    private var observers: [NSObjectProtocol] = []
+    /// True from the press to the release. Esc cancels the drag but leaves this
+    /// set, so the tail of the gesture is still swallowed rather than leaking
+    /// into the terminal.
     private var dragging = false
     private var cancelled = false
     private var cursorPushed = false
+    private var hoverCursorPushed = false
 
-    /// The handle itself: ghostty's dimensions (`SurfaceGrabHandle`), centered
-    /// on the pane's top edge. Small on purpose — it is the only place a plain
-    /// click is taken from the terminal.
+    /// Ghostty's handle dimensions (`SurfaceGrabHandle`), centered on the pane's
+    /// top edge. Small on purpose — it is the only place a plain click is taken
+    /// from the terminal.
     static let handleSize = CGSize(width: 80, height: 12)
 
-    /// The handle appears while the pointer is anywhere in the top fifth of the
-    /// pane, so it is reachable without aiming at 12 points of nothing.
-    private static let hoverHeightFactor: CGFloat = 0.2
+    /// The band that reveals the handle. Ghostty uses the pane's top *fifth*,
+    /// which on a tall pane is deep enough to park a pointer in — and since
+    /// mouse-moved events only arrive while the mouse moves, a parked pointer
+    /// leaves the handle up until the next move. A header-sized strip is still a
+    /// wide target for a 12pt handle.
+    private static let hoverBandHeight: CGFloat = 28
 
     /// The handle's rect in a pane of `size`, top-left origin — the space both
     /// this hit test and `TerminalPane`'s overlay work in.
@@ -61,7 +81,7 @@ final class PaneDragRearrange {
     }
 
     private static func isInHoverRegion(_ point: CGPoint, in size: CGSize) -> Bool {
-        point.y >= 0 && point.y <= size.height * hoverHeightFactor
+        point.y >= 0 && point.y <= min(size.height, hoverBandHeight)
     }
 
     init(store: TermioStore) {
@@ -81,65 +101,93 @@ final class PaneDragRearrange {
         monitor(.leftMouseDragged) { [weak self] in self?.moved($0) ?? false }
         monitor(.leftMouseUp) { [weak self] in self?.ended($0) ?? false }
         monitor(.keyDown) { [weak self] in self?.pressedKey($0) ?? false }
-        // Never consumed: the reveal only reads the pointer, so hover tracking
-        // can't interfere with a TUI's own mouse reporting.
+        // Never consumed: the reveal only reads the pointer, so it can't
+        // interfere with a TUI's own mouse reporting.
         monitor(.mouseMoved) { [weak self] in
             self?.hovered($0)
             return false
         }
-    }
-
-    /// Publishes which pane should be showing its handle. Only while a split is
-    /// on screen, matching `began` — a lone pane has nothing to rearrange, so it
-    /// gets no handle and keeps every click.
-    private func hovered(_ event: NSEvent) {
-        guard let store else { return }
-        var revealed: Session.ID?
-        if !dragging, store.splitRoot != nil, !store.isPaneZoomed,
-           let window = event.window,
-           window.frameAutosaveName == AppDelegate.mainWindowFrameAutosaveName,
-           let contentView = window.contentView,
-           let (id, point, size) = paneGeometry(at: event.locationInWindow, in: contentView, window: window),
-           Self.isInHoverRegion(point, in: size) {
-            revealed = id
+        // A pointer that leaves for another app sends no further mouse-moved
+        // events, so the last reveal would hang on screen until it came back.
+        for name in [NSApplication.didResignActiveNotification, NSWindow.didResignKeyNotification] {
+            let token = NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.setHover(nil) }
+            }
+            observers.append(token)
         }
-        // @Published on every mouse-moved event would redraw the pane tree at
-        // pointer rate; only a change is worth a render.
-        if store.paneHandleHover != revealed { store.paneHandleHover = revealed }
     }
 
-    /// Starts a drag from a press on a pane's grab handle. Only meaningful with
-    /// a split on screen: a lone pane has nowhere to go, and a zoomed pane hides
-    /// the layout the drop zones would preview.
+    // MARK: - Hover
+
+    private func hovered(_ event: NSEvent) {
+        guard !dragging, let hit = rearrangeablePane(under: event),
+              Self.isInHoverRegion(hit.point, in: hit.size)
+        else { return setHover(nil) }
+        setHover(PaneHandleHover(pane: hit.id,
+                                 overHandle: Self.handleRect(in: hit.size).contains(hit.point)))
+    }
+
+    /// Republishing on every mouse-moved event would redraw the pane tree at
+    /// pointer rate; only a change is worth a render.
+    private func setHover(_ hover: PaneHandleHover?) {
+        guard let store, store.paneHandleHover != hover else { return }
+        store.paneHandleHover = hover
+        setHoverCursor(hover?.overHandle == true)
+    }
+
+    /// The open hand over the handle, mirroring ghostty's cursor rects. A drawn
+    /// handle has no view to hang a rect on, and a plain `set()` loses the race:
+    /// this monitor runs before the event reaches the surface, which then puts
+    /// the I-beam back on its own cursor update. A pushed cursor outranks that.
+    private func setHoverCursor(_ overHandle: Bool) {
+        guard overHandle != hoverCursorPushed else { return }
+        if overHandle { NSCursor.openHand.push() } else { NSCursor.pop() }
+        hoverCursorPushed = overHandle
+    }
+
+    // MARK: - Drag
+
+    /// Starts a drag from a press on a pane's grab handle.
     private func began(_ event: NSEvent) -> Bool {
         guard let store, !dragging,
-              store.splitRoot != nil, !store.isPaneZoomed,
-              !(store.isDetailPresented && store.inspectorMaximized),
-              let window = event.window,
-              window.frameAutosaveName == AppDelegate.mainWindowFrameAutosaveName,
-              let contentView = window.contentView,
-              let (id, point, size) = paneGeometry(at: event.locationInWindow, in: contentView, window: window),
-              Self.handleRect(in: size).contains(point)
+              let hit = rearrangeablePane(under: event),
+              Self.handleRect(in: hit.size).contains(hit.point),
+              let contentView = event.window?.contentView
         else { return false }
         dragging = true
         cancelled = false
-        store.paneDrag = PaneDragState(source: id)
+        // Snapshot before anything moves, the way ghostty builds its drag image.
+        // A surface that won't cache leaves this nil and the drag runs without a
+        // preview rather than showing a blank card.
+        store.paneDragPreview = terminalView(for: hit.id, in: contentView)?.paneSnapshot
+        store.paneDrag = PaneDragState(source: hit.id,
+                                       pointer: PanePointer(pane: hit.id, local: hit.point))
+        // The overlay washes translucently over live surfaces, which have to
+        // keep producing frames for the length of the gesture.
+        store.beginPaneDragRepaint()
+        // The hand closes on the press; drop the hover cursor so the two can't
+        // stack up.
+        setHoverCursor(false)
         NSCursor.closedHand.push()
         cursorPushed = true
         return true
     }
 
-    /// Tracks the pointer across panes. Once a drag has begun the modifiers no
-    /// longer matter — releasing the chord mid-drag doesn't drop the pane on
-    /// the floor, the mouse button does.
+    /// Tracks the pointer across panes. Once a drag has begun only the mouse
+    /// button ends it.
     private func moved(_ event: NSEvent) -> Bool {
         guard dragging else { return false }
         guard !cancelled, let store, var drag = store.paneDrag,
               let window = event.window, let contentView = window.contentView
         else { return true }
-        let hit = pane(at: event.locationInWindow, in: contentView, window: window)
-        drag.target = hit?.0
-        drag.zone = hit?.1
+        let hit = paneGeometry(at: event.locationInWindow, in: contentView, window: window)
+        drag.target = hit?.id
+        drag.zone = hit.map { PaneDropZone.zone(at: $0.point, in: $0.size) }
+        // Off every pane (a divider, the sidebar) the preview holds its last
+        // position rather than snapping to a corner.
+        if let hit { drag.pointer = PanePointer(pane: hit.id, local: hit.point) }
         store.paneDrag = drag
         return true
     }
@@ -159,7 +207,7 @@ final class PaneDragRearrange {
     private func pressedKey(_ event: NSEvent) -> Bool {
         guard dragging, !cancelled, event.keyCode == 53 else { return false }
         cancelled = true
-        store?.paneDrag = nil
+        clearDrag()
         popCursorIfNeeded()
         return true
     }
@@ -167,8 +215,19 @@ final class PaneDragRearrange {
     private func finish() {
         dragging = false
         cancelled = false
-        store?.paneDrag = nil
+        clearDrag()
+        // The drop rebuilt the layout under the pointer, so whichever pane was
+        // showing a handle may not be there any more; the next move decides.
+        setHover(nil)
         popCursorIfNeeded()
+    }
+
+    /// Drops the overlay and stops the drag pump — whose parting repaint is what
+    /// clears the wash back off the panes.
+    private func clearDrag() {
+        store?.paneDrag = nil
+        store?.paneDragPreview = nil
+        store?.endPaneDragRepaint()
     }
 
     private func popCursorIfNeeded() {
@@ -177,24 +236,31 @@ final class PaneDragRearrange {
         cursorPushed = false
     }
 
-    /// The visible pane under a window point, and the drop zone within it.
-    /// Resolved by geometry rather than `hitTest` for the same reason as
-    /// `TerminalContextMenu`: invisible siblings stay mounted at full pane
-    /// size, so AppKit's topmost hit may be a hidden view. Visible panes tile
-    /// without overlapping, so "contains the point and is visible" is
-    /// unambiguous.
-    private func pane(at point: NSPoint, in contentView: NSView,
-                      window: NSWindow) -> (Session.ID, PaneDropZone)? {
-        guard let (id, local, size) = paneGeometry(at: point, in: contentView, window: window)
+    // MARK: - Geometry
+
+    /// The pane under the pointer, once everything that makes a rearrange
+    /// meaningful holds: a split on screen, not zoomed, no full-window inspector
+    /// over it, and the pointer in the key main window.
+    private func rearrangeablePane(under event: NSEvent) -> PaneHit? {
+        guard let store, store.splitRoot != nil, !store.isPaneZoomed,
+              !(store.isDetailPresented && store.inspectorMaximized),
+              let window = event.window, window.isKeyWindow,
+              window.frameAutosaveName == AppDelegate.mainWindowFrameAutosaveName,
+              let contentView = window.contentView
         else { return nil }
-        return (id, PaneDropZone.zone(at: local, in: size))
+        return paneGeometry(at: event.locationInWindow, in: contentView, window: window)
     }
 
-    /// The visible pane under a window point, with that point in the pane's own
-    /// top-left-origin space and the pane's size — what both the handle hit test
-    /// and the drop-zone lookup are expressed in.
+    /// A visible pane, the pointer in its top-left-origin space, and its size —
+    /// what the handle hit test and the drop-zone lookup are both expressed in.
+    private typealias PaneHit = (id: Session.ID, point: CGPoint, size: CGSize)
+
+    /// Resolved by geometry rather than `hitTest` for the same reason as
+    /// `TerminalContextMenu`: invisible siblings stay mounted at full pane size,
+    /// so AppKit's topmost hit may be a hidden view. Visible panes tile without
+    /// overlapping, so "contains the point and is visible" is unambiguous.
     private func paneGeometry(at point: NSPoint, in contentView: NSView,
-                              window: NSWindow) -> (Session.ID, CGPoint, CGSize)? {
+                              window: NSWindow) -> PaneHit? {
         guard let store else { return nil }
         for view in terminalViews(in: contentView) {
             guard view.window === window,
@@ -208,6 +274,10 @@ final class PaneDragRearrange {
             return (id, normalized, view.bounds.size)
         }
         return nil
+    }
+
+    private func terminalView(for id: Session.ID, in root: NSView) -> TerminalView? {
+        terminalViews(in: root).first { sessionID(for: $0) == id }
     }
 
     // The two resolution helpers below mirror `TerminalContextMenu`'s private
@@ -229,5 +299,19 @@ final class PaneDragRearrange {
     /// cache — the view and its cached `TerminalViewState` share a controller.
     private func sessionID(for view: TerminalView) -> Session.ID? {
         store?.surfaces.first { $0.value.controller === view.controller }?.key
+    }
+}
+
+private extension NSView {
+    /// A still of the view, the way ghostty builds its drag image
+    /// (`SurfaceView.asImage`). Nil for an empty or uncacheable view, so callers
+    /// degrade to no preview.
+    var paneSnapshot: NSImage? {
+        guard bounds.width > 1, bounds.height > 1,
+              let rep = bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
+        cacheDisplay(in: bounds, to: rep)
+        let image = NSImage(size: bounds.size)
+        image.addRepresentation(rep)
+        return image
     }
 }

@@ -193,20 +193,21 @@ struct TerminalPane: View {
             // near (see `PaneDragRearrange`). Never hit-testable: the press is
             // taken by the event monitor, so this is purely the affordance.
             if let layout, !zoomed, store.paneDrag == nil,
-               let hovered = store.paneHandleHover, let frame = layout.frames[hovered] {
-                PaneGrabHandle(paneFrame: frame)
+               let hovered = store.paneHandleHover, let frame = layout.frames[hovered.pane] {
+                PaneGrabHandle(paneFrame: frame, isOverHandle: hovered.overHandle)
                     .allowsHitTesting(false)
             }
             // The drag's preview (issue #183): the drop-zone highlight is what
             // resolves the ambiguity a drag-rearrange otherwise has — you see
             // the half (or the swap) the release would commit.
             if let drag = store.paneDrag, let layout, !zoomed {
-                PaneDragOverlay(drag: drag, layout: layout)
+                PaneDragOverlay(drag: drag, layout: layout, preview: store.paneDragPreview)
             }
         }
-        // The handle fades rather than blinking as the pointer crosses into the
-        // reveal band; short enough that it still feels attached to the pointer.
-        .animation(.easeOut(duration: 0.12), value: store.paneHandleHover)
+        // Ghostty's own timing (`SurfaceDragSource`): the handle fades in and
+        // brightens rather than blinking. The drag overlay animates its own
+        // pieces — the highlight slides, the preview must not.
+        .animation(.easeInOut(duration: 0.15), value: store.paneHandleHover)
     }
 
     /// A surface becoming first responder is the source of truth for split selection.
@@ -681,34 +682,52 @@ private final class TerminalFocusDriver {
     }
 }
 
-/// The visual half of the pane drag (issue #183): a wash over the lifted
-/// source pane plus a highlight over the region the release would commit —
-/// the half of the target the pane would occupy, or the whole target for a
-/// swap. Geometry comes straight from the tree's `layout`, so the preview and
-/// the drop can never disagree. The tint family is the file-drop wash's
-/// desaturated blue-grey, not accent blue.
-/// The pane's drag affordance: ghostty's ellipsis strip on the top edge, shown
-/// while the pointer is near it. Drawing only — the press that starts the drag
-/// is hit-tested in `PaneDragRearrange`, so this never stands between the
-/// pointer and the terminal.
+/// The pane's drag affordance: ghostty's ellipsis strip on the top edge, drawn
+/// while the pointer is on it. Drawing only — the press that starts the drag is
+/// hit-tested in `PaneDragRearrange`, so this never stands between the pointer
+/// and the terminal.
 private struct PaneGrabHandle: View {
     let paneFrame: CGRect
+    /// True once the pointer is on the handle itself rather than in the band
+    /// that reveals it: ghostty's two strengths, present then ready.
+    let isOverHandle: Bool
 
     var body: some View {
         let rect = PaneDragRearrange.handleRect(in: paneFrame.size)
         Image(systemName: "ellipsis")
             .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(.primary.opacity(0.55))
+            .foregroundStyle(.primary.opacity(isOverHandle ? 0.8 : 0.3))
             .frame(width: rect.width, height: rect.height)
             .position(x: paneFrame.minX + rect.midX, y: paneFrame.minY + rect.midY)
             .transition(.opacity)
     }
 }
 
+/// The visual half of the pane drag (issue #183): a wash over the lifted source
+/// pane, a highlight over the region the release would commit — the half of the
+/// target the pane would occupy, or the whole target for a swap — and a scaled
+/// still of the pane riding under the pointer. Geometry comes straight from the
+/// tree's `layout`, so the preview and the drop can never disagree. The tint
+/// family is the file-drop wash's desaturated blue-grey, not accent blue.
 private struct PaneDragOverlay: View {
+    /// Ghostty's own drag-image scale (`SurfaceDragSource.previewScale`).
+    private static let previewScale: CGFloat = 0.2
+
     let drag: PaneDragState
     let layout: SplitNode.PaneLayout
+    /// The pane as it looked when picked up, or nil when the surface could not
+    /// be captured — the drag then runs without a preview rather than showing an
+    /// empty card.
+    let preview: NSImage?
     @Environment(\.colorScheme) private var colorScheme
+    @State private var lastHighlight: CGRect = .zero
+
+    /// The pointer in the pane area's coordinate space, rebuilt from the pane it
+    /// is over plus the local point the hit test already resolved.
+    private var pointerCenter: CGPoint? {
+        guard let pointer = drag.pointer, let frame = layout.frames[pointer.pane] else { return nil }
+        return CGPoint(x: frame.minX + pointer.local.x, y: frame.minY + pointer.local.y)
+    }
 
     private var tint: Color {
         colorScheme == .dark
@@ -716,29 +735,75 @@ private struct PaneDragOverlay: View {
             : Color(.sRGB, red: 0.40, green: 0.52, blue: 0.68, opacity: 1)
     }
 
+    /// The half (or whole pane) the release would fill, or `.zero` when the
+    /// pointer is over nothing droppable.
+    private var highlightRect: CGRect {
+        guard let target = drag.target, target != drag.source,
+              let zone = drag.zone, let frame = layout.frames[target]
+        else { return .zero }
+        return zone.highlightRect(in: frame)
+    }
+
     var body: some View {
         ZStack {
-            // The source pane reads as "lifted": a faint wash, no border.
-            if let source = layout.frames[drag.source] {
-                Rectangle()
-                    .fill(tint.opacity(colorScheme == .dark ? 0.08 : 0.07))
-                    .frame(width: source.width, height: source.height)
-                    .position(x: source.midX, y: source.midY)
-            }
-            // Fill only, no border — the same restraint as the file-drop wash
-            // above (and ghostty's own split-drag overlay): the rect's edge
-            // already draws the zone boundary, a stroke would just say it twice.
-            if let target = drag.target, target != drag.source,
-               let zone = drag.zone, let frame = layout.frames[target] {
-                let rect = zone.highlightRect(in: frame)
-                Rectangle()
-                    .fill(tint.opacity(colorScheme == .dark ? 0.20 : 0.17))
-                    .frame(width: rect.width, height: rect.height)
-                    .position(x: rect.midX, y: rect.midY)
-            }
+            liftedSource
+            dropHighlight
+            draggedPreview
         }
         .allowsHitTesting(false)
-        .animation(.easeOut(duration: 0.12), value: drag)
+    }
+
+    /// The pane you picked up, faintly washed so it reads as lifted.
+    @ViewBuilder private var liftedSource: some View {
+        if let source = layout.frames[drag.source] {
+            Rectangle()
+                .fill(tint.opacity(colorScheme == .dark ? 0.08 : 0.07))
+                .frame(width: source.width, height: source.height)
+                .position(x: source.midX, y: source.midY)
+        }
+    }
+
+    /// Where the release would land. Fill only, no border — the same restraint
+    /// as the file-drop wash (and ghostty's split-drag overlay): the rect's edge
+    /// already draws the boundary, a stroke would say it twice.
+    ///
+    /// Always mounted and hidden by opacity, because a view that survives every
+    /// zone change is what lets SwiftUI interpolate the rect — the highlight
+    /// then slides from half to half instead of blinking out and back in
+    /// somewhere else. Leaving every zone keeps the last rect and only fades it;
+    /// animating the frame to nothing reads as the wash shrinking away rather
+    /// than releasing.
+    private var dropHighlight: some View {
+        let rect = highlightRect == .zero ? lastHighlight : highlightRect
+        return Rectangle()
+            .fill(tint.opacity(colorScheme == .dark ? 0.20 : 0.17))
+            .frame(width: rect.width, height: rect.height)
+            .position(x: rect.midX, y: rect.midY)
+            .opacity(highlightRect == .zero ? 0 : 1)
+            .animation(.easeInOut(duration: 0.15), value: rect)
+            .animation(.easeInOut(duration: 0.15), value: highlightRect == .zero)
+            .onChange(of: highlightRect) { _, new in
+                if new != .zero { lastHighlight = new }
+            }
+    }
+
+    /// A still of the dragged pane under the pointer, at ghostty's drag-image
+    /// scale and translucent like the image a real dragging session carries — an
+    /// opaque card reads as a second window dropped on the layout. Never
+    /// animated: an interpolated position is a preview that lags the mouse.
+    @ViewBuilder private var draggedPreview: some View {
+        if let preview, let center = pointerCenter {
+            Image(nsImage: preview)
+                .resizable()
+                .interpolation(.medium)
+                .frame(width: preview.size.width * Self.previewScale,
+                       height: preview.size.height * Self.previewScale)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
+                .opacity(0.8)
+                .position(center)
+                .animation(nil, value: drag)
+        }
     }
 }
 
