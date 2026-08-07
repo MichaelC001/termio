@@ -3,13 +3,28 @@
 How termio writes. Read this before writing anything a user reads: UI strings,
 the landing site, `docs/`, release notes, issues, PR bodies.
 
-Every rule below came from copy already in the repo. The Do examples are real
-termio sentences; the Don't examples are the same sentence written the way it
-would have gone wrong. When a rule and a shipped string disagree, the rule wins
-and the string is a bug.
+## Where these rules come from
 
-`AGENTS.md` carries the five hardest rules so an agent that never opens this file
-still can't get them wrong. This is the long form.
+**Not from termio's own copy.** Most strings in this repo were written with AI
+assistance. Mining them for examples would make this file a mirror — it would
+teach the next writer to reproduce whatever is already here, including the
+mistakes. That is the failure mode named below as *regression to the mean*, and
+a style guide is the worst place to commit it.
+
+The examples here come from two outside sources:
+
+- **UI copy** — Apple's shipped strings, extracted from this Mac's System
+  Settings panes. Quoted verbatim and marked *(Apple)*. When you need to know
+  how a control should read, open the pane that does the same job and read it.
+- **Prose** — the rules in tldraw's `VOICE.md`, an open, human-written guide by
+  a team that ships developer documentation for a living.
+
+termio's existing strings are the **backlog**, not the standard. When a shipped
+string and this file disagree, the string is the bug. Run the `review-copy`
+skill over a file rather than assuming what is there is right.
+
+`AGENTS.md` carries the few rules an agent must not get wrong even if it never
+opens this file. This is the long form.
 
 ## The voice in one line
 
@@ -27,110 +42,90 @@ The reader's time is the scarce resource. Say the thing, then stop.
 
 ## UI copy
 
-This is termio's largest writing surface and the one Apple's own conventions
-govern most tightly. When in doubt, open System Settings and read how Apple
-writes the same kind of control.
+termio's largest writing surface. Apple already solved most of it; the job is
+to match their register, not to invent one.
 
-### Subtexts describe the control, not the user
+### Read how Apple writes the same control
 
-One sentence. Present tense. The subject is the control, not "you".
+Before writing a subtext, find the System Settings pane that does something
+similar and read it. These are real strings from macOS:
 
-**Do:**
+> Known networks will be joined automatically. If no known networks are available, you will be asked before joining a new network. *(Apple, Network)*
 
-> Posts a notification when an agent finishes or needs you while termio is in the background.
+> Extensions add extra functionality to your Mac and apps, and some may run in the background. *(Apple, Login Items)*
 
-> Takes Codex out of the new-session menu. Its settings are kept.
+> Allow the applications below to access the contents of your screen and audio through Remote Desktop, even while using other applications. *(Apple, Privacy & Security)*
 
-> Reads ~/.ssh/config directly — termio keeps no separate host list.
+> Applications that have requested access to your contacts will appear here. *(Apple, Privacy & Security)*
 
-**Don't:**
+> This will permanently delete it from all your devices. *(Apple, Accessibility)*
 
-> You can enable this option if you would like to be notified when your agents complete their tasks.
+Three things to notice, because each contradicts what a language model will
+produce by default:
 
-> This powerful setting allows you to seamlessly manage which agents appear in your menu.
+**Apple addresses the user directly.** "your Mac", "your contacts", "you will
+be asked". There is no rule that the control must be the grammatical subject.
+Write whichever subject makes the sentence clearest.
 
-The second sentence, when there is one, exists to answer the question the first
-one raises — usually "what happens to my stuff?". "Its settings are kept."
-"Existing sessions keep running." "Private keys are never read."
+**Apple uses passive voice when the actor doesn't matter.** "Known networks
+will be joined automatically." "Authentication is required to save the VNC
+password." Prefer active, but don't contort a sentence to avoid passive when
+the actor is the system and nobody cares which part of it.
 
-Two sentences is the ceiling. If a control needs three, the control is wrong.
+**Apple's subtexts are not short.** Several run past 140 characters and carry
+two clauses. Length is not the enemy; unearned words are. One idea per
+sentence, however long that sentence needs to be.
 
-### Say the mechanism only when the user pays for it
+### The second sentence answers "what happens to my stuff?"
 
-Mechanism belongs in copy when it changes what the user should expect or do —
-a file termio reads, a command it runs, a limit it has. Not otherwise.
+When a control has a consequence, name it. This is where honesty lives.
 
-**Do:**
+> This will permanently delete it from all your devices. *(Apple)*
 
-> The command is run in a login shell, so anything on your PATH works.
+> Turning off "Share across devices" will also prevent this Mac from sharing your Focus status. *(Apple)*
 
-> Line height applies to the file editor and diffs; the terminal keeps the font's own.
-
-**Don't:**
-
-> termio spawns the process via forkpty with a login_tty shape so the child inherits the controlling terminal.
-
-The first tells you why your PATH works. The second is a design doc sentence
-that wandered into a settings pane.
+Two sentences is the ceiling. A control needing three is a control that needs
+redesigning, not more prose.
 
 ### Empty states name the next action
 
-An empty state that only says "nothing here" wastes the one moment the user is
-looking for a way forward.
+An empty state is the one moment the user is actively looking for a way
+forward. Don't spend it saying "nothing here".
 
-**Do:**
+> Select a command or click Add (+) to create a new command. *(Apple)*
 
-> No hosts yet — add one, or write a Host block in ~/.ssh/config.
-
-> No local usage yet — run `claude` once, then Refresh.
-
-> Enable Claude Code or Codex in the Agents tab to see their usage here.
-
-**Don't:**
-
-> No hosts found.
-
-> There is no data to display at this time.
+**Don't:** "No hosts found." · "There is no data to display at this time."
 
 ### Errors say what happened, then what to do
 
-Name the thing that failed in the user's terms. If there is an action, give it
-in the same breath. Never blame the user, never apologize.
+Name what failed in the user's terms. If there is an action, give it in the
+same breath. Never blame the user, never apologize, never use an emoji.
 
-**Do:**
+> Remote Management is not installed on this computer. *(Apple)*
 
-> Couldn't tell which project you're in. Run this from inside a termio session.
+> Internet Sharing is not installed on this computer. To install Internet Sharing, install the BSD packages using the macOS Installer. *(Apple)*
 
-> No coding agent is enabled — pass `--agent <name>`.
+> Your organization's device management settings do not recommend beta updates on this device. *(Apple)*
 
-> Notifications for termio are turned off in System Settings.
-
-**Don't:**
-
-> An unexpected error occurred. Please try again later.
-
-> Sorry! We couldn't figure out your project. 😞
-
-Prefer `Couldn't` over `Could not` — it is what Apple uses and it is shorter.
-Use the curly apostrophe (`’`), consistently, in every user-facing string.
+Use `Couldn't`, not `Could not` — Apple contracts, and it is shorter. Use the
+curly apostrophe, consistently.
 
 ### Buttons and menu items are verbs
 
-The label says what happens when you click it, in sentence case, no trailing
-punctuation.
+The label says what happens when you click it. No trailing punctuation.
 
 **Do:** `Show Original` · `Group with` · `Ungroup` · `Close Session` ·
 `Remove from List` · `Reveal in Finder`
 
-**Don't:** `OK` for a destructive action · `Submit` · `Click here` ·
+**Don't:** `OK` on a destructive action · `Submit` · `Click here` ·
 `Are you sure?` as a button
 
-Destructive labels name the destruction: "Delete", "Remove from List", not
+Destructive labels name the destruction: "Delete", "Remove from List", never
 "Yes".
 
 ### Fixed vocabulary
 
-These words are decided. Using a synonym is a bug, not a style choice.
+Decided. A synonym is a bug, not a style choice.
 
 | Use | Never |
 | --- | --- |
@@ -141,8 +136,8 @@ These words are decided. Using a synonym is a bug, not a style choice.
 | agent | assistant, bot, AI |
 | needs you | blocked, waiting for input (as a status label) |
 
-`termio` is lowercase, including at the start of a sentence — that is what the
-README, the docs, and every UI string do. Never `TermIO`.
+`termio` is lowercase, including at the start of a sentence — what the README,
+the docs, and the UI strings do. Never `TermIO`.
 
 **Open:** the landing site is split, roughly 79 `Termio` to 49 `termio`. Either
 it converges on lowercase like the rest of the repo, or the marketing surface
@@ -151,131 +146,187 @@ either way as a drive-by.
 
 ### Never describe termio as paid
 
-termio is free. There is no tier, no trial, no seat, no license key. Copy that
-implies otherwise is wrong everywhere — UI, landing site, README, release notes,
+termio is free. No tier, no trial, no seat, no license key. Copy implying
+otherwise is wrong everywhere — UI, landing site, README, release notes,
 replies to users. The words that give it away: "upgrade", "unlock", "pro",
 "premium", "free for now".
 
-## The landing site and README
+## Prose: docs, landing, GitHub
 
-Marketing copy is the same voice with the volume up, not a different voice. It
-may lead with a claim; it may not make one it can't cash.
+### Pronouns
 
-**Do:**
+- **"you"** for the reader: "You can drag a session onto another to group them."
+- **"termio"** or **"the app"** for the software: "termio reads each agent's
+  hooks." Not "we read" — that conflates the software with the person writing.
+- **"we"** only in docs and essays where a person is genuinely speaking:
+  "We tried a chat lens twice and reverted it both times."
+- Never first-person singular. Never "It is recommended that…".
 
-> A real terminal, not a web view. Swift + AppKit on libghostty, rendered with Metal. No Electron, no xterm.js.
+### Rhythm
 
-> Free. No account, no license keys, no paid tier. MIT-licensed.
-
-The pattern: **claim, then the evidence, in the same breath.** Every headline
-feature earns its adjective in the next clause.
+Vary sentence length. AI defaults to uniform sentences and uniform paragraphs;
+that uniformity is itself a tell, independent of any individual word.
 
 **Don't:**
 
-> The most powerful terminal ever built for AI development.
+> The store holds session state. The sidebar renders the tree. The watcher
+> reloads changed directories. The surface cache keeps shells alive.
 
-> Seamlessly orchestrate your agent workflows with cutting-edge tooling.
+**Do:**
+
+> `TermioStore` owns the session tree. The sidebar renders it, the watcher
+> reloads directories that actually changed, and a surface cache keeps each
+> shell alive across view rebuilds — which is why switching sessions doesn't
+> restart your agent.
+
+### The landing site
+
+Same voice, volume up. It may lead with a claim; it may not make one it can't
+cash. The pattern is **claim, then the evidence, in the same breath**:
+
+> A real terminal, not a web view. Swift + AppKit on libghostty, rendered with
+> Metal. No Electron, no xterm.js.
 
 Claims must match what the code does. A capability that is planned, partial, or
 only true on the dev channel is described as such or not at all.
 
-## Docs
+### docs/
 
-`docs/` is written for someone who will have to maintain this in a year — often
-you, often an agent. Front matter carries the status; the prose carries the
-reasoning.
+Written for whoever maintains this in a year — often you, often an agent.
+Front matter carries the status; the prose carries the reasoning.
 
-- Open by saying what the document decides or describes. No "This document
+- Open by saying what the document decides or describes. Never "This document
   aims to…".
-- Record **why**, and record what was rejected and why. A design doc whose
-  alternatives section is empty hasn't done its job.
-- Past decisions stay written down even when they were wrong; mark them, don't
-  delete them. The record is the point.
-- Prefer a table over four parallel paragraphs.
+- Record **why**, and record what was rejected and why. A design doc with an
+  empty alternatives section hasn't done its job.
+- Wrong past decisions stay written down, marked. The record is the point.
+- Design docs may be long. Runbooks may not — a runbook is a command list with
+  just enough prose to say when to run it.
 
-Design docs may be long. Runbooks may not — a runbook is a command list with
-just enough prose to say when to run it.
+### GitHub
 
-## GitHub
-
-- **Commit messages** follow Conventional Commits; use the
-  `conventional-commit` skill. Summary is imperative, lowercase, no trailing
-  period.
-- **PR titles** are imperative and correctly capitalized, with no
-  conventional-commit prefix and no trailing punctuation.
-- **PR bodies** are written for a reviewer who knows the architecture but has
-  not read the diff. Lead with what changes for the user, then how, then what
-  you verified. Include a `Release Notes:` section.
-- **Issue and PR comments are one clean line.** Not an essay, not a summary of
-  what you just did with headers and bullets.
-- **No AI attribution anywhere** — no `Co-Authored-By` trailer, no "Generated
-  with", no bot signature. This applies to commits, PRs, issues, docs, and
-  release notes.
+- **Commits** follow Conventional Commits; use the `conventional-commit` skill.
+- **PR titles** are imperative, correctly capitalized, no conventional-commit
+  prefix, no trailing punctuation.
+- **PR bodies** are for a reviewer who knows the architecture but hasn't read
+  the diff. What changes for the user, then how, then what you verified.
+  Include a `Release Notes:` section.
+- **Issue and PR comments are one clean line.** Not an essay with headers.
+- **No AI attribution anywhere** — no `Co-Authored-By`, no "Generated with", no
+  bot signature, in commits, PRs, issues, docs, or release notes.
 
 ## Tells that mean a machine wrote it
 
-These show up in generated copy and read as noise. Cut them on sight.
+Ordered by how often they actually show up.
 
-**Hollow importance.** "plays a crucial role", "is a key component of",
-"underscores the importance of", "represents a significant step". Say what it
-does instead.
+### Trailing gerunds
 
-**Trailing gerunds.** "…, ensuring a seamless experience", "…, allowing users to
-work more efficiently", "…, making it easier than ever". The clause after the
-comma is almost always empty; delete it.
+The most common pattern, and the one to hunt hardest. A comma followed by an
+`-ing` word near the end of a sentence is the signal.
 
-**Formulaic transitions.** "It's important to note that", "Additionally, it is
-worth mentioning", "In today's fast-paced world". Start with the fact.
+Hollow ones are obvious: "…, ensuring a seamless experience", "…, highlighting
+the importance of X". **Neutral ones are just as bad** — they bury the point at
+the end and flatten the rhythm:
 
-**The rule of three.** "fast, reliable, and intuitive" — three adjectives where
-one specific one would do. Pick the true one.
+"…, allowing you to X" · "…, enabling users to X" · "…, making it easy to X" ·
+"…, giving you X" · "…, providing X" · "…, resulting in X"
 
-**Promotional adjectives.** "powerful", "seamless", "robust", "cutting-edge",
-"game-changing", "revolutionary". None of these survive review.
+**Don't:** "The store is reactive, allowing you to subscribe to changes."
 
-**Negation parallelism.** "It's not just a terminal — it's a home for agents."
-Say what it is.
+**Do:** "The store is reactive. You can subscribe to changes."
 
-**Em dash overuse.** One per paragraph, and only for a real aside. If two
-dashes appear in one sentence, rewrite it.
+The fix is always the same: split into two sentences, or restructure so the
+important part comes first.
 
-**Bolded pseudo-headers in lists.** A bullet that opens with a bold phrase and
-a colon, repeated down a list, is a table pretending to be prose. Use a table.
+### Regression to the mean
 
-**Emoji.** None, anywhere — not in UI, commits, PRs, issues, docs, or release
-notes.
+AI replaces specific, unusual facts with generic positive-sounding language,
+because that is what the average of its training data looks like. This is the
+tell that matters most, because the result reads fine and says nothing.
+
+**Don't:** "The inspector is a powerful and versatile pane that helps you
+review your agents' work efficiently."
+
+**Do:** "The inspector shows changes, a file tree, and the session's transcript.
+The git pane is read-only — you commit in the terminal."
+
+If you don't know the specific, look it up or drop the claim. A vague
+importance claim adds nothing.
+
+### Hollow importance
+
+"plays a crucial role", "is a key component of", "underscores the importance
+of", "represents a significant step". Say what it does instead.
+
+### Formulaic transitions
+
+"Moreover", "Furthermore", "Additionally", "It's important to note that",
+"In today's fast-paced world". Usually deleting them makes the sentence
+stronger. If you need a transition, use a short one: "But", "And", "Also".
+
+### The rule of three
+
+Real lists have two items, or four, or seven. Exactly three adjectives is a
+pattern, not an observation.
+
+**Don't:** "fast, reliable, and intuitive" — **Do:** pick the true one.
+
+### Promotional adjectives
+
+"powerful", "seamless", "robust", "comprehensive", "cutting-edge",
+"game-changing", "empowers you to", "unlock the full potential of". None
+survive review.
+
+### Negation parallelism
+
+"It's not just a terminal — it's a home for agents." Say what it is.
+
+### Bolded pseudo-headers in a list
+
+A bullet opening with a bold phrase and a colon, repeated down a list, is a
+table pretending to be prose. Fine in reference material where scanning beats
+flow; wrong in prose. If the items are genuinely parallel, use a table.
+
+### Em dash overuse
+
+One per paragraph, for a real aside. Two unpaired dashes in one sentence means
+rewrite.
+
+### Emoji
+
+None, anywhere — UI, commits, PRs, issues, docs, release notes.
 
 ## Mechanics
 
-- **Sentence case** for every heading, label, button, menu item, PR title, and
-  doc title. Capitalize proper nouns normally: `PATH`, `SwiftUI`, `GitHub`,
-  `Claude Code`, `libghostty`.
-- **Curly quotes and apostrophes** (`’ “ ”`) in user-facing strings. Straight
-  quotes only inside code, paths, and identifiers.
+- **Sentence case** for descriptive sentences, headings, PR titles, and doc
+  titles. **Title Case** for the names of features, panes, and menu items —
+  Apple writes "Users & Groups", "Internet Sharing", "Remote Management", and
+  termio writes "Group with", "Close Session", "Reveal in Finder".
+- **Curly quotes and apostrophes** in user-facing strings. Straight quotes only
+  inside code, paths, and identifiers.
 - **Backticks** in UI copy for literal commands, flags, and paths the user could
   type: `--agent`, `~/.ssh/config`, `termio sessions`.
-- **Contractions** are fine and preferred: "won't", "doesn't", "couldn't".
-- **Second person** for the reader ("you"); name termio as "termio", not "we",
-  in UI copy. "We" is allowed in docs and essays where a person is speaking.
-- **Numbers**: numerals everywhere in UI ("2 sessions", not "two sessions").
+- **Contractions** are preferred: "won't", "doesn't", "couldn't".
+- **Numerals** in UI: "2 sessions", not "two sessions".
 - **No trailing periods** on labels, buttons, or table cells. Full sentences in
-  subtexts and errors do take one.
+  subtexts and errors take one.
 
 ## Checklist
 
-Run this over any copy before it ships:
-
-- [ ] **One sentence per idea** — is anything two sentences that should be one?
-- [ ] **Subject is the thing, not the user** — "Posts a notification", not "You can be notified"
-- [ ] **Concrete** — does every claim name a file, flag, key, or observable behavior?
+- [ ] **Trailing gerunds** — any comma + `-ing` near a sentence end?
+- [ ] **Specific** — does every claim name a file, flag, key, or observable
+      behavior, or has a specific been smoothed into a generic?
+- [ ] **One idea per sentence** — regardless of length
 - [ ] **Honest** — does it say what the control won't do, or what it costs?
 - [ ] **Next action** — do empty states and errors tell the user what to do?
-- [ ] **Vocabulary** — Group with / Ungroup / Close Session / session / project / agent, lowercase `termio`?
-- [ ] **Sentence case** — headings, labels, buttons, PR titles?
-- [ ] **Apostrophes** — curly, and `Couldn't` rather than `Could not`?
+- [ ] **Rhythm** — do the sentences vary in length, or all run the same?
+- [ ] **Vocabulary** — Group with / Ungroup / Close Session / session / project
+      / agent, lowercase `termio`?
+- [ ] **Case** — sentence case for sentences, Title Case for feature names?
+- [ ] **Apostrophes** — curly, and `Couldn't` over `Could not`?
 - [ ] **Never paid** — no upgrade, unlock, pro, trial, or tier?
-- [ ] **No AI tells** — no hollow importance, trailing gerunds, rule of three, promotional adjectives, emoji?
+- [ ] **No AI tells** — hollow importance, rule of three, promotional
+      adjectives, negation parallelism, emoji?
 - [ ] **No AI attribution** — no co-author trailer, no "generated with"?
 
-The `review-copy` skill runs this checklist as a scored loop; see
-`skills/review-copy/`.
+The `review-copy` skill runs this as a scored loop; see `skills/review-copy/`.

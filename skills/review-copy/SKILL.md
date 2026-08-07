@@ -17,6 +17,11 @@ body, or pasted text.
 Read `VOICE.md` at the repo root. It is the standard; this skill is only the
 loop that applies it. If the two ever disagree, `VOICE.md` wins.
 
+**Never calibrate against neighbouring strings in this repo.** Most of them were
+written with AI assistance, so "it matches the file around it" is evidence of
+nothing. For UI copy, the reference is the macOS System Settings pane that does
+the same job — read Apple's wording, then write termio's.
+
 ## The loop
 
 ```
@@ -49,17 +54,27 @@ Status values: `pending` · `fixed` (claimed, unverified) · `verified-fixed` ·
 Two dimensions, 0–10 each. Score them separately; they fail for different
 reasons and get fixed by different means.
 
-**VOICE** — does it read like termio?
+**VOICE** — does it read like a person wrote it?
 
-- One sentence per idea; the control is the subject, not the user
-- Concrete: names a file, flag, key, or observable behavior
-- Honest: says what a control won't do or what it costs
-- Empty states and errors name the next action
-- Fixed vocabulary (Group with / Ungroup / Close Session, lowercase `termio`)
-- Sentence case, curly apostrophes, `Couldn't` over `Could not`
-- No AI tells (hollow importance, trailing gerunds, rule of three, promotional
-  adjectives, emoji), no AI attribution
-- Nothing implying termio is paid
+Check in this order; the first two catch the most and are the easiest to miss
+because the result reads fine.
+
+1. **Trailing gerunds** — grep the target for `, [a-z]+ing\b`. Every hit is a
+   candidate: "allowing you to", "making it easy to", "ensuring". Neutral ones
+   count.
+2. **Regression to the mean** — has a specific fact been smoothed into a
+   generic? "helps you review your agents' work" where the truth was "shows
+   changes, a file tree, and the transcript".
+3. One idea per sentence, whatever its length
+4. Honest: says what the control won't do or what it costs
+5. Empty states and errors name the next action
+6. Rhythm: do the sentences vary in length, or all run the same?
+7. Fixed vocabulary (Group with / Ungroup / Close Session, lowercase `termio`)
+8. Sentence case for sentences, Title Case for feature names; curly
+   apostrophes; `Couldn't` over `Could not`
+9. Remaining AI tells (hollow importance, rule of three, promotional
+   adjectives, negation parallelism, emoji), no AI attribution
+10. Nothing implying termio is paid
 
 **ACCURACY** — is it true?
 
