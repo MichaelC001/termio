@@ -32,7 +32,22 @@ half of the presentation boundary.
 `fs.read`/`fs.search`/`fs.match` with a coverage-honest host name index, and
 the chunked `upload.*` verbs with HOL discipline) and §C.13 (`git:` resource
 kind — Zed's two-axis status vocabulary, read-only, one event shape + `git.diff`),
-from a design pass against Zed's replicate-everything remote worktree model. -->
+from a design pass against Zed's replicate-everything remote worktree model.
+2026-08-07 (later): §C.12 and §C.13 implemented in termiod
+(`59b5b7a`..`f1d8871`), with four deviations from the text as written:
+(1) §C.13's status trigger is any watcher batch, not only `git_meta` — a
+worktree edit changes `git status` without touching `.git`, so the narrower
+trigger goes stale on exactly the edits the pane exists to show; runs use
+`--no-optional-locks` so status itself cannot re-trigger the watcher.
+(2) §C.13 gap semantics: a subscriber whose cursor cannot replay is served a
+synthetic full-state `git_changed` at the current cursor — "rescan before
+applying" done host-side, because only the host can compute git status.
+(3) §C.12 `upload.open` carries two extra fields the shape omitted: `root`
+for project dests and `session` for `temp:` dests — the host cannot anchor
+confinement (or reap scratch with its session) without being told which.
+(4) cancellation of `fs.search` is a generic `cancel {request}` verb rather
+than a search-specific one, since request ids are already protocol-wide; and
+the `git:` kind is gated on a `git` capability, parallel to `fs_watch`. -->
 
 
 # Design: termiod Session Protocol
