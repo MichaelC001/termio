@@ -568,8 +568,9 @@ final class DiffDocument {
 
 // MARK: - Text view
 
-/// The diff's text view: TextKit 1 so the wash layout manager can paint underneath the
-/// glyphs, plus the line-number column drawn into the container's left inset.
+/// The diff's text view: TextKit 1, so `DiffWashLayoutManager` can paint the row
+/// semantics — washes, edge bars, and the line-number column — underneath the glyphs.
+/// The view itself draws nothing of its own; see the layout manager for why.
 final class DiffTextView: UITextView {
     static let gutterWidth: CGFloat = 34
 
@@ -614,45 +615,6 @@ final class DiffTextView: UITextView {
         (layoutManager as? DiffWashLayoutManager)?.contentWidth = bounds.width
     }
 
-    override func draw(_ rect: CGRect) {
-        super.draw(rect)
-        drawLineNumbers(in: rect)
-    }
-
-    /// Numbers ride in the container's left inset, outside the selectable text — so a
-    /// selection copies pure code, never "214 let x = 1". Only the visible paragraphs
-    /// are measured.
-    private func drawLineNumbers(in rect: CGRect) {
-        guard let document, let context = UIGraphicsGetCurrentContext() else { return }
-        let size = max(9, MobileSettings.shared.codeFont().pointSize - 2)
-        let font = UIFont.monospacedDigitSystemFont(ofSize: size, weight: .regular)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: UIColor.tertiaryLabel,
-        ]
-        // Start at the first paragraph the dirty rect touches — a 5000-line diff must
-        // not measure every line on every scroll tick.
-        let visible = rect.offsetBy(dx: -textContainerInset.left, dy: -textContainerInset.top)
-        let glyphs = layoutManager.glyphRange(forBoundingRect: visible, in: textContainer)
-        let characters = layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
-        context.saveGState()
-        var index = document.lineIndex(at: characters.location)
-        while index < document.lines.count {
-            let line = document.lines[index]
-            index += 1
-            if line.range.location >= NSMaxRange(characters) { break }
-            guard let number = line.number else { continue }
-            let paragraph = self.rect(forParagraph: line)
-            let text = NSAttributedString(string: "\(number)", attributes: attributes)
-            // Right-aligned against the code's leading edge, drawn on the paragraph's
-            // first line so a wrapped line is numbered once.
-            text.draw(at: CGPoint(
-                x: Self.gutterWidth - text.size().width - 8,
-                y: paragraph.minY + font.lineHeight * 0.1
-            ))
-        }
-        context.restoreGState()
-    }
 }
 
 /// Paints each line's meaning behind its glyphs: a saturated 3pt bar at the leading
@@ -667,33 +629,66 @@ final class DiffWashLayoutManager: NSLayoutManager {
 
     static let barWidth: CGFloat = 3
 
+    /// Everything the row means is drawn here, in one pass over the visible lines:
+    /// washes, edge bars, and the line numbers.
+    ///
+    /// The numbers belong on *this* surface specifically. TextKit renders a layout
+    /// manager's drawing into the text view's scrolling container, so it travels with
+    /// `contentOffset` for free; a `UITextView.draw(_:)` override paints into the view's
+    /// own layer instead, which does not move — the numbers then hang in the viewport
+    /// while the code scrolls under them, and the only way back is repainting the whole
+    /// viewport every frame. The desktop learned the same lesson from the other side
+    /// (see `Sources/termio/Git/DiffTextView.swift`, where AppKit's copy-on-scroll
+    /// forces a full ruler invalidation). They still stay out of any selection, because
+    /// they are painted, not part of the string.
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
         if let document, let container = textContainers.first {
             let charRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
             let width = max(usedRect(for: container).width + origin.x, contentWidth)
+            let numberAttributes = Self.numberAttributes()
             var index = document.lineIndex(at: charRange.location)
             while index < document.lines.count {
                 let line = document.lines[index]
                 index += 1
                 if line.range.location >= NSMaxRange(charRange) { break }
-                guard let (wash, bar) = Self.fills(for: line.role) else { continue }
                 let glyphs = glyphRange(forCharacterRange: line.range, actualCharacterRange: nil)
                 var rect = boundingRect(forGlyphRange: glyphs, in: container)
-                rect.origin.x = 0
-                rect.size.width = width
                 rect.origin.y += origin.y
-                if case .band = line.role {
-                    rect = rect.insetBy(dx: 0, dy: -DiffDocument.bandPadding)
+                if let (wash, bar) = Self.fills(for: line.role) {
+                    var fill = rect
+                    fill.origin.x = 0
+                    fill.size.width = width
+                    if case .band = line.role {
+                        fill = fill.insetBy(dx: 0, dy: -DiffDocument.bandPadding)
+                    }
+                    wash.setFill()
+                    UIRectFill(fill)
+                    if let bar {
+                        bar.setFill()
+                        UIRectFill(CGRect(x: 0, y: fill.minY, width: Self.barWidth, height: fill.height))
+                    }
                 }
-                wash.setFill()
-                UIRectFill(rect)
-                if let bar {
-                    bar.setFill()
-                    UIRectFill(CGRect(x: 0, y: rect.minY, width: Self.barWidth, height: rect.height))
+                // `origin.x` is the container's left inset — exactly the column the
+                // numbers live in, and it holds no glyphs to collide with. Drawn on the
+                // paragraph's first line, so a wrapped line is numbered once.
+                if let number = line.number {
+                    let text = NSAttributedString(string: "\(number)", attributes: numberAttributes)
+                    text.draw(at: CGPoint(
+                        x: origin.x - text.size().width - 8,
+                        y: rect.minY
+                    ))
                 }
             }
         }
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
+    }
+
+    private static func numberAttributes() -> [NSAttributedString.Key: Any] {
+        let size = max(9, MobileSettings.shared.codeFont().pointSize - 2)
+        return [
+            .font: UIFont.monospacedDigitSystemFont(ofSize: size, weight: .regular),
+            .foregroundColor: UIColor.tertiaryLabel,
+        ]
     }
 
     /// (row wash, leading bar). The wash is deliberately faint; the bar is full strength.
