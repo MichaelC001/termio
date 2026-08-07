@@ -1203,9 +1203,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.splitSelectedPane(.horizontal)
     }
 
+    /// View ▸ Split Left — side-by-side, with the new terminal on the leading side.
+    @objc func splitPaneLeft(_ sender: Any?) {
+        store.splitSelectedPane(.horizontal, slot: .first)
+    }
+
     /// View ▸ Split Down (⌘⇧D) — splits the focused pane stacked.
     @objc func splitPaneDown(_ sender: Any?) {
         store.splitSelectedPane(.vertical)
+    }
+
+    /// View ▸ Split Up — stacked, with the new terminal above.
+    @objc func splitPaneUp(_ sender: Any?) {
+        store.splitSelectedPane(.vertical, slot: .first)
     }
 
     /// View ▸ Ungroup (⌘W) — collapses the focused pane out of the layout.
@@ -2023,9 +2033,19 @@ private func buildMainMenu() -> NSMenu {
         command: .splitRight
     )
     viewMenu.addItem(
+        withTitle: "Split Left",
+        action: #selector(AppDelegate.splitPaneLeft(_:)),
+        command: .splitLeft
+    )
+    viewMenu.addItem(
         withTitle: "Split Down",
         action: #selector(AppDelegate.splitPaneDown(_:)),
         command: .splitDown
+    )
+    viewMenu.addItem(
+        withTitle: "Split Up",
+        action: #selector(AppDelegate.splitPaneUp(_:)),
+        command: .splitUp
     )
     // ⌘⇧↩ maximises the focused pane (tmux/iTerm2 zoom), toggling back to the split.
     viewMenu.addItem(

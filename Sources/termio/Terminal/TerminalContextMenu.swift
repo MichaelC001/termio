@@ -110,8 +110,17 @@ final class TerminalContextMenu: NSObject {
             menu.addItem(storeItem("Copy Session Link", action: #selector(copyLink), symbol: "link"))
         }
         menu.addItem(.separator())
-        menu.addItem(storeItem("Split Right", action: #selector(splitRight), symbol: "rectangle.split.2x1"))
-        menu.addItem(storeItem("Split Down", action: #selector(splitDown), symbol: "rectangle.split.1x2"))
+        // Ghostty's own split glyphs and order (Right, Left, Down, Up): the filled
+        // half of the rectangle is where the new pane lands, which reads at a
+        // glance in a way "rectangle.split.2x1" never did once there were four.
+        menu.addItem(storeItem("Split Right", action: #selector(splitRight),
+                               symbol: "rectangle.righthalf.inset.filled"))
+        menu.addItem(storeItem("Split Left", action: #selector(splitLeft),
+                               symbol: "rectangle.leadinghalf.inset.filled"))
+        menu.addItem(storeItem("Split Down", action: #selector(splitDown),
+                               symbol: "rectangle.bottomhalf.inset.filled"))
+        menu.addItem(storeItem("Split Up", action: #selector(splitUp),
+                               symbol: "rectangle.tophalf.inset.filled"))
         // Rearranging without drag-and-drop: each direction trades the clicked
         // pane with its neighbour that way (tmux's swap-pane), scored by the
         // same geometry ⌥⌘-arrow focus uses. Directions with no neighbour are
@@ -190,7 +199,9 @@ final class TerminalContextMenu: NSObject {
     }
 
     @objc private func splitRight() { store?.splitSelectedPane(.horizontal) }
+    @objc private func splitLeft() { store?.splitSelectedPane(.horizontal, slot: .first) }
     @objc private func splitDown() { store?.splitSelectedPane(.vertical) }
+    @objc private func splitUp() { store?.splitSelectedPane(.vertical, slot: .first) }
     @objc private func ungroup() { store?.ungroupSelectedPane() }
     @objc private func flipLayout() {
         guard let id = clickedSessionID else { return }
