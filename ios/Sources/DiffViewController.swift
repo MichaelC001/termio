@@ -12,8 +12,8 @@ import UIKit
 ///   leading edge and the line itself takes a very light wash.
 /// - **One line-number column.** Two would cost a tenth of the width; a deletion shows
 ///   its old number, everything else the new one, which is what a reviewer quotes.
-/// - **Fold bands are rows, not gutter buttons.** The whole band is the tap target, so
-///   it clears 44pt.
+/// - **Folds are a pill on a hairline**, named by the line range they hide. The whole
+///   row is the tap target, so it clears 44pt without a slab of grey in the code.
 /// - **The file walker is in the view.** ‹ 3 of 12 › moves between changed files without
 ///   a trip back to the list, and the floating button jumps to the next hunk.
 /// - **Selection feeds the agent.** Long-press → "Send to Agent" bracketed-pastes the
@@ -429,6 +429,7 @@ final class DiffDocument {
 
     struct Line {
         let role: Role
+
         /// The paragraph's range, including its trailing newline.
         let range: NSRange
         /// `DiffLine.id` for code (keys the syntax pass), the first hidden line's id for
@@ -436,6 +437,11 @@ final class DiffDocument {
         let rowId: Int
         /// The number drawn in the gutter: a deletion's old line, else the new one.
         let number: Int?
+
+        var isBand: Bool {
+            if case .band = role { return true }
+            return false
+        }
     }
 
     let attributed: NSAttributedString
@@ -474,8 +480,10 @@ final class DiffDocument {
                     rowId: row.id,
                     number: row.kind == .deletion ? row.oldLine : row.newLine
                 ))
-            case .band(let id, let count, let expandable):
-                let label = "⋯ \(count) unchanged \(count == 1 ? "line" : "lines")"
+            case .band(let id, let range, let expandable):
+                // The range names the code the fold hides, against the same numbers the
+                // gutter shows. A count would only describe the fold itself.
+                let label = "\(range.lowerBound)–\(range.upperBound)"
                 text += label
                 text += "\n"
                 previousWasChange = false
@@ -518,10 +526,12 @@ final class DiffDocument {
         band.paragraphSpacing = bandPadding
         for (item, line) in zip(items, lines) {
             switch item {
-            case .band:
+            case .band(_, _, let expandable):
                 attributed.addAttributes([
-                    .font: UIFont.systemFont(ofSize: 11, weight: .medium),
-                    .foregroundColor: UIColor.tertiaryLabel,
+                    .font: UIFont.roundedCounter(size: 11, weight: .medium),
+                    // A fixed band is inert (its lines were never fetched), so it sits a
+                    // step back in the ink hierarchy.
+                    .foregroundColor: expandable ? UIColor.secondaryLabel : UIColor.tertiaryLabel,
                     .paragraphStyle: band,
                 ], range: line.range)
             case .line(let row):
@@ -603,10 +613,15 @@ final class DiffTextView: UITextView {
         )
         // `characterIndex` snaps to the nearest character, so a tap in the empty space
         // past the end would "hit" the last line. Take the hit only if the point is
-        // actually inside that paragraph.
-        guard let line = document.line(at: index),
-              rect(forParagraph: line).insetBy(dx: 0, dy: -DiffDocument.bandPadding).contains(point)
-        else { return nil }
+        // actually inside that paragraph — with a band's row grown to a full 44pt, since
+        // its pill is a smaller target than the row it stands for.
+        guard let line = document.line(at: index) else { return nil }
+        var hit = rect(forParagraph: line)
+        if line.isBand {
+            let grow = max(0, 44 - hit.height) / 2
+            hit = hit.insetBy(dx: 0, dy: -grow)
+        }
+        guard hit.contains(point) else { return nil }
         return line
     }
 
@@ -654,13 +669,19 @@ final class DiffWashLayoutManager: NSLayoutManager {
                 let glyphs = glyphRange(forCharacterRange: line.range, actualCharacterRange: nil)
                 var rect = boundingRect(forGlyphRange: glyphs, in: container)
                 rect.origin.y += origin.y
-                if let (wash, bar) = Self.fills(for: line.role) {
+                if case .band(let expandable) = line.role {
+                    // The fold reads as a seam in the file with a control sitting on it —
+                    // Mail's trimmed-quote pill — not as a grey slab competing with the
+                    // code around it. The used rect is the centered label's real extent,
+                    // so the capsule wraps the text wherever it lands.
+                    var used = lineFragmentUsedRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+                    used.origin.x += origin.x
+                    used.origin.y += origin.y
+                    drawBand(around: used, across: width, expandable: expandable)
+                } else if let (wash, bar) = Self.fills(for: line.role) {
                     var fill = rect
                     fill.origin.x = 0
                     fill.size.width = width
-                    if case .band = line.role {
-                        fill = fill.insetBy(dx: 0, dy: -DiffDocument.bandPadding)
-                    }
                     wash.setFill()
                     UIRectFill(fill)
                     if let bar {
@@ -683,6 +704,24 @@ final class DiffWashLayoutManager: NSLayoutManager {
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
     }
 
+    /// A hairline across the row with an opaque capsule behind the label. Drawn under
+    /// the glyphs, so the range text lands inside the capsule.
+    private func drawBand(around label: CGRect, across width: CGFloat, expandable: Bool) {
+        let capsule = label.insetBy(dx: -10, dy: -4)
+        let rule = CGRect(x: 0, y: capsule.midY - 0.25, width: width, height: 0.5)
+        UIColor.separator.withAlphaComponent(expandable ? 0.6 : 0.35).setFill()
+        UIRectFill(rule)
+        let path = UIBezierPath(roundedRect: capsule, cornerRadius: capsule.height / 2)
+        // Opaque, so the rule stops cleanly at the capsule instead of striking through it.
+        UIColor.secondarySystemBackground.setFill()
+        path.fill()
+        if expandable {
+            UIColor.separator.setStroke()
+            path.lineWidth = 0.5
+            path.stroke()
+        }
+    }
+
     private static func numberAttributes() -> [NSAttributedString.Key: Any] {
         let size = max(9, MobileSettings.shared.codeFont().pointSize - 2)
         return [
@@ -691,16 +730,15 @@ final class DiffWashLayoutManager: NSLayoutManager {
         ]
     }
 
-    /// (row wash, leading bar). The wash is deliberately faint; the bar is full strength.
+    /// (row wash, leading bar) for a code line. The wash is deliberately faint; the bar
+    /// is full strength. Bands paint themselves — see `drawBand`.
     static func fills(for role: DiffDocument.Role) -> (UIColor, UIColor?)? {
         switch role {
         case .code(.addition):
             return (UIColor.systemGreen.withAlphaComponent(0.09), UIColor.systemGreen)
         case .code(.deletion):
             return (UIColor.systemRed.withAlphaComponent(0.09), UIColor.systemRed)
-        case .band:
-            return (UIColor.label.withAlphaComponent(0.05), nil)
-        case .code:
+        case .band, .code:
             return nil
         }
     }

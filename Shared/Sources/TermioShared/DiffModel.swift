@@ -36,10 +36,12 @@ public struct DiffLine: Identifiable, Sendable, Equatable {
 /// unchanged lines that is folded away.
 public enum DiffItem: Sendable, Equatable {
     case line(DiffLine)
-    /// `expandable` bands (full-context diffs) hold their hidden lines and splice them
-    /// back in when tapped; fixed bands (a 3-line-context diff, where the hidden lines
-    /// were never fetched) only mark the gap.
-    case band(id: Int, count: Int, expandable: Bool)
+    /// A folded run, named by the line range it hides (new-side numbers, so it reads
+    /// against the gutter) — "227–348" says where you are; a count would only describe
+    /// the fold. `expandable` bands (full-context diffs) hold their hidden lines and
+    /// splice them back in when tapped; fixed bands (a 3-line-context diff, where the
+    /// hidden lines were never fetched) only mark the gap.
+    case band(id: Int, lines: ClosedRange<Int>, expandable: Bool)
 }
 
 /// Parsing and folding unified-diff text, kept free of any UI framework so both ends
@@ -109,7 +111,12 @@ public enum DiffParser {
             if expanded.contains(hiddenRows[0].id) {
                 items += hiddenRows.map(DiffItem.line)
             } else {
-                items.append(.band(id: hiddenRows[0].id, count: hiddenRows.count, expandable: true))
+                let first = hiddenRows[0].newLine ?? hiddenRows[0].oldLine ?? 0
+                let last = hiddenRows[hiddenRows.count - 1].newLine
+                    ?? hiddenRows[hiddenRows.count - 1].oldLine ?? first
+                items.append(.band(
+                    id: hiddenRows[0].id, lines: first...max(first, last), expandable: true
+                ))
             }
             items += run.suffix(tail).map(DiffItem.line)
         }
@@ -119,7 +126,9 @@ public enum DiffParser {
             case .hunk:
                 flush(isLast: false)
                 if let start = row.newLine, start > lastNewLine + 1 {
-                    items.append(.band(id: row.id, count: start - lastNewLine - 1, expandable: false))
+                    items.append(.band(
+                        id: row.id, lines: (lastNewLine + 1)...(start - 1), expandable: false
+                    ))
                 }
             case .context:
                 run.append(row)

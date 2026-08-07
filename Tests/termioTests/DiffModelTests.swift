@@ -75,12 +75,13 @@ final class DiffFoldTests: XCTestCase {
         rows.insert(DiffLine(id: 100, kind: .addition, text: "new", oldLine: nil, newLine: 16), at: 15)
 
         let items = DiffParser.displayItems(lines: rows, expanded: [])
-        guard case .band(let id, let count, let expandable) = items.first else {
+        guard case .band(let id, let range, let expandable) = items.first else {
             return XCTFail("a 15-line leading run should fold to a band, got \(String(describing: items.first))")
         }
         XCTAssertTrue(expandable)
-        // 15 lines, 3 kept facing the change → 12 hidden, keyed by the first of them.
-        XCTAssertEqual(count, 12)
+        // 15 lines, 3 kept facing the change → 12 hidden, keyed by the first of them, and
+        // named by the lines they hide rather than counted.
+        XCTAssertEqual(range, 1...12)
         XCTAssertEqual(id, 0)
         XCTAssertEqual(items.count, 1 + 3 + 1 + 3 + 1) // band, context, add, context, band
         XCTAssertEqual(items.filter { if case .band = $0 { return true } else { return false } }.count, 2)
@@ -124,12 +125,12 @@ final class DiffFoldTests: XCTestCase {
         +FORTY
         """
         let items = DiffParser.displayItems(lines: DiffParser.lines(from: diff), expanded: [])
-        let bands = items.compactMap { item -> (Int, Bool)? in
-            if case .band(_, let count, let expandable) = item { return (count, expandable) }
+        let bands = items.compactMap { item -> (ClosedRange<Int>, Bool)? in
+            if case .band(_, let range, let expandable) = item { return (range, expandable) }
             return nil
         }
         XCTAssertEqual(bands.count, 1)
-        XCTAssertEqual(bands.first?.0, 38) // lines 2…39 of the new side
+        XCTAssertEqual(bands.first?.0, 2...39) // the gap between the two hunks
         XCTAssertEqual(bands.first?.1, false)
     }
 }
