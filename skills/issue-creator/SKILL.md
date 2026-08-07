@@ -1,6 +1,6 @@
 ---
-name: feedback-to-issue
-description: "Turn vague customer or user feedback from pasted text, chat excerpts, or screenshots into a clear, evidence-backed GitHub issue without inventing requirements. Use when the user says 'create an issue for this', 'turn this user request into an issue', 'file this feedback', '用户反馈建 issue', '把这个模糊需求变成 issue', '把这段聊天/截图建成 GitHub issue', or invokes /feedback-to-issue."
+name: issue-creator
+description: "Turn vague customer or user feedback from pasted text, chat excerpts, or screenshots into a clear, evidence-backed GitHub issue without inventing requirements. Use when the user says 'create an issue for this', 'turn this user request into an issue', 'file this feedback', '用户反馈建 issue', '把这个模糊需求变成 issue', '把这段聊天/截图建成 GitHub issue', or invokes /issue-creator."
 ---
 
 # Vague user request → actionable GitHub issue
