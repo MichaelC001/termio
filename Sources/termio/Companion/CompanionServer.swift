@@ -5,7 +5,7 @@ import TermioShared
 
 /// The shared secret a phone must present before the companion server serves
 /// it anything. It rides the pairing QR as a `t` query param, so possession
-/// means "was shown the Mac's screen" — which holds up whether the socket is
+/// means "was shown the Mac’s screen" — which holds up whether the socket is
 /// reached over the LAN or through a public tunnel URL.
 ///
 /// Stored in UserDefaults rather than the Keychain on purpose: the trust

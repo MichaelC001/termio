@@ -148,9 +148,9 @@ struct FileEditorView: View {
         Group {
             if loadFailed {
                 ContentUnavailableView(
-                    "Can't Open as Text",
+                    "Can’t open as text",
                     huge: .fileQuestion,
-                    description: Text("\(url.lastPathComponent) isn't a UTF-8 text file.")
+                    description: Text("\(url.lastPathComponent) isn’t a UTF-8 text file.")
                 )
             } else if !loaded {
                 // The bare background while the async read runs — small files land

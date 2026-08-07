@@ -155,7 +155,7 @@ struct CustomAgentEditorSheet: View {
                             .labelsHidden()
                     }
                 } footer: {
-                    Text("Both optional. The flag powers the agent's “Skip permission prompts” switch; leave it empty if the CLI has none.")
+                    Text("Both optional. The flag powers the agent’s “Skip permission prompts” switch; leave it empty if the CLI has none.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

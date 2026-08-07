@@ -264,7 +264,7 @@ struct IssuesView: View {
                 // A valid token with no rights to *this* repo (403) — usually an org that hasn't
                 // authorized termio. Switch account, or grant org access.
                 zeroState(
-                    title: "Couldn’t Load",
+                    title: "Couldn’t load",
                     message: "Reconnect to sign in with a different account, or grant termio access to the organization that owns this repository."
                 ) {
                     Button("Reconnect") { Task { await model.reconnect() } }
@@ -277,7 +277,7 @@ struct IssuesView: View {
             case .retry, .none:
                 // Rate limit, 404, 5xx, network, decode — reconnecting won't help; just retry.
                 zeroState(
-                    title: "Couldn’t Load",
+                    title: "Couldn’t load",
                     message: "Something went wrong loading this repository. Try again in a moment."
                 ) {
                     Button("Try Again") { Task { await model.loadList(force: true) } }
@@ -715,7 +715,7 @@ struct IssueDetailView: View {
             // (reads as a black window, most visibly across a minimize/restore relayout).
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let error = model.detailError {
-            ContentUnavailableView("Couldn’t Load", huge: .github, description: Text(error))
+            ContentUnavailableView("Couldn’t load", huge: .github, description: Text(error))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ProgressView()

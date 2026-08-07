@@ -37,7 +37,7 @@ struct GeneralSettingsTab: View {
                     SettingsLabel(
                         .huge(.wireless),
                         title: "Live agent status",
-                        subtext: "Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs termio's hooks into each agent's config."
+                        subtext: "Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs termio’s hooks into each agent’s config."
                     )
                 }
                 .toggleStyle(.switch)
@@ -102,7 +102,7 @@ private struct NotificationPermissionRow: View {
             switch status {
             case .notDetermined:
                 HStack(spacing: 10) {
-                    Text("macOS hasn't been asked to allow termio's notifications yet.")
+                    Text("macOS hasn’t been asked to allow termio’s notifications yet.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -202,7 +202,7 @@ private struct CommandLineToolRow: View {
         case .notInstalled:
             return "Install `\(tool)` so you (and agents) can run `\(tool) sessions …` from any shell. Links to /usr/local/bin."
         case .conflict:
-            return "A different `\(tool)` already exists at \(CommandLineTool.installURL.path). Remove it first — termio won't overwrite a file it didn't create."
+            return "A different `\(tool)` already exists at \(CommandLineTool.installURL.path). Remove it first — termio won’t overwrite a file it didn’t create."
         case .unavailable:
             return "Available when termio runs from the built app bundle."
         }

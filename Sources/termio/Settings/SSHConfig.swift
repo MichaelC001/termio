@@ -2,7 +2,7 @@ import Foundation
 
 /// The outcome of a non-interactive SSH reachability + auth probe (the Settings
 /// "Test Connection" action). Deliberately coarse: enough to tell "it works"
-/// from "the network's the problem" from "auth's the problem", each with a short
+/// from "the network’s the problem" from "auth’s the problem", each with a short
 /// human line for the row and the raw detail in a tooltip.
 enum SSHProbeResult: Equatable {
     case reachable

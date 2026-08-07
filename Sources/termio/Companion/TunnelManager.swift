@@ -190,7 +190,7 @@ final class TunnelManager: ObservableObject {
                     binary = try await Self.install(target)
                 } catch {
                     if self.provider == target {
-                        status = .failed("couldn't install \(target.binaryName): \(error.localizedDescription)")
+                        status = .failed("couldn’t install \(target.binaryName): \(error.localizedDescription)")
                     }
                     return
                 }
@@ -250,7 +250,7 @@ final class TunnelManager: ObservableObject {
             try process.run()
             Log.tunnel.info("spawned \(provider.binaryName, privacy: .public) (pid \(process.processIdentifier, privacy: .public))")
         } catch {
-            status = .failed("couldn't launch \(provider.binaryName): \(error.localizedDescription)")
+            status = .failed("couldn’t launch \(provider.binaryName): \(error.localizedDescription)")
             return
         }
         self.process = process
@@ -261,7 +261,7 @@ final class TunnelManager: ObservableObject {
             Task { @MainActor in
                 guard let self, self.process === process, self.status == .starting else { return }
                 self.stopProcess()
-                self.status = .failed("\(provider.binaryName) didn't come up — check the network and retry")
+                self.status = .failed("\(provider.binaryName) didn’t come up — check the network and retry")
             }
         }
     }
@@ -334,7 +334,7 @@ final class TunnelManager: ObservableObject {
     nonisolated private static func install(_ provider: Provider) async throws -> URL {
         guard let download = provider.spec?.download else {
             throw NSError(domain: "termio.tunnel", code: 3, userInfo: [
-                NSLocalizedDescriptionKey: "\(provider.binaryName) isn't installed — `brew install \(provider.binaryName)`, then run `\(provider.binaryName) config add-authtoken <token>` once",
+                NSLocalizedDescriptionKey: "\(provider.binaryName) isn’t installed — `brew install \(provider.binaryName)`, then run `\(provider.binaryName) config add-authtoken <token>` once",
             ])
         }
         let (temp, response) = try await URLSession.shared.download(from: URL(string: download.url)!)
@@ -355,7 +355,7 @@ final class TunnelManager: ObservableObject {
             tar.waitUntilExit()
             guard tar.terminationStatus == 0 else {
                 throw NSError(domain: "termio.tunnel", code: 2, userInfo: [
-                    NSLocalizedDescriptionKey: "couldn't unpack the archive",
+                    NSLocalizedDescriptionKey: "couldn’t unpack the archive",
                 ])
             }
         } else {

@@ -56,7 +56,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "Notifications and the termio command-line tool"
         case .appearance: return "Terminal font, theme, cursor, and window"
-        case .interface: return "The app's own sidebar font and density"
+        case .interface: return "The app’s own sidebar font and density"
         case .terminal: return "Scrollback history and text selection"
         case .ssh: return "Your ~/.ssh/config hosts, one click away"
         case .keyboard: return "Keyboard shortcuts for every command"

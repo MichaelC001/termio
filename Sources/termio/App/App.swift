@@ -1316,8 +1316,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 NSWorkspace.shared.open(url)
             } else {
                 let alert = NSAlert()
-                alert.messageText = "Couldn't open a pull request page"
-                alert.informativeText = "Push the current branch to the repository's "
+                alert.messageText = "Couldn’t open a pull request page"
+                alert.informativeText = "Push the current branch to the repository’s "
                     + "remote first, then try again. (The remote also needs to be a "
                     + "forge termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)"
                 alert.alertStyle = .warning

@@ -87,7 +87,7 @@ struct KeybindingsSettingsTab: View {
             }
             .disabled(keys.overrides.isEmpty)
         } footer: {
-            Text("Shortcuts must include ⌘ so they can't shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel.")
+            Text("Shortcuts must include ⌘ so they can’t shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

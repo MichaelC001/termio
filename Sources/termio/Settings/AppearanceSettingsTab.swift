@@ -36,7 +36,7 @@ struct AppearanceSettingsTab: View {
             } header: {
                 SectionHeaderLabel(title: "Theme")
             } footer: {
-                Text("termio switches between these as macOS changes appearance; leave a slot on the default for termio's own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”")
+                Text("termio switches between these as macOS changes appearance; leave a slot on the default for termio’s own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -59,7 +59,7 @@ struct AppearanceSettingsTab: View {
             } header: {
                 SectionHeaderLabel(title: "Font")
             } footer: {
-                Text("Line height applies to the file editor and diffs; the terminal keeps the font's own.")
+                Text("Line height applies to the file editor and diffs; the terminal keeps the font’s own.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

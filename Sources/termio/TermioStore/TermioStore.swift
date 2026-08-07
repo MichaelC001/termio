@@ -446,7 +446,7 @@ final class TermioStore: ObservableObject {
     /// no-op writes and ping `sessionRuntimeDidChange` for the non-SwiftUI observers.
     private(set) var runtimes: [Session.ID: SessionRuntime] = [:]
 
-    /// A coarse "some session's runtime changed" ping for observers that can't
+    /// A coarse "some session’s runtime changed" ping for observers that can't
     /// subscribe to a per-session `@Observable` — the menu-bar tray and the window
     /// title bar (both plain AppKit). The sidebar deliberately ignores this: its rows
     /// track their own `SessionRuntime`, so this signal never rebuilds the tree. The

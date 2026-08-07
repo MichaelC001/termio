@@ -49,6 +49,33 @@ re-discover the same issues or trust an unverified claim:
 Status values: `pending` · `fixed` (claimed, unverified) · `verified-fixed` ·
 `not-fixed` · `wont-fix` (intentional, out of scope, or a false positive).
 
+## Step 0 — The mechanical pass
+
+Cheap, exact, and it clears the noise before anyone reads for tone. Run these
+over the target first and fix every hit; none of them need judgment.
+
+```sh
+# straight apostrophes in user-facing strings — should be curly (’)
+grep -rnE "\"[^\"]*[a-zA-Z]'(t|s|re|ll|ve|m|d)\b[^\"]*\"" <target> | grep -v 'Log\.\|logger\|// '
+
+# "could not" where a contraction belongs (skip log strings and matched tool output)
+grep -rn '"[^"]*[Cc]ould not' <target>
+
+# Title Case on what is a sentence, not a feature name
+grep -rnE '"(Can|Couldn|Cannot|Unable)[^"]*[a-z] [A-Z][a-z]+' <target>
+
+# emoji in copy
+grep -rnP '"[^"]{3,}"' <target> | grep -P "[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]"
+
+# trailing gerunds — every hit is a candidate, neutral ones included
+grep -rnE '"[^"]*, [a-z]+ing\b[^"]*"' <target>
+```
+
+Rewriting apostrophes across a tree is safe only inside string literals. Check
+first that no match sits in a shell command being built for execution, then
+operate on quoted substrings rather than whole lines, so comments and
+identifiers are left alone.
+
 ## Step 1 — Score
 
 Two dimensions, 0–10 each. Score them separately; they fail for different

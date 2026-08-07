@@ -2,7 +2,7 @@ import Foundation
 
 /// Parses ConEmu-style `OSC 9;4` progress out of a terminal byte stream as an agent
 /// busy/idle signal — the same unbreakable channel as the OSC title, but more precise
-/// (the agent says "I'm working" without termio having to recognise a spinner glyph).
+/// (the agent says "I’m working" without termio having to recognise a spinner glyph).
 /// libghostty forwards the sequence but surfaces only titles (OSC 0/2) and cwd (OSC 7).
 ///
 /// The protocol is `ESC ] 9 ; 4 ; <state> ; <progress> (BEL | ST)`: state `0` = clear
