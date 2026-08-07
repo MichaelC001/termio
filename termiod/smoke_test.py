@@ -1618,6 +1618,173 @@ def main():
     matcher.close()
     shutil.rmtree(matchdir, ignore_errors=True)
 
+    print("\n# 14. git: resource kind — status as a subscription, read-only (§C.13)")
+    gitproj = f"{SOCK_DIR}/gitproj"
+    shutil.rmtree(gitproj, ignore_errors=True)
+    os.makedirs(gitproj, exist_ok=True)
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", gitproj, "-c", "user.email=smoke@termio", "-c", "user.name=smoke", *args],
+            capture_output=True,
+            text=True,
+        )
+
+    git("init", "-q", "-b", "main")
+    with open(f"{gitproj}/tracked.txt", "w") as f:
+        f.write("line one\n")
+    git("add", "tracked.txt")
+    git("commit", "-q", "-m", "initial")
+
+    nogit = WireClient(caps=["resources", "events"])
+    nogit.send_control(
+        {"op": "subscribe_resource", "resource": f"git:{gitproj}", "seq": 140}
+    )
+    ungated_git, _ = nogit.recv_matching(
+        lambda kind, msg: kind == "C"
+        and msg.get("op") == "error"
+        and msg.get("code") == "denied"
+        and msg.get("re") == 140
+    )
+    check("git: the kind is gated on the git capability", ungated_git is not None)
+    nogit.close()
+
+    gw = WireClient(caps=["resources", "git", "events"])
+    gw.send_control(
+        {"op": "subscribe_resource", "resource": f"git:{gitproj}", "seq": 141}
+    )
+    gsubscribed, _ = gw.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "subscribed" and msg.get("re") == 141
+    )
+    first_batch, _ = gw.recv_matching(
+        lambda kind, msg: kind == "E" and msg.get("ev") == "git_changed",
+        timeout=6.0,
+    )
+    check(
+        "git: subscribe reuses the C.10 shape and the first batch carries branch metadata",
+        gsubscribed is not None
+        and gsubscribed[1]["resource"].startswith("git:")
+        and gsubscribed[1]["gap"] is True
+        and first_batch is not None
+        and first_batch[1].get("branch") == "main"
+        and first_batch[1].get("head")
+        and first_batch[1].get("updated_statuses") == [],
+    )
+
+    with open(f"{gitproj}/tracked.txt", "a") as f:
+        f.write("line two\n")
+    dirty, _ = gw.recv_matching(
+        lambda kind, msg: kind == "E"
+        and msg.get("ev") == "git_changed"
+        and any(e["path"] == "tracked.txt" for e in msg.get("updated_statuses", [])),
+        timeout=6.0,
+    )
+    dirty_status = (
+        next(e["status"] for e in dirty[1]["updated_statuses"] if e["path"] == "tracked.txt")
+        if dirty
+        else None
+    )
+    check(
+        "git: a worktree edit publishes the two-axis tracked status",
+        dirty is not None
+        and dirty_status
+        == {"tracked": {"index_status": "unmodified", "worktree_status": "modified"}},
+    )
+    dirty_seq = dirty[1]["seq"] if dirty else 0
+
+    git("add", "tracked.txt")
+    with open(f"{gitproj}/fresh.txt", "w") as f:
+        f.write("untracked\n")
+    staged_seen = None
+    untracked_seen = None
+    deadline = time.time() + 8
+    while time.time() < deadline and not (staged_seen and untracked_seen):
+        got, _ = gw.recv_matching(
+            lambda kind, msg: kind == "E" and msg.get("ev") == "git_changed",
+            timeout=max(0.1, deadline - time.time()),
+        )
+        if got is None:
+            break
+        for entry in got[1].get("updated_statuses", []):
+            if entry["path"] == "tracked.txt" and entry["status"] == {
+                "tracked": {"index_status": "modified", "worktree_status": "unmodified"}
+            }:
+                staged_seen = got
+            if entry["path"] == "fresh.txt" and entry["status"] == "untracked":
+                untracked_seen = got
+    check(
+        "git: staging and untracked files land in the adopted vocabulary",
+        staged_seen is not None and untracked_seen is not None,
+    )
+
+    resumer = WireClient(caps=["resources", "git", "events"])
+    resumer.send_control(
+        {
+            "op": "subscribe_resource",
+            "resource": f"git:{gitproj}",
+            "since": dirty_seq,
+            "seq": 142,
+        }
+    )
+    resumed, _ = resumer.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "subscribed" and msg.get("re") == 142
+    )
+    check(
+        "git: a cursor inside the ring resumes without a gap",
+        resumed is not None and resumed[1]["gap"] is False,
+    )
+    resumer.close()
+
+    fresh_client = WireClient(caps=["resources", "git", "events"])
+    fresh_client.send_control(
+        {"op": "subscribe_resource", "resource": f"git:{gitproj}", "seq": 143}
+    )
+    fresh_sub, fresh_seen = fresh_client.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "subscribed" and msg.get("re") == 143
+    )
+    full_state, _ = fresh_client.recv_matching(
+        lambda kind, msg: kind == "E" and msg.get("ev") == "git_changed",
+        timeout=4.0,
+    )
+    full_paths = {e["path"] for e in (full_state[1]["updated_statuses"] if full_state else [])}
+    check(
+        "git: a gap subscriber is served the full state at the current cursor",
+        fresh_sub is not None
+        and fresh_sub[1]["gap"] is True
+        and full_state is not None
+        and full_state[1]["seq"] == fresh_sub[1]["seq"]
+        and {"tracked.txt", "fresh.txt"} <= full_paths,
+    )
+    fresh_client.close()
+
+    with open(f"{gitproj}/tracked.txt", "a") as f:
+        f.write("line three\n")
+    gw.send_control({"op": "git_diff", "root": gitproj, "path": "tracked.txt", "seq": 144})
+    unstaged_diff, _ = gw.recv_matching(
+        lambda kind, msg: kind == "C"
+        and msg.get("op") == "git_diff_result"
+        and msg.get("re") == 144
+    )
+    gw.send_control(
+        {"op": "git_diff", "root": gitproj, "path": "tracked.txt", "staged": True, "seq": 145}
+    )
+    staged_diff, _ = gw.recv_matching(
+        lambda kind, msg: kind == "C"
+        and msg.get("op") == "git_diff_result"
+        and msg.get("re") == 145
+    )
+    check(
+        "git.diff: worktree and staged diffs are distinct unified diffs",
+        unstaged_diff is not None
+        and "+line three" in unstaged_diff[1]["diff"]
+        and unstaged_diff[1]["truncated"] is False
+        and staged_diff is not None
+        and "+line two" in staged_diff[1]["diff"]
+        and "+line three" not in staged_diff[1]["diff"],
+    )
+    gw.close()
+    shutil.rmtree(gitproj, ignore_errors=True)
+
     print()
     if FAILURES:
         print(f"FAILED ({len(FAILURES)}): " + ", ".join(FAILURES))

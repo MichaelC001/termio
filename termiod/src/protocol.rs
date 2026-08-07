@@ -37,6 +37,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "fs_watch",
     "files",
     "upload",
+    "git",
 ];
 pub const SNAPSHOT_FORMAT_VERSION: u8 = 1;
 /// Snapshot payload carrying **VT sequences** instead of packed cells.
@@ -75,6 +76,9 @@ pub enum Frame {
     Snapshot(Snapshot),
     History(HistoryChunk),
     Grid(GridDiff),
+    // The daemon only ever rejects an inbound F frame; the chunk body is for
+    // protocol clients (the CLI reads it when file verbs land there).
+    #[allow(dead_code)]
     File(FileChunk),
     Upload(UploadChunk),
 }
@@ -185,6 +189,53 @@ pub struct PathListing {
     pub next_page: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// One axis of a tracked file's two-axis status (§C.13). The vocabulary is
+/// adopted from Zed verbatim — battle-tested and 1:1 with the
+/// GitHub-Desktop-shaped changes pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitStatusCode {
+    Unmodified,
+    Modified,
+    TypeChanged,
+    Added,
+    Deleted,
+    Renamed,
+    Copied,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitUnmergedCode {
+    Updated,
+    Added,
+    Deleted,
+}
+
+/// A file's git status (§C.13): two axes for tracked files, plus
+/// `untracked | ignored | unmerged {first_head, second_head}` with the
+/// merge-conflict path set first-class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitFileStatus {
+    Untracked,
+    Ignored,
+    Tracked {
+        index_status: GitStatusCode,
+        worktree_status: GitStatusCode,
+    },
+    Unmerged {
+        first_head: GitUnmergedCode,
+        second_head: GitUnmergedCode,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitStatusEntry {
+    pub path: String,
+    pub status: GitFileStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -399,6 +450,18 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// The `git:` kind's one verb (§C.13, capability `git`): a unified diff
+    /// for one path, rendered client-side. Read-only by design — no
+    /// stage/commit/push verbs; the user commits in the terminal, which is
+    /// the same app.
+    GitDiff {
+        root: String,
+        path: String,
+        #[serde(default)]
+        staged: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
     /// Fuzzy filename lookup against the host-side name index (§C.12,
     /// capability `files`). The index is built lazily after the workspace's
     /// first `subscribe_resource` and kept incremental by the watcher, so
@@ -510,6 +573,14 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },
+    /// Reply to `git_diff`. `truncated` marks a diff cut at the 1 MiB cap.
+    GitDiffResult {
+        diff: String,
+        #[serde(default)]
+        truncated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
     /// Reply to `fs_match`: workspace-relative paths, best first. `coverage`
     /// is how much of the tree the index has walked (0.0–1.0); the index is
     /// evictable state, never correctness-bearing.
@@ -580,6 +651,7 @@ impl Control {
             | Control::FsList { seq, .. }
             | Control::FsRead { seq, .. }
             | Control::FsMatch { seq, .. }
+            | Control::GitDiff { seq, .. }
             | Control::UploadOpen { seq, .. }
             | Control::UploadCommit { seq, .. }
             | Control::UploadAbort { seq, .. }
@@ -631,6 +703,26 @@ pub enum Event {
         full_rescan: bool,
         #[serde(default)]
         git_meta: bool,
+    },
+    /// A status delta for a `git:` resource (§C.13) — the second consumer of
+    /// §C.10's one mechanism. `updated_statuses` and `removed_paths` are a
+    /// delta against the subscriber's baseline; branch metadata rides along
+    /// whole so clients never merge it.
+    GitChanged {
+        resource: String,
+        seq: u64,
+        #[serde(default)]
+        updated_statuses: Vec<GitStatusEntry>,
+        #[serde(default)]
+        removed_paths: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        head: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ahead_behind: Option<(u32, u32)>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        conflicts: Vec<String>,
     },
     /// Roster delta used by control-channel `subscribe`.
     Roster {
@@ -755,6 +847,9 @@ pub fn encode_file_chunk(chunk: &FileChunk) -> Result<Vec<u8>> {
 }
 
 /// Upload-chunk payload: id_len:u8, upload id, offset:u64be, then the bytes.
+/// The sending side of `U` — the daemon only decodes; this is for protocol
+/// clients and the codec tests.
+#[allow(dead_code)]
 pub fn encode_upload_chunk(chunk: &UploadChunk) -> Result<Vec<u8>> {
     let id = chunk.upload_id.as_bytes();
     let id_len =

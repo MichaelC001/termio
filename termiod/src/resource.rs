@@ -56,6 +56,14 @@ const IDLE_TICK: Duration = Duration::from_secs(30);
 /// The `fs:` resource id prefix. Ids are `fs:<canonical absolute path>`.
 pub const FS_PREFIX: &str = "fs:";
 
+/// The `git:` resource id prefix (§C.13). Ids are `git:<canonical repo root>`.
+pub const GIT_PREFIX: &str = "git:";
+
+/// Extra quiet window between a watcher batch reaching the git loop and the
+/// `git status` run, so one `git checkout` costs one status run, not one per
+/// batch.
+const GIT_DEBOUNCE: Duration = Duration::from_millis(200);
+
 /// One published batch of filesystem change for a workspace.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FsBatch {
@@ -73,7 +81,16 @@ impl FsBatch {
     fn is_empty(&self) -> bool {
         self.paths.is_empty() && !self.full_rescan && !self.git_meta
     }
+}
 
+/// What a ring element must do: become the wire event for its kind. This is
+/// the §C.10 "one mechanism" seam — the cursor/ring/gap/linger machinery below
+/// is identical for every resource kind.
+pub trait ResourceBatch: Clone {
+    fn into_event(self, resource: String, seq: u64) -> Event;
+}
+
+impl ResourceBatch for FsBatch {
     fn into_event(self, resource: String, seq: u64) -> Event {
         Event::FsChanged {
             resource,
@@ -82,6 +99,12 @@ impl FsBatch {
             full_rescan: self.full_rescan,
             git_meta: self.git_meta,
         }
+    }
+}
+
+impl ResourceBatch for crate::git::GitBatch {
+    fn into_event(self, resource: String, seq: u64) -> Event {
+        crate::git::GitBatch::into_event(self, resource, seq)
     }
 }
 
@@ -98,19 +121,33 @@ pub struct SubscribeReply {
     pub replay: Vec<Event>,
 }
 
-struct WatchState {
+struct ResourceState<B: ResourceBatch> {
     /// seq of the most recently published batch; 0 = nothing published yet.
     seq: u64,
-    ring: VecDeque<(u64, FsBatch)>,
+    ring: VecDeque<(u64, B)>,
     subscribers: HashMap<ClientId, mpsc::UnboundedSender<Event>>,
     /// When the last subscriber left. `None` while anyone is attached.
     idle_since: Option<Instant>,
-    /// Dropping the watcher stops the OS-level watch. `None` only in tests,
-    /// which exercise the ring and replay rules without touching the OS.
+    /// Dropping the watcher stops the OS-level watch. `None` for kinds that
+    /// borrow another resource's watcher (git), and in tests, which exercise
+    /// the ring and replay rules without touching the OS.
     _watcher: Option<RecommendedWatcher>,
 }
 
-impl WatchState {
+/// The `fs:` kind's state — the name other code and the tests know it by.
+type WatchState = ResourceState<FsBatch>;
+
+impl<B: ResourceBatch> ResourceState<B> {
+    fn new(watcher: Option<RecommendedWatcher>) -> ResourceState<B> {
+        ResourceState {
+            seq: 0,
+            ring: VecDeque::new(),
+            subscribers: HashMap::new(),
+            idle_since: None,
+            _watcher: watcher,
+        }
+    }
+
     /// The oldest seq still replayable, or `seq` when the ring is empty.
     fn oldest(&self) -> u64 {
         self.ring.front().map(|(s, _)| *s).unwrap_or(self.seq)
@@ -119,7 +156,7 @@ impl WatchState {
     /// Append a batch to the ring and fan it out. The ring is written whether
     /// or not anyone is listening — that is what a detached client resumes
     /// from when it comes back.
-    fn publish(&mut self, resource: &str, batch: FsBatch) {
+    fn publish(&mut self, resource: &str, batch: B) {
         self.seq += 1;
         let seq = self.seq;
         if self.ring.len() == RING_CAPACITY {
@@ -167,12 +204,31 @@ impl WatchState {
 struct WatchEntry {
     state: Arc<Mutex<WatchState>>,
     index: Arc<crate::files::NameIndex>,
-    index_tx: mpsc::UnboundedSender<FsBatch>,
+    /// Held for ownership: dropping the entry drops the last sender, which
+    /// ends the index task.
+    _index_tx: mpsc::UnboundedSender<FsBatch>,
+}
+
+/// A `git:` resource (§C.13). It owns no watcher — it subscribes to the
+/// workspace's `fs:` watch internally and turns that signal into debounced
+/// status runs. `snapshot` is the live full state, which is what a gap
+/// subscriber is served: only the host can rescan git status, so on gap the
+/// host does the scan for the client.
+#[derive(Clone)]
+struct GitEntry {
+    state: Arc<Mutex<ResourceState<crate::git::GitBatch>>>,
+    snapshot: Arc<Mutex<crate::git::GitSnapshot>>,
+}
+
+#[derive(Clone)]
+enum ResourceEntry {
+    Fs(WatchEntry),
+    Git(GitEntry),
 }
 
 #[derive(Clone, Default)]
 pub struct Registry {
-    watches: Arc<Mutex<HashMap<String, WatchEntry>>>,
+    watches: Arc<Mutex<HashMap<String, ResourceEntry>>>,
 }
 
 impl Registry {
@@ -196,6 +252,21 @@ impl Registry {
         Ok(format!("{FS_PREFIX}{}", canonical.display()))
     }
 
+    /// Resolve what a client passed as `resource` to a canonical id. A bare
+    /// path (the v1 wire shape) is the `fs:` kind; explicit `fs:`/`git:`
+    /// prefixes pick the kind (§C.13 adds `git:`).
+    pub fn resource_id(spec: &str) -> Result<String> {
+        if let Some(root) = spec.strip_prefix(GIT_PREFIX) {
+            let canonical = Registry::fs_resource_id(root)?;
+            let canonical = canonical.trim_start_matches(FS_PREFIX);
+            if !Path::new(canonical).join(".git").exists() {
+                return Err(anyhow!("not a git repository: {root}"));
+            }
+            return Ok(format!("{GIT_PREFIX}{canonical}"));
+        }
+        Registry::fs_resource_id(spec.strip_prefix(FS_PREFIX).unwrap_or(spec))
+    }
+
     /// The `fs:` resource cursor for a workspace root, or 0 when nothing is
     /// watching it. `fs.list` replies are stamped with this so cached listings
     /// carry a freshness proof (§C.12); 0 honestly says "no watch — nothing
@@ -204,7 +275,8 @@ impl Registry {
         let Ok(id) = Registry::fs_resource_id(root) else {
             return 0;
         };
-        let Some(entry) = self.watches.lock().unwrap().get(&id).cloned() else {
+        let Some(ResourceEntry::Fs(entry)) = self.watches.lock().unwrap().get(&id).cloned()
+        else {
             return 0;
         };
         let seq = entry.state.lock().unwrap().seq;
@@ -216,11 +288,10 @@ impl Registry {
     /// than starting a walk nobody asked to keep fresh.
     pub fn name_index(&self, root: &str) -> Option<Arc<crate::files::NameIndex>> {
         let id = Registry::fs_resource_id(root).ok()?;
-        self.watches
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|entry| entry.index.clone())
+        match self.watches.lock().unwrap().get(&id) {
+            Some(ResourceEntry::Fs(entry)) => Some(entry.index.clone()),
+            _ => None,
+        }
     }
 
     /// Subscribe `client` to `resource`, resuming from `since` when possible.
@@ -232,6 +303,9 @@ impl Registry {
         tx: mpsc::UnboundedSender<Event>,
         since: Option<u64>,
     ) -> Result<SubscribeReply> {
+        if resource.starts_with(GIT_PREFIX) {
+            return self.subscribe_git(resource, client, tx, since);
+        }
         let root = resource
             .strip_prefix(FS_PREFIX)
             .ok_or_else(|| anyhow!("unknown resource kind: {resource}"))?
@@ -239,16 +313,8 @@ impl Registry {
 
         let entry = {
             let mut watches = self.watches.lock().unwrap();
-            match watches.get(resource) {
-                Some(existing) => existing.clone(),
-                None => {
-                    let created = self.start_watch(resource.to_string(), Path::new(&root))?;
-                    watches.insert(resource.to_string(), created.clone());
-                    created
-                }
-            }
+            self.fs_entry_locked(&mut watches, resource, Path::new(&root))?
         };
-
         let mut guard = entry.state.lock().unwrap();
         guard.subscribers.insert(client, tx);
         guard.idle_since = None;
@@ -261,21 +327,138 @@ impl Registry {
         })
     }
 
+    /// Get or start the `fs:` watch for a workspace. Shared by fs subscribers
+    /// and by the `git:` kind, which rides the same watcher — one repo, one
+    /// OS watch, whatever is observing it. Takes the already-held map guard:
+    /// one lock for the whole get-or-create, and no way to re-lock under it.
+    fn fs_entry_locked(
+        &self,
+        watches: &mut HashMap<String, ResourceEntry>,
+        resource: &str,
+        root: &Path,
+    ) -> Result<WatchEntry> {
+        match watches.get(resource) {
+            Some(ResourceEntry::Fs(existing)) => Ok(existing.clone()),
+            Some(ResourceEntry::Git(_)) => Err(anyhow!("resource id kind collision: {resource}")),
+            None => {
+                let created = self.start_watch(resource.to_string(), root)?;
+                watches.insert(resource.to_string(), ResourceEntry::Fs(created.clone()));
+                Ok(created)
+            }
+        }
+    }
+
+    /// Subscribe to a `git:` resource (§C.13): same cursor/ring/gap/linger as
+    /// every resource. A gap subscriber whose cursor cannot replay is served
+    /// the full current state at the current seq — the host-side form of
+    /// "rescan before applying".
+    fn subscribe_git(
+        &self,
+        resource: &str,
+        client: ClientId,
+        tx: mpsc::UnboundedSender<Event>,
+        since: Option<u64>,
+    ) -> Result<SubscribeReply> {
+        let root = resource
+            .strip_prefix(GIT_PREFIX)
+            .ok_or_else(|| anyhow!("unknown resource kind: {resource}"))?
+            .to_string();
+
+        let entry = {
+            let mut watches = self.watches.lock().unwrap();
+            match watches.get(resource) {
+                Some(ResourceEntry::Git(existing)) => existing.clone(),
+                Some(ResourceEntry::Fs(_)) => {
+                    return Err(anyhow!("resource id kind collision: {resource}"))
+                }
+                None => {
+                    let created =
+                        self.start_git_watch(&mut watches, resource.to_string(), &root)?;
+                    watches.insert(resource.to_string(), ResourceEntry::Git(created.clone()));
+                    created
+                }
+            }
+        };
+
+        let mut guard = entry.state.lock().unwrap();
+        guard.subscribers.insert(client, tx);
+        guard.idle_since = None;
+        let (gap, mut replay) = guard.resume(resource, since);
+        if gap && guard.seq > 0 {
+            let full = entry.snapshot.lock().unwrap().full_batch();
+            replay = vec![crate::git::GitBatch::into_event(
+                full,
+                resource.to_string(),
+                guard.seq,
+            )];
+        }
+
+        Ok(SubscribeReply {
+            seq: guard.seq,
+            gap,
+            replay,
+        })
+    }
+
+    /// Start the machinery behind one `git:` resource: ensure the workspace's
+    /// `fs:` watch is running, register an internal subscriber on it (which
+    /// also keeps it alive), and spawn the loop that turns its batches into
+    /// debounced status runs.
+    fn start_git_watch(
+        &self,
+        watches: &mut HashMap<String, ResourceEntry>,
+        resource: String,
+        root: &str,
+    ) -> Result<GitEntry> {
+        let fs_id = Registry::fs_resource_id(root)?;
+        let fs_entry = self.fs_entry_locked(watches, &fs_id, Path::new(root))?;
+
+        let (signal_tx, signal_rx) = mpsc::unbounded_channel::<Event>();
+        let internal_client = format!("git-signal:{resource}");
+        {
+            let mut guard = fs_entry.state.lock().unwrap();
+            guard.subscribers.insert(internal_client.clone(), signal_tx);
+            guard.idle_since = None;
+        }
+
+        let entry = GitEntry {
+            state: Arc::new(Mutex::new(ResourceState::new(None))),
+            snapshot: Arc::new(Mutex::new(crate::git::GitSnapshot::default())),
+        };
+        tokio::spawn(git_loop(
+            resource,
+            root.to_string(),
+            signal_rx,
+            entry.clone(),
+            self.clone(),
+            fs_id,
+            internal_client,
+        ));
+        Ok(entry)
+    }
+
     /// Drop one client's interest. Returns whether the client had been
     /// subscribed. The watch keeps running for `LINGER` so the same client can
     /// come back and resume from its cursor — detach ≠ kill, applied to the
     /// resource plane.
     pub fn unsubscribe(&self, resource: &str, client: &str) -> bool {
-        let watches = self.watches.lock().unwrap();
-        let Some(entry) = watches.get(resource).cloned() else {
-            return false;
-        };
-        let mut guard = entry.state.lock().unwrap();
-        let removed = guard.subscribers.remove(client).is_some();
-        if guard.subscribers.is_empty() && guard.idle_since.is_none() {
-            guard.idle_since = Some(Instant::now());
+        fn drop_interest<B: ResourceBatch>(
+            state: &Arc<Mutex<ResourceState<B>>>,
+            client: &str,
+        ) -> bool {
+            let mut guard = state.lock().unwrap();
+            let removed = guard.subscribers.remove(client).is_some();
+            if guard.subscribers.is_empty() && guard.idle_since.is_none() {
+                guard.idle_since = Some(Instant::now());
+            }
+            removed
         }
-        removed
+        let watches = self.watches.lock().unwrap();
+        match watches.get(resource) {
+            Some(ResourceEntry::Fs(entry)) => drop_interest(&entry.state, client),
+            Some(ResourceEntry::Git(entry)) => drop_interest(&entry.state, client),
+            None => false,
+        }
     }
 
     /// Drop every subscription held by a departing connection.
@@ -298,13 +481,7 @@ impl Registry {
             .watch(root, RecursiveMode::Recursive)
             .with_context(|| format!("watching {}", root.display()))?;
 
-        let state = Arc::new(Mutex::new(WatchState {
-            seq: 0,
-            ring: VecDeque::new(),
-            subscribers: HashMap::new(),
-            idle_since: None,
-            _watcher: Some(watcher),
-        }));
+        let state = Arc::new(Mutex::new(WatchState::new(Some(watcher))));
         // The first subscribe is what triggers the lazy index build (§C.12).
         let (index, index_tx) = crate::files::spawn_index(root.to_path_buf());
         tokio::spawn(debounce_loop(
@@ -317,12 +494,70 @@ impl Registry {
         Ok(WatchEntry {
             state,
             index,
-            index_tx,
+            _index_tx: index_tx,
         })
     }
 }
 
-type WatchMap = Arc<Mutex<HashMap<String, WatchEntry>>>;
+type WatchMap = Arc<Mutex<HashMap<String, ResourceEntry>>>;
+
+/// Drive one `git:` resource: coalesce the workspace watcher's signal, run
+/// `git status --porcelain=v2`, publish the delta. Retires itself — and its
+/// grip on the `fs:` watch — when its own linger runs out.
+///
+/// Trigger note: §C.13 names the `git_meta` signal, but a worktree edit
+/// changes status without touching `.git`, so every batch triggers a run
+/// (recorded as a deviation in the spec changelog).
+async fn git_loop(
+    resource: String,
+    root: String,
+    mut signal_rx: mpsc::UnboundedReceiver<Event>,
+    entry: GitEntry,
+    registry: Registry,
+    fs_resource: String,
+    internal_client: String,
+) {
+    refresh_git(&resource, &root, &entry).await;
+    loop {
+        match tokio::time::timeout(IDLE_TICK, signal_rx.recv()).await {
+            Ok(Some(_)) => {
+                // One checkout arrives as several watcher batches; quiet them
+                // into one status run.
+                while let Ok(Some(_)) =
+                    tokio::time::timeout(GIT_DEBOUNCE, signal_rx.recv()).await
+                {}
+                refresh_git(&resource, &root, &entry).await;
+            }
+            Ok(None) => break,
+            Err(_) => {
+                if entry.state.lock().unwrap().expired() {
+                    break;
+                }
+            }
+        }
+    }
+    registry.watches.lock().unwrap().remove(&resource);
+    registry.unsubscribe(&fs_resource, &internal_client);
+}
+
+async fn refresh_git(resource: &str, root: &str, entry: &GitEntry) {
+    match crate::git::run_status(root).await {
+        Ok(fresh) => {
+            let delta = {
+                let mut snapshot = entry.snapshot.lock().unwrap();
+                let delta = fresh.delta_from(&snapshot);
+                *snapshot = fresh;
+                delta
+            };
+            if let Some(batch) = delta {
+                entry.state.lock().unwrap().publish(resource, batch);
+            }
+        }
+        // Never silently: a broken repo keeps its subscribers' cursors valid
+        // (nothing published) and tells the operator why nothing moves.
+        Err(error) => eprintln!("termiod: git status for {resource}: {error:#}"),
+    }
+}
 
 /// Accumulate raw watcher events and publish one batch per quiet window.
 async fn debounce_loop(

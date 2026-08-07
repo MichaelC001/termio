@@ -879,10 +879,17 @@ async fn process_control(
                     "the resources capability was not negotiated",
                     false,
                 )
+            } else if resource.starts_with("git:") && !connection.capabilities.contains("git") {
+                error(
+                    seq,
+                    ErrorCode::Denied,
+                    "the git capability was not negotiated",
+                    false,
+                )
             } else {
                 // Clients name a workspace root; the host canonicalises it, so
                 // two spellings of one repo share a single watch.
-                match crate::resource::Registry::fs_resource_id(&resource)
+                match crate::resource::Registry::resource_id(&resource)
                     .and_then(|id| {
                         manager
                             .resources
@@ -914,10 +921,39 @@ async fn process_control(
             send_response(out, response_cache, seq, response);
         }
         Control::UnsubscribeResource { resource, seq } => {
-            let id = crate::resource::Registry::fs_resource_id(&resource)
+            let id = crate::resource::Registry::resource_id(&resource)
                 .unwrap_or_else(|_| resource.clone());
             manager.resources.unsubscribe(&id, &connection.client_id);
             send_response(out, response_cache, seq, Control::Ok { re: seq });
+        }
+        Control::GitDiff {
+            root,
+            path,
+            staged,
+            seq,
+        } => {
+            if !connection.capabilities.contains("git") {
+                let response = error(
+                    seq,
+                    ErrorCode::Denied,
+                    "the git capability was not negotiated",
+                    false,
+                );
+                send_response(out, response_cache, seq, response);
+            } else {
+                let out = out.clone();
+                tokio::spawn(async move {
+                    let response = match crate::git::run_diff(&root, &path, staged).await {
+                        Ok((diff, truncated)) => Control::GitDiffResult {
+                            diff,
+                            truncated,
+                            re: seq,
+                        },
+                        Err(e) => error(seq, ErrorCode::Denied, format!("{e:#}"), false),
+                    };
+                    let _ = out.send(Outbound::Control(response));
+                });
+            }
         }
         Control::FsList {
             root,
@@ -1198,6 +1234,7 @@ async fn process_control(
         | Control::FsListed { .. }
         | Control::FsFile { .. }
         | Control::FsMatched { .. }
+        | Control::GitDiffResult { .. }
         | Control::UploadOpened { .. }
         | Control::UploadAck { .. }
         | Control::UploadCommitted { .. }
@@ -1305,7 +1342,7 @@ fn subscribed_to(subscriptions: &HashSet<String>, event: &Event) -> bool {
         Event::Ready { .. } => false,
         // Resource events are delivered on the subscriber's own channel, not
         // through the roster broadcast, so they never match here.
-        Event::FsChanged { .. } => false,
+        Event::FsChanged { .. } | Event::GitChanged { .. } => false,
         Event::Unknown => false,
     }
 }
