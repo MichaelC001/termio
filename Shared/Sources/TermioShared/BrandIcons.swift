@@ -172,6 +172,7 @@ public enum HugeIcon: Hashable, Sendable {
     case folder
     case camera
     case folderOpen
+    case folderSymlink
     case chevronRight
     case chevronLeft
     case gitPullRequest
@@ -238,6 +239,15 @@ public enum HugeIcon: Hashable, Sendable {
             return "M7.5 7.5L8.72654 8.55719C9.24218 9.00163 9.5 9.22386 9.5 9.5C9.5 9.77614 9.24218 9.99836 8.72654 10.4428L7.5 11.5 M11.5 12.5H15.5 M12 21C15.7497 21 17.6246 21 18.9389 20.0451C19.3634 19.7367 19.7367 19.3634 20.0451 18.9389C21 17.6246 21 15.7497 21 12C21 8.25027 21 6.3754 20.0451 5.06107C19.7367 4.6366 19.3634 4.26331 18.9389 3.95491C17.6246 3 15.7497 3 12 3C8.25027 3 6.3754 3 5.06107 3.95491C4.6366 4.26331 4.26331 4.6366 3.95491 5.06107C3 6.3754 3 8.25027 3 12C3 15.7497 3 17.6246 3.95491 18.9389C4.26331 19.3634 4.6366 19.7367 5.06107 20.0451C6.3754 21 8.25027 21 12 21Z"
         case .folder:
             return "M8 7H16.75C18.8567 7 19.91 7 20.6667 7.50559C20.9943 7.72447 21.2755 8.00572 21.4944 8.33329C22 9.08996 22 10.1433 22 12.25C22 15.7612 22 17.5167 21.1573 18.7779C20.7926 19.3238 20.3238 19.7926 19.7779 20.1573C18.5167 21 16.7612 21 13.25 21H12C7.28595 21 4.92893 21 3.46447 19.5355C2 18.0711 2 15.714 2 11V7.94427C2 6.1278 2 5.21956 2.38032 4.53806C2.65142 4.05227 3.05227 3.65142 3.53806 3.38032C4.21956 3 5.1278 3 6.94427 3C8.10802 3 8.6899 3 9.19926 3.19101C10.3622 3.62712 10.8418 4.68358 11.3666 5.73313L12 7"
+        case .folderSymlink:
+            // Hugeicons "folder-symlink": the same folder body as `.folder` with an
+            // arrow pushing out through its left wall. A purpose-drawn glyph rather than
+            // the Finder's badge-on-top: rendered at 128pt the Finder's alias arrow is
+            // unmistakable, but at the 15pt this tree draws it collapses to a five-pixel
+            // grey smudge. A line set solves that by integrating the mark into the glyph
+            // — which is also why VS Code ships `file-symlink-directory` as its own
+            // codicon instead of compositing one.
+            return "M8 7H12M12 7H16.75C18.8567 7 19.91 7 20.6667 7.50559C20.9943 7.72447 21.2755 8.00572 21.4944 8.33329C22 9.08996 22 10.1433 22 12.25C22 15.7612 22 17.5167 21.1573 18.7779C20.7926 19.3238 20.3238 19.7926 19.7779 20.1573C18.5167 21 16.7612 21 13.25 21H12C7.28595 21 4.92893 21 3.46447 19.5355C2.93416 19.0052 2.64986 18.2157 2.50661 17.3979C2.27647 16.0841 2.16139 15.4271 2.76083 14.7136C3.36026 14 4.21042 14 5.91073 14L11 14M12 7L11.3666 5.73313C10.8418 4.68358 10.3622 3.62712 9.19926 3.19101C8.6899 3 8.10802 3 6.94427 3C5.1278 3 4.21956 3 3.53806 3.38032C3.05227 3.65142 2.65142 4.05227 2.38032 4.53806C2 5.21956 2 6.1278 2 7.94427L2.02008 10M9.00002 17C9.00002 17 12 14.7905 12 14C12 13.2094 9 11 9 11"
         case .camera:
             // Hugeicons "camera-01": a camera body with a round lens and a flash
             // dot (three subpaths). Relative + arc commands, which the SVG parser
