@@ -368,8 +368,8 @@ final class CompanionServer {
             handleSearchFiles(projectID: projectID, query: query, on: connection)
         case .listChanges(let projectID):
             handleListChanges(projectID: projectID, on: connection)
-        case .readDiff(let projectID, let path):
-            handleReadDiff(projectID: projectID, path: path, on: connection)
+        case .readDiff(let projectID, let path, let status):
+            handleReadDiff(projectID: projectID, path: path, status: status, on: connection)
         case .trace(let sessionID, let dark):
             handleTrace(sessionID: sessionID, dark: dark, on: connection)
         case .sshConfigHosts:
@@ -696,7 +696,9 @@ final class CompanionServer {
             sendControl(.error(message: "unknown project"), to: connection)
             return
         }
-        Task { [weak self] in
+        // Detached like every other handler here: `CompanionServer` is main-actor, and a
+        // repo-wide status walk has no business on the UI thread.
+        Task.detached(priority: .userInitiated) { [weak self] in
             let files = await GitService.changes(in: root).map {
                 WireChange(
                     path: $0.path, status: $0.status.letter,
@@ -704,38 +706,40 @@ final class CompanionServer {
                     isBinary: $0.isBinary, isStaged: $0.isStaged
                 )
             }
-            self?.sendControl(.changes(files: files), to: connection)
+            await MainActor.run { self?.sendControl(.changes(files: files), to: connection) }
         }
     }
 
-    /// One changed file's diff. Rows come back with *full* file context so the phone
-    /// can fold unchanged runs into bands the reader expands; past the byte cap the
-    /// reassembled text would be a multi-megabyte frame, so that case degrades to
-    /// git's default 3-line context and says so (`fullContext: false`).
-    private func handleReadDiff(projectID: String, path: String, on connection: NWConnection) {
+    /// One changed file's diff. The request carries the status the phone read off the
+    /// listing, so this costs one git invocation rather than a second whole-repo scan
+    /// per tap — and per step of the reader's file walker.
+    ///
+    /// Rows come back with *full* file context so the phone can fold unchanged runs into
+    /// bands the reader expands; past the byte cap the reassembled text would be a
+    /// multi-megabyte frame, so that case degrades to git's default 3-line context.
+    private func handleReadDiff(
+        projectID: String, path: String, status: String, on connection: NWConnection
+    ) {
         guard let root = projectRoot(for: projectID) else {
             sendControl(.error(message: "unknown project"), to: connection)
             return
         }
-        Task { [weak self] in
-            guard let change = await GitService.changes(in: root).first(where: { $0.path == path }) else {
-                self?.sendControl(.error(message: "\(path) has no working-tree changes"), to: connection)
-                return
-            }
-            guard !change.isBinary else {
-                self?.sendControl(
-                    .diff(WireDiff(path: path, text: "", fullContext: false, binary: true)),
-                    to: connection
-                )
-                return
-            }
+        let change = GitChange(
+            path: path,
+            status: GitFileStatus(code: status.first ?? "M"),
+            isUntracked: status == "U"
+        )
+        Task.detached(priority: .userInitiated) { [weak self] in
             let full = Self.unifiedText(await GitService.diffRows(for: change, in: root))
-            let fits = full.utf8.count <= Self.maxDiffBytes
-            let text = fits ? full : await GitService.diffText(for: change, in: root)
-            self?.sendControl(
-                .diff(WireDiff(path: path, text: text, fullContext: fits)),
-                to: connection
+            let text = full.utf8.count <= Self.maxDiffBytes
+                ? full : await GitService.diffText(for: change, in: root)
+            // git answers a binary file with its own one-line note rather than a diff;
+            // the reader says so instead of rendering that note as code.
+            let binary = text.contains("Binary files ")
+            let reply = CompanionControl.diff(
+                WireDiff(path: path, text: binary ? "" : text, binary: binary)
             )
+            await MainActor.run { self?.sendControl(reply, to: connection) }
         }
     }
 
@@ -746,6 +750,8 @@ final class CompanionServer {
     /// Reassembles parsed rows into unified-diff text for the wire. The phone re-parses
     /// with the same rules (`DiffParser`), so the round trip is lossless for everything
     /// it renders; only the file-header plumbing the parser already drops is gone.
+    /// (Once `GitService` exposes its full-context text directly — it is private today,
+    /// and that file belongs to another change in flight — this detour goes away.)
     nonisolated static func unifiedText(_ rows: [DiffRow]) -> String {
         rows.map { row in
             switch row.kind {

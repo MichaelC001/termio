@@ -13,6 +13,12 @@ enum FileIcons {
     /// (nil tint); monochrome marks and the Hugeicons resource glyphs are
     /// template images tinted with label ink so they stay visible in either
     /// appearance, matching the Mac's `monochromeInk` treatment.
+    /// The folder mark, in the same line family as every other glyph in the row —
+    /// an SF `folder` beside Hugeicons strokes reads as two different alphabets.
+    static func folder() -> (image: UIImage?, tint: UIColor?) {
+        (HugeIcon.folder.strokeImage(boxSize: 16), .secondaryLabel)
+    }
+
     static func icon(forFileName name: String) -> (image: UIImage?, tint: UIColor?) {
         if let resource = LangIconCatalog.resource(forFileName: name),
            let image = UIImage(named: resource.name) {

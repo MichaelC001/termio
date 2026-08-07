@@ -22,16 +22,16 @@ final class DiffViewController: UIViewController {
     private var files: [WireChange]
     private var index: Int
 
-    /// Ask the owner (which holds the companion socket) for one file's diff; the reply
-    /// arrives back through `receive(_:)`.
-    var onRequestDiff: ((String) -> Void)?
+    /// Ask the owner (which holds the companion socket) for one file's diff, passing the
+    /// status from the listing so the Mac needn't re-derive it; the reply arrives back
+    /// through `receive(_:)`.
+    var onRequestDiff: ((String, String) -> Void)?
     /// Bracketed-paste selected code into the session's terminal. nil hides the action —
     /// a plain shell has no prompt to feed.
     var onSendToAgent: ((String) -> Void)?
 
     private var rows: [DiffLine] = []
     private var expanded: Set<Int> = []
-    private var document: DiffDocument?
     /// The path a `readDiff` is in flight for, so a late reply for the previous file
     /// can't paint over the current one.
     private var pendingPath: String?
@@ -46,7 +46,6 @@ final class DiffViewController: UIViewController {
     private let previousButton = UIButton(type: .system)
     private let nextButton = UIButton(type: .system)
     private let hunkButton = UIButton(type: .system)
-    private var walkerBar: UIStackView!
 
     /// A `readDiff` is outstanding, so a failure belongs to this screen.
     var isAwaitingDiff: Bool { pendingPath != nil }
@@ -54,6 +53,8 @@ final class DiffViewController: UIViewController {
     private var change: WireChange? {
         files.indices.contains(index) ? files[index] : nil
     }
+
+    private var document: DiffDocument? { textView.document }
 
     init(files: [WireChange], index: Int) {
         self.files = files
@@ -147,7 +148,6 @@ final class DiffViewController: UIViewController {
             nextButton.widthAnchor.constraint(equalToConstant: 44),
             nextButton.heightAnchor.constraint(equalToConstant: 44),
         ])
-        walkerBar = bar
         return bar
     }
 
@@ -228,31 +228,22 @@ final class DiffViewController: UIViewController {
         guard let change else { return }
         rows = []
         expanded = []
-        document = nil
+        textView.document = nil
         storage.setAttributedString(NSAttributedString())
-        titleLabel.text = (change.path as NSString).lastPathComponent
-        subtitleLabel.text = summary(for: change)
+        titleLabel.text = change.name
+        subtitleLabel.text = change.caption
         walkerLabel.text = "\(index + 1) of \(files.count)"
         previousButton.isEnabled = index > 0
         nextButton.isEnabled = index < files.count - 1
         hunkButton.isHidden = true
         statusLabel.isHidden = true
+        guard !change.isBinary else {
+            show(status: "Binary file — no text diff to show.")
+            return
+        }
         pendingPath = change.path
         spinner.startAnimating()
-        onRequestDiff?(change.path)
-    }
-
-    private func summary(for change: WireChange) -> String {
-        let directory = (change.path as NSString).deletingLastPathComponent
-        var parts: [String] = []
-        if !directory.isEmpty { parts.append(directory) }
-        if change.isBinary {
-            parts.append("binary")
-        } else {
-            parts.append("+\(change.additions) −\(change.deletions)")
-        }
-        if change.isStaged { parts.append("staged") }
-        return parts.joined(separator: " · ")
+        onRequestDiff?(change.path, change.status)
     }
 
     /// A `readDiff` reply arrived (routed in by the owner).
@@ -270,7 +261,7 @@ final class DiffViewController: UIViewController {
             return
         }
         statusLabel.isHidden = true
-        rebuild(preservingScroll: false)
+        rebuild()
         highlightSyntax()
     }
 
@@ -283,7 +274,6 @@ final class DiffViewController: UIViewController {
 
     private func show(status: String) {
         storage.setAttributedString(NSAttributedString())
-        document = nil
         textView.document = nil
         hunkButton.isHidden = true
         statusLabel.text = status
@@ -292,19 +282,19 @@ final class DiffViewController: UIViewController {
 
     // MARK: - Rendering
 
-    private func rebuild(preservingScroll: Bool, anchorRowId: Int? = nil, anchorY: CGFloat = 0) {
+    /// `anchor` pins a row to a screen position across the rebuild — the tapped band's
+    /// first revealed line stays where the band was, so expanding never teleports the
+    /// reader. nil rebuilds from the top.
+    private func rebuild(anchor: (rowId: Int, y: CGFloat)? = nil) {
         let items = DiffParser.displayItems(lines: rows, expanded: expanded)
         let built = DiffDocument.build(items: items, font: MobileSettings.shared.codeFont())
-        document = built
         textView.document = built
         storage.setAttributedString(built.attributed)
         hunkButton.isHidden = built.changeAnchors.count < 2
-        guard preservingScroll, let anchorRowId,
-              let line = built.lines.first(where: { $0.rowId == anchorRowId }) else { return }
-        // Keep the tapped band's first revealed line where the band was, so expanding
-        // never teleports the reader.
+        guard let anchor, let line = built.lines.first(where: { $0.rowId == anchor.rowId })
+        else { return }
         let rect = textView.rect(forParagraph: line)
-        let offset = max(rect.minY - anchorY, -textView.adjustedContentInset.top)
+        let offset = max(rect.minY - anchor.y, -textView.adjustedContentInset.top)
         textView.setContentOffset(CGPoint(x: 0, y: offset), animated: false)
     }
 
@@ -368,7 +358,7 @@ final class DiffViewController: UIViewController {
         }
         let anchorY = textView.rect(forParagraph: line).minY - textView.contentOffset.y
         expanded.insert(line.rowId)
-        rebuild(preservingScroll: true, anchorRowId: line.rowId, anchorY: anchorY)
+        rebuild(anchor: (line.rowId, anchorY))
     }
 
     private func scrollToNextChange() {
@@ -387,10 +377,14 @@ final class DiffViewController: UIViewController {
         guard let document, let range = textView.selectedTextRange, !range.isEmpty else { return nil }
         let selection = textView.selectedRange
         var parts: [String] = []
-        for line in document.lines {
-            guard NSIntersectionRange(line.range, selection).length > 0 else { continue }
+        var index = document.lineIndex(at: selection.location)
+        while index < document.lines.count {
+            let line = document.lines[index]
+            index += 1
+            if line.range.location >= NSMaxRange(selection) { break }
             if case .band = line.role { continue }
             let clipped = NSIntersectionRange(line.range, selection)
+            guard clipped.length > 0 else { continue }
             parts.append((storage.string as NSString).substring(with: clipped))
         }
         let text = parts.joined()
@@ -457,42 +451,48 @@ final class DiffDocument {
     }
 
     /// Extra height around a band's text, so the whole row clears a 44pt tap target.
-    static let bandPadding: CGFloat = 13
+    fileprivate static let bandPadding: CGFloat = 13
 
     static func build(items: [DiffItem], font: UIFont) -> DiffDocument {
         var text = String()
         var lines: [Line] = []
         var changeAnchors: [Int] = []
         var previousWasChange = false
+        // A running offset: `(text as NSString).length` on the growing string is O(n) for
+        // non-ASCII content, which would make laying the document down quadratic.
+        var location = 0
 
         for item in items {
-            let location = (text as NSString).length
             switch item {
             case .line(let row):
                 text += row.text
                 text += "\n"
+                let length = (row.text as NSString).length + 1
                 let isChange = row.kind == .addition || row.kind == .deletion
                 if isChange, !previousWasChange { changeAnchors.append(lines.count) }
                 previousWasChange = isChange
                 lines.append(Line(
                     role: .code(row.kind),
-                    range: NSRange(location: location, length: (row.text as NSString).length + 1),
+                    range: NSRange(location: location, length: length),
                     rowId: row.id,
                     number: row.kind == .deletion ? row.oldLine : row.newLine
                 ))
+                location += length
             case .band(let id, let range, let expandable):
                 // The range names the code the fold hides, against the same numbers the
                 // gutter shows. A count would only describe the fold itself.
                 let label = "\(range.lowerBound)–\(range.upperBound)"
                 text += label
                 text += "\n"
+                let length = (label as NSString).length + 1
                 previousWasChange = false
                 lines.append(Line(
                     role: .band(expandable: expandable),
-                    range: NSRange(location: location, length: (label as NSString).length + 1),
+                    range: NSRange(location: location, length: length),
                     rowId: id,
                     number: nil
                 ))
+                location += length
             }
         }
 
@@ -500,30 +500,18 @@ final class DiffDocument {
             .font: font,
             .foregroundColor: UIColor.label,
         ])
-        // A wrapped continuation hangs off the line's *own* indentation, not off the
-        // margin: on a 390pt screen most lines wrap, and a continuation that jumps back
-        // to column 0 reads as a new statement. One style per distinct indent, cached —
-        // a 5000-line diff has a handful.
-        var styles: [String: NSParagraphStyle] = [:]
-        for (item, line) in zip(items, lines) {
-            guard case .line(let row) = item else { continue }
-            let indent = String(row.text.prefix { $0 == " " || $0 == "\t" })
-            let style = styles[indent] ?? {
-                let style = NSMutableParagraphStyle()
-                style.lineSpacing = 2
-                let width = (indent as NSString).size(withAttributes: [.font: font]).width
-                style.headIndent = width + 16
-                styles[indent] = style
-                return style
-            }()
-            attributed.addAttribute(.paragraphStyle, value: style, range: line.range)
-        }
-
         let band = NSMutableParagraphStyle()
         band.alignment = .center
         band.lineSpacing = 2
         band.paragraphSpacingBefore = bandPadding
         band.paragraphSpacing = bandPadding
+        // A wrapped continuation hangs off the line's *own* indentation, not off the
+        // margin: on a 390pt screen most lines wrap, and a continuation that jumps back
+        // to column 0 reads as a new statement. One style per distinct indent, cached —
+        // a 5000-line diff has a handful.
+        var styles: [String: NSParagraphStyle] = [:]
+
+        attributed.beginEditing()
         for (item, line) in zip(items, lines) {
             switch item {
             case .band(_, _, let expandable):
@@ -535,6 +523,15 @@ final class DiffDocument {
                     .paragraphStyle: band,
                 ], range: line.range)
             case .line(let row):
+                let indent = String(row.text.prefix { $0 == " " || $0 == "\t" })
+                let style = styles[indent] ?? {
+                    let style = NSMutableParagraphStyle()
+                    style.lineSpacing = 2
+                    style.headIndent = (indent as NSString).size(withAttributes: [.font: font]).width + 16
+                    styles[indent] = style
+                    return style
+                }()
+                attributed.addAttribute(.paragraphStyle, value: style, range: line.range)
                 guard let emphasis = row.emphasis, !emphasis.isEmpty,
                       let range = utf16Range(of: emphasis, in: row.text) else { continue }
                 let color: UIColor = row.kind == .addition
@@ -546,6 +543,7 @@ final class DiffDocument {
                 )
             }
         }
+        attributed.endEditing()
 
         return DiffDocument(attributed: attributed, lines: lines, changeAnchors: changeAnchors)
     }
@@ -644,6 +642,15 @@ final class DiffWashLayoutManager: NSLayoutManager {
 
     static let barWidth: CGFloat = 3
 
+    /// Everything below is constant per document; a draw pass fires on every scroll
+    /// tick, so none of it is rebuilt there.
+    private static let additionWash = UIColor.systemGreen.withAlphaComponent(0.09)
+    private static let deletionWash = UIColor.systemRed.withAlphaComponent(0.09)
+    private lazy var numberAttributes = Self.numberAttributes()
+    /// One digit's advance in the (monospaced-digit) number font, so a number can be
+    /// right-aligned by arithmetic instead of a measuring layout pass per line.
+    private lazy var digitWidth: CGFloat = ("0" as NSString).size(withAttributes: numberAttributes).width
+
     /// Everything the row means is drawn here, in one pass over the visible lines:
     /// washes, edge bars, and the line numbers.
     ///
@@ -659,8 +666,10 @@ final class DiffWashLayoutManager: NSLayoutManager {
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
         if let document, let container = textContainers.first {
             let charRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
-            let width = max(usedRect(for: container).width + origin.x, contentWidth)
-            let numberAttributes = Self.numberAttributes()
+            // The view's width, not the used rect: the text soft-wraps, so it never
+            // exceeds the view — and `usedRect` would lay out the whole container on
+            // every pass to tell us so.
+            let width = contentWidth
             var index = document.lineIndex(at: charRange.location)
             while index < document.lines.count {
                 let line = document.lines[index]
@@ -684,18 +693,16 @@ final class DiffWashLayoutManager: NSLayoutManager {
                     fill.size.width = width
                     wash.setFill()
                     UIRectFill(fill)
-                    if let bar {
-                        bar.setFill()
-                        UIRectFill(CGRect(x: 0, y: fill.minY, width: Self.barWidth, height: fill.height))
-                    }
+                    bar.setFill()
+                    UIRectFill(CGRect(x: 0, y: fill.minY, width: Self.barWidth, height: fill.height))
                 }
                 // `origin.x` is the container's left inset — exactly the column the
                 // numbers live in, and it holds no glyphs to collide with. Drawn on the
                 // paragraph's first line, so a wrapped line is numbered once.
                 if let number = line.number {
-                    let text = NSAttributedString(string: "\(number)", attributes: numberAttributes)
-                    text.draw(at: CGPoint(
-                        x: origin.x - text.size().width - 8,
+                    let digits = "\(number)"
+                    NSAttributedString(string: digits, attributes: numberAttributes).draw(at: CGPoint(
+                        x: origin.x - CGFloat(digits.count) * digitWidth - 8,
                         y: rect.minY
                     ))
                 }
@@ -732,14 +739,11 @@ final class DiffWashLayoutManager: NSLayoutManager {
 
     /// (row wash, leading bar) for a code line. The wash is deliberately faint; the bar
     /// is full strength. Bands paint themselves — see `drawBand`.
-    static func fills(for role: DiffDocument.Role) -> (UIColor, UIColor?)? {
+    private static func fills(for role: DiffDocument.Role) -> (UIColor, UIColor)? {
         switch role {
-        case .code(.addition):
-            return (UIColor.systemGreen.withAlphaComponent(0.09), UIColor.systemGreen)
-        case .code(.deletion):
-            return (UIColor.systemRed.withAlphaComponent(0.09), UIColor.systemRed)
-        case .band, .code:
-            return nil
+        case .code(.addition): return (additionWash, .systemGreen)
+        case .code(.deletion): return (deletionWash, .systemRed)
+        case .band, .code: return nil
         }
     }
 }
@@ -767,13 +771,14 @@ final class DiffSyntaxHighlighter {
         theme: String, font: UIFont,
         completion: @escaping ([Int: NSAttributedString]) -> Void
     ) {
-        let total = newSide.reduce(0) { $0 + $1.text.count } + oldSide.reduce(0) { $0 + $1.text.count }
+        let total = newSide.reduce(0) { $0 + $1.text.utf8.count }
+            + oldSide.reduce(0) { $0 + $1.text.utf8.count }
         guard total <= Self.maxCharacters else { return }
         queue.async { [weak self] in
             guard let self, let highlightr = prepared(theme: theme, font: font) else { return }
             var result: [Int: NSAttributedString] = [:]
-            Self.apply(newSide, keeping: [.context, .addition], highlightr, language, into: &result)
-            Self.apply(oldSide, keeping: [.deletion], highlightr, language, into: &result)
+            Self.apply(newSide, highlightr, language, into: &result)
+            Self.apply(oldSide, highlightr, language, into: &result)
             DispatchQueue.main.async { completion(result) }
         }
     }
@@ -794,8 +799,7 @@ final class DiffSyntaxHighlighter {
     }
 
     private static func apply(
-        _ side: [DiffLine], keeping kinds: Set<DiffLine.Kind>,
-        _ highlightr: Highlightr, _ language: String,
+        _ side: [DiffLine], _ highlightr: Highlightr, _ language: String,
         into result: inout [Int: NSAttributedString]
     ) {
         let joined = side.map(\.text).joined(separator: "\n")
@@ -807,7 +811,7 @@ final class DiffSyntaxHighlighter {
         for row in side {
             let length = (row.text as NSString).length
             defer { location += length + 1 }
-            guard kinds.contains(row.kind), length > 0 else { continue }
+            guard length > 0 else { continue }
             result[row.id] = colored.attributedSubstring(from: NSRange(location: location, length: length))
         }
     }

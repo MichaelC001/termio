@@ -97,9 +97,11 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     /// The working-tree changes (server → client), repo-relative and already
     /// carrying their `+`/`−` counts so the list needs no second round trip.
     case changes(files: [WireChange])
-    /// The client asks for one changed file's unified diff. Answered with
-    /// `.diff` or `.error`.
-    case readDiff(projectID: String, path: String)
+    /// The client asks for one changed file's unified diff, echoing the status letter
+    /// it already holds from `.changes` — an untracked file diffs against nothing, and
+    /// re-deriving that on the Mac would mean a second `git status` walk of the repo per
+    /// tap. Answered with `.diff` or `.error`.
+    case readDiff(projectID: String, path: String, status: String)
     /// One file's unified diff (server → client).
     case diff(WireDiff)
     /// The server rejected a request (unknown session, no live PTY).
@@ -200,12 +202,13 @@ public enum CompanionControl: Codable, Sendable, Equatable {
                     ]
                 },
             ])
-        case .readDiff(let projectID, let path):
-            return Self.json(["t": "readDiff", "project": projectID, "path": path])
+        case .readDiff(let projectID, let path, let status):
+            return Self.json([
+                "t": "readDiff", "project": projectID, "path": path, "status": status,
+            ])
         case .diff(let diff):
             return Self.json([
-                "t": "diff", "path": diff.path, "text": diff.text,
-                "full": diff.fullContext, "binary": diff.binary,
+                "t": "diff", "path": diff.path, "text": diff.text, "binary": diff.binary,
             ])
         case .trace(let sessionID, let dark):
             return Self.json(["t": "trace", "session": sessionID, "dark": dark])
@@ -347,13 +350,15 @@ public enum CompanionControl: Codable, Sendable, Equatable {
         case "readDiff":
             guard let projectID = obj["project"] as? String,
                   let path = obj["path"] as? String else { return nil }
-            return .readDiff(projectID: projectID, path: path)
+            return .readDiff(
+                projectID: projectID, path: path,
+                status: obj["status"] as? String ?? "M"
+            )
         case "diff":
             guard let path = obj["path"] as? String,
                   let text = obj["text"] as? String else { return nil }
             return .diff(WireDiff(
                 path: path, text: text,
-                fullContext: obj["full"] as? Bool ?? false,
                 binary: obj["binary"] as? Bool ?? false
             ))
         case "trace":
@@ -437,23 +442,34 @@ public struct WireChange: Codable, Sendable, Equatable {
     }
 }
 
+extension WireChange {
+    /// The one-line caption both the Changes row and the diff reader's header show:
+    /// where the file lives and what it gained and lost.
+    public var caption: String {
+        let directory = (path as NSString).deletingLastPathComponent
+        var parts: [String] = directory.isEmpty ? [] : [directory]
+        parts.append(isBinary ? "binary" : "+\(additions) −\(deletions)")
+        if isStaged { parts.append("staged") }
+        return parts.joined(separator: " · ")
+    }
+
+    public var name: String { (path as NSString).lastPathComponent }
+}
+
 /// A `readDiff` reply: one file's unified diff as text, parsed on the phone with
-/// `DiffParser`. `fullContext` marks a diff fetched with the whole file as context —
-/// the phone can then fold unchanged runs into bands the reader *expands*. Without it
-/// (a huge file, refetched at git's default 3-line context) the gaps between hunks are
-/// fixed markers, since the hidden lines were never sent.
+/// `DiffParser`. Whether a fold can be *expanded* is read off the text itself — a diff
+/// fetched with whole-file context has every line in it, one fetched at git's default
+/// context does not — so nothing here has to describe it separately.
 public struct WireDiff: Codable, Sendable, Equatable {
     public let path: String
     public let text: String
-    public let fullContext: Bool
     /// Binary content: `text` is empty and the reader says so rather than
     /// rendering git's "Binary files differ" line as if it were code.
     public let binary: Bool
 
-    public init(path: String, text: String, fullContext: Bool, binary: Bool = false) {
+    public init(path: String, text: String, binary: Bool = false) {
         self.path = path
         self.text = text
-        self.fullContext = fullContext
         self.binary = binary
     }
 }

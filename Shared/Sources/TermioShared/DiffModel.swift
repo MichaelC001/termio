@@ -55,13 +55,12 @@ public enum DiffParser {
         var id = 0
         var oldNo = 0
         var newNo = 0
-        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(raw)
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
             if line.hasPrefix("@@") {
                 if let (o, n) = parseHunkHeader(line) { oldNo = o; newNo = n }
                 // Hunk rows carry their start numbers so a renderer can size the gap to
                 // the previous hunk when it draws the boundary as a band.
-                rows.append(DiffLine(id: id, kind: .hunk, text: line, oldLine: oldNo, newLine: newNo))
+                rows.append(DiffLine(id: id, kind: .hunk, text: String(line), oldLine: oldNo, newLine: newNo))
                 id += 1
                 continue
             }
@@ -107,15 +106,17 @@ public enum DiffParser {
                 return
             }
             items += run.prefix(head).map(DiffItem.line)
-            let hiddenRows = Array(run.dropFirst(head).dropLast(tail))
-            if expanded.contains(hiddenRows[0].id) {
+            // A slice, not a copy: a folded run can be thousands of lines, and the
+            // collapsed case only reads its two ends.
+            let hiddenRows = run[head..<(run.count - tail)]
+            guard let firstHidden = hiddenRows.first, let lastHidden = hiddenRows.last else { return }
+            if expanded.contains(firstHidden.id) {
                 items += hiddenRows.map(DiffItem.line)
             } else {
-                let first = hiddenRows[0].newLine ?? hiddenRows[0].oldLine ?? 0
-                let last = hiddenRows[hiddenRows.count - 1].newLine
-                    ?? hiddenRows[hiddenRows.count - 1].oldLine ?? first
+                let first = firstHidden.newLine ?? firstHidden.oldLine ?? 0
+                let last = lastHidden.newLine ?? lastHidden.oldLine ?? first
                 items.append(.band(
-                    id: hiddenRows[0].id, lines: first...max(first, last), expandable: true
+                    id: firstHidden.id, lines: first...max(first, last), expandable: true
                 ))
             }
             items += run.suffix(tail).map(DiffItem.line)
@@ -207,17 +208,19 @@ public enum DiffParser {
 
     // MARK: Line scanning
 
-    private static func isFileHeader(_ line: String) -> Bool {
-        for prefix in ["diff ", "index ", "--- ", "+++ ", "new file", "deleted file",
-                       "old mode", "new mode", "similarity ", "dissimilarity ",
-                       "rename ", "copy ", "\\ "] where line.hasPrefix(prefix) {
-            return true
-        }
-        return false
+    /// git's plumbing lines, which carry no code and no line numbers.
+    private static let fileHeaderPrefixes = [
+        "diff ", "index ", "--- ", "+++ ", "new file", "deleted file",
+        "old mode", "new mode", "similarity ", "dissimilarity ",
+        "rename ", "copy ", "\\ ",
+    ]
+
+    private static func isFileHeader(_ line: Substring) -> Bool {
+        fileHeaderPrefixes.contains(where: line.hasPrefix)
     }
 
     /// Pulls the starting old and new line numbers out of `@@ -a,b +c,d @@`.
-    private static func parseHunkHeader(_ line: String) -> (Int, Int)? {
+    private static func parseHunkHeader(_ line: Substring) -> (Int, Int)? {
         let parts = line.split(separator: " ")
         guard parts.count >= 3 else { return nil }
         func start(_ s: Substring) -> Int? {

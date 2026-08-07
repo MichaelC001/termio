@@ -98,18 +98,18 @@ final class FileListViewController: UITableViewController {
 /// The one recipe for a file/folder row, so the root listing in the drawer and every
 /// pushed directory read identically.
 enum FileRow {
-    static func configure(_ cell: UITableViewCell, entry: WireFileEntry) {
+    /// `subtitle` is for the flat search results, where a name alone doesn't say which
+    /// file it is; a directory listing needs none.
+    static func configure(_ cell: UITableViewCell, entry: WireFileEntry, subtitle: String? = nil) {
         var config = cell.defaultContentConfiguration()
         config.text = entry.name
         config.textProperties.font = .preferredFont(forTextStyle: .subheadline)
-        if entry.isDir {
-            config.image = UIImage(systemName: "folder")
-            config.imageProperties.tintColor = .secondaryLabel
-        } else {
-            let icon = FileIcons.icon(forFileName: entry.name)
-            config.image = icon.image
-            config.imageProperties.tintColor = icon.tint
-        }
+        config.secondaryText = subtitle
+        config.secondaryTextProperties.font = .preferredFont(forTextStyle: .caption1)
+        config.secondaryTextProperties.color = .secondaryLabel
+        let icon = entry.isDir ? FileIcons.folder() : FileIcons.icon(forFileName: entry.name)
+        config.image = icon.image
+        config.imageProperties.tintColor = icon.tint
         // Icons vary in width (folder vs logo vs symbol); a fixed layout box keeps
         // every name at the same leading edge.
         config.imageProperties.maximumSize = CGSize(width: 16, height: 16)
@@ -131,26 +131,14 @@ enum FileRow {
         stack.axis = .horizontal
         stack.alignment = .center
         stack.spacing = 8
+        // A stack lays its children out by intrinsic size and ignores their frames, so
+        // both pieces carry constraints — a bare `UIView` dot would otherwise collapse to
+        // zero width and vanish. The cell then sizes the accessory from this frame.
         stack.frame = CGRect(
-            x: 0, y: 0,
-            width: pieces.reduce(0) { $0 + $1.frame.width } + CGFloat(pieces.count - 1) * 8,
-            height: 16
+            origin: .zero,
+            size: stack.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize)
         )
         return stack
-    }
-
-    /// The system disclosure indicator's twin, drawn by hand so it can sit beside the
-    /// changed dot.
-    private static func chevron() -> UIView {
-        let image = UIImage(
-            systemName: "chevron.right",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
-        )
-        let view = UIImageView(image: image)
-        view.tintColor = .tertiaryLabel
-        view.frame = CGRect(x: 0, y: 0, width: 10, height: 16)
-        view.contentMode = .scaleAspectFit
-        return view
     }
 
     static func menu(
@@ -161,23 +149,41 @@ enum FileRow {
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak browser] _ in
             var actions: [UIMenuElement] = []
             if !entry.isDir {
-                actions.append(UIAction(title: "Open", image: UIImage(systemName: "doc.text")) { _ in
+                actions.append(UIAction(title: "Open File", image: UIImage(systemName: "doc.text")) { _ in
                     browser?.openFile(at: relative)
                 })
             }
             actions.append(UIAction(title: "Copy Path", image: UIImage(systemName: "doc.on.doc")) { _ in
                 UIPasteboard.general.string = absolute
             })
-            return UIMenu(title: entry.name, children: actions)
+            return UIMenu(title: relative, children: actions)
         }
+    }
+
+    /// The system disclosure indicator's twin, drawn by hand so it can sit beside the
+    /// changed dot (a cell's accessory type and accessory view are mutually exclusive).
+    private static func chevron() -> UIView {
+        let image = UIImage(
+            systemName: "chevron.right",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        )
+        let view = UIImageView(image: image)
+        view.tintColor = .tertiaryLabel
+        view.contentMode = .scaleAspectFit
+        return view
     }
 
     /// The dot marking a file the working diff touches (and the folders above it) —
     /// the same signal the desktop tree shows.
-    static func changedDot() -> UIView {
-        let dot = UIView(frame: CGRect(x: 0, y: 0, width: 8, height: 8))
+    private static func changedDot() -> UIView {
+        let dot = UIView()
         dot.backgroundColor = .systemBlue
         dot.layer.cornerRadius = 4
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            dot.widthAnchor.constraint(equalToConstant: 8),
+            dot.heightAnchor.constraint(equalToConstant: 8),
+        ])
         return dot
     }
 }

@@ -33,8 +33,10 @@ final class InspectorViewController: UIViewController {
 
     private var client: CompanionClient?
     /// Directory listings in flight, keyed by path — a pushed screen's reply must reach
-    /// that screen, not whichever list asked last.
-    private var listingHandlers: [String: ([WireFileEntry]) -> Void] = [:]
+    /// that screen, not whichever list asked last. A path can have more than one waiter
+    /// (pull-to-refresh while the first load is still out), and dropping the earlier one
+    /// would leave its screen spinning forever.
+    private var listingHandlers: [String: [([WireFileEntry]) -> Void]] = [:]
     /// The file path awaiting a `.file` reply, so late/errored replies don't open stale
     /// viewers.
     private var pendingRead: String?
@@ -140,13 +142,8 @@ final class InspectorViewController: UIViewController {
     /// Show/hide the nav-bar spinner, attaching its bar button only while busy so no
     /// empty glass capsule lingers in the header when idle.
     private func setLoading(_ loading: Bool) {
-        if loading {
-            spinner.startAnimating()
-            navigationItem.rightBarButtonItem = UIBarButtonItem(customView: spinner)
-        } else {
-            spinner.stopAnimating()
-            updateRightBarButton()
-        }
+        if loading { spinner.startAnimating() } else { spinner.stopAnimating() }
+        updateRightBarButton()
     }
 
     /// The right slot shows the search affordance when idle in the Files pane; the
@@ -272,6 +269,10 @@ final class InspectorViewController: UIViewController {
     private func receiveError(_ message: String) {
         setLoading(false)
         refreshControl.endRefreshing()
+        // Whatever the failure was, a Changes pane that never loaded has to stop saying
+        // it is loading — the wire's `.error` carries no request id to tell us it was
+        // ours, and "Loading changes…" forever is the worst of the readings.
+        changesLoaded = true
         // A diff on screen owns any failure while it is waiting for one.
         if let activeDiff, activeDiff.isAwaitingDiff {
             activeDiff.failed(message)
@@ -281,7 +282,7 @@ final class InspectorViewController: UIViewController {
             // A directory that never lands would leave its screen spinning forever —
             // answer the waiters with nothing so they settle on their empty state.
             if !listingHandlers.isEmpty {
-                let waiting = listingHandlers.values
+                let waiting = listingHandlers.values.flatMap { $0 }
                 listingHandlers = [:]
                 for handler in waiting { handler([]) }
                 return
@@ -307,8 +308,8 @@ final class InspectorViewController: UIViewController {
     private func receiveListing(path: String, entries: [WireFileEntry]) {
         setLoading(false)
         refreshControl.endRefreshing()
-        guard let handler = listingHandlers.removeValue(forKey: path) else { return }
-        handler(entries)
+        guard let waiting = listingHandlers.removeValue(forKey: path) else { return }
+        for handler in waiting { handler(entries) }
     }
 
     private func receiveFile(_ file: WireFile) {
@@ -340,13 +341,16 @@ final class InspectorViewController: UIViewController {
     /// reader.
     private func openDiff(at index: Int) {
         let viewer = DiffViewController(files: changes, index: index)
-        viewer.onRequestDiff = { [weak self] path in
+        // `viewer` weakly: this closure is stored *on* the viewer, so capturing it
+        // strongly would keep every diff ever opened — text storage and all — alive for
+        // the app's lifetime.
+        viewer.onRequestDiff = { [weak self, weak viewer] path, status in
             guard let self else { return }
             guard isLive, let projectID = session.projectRosterID else {
-                viewer.receive(WireDiff(path: path, text: MockChanges.sampleDiff, fullContext: true))
+                viewer?.receive(WireDiff(path: path, text: MockChanges.sampleDiff))
                 return
             }
-            client?.send(.readDiff(projectID: projectID, path: path))
+            client?.send(.readDiff(projectID: projectID, path: path, status: status))
         }
         // A plain shell has no prompt to paste into; only an agent session gets the action.
         if session.agent.id != RosterAgent.terminal.id, let onSendToAgent {
@@ -365,7 +369,7 @@ extension InspectorViewController: RemoteFileBrowsing {
             then(FileNode.sampleEntries(at: path))
             return
         }
-        listingHandlers[path] = then
+        listingHandlers[path, default: []].append(then)
         setLoading(true)
         client?.send(.listFiles(projectID: projectID, path: path))
     }
@@ -403,10 +407,12 @@ extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         guard pane == .changes, !changes.isEmpty else { return nil }
-        let additions = changes.reduce(0) { $0 + $1.additions }
-        let deletions = changes.reduce(0) { $0 + $1.deletions }
+        let totals = changes.reduce(into: (added: 0, deleted: 0)) {
+            $0.added += $1.additions
+            $0.deleted += $1.deletions
+        }
         let files = changes.count == 1 ? "1 changed file" : "\(changes.count) changed files"
-        return "\(files)  +\(additions) −\(deletions)"
+        return "\(files)  +\(totals.added) −\(totals.deleted)"
     }
 
     func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
@@ -428,21 +434,12 @@ extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
         case .files where isSearching:
             guard indexPath.row < searchResults.count else { break }
             let path = searchResults[indexPath.row]
-            var config = cell.defaultContentConfiguration()
-            config.text = (path as NSString).lastPathComponent
-            config.textProperties.font = .preferredFont(forTextStyle: .subheadline)
             let parent = (path as NSString).deletingLastPathComponent
-            config.secondaryText = parent.isEmpty ? nil : parent
-            config.secondaryTextProperties.font = .preferredFont(forTextStyle: .caption1)
-            config.secondaryTextProperties.color = .secondaryLabel
-            let icon = FileIcons.icon(forFileName: config.text ?? "")
-            config.image = icon.image
-            config.imageProperties.tintColor = icon.tint
-            config.imageProperties.maximumSize = CGSize(width: 16, height: 16)
-            config.imageProperties.reservedLayoutSize = CGSize(width: 16, height: 16)
-            cell.contentConfiguration = config
-            cell.accessoryView = nil
-            cell.accessoryType = .none
+            FileRow.configure(
+                cell,
+                entry: WireFileEntry(name: (path as NSString).lastPathComponent, isDir: false),
+                subtitle: parent.isEmpty ? nil : parent
+            )
         case .files:
             guard indexPath.row < rootEntries.count else { break }
             FileRow.configure(cell, entry: rootEntries[indexPath.row])
@@ -450,9 +447,9 @@ extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
             guard indexPath.row < changes.count else { break }
             let change = changes[indexPath.row]
             var config = cell.defaultContentConfiguration()
-            config.text = (change.path as NSString).lastPathComponent
+            config.text = change.name
             config.textProperties.font = .preferredFont(forTextStyle: .subheadline)
-            config.secondaryText = Self.subtitle(for: change)
+            config.secondaryText = change.caption
             config.secondaryTextProperties.font = .preferredFont(forTextStyle: .caption1)
             config.secondaryTextProperties.color = .secondaryLabel
             config.secondaryTextProperties.lineBreakMode = .byTruncatingHead
@@ -513,24 +510,11 @@ extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
         case .changes:
             guard indexPath.row < changes.count else { return nil }
             let change = changes[indexPath.row]
-            let absolute = absolutePath(for: change.path)
-            return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-                UIMenu(title: change.path, children: [
-                    UIAction(title: "Open File", image: UIImage(systemName: "doc.text")) { _ in
-                        self?.openFile(at: change.path)
-                    },
-                    UIAction(title: "Copy Path", image: UIImage(systemName: "doc.on.doc")) { _ in
-                        UIPasteboard.general.string = absolute
-                    },
-                ])
-            }
+            return FileRow.menu(
+                for: WireFileEntry(name: change.name, isDir: false),
+                in: (change.path as NSString).deletingLastPathComponent, browser: self
+            )
         }
-    }
-
-    private static func subtitle(for change: WireChange) -> String {
-        let directory = (change.path as NSString).deletingLastPathComponent
-        let counts = change.isBinary ? "binary" : "+\(change.additions) −\(change.deletions)"
-        return directory.isEmpty ? counts : "\(directory) · \(counts)"
     }
 
     /// git's status letter as its own glyph — the desktop's single-letter badge, in the

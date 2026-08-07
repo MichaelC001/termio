@@ -35,29 +35,34 @@ final class CompanionChangesWireTests: XCTestCase {
         XCTAssertEqual(files.first?.path, path)
     }
 
-    func testReadDiffRoundTrips() {
-        let message = CompanionControl.readDiff(projectID: "abc123", path: "Sources/termio/App.swift")
+    func testReadDiffRoundTripsItsStatus() {
+        let message = CompanionControl.readDiff(
+            projectID: "abc123", path: "Sources/termio/App.swift", status: "U"
+        )
         XCTAssertEqual(CompanionControl.decode(message.encoded()), message)
     }
 
     func testDiffRoundTripsItsText() {
         let message = CompanionControl.diff(WireDiff(
             path: "App.swift",
-            text: "@@ -1,2 +1,2 @@\n-let a = 1\n+let a = 2\n",
-            fullContext: true
+            text: "@@ -1,2 +1,2 @@\n-let a = 1\n+let a = 2\n"
         ))
         XCTAssertEqual(CompanionControl.decode(message.encoded()), message)
     }
 
-    /// An older peer sends neither flag; both must read as "not full context, not
-    /// binary" rather than failing the decode and blanking the reader.
-    func testDiffToleratesMissingFlags() {
+    /// An older peer sends no binary flag; it must read as "not binary" rather than
+    /// failing the decode and blanking the reader. Likewise a `readDiff` with no status.
+    func testToleratesMissingOptionalFields() {
         let json = #"{"t":"diff","path":"App.swift","text":"@@ -1 +1 @@"}"#
         guard case .diff(let diff) = CompanionControl.decode(json) else {
             return XCTFail("a diff without flags should still decode")
         }
-        XCTAssertFalse(diff.fullContext)
         XCTAssertFalse(diff.binary)
+        guard case .readDiff(_, _, let status) =
+            CompanionControl.decode(#"{"t":"readDiff","project":"a","path":"b"}"#) else {
+            return XCTFail("a readDiff without a status should still decode")
+        }
+        XCTAssertEqual(status, "M")
     }
 }
 
