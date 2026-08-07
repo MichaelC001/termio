@@ -1008,6 +1008,54 @@ async fn process_control(
                 });
             }
         }
+        Control::FsMatch {
+            root,
+            query,
+            limit,
+            seq,
+        } => {
+            if !connection.capabilities.contains("files") {
+                let response = error(
+                    seq,
+                    ErrorCode::Denied,
+                    "the files capability was not negotiated",
+                    false,
+                );
+                send_response(out, response_cache, seq, response);
+            } else {
+                match manager.resources.name_index(&root) {
+                    // No subscription yet means no index — an honest 0.0,
+                    // not a walk nobody asked the watcher to keep fresh.
+                    None => {
+                        let response = Control::FsMatched {
+                            paths: Vec::new(),
+                            coverage: 0.0,
+                            re: seq,
+                        };
+                        send_response(out, response_cache, seq, response);
+                    }
+                    Some(index) => {
+                        let out = out.clone();
+                        tokio::spawn(async move {
+                            let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+                            let matched = tokio::task::spawn_blocking(move || {
+                                index.matches(&query, limit)
+                            })
+                            .await;
+                            let response = match matched {
+                                Ok((paths, coverage)) => Control::FsMatched {
+                                    paths,
+                                    coverage,
+                                    re: seq,
+                                },
+                                Err(e) => error(seq, ErrorCode::Internal, e.to_string(), true),
+                            };
+                            let _ = out.send(Outbound::Control(response));
+                        });
+                    }
+                }
+            }
+        }
         Control::UploadOpen {
             dest,
             size,
@@ -1149,6 +1197,7 @@ async fn process_control(
         | Control::Subscribed { .. }
         | Control::FsListed { .. }
         | Control::FsFile { .. }
+        | Control::FsMatched { .. }
         | Control::UploadOpened { .. }
         | Control::UploadAck { .. }
         | Control::UploadCommitted { .. }

@@ -160,9 +160,19 @@ impl WatchState {
     }
 }
 
+/// One workspace's live machinery: the subscription state plus the lazy name
+/// index that §C.12's `fs.match` reads. Both share the watch's lifetime — the
+/// entry leaving the map drops the index sender, which ends the index task.
+#[derive(Clone)]
+struct WatchEntry {
+    state: Arc<Mutex<WatchState>>,
+    index: Arc<crate::files::NameIndex>,
+    index_tx: mpsc::UnboundedSender<FsBatch>,
+}
+
 #[derive(Clone, Default)]
 pub struct Registry {
-    watches: Arc<Mutex<HashMap<String, Arc<Mutex<WatchState>>>>>,
+    watches: Arc<Mutex<HashMap<String, WatchEntry>>>,
 }
 
 impl Registry {
@@ -194,11 +204,23 @@ impl Registry {
         let Ok(id) = Registry::fs_resource_id(root) else {
             return 0;
         };
-        let Some(state) = self.watches.lock().unwrap().get(&id).cloned() else {
+        let Some(entry) = self.watches.lock().unwrap().get(&id).cloned() else {
             return 0;
         };
-        let seq = state.lock().unwrap().seq;
+        let seq = entry.state.lock().unwrap().seq;
         seq
+    }
+
+    /// The name index for a workspace, if its watch is running. `None` means
+    /// no one has subscribed yet — `fs.match` answers coverage 0.0 rather
+    /// than starting a walk nobody asked to keep fresh.
+    pub fn name_index(&self, root: &str) -> Option<Arc<crate::files::NameIndex>> {
+        let id = Registry::fs_resource_id(root).ok()?;
+        self.watches
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|entry| entry.index.clone())
     }
 
     /// Subscribe `client` to `resource`, resuming from `since` when possible.
@@ -215,7 +237,7 @@ impl Registry {
             .ok_or_else(|| anyhow!("unknown resource kind: {resource}"))?
             .to_string();
 
-        let state = {
+        let entry = {
             let mut watches = self.watches.lock().unwrap();
             match watches.get(resource) {
                 Some(existing) => existing.clone(),
@@ -227,7 +249,7 @@ impl Registry {
             }
         };
 
-        let mut guard = state.lock().unwrap();
+        let mut guard = entry.state.lock().unwrap();
         guard.subscribers.insert(client, tx);
         guard.idle_since = None;
         let (gap, replay) = guard.resume(resource, since);
@@ -245,10 +267,10 @@ impl Registry {
     /// resource plane.
     pub fn unsubscribe(&self, resource: &str, client: &str) -> bool {
         let watches = self.watches.lock().unwrap();
-        let Some(state) = watches.get(resource).cloned() else {
+        let Some(entry) = watches.get(resource).cloned() else {
             return false;
         };
-        let mut guard = state.lock().unwrap();
+        let mut guard = entry.state.lock().unwrap();
         let removed = guard.subscribers.remove(client).is_some();
         if guard.subscribers.is_empty() && guard.idle_since.is_none() {
             guard.idle_since = Some(Instant::now());
@@ -264,7 +286,7 @@ impl Registry {
         }
     }
 
-    fn start_watch(&self, resource: String, root: &Path) -> Result<Arc<Mutex<WatchState>>> {
+    fn start_watch(&self, resource: String, root: &Path) -> Result<WatchEntry> {
         let (raw_tx, raw_rx) = mpsc::unbounded_channel::<notify::Result<notify::Event>>();
         let mut watcher = notify::recommended_watcher(move |event| {
             // The watcher thread must never block on a slow subscriber; the
@@ -283,23 +305,31 @@ impl Registry {
             idle_since: None,
             _watcher: Some(watcher),
         }));
+        // The first subscribe is what triggers the lazy index build (§C.12).
+        let (index, index_tx) = crate::files::spawn_index(root.to_path_buf());
         tokio::spawn(debounce_loop(
             resource,
             raw_rx,
             state.clone(),
+            index_tx.clone(),
             self.watches.clone(),
         ));
-        Ok(state)
+        Ok(WatchEntry {
+            state,
+            index,
+            index_tx,
+        })
     }
 }
 
-type WatchMap = Arc<Mutex<HashMap<String, Arc<Mutex<WatchState>>>>>;
+type WatchMap = Arc<Mutex<HashMap<String, WatchEntry>>>;
 
 /// Accumulate raw watcher events and publish one batch per quiet window.
 async fn debounce_loop(
     resource: String,
     mut raw_rx: mpsc::UnboundedReceiver<notify::Result<notify::Event>>,
     state: Arc<Mutex<WatchState>>,
+    index_tx: mpsc::UnboundedSender<FsBatch>,
     watches: WatchMap,
 ) {
     let mut pending = FsBatch::default();
@@ -332,6 +362,11 @@ async fn debounce_loop(
         seen.clear();
         if batch.is_empty() {
             continue;
+        }
+        // The index applies the same batches subscribers see; a git_meta-only
+        // batch has nothing for it.
+        if batch.full_rescan || !batch.paths.is_empty() {
+            let _ = index_tx.send(batch.clone());
         }
         // Published unconditionally: batches recorded while nobody is attached
         // are exactly what a returning client replays.

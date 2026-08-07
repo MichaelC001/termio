@@ -223,6 +223,243 @@ fn read_with_cap(
     })
 }
 
+/// The lazy, paths-only name index behind `fs.match` (§C.12). Built at idle
+/// priority after a workspace's first subscribe, kept incremental by the
+/// watcher's batches, evicted with the watch. It is a cache of names, never
+/// correctness-bearing — `coverage` tells the client how much of the tree it
+/// has seen so "still indexing" is honest instead of silently incomplete.
+pub struct NameIndex {
+    root: PathBuf,
+    inner: std::sync::Mutex<IndexInner>,
+}
+
+#[derive(Default)]
+struct IndexInner {
+    /// Files per directory (absolute dir → file names). Per-dir granularity is
+    /// what makes watcher batches cheap to apply: one changed dir = one
+    /// re-list, not a walk.
+    dirs: std::collections::HashMap<PathBuf, Vec<String>>,
+    walked_dirs: usize,
+    pending_dirs: usize,
+    complete: bool,
+}
+
+impl NameIndex {
+    pub fn new(root: PathBuf) -> NameIndex {
+        NameIndex {
+            root,
+            inner: std::sync::Mutex::new(IndexInner::default()),
+        }
+    }
+
+    /// Walk the tree breadth-first, yielding between directories so the build
+    /// stays idle-priority work. Skips symlinks (external escape) and the
+    /// watcher's ignored dirs — the "never walk them" invariant.
+    pub async fn build(&self) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.dirs.clear();
+            inner.walked_dirs = 0;
+            inner.pending_dirs = 1;
+            inner.complete = false;
+        }
+        let mut frontier = std::collections::VecDeque::from([self.root.clone()]);
+        while let Some(dir) = frontier.pop_front() {
+            let (files, subdirs) = list_index_dir(&dir);
+            {
+                let mut inner = self.inner.lock().unwrap();
+                inner.dirs.insert(dir, files);
+                inner.walked_dirs += 1;
+                inner.pending_dirs = inner.pending_dirs.saturating_sub(1) + subdirs.len();
+            }
+            frontier.extend(subdirs);
+            tokio::task::yield_now().await;
+        }
+        self.inner.lock().unwrap().complete = true;
+    }
+
+    /// Apply one watcher batch: re-list exactly the named directories and
+    /// prune index entries beneath any that vanished. `full_rescan`
+    /// invalidates everything; the caller rebuilds instead. All IO happens
+    /// outside the lock so `fs.match` never waits on the filesystem.
+    pub fn apply(&self, changed_dirs: &[String]) {
+        for changed in changed_dirs {
+            let dir = PathBuf::from(changed);
+            if !dir.starts_with(&self.root) {
+                continue;
+            }
+            if dir
+                .file_name()
+                .is_some_and(|name| is_unloaded_dir_name(&name.to_string_lossy()))
+            {
+                continue;
+            }
+            if dir.is_dir() {
+                let (files, subdirs) = list_index_dir(&dir);
+                // A freshly created subtree names only the dirs that received
+                // entries; unseen children get one level here and name their
+                // own children in the batches their contents raised.
+                let unseen: Vec<PathBuf> = {
+                    let inner = self.inner.lock().unwrap();
+                    subdirs
+                        .into_iter()
+                        .filter(|subdir| !inner.dirs.contains_key(subdir))
+                        .collect()
+                };
+                let listed: Vec<(PathBuf, Vec<String>)> = unseen
+                    .into_iter()
+                    .map(|subdir| {
+                        let (files, _) = list_index_dir(&subdir);
+                        (subdir, files)
+                    })
+                    .collect();
+                let mut inner = self.inner.lock().unwrap();
+                inner.dirs.insert(dir.clone(), files);
+                for (subdir, files) in listed {
+                    inner.dirs.insert(subdir, files);
+                }
+            } else {
+                // The dir is gone; everything indexed beneath it is stale.
+                self.inner
+                    .lock()
+                    .unwrap()
+                    .dirs
+                    .retain(|indexed, _| !indexed.starts_with(&dir));
+            }
+        }
+    }
+
+    pub fn coverage(&self) -> f32 {
+        let inner = self.inner.lock().unwrap();
+        if inner.complete {
+            return 1.0;
+        }
+        let walked = inner.walked_dirs as f32;
+        let pending = inner.pending_dirs as f32;
+        if walked + pending == 0.0 {
+            return 0.0;
+        }
+        walked / (walked + pending)
+    }
+
+    /// Best `limit` workspace-relative matches for `query`, plus coverage.
+    pub fn matches(&self, query: &str, limit: usize) -> (Vec<String>, f32) {
+        let inner = self.inner.lock().unwrap();
+        let mut scored: Vec<(i64, String)> = inner
+            .dirs
+            .iter()
+            .flat_map(|(dir, files)| {
+                let prefix = dir
+                    .strip_prefix(&self.root)
+                    .unwrap_or(dir)
+                    .to_string_lossy()
+                    .into_owned();
+                files.iter().filter_map(move |name| {
+                    let relative = if prefix.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{prefix}/{name}")
+                    };
+                    fuzzy_score(&relative, name, query).map(|score| (score, relative))
+                })
+            })
+            .collect();
+        drop(inner);
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        scored.truncate(limit);
+        (
+            scored.into_iter().map(|(_, path)| path).collect(),
+            self.coverage(),
+        )
+    }
+}
+
+/// Bind a name index to a workspace watch: build lazily at idle priority,
+/// then apply the watcher's batches as they arrive. The watch owns the
+/// sender; when the watch retires, the task ends and the index memory goes
+/// with it — evictable by construction.
+pub fn spawn_index(
+    root: PathBuf,
+) -> (
+    std::sync::Arc<NameIndex>,
+    tokio::sync::mpsc::UnboundedSender<crate::resource::FsBatch>,
+) {
+    let index = std::sync::Arc::new(NameIndex::new(root));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::resource::FsBatch>();
+    let worker = index.clone();
+    tokio::spawn(async move {
+        worker.build().await;
+        while let Some(batch) = rx.recv().await {
+            if batch.full_rescan {
+                worker.build().await;
+            } else if !batch.paths.is_empty() {
+                let apply_on = worker.clone();
+                let _ =
+                    tokio::task::spawn_blocking(move || apply_on.apply(&batch.paths)).await;
+            }
+        }
+    });
+    (index, tx)
+}
+
+fn list_index_dir(dir: &Path) -> (Vec<String>, Vec<PathBuf>) {
+    let mut files = Vec::new();
+    let mut subdirs = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (files, subdirs);
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            if !is_unloaded_dir_name(&name) {
+                subdirs.push(entry.path());
+            }
+        } else if metadata.is_file() {
+            files.push(name);
+        }
+    }
+    (files, subdirs)
+}
+
+/// Filename fuzzy score: higher is better, `None` is no match. Substring
+/// beats subsequence, the basename beats the full path, and shorter paths
+/// win ties — the ⌘⇧O ranking, kept simple enough to be deterministic.
+fn fuzzy_score(relative: &str, basename: &str, query: &str) -> Option<i64> {
+    if query.is_empty() {
+        return Some(-(relative.len() as i64));
+    }
+    let query = query.to_ascii_lowercase();
+    let basename_lower = basename.to_ascii_lowercase();
+    let relative_lower = relative.to_ascii_lowercase();
+    let length_penalty = relative.len() as i64;
+    if basename_lower.contains(&query) {
+        return Some(4000 - length_penalty);
+    }
+    if is_subsequence(&query, &basename_lower) {
+        return Some(3000 - length_penalty);
+    }
+    if relative_lower.contains(&query) {
+        return Some(2000 - length_penalty);
+    }
+    if is_subsequence(&query, &relative_lower) {
+        return Some(1000 - length_penalty);
+    }
+    None
+}
+
+fn is_subsequence(needle: &str, haystack: &str) -> bool {
+    let mut chars = haystack.chars();
+    needle
+        .chars()
+        .all(|wanted| chars.by_ref().any(|have| have == wanted))
+}
+
 /// Where an upload lands, after confinement has been decided by the caller
 /// (project dest under a canonical root, or a session scratch dir).
 pub struct UploadDest {
@@ -634,6 +871,76 @@ mod tests {
         assert!(!past_end.truncated, "beyond EOF serves empty, not an error");
 
         assert!(read_with_cap(root.to_str().unwrap(), None, None, 4).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fuzzy_ranking_prefers_basename_and_substring() {
+        let hit = |relative: &str, query: &str| {
+            let basename = relative.rsplit('/').next().unwrap();
+            fuzzy_score(relative, basename, query)
+        };
+        assert!(hit("src/main.rs", "zzz").is_none());
+        let basename_substring = hit("src/main.rs", "main").unwrap();
+        let basename_subsequence = hit("src/main.rs", "mrs").unwrap();
+        let path_substring = hit("src/main.rs", "src/ma").unwrap();
+        let path_subsequence = hit("src/main.rs", "smain").unwrap();
+        assert!(basename_substring > basename_subsequence);
+        assert!(basename_subsequence > path_substring);
+        assert!(path_substring > path_subsequence);
+        assert!(
+            hit("main.rs", "main").unwrap() > hit("deeply/nested/main.rs", "main").unwrap(),
+            "shorter paths win ties"
+        );
+        assert!(hit("src/Main.RS", "main").is_some(), "case-insensitive");
+    }
+
+    #[tokio::test]
+    async fn index_builds_walks_lazily_and_stays_incremental() {
+        let root = scratch("index");
+        std::fs::create_dir_all(root.join("src/deep")).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        touch(&root.join(".git/config"), b"");
+        touch(&root.join("src/main.rs"), b"");
+        touch(&root.join("src/deep/hidden.rs"), b"");
+        std::os::unix::fs::symlink("/", root.join("outside")).unwrap();
+
+        let index = NameIndex::new(root.clone());
+        index.build().await;
+        assert_eq!(index.coverage(), 1.0);
+        let (paths, coverage) = index.matches("rs", 10);
+        assert_eq!(coverage, 1.0);
+        assert_eq!(paths, vec!["src/main.rs", "src/deep/hidden.rs"]);
+        let (ignored, _) = index.matches("config", 10);
+        assert!(
+            ignored.is_empty(),
+            "VCS internals are never walked into the index"
+        );
+
+        // The watcher names a dir; the index re-lists just that dir.
+        touch(&root.join("src/fresh.rs"), b"");
+        index.apply(&[root.join("src").display().to_string()]);
+        let (paths, _) = index.matches("fresh", 10);
+        assert_eq!(paths, vec!["src/fresh.rs"]);
+
+        // A dir that vanished takes its subtree out of the index.
+        std::fs::remove_dir_all(root.join("src/deep")).unwrap();
+        index.apply(&[root.join("src/deep").display().to_string()]);
+        let (paths, _) = index.matches("hidden", 10);
+        assert!(paths.is_empty(), "stale entries must be pruned");
+
+        // A subtree created in one batch is picked up via its parent.
+        std::fs::create_dir_all(root.join("newdir")).unwrap();
+        touch(&root.join("newdir/inside.txt"), b"");
+        index.apply(&[
+            root.display().to_string(),
+            root.join("newdir").display().to_string(),
+        ]);
+        let (paths, _) = index.matches("inside", 10);
+        assert_eq!(paths, vec!["newdir/inside.txt"]);
+
+        let (limited, _) = index.matches("rs", 1);
+        assert_eq!(limited.len(), 1, "limit caps the reply");
         let _ = std::fs::remove_dir_all(&root);
     }
 

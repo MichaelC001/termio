@@ -1540,6 +1540,84 @@ def main():
     up.close()
     shutil.rmtree(updir, ignore_errors=True)
 
+    print("\n# 13. fs.match: lazy name index, watcher-kept, coverage-honest (§C.12)")
+    matchdir = f"{SOCK_DIR}/matchproj"
+    shutil.rmtree(matchdir, ignore_errors=True)
+    os.makedirs(f"{matchdir}/src/deep", exist_ok=True)
+    os.makedirs(f"{matchdir}/docs", exist_ok=True)
+    with open(f"{matchdir}/src/main.rs", "w") as f:
+        f.write("fn main() {}\n")
+    with open(f"{matchdir}/src/deep/hidden.rs", "w") as f:
+        f.write("\n")
+    with open(f"{matchdir}/docs/guide.md", "w") as f:
+        f.write("# guide\n")
+
+    def fs_match(client, seq, query, limit=10):
+        client.send_control(
+            {"op": "fs_match", "root": matchdir, "query": query, "limit": limit, "seq": seq}
+        )
+        reply, _ = client.recv_matching(
+            lambda kind, msg: kind == "C"
+            and msg.get("op") == "fs_matched"
+            and msg.get("re") == seq
+        )
+        return reply[1] if reply else None
+
+    matcher = WireClient(caps=["files", "resources", "events"])
+    unindexed = fs_match(matcher, 110, "main")
+    check(
+        "fs.match: before any subscribe there is no index — coverage 0.0",
+        unindexed is not None
+        and unindexed["coverage"] == 0.0
+        and unindexed["paths"] == [],
+    )
+
+    matcher.send_control(
+        {"op": "subscribe_resource", "resource": matchdir, "seq": 111}
+    )
+    matcher.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "subscribed"
+    )
+    indexed = None
+    seq_counter = [120]
+    deadline = time.time() + 6
+    while time.time() < deadline:
+        seq_counter[0] += 1
+        reply = fs_match(matcher, seq_counter[0], "guide")
+        if reply and reply["coverage"] == 1.0:
+            indexed = reply
+            break
+        time.sleep(0.1)
+    check(
+        "fs.match: the first subscribe builds the index to coverage 1.0",
+        indexed is not None and indexed["paths"] == ["docs/guide.md"],
+    )
+    ranked = fs_match(matcher, 130, "rs")
+    check(
+        "fs.match: fuzzy ranking prefers the shorter basename hit",
+        ranked is not None
+        and ranked["paths"][:1] == ["src/main.rs"]
+        and "src/deep/hidden.rs" in ranked["paths"],
+    )
+
+    with open(f"{matchdir}/src/created_later.rs", "w") as f:
+        f.write("\n")
+    fresh = None
+    deadline = time.time() + 6
+    while time.time() < deadline:
+        seq_counter[0] += 1
+        reply = fs_match(matcher, seq_counter[0], "created_later")
+        if reply and reply["paths"]:
+            fresh = reply
+            break
+        time.sleep(0.1)
+    check(
+        "fs.match: the watcher keeps the index incremental",
+        fresh is not None and fresh["paths"] == ["src/created_later.rs"],
+    )
+    matcher.close()
+    shutil.rmtree(matchdir, ignore_errors=True)
+
     print()
     if FAILURES:
         print(f"FAILED ({len(FAILURES)}): " + ", ".join(FAILURES))

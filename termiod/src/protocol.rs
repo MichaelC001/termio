@@ -399,6 +399,18 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// Fuzzy filename lookup against the host-side name index (§C.12,
+    /// capability `files`). The index is built lazily after the workspace's
+    /// first `subscribe_resource` and kept incremental by the watcher, so
+    /// replies carry `coverage` — a client shows "still indexing" instead of
+    /// silently missing files.
+    FsMatch {
+        root: String,
+        query: String,
+        limit: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
     UploadCommit {
         upload_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -498,6 +510,15 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },
+    /// Reply to `fs_match`: workspace-relative paths, best first. `coverage`
+    /// is how much of the tree the index has walked (0.0–1.0); the index is
+    /// evictable state, never correctness-bearing.
+    FsMatched {
+        paths: Vec<String>,
+        coverage: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
     UploadOpened {
         upload_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -558,6 +579,7 @@ impl Control {
             | Control::UnsubscribeResource { seq, .. }
             | Control::FsList { seq, .. }
             | Control::FsRead { seq, .. }
+            | Control::FsMatch { seq, .. }
             | Control::UploadOpen { seq, .. }
             | Control::UploadCommit { seq, .. }
             | Control::UploadAbort { seq, .. }
