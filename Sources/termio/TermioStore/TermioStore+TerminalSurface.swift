@@ -794,36 +794,18 @@ extension TermioStore {
         // it just vanishes like a native terminal tab.
         builder.withCustom("wait-after-command", "true")
 
-        // termio's palettes live on ⌘⇧P (Command Palette) and ⌘⇧O (Open
-        // Quickly, see `buildMainMenu`); ghostty binds keys like these to its
-        // own actions, and a surface-handled keybind is consumed before the
-        // menu bar ever sees the event. Unbind them inside the surface so the
-        // shortcuts always reach termio's menu.
-        builder.withCustom("keybind", "super+shift+p=unbind")
-        builder.withCustom("keybind", "super+shift+o=unbind")
-        // ⌘T is termio's "New Terminal" (see `buildMainMenu`). Ghostty binds it to
-        // its own `new_tab`, which is a no-op in termio's tab-less embedding — so a
-        // focused surface swallows the key and the menu action never fires ("nothing
-        // happens"). Unbind it so ⌘T always reaches termio's menu.
-        builder.withCustom("keybind", "super+t=unbind")
-        // Font size and split zoom are termio menu actions too: font size is
-        // driven from the persisted `fontSize` setting (so it survives relaunch
-        // and applies to every surface), and zoom is a host SplitTree operation
-        // (ghostty has no splits in embedded mode). Unbind ghostty's built-in
-        // versions so ⌘=/⌘-/⌘0 and ⌘⇧↩ reach `buildMainMenu` instead of being
-        // swallowed by the surface.
-        builder.withCustom("keybind", "super+equal=unbind")
-        builder.withCustom("keybind", "super+plus=unbind")
-        builder.withCustom("keybind", "super+minus=unbind")
-        builder.withCustom("keybind", "super+zero=unbind")
-        builder.withCustom("keybind", "super+shift+enter=unbind")
-        // Session cycling lives on ⌘⇧[ / ⌘⇧] (Session menu). Ghostty binds both
-        // to previous/next_tab — no-ops in termio's tab-less embedding that would
-        // still swallow the keys before the menu sees them. The bare-character
-        // form matches ghostty's own default triggers (unicode '[' / ']'), which
-        // the named physical keys (bracket_left/right) would not.
-        builder.withCustom("keybind", "super+shift+[=unbind")
-        builder.withCustom("keybind", "super+shift+]=unbind")
+        // The keyboard is split in two: keys that act on the terminal's text
+        // (copy, paste, clear, scrollback, selection, word motion, search) stay
+        // ghostty's, and keys that act on the app (sessions, panes, palettes,
+        // settings, full screen) are the host's. Ghostty ships defaults on both
+        // sides — ⌘D is `new_split`, ⌘T `new_tab`, ⌘, `open_config` — and a
+        // surface-handled keybind is consumed before the menu bar sees the
+        // event, so every host-claimed trigger has to be unbound here or the
+        // menu action never fires. `surfaceUnbindTriggers` derives that set from
+        // the effective binding table, so a rebind in Settings is covered too.
+        for trigger in KeybindingStore.shared.surfaceUnbindTriggers {
+            builder.withCustom("keybind", "\(trigger)=unbind")
+        }
     }
 
     /// The light/dark theme pair libghostty switches between as the system
