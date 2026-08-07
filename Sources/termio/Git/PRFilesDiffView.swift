@@ -175,6 +175,11 @@ private struct PRFileDiffBody: View {
         .onKeyPress(.leftArrow) { onWalk(-1) ? .handled : .ignored }
         .onKeyPress(.rightArrow) { onWalk(+1) ? .handled : .ignored }
         .task(id: change.path) { await load() }
+        .task(id: colorScheme) {
+            guard !rows.isEmpty else { return }
+            rebuildDocument()
+            await buildStyledLines(rows)
+        }
     }
 
     private var header: some View {
@@ -225,10 +230,7 @@ private struct PRFileDiffBody: View {
                 numberColor: settings.gutterInk(for: colorScheme),
                 onExpand: { anchor, direction in
                     expansion.reveal(anchor, direction)
-                    self.document = DiffDocument.build(
-                        rows: rows, expansion: expansion, palette: settings.diffPalette(for: colorScheme),
-                        codeFont: settings.resolvedTerminalFont(),
-                        lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
+                    rebuildDocument()
                 },
                 onWalk: onWalk,
                 onClose: onClose
@@ -254,13 +256,20 @@ private struct PRFileDiffBody: View {
         }
         let parsed = await GitService.parseDiffText(patch)
         rows = parsed
-        document = parsed.isEmpty
-            ? nil
-            : DiffDocument.build(rows: parsed, expansion: expansion, palette: settings.diffPalette(for: colorScheme),
-                                 codeFont: settings.resolvedTerminalFont(),
-                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
+        rebuildDocument()
         isLoading = false
         await buildStyledLines(parsed)
+    }
+
+    /// The palette is baked into the document (opaque tints, mixed against the terminal
+    /// background), so an appearance flip needs a rebuild rather than re-resolving itself.
+    private func rebuildDocument() {
+        document = rows.isEmpty
+            ? nil
+            : DiffDocument.build(rows: rows, expansion: expansion,
+                                 palette: settings.diffPalette(for: colorScheme),
+                                 codeFont: settings.resolvedTerminalFont(),
+                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
     }
 
     private func buildStyledLines(_ rows: [DiffRow]) async {
@@ -360,6 +369,11 @@ private struct FileDiffCard: View {
         .task(id: collapsed) {
             if !collapsed, !loaded { await load() }
         }
+        .task(id: colorScheme) {
+            guard !rows.isEmpty else { return }
+            rebuildDocument()
+            await buildStyled(rows)
+        }
     }
 
     /// The title bar — the whole row toggles the fold; the disclosure chevron mirrors the state.
@@ -436,7 +450,8 @@ private struct FileDiffCard: View {
         rows = parsed
         document = parsed.isEmpty
             ? nil
-            : DiffDocument.build(rows: parsed, expansion: expansion, palette: settings.diffPalette(for: colorScheme),
+            : DiffDocument.build(rows: parsed, expansion: expansion,
+                                 palette: settings.diffPalette(for: colorScheme),
                                  codeFont: settings.resolvedTerminalFont(),
                                  lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
         await buildStyled(parsed)

@@ -48,6 +48,22 @@ final class DiffIntralineTests: XCTestCase {
         XCTAssertEqual(result?.new, ["    "])
     }
 
+    /// A long insertion into a short line: the old side survives whole, so it is an edit,
+    /// not a rewrite. Charging the inserted characters against the shorter line's budget
+    /// classified this as a rewrite and dropped the span.
+    func testLongInsertionIntoAShortLineIsStillMarked() {
+        let result = spans("call()", "call(aVeryLongInsertedIdentifier)")
+        XCTAssertEqual(result?.old, [])
+        XCTAssertEqual(result?.new, ["aVeryLongInsertedIdentifier"])
+    }
+
+    /// The mirror case: a long deletion leaving a short line behind.
+    func testLongDeletionLeavingAShortLineIsStillMarked() {
+        let result = spans("call(aVeryLongInsertedIdentifier)", "call()")
+        XCTAssertEqual(result?.old, ["aVeryLongInsertedIdentifier"])
+        XCTAssertEqual(result?.new, [])
+    }
+
     func testRewrittenLineIsNotMarked() {
         XCTAssertNil(spans("let greeting = \"hello\"",
                            "await database.commit(transaction, retries: 3)"))

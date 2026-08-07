@@ -32,6 +32,11 @@ final class DiffGutterRulerView: NSRulerView {
         let direction: DiffBandDirection
     }
     private var buttonHits: [ButtonHit] = []
+    /// The scroll offset the hit rects were built at. Scrolling only *schedules* a redraw,
+    /// so a click landing in between would test the click's position against rects that
+    /// describe where the buttons used to be — and expand whichever band happened to sit
+    /// there. Stamping the offset lets such a click be ignored instead of misfiring.
+    private var hitsOffset: CGFloat = .nan
 
     private static let leadingPad: CGFloat = 8
     private static let columnGap: CGFloat = 8
@@ -102,6 +107,7 @@ final class DiffGutterRulerView: NSRulerView {
         let inset = textView.textContainerInset.height
         // Maps the text view's y-coordinates into the ruler's (carries the scroll offset).
         let yOffset = convert(NSPoint.zero, from: textView).y
+        hitsOffset = yOffset
         // Numbers stranded in the strip above the content clip would ghost over the
         // header; anything at or above the ruler's top edge stays undrawn.
         let topClipInset = window.map { 1 / $0.backingScaleFactor } ?? 0
@@ -260,7 +266,11 @@ final class DiffGutterRulerView: NSRulerView {
 
         override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        guard let hit = buttonHits.first(where: { $0.rect.contains(point) }) else {
+        // Only act on rects built at the current scroll position; a click that beat the
+        // pending redraw does nothing rather than expanding the wrong band.
+        guard let textView = clientView as? NSTextView,
+              convert(NSPoint.zero, from: textView).y == hitsOffset,
+              let hit = buttonHits.first(where: { $0.rect.contains(point) }) else {
             super.mouseDown(with: event)
             return
         }

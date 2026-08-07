@@ -48,14 +48,15 @@ public enum DiffIntraline {
         let oldSpans = spans(of: oldCore, changed: changed.old)
         let newSpans = spans(of: newCore, changed: changed.new)
 
-        // The same "too different to be worth marking" test the prefix/suffix pass used,
-        // now measured on what the word diff actually kept: at least a fifth of the
-        // shorter line must survive unchanged.
+        // "Too different to be worth marking": at least a fifth of the shorter line must
+        // survive unchanged. Survival is measured per side against that side's own length
+        // — charging the longer side's inserted characters against the shorter line reads
+        // a pure insertion (`call()` -> `call(aVeryLongName)`, where the old line survives
+        // whole) as a rewrite and drops the highlight entirely.
         let shorter = min(oldCharacters.count, newCharacters.count)
-        let changedCharacters = max(oldSpans.reduce(0) { $0 + $1.count },
-                                    newSpans.reduce(0) { $0 + $1.count })
-        guard shorter == 0 || (shorter - min(changedCharacters, shorter)) * 5 >= shorter
-        else { return nil }
+        let oldSurvived = oldCharacters.count - oldSpans.reduce(0) { $0 + $1.count }
+        let newSurvived = newCharacters.count - newSpans.reduce(0) { $0 + $1.count }
+        guard shorter == 0 || min(oldSurvived, newSurvived) * 5 >= shorter else { return nil }
 
         return (oldSpans, newSpans)
     }
