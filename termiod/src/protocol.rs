@@ -21,6 +21,7 @@ pub const KIND_SNAPSHOT: u8 = b'S';
 pub const KIND_HISTORY: u8 = b'H';
 pub const KIND_GRID: u8 = b'G';
 pub const KIND_FILE: u8 = b'F';
+pub const KIND_UPLOAD: u8 = b'U';
 
 pub const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 pub const MAX_DATA_FRAME_SIZE: usize = 64 * 1024;
@@ -35,6 +36,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "resources",
     "fs_watch",
     "files",
+    "upload",
 ];
 pub const SNAPSHOT_FORMAT_VERSION: u8 = 1;
 /// Snapshot payload carrying **VT sequences** instead of packed cells.
@@ -58,6 +60,10 @@ pub const FILE_CHUNK_HEADER_SIZE: usize = 17;
 /// file read never parks a keystroke behind more than one chunk on a shared
 /// pipe (§C.12 head-of-line discipline).
 pub const MAX_FILE_FRAME_SIZE: usize = 64 * 1024;
+/// Whole-frame cap for `U` upload chunks — the same one-chunk bound: with
+/// credit-of-one acks, a keystroke on a shared pipe waits behind at most one
+/// of these (§C.12 head-of-line discipline).
+pub const MAX_UPLOAD_FRAME_SIZE: usize = 64 * 1024;
 
 /// A single decoded frame off the wire.
 #[derive(Debug)]
@@ -70,6 +76,17 @@ pub enum Frame {
     History(HistoryChunk),
     Grid(GridDiff),
     File(FileChunk),
+    Upload(UploadChunk),
+}
+
+/// One `U` frame of upload content (§C.12), client → host only. The daemon
+/// answers each with `upload_ack`; credit-of-one means the client holds the
+/// next chunk until that ack arrives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadChunk {
+    pub upload_id: String,
+    pub offset: u64,
+    pub data: Vec<u8>,
 }
 
 /// One `F` frame of `fs.read` content (§C.12), host → client only. `re` ties
@@ -364,6 +381,34 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// Open an upload (§C.12, capability `upload`). `dest` is either a path
+    /// under `root` (which must then be present) or `temp:<name>` with
+    /// `session` naming whose scratch dir receives it. Re-opening with the
+    /// same dest, size, and sha256 is idempotent: same id, restarted from 0
+    /// (no resume in v1).
+    UploadOpen {
+        dest: String,
+        size: u64,
+        sha256: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    UploadCommit {
+        upload_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    UploadAbort {
+        upload_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
     Wait {
         target: String,
         until: Vec<String>,
@@ -453,6 +498,21 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },
+    UploadOpened {
+        upload_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
+    /// Credit-of-one grant: `offset` is the total received so far — the next
+    /// chunk the host expects. The client sends chunk N+1 only after the ack
+    /// for chunk N, which bounds a keystroke's wait on a shared pipe to one
+    /// chunk (§C.12).
+    UploadAck { upload_id: String, offset: u64 },
+    UploadCommitted {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
     /// Sent when the attached session's process exits (retained for v0).
     Exited { id: String, status: i32 },
     WaitResult {
@@ -498,6 +558,9 @@ impl Control {
             | Control::UnsubscribeResource { seq, .. }
             | Control::FsList { seq, .. }
             | Control::FsRead { seq, .. }
+            | Control::UploadOpen { seq, .. }
+            | Control::UploadCommit { seq, .. }
+            | Control::UploadAbort { seq, .. }
             | Control::Wait { seq, .. }
             | Control::SetStatus { seq, .. } => *seq,
             _ => None,
@@ -667,6 +730,51 @@ pub fn encode_file_chunk(chunk: &FileChunk) -> Result<Vec<u8>> {
     payload.push(u8::from(chunk.last));
     payload.extend_from_slice(&chunk.data);
     Ok(payload)
+}
+
+/// Upload-chunk payload: id_len:u8, upload id, offset:u64be, then the bytes.
+pub fn encode_upload_chunk(chunk: &UploadChunk) -> Result<Vec<u8>> {
+    let id = chunk.upload_id.as_bytes();
+    let id_len =
+        u8::try_from(id.len()).map_err(|_| anyhow::anyhow!("upload id too long"))?;
+    if id.is_empty() {
+        bail!("upload id must not be empty");
+    }
+    let payload_len = 1 + id.len() + 8 + chunk.data.len();
+    if payload_len > MAX_UPLOAD_FRAME_SIZE {
+        bail!("upload payload too large: {payload_len} > {MAX_UPLOAD_FRAME_SIZE}");
+    }
+    let mut payload = Vec::with_capacity(payload_len);
+    payload.push(id_len);
+    payload.extend_from_slice(id);
+    payload.extend_from_slice(&chunk.offset.to_be_bytes());
+    payload.extend_from_slice(&chunk.data);
+    Ok(payload)
+}
+
+pub fn decode_upload_chunk(payload: &[u8]) -> Result<UploadChunk> {
+    if payload.len() > MAX_UPLOAD_FRAME_SIZE {
+        bail!(
+            "upload payload too large: {} > {MAX_UPLOAD_FRAME_SIZE}",
+            payload.len()
+        );
+    }
+    let Some((&id_len, rest)) = payload.split_first() else {
+        bail!("malformed upload chunk header");
+    };
+    let id_len = usize::from(id_len);
+    if id_len == 0 || rest.len() < id_len + 8 {
+        bail!("malformed upload chunk header");
+    }
+    let upload_id = std::str::from_utf8(&rest[..id_len])
+        .map_err(|error| anyhow::anyhow!("upload id is not UTF-8: {error}"))?
+        .to_string();
+    let offset = u64::from_be_bytes(rest[id_len..id_len + 8].try_into().expect("sized slice"));
+    Ok(UploadChunk {
+        upload_id,
+        offset,
+        data: rest[id_len + 8..].to_vec(),
+    })
 }
 
 pub fn decode_file_chunk(payload: &[u8]) -> Result<FileChunk> {
@@ -1066,6 +1174,7 @@ pub async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<Fra
             | KIND_HISTORY
             | KIND_GRID
             | KIND_FILE
+            | KIND_UPLOAD
     ) {
         bail!("unknown frame kind {kind:#x}");
     }
@@ -1096,6 +1205,7 @@ pub async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<Fra
         KIND_HISTORY => Ok(Some(Frame::History(decode_history_payload(&payload)?))),
         KIND_GRID => Ok(Some(Frame::Grid(decode_grid_payload(&payload)?))),
         KIND_FILE => Ok(Some(Frame::File(decode_file_chunk(&payload)?))),
+        KIND_UPLOAD => Ok(Some(Frame::Upload(decode_upload_chunk(&payload)?))),
         _ => unreachable!("frame kind validated above"),
     }
 }
@@ -1104,10 +1214,31 @@ pub async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<Fra
 mod tests {
     use super::{
         decode_file_chunk, decode_grid_payload, decode_history_payload, decode_snapshot_payload,
-        encode_file_chunk, encode_grid_payload, encode_history_payload, encode_snapshot_payload,
-        Control, FileChunk, GridDiff, GridRow, HistoryChunk, Snapshot, WireCell,
-        FILE_CHUNK_HEADER_SIZE, MAX_FILE_FRAME_SIZE,
+        decode_upload_chunk, encode_file_chunk, encode_grid_payload, encode_history_payload,
+        encode_snapshot_payload, encode_upload_chunk, Control, FileChunk, GridDiff, GridRow,
+        HistoryChunk, Snapshot, UploadChunk, WireCell, FILE_CHUNK_HEADER_SIZE,
+        MAX_FILE_FRAME_SIZE, MAX_UPLOAD_FRAME_SIZE,
     };
+
+    #[test]
+    fn upload_chunk_round_trip_and_size_cap() {
+        let chunk = UploadChunk {
+            upload_id: "u_2a".to_string(),
+            offset: 131072,
+            data: b"pasted image bytes".to_vec(),
+        };
+        let encoded = encode_upload_chunk(&chunk).unwrap();
+        assert_eq!(decode_upload_chunk(&encoded).unwrap(), chunk);
+
+        let oversize = UploadChunk {
+            upload_id: "u_1".to_string(),
+            offset: 0,
+            data: vec![0; MAX_UPLOAD_FRAME_SIZE],
+        };
+        assert!(encode_upload_chunk(&oversize).is_err());
+        assert!(decode_upload_chunk(&[]).is_err());
+        assert!(decode_upload_chunk(&[4, b'u']).is_err(), "truncated id");
+    }
 
     #[test]
     fn file_chunk_round_trip_and_size_cap() {

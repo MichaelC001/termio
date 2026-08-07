@@ -197,7 +197,8 @@ impl Registry {
         let Some(state) = self.watches.lock().unwrap().get(&id).cloned() else {
             return 0;
         };
-        state.lock().unwrap().seq
+        let seq = state.lock().unwrap().seq;
+        seq
     }
 
     /// Subscribe `client` to `resource`, resuming from `since` when possible.

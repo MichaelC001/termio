@@ -223,6 +223,282 @@ fn read_with_cap(
     })
 }
 
+/// Where an upload lands, after confinement has been decided by the caller
+/// (project dest under a canonical root, or a session scratch dir).
+pub struct UploadDest {
+    pub final_path: PathBuf,
+    /// Scratch files are always 0600; project files honor `mode` (0644
+    /// default). Decided at open so commit cannot be talked into anything.
+    pub scratch: bool,
+}
+
+/// Confine a project-root upload dest (§C.12): no dotdot, parent must exist
+/// and canonicalise under the root (which resolves symlink traversal), and
+/// the final component must be a plain name. The file itself may not exist
+/// yet, so confinement is proven on the parent.
+pub fn resolve_project_dest(root: &str, dest: &str) -> Result<UploadDest> {
+    let root = canonical_root(root)?;
+    let raw = Path::new(dest);
+    if raw
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        bail!("upload dest escapes the workspace root: {dest}");
+    }
+    let joined = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        root.join(raw)
+    };
+    let name = joined
+        .file_name()
+        .ok_or_else(|| anyhow!("upload dest needs a file name: {dest}"))?
+        .to_os_string();
+    let parent = joined
+        .parent()
+        .ok_or_else(|| anyhow!("upload dest needs a parent directory: {dest}"))?;
+    let parent = std::fs::canonicalize(parent)
+        .with_context(|| format!("resolving upload dest parent for {dest}"))?;
+    if !parent.starts_with(&root) {
+        bail!("upload dest escapes the workspace root: {dest}");
+    }
+    Ok(UploadDest {
+        final_path: parent.join(name),
+        scratch: false,
+    })
+}
+
+/// Validate a `temp:` name: one plain component headed for the session's
+/// scratch dir, nothing that could navigate out of it.
+pub fn resolve_scratch_dest(scratch_dir: &Path, name: &str) -> Result<UploadDest> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\0')
+    {
+        bail!("invalid temp: file name: {name}");
+    }
+    Ok(UploadDest {
+        final_path: scratch_dir.join(name),
+        scratch: true,
+    })
+}
+
+struct UploadState {
+    dest: PathBuf,
+    dotfile: PathBuf,
+    scratch: bool,
+    size: u64,
+    sha256: String,
+    mode: Option<u32>,
+    session: Option<String>,
+    received: u64,
+    hasher: sha2::Sha256,
+    file: std::fs::File,
+}
+
+/// In-flight uploads (§C.12). Memory stays O(chunk): bytes stream through an
+/// incremental hasher into a dotfile beside the dest, and commit verifies
+/// size + sha256 before the atomic rename. No resume in v1 — a re-open with
+/// the same dest/size/hash is idempotent and restarts from zero.
+#[derive(Clone, Default)]
+pub struct Uploads {
+    inner: std::sync::Arc<std::sync::Mutex<UploadsInner>>,
+}
+
+#[derive(Default)]
+struct UploadsInner {
+    counter: u64,
+    by_id: std::collections::HashMap<String, UploadState>,
+}
+
+impl Uploads {
+    pub fn new() -> Uploads {
+        Uploads::default()
+    }
+
+    /// Open (or idempotently re-open) an upload. `session` ties a scratch
+    /// upload to the session whose death reaps it.
+    pub fn open(
+        &self,
+        dest: UploadDest,
+        size: u64,
+        sha256: &str,
+        mode: Option<u32>,
+        session: Option<String>,
+    ) -> Result<String> {
+        if sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            bail!("sha256 must be 64 hex characters");
+        }
+        let sha256 = sha256.to_ascii_lowercase();
+
+        let mut inner = self.inner.lock().unwrap();
+        let existing = inner
+            .by_id
+            .iter()
+            .find(|(_, state)| state.dest == dest.final_path)
+            .map(|(id, state)| (id.clone(), state.size == size && state.sha256 == sha256));
+        if let Some((id, matches)) = existing {
+            if !matches {
+                bail!(
+                    "another upload is already open for {} with different content",
+                    dest.final_path.display()
+                );
+            }
+            // Idempotent re-open: same id, restarted from zero. This is the
+            // reconnect story — the client lost the acks, not the daemon.
+            let state = inner.by_id.get_mut(&id).expect("looked up above");
+            state.file.set_len(0).context("truncating upload dotfile")?;
+            use std::io::Seek;
+            state
+                .file
+                .seek(std::io::SeekFrom::Start(0))
+                .context("rewinding upload dotfile")?;
+            state.received = 0;
+            state.hasher = <sha2::Sha256 as sha2::Digest>::new();
+            return Ok(id);
+        }
+
+        inner.counter += 1;
+        let id = format!("u_{:x}", inner.counter);
+        let name = dest
+            .final_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "upload".to_string());
+        let dotfile = dest
+            .final_path
+            .with_file_name(format!(".{name}.{id}.part"));
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&dotfile)
+            .with_context(|| format!("creating upload dotfile {}", dotfile.display()))?;
+        inner.by_id.insert(
+            id.clone(),
+            UploadState {
+                dest: dest.final_path,
+                dotfile,
+                scratch: dest.scratch,
+                size,
+                sha256,
+                mode,
+                session,
+                received: 0,
+                hasher: <sha2::Sha256 as sha2::Digest>::new(),
+                file,
+            },
+        );
+        Ok(id)
+    }
+
+    /// Apply one chunk. Credit-of-one makes chunks strictly sequential, so
+    /// any offset other than the running total is a protocol violation, not
+    /// something to reorder around. Returns the new total (the next expected
+    /// offset, echoed in the ack).
+    pub fn chunk(&self, upload_id: &str, offset: u64, data: &[u8]) -> Result<u64> {
+        let mut inner = self.inner.lock().unwrap();
+        let state = inner
+            .by_id
+            .get_mut(upload_id)
+            .ok_or_else(|| anyhow!("no such upload: {upload_id}"))?;
+        if offset != state.received {
+            bail!(
+                "upload {upload_id} expected offset {}, got {offset}",
+                state.received
+            );
+        }
+        if state.received + data.len() as u64 > state.size {
+            bail!(
+                "upload {upload_id} overruns its declared size of {} bytes",
+                state.size
+            );
+        }
+        use std::io::Write;
+        state
+            .file
+            .write_all(data)
+            .context("writing upload chunk")?;
+        sha2::Digest::update(&mut state.hasher, data);
+        state.received += data.len() as u64;
+        Ok(state.received)
+    }
+
+    /// Verify and land the upload: size and sha256 must match what open
+    /// declared, then the dotfile is renamed into place — readers only ever
+    /// see nothing or the whole verified file.
+    pub fn commit(&self, upload_id: &str) -> Result<PathBuf> {
+        let mut inner = self.inner.lock().unwrap();
+        let state = inner
+            .by_id
+            .remove(upload_id)
+            .ok_or_else(|| anyhow!("no such upload: {upload_id}"))?;
+        let finish = (|| {
+            if state.received != state.size {
+                bail!(
+                    "upload has {} of {} declared bytes",
+                    state.received,
+                    state.size
+                );
+            }
+            let digest = sha2::Digest::finalize(state.hasher.clone());
+            let actual = digest
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            if actual != state.sha256 {
+                bail!("sha256 mismatch: expected {}, got {actual}", state.sha256);
+            }
+            state.file.sync_all().context("syncing upload")?;
+            let mode = if state.scratch {
+                0o600
+            } else {
+                state.mode.unwrap_or(0o644)
+            };
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&state.dotfile, std::fs::Permissions::from_mode(mode))
+                .context("setting upload permissions")?;
+            std::fs::rename(&state.dotfile, &state.dest)
+                .with_context(|| format!("renaming into {}", state.dest.display()))?;
+            Ok(state.dest.clone())
+        })();
+        if finish.is_err() {
+            let _ = std::fs::remove_file(&state.dotfile);
+        }
+        finish
+    }
+
+    /// Drop an upload and its dotfile. Idempotent — aborting what is already
+    /// gone is not an error.
+    pub fn abort(&self, upload_id: &str) {
+        let removed = self.inner.lock().unwrap().by_id.remove(upload_id);
+        if let Some(state) = removed {
+            let _ = std::fs::remove_file(&state.dotfile);
+        }
+    }
+
+    /// Drop every in-flight upload bound for a dead session's scratch dir.
+    /// Called from the reaper before the dir itself is removed.
+    pub fn drop_session(&self, session_id: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        let doomed: Vec<String> = inner
+            .by_id
+            .iter()
+            .filter(|(_, state)| state.session.as_deref() == Some(session_id))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in doomed {
+            if let Some(state) = inner.by_id.remove(&id) {
+                let _ = std::fs::remove_file(&state.dotfile);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,6 +634,192 @@ mod tests {
         assert!(!past_end.truncated, "beyond EOF serves empty, not an error");
 
         assert!(read_with_cap(root.to_str().unwrap(), None, None, 4).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn hex_sha256(data: &[u8]) -> String {
+        let digest = <sha2::Sha256 as sha2::Digest>::digest(data);
+        digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    #[test]
+    fn upload_streams_verifies_and_lands_atomically() {
+        let root = scratch("upload");
+        let uploads = Uploads::new();
+        let body = vec![7u8; 100_000];
+        let dest = resolve_project_dest(root.to_str().unwrap(), "out.bin").unwrap();
+        let id = uploads
+            .open(dest, body.len() as u64, &hex_sha256(&body), None, None)
+            .unwrap();
+
+        let mut sent = 0;
+        for piece in body.chunks(64 * 1024 - 64) {
+            assert!(
+                uploads.chunk(&id, sent + 1, piece).is_err(),
+                "a skewed offset must be rejected"
+            );
+            let total = uploads.chunk(&id, sent, piece).unwrap();
+            sent += piece.len() as u64;
+            assert_eq!(total, sent, "ack carries the running total");
+        }
+        assert!(
+            !std::fs::read_dir(&root)
+                .unwrap()
+                .flatten()
+                .any(|e| e.file_name() == "out.bin"),
+            "nothing lands before commit"
+        );
+        let landed = uploads.commit(&id).unwrap();
+        assert_eq!(std::fs::read(&landed).unwrap(), body);
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&landed).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "project files default to 0644");
+        assert_eq!(
+            std::fs::read_dir(&root).unwrap().flatten().count(),
+            1,
+            "the dotfile is gone after the rename"
+        );
+        assert!(uploads.commit(&id).is_err(), "an upload commits once");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn upload_commit_rejects_a_hash_mismatch_and_cleans_up() {
+        let root = scratch("upload-hash");
+        let uploads = Uploads::new();
+        let dest = resolve_project_dest(root.to_str().unwrap(), "bad.bin").unwrap();
+        let id = uploads
+            .open(dest, 4, &hex_sha256(b"good"), None, None)
+            .unwrap();
+        uploads.chunk(&id, 0, b"evil").unwrap();
+        let error = uploads.commit(&id).unwrap_err().to_string();
+        assert!(error.contains("sha256 mismatch"), "got: {error}");
+        assert_eq!(
+            std::fs::read_dir(&root).unwrap().flatten().count(),
+            0,
+            "neither dest nor dotfile survives a failed verify"
+        );
+
+        let dest = resolve_project_dest(root.to_str().unwrap(), "short.bin").unwrap();
+        let id = uploads
+            .open(dest, 10, &hex_sha256(b"0123456789"), None, None)
+            .unwrap();
+        uploads.chunk(&id, 0, b"0123").unwrap();
+        assert!(
+            uploads
+                .commit(&id)
+                .unwrap_err()
+                .to_string()
+                .contains("declared bytes"),
+            "a short upload must not commit"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn upload_reopen_with_the_same_hash_is_idempotent() {
+        let root = scratch("upload-reopen");
+        let uploads = Uploads::new();
+        let body = b"reconnect survivor".to_vec();
+        let sha = hex_sha256(&body);
+        let root_str = root.to_str().unwrap();
+
+        let dest = resolve_project_dest(root_str, "again.txt").unwrap();
+        let first = uploads
+            .open(dest, body.len() as u64, &sha, None, None)
+            .unwrap();
+        uploads.chunk(&first, 0, &body[..5]).unwrap();
+
+        // The connection dies; the client re-opens and starts over.
+        let dest = resolve_project_dest(root_str, "again.txt").unwrap();
+        let second = uploads
+            .open(dest, body.len() as u64, &sha, None, None)
+            .unwrap();
+        assert_eq!(first, second, "same dest + hash + size = same upload");
+        uploads.chunk(&second, 0, &body).unwrap();
+        let landed = uploads.commit(&second).unwrap();
+        assert_eq!(std::fs::read(&landed).unwrap(), body);
+
+        // A different payload aimed at the same dest is a conflict, not a
+        // silent replacement.
+        let dest = resolve_project_dest(root_str, "again.txt").unwrap();
+        let one = uploads.open(dest, 1, &hex_sha256(b"a"), None, None).unwrap();
+        let dest = resolve_project_dest(root_str, "again.txt").unwrap();
+        assert!(uploads.open(dest, 1, &hex_sha256(b"b"), None, None).is_err());
+        uploads.abort(&one);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn upload_dests_are_confined() {
+        let root = scratch("upload-confine");
+        std::fs::create_dir(root.join("ok")).unwrap();
+        std::os::unix::fs::symlink("/tmp", root.join("leak")).unwrap();
+        let root_str = root.to_str().unwrap();
+
+        assert!(resolve_project_dest(root_str, "ok/file.png").is_ok());
+        assert!(
+            resolve_project_dest(root_str, "../escape.png").is_err(),
+            "dotdot must be rejected"
+        );
+        assert!(
+            resolve_project_dest(root_str, "leak/escape.png").is_err(),
+            "a symlinked parent outside the root must be rejected"
+        );
+        assert!(
+            resolve_project_dest(root_str, "missing/escape.png").is_err(),
+            "the parent must already exist"
+        );
+        assert!(
+            resolve_project_dest("/definitely/not/here", "x").is_err(),
+            "the root itself must resolve"
+        );
+
+        let scratch_dir = root.join("scratch");
+        std::fs::create_dir(&scratch_dir).unwrap();
+        assert!(resolve_scratch_dest(&scratch_dir, "paste-1.png").is_ok());
+        assert!(resolve_scratch_dest(&scratch_dir, "a/b.png").is_err());
+        assert!(resolve_scratch_dest(&scratch_dir, "..").is_err());
+        assert!(resolve_scratch_dest(&scratch_dir, "").is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scratch_uploads_are_0600_and_reaped_with_their_session() {
+        let root = scratch("upload-scratch");
+        let uploads = Uploads::new();
+        let body = b"paste".to_vec();
+        let dest = resolve_scratch_dest(&root, "paste-1.png").unwrap();
+        let id = uploads
+            .open(
+                dest,
+                body.len() as u64,
+                &hex_sha256(&body),
+                Some(0o777),
+                Some("s_1".to_string()),
+            )
+            .unwrap();
+        uploads.chunk(&id, 0, &body).unwrap();
+        let landed = uploads.commit(&id).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&landed).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "scratch files are 0600 whatever mode asked");
+
+        // A second upload still in flight when the session dies leaves no
+        // dotfile behind.
+        let dest = resolve_scratch_dest(&root, "paste-2.png").unwrap();
+        let id = uploads
+            .open(dest, 4, &hex_sha256(b"gone"), None, Some("s_1".to_string()))
+            .unwrap();
+        uploads.chunk(&id, 0, b"go").unwrap();
+        uploads.drop_session("s_1");
+        assert!(uploads.chunk(&id, 2, b"ne").is_err(), "upload is gone");
+        let names: Vec<String> = std::fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["paste-1.png"], "no dotfile survives the reap");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

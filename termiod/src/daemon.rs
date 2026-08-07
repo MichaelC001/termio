@@ -40,6 +40,9 @@ pub struct Manager {
     /// Durable non-session state clients can resume against (§C.10). Shared by
     /// every connection so one workspace costs one watcher, not one per client.
     resources: Registry,
+    /// In-flight uploads (§C.12). Daemon-wide, not per-connection, so a client
+    /// that reconnects mid-upload can idempotently re-open its transfer.
+    uploads: crate::files::Uploads,
     /// What died and why (§6). The daemon is now the only PTY owner, so its own
     /// death has to leave evidence — an empty session list otherwise reads as
     /// "nothing was running" rather than "everything was lost".
@@ -63,6 +66,7 @@ impl Manager {
             events,
             host_id: Arc::new(host_id),
             resources: Registry::new(),
+            uploads: crate::files::Uploads::new(),
             graveyard,
         }
     }
@@ -323,6 +327,11 @@ pub async fn serve() -> Result<()> {
     std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600))?;
 
     let host_id = paths::load_or_create_host_id()?;
+    // Scratch dirs are session-scoped and every session died with the
+    // previous daemon, so the whole tree is stale by definition here.
+    if let Ok(scratch) = paths::scratch_root() {
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
     // Opening the graveyard is also the crash check: anything the previous
     // daemon left on its roster is adopted as `daemon_lost` here, before this
     // one accepts a single connection.
@@ -343,6 +352,12 @@ pub async fn serve() -> Result<()> {
                 manager
                     .graveyard
                     .bury(&ended.info, reason, Some(ended.status));
+                // The scratch dir is reaped with the session (§C.12 `temp:`),
+                // in-flight uploads first so no dotfile survives the sweep.
+                manager.uploads.drop_session(&id);
+                if let Ok(scratch) = paths::scratch_root() {
+                    let _ = std::fs::remove_dir_all(scratch.join(format!("session-{id}")));
+                }
                 if manager.remove(&id) {
                     manager.publish_removed(&id);
                 }
@@ -647,6 +662,33 @@ async fn run_connection(
                             false,
                         )));
                         return Ok(());
+                    }
+                    Ok(Some(Frame::Upload(chunk))) => {
+                        if !connection.capabilities.contains("upload") {
+                            let _ = out.send(Outbound::Control(error(
+                                None,
+                                ErrorCode::Denied,
+                                "the upload capability was not negotiated",
+                                false,
+                            )));
+                            return Ok(());
+                        }
+                        // The ack is the credit: it goes back only once the
+                        // chunk is written, so a client honoring credit-of-one
+                        // can never queue more than one chunk in the pipe.
+                        let outcome = manager.uploads.chunk(
+                            &chunk.upload_id,
+                            chunk.offset,
+                            &chunk.data,
+                        );
+                        let reply = match outcome {
+                            Ok(offset) => Control::UploadAck {
+                                upload_id: chunk.upload_id,
+                                offset,
+                            },
+                            Err(e) => error(None, ErrorCode::Denied, format!("{e:#}"), false),
+                        };
+                        let _ = out.send(Outbound::Control(reply));
                     }
                     Ok(Some(Frame::Data(_))) | Ok(Some(Frame::Resize { .. })) => {
                         let _ = out.send(Outbound::Control(error(
@@ -966,6 +1008,65 @@ async fn process_control(
                 });
             }
         }
+        Control::UploadOpen {
+            dest,
+            size,
+            sha256,
+            mode,
+            root,
+            session,
+            seq,
+        } => {
+            let response = if !connection.capabilities.contains("upload") {
+                error(
+                    seq,
+                    ErrorCode::Denied,
+                    "the upload capability was not negotiated",
+                    false,
+                )
+            } else {
+                match resolve_upload_dest(manager, &dest, root.as_deref(), session.as_deref())
+                    .await
+                {
+                    Ok((resolved, session_id)) => {
+                        match manager
+                            .uploads
+                            .open(resolved, size, &sha256, mode, session_id)
+                        {
+                            Ok(upload_id) => Control::UploadOpened { upload_id, re: seq },
+                            Err(e) => error(seq, ErrorCode::Denied, format!("{e:#}"), false),
+                        }
+                    }
+                    Err((code, message)) => error(seq, code, message, false),
+                }
+            };
+            send_response(out, response_cache, seq, response);
+        }
+        Control::UploadCommit { upload_id, seq } => {
+            let response = if !connection.capabilities.contains("upload") {
+                error(
+                    seq,
+                    ErrorCode::Denied,
+                    "the upload capability was not negotiated",
+                    false,
+                )
+            } else {
+                match manager.uploads.commit(&upload_id) {
+                    Ok(path) => Control::UploadCommitted {
+                        path: path.display().to_string(),
+                        re: seq,
+                    },
+                    Err(e) => error(seq, ErrorCode::Denied, format!("{e:#}"), false),
+                }
+            };
+            send_response(out, response_cache, seq, response);
+        }
+        Control::UploadAbort { upload_id, seq } => {
+            // Aborting what is already gone is success, not failure — the
+            // client is declaring disinterest, not asserting existence.
+            manager.uploads.abort(&upload_id);
+            send_response(out, response_cache, seq, Control::Ok { re: seq });
+        }
         Control::Wait {
             target,
             until,
@@ -1048,9 +1149,52 @@ async fn process_control(
         | Control::Subscribed { .. }
         | Control::FsListed { .. }
         | Control::FsFile { .. }
+        | Control::UploadOpened { .. }
+        | Control::UploadAck { .. }
+        | Control::UploadCommitted { .. }
         | Control::Error { .. } => {}
     }
     Ok(ControlFlow::Continue)
+}
+
+/// Resolve an `upload.open` dest to a confined landing spot (§C.12): either
+/// `temp:<name>` in the named session's scratch dir, or a path under a
+/// caller-named project root. Returns the session id that owns a scratch
+/// upload so the reaper can drop it with the session.
+async fn resolve_upload_dest(
+    manager: &Manager,
+    dest: &str,
+    root: Option<&str>,
+    session: Option<&str>,
+) -> std::result::Result<(crate::files::UploadDest, Option<String>), (ErrorCode, String)> {
+    if let Some(name) = dest.strip_prefix("temp:") {
+        let Some(session) = session else {
+            return Err((
+                ErrorCode::Denied,
+                "a temp: upload must name its session".to_string(),
+            ));
+        };
+        let Some(handle) = manager.resolve(session).await else {
+            return Err((
+                ErrorCode::NoSuchSession,
+                format!("no such session: {session}"),
+            ));
+        };
+        let scratch = paths::session_scratch_dir(&handle.id)
+            .map_err(|e| (ErrorCode::Internal, format!("{e:#}")))?;
+        let resolved = crate::files::resolve_scratch_dest(&scratch, name)
+            .map_err(|e| (ErrorCode::Denied, format!("{e:#}")))?;
+        return Ok((resolved, Some(handle.id.clone())));
+    }
+    let Some(root) = root else {
+        return Err((
+            ErrorCode::Denied,
+            "a project upload must name its workspace root".to_string(),
+        ));
+    };
+    let resolved = crate::files::resolve_project_dest(root, dest)
+        .map_err(|e| (ErrorCode::Denied, format!("{e:#}")))?;
+    Ok((resolved, None))
 }
 
 /// Ship an `fs.read` window as `F` chunks: 64 KiB fair-write pieces, the last
@@ -1287,6 +1431,15 @@ async fn run_attach(
                     None,
                     ErrorCode::ProtoError,
                     "file frames are host-to-client only",
+                    false,
+                )));
+                break;
+            }
+            Ok(Some(Frame::Upload(_))) => {
+                let _ = out.send(Outbound::Control(error(
+                    None,
+                    ErrorCode::ProtoError,
+                    "upload frames ride the control channel, not an attachment",
                     false,
                 )));
                 break;

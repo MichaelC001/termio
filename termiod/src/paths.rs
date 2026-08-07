@@ -46,6 +46,27 @@ pub fn host_id_path() -> Result<PathBuf> {
     Ok(state_dir()?.join("host.id"))
 }
 
+/// Root of the per-session upload scratch dirs (§C.12 `temp:` dests). Lives
+/// beside the socket for the same reason as the graveyard: two daemons on two
+/// sockets must not share scratch space.
+pub fn scratch_root() -> Result<PathBuf> {
+    Ok(state_dir()?.join("scratch"))
+}
+
+/// One session's scratch dir, created 0700 on first use and reaped with the
+/// session.
+pub fn session_scratch_dir(session_id: &str) -> Result<PathBuf> {
+    let dir = scratch_root()?.join(format!("session-{session_id}"));
+    if !dir.exists() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+            .with_context(|| format!("creating scratch dir {}", dir.display()))?;
+    }
+    Ok(dir)
+}
+
 fn read_host_id(path: &std::path::Path) -> Result<String> {
     let id = std::fs::read_to_string(path)
         .with_context(|| format!("reading host id {}", path.display()))?

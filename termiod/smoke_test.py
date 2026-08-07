@@ -13,6 +13,7 @@ Exits 0 if every check passes, 1 otherwise.
 """
 
 import fcntl
+import hashlib
 import json
 import os
 import pty
@@ -178,6 +179,29 @@ def recv_file_body(client, re_id, timeout=4.0):
         if chunk["last"]:
             return body, chunks
     raise EOFError("no final file chunk")
+
+
+def send_upload_chunk(client, upload_id, offset, data):
+    """Encode a §C.12 U frame: id_len u8, id, offset u64be, bytes."""
+    uid = upload_id.encode()
+    client.send_frame("U", bytes([len(uid)]) + uid + struct.pack(">Q", offset) + data)
+
+
+def upload_credit_of_one(client, upload_id, body, chunk=64 * 1024 - 64):
+    """Send the body chunk by chunk, holding each until the previous ack."""
+    sent = 0
+    while True:
+        piece = body[sent : sent + chunk]
+        send_upload_chunk(client, upload_id, sent, piece)
+        ack, _ = client.recv_matching(
+            lambda kind, msg: kind == "C"
+            and msg.get("op") in ("upload_ack", "error")
+        )
+        if ack is None or ack[1].get("op") != "upload_ack":
+            return sent, ack
+        sent = ack[1]["offset"]
+        if sent >= len(body):
+            return sent, ack
 
 
 def decode_grid(payload):
@@ -1380,6 +1404,141 @@ def main():
     )
     fs.close()
     shutil.rmtree(proj, ignore_errors=True)
+
+    print("\n# 12. uploads: credit-of-one chunks, verify, confinement, temp: reap (§C.12)")
+    updir = f"{SOCK_DIR}/uploads"
+    shutil.rmtree(updir, ignore_errors=True)
+    os.makedirs(f"{updir}/assets", exist_ok=True)
+
+    up = WireClient(caps=["upload"])
+    body = os.urandom(150_000)
+    up.send_control(
+        {
+            "op": "upload_open",
+            "root": updir,
+            "dest": "assets/drop.bin",
+            "size": len(body),
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "seq": 100,
+        }
+    )
+    opened, _ = up.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "upload_opened" and msg.get("re") == 100
+    )
+    upload_id = opened[1]["upload_id"] if opened else None
+    check("upload: open returns an upload id", upload_id is not None)
+
+    sent, _ = upload_credit_of_one(up, upload_id, body)
+    up.send_control({"op": "upload_commit", "upload_id": upload_id, "seq": 101})
+    committed, _ = up.recv_matching(
+        lambda kind, msg: kind == "C"
+        and msg.get("op") == "upload_committed"
+        and msg.get("re") == 101
+    )
+    landed = committed[1]["path"] if committed else None
+    check(
+        "upload: credit-of-one chunks land the exact bytes after commit",
+        sent == len(body)
+        and landed is not None
+        and open(landed, "rb").read() == body
+        and (os.stat(landed).st_mode & 0o777) == 0o644
+        and os.listdir(f"{updir}/assets") == ["drop.bin"],
+    )
+
+    up.send_control(
+        {
+            "op": "upload_open",
+            "root": updir,
+            "dest": "assets/liar.bin",
+            "size": 4,
+            "sha256": hashlib.sha256(b"good").hexdigest(),
+            "seq": 102,
+        }
+    )
+    lying, _ = up.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "upload_opened" and msg.get("re") == 102
+    )
+    lying_id = lying[1]["upload_id"]
+    send_upload_chunk(up, lying_id, 0, b"evil")
+    up.recv_matching(lambda kind, msg: kind == "C" and msg.get("op") == "upload_ack")
+    up.send_control({"op": "upload_commit", "upload_id": lying_id, "seq": 103})
+    refused, _ = up.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "error" and msg.get("re") == 103
+    )
+    check(
+        "upload: commit verifies sha256 and leaves nothing behind",
+        refused is not None
+        and "sha256" in refused[1]["message"]
+        and not os.path.exists(f"{updir}/assets/liar.bin")
+        and os.listdir(f"{updir}/assets") == ["drop.bin"],
+    )
+
+    send_upload_chunk(up, "u_nonesuch", 0, b"zz")
+    ghost, _ = up.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "error"
+    )
+    check("upload: a chunk for an unknown id is a typed error", ghost is not None)
+
+    up.send_control(
+        {
+            "op": "upload_open",
+            "root": updir,
+            "dest": "../escape.bin",
+            "size": 1,
+            "sha256": hashlib.sha256(b"x").hexdigest(),
+            "seq": 104,
+        }
+    )
+    escaped, _ = up.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "error" and msg.get("re") == 104
+    )
+    check(
+        "upload: a dest escaping the root is refused at open",
+        escaped is not None and not os.path.exists(f"{SOCK_DIR}/escape.bin"),
+    )
+
+    paste_session = cli_out("create", "--name", "paste-target", "--", "cat")
+    time.sleep(0.2)
+    paste = b"fake png bytes"
+    up.send_control(
+        {
+            "op": "upload_open",
+            "dest": "temp:paste-1.png",
+            "session": paste_session,
+            "size": len(paste),
+            "sha256": hashlib.sha256(paste).hexdigest(),
+            "seq": 105,
+        }
+    )
+    paste_opened, _ = up.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "upload_opened" and msg.get("re") == 105
+    )
+    paste_id = paste_opened[1]["upload_id"]
+    upload_credit_of_one(up, paste_id, paste)
+    up.send_control({"op": "upload_commit", "upload_id": paste_id, "seq": 106})
+    paste_done, _ = up.recv_matching(
+        lambda kind, msg: kind == "C"
+        and msg.get("op") == "upload_committed"
+        and msg.get("re") == 106
+    )
+    paste_path = paste_done[1]["path"] if paste_done else None
+    check(
+        "upload: temp: lands 0600 in the session scratch dir",
+        paste_path is not None
+        and f"session-{paste_session}" in paste_path
+        and open(paste_path, "rb").read() == paste
+        and (os.stat(paste_path).st_mode & 0o777) == 0o600,
+    )
+    cli("kill", paste_session)
+    reaped = False
+    for _ in range(40):
+        if paste_path and not os.path.exists(paste_path):
+            reaped = True
+            break
+        time.sleep(0.1)
+    check("upload: the scratch dir is reaped with its session", reaped)
+    up.close()
+    shutil.rmtree(updir, ignore_errors=True)
 
     print()
     if FAILURES:
