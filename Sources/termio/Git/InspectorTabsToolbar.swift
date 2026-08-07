@@ -129,8 +129,13 @@ struct InspectorTabsToolbar: View {
         .padding(Self.trackPadding)
         .background { trackBackground }
         // Scope the slide animation to just this control's subtree, so switching panes doesn't
-        // drag the inspector content along with it.
-        .animation(.snappy(duration: 0.28), value: store.inspectorTab)
+        // drag the inspector content along with it. Fast and bounce-free: the pane itself
+        // switches instantly, and the pill is the motion cue the eye tracks — at 0.28s it
+        // arrived visibly after the content and made every switch read slow. A tab switch
+        // is a dozens-of-times-a-day micro-interaction, and the eye finishes tracking a
+        // hop this small in under ~80ms, so 0.1s is the floor that still shows *which way*
+        // the selection moved without ever being waited on.
+        .animation(.snappy(duration: 0.1, extraBounce: 0), value: store.inspectorTab)
     }
 
     // MARK: Materials — macOS 26 (Tahoe) Finder segmented control
