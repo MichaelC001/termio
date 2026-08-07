@@ -1785,6 +1785,114 @@ def main():
     gw.close()
     shutil.rmtree(gitproj, ignore_errors=True)
 
+    print("\n# 15. fs.search: streamed git grep, limit, cancel by request id (§C.12)")
+    searchdir = f"{SOCK_DIR}/searchproj"
+    shutil.rmtree(searchdir, ignore_errors=True)
+    os.makedirs(f"{searchdir}/src", exist_ok=True)
+
+    def sgit(*args):
+        return subprocess.run(
+            ["git", "-C", searchdir, "-c", "user.email=smoke@termio", "-c", "user.name=smoke", *args],
+            capture_output=True,
+            text=True,
+        )
+
+    sgit("init", "-q", "-b", "main")
+    with open(f"{searchdir}/src/lib.rs", "w") as f:
+        f.write("fn alpha() {}\n// NEEDLE: in a tracked file\n")
+    sgit("add", "-A")
+    sgit("commit", "-q", "-m", "content")
+    with open(f"{searchdir}/notes.md", "w") as f:
+        f.write("NEEDLE appears untracked: here\n")
+
+    def collect_search(client, seq, query, limit=1000, timeout=6.0):
+        client.send_control(
+            {"op": "fs_search", "root": searchdir, "query": query, "limit": limit, "seq": seq}
+        )
+        hits, done = [], None
+        end = time.time() + timeout
+        while time.time() < end and done is None:
+            try:
+                kind, msg = client.recv_frame(max(0.05, end - time.time()))
+            except (socket.timeout, EOFError):
+                break
+            if kind == "E" and msg.get("ev") == "search_results" and msg.get("request") == seq:
+                hits.extend(msg["matches"])
+            elif kind == "C" and msg.get("op") in ("fs_searched", "error") and msg.get("re") == seq:
+                done = msg
+        return hits, done
+
+    searcher = WireClient(caps=["files", "events"])
+    hits, done = collect_search(searcher, 150, "NEEDLE")
+    by_path = {h["path"] for h in hits}
+    check(
+        "fs.search: results stream as events, then one terminal reply",
+        done is not None
+        and done["op"] == "fs_searched"
+        and done["matches"] == len(hits) == 2
+        and done["limit_hit"] is False
+        and done["canceled"] is False
+        and by_path == {"src/lib.rs", "notes.md"}
+        and all("NEEDLE" in h["text"] and h["line"] >= 1 for h in hits),
+    )
+
+    hits, done = collect_search(searcher, 151, "NEEDLE", limit=1)
+    check(
+        "fs.search: the limit stops the stream and says so",
+        done is not None
+        and done.get("limit_hit") is True
+        and done["matches"] == len(hits) == 1,
+    )
+
+    with open(f"{searchdir}/huge.txt", "w") as f:
+        for index in range(400_000):
+            f.write(f"NEEDLE line {index}\n")
+    searcher.send_control(
+        {
+            "op": "fs_search",
+            "root": searchdir,
+            "query": "NEEDLE",
+            "limit": 10_000_000,
+            "seq": 152,
+        }
+    )
+    searcher.send_control({"op": "cancel", "request": 152, "seq": 153})
+    cancel_ok = None
+    cancel_done = None
+    streamed_before_done = 0
+    end = time.time() + 10
+    while time.time() < end and (cancel_ok is None or cancel_done is None):
+        try:
+            kind, msg = searcher.recv_frame(max(0.05, end - time.time()))
+        except (socket.timeout, EOFError):
+            break
+        if kind == "C" and msg.get("op") == "ok" and msg.get("re") == 153:
+            cancel_ok = msg
+        elif kind == "E" and msg.get("ev") == "search_results" and msg.get("request") == 152:
+            streamed_before_done += len(msg["matches"])
+        elif kind == "C" and msg.get("op") == "fs_searched" and msg.get("re") == 152:
+            cancel_done = msg
+    trailing = searcher.drain(0.5)
+    check(
+        "fs.search: cancel by request id ends the stream early",
+        cancel_ok is not None
+        and cancel_done is not None
+        and cancel_done["canceled"] is True
+        and cancel_done["matches"] < 400_000
+        and all(
+            not (kind == "E" and payload.get("ev") == "search_results")
+            for kind, payload in trailing
+        ),
+    )
+
+    searcher.send_control({"op": "cancel", "request": 9999, "seq": 154})
+    idempotent, _ = searcher.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "ok" and msg.get("re") == 154
+    )
+    check("fs.search: cancelling a finished request is ok, not an error", idempotent is not None)
+    searcher.close()
+    shutil.rmtree(searchdir, ignore_errors=True)
+
     print()
     if FAILURES:
         print(f"FAILED ({len(FAILURES)}): " + ", ".join(FAILURES))

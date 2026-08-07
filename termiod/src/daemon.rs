@@ -568,6 +568,11 @@ async fn handle_conn(stream: UnixStream, manager: Manager) -> Result<()> {
     result
 }
 
+/// In-flight cancellable requests on one control connection, keyed by their
+/// request id (§C.12 `fs.search`). Dropping a sender — via `cancel`, or the
+/// whole map going away with the connection — stops the work.
+type SearchMap = Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>;
+
 struct AttachRequest {
     handle: SessionHandle,
     rows: u16,
@@ -593,9 +598,11 @@ async fn run_connection(
     let mut subscriptions = HashSet::new();
     let mut events = manager.events.subscribe();
     let mut response_cache: HashMap<u64, Control> = HashMap::new();
-    // Resource events are addressed to this connection alone, so they take a
-    // dedicated channel rather than the roster broadcast every client sees.
+    // Resource and search events are addressed to this connection alone, so
+    // they take a dedicated channel rather than the roster broadcast every
+    // client sees.
     let (resource_tx, mut resource_rx) = mpsc::unbounded_channel::<Event>();
+    let searches: SearchMap = Arc::new(Mutex::new(HashMap::new()));
 
     loop {
         if let Some(control) = pending.take() {
@@ -607,6 +614,7 @@ async fn run_connection(
                 &mut subscriptions,
                 &mut response_cache,
                 &resource_tx,
+                &searches,
             )
             .await?
             {
@@ -738,6 +746,7 @@ async fn process_control(
     subscriptions: &mut HashSet<String>,
     response_cache: &mut HashMap<u64, Control>,
     resource_tx: &mpsc::UnboundedSender<Event>,
+    searches: &SearchMap,
 ) -> Result<ControlFlow> {
     let seq = control.seq();
     if let Some(cached) = seq.and_then(|id| response_cache.get(&id)) {
@@ -924,6 +933,53 @@ async fn process_control(
             let id = crate::resource::Registry::resource_id(&resource)
                 .unwrap_or_else(|_| resource.clone());
             manager.resources.unsubscribe(&id, &connection.client_id);
+            send_response(out, response_cache, seq, Control::Ok { re: seq });
+        }
+        Control::FsSearch {
+            root,
+            query,
+            limit,
+            seq,
+        } => {
+            if !connection.capabilities.contains("files") {
+                let response = error(
+                    seq,
+                    ErrorCode::Denied,
+                    "the files capability was not negotiated",
+                    false,
+                );
+                send_response(out, response_cache, seq, response);
+            } else {
+                let (cancel_tx, cancel_rx) = oneshot::channel();
+                // Without a request id the search cannot be addressed by
+                // `cancel`; the task holds the sender itself so only the
+                // connection going away stops it.
+                let retained = match seq {
+                    Some(id) => {
+                        searches.lock().unwrap().insert(id, cancel_tx);
+                        None
+                    }
+                    None => Some(cancel_tx),
+                };
+                tokio::spawn(run_search(
+                    out.clone(),
+                    searches.clone(),
+                    cancel_rx,
+                    retained,
+                    root,
+                    query,
+                    limit,
+                    seq,
+                ));
+            }
+        }
+        Control::Cancel { request, seq } => {
+            let pending = searches.lock().unwrap().remove(&request);
+            if let Some(cancel) = pending {
+                let _ = cancel.send(());
+            }
+            // Cancelling what already finished is declaring disinterest in a
+            // result that no longer exists — success either way.
             send_response(out, response_cache, seq, Control::Ok { re: seq });
         }
         Control::GitDiff {
@@ -1234,6 +1290,7 @@ async fn process_control(
         | Control::FsListed { .. }
         | Control::FsFile { .. }
         | Control::FsMatched { .. }
+        | Control::FsSearched { .. }
         | Control::GitDiffResult { .. }
         | Control::UploadOpened { .. }
         | Control::UploadAck { .. }
@@ -1241,6 +1298,156 @@ async fn process_control(
         | Control::Error { .. } => {}
     }
     Ok(ControlFlow::Continue)
+}
+
+/// Matches per `search_results` event — small enough to render as they
+/// arrive, large enough that a big result set is not one event per line.
+const SEARCH_BATCH: usize = 50;
+
+/// Stream one `fs.search` (§C.12): `git grep` under the workspace root,
+/// batched result events, one terminal `fs_searched` reply. Ends on
+/// completion, on the limit, on `cancel`, or on the connection going away
+/// (the cancel sender's map is dropped with it). Result events and the
+/// terminal reply share `out`, which is what guarantees the reply is last.
+#[allow(clippy::too_many_arguments)]
+async fn run_search(
+    out: mpsc::UnboundedSender<Outbound>,
+    searches: SearchMap,
+    mut cancel_rx: oneshot::Receiver<()>,
+    _retained: Option<oneshot::Sender<()>>,
+    root: String,
+    query: String,
+    limit: u64,
+    seq: Option<u64>,
+) {
+    let request = seq.unwrap_or(0);
+    let cleanup = |searches: &SearchMap| {
+        if let Some(id) = seq {
+            searches.lock().unwrap().remove(&id);
+        }
+    };
+
+    let root = match crate::files::canonical_root(&root) {
+        Ok(root) => root,
+        Err(e) => {
+            cleanup(&searches);
+            let _ = out.send(Outbound::Control(error(
+                seq,
+                ErrorCode::Denied,
+                format!("{e:#}"),
+                false,
+            )));
+            return;
+        }
+    };
+    let spawned = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .arg("grep")
+        .arg("-n")
+        .arg("-I")
+        .arg("--no-color")
+        .arg("--untracked")
+        .arg("--fixed-strings")
+        .arg("-e")
+        .arg(&query)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(e) => {
+            cleanup(&searches);
+            let _ = out.send(Outbound::Control(error(
+                seq,
+                ErrorCode::Internal,
+                format!("spawning git grep: {e}"),
+                true,
+            )));
+            return;
+        }
+    };
+    let Some(stdout) = child.stdout.take() else {
+        cleanup(&searches);
+        let _ = out.send(Outbound::Control(error(
+            seq,
+            ErrorCode::Internal,
+            "git grep stdout unavailable",
+            true,
+        )));
+        return;
+    };
+
+    use tokio::io::AsyncBufReadExt;
+    let mut lines = tokio::io::BufReader::new(stdout).lines();
+    let mut pending: Vec<crate::protocol::SearchMatch> = Vec::new();
+    let mut streamed = 0u64;
+    let mut limit_hit = false;
+    let mut canceled = false;
+    loop {
+        tokio::select! {
+            // Err means the sender vanished without an explicit cancel — the
+            // connection is gone; stop doing work nobody can receive.
+            _ = &mut cancel_rx => {
+                canceled = true;
+                break;
+            }
+            line = lines.next_line() => {
+                match line {
+                    Ok(Some(line)) => {
+                        let Some(found) = crate::files::parse_grep_line(&line) else {
+                            continue;
+                        };
+                        pending.push(found);
+                        if streamed + pending.len() as u64 >= limit {
+                            limit_hit = true;
+                            break;
+                        }
+                        if pending.len() >= SEARCH_BATCH {
+                            streamed += pending.len() as u64;
+                            let _ = out.send(Outbound::Event(Event::SearchResults {
+                                request,
+                                matches: std::mem::take(&mut pending),
+                            }));
+                        }
+                    }
+                    Ok(None) | Err(_) => break,
+                }
+            }
+        }
+    }
+    if !canceled && !pending.is_empty() {
+        streamed += pending.len() as u64;
+        let _ = out.send(Outbound::Event(Event::SearchResults {
+            request,
+            matches: std::mem::take(&mut pending),
+        }));
+    }
+
+    let failure = if canceled || limit_hit {
+        let _ = child.kill().await;
+        None
+    } else {
+        // git grep exits 1 for "no matches" — a result, not a failure.
+        match child.wait().await {
+            Ok(status) if status.success() || status.code() == Some(1) => None,
+            Ok(status) => Some(format!("git grep exited with {status}")),
+            Err(e) => Some(format!("waiting for git grep: {e}")),
+        }
+    };
+
+    cleanup(&searches);
+    let response = match failure {
+        Some(message) => error(seq, ErrorCode::Denied, message, false),
+        None => Control::FsSearched {
+            matches: streamed,
+            limit_hit,
+            canceled,
+            re: seq,
+        },
+    };
+    let _ = out.send(Outbound::Control(response));
 }
 
 /// Resolve an `upload.open` dest to a confined landing spot (§C.12): either
@@ -1342,7 +1549,7 @@ fn subscribed_to(subscriptions: &HashSet<String>, event: &Event) -> bool {
         Event::Ready { .. } => false,
         // Resource events are delivered on the subscriber's own channel, not
         // through the roster broadcast, so they never match here.
-        Event::FsChanged { .. } | Event::GitChanged { .. } => false,
+        Event::FsChanged { .. } | Event::GitChanged { .. } | Event::SearchResults { .. } => false,
         Event::Unknown => false,
     }
 }

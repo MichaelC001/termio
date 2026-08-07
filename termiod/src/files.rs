@@ -460,6 +460,31 @@ fn is_subsequence(needle: &str, haystack: &str) -> bool {
         .all(|wanted| chars.by_ref().any(|have| have == wanted))
 }
 
+/// Long minified lines would bloat a `search_results` event; the match is
+/// findable from far less.
+const SEARCH_TEXT_CAP: usize = 512;
+
+/// Parse one `git grep -n` line: `path:lineno:text`. Colons inside the text
+/// are safe — only the first two split.
+pub fn parse_grep_line(line: &str) -> Option<crate::protocol::SearchMatch> {
+    let (path, rest) = line.split_once(':')?;
+    let (line_number, text) = rest.split_once(':')?;
+    let line_number: u64 = line_number.parse().ok()?;
+    let mut text = text.to_string();
+    if text.len() > SEARCH_TEXT_CAP {
+        let mut cut = SEARCH_TEXT_CAP;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+    }
+    Some(crate::protocol::SearchMatch {
+        path: path.to_string(),
+        line: line_number,
+        text,
+    })
+}
+
 /// Where an upload lands, after confinement has been decided by the caller
 /// (project dest under a canonical root, or a session scratch dir).
 pub struct UploadDest {
@@ -872,6 +897,22 @@ mod tests {
 
         assert!(read_with_cap(root.to_str().unwrap(), None, None, 4).is_err());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn grep_lines_parse_with_colons_in_the_text_and_cap_long_lines() {
+        let hit = parse_grep_line("src/main.rs:42:let url = \"http://x:8080\";").unwrap();
+        assert_eq!(hit.path, "src/main.rs");
+        assert_eq!(hit.line, 42);
+        assert_eq!(hit.text, "let url = \"http://x:8080\";");
+
+        let long = format!("a.txt:1:{}", "é".repeat(SEARCH_TEXT_CAP));
+        let capped = parse_grep_line(&long).unwrap();
+        assert!(capped.text.len() <= SEARCH_TEXT_CAP);
+        assert!(capped.text.chars().all(|c| c == 'é'), "cut on a boundary");
+
+        assert!(parse_grep_line("no line number here").is_none());
+        assert!(parse_grep_line("path:notanumber:text").is_none());
     }
 
     #[test]

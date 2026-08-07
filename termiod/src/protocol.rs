@@ -238,6 +238,15 @@ pub struct GitStatusEntry {
     pub status: GitFileStatus,
 }
 
+/// One `fs.search` hit (§C.12): workspace-relative path, 1-based line, the
+/// matching line's text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchMatch {
+    pub path: String,
+    pub line: u64,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelRole {
@@ -450,6 +459,25 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// Content search (§C.12, capability `files`): the host runs `git grep`
+    /// and streams `search_results` events tagged with this request's `seq`,
+    /// then closes with one `fs_searched` reply. Cancellable mid-stream with
+    /// `cancel {request: <seq>}`.
+    FsSearch {
+        root: String,
+        query: String,
+        limit: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    /// Cancel an in-flight cancellable request on this channel by its request
+    /// id (§C.12 — the ⇧⌘F escape hatch). Idempotent: cancelling what
+    /// already finished is `ok`, not an error.
+    Cancel {
+        request: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
     /// The `git:` kind's one verb (§C.13, capability `git`): a unified diff
     /// for one path, rendered client-side. Read-only by design — no
     /// stage/commit/push verbs; the user commits in the terminal, which is
@@ -573,6 +601,17 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },
+    /// Terminal reply to `fs_search`, sent after the last `search_results`
+    /// event: how many matches streamed and why the stream ended.
+    FsSearched {
+        matches: u64,
+        #[serde(default)]
+        limit_hit: bool,
+        #[serde(default)]
+        canceled: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
     /// Reply to `git_diff`. `truncated` marks a diff cut at the 1 MiB cap.
     GitDiffResult {
         diff: String,
@@ -651,6 +690,8 @@ impl Control {
             | Control::FsList { seq, .. }
             | Control::FsRead { seq, .. }
             | Control::FsMatch { seq, .. }
+            | Control::FsSearch { seq, .. }
+            | Control::Cancel { seq, .. }
             | Control::GitDiff { seq, .. }
             | Control::UploadOpen { seq, .. }
             | Control::UploadCommit { seq, .. }
@@ -703,6 +744,13 @@ pub enum Event {
         full_rescan: bool,
         #[serde(default)]
         git_meta: bool,
+    },
+    /// A batch of `fs.search` hits (§C.12), addressed to the requesting
+    /// connection alone. `request` echoes the `fs_search` seq so several
+    /// searches can share one channel.
+    SearchResults {
+        request: u64,
+        matches: Vec<SearchMatch>,
     },
     /// A status delta for a `git:` resource (§C.13) — the second consumer of
     /// §C.10's one mechanism. `updated_statuses` and `removed_paths` are a
