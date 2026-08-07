@@ -263,28 +263,7 @@ extension TermioStore {
         isPaneZoomed.toggle()
     }
 
-    /// The pane `id` would trade places with when moved `direction`, or `nil`
-    /// when nothing lies that way — what greys out the "Move Pane" menu items.
-    /// Uses the same directional scoring as focus movement, so "Move Left" and
-    /// ⌥⌘← always agree on which pane is the neighbour.
-    func movePaneTarget(of id: Session.ID, _ direction: PaneFocusDirection) -> Session.ID? {
-        groupIndex(containing: id).flatMap { splitGroups[$0].pane(direction, of: id) }
-    }
-
-    /// Moves a pane by trading places with its directional neighbour (tmux's
-    /// swap-pane) — the context menu's "Move Pane". The tree's shape and every
-    /// divider ratio stay put; only the two leaves change slots. Zoom is
-    /// dropped so the result is visible, and the selection sticks with the
-    /// moved pane.
-    func movePane(_ id: Session.ID, _ direction: PaneFocusDirection) {
-        guard let group = groupIndex(containing: id),
-              let target = movePaneTarget(of: id, direction) else { return }
-        splitGroups[group] = splitGroups[group].swapping(id, and: target)
-        selectedSessionID = id
-        isPaneZoomed = false
-    }
-
-    /// Lands a modifier-dragged pane on `target` (issue #183). An edge zone
+    /// Lands a dragged pane on `target` (issue #183). An edge zone
     /// re-splits the target with the dragged pane on that side — the pane
     /// leaves its old slot first, its vacated space collapsing into the
     /// sibling exactly as if it had closed, so one gesture subsumes move +

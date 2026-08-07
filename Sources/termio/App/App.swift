@@ -120,7 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // The ghostty-style right-click menu over the terminal surfaces (Copy/Paste + splits);
     // owns the rightMouseDown monitor for the app's lifetime.
     private var terminalContextMenu: TerminalContextMenu?
-    // The ⌘⌥⇧ drag-to-rearrange gesture over the panes (issue #183); owns its
+    // The pane drag-to-rearrange gesture (issue #183); owns its
     // mouse monitors for the app's lifetime.
     private var paneDragRearrange: PaneDragRearrange?
 
@@ -160,6 +160,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             defer: false
         )
         window.title = "Termio"
+        // Mouse-moved events are off by default; the pane grab handle reveals on
+        // hover, so it needs them (see `PaneDragRearrange`).
+        window.acceptsMouseMovedEvents = true
         // Floor the window size so it can't be dragged down to an unusable sliver: the
         // sidebar alone wants ~220pt, leaving room for a workable terminal beside it.
         window.contentMinSize = NSSize(width: 640, height: 420)
