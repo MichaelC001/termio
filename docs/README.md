@@ -41,6 +41,7 @@ from the real front matter).
 | active | design | ["Remote-access design lessons: sleep reachability, stable domains, identity, monetization"](design/20260705-remote-access-lessons.md) |
 | active | design | [iOS libghostty "non-functional" panel + teardown UAF — root-cause findings](design/20260706-ios-ghostty-renderer-panic-investigation-findings.md) |
 | active | design | [iOS terminal input & attachments](design/20260703-ios-terminal-input.md) |
+| active | design | [iOS TestFlight runbook — build, upload, and drive ASC from the API](runbook/ios-testflight-runbook.md) |
 | active | design | [macOS release runbook — cut, notarize, publish termio.dmg](runbook/macos-release-runbook.md) |
 | active | design | [Research brief — termiod Session Protocol (for design agent)](design/20260730-_research-session-protocol-brief.md) |
 | active | design | [Sessions CLI v2 — reliability & command design](design/20260724-sessions-cli-v2.md) |
@@ -54,6 +55,7 @@ from the real front matter).
 | archived | design | [Sandbox VM —— 原生 per-project 容器（Apple Containerization）](design/20260629-sandbox-vm.md) |
 | archived | essay | ["From IDE to ADE: Sixty Years of Development Environments, and Why the Era Is Ending"](essays/from-ide-to-ade.md) |
 | archived | plan | [Fix — defer the PTY spawn to the first real layout size so the agent banner boots at pane width](plan/terminal-narrow-grid-frozen-banner-fix.md) |
+| built, measured, shelved | design | [Agent permission questions on the phone](design/agent-permission-questions.md) |
 | done | bug | ["HANDOFF: terminal content does not reflow on window resize"](bug/terminal-resize-no-reflow-HANDOFF.md) |
 | done | bug | [Agent welcome banner frozen into a narrow column when a session opens in a wide window](bug/terminal-narrow-grid-frozen-banner-on-open.md) |
 | done | design | ["Sandbox removal & restoration (Apple Seatbelt subsystem)"](design/20260718-sandbox-removal-and-restoration.md) |
@@ -72,12 +74,14 @@ from the real front matter).
 | done | research | ["Competitive analysis: Vibe Island family (status monitors)"](competitive-analysis/07-vibe-island.md) |
 | done | research | ["Competitive analysis: Warp (alternative paradigm)"](competitive-analysis/08-warp.md) |
 | done | research | ["termio differentiation, gaps, and risks"](competitive-analysis/09-differentiation-and-gaps.md) |
+| draft (v2) | design | [移动端 Agent UI 协议 —— PTY 之上的旁路结构面（ACP 词汇）](design/20260711-mobile-agent-ui-protocol.md) |
 | draft | design | [分享 Agent 会话（带密码的实时分享链接）](design/20260628-session-share.md) |
-| draft | design | [移动端 Agent UI 协议 —— PTY 之上的旁路结构面（ACP 词汇）](design/20260711-mobile-agent-ui-protocol.md) |
 | draft | design | [调研：下一批 AgentAdapter 的落盘格式（OpenCode / Pi / Amp / Cursor / Kimi）](design/20260711-agent-transcript-survey.md) |
 | draft | design | ["Markdown preview — Apple-grade reading typography"](design/20260718-markdown-preview-reading-typography.md) |
 | draft | design | [Device Architecture — one server per device, every UI a client](design/20260805-termiod-device-architecture.md) |
+| draft | design | [Device Architecture — one server per device, every UI a client](design/termiod-device-architecture.md) |
 | draft | design | [Hot path, attach join point, and client classes](design/20260805-termiod-hot-path-and-client-classes.md) |
+| draft | design | [Hot path, attach join point, and client classes](design/termiod-hot-path-and-client-classes.md) |
 | draft | design | [Issue Triage → 本地 agent（GitHub / Linear 事件驱动 termio session）](design/20260723-issue-triage-local-agent.md) |
 | draft | design | [Mac retention analytics (no app changes)](design/20260715-mac-retention-analytics.md) |
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/20260708-remote-projects.md) |
@@ -88,6 +92,7 @@ from the real front matter).
 | draft | design | [termiod — Agent-native session mux](design/20260730-termiod-session-mux.md) |
 | draft | design | [termiod Session Protocol](design/20260730-termiod-session-protocol.md) |
 | draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/20260705-remote-access-relay-strategy.md) |
+| draft | essay | ["How Claude Code Got the Mouse: Reverse-Engineering the Clickable Terminal"](essays/how-claude-code-got-the-mouse.md) |
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/20260630-sandbox-seatbelt.md) |
 | draft | rfc | [Automation — scheduled agent runs](rfcs/automation-scheduled-agent-runs.md) |
 | draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](rfcs/fork-libghostty-spm.md) |

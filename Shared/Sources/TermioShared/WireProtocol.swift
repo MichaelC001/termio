@@ -90,6 +90,20 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     /// `truncated` marks that more matched than the returned batch. `query`
     /// echoes the request so a stale reply for an old keystroke is discardable.
     case searchResults(query: String, paths: [String], truncated: Bool)
+    /// The client asks for the project's working-tree changes — the phone's
+    /// Changes pane, the same `git status` the desktop git pane lists. Answered
+    /// with `.changes` (empty when the project isn't a git work tree).
+    case listChanges(projectID: String)
+    /// The working-tree changes (server → client), repo-relative and already
+    /// carrying their `+`/`−` counts so the list needs no second round trip.
+    case changes(files: [WireChange])
+    /// The client asks for one changed file's unified diff, echoing the status letter
+    /// it already holds from `.changes` — an untracked file diffs against nothing, and
+    /// re-deriving that on the Mac would mean a second `git status` walk of the repo per
+    /// tap. Answered with `.diff` or `.error`.
+    case readDiff(projectID: String, path: String, status: String)
+    /// One file's unified diff (server → client).
+    case diff(WireDiff)
     /// The server rejected a request (unknown session, no live PTY).
     /// Phone → Mac: render this session's agent transcript as an HTML trace
     /// (the same dashboard-over-conversation the desktop Info pane shows). The
@@ -174,6 +188,27 @@ public enum CompanionControl: Codable, Sendable, Equatable {
         case .searchResults(let query, let paths, let truncated):
             return Self.json([
                 "t": "searchResults", "query": query, "paths": paths, "truncated": truncated,
+            ])
+        case .listChanges(let projectID):
+            return Self.json(["t": "listChanges", "project": projectID])
+        case .changes(let files):
+            return Self.json([
+                "t": "changes",
+                "files": files.map {
+                    [
+                        "path": $0.path, "status": $0.status,
+                        "add": $0.additions, "del": $0.deletions,
+                        "binary": $0.isBinary, "staged": $0.isStaged,
+                    ]
+                },
+            ])
+        case .readDiff(let projectID, let path, let status):
+            return Self.json([
+                "t": "readDiff", "project": projectID, "path": path, "status": status,
+            ])
+        case .diff(let diff):
+            return Self.json([
+                "t": "diff", "path": diff.path, "text": diff.text, "binary": diff.binary,
             ])
         case .trace(let sessionID, let dark):
             return Self.json(["t": "trace", "session": sessionID, "dark": dark])
@@ -296,6 +331,36 @@ public enum CompanionControl: Codable, Sendable, Equatable {
                 query: query, paths: paths,
                 truncated: obj["truncated"] as? Bool ?? false
             )
+        case "listChanges":
+            guard let projectID = obj["project"] as? String else { return nil }
+            return .listChanges(projectID: projectID)
+        case "changes":
+            let raw = obj["files"] as? [[String: Any]] ?? []
+            return .changes(files: raw.compactMap { entry in
+                guard let path = entry["path"] as? String else { return nil }
+                return WireChange(
+                    path: path,
+                    status: entry["status"] as? String ?? "M",
+                    additions: entry["add"] as? Int ?? 0,
+                    deletions: entry["del"] as? Int ?? 0,
+                    isBinary: entry["binary"] as? Bool ?? false,
+                    isStaged: entry["staged"] as? Bool ?? false
+                )
+            })
+        case "readDiff":
+            guard let projectID = obj["project"] as? String,
+                  let path = obj["path"] as? String else { return nil }
+            return .readDiff(
+                projectID: projectID, path: path,
+                status: obj["status"] as? String ?? "M"
+            )
+        case "diff":
+            guard let path = obj["path"] as? String,
+                  let text = obj["text"] as? String else { return nil }
+            return .diff(WireDiff(
+                path: path, text: text,
+                binary: obj["binary"] as? Bool ?? false
+            ))
         case "trace":
             guard let sessionID = obj["session"] as? String else { return nil }
             return .trace(sessionID: sessionID, dark: obj["dark"] as? Bool ?? false)
@@ -344,6 +409,68 @@ public struct WireFileEntry: Codable, Sendable, Equatable {
         self.name = name
         self.isDir = isDir
         self.changed = changed
+    }
+}
+
+// MARK: - Changes (git working tree)
+
+/// One changed file in the Mac's working tree, as the phone's Changes pane shows it:
+/// the repo-relative path, git's status letter, and the line counts. Deliberately
+/// flatter than the desktop's `GitChange` — the phone lists and diffs, it never stages.
+public struct WireChange: Codable, Sendable, Equatable {
+    public let path: String
+    /// git's status letter, the desktop's own vocabulary: `M`odified, `A`dded,
+    /// `D`eleted, `R`enamed, `C`opied, `U`ntracked, `!` conflicted.
+    public let status: String
+    public let additions: Int
+    public let deletions: Int
+    /// `--numstat` reported `-` for the counts, so `+`/`−` would be a lie.
+    public let isBinary: Bool
+    /// The change sits entirely in the index — what `git commit` would take now.
+    public let isStaged: Bool
+
+    public init(
+        path: String, status: String, additions: Int, deletions: Int,
+        isBinary: Bool = false, isStaged: Bool = false
+    ) {
+        self.path = path
+        self.status = status
+        self.additions = additions
+        self.deletions = deletions
+        self.isBinary = isBinary
+        self.isStaged = isStaged
+    }
+}
+
+extension WireChange {
+    /// The one-line caption both the Changes row and the diff reader's header show:
+    /// where the file lives and what it gained and lost.
+    public var caption: String {
+        let directory = (path as NSString).deletingLastPathComponent
+        var parts: [String] = directory.isEmpty ? [] : [directory]
+        parts.append(isBinary ? "binary" : "+\(additions) −\(deletions)")
+        if isStaged { parts.append("staged") }
+        return parts.joined(separator: " · ")
+    }
+
+    public var name: String { (path as NSString).lastPathComponent }
+}
+
+/// A `readDiff` reply: one file's unified diff as text, parsed on the phone with
+/// `DiffParser`. Whether a fold can be *expanded* is read off the text itself — a diff
+/// fetched with whole-file context has every line in it, one fetched at git's default
+/// context does not — so nothing here has to describe it separately.
+public struct WireDiff: Codable, Sendable, Equatable {
+    public let path: String
+    public let text: String
+    /// Binary content: `text` is empty and the reader says so rather than
+    /// rendering git's "Binary files differ" line as if it were code.
+    public let binary: Bool
+
+    public init(path: String, text: String, binary: Bool = false) {
+        self.path = path
+        self.text = text
+        self.binary = binary
     }
 }
 

@@ -522,7 +522,6 @@ private struct IssueRowContextMenu: NSViewRepresentable {
             // The agent verb leads, like the file tree's rows.
             if canAddToChat?() == true {
                 let add = menuItem("Add to Chat", #selector(addToChatAction))
-                add.image = NSImage(systemSymbolName: "plus.bubble", accessibilityDescription: nil)
                 menu.addItem(add)
                 menu.addItem(.separator())
             }
@@ -922,7 +921,12 @@ private struct IssueWebView: NSViewRepresentable {
         // through the handler so it can attach the bearer WebKit can't add itself.
         config.setURLSchemeHandler(context.coordinator.assetHandler,
                                    forURLScheme: GitHubAssetSchemeHandler.scheme)
+        let bridge = WebContextMenuBridge()
+        bridge.install(on: config)
         let view = IssueDetailWKWebView(frame: .zero, configuration: config)
+        bridge.attach(to: view) { [weak view] click in
+            view?.contextMenu(for: click) ?? NSMenu()
+        }
         view.addToChat = addToChat
         view.canAddToChat = canAddToChat
         view.setValue(false, forKey: "drawsBackground")
@@ -962,12 +966,11 @@ private struct IssueWebView: NSViewRepresentable {
     }
 }
 
-/// A `WKWebView` for the issue/PR detail that strips its right-click menu down to the
-/// items that mean something over a rendered conversation, matching the file preview's
-/// `ContextMenuWebView`. AppKit otherwise injects a grab-bag onto a `WKWebView` menu
-/// (Look Up / Translate / Search / Copy Link with Highlight / Share / Speech / Services)
-/// — none of it fits a read-only issue thread. Whitelisting by identifier keeps Copy
-/// (text selection) plus Copy Link (a link's URL under the cursor) and drops the rest.
+/// A `WKWebView` for the issue/PR detail that replaces its right-click menu with the items that
+/// mean something over a rendered conversation, matching the file preview's `ContextMenuWebView`.
+/// WebKit's own menu is a grab-bag (Look Up / Translate / Search / Copy Link with Highlight /
+/// Share / Speech / Services) that cannot be trimmed to plain text, so `WebContextMenuBridge`
+/// suppresses it and the page's click builds this one instead.
 ///
 /// "Open Link" is deliberately *not* kept: the nav delegate only diverts `.linkActivated`
 /// navigations to the browser, but the context-menu item fires a different navigation type
@@ -979,32 +982,37 @@ private final class IssueDetailWKWebView: WKWebView {
     var addToChat: ((String?) -> Void)?
     var canAddToChat: (() -> Bool)?
 
-    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
-        super.willOpenMenu(menu, with: event)
-        let keep: Set<String> = [
-            "WKMenuItemIdentifierCopy",
-            "WKMenuItemIdentifierCopyLink",
-        ]
-        menu.items = menu.items.filter { item in
-            guard let id = item.identifier?.rawValue else { return false }
-            return keep.contains(id)
+    /// Built from the page's own right-click: Copy for a text selection, Copy Link for a link
+    /// under the pointer, then Add to Chat.
+    func contextMenu(for click: WebContextMenuBridge.Click) -> NSMenu {
+        let menu = NSMenu()
+        if !click.selection.isEmpty {
+            menu.addPlainItem("Copy", target: self, action: #selector(copyText(_:)),
+                              representedObject: click.selection)
+        }
+        if let link = click.link {
+            menu.addPlainItem("Copy Link", target: self, action: #selector(copyText(_:)),
+                              representedObject: link.absoluteString)
         }
         if canAddToChat?() == true {
             if !menu.items.isEmpty { menu.addItem(.separator()) }
-            let add = NSMenuItem(title: "Add to Chat", action: #selector(addToChatAction), keyEquivalent: "")
-            add.target = self
-            add.image = NSImage(systemSymbolName: "plus.bubble", accessibilityDescription: nil)
-            menu.addItem(add)
+            menu.addPlainItem("Add to Chat", target: self, action: #selector(addToChatAction(_:)),
+                              representedObject: click.selection)
         }
+        return menu
     }
 
-    /// The web view's selection lives in the WebContent process, so it's read via JS
-    /// at click time: non-empty selection → snippet, else `nil` for the item's URL.
-    @objc private func addToChatAction() {
-        evaluateJavaScript("window.getSelection().toString()") { [weak self] result, _ in
-            let text = (result as? String).flatMap { $0.isEmpty ? nil : $0 }
-            self?.addToChat?(text)
-        }
+    @objc private func copyText(_ sender: NSMenuItem) {
+        guard let text = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    /// A non-empty selection goes over as the snippet, an empty one as `nil` — the owner inserts
+    /// the item's GitHub URL instead.
+    @objc private func addToChatAction(_ sender: NSMenuItem) {
+        let selection = (sender.representedObject as? String).flatMap { $0.isEmpty ? nil : $0 }
+        addToChat?(selection)
     }
 }
 

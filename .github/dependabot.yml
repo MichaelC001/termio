@@ -20,7 +20,6 @@ updates:
     directories:
       - "/"
       - "/Shared"
-      - "/companion"
       - "/ios"
     schedule:
       interval: "weekly"

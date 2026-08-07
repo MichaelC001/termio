@@ -1,3 +1,4 @@
+import TermioShared
 import AppKit
 import SwiftUI
 
@@ -20,8 +21,9 @@ struct DiffTextPane: NSViewRepresentable {
     /// Line-number ink, from the shared `gutterInk(for:)` so the diff's gutter and the
     /// file editor's read as one family.
     let numberColor: NSColor
-    /// Splices a clicked band's hidden lines back in (rebuilds the document upstream).
-    let onExpand: (Int) -> Void
+    /// Splices a band's hidden lines back in, from the end the reader asked for
+    /// (rebuilds the document upstream).
+    let onExpand: (Int, DiffBandDirection) -> Void
     /// ← / → sibling walk; returns false at either end so the press dies quietly.
     let onWalk: (Int) -> Bool
     let onClose: () -> Void
@@ -178,6 +180,7 @@ struct DiffTextPane: NSViewRepresentable {
         }
         // Outside the document-identity check so a theme change re-inks the gutter of an
         // already-open diff, matching the editor's every-update restyle.
+        ruler.onExpand = onExpand
         ruler.configure(document: document, codeFont: font, gutterColor: backgroundColor,
                         numberColor: numberColor)
         // A dictionary identity check, not equality: the highlight pass lands at most
@@ -312,7 +315,7 @@ struct DiffTextPane: NSViewRepresentable {
 /// caret to move), and a click on an expandable band splices its lines back in.
 final class DiffTextView: NSTextView {
     var document: DiffDocument?
-    var onExpand: ((Int) -> Void)?
+    var onExpand: ((Int, DiffBandDirection) -> Void)?
     var onWalk: ((Int) -> Bool)?
     var onClose: (() -> Void)?
     /// "Add to Chat": the argument is the selected diff text (`nil` = no selection,
@@ -346,14 +349,16 @@ final class DiffTextView: NSTextView {
     /// of it, matching the editor's and reader's stripped menus.
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
-        menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+        menu.allowsContextMenuPlugIns = false
+        // Not `copy:`: macOS 26 decorates the standard editing selectors with a system symbol
+        // that `image = nil` cannot clear, and the rest of this menu is plain text.
+        menu.addItem(withTitle: "Copy", action: #selector(copySelection), keyEquivalent: "")
         if canAddToChat?() == true {
             menu.addItem(.separator())
             // One name everywhere (Cursor's): a selection goes over as the pasted
             // snippet, none means the diffed file's path — context says which.
             let add = NSMenuItem(title: "Add to Chat", action: #selector(addToChatAction), keyEquivalent: "")
             add.target = self
-            add.image = NSImage(systemSymbolName: "plus.bubble", accessibilityDescription: nil)
             menu.addItem(add)
         }
         if onClose != nil {
@@ -373,9 +378,18 @@ final class DiffTextView: NSTextView {
 
     @objc private func closeFromMenu() { onClose?() }
 
+    @objc private func copySelection(_ sender: Any?) { copy(sender) }
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(copySelection) { return selectedRange().length > 0 }
+        return super.validateUserInterfaceItem(item)
+    }
+
     override func mouseDown(with event: NSEvent) {
+        // The row itself is the "show me the whole gap" target; the gutter's chevrons
+        // reveal it a screenful at a time.
         if let anchor = expandableBand(at: event) {
-            onExpand?(anchor)
+            onExpand?(anchor, .all)
             return
         }
         super.mouseDown(with: event)
@@ -392,8 +406,7 @@ final class DiffTextView: NSTextView {
         let padding = DiffDocument.bandPadding
         guard local.y >= fragment.minY - padding, local.y <= fragment.maxY + padding else { return nil }
         let character = layoutManager.characterIndexForGlyph(at: glyph)
-        guard let line = document.line(at: character),
-              case .band(_, expandable: true) = line.role else { return nil }
+        guard let line = document.line(at: character), line.isRevealable else { return nil }
         return line.rowId
     }
 
@@ -457,7 +470,7 @@ final class DiffWashLayoutManager: NSLayoutManager {
                 let line = document.lines[index]
                 index += 1
                 if line.range.location >= NSMaxRange(charRange) { break }
-                guard let fill = Self.fill(for: line.role) else { continue }
+                guard let fill = document.palette.wash(for: line.role) else { continue }
                 let glyphs = glyphRange(forCharacterRange: line.range, actualCharacterRange: nil)
                 var rect = boundingRect(forGlyphRange: glyphs, in: container)
                 rect.origin.x = 0
@@ -469,14 +482,5 @@ final class DiffWashLayoutManager: NSLayoutManager {
             }
         }
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
-    }
-
-    static func fill(for role: DiffDocument.Line.Role) -> NSColor? {
-        switch role {
-        case .code(.addition): return NSColor.systemGreen.withAlphaComponent(0.13)
-        case .code(.deletion): return NSColor.systemRed.withAlphaComponent(0.13)
-        case .band: return NSColor.labelColor.withAlphaComponent(0.045)
-        case .code: return nil
-        }
     }
 }

@@ -110,32 +110,17 @@ final class TerminalContextMenu: NSObject {
             menu.addItem(storeItem("Copy Session Link", action: #selector(copyLink), symbol: "link"))
         }
         menu.addItem(.separator())
-        menu.addItem(storeItem("Split Right", action: #selector(splitRight), symbol: "rectangle.split.2x1"))
-        menu.addItem(storeItem("Split Down", action: #selector(splitDown), symbol: "rectangle.split.1x2"))
-        // Rearranging without drag-and-drop: each direction trades the clicked
-        // pane with its neighbour that way (tmux's swap-pane), scored by the
-        // same geometry ⌥⌘-arrow focus uses. Directions with no neighbour are
-        // greyed out rather than hidden, so the submenu's shape is stable.
-        if let id = clickedSessionID, let store, store.isInSplitGroup(id) {
-            let submenu = NSMenu()
-            submenu.autoenablesItems = false
-            let directions: [(String, String, Selector, PaneFocusDirection)] = [
-                ("Left", "arrow.left", #selector(movePaneLeft), .left),
-                ("Right", "arrow.right", #selector(movePaneRight), .right),
-                ("Up", "arrow.up", #selector(movePaneUp), .up),
-                ("Down", "arrow.down", #selector(movePaneDown), .down),
-            ]
-            for (title, symbol, action, direction) in directions {
-                let item = storeItem(title, action: action, symbol: symbol)
-                item.isEnabled = store.movePaneTarget(of: id, direction) != nil
-                submenu.addItem(item)
-            }
-            let parent = NSMenuItem(title: "Move Pane", action: nil, keyEquivalent: "")
-            parent.image = NSImage(systemSymbolName: "arrow.up.and.down.and.arrow.left.and.right",
-                                   accessibilityDescription: nil)
-            parent.submenu = submenu
-            menu.addItem(parent)
-        }
+        // Ghostty's own split glyphs and order (Right, Left, Down, Up): the filled
+        // half of the rectangle is where the new pane lands, which reads at a
+        // glance in a way "rectangle.split.2x1" never did once there were four.
+        menu.addItem(storeItem("Split Right", action: #selector(splitRight),
+                               symbol: "rectangle.righthalf.inset.filled"))
+        menu.addItem(storeItem("Split Left", action: #selector(splitLeft),
+                               symbol: "rectangle.leadinghalf.inset.filled"))
+        menu.addItem(storeItem("Split Down", action: #selector(splitDown),
+                               symbol: "rectangle.bottomhalf.inset.filled"))
+        menu.addItem(storeItem("Split Up", action: #selector(splitUp),
+                               symbol: "rectangle.tophalf.inset.filled"))
         // "Flip Layout" turns just the divider that holds the clicked pane and
         // its neighbour from side-by-side to stacked (or back) — the honest
         // inverse of the "Split Right"/"Split Down" that made the pair. Nested
@@ -190,19 +175,13 @@ final class TerminalContextMenu: NSObject {
     }
 
     @objc private func splitRight() { store?.splitSelectedPane(.horizontal) }
+    @objc private func splitLeft() { store?.splitSelectedPane(.horizontal, slot: .first) }
     @objc private func splitDown() { store?.splitSelectedPane(.vertical) }
+    @objc private func splitUp() { store?.splitSelectedPane(.vertical, slot: .first) }
     @objc private func ungroup() { store?.ungroupSelectedPane() }
     @objc private func flipLayout() {
         guard let id = clickedSessionID else { return }
         store?.flipPaneLayout(id)
-    }
-    @objc private func movePaneLeft() { movePane(.left) }
-    @objc private func movePaneRight() { movePane(.right) }
-    @objc private func movePaneUp() { movePane(.up) }
-    @objc private func movePaneDown() { movePane(.down) }
-    private func movePane(_ direction: PaneFocusDirection) {
-        guard let id = clickedSessionID else { return }
-        store?.movePane(id, direction)
     }
     @objc private func closeSession() {
         guard let id = clickedSessionID else { return }

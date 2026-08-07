@@ -85,7 +85,7 @@ cat "/Applications/Dia.app/Contents/Resources/agent-server-resources/dist/info.j
 The `.js` bundles are compiled into the Mach-O binaries and NOT shipped, but `entrypoint.js.map`
 and `handler-entrypoint.js.map` ship with `sourcesContent` populated → near-original TS.
 ```bash
-python3 .claude/skills/dia-source-analysis/scripts/extract-sourcemaps.py --out /tmp/dia-src
+python3 skills/dia-source-analysis/scripts/extract-sourcemaps.py --out /tmp/dia-src
 ```
 Yields ~40 "own" TS files (non-node_modules): `agent/harness/claude-sdk/*` (how it drives the
 Claude SDK — `prompt-template.ts`, `proxy-tools.ts`, `claude-sdk-in-process.ts`, `sandbox.ts`),

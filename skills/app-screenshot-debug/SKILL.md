@@ -45,7 +45,7 @@ Run them with bash; they take the app name from `$TERMIO_APP_NAME` (default
 ## Canonical recipe
 
 ```bash
-SK=.claude/skills/app-screenshot-debug/scripts
+SK=skills/app-screenshot-debug/scripts
 
 osascript -e 'tell application "System Events" to tell process "termio" to set frontmost to true'
 bash $SK/capture-window.sh /tmp/shot.png

@@ -60,7 +60,7 @@ Shared wire-protocol code lives in `Shared/` and is used by both platforms.
 
 ## Code conventions
 
-From `docs/CLAUDE.md` (the authoritative copy):
+From `AGENTS.md` (the authoritative copy, also what AI coding agents read):
 
 - Prioritize correctness and clarity over micro-optimization.
 - No force-unwraps (`!`) or anything that traps — use `guard let` / `if let`
@@ -74,7 +74,7 @@ From `docs/CLAUDE.md` (the authoritative copy):
 ### libghostty specifics
 
 - termio uses the host-managed `.inMemory` backend: the app owns the PTY via
-  `Sources/termio/PTYProcess.swift`, spawned with `forkpty`. Do **not** switch
+  `Sources/termio/Terminal/Ghostty/PTYProcess.swift`, spawned with `forkpty`. Do **not** switch
   the spawn to `posix_spawn` — that PTY shape breaks agents' resize repaint
   (see `docs/bug/terminal-resize-no-reflow-HANDOFF.md`).
 - One `TerminalViewState` owns one surface; `TermioStore`'s SurfaceCache keeps

@@ -249,9 +249,17 @@ struct CommandPaletteView: View {
                                  icon: .layoutColumns, shortcut: keys.display(for: .splitRight)) {
                 $0.splitSelectedPane(.horizontal)
             })
+            actions.append(.init(id: "split-left", title: "Split Left",
+                                 icon: .layoutColumns, shortcut: keys.display(for: .splitLeft)) {
+                $0.splitSelectedPane(.horizontal, slot: .first)
+            })
             actions.append(.init(id: "split-down", title: "Split Down",
                                  icon: .layoutRows, shortcut: keys.display(for: .splitDown)) {
                 $0.splitSelectedPane(.vertical)
+            })
+            actions.append(.init(id: "split-up", title: "Split Up",
+                                 icon: .layoutRows, shortcut: keys.display(for: .splitUp)) {
+                $0.splitSelectedPane(.vertical, slot: .first)
             })
         }
         if store.splitRoot != nil {

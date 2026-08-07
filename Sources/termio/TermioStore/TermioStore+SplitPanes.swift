@@ -25,7 +25,11 @@ extension TermioStore {
     /// beside a working agent, and silently auto-launching another agent
     /// instance is a side effect ⌘D shouldn't have; an agent can still be put
     /// there by splitting from it or grouping it later.
-    func splitSelectedPane(_ direction: SplitDirection) {
+    ///
+    /// `slot` is which half the new pane takes: `.second` is Split Right / Split
+    /// Down, `.first` is Split Left / Split Up. Either way the new pane takes
+    /// focus — the direction says where the pane lands, not where attention goes.
+    func splitSelectedPane(_ direction: SplitDirection, slot: SplitSlot = .second) {
         guard let focusedID = selectedSessionID,
               let projectIndex = projects.firstIndex(where: { $0.sessions.contains { $0.id == focusedID } }),
               let sessionIndex = projects[projectIndex].sessions.firstIndex(where: { $0.id == focusedID })
@@ -37,18 +41,20 @@ extension TermioStore {
         // A worktree session runs somewhere other than the project root; the
         // companion shell should land where the focused session actually works.
         newSession.worktreePath = session(focusedID)?.worktreePath
-        // Right below the session it splits, not at the end of the project — the
+        // Beside the session it splits, not at the end of the project — the
         // sidebar then reads the split group as adjacent rows, which is what lets
-        // it draw the VS Code-style ┌/└ group bracket (see `splitLinkMarks`).
-        projects[projectIndex].sessions.insert(newSession, at: sessionIndex + 1)
+        // it draw the VS Code-style ┌/└ group bracket (see `splitLinkMarks`). The
+        // row order follows the layout, so a leading split lists above its origin.
+        projects[projectIndex].sessions.insert(newSession, at: slot == .first ? sessionIndex : sessionIndex + 1)
 
         if let group = groupIndex(containing: focusedID) {
             splitGroups[group] = splitGroups[group]
-                .splitting(leaf: focusedID, direction: direction, adding: newSession.id)
+                .splitting(leaf: focusedID, direction: direction, adding: newSession.id, slot: slot)
         } else {
-            splitGroups.append(.split(SplitBranch(direction: direction, ratio: 0.5,
-                                                  first: .leaf(focusedID),
-                                                  second: .leaf(newSession.id))))
+            splitGroups.append(.split(SplitBranch(
+                direction: direction, ratio: 0.5,
+                first: .leaf(slot == .first ? newSession.id : focusedID),
+                second: .leaf(slot == .first ? focusedID : newSession.id))))
         }
         // The new pane takes focus; it is a member of the (possibly new) group,
         // so the derived `splitRoot` keeps showing this layout.
@@ -257,28 +263,7 @@ extension TermioStore {
         isPaneZoomed.toggle()
     }
 
-    /// The pane `id` would trade places with when moved `direction`, or `nil`
-    /// when nothing lies that way — what greys out the "Move Pane" menu items.
-    /// Uses the same directional scoring as focus movement, so "Move Left" and
-    /// ⌥⌘← always agree on which pane is the neighbour.
-    func movePaneTarget(of id: Session.ID, _ direction: PaneFocusDirection) -> Session.ID? {
-        groupIndex(containing: id).flatMap { splitGroups[$0].pane(direction, of: id) }
-    }
-
-    /// Moves a pane by trading places with its directional neighbour (tmux's
-    /// swap-pane) — the context menu's "Move Pane". The tree's shape and every
-    /// divider ratio stay put; only the two leaves change slots. Zoom is
-    /// dropped so the result is visible, and the selection sticks with the
-    /// moved pane.
-    func movePane(_ id: Session.ID, _ direction: PaneFocusDirection) {
-        guard let group = groupIndex(containing: id),
-              let target = movePaneTarget(of: id, direction) else { return }
-        splitGroups[group] = splitGroups[group].swapping(id, and: target)
-        selectedSessionID = id
-        isPaneZoomed = false
-    }
-
-    /// Lands a modifier-dragged pane on `target` (issue #183). An edge zone
+    /// Lands a dragged pane on `target` (issue #183). An edge zone
     /// re-splits the target with the dragged pane on that side — the pane
     /// leaves its old slot first, its vacated space collapsing into the
     /// sibling exactly as if it had closed, so one gesture subsumes move +

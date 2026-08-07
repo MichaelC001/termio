@@ -1,0 +1,51 @@
+name: macOS
+
+# Build + test check for the macOS app. Until this existed the app — the bulk of
+# the codebase — was only ever compiled by release.yml on a version tag, so a PR
+# that broke `swift build` merged green and surfaced inside the signing pipeline.
+# Path-filtered so landing-page or iOS-only pushes never spin a (metered) macOS
+# runner; the iOS companion has its own pipeline in ios.yml.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Sources/**"
+      - "Shared/**"
+      - "Tests/**"
+      - "Package.swift"
+      - "Package.resolved"
+      - ".github/workflows/macos.yml"
+  pull_request:
+    paths:
+      - "Sources/**"
+      - "Shared/**"
+      - "Tests/**"
+      - "Package.swift"
+      - "Package.resolved"
+      - ".github/workflows/macos.yml"
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Same toolchain pin as release.yml. A PR passing on a toolchain that releases
+  # don't use is a false green, and keeping the two in step means an image that
+  # drops this Xcode breaks both workflows together rather than silently
+  # diverging. Bump both at once.
+  DEVELOPER_DIR: /Applications/Xcode_26.4.app/Contents/Developer
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test

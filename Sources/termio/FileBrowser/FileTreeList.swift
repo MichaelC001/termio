@@ -129,8 +129,16 @@ private struct FileRow: View {
                 // Static — the disclosure chevron already carries open/closed state
                 // (Finder/Xcode's pattern), so the glyph doesn't need to swap and the
                 // row needs no expansion tracking of its own.
-                HugeIconView(icon: .folder, size: 15, color: chrome?.foreground ?? .primary)
-                    .frame(width: 16, alignment: .leading)
+                // A symlinked folder gets its own glyph rather than the folder plus a
+                // badge — the folder mark carries nothing but "folder", so swapping it
+                // for "symlinked folder" costs no information, and one line glyph stays
+                // legible at 15pt where a composited badge does not.
+                HugeIconView(
+                    icon: node.isSymbolicLink ? .folderSymlink : .folder,
+                    size: 15,
+                    color: chrome?.foreground ?? .primary
+                )
+                .frame(width: 16, alignment: .leading)
             } else {
                 // The file's real language/tool logo (a Devicon mark) when bundled,
                 // else a tinted SF Symbol — see `FileIconView`. Boxed below the folder's
@@ -138,6 +146,11 @@ private struct FileRow: View {
                 // ink only ~75% of theirs (the left sidebar's shared-column rule), so an
                 // equal nominal size made every file icon read a step LARGER than the
                 // folder and sidebar family — 12 brings their ink widths level.
+                // A symlinked *file* keeps its plain language logo — that mark says more
+                // than its link-ness, and the Finder's badge doesn't survive the trade:
+                // an arrow small enough to sit in the corner of a 12pt glyph collides
+                // with its outline and reads as damage, not as a mark. The tooltip and
+                // the row menu's Show Original carry it instead.
                 FileIconView(url: node.url, size: 12, symbolSize: 11, ink: chrome?.foreground ?? .primary)
                     .frame(width: 16, alignment: .leading)
             }
@@ -158,6 +171,10 @@ private struct FileRow: View {
         // full width, not just the label's footprint.
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+        // Where a symlink points — the one fact about a link no badge can carry, and the
+        // reason the Finder puts it in Get Info rather than on the icon. Applied only to
+        // links: an empty `help` string still arms an (empty) AppKit tooltip.
+        .modifier(SymbolicLinkTooltip(target: node.symbolicLinkTarget))
         .onHover { isHovering = $0 }
         // Strip the source list's blue selection fill and restore the mouse-wheel
         // scroll increment at the AppKit layer (see `OutlineViewFixups`). Lives in a
@@ -199,6 +216,7 @@ private struct FileRow: View {
         // `EmptyAreaContextMenu`).
         .background(RowContextMenu(
             isDirectory: node.isDirectory,
+            symbolicLinkTarget: node.resolvedSymbolicLinkTarget,
             target: node.url,
             rootURL: rootURL,
             actions: actions
@@ -216,6 +234,22 @@ private struct FileRow: View {
             row
         }
     }
+
+}
+
+/// Hover text naming a symlink's target, applied only when there is one — `.help("")`
+/// still arms an AppKit tooltip, which would flash an empty bubble over every ordinary
+/// row in the tree.
+private struct SymbolicLinkTooltip: ViewModifier {
+    let target: String?
+
+    func body(content: Content) -> some View {
+        if let target {
+            content.help("Alias → \(target)")
+        } else {
+            content
+        }
+    }
 }
 
 /// The per-row right-click menu, via AppKit `NSMenu` rather than SwiftUI's
@@ -226,6 +260,9 @@ private struct FileRow: View {
 /// Path, Rename, and Delete.
 private struct RowContextMenu: NSViewRepresentable {
     let isDirectory: Bool
+    /// Where this row's symlink lands, or nil when the row isn't a link — gates Show
+    /// Original.
+    let symbolicLinkTarget: URL?
     let target: URL
     let rootURL: URL
     let actions: FileTreeActions
@@ -235,13 +272,25 @@ private struct RowContextMenu: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
         context.coordinator.owner = view
-        context.coordinator.configure(isDirectory: isDirectory, target: target, rootURL: rootURL, actions: actions)
+        context.coordinator.configure(
+            isDirectory: isDirectory,
+            symbolicLinkTarget: symbolicLinkTarget,
+            target: target,
+            rootURL: rootURL,
+            actions: actions
+        )
         context.coordinator.attach()
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.configure(isDirectory: isDirectory, target: target, rootURL: rootURL, actions: actions)
+        context.coordinator.configure(
+            isDirectory: isDirectory,
+            symbolicLinkTarget: symbolicLinkTarget,
+            target: target,
+            rootURL: rootURL,
+            actions: actions
+        )
         context.coordinator.attach()
     }
 
@@ -253,14 +302,22 @@ private struct RowContextMenu: NSViewRepresentable {
     final class Coordinator: NSObject {
         weak var owner: NSView?
         private var isDirectory = false
+        private var symbolicLinkTarget: URL?
         private var target = URL(fileURLWithPath: "/")
         private var rootURL = URL(fileURLWithPath: "/")
         private var actions: FileTreeActions?
         private weak var hostView: NSView?
         private var recognizer: NSClickGestureRecognizer?
 
-        func configure(isDirectory: Bool, target: URL, rootURL: URL, actions: FileTreeActions) {
+        func configure(
+            isDirectory: Bool,
+            symbolicLinkTarget: URL?,
+            target: URL,
+            rootURL: URL,
+            actions: FileTreeActions
+        ) {
             self.isDirectory = isDirectory
+            self.symbolicLinkTarget = symbolicLinkTarget
             self.target = target
             self.rootURL = rootURL
             self.actions = actions
@@ -294,7 +351,6 @@ private struct RowContextMenu: NSViewRepresentable {
             // inserts. Gated live at open time; a plain shell has no chat to add to.
             if actions?.canAddToChat() == true {
                 let add = menuItem("Add to Chat", #selector(addToChat))
-                add.image = NSImage(systemSymbolName: "plus.bubble", accessibilityDescription: nil)
                 menu.addItem(add)
                 menu.addItem(.separator())
             }
@@ -302,6 +358,12 @@ private struct RowContextMenu: NSViewRepresentable {
                 menu.addItem(menuItem("New File", #selector(newFile)))
                 menu.addItem(menuItem("New Folder", #selector(newFolder)))
                 menu.addItem(.separator())
+            }
+            // The Finder's own verb for an alias, and directly above Reveal in Finder so
+            // the pair reads as "the original" versus "this link". Absent on a row that
+            // isn't a link, and on one whose target is gone.
+            if symbolicLinkTarget != nil {
+                menu.addItem(menuItem("Show Original", #selector(showOriginal)))
             }
             menu.addItem(menuItem("Reveal in Finder", #selector(revealInFinder)))
             menu.addItem(.separator())
@@ -327,6 +389,14 @@ private struct RowContextMenu: NSViewRepresentable {
         @objc private func deleteItem() { actions?.delete(target) }
         @objc private func revealInFinder() {
             NSWorkspace.shared.activateFileViewerSelecting([target])
+        }
+
+        /// Reveals what the link points at, not the link — the Finder selects the target
+        /// in its own folder, which is where "where does this actually live" gets
+        /// answered.
+        @objc private func showOriginal() {
+            guard let symbolicLinkTarget else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([symbolicLinkTarget])
         }
 
         @objc private func copyPath() {
@@ -522,6 +592,14 @@ struct OutlineViewFixups: NSViewRepresentable {
         DispatchQueue.main.async { Self.apply(from: nsView) }
     }
 
+    /// Reasserts the wheel increment on an outline captured earlier (see
+    /// `OutlineViewCapture`) — for callers that know a specific update just reset
+    /// it, like the inspector's tab switch covering the always-mounted file tree.
+    static func assertWheelIncrement(on outline: NSOutlineView?) {
+        guard let scroll = outline?.enclosingScrollView, scroll.verticalLineScroll != 24 else { return }
+        scroll.verticalLineScroll = 24
+    }
+
     private static func apply(from view: NSView) {
         var ancestor = view.superview
         while let current = ancestor {
@@ -530,12 +608,41 @@ struct OutlineViewFixups: NSViewRepresentable {
                 if table.selectionHighlightStyle != .none {
                     table.selectionHighlightStyle = .none
                 }
-                if let scroll = table.enclosingScrollView, scroll.verticalLineScroll != 24 {
-                    scroll.verticalLineScroll = 24
+                if let scroll = table.enclosingScrollView {
+                    if scroll.verticalLineScroll != 24 {
+                        scroll.verticalLineScroll = 24
+                    }
+                    enforce(scroll)
                 }
                 return
             }
             ancestor = current.superview
         }
     }
+
+    /// SwiftUI re-configures the List's scroll view on some structural updates
+    /// (covering the pane with another tab's overlay is one), resetting
+    /// `verticalLineScroll` back to the 1pt it mirrors from `rowHeight` — and a
+    /// property-less representable gets no `updateNSView` afterward to re-run
+    /// `apply`, so a one-shot write stays clobbered on an always-mounted list.
+    /// This observer watches the clip view's bounds (they change on every scroll)
+    /// and re-asserts the increment the moment a reset scroll view first moves, so
+    /// a wheel is never slow for more than its first notch. One observer per
+    /// scroll view; the token dies with the scroll view it's associated to.
+    private static func enforce(_ scroll: NSScrollView) {
+        guard objc_getAssociatedObject(scroll, &enforcementKey) == nil else { return }
+        scroll.contentView.postsBoundsChangedNotifications = true
+        let token = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: scroll.contentView,
+            queue: nil
+        ) { [weak scroll] _ in
+            guard let scroll, scroll.verticalLineScroll != 24 else { return }
+            scroll.verticalLineScroll = 24
+        }
+        objc_setAssociatedObject(scroll, &enforcementKey, token, .OBJC_ASSOCIATION_RETAIN)
+    }
 }
+
+/// Unique address keying the enforcement token onto its scroll view.
+private var enforcementKey: UInt8 = 0

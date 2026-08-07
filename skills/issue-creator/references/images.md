@@ -62,7 +62,7 @@ fi
 
 base64 < "$request_image" | tr -d '\n' |
   jq -Rs \
-    --arg message "docs: add feedback-to-issue evidence" \
+    --arg message "docs: add issue-creator evidence" \
     --arg branch "$request_asset_branch" \
     '{message:$message, content:., branch:$branch}' |
   gh api --method PUT \
