@@ -145,8 +145,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // whole main menu whenever a user rebinds a shortcut in Settings.
         keybindingsObserver = NotificationCenter.default.addObserver(
             forName: .termioKeybindingsChanged, object: nil, queue: .main
-        ) { _ in
-            MainActor.assumeIsolated { NSApp.mainMenu = buildMainMenu() }
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                NSApp.mainMenu = buildMainMenu()
+                // Open surfaces carry the old unbind set, so a shortcut moved onto
+                // a ghostty-bound key would be swallowed until relaunch.
+                self?.store.applyAppearanceToOpenSurfaces()
+            }
         }
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
@@ -617,6 +622,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         applyChromeAppearance()
         applyWindowTransparency()
         updateInspectorMaxThickness()
+    }
+
+    /// View ▸ Toggle Full Screen (⌃⌘F).
+    ///
+    /// macOS moved its own full-screen shortcut to globe-F in Monterey and pins
+    /// that onto the Enter/Exit Full Screen item AppKit inserts — so ⌃⌘F, what a
+    /// decade of Mac apps taught and what ghostty binds, reaches nothing. This is
+    /// ghostty's own answer, verbatim: an item AppKit will not take over, which
+    /// means neither the reserved titles nor `NSWindow.toggleFullScreen(_:)`
+    /// (ghostty ships "Toggle Full Screen" on `toggleGhosttyFullScreen:`).
+    /// Ghostty's binding on the same key is unbound inside the surface (see
+    /// `applyAppearance`), or the terminal would swallow it first.
+    @objc func toggleFullScreenCommand(_ sender: Any?) {
+        (window ?? Self.mainWindow)?.toggleFullScreen(nil)
     }
 
     func windowDidResize(_ notification: Notification) {
@@ -2062,6 +2081,17 @@ private func buildMainMenu() -> NSMenu {
         action: #selector(AppDelegate.resetFontSize(_:)),
         command: .resetFontSize
     )
+    viewMenu.addItem(.separator())
+    // "Toggle Full Screen", not "Enter/Exit Full Screen": AppKit manages an item
+    // carrying either reserved title (or `NSWindow.toggleFullScreen(_:)`) and
+    // rewrites its key equivalent to the system shortcut. See
+    // `toggleFullScreenCommand`.
+    let fullScreenItem = viewMenu.addItem(
+        withTitle: "Toggle Full Screen",
+        action: #selector(AppDelegate.toggleFullScreenCommand(_:)),
+        keyEquivalent: "f"
+    )
+    fullScreenItem.keyEquivalentModifierMask = [.control, .command]
     viewItem.submenu = viewMenu
 
     // Session menu — Chrome's Tab menu for termio's own navigation unit: the
