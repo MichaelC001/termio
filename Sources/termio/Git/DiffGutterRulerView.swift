@@ -1,3 +1,4 @@
+import TermioShared
 import AppKit
 
 /// The diff's gutter, following `LineNumberRulerView`'s ruler precedent (including its

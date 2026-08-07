@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import TermioShared
 
 /// The environment for **every** app-side `git` subprocess. `GIT_OPTIONAL_LOCKS=0`
 /// stops read-only git — notably `git status` — from taking the index lock and
@@ -57,7 +58,7 @@ enum GitService {
             // default 3-line context rather than parse (and render) a whole huge file.
             let text = full.count <= 1_500_000
                 ? full : loadDiffText(change, repoRoot, commit: commit, range: range)
-            return parseDiff(text)
+            return DiffParser.lines(from: text)
         }
     }
 
@@ -71,7 +72,7 @@ enum GitService {
     /// main thread — the same parser the local `git diff` path uses, so a PR file diffed
     /// from the API renders identically without a subprocess or a checkout.
     static func parseDiffText(_ text: String) async -> [DiffRow] {
-        await offMain { parseDiff(text) }
+        await offMain { DiffParser.lines(from: text) }
     }
 
     /// Discards a whole selection in one confirmed action — the multi-select's
@@ -415,7 +416,7 @@ enum GitService {
                        in: repoRoot, ignoreStatus: true) ?? ""
         }
         // History file row: the file's change within one commit. `--format=` strips the
-        // commit header so parseDiff sees only the unified diff.
+        // commit header so the parser sees only the unified diff.
         if let commit {
             return run(["show", "--format=", "-M"] + contextArguments + [commit, "--", change.path],
                        in: repoRoot, ignoreStatus: true) ?? ""
@@ -435,91 +436,6 @@ enum GitService {
         return run(["diff"] + contextArguments + ["--cached", "--", change.path], in: repoRoot) ?? ""
     }
 
-    /// Parses unified-diff text into rows, tracking old/new line numbers from each
-    /// hunk header and dropping the file-header lines (`diff --git`, `+++`, …).
-    private static func parseDiff(_ text: String) -> [DiffRow] {
-        var rows: [DiffRow] = []
-        var id = 0
-        var oldNo = 0
-        var newNo = 0
-        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(raw)
-            if line.hasPrefix("@@") {
-                if let (o, n) = parseHunkHeader(line) { oldNo = o; newNo = n }
-                // Hunk rows carry their start numbers so the overlay can size the gap
-                // to the previous hunk when it renders the boundary as a "⋯ n lines" band.
-                rows.append(DiffRow(id: id, kind: .hunk, text: line, oldLine: oldNo, newLine: newNo)); id += 1
-                continue
-            }
-            if isFileHeader(line) { continue }
-            guard let first = line.first else { continue }
-            let body = String(line.dropFirst())
-            switch first {
-            case "+":
-                rows.append(DiffRow(id: id, kind: .addition, text: body, oldLine: nil, newLine: newNo)); id += 1; newNo += 1
-            case "-":
-                rows.append(DiffRow(id: id, kind: .deletion, text: body, oldLine: oldNo, newLine: nil)); id += 1; oldNo += 1
-            case " ":
-                rows.append(DiffRow(id: id, kind: .context, text: body, oldLine: oldNo, newLine: newNo)); id += 1; oldNo += 1; newNo += 1
-            default:
-                continue
-            }
-        }
-        applyIntraline(&rows)
-        return rows
-    }
-
-    /// Marks the changed spans inside modified lines: within each hunk, a run of
-    /// deletions immediately followed by a run of additions is paired index-wise, and
-    /// each pair is word-diffed by `DiffIntraline`.
-    private static func applyIntraline(_ rows: inout [DiffRow]) {
-        var i = 0
-        while i < rows.count {
-            guard rows[i].kind == .deletion else { i += 1; continue }
-            let delStart = i
-            while i < rows.count, rows[i].kind == .deletion { i += 1 }
-            let addStart = i
-            while i < rows.count, rows[i].kind == .addition { i += 1 }
-            for k in 0..<min(addStart - delStart, i - addStart) {
-                guard let spans = DiffIntraline.spans(old: rows[delStart + k].text,
-                                                      new: rows[addStart + k].text)
-                else { continue }
-                rows[delStart + k].emphasis = spans.old
-                rows[addStart + k].emphasis = spans.new
-            }
-        }
-    }
-
-    private static func isFileHeader(_ line: String) -> Bool {
-        for prefix in ["diff ", "index ", "--- ", "+++ ", "new file", "deleted file",
-                       "old mode", "new mode", "similarity ", "dissimilarity ",
-                       "rename ", "copy ", "\\ "] where line.hasPrefix(prefix) {
-            return true
-        }
-        return false
-    }
-
-    /// The section heading git appends to a hunk header (`@@ -a,b +c,d @@ func foo() {`) —
-    /// the enclosing scope of the lines that follow, which the diff's collapsed bands show
-    /// to say what is being skipped. Lives beside `parseHunkHeader` so the header's grammar
-    /// is read in one file.
-    static func hunkHeading(_ text: String) -> String? {
-        let parts = text.components(separatedBy: "@@")
-        guard parts.count >= 3 else { return nil }
-        let heading = parts[2...].joined(separator: "@@").trimmingCharacters(in: .whitespaces)
-        return heading.isEmpty ? nil : heading
-    }
-
-    /// Pulls the starting old and new line numbers out of `@@ -a,b +c,d @@`.
-    private static func parseHunkHeader(_ line: String) -> (Int, Int)? {
-        let parts = line.split(separator: " ")
-        guard parts.count >= 3 else { return nil }
-        func start(_ s: Substring) -> Int? {
-            Int(s.dropFirst().split(separator: ",").first ?? s.dropFirst())
-        }
-        guard let o = start(parts[1]), let n = start(parts[2]) else { return nil }
-        return (o, n)
-    }
 
     /// A recognized code-hosting forge, detected from the origin remote's hostname.
     /// Each forge shapes its branch-tree URL differently, so a "view remote" link

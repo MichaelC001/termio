@@ -1,3 +1,4 @@
+import TermioShared
 import AppKit
 import SwiftUI
 

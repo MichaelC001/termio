@@ -74,11 +74,12 @@ final class DiffFoldTests: XCTestCase {
         }
         rows.insert(DiffLine(id: 100, kind: .addition, text: "new", oldLine: nil, newLine: 16), at: 15)
 
-        let items = DiffParser.displayItems(lines: rows, expanded: [])
-        guard case .band(let id, let range, let expandable) = items.first else {
+        let items = DiffParser.displayItems(lines: rows, expansion: DiffExpansion())
+        guard case .band(let id, let range, let controls, _) = items.first else {
             return XCTFail("a 15-line leading run should fold to a band, got \(String(describing: items.first))")
         }
-        XCTAssertTrue(expandable)
+        // Nothing is rendered above the leading band, so it reveals upward only.
+        XCTAssertEqual(controls, [.up])
         // 15 lines, 3 kept facing the change → 12 hidden, keyed by the first of them, and
         // named by the lines they hide rather than counted.
         XCTAssertEqual(range, 1...12)
@@ -94,7 +95,9 @@ final class DiffFoldTests: XCTestCase {
         }
         rows.insert(DiffLine(id: 100, kind: .addition, text: "new", oldLine: nil, newLine: 16), at: 15)
 
-        let items = DiffParser.displayItems(lines: rows, expanded: [0])
+        var expansion = DiffExpansion()
+        expansion.reveal(0, .all)
+        let items = DiffParser.displayItems(lines: rows, expansion: expansion)
         // The leading band is gone; its 12 lines are back, so only the trailing one is left.
         XCTAssertEqual(items.filter { if case .band = $0 { return true } else { return false } }.count, 1)
         guard case .line(let first) = items[0] else { return XCTFail("expanded band should start with a line") }
@@ -107,7 +110,7 @@ final class DiffFoldTests: XCTestCase {
             rows.append(DiffLine(id: i, kind: .context, text: "line \(i)", oldLine: i + 1, newLine: i + 1))
         }
         rows.append(DiffLine(id: 100, kind: .addition, text: "new", oldLine: nil, newLine: 9))
-        let items = DiffParser.displayItems(lines: rows, expanded: [])
+        let items = DiffParser.displayItems(lines: rows, expansion: DiffExpansion())
         XCTAssertEqual(items.count, 9)
         XCTAssertFalse(items.contains { if case .band = $0 { return true } else { return false } })
     }
@@ -124,14 +127,15 @@ final class DiffFoldTests: XCTestCase {
         -forty
         +FORTY
         """
-        let items = DiffParser.displayItems(lines: DiffParser.lines(from: diff), expanded: [])
-        let bands = items.compactMap { item -> (ClosedRange<Int>, Bool)? in
-            if case .band(_, let range, let expandable) = item { return (range, expandable) }
+        let items = DiffParser.displayItems(lines: DiffParser.lines(from: diff),
+                                            expansion: DiffExpansion())
+        let bands = items.compactMap { item -> (ClosedRange<Int>, DiffBandControls)? in
+            if case .band(_, let range, let controls, _) = item { return (range, controls) }
             return nil
         }
         XCTAssertEqual(bands.count, 1)
         XCTAssertEqual(bands.first?.0, 2...39) // the gap between the two hunks
-        XCTAssertEqual(bands.first?.1, false)
+        XCTAssertEqual(bands.first?.1, [], "the hidden lines were never sent, so nothing reveals them")
     }
 }
 
@@ -143,23 +147,23 @@ final class DiffIntralineSpanTests: XCTestCase {
         +let value = newName
         """
         let lines = DiffParser.lines(from: diff)
-        guard let old = lines[1].emphasis, let new = lines[2].emphasis else {
+        guard let old = lines[1].emphasis.first, let new = lines[2].emphasis.first else {
             return XCTFail("a one-word edit should carry an intraline span")
         }
         XCTAssertEqual(String(Array(lines[1].text)[old]), "oldName")
         XCTAssertEqual(String(Array(lines[2].text)[new]), "newName")
     }
 
-    /// The boundary snaps outward to whole words: peeling the shared `alph` prefix
-    /// alone would emphasize a bare `a` / `b` and leave the identifier split.
-    func testSpanSnapsToWordBoundaries() {
+    /// Spans are whole words: a character-level peel of the shared `alph` prefix would
+    /// emphasize a bare `a` / `b` and leave the identifier visually split.
+    func testSpanCoversTheWholeWord() {
         let diff = """
         @@ -1,1 +1,1 @@
         -call(alpha)
         +call(alphb)
         """
         let lines = DiffParser.lines(from: diff)
-        guard let old = lines[1].emphasis else {
+        guard let old = lines[1].emphasis.first else {
             return XCTFail("a near-identical pair should carry a span")
         }
         XCTAssertEqual(String(Array(lines[1].text)[old]), "alpha")
@@ -174,7 +178,7 @@ final class DiffIntralineSpanTests: XCTestCase {
         +print(somethingElseEntirely)
         """
         let lines = DiffParser.lines(from: diff)
-        XCTAssertNil(lines[1].emphasis)
-        XCTAssertNil(lines[2].emphasis)
+        XCTAssertTrue(lines[1].emphasis.isEmpty)
+        XCTAssertTrue(lines[2].emphasis.isEmpty)
     }
 }

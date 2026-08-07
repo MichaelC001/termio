@@ -1,3 +1,4 @@
+import TermioShared
 import AppKit
 import XCTest
 @testable import termio
@@ -95,18 +96,18 @@ final class DiffDocumentTests: XCTestCase {
     }
 
     func testHunkHeadingIsTheSectionAfterTheRanges() {
-        XCTAssertEqual(GitService.hunkHeading("@@ -8,7 +8,7 @@ func reload() {"),
+        XCTAssertEqual(DiffParser.hunkHeading("@@ -8,7 +8,7 @@ func reload() {"),
                        "func reload() {")
     }
 
     func testHunkHeadingIsNilWhenGitOffersNone() {
-        XCTAssertNil(GitService.hunkHeading("@@ -8,7 +8,7 @@"))
-        XCTAssertNil(GitService.hunkHeading("@@ -8,7 +8,7 @@   "))
+        XCTAssertNil(DiffParser.hunkHeading("@@ -8,7 +8,7 @@"))
+        XCTAssertNil(DiffParser.hunkHeading("@@ -8,7 +8,7 @@   "))
     }
 
     /// A heading can itself contain `@@` — an operator, a string, a comment.
     func testHunkHeadingKeepsAtSignsInsideTheHeading() {
-        XCTAssertEqual(GitService.hunkHeading("@@ -1,2 +1,2 @@ let mark = \"@@\""),
+        XCTAssertEqual(DiffParser.hunkHeading("@@ -1,2 +1,2 @@ let mark = \"@@\""),
                        "let mark = \"@@\"")
     }
 }

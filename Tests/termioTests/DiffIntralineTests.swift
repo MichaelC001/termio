@@ -1,3 +1,4 @@
+import TermioShared
 import XCTest
 @testable import termio
 

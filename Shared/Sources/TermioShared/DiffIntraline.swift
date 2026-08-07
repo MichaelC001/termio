@@ -10,7 +10,7 @@ import Foundation
 /// edits and leaves `(a, ` alone.
 ///
 /// Offsets are `Character` counts, matching `DiffRow.text`.
-enum DiffIntraline {
+public enum DiffIntraline {
     /// Longer lines are left plain rather than diffed — the pathological cases here are
     /// minified bundles and embedded data, where every span would be noise anyway.
     private static let maximumLineLength = 2000
@@ -18,7 +18,7 @@ enum DiffIntraline {
     /// The changed spans of a deletion/addition line pair, or `nil` when the two share so
     /// little that spans would be noise (a rewritten line reads better as a plain
     /// add/delete pair than as one line-long highlight).
-    static func spans(old oldText: String, new newText: String)
+    public static func spans(old oldText: String, new newText: String)
         -> (old: [Range<Int>], new: [Range<Int>])? {
         guard oldText != newText else { return nil }
         let oldCharacters = Array(oldText), newCharacters = Array(newText)
