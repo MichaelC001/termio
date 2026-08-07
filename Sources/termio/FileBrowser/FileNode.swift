@@ -8,25 +8,56 @@ import Foundation
 /// rebuilt.
 final class FileNode: Identifiable {
     let url: URL
+    /// Whether this browses as a folder — resolved *through* a symlink, so a link to a
+    /// directory expands like the directory it points at (what the Finder and the VS Code
+    /// explorer both do).
     let isDirectory: Bool
+    /// Whether the entry itself is a symlink, so the row can mark it. Independent of
+    /// `isDirectory`: a link can point at either kind.
+    let isSymbolicLink: Bool
     var id: URL { url }
     var name: String { url.lastPathComponent }
 
     private var loadedChildren: [FileNode]?
 
-    init(url: URL, isDirectory: Bool) {
+    init(url: URL, isDirectory: Bool, isSymbolicLink: Bool = false) {
         self.url = url
         self.isDirectory = isDirectory
+        self.isSymbolicLink = isSymbolicLink
+    }
+
+    /// Where a symlink points, for the row's tooltip — the one fact about a link an icon
+    /// can't carry. Relative to the link's own parent when the target sits inside the
+    /// project (`.claude/skills` → `../skills`), absolute when it escapes.
+    var symbolicLinkTarget: String? {
+        guard isSymbolicLink else { return nil }
+        return try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)
+    }
+
+    /// Where a symlink actually lands, absolute — for the row menu's Show Original. Nil
+    /// when this isn't a link, or when the link dangles: a target that doesn't exist
+    /// can't be revealed, and offering a menu item that silently does nothing is worse
+    /// than not offering it.
+    var resolvedSymbolicLinkTarget: URL? {
+        guard isSymbolicLink else { return nil }
+        let resolved = url.resolvingSymlinksInPath()
+        guard resolved != url, FileManager.default.fileExists(atPath: resolved.path) else { return nil }
+        return resolved
     }
 
     /// `nil` for a file (so the outline draws no disclosure triangle); a folder's
     /// contents — read lazily and cached — for a directory. SwiftUI only asks for
     /// the children of an *expanded* node, so this stays cheap on a large tree.
+    ///
+    /// A symlink that points at one of its own ancestors therefore nests forever, one
+    /// level per click. That's the Finder's and the VS Code explorer's behavior too:
+    /// laziness bounds the recursion by what the user actually opens, so no cycle
+    /// detection is worth the bookkeeping.
     var children: [FileNode]? {
         guard isDirectory else { return nil }
         if let loadedChildren { return loadedChildren }
         let contents = FileNode.listContents(of: url)
-            .map { FileNode(url: $0.url, isDirectory: $0.isDirectory) }
+            .map { FileNode(url: $0.url, isDirectory: $0.isDirectory, isSymbolicLink: $0.isSymbolicLink) }
         loadedChildren = contents
         return contents
     }
@@ -53,17 +84,20 @@ final class FileNode: Identifiable {
     /// Replaces this directory's realized contents with `entries` (a fresh disk
     /// listing), adopting the existing child node — realized subtree, and with it
     /// the outline's expansion state — wherever the entry survived.
-    func applyReloaded(_ entries: [(url: URL, isDirectory: Bool)]) {
+    func applyReloaded(_ entries: [(url: URL, isDirectory: Bool, isSymbolicLink: Bool)]) {
         guard isDirectory, let current = loadedChildren else { return }
         var existing = [URL: FileNode]()
         for child in current { existing[child.url] = child }
         loadedChildren = entries.map { entry in
-            // Same URL but a different kind (a file replaced by a folder, or the
-            // reverse) is a new entry — `isDirectory` is immutable on the node.
-            if let node = existing[entry.url], node.isDirectory == entry.isDirectory {
+            // Same URL but a different kind (a file replaced by a folder, a real folder
+            // replaced by a link to one) is a new entry — both flags are immutable on
+            // the node.
+            if let node = existing[entry.url],
+               node.isDirectory == entry.isDirectory,
+               node.isSymbolicLink == entry.isSymbolicLink {
                 return node
             }
-            return FileNode(url: entry.url, isDirectory: entry.isDirectory)
+            return FileNode(url: entry.url, isDirectory: entry.isDirectory, isSymbolicLink: entry.isSymbolicLink)
         }
     }
 
@@ -73,19 +107,32 @@ final class FileNode: Identifiable {
     /// `files.exclude`, which likewise leaves `node_modules`/build folders visible.
     /// Plain values (not nodes) so callers can list on a background thread and build
     /// or merge nodes back on main (`FileNode` itself is main-thread state).
-    static func listContents(of url: URL) -> [(url: URL, isDirectory: Bool)] {
+    static func listContents(of url: URL) -> [(url: URL, isDirectory: Bool, isSymbolicLink: Bool)] {
         let manager = FileManager.default
         guard let entries = try? manager.contentsOfDirectory(
             at: url,
-            includingPropertiesForKeys: [.isDirectoryKey],
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
             options: []
         ) else { return [] }
 
         return entries
             .filter { !ignoredNames.contains($0.lastPathComponent) }
             .map { entry in
-                let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-                return (url: entry, isDirectory: isDirectory)
+                let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                let isSymbolicLink = values?.isSymbolicLink ?? false
+                // `.isDirectoryKey` describes the link itself, not its target, so a
+                // symlink to a folder reports false and would render as a file with no
+                // disclosure triangle. `fileExists` follows the link, which is the
+                // answer the tree wants — and the same probe `FileBrowserView` already
+                // uses to decide whether a double-click opens an editor.
+                let isDirectory: Bool
+                if isSymbolicLink {
+                    var target: ObjCBool = false
+                    isDirectory = manager.fileExists(atPath: entry.path, isDirectory: &target) && target.boolValue
+                } else {
+                    isDirectory = values?.isDirectory ?? false
+                }
+                return (url: entry, isDirectory: isDirectory, isSymbolicLink: isSymbolicLink)
             }
             .sorted { left, right in
                 if left.isDirectory != right.isDirectory { return left.isDirectory }
