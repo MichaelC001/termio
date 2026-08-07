@@ -94,10 +94,19 @@ final class TermioStore: ObservableObject {
     /// highlight. Transient gesture state, never persisted.
     @Published var paneDrag: PaneDragState?
 
-    /// The pane whose grab handle is revealed right now — the pointer is near
-    /// its top edge. Also written by `PaneDragRearrange`; nil means no handle is
+    /// The pane whose grab handle is revealed right now — the pointer is on its
+    /// top edge. Also written by `PaneDragRearrange`; nil means no handle is
     /// showing.
-    @Published var paneHandleHover: Session.ID?
+    @Published var paneHandleHover: PaneHandleHover?
+
+    /// A still of the pane picked up by the current drag, drawn scaled under the
+    /// pointer. Nil when no drag is in flight, or when the surface could not be
+    /// captured — the drag then simply has no preview.
+    @Published var paneDragPreview: NSImage?
+
+    /// Drives the visible surfaces while a pane drag is in flight (see
+    /// `beginPaneDragRepaint`). Not published: nothing renders from it.
+    var paneDragRepaintTimer: Timer?
 
     /// Activation *requests* for sessions that are neither selected nor in the
     /// visible group: a background spawn's fresh pane, a `send` target never
