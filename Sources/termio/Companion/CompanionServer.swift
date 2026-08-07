@@ -366,12 +366,16 @@ final class CompanionServer {
             handleUpload(projectID: projectID, name: name, base64: base64, on: connection)
         case .searchFiles(let projectID, let query):
             handleSearchFiles(projectID: projectID, query: query, on: connection)
+        case .listChanges(let projectID):
+            handleListChanges(projectID: projectID, on: connection)
+        case .readDiff(let projectID, let path):
+            handleReadDiff(projectID: projectID, path: path, on: connection)
         case .trace(let sessionID, let dark):
             handleTrace(sessionID: sessionID, dark: dark, on: connection)
         case .sshConfigHosts:
             sendControl(.sshConfigList(hosts: Self.parseSSHConfigHosts()), to: connection)
         case .auth, .exit, .error, .started, .fileList, .file, .written, .uploaded,
-             .searchResults, .traceHTML, .sshConfigList:
+             .searchResults, .traceHTML, .sshConfigList, .changes, .diff:
             break
         }
     }
@@ -680,6 +684,77 @@ final class CompanionServer {
         return Set(raw.split(separator: "\0").compactMap { record in
             record.count > 3 ? String(record.dropFirst(3)) : nil
         })
+    }
+
+    // MARK: - Changes plane (git working tree)
+
+    /// The project's working-tree changes, straight from the same `GitService` the
+    /// desktop git pane reads — the phone never shells out to git itself, so the two
+    /// lists can't disagree about what "changed" means.
+    private func handleListChanges(projectID: String, on connection: NWConnection) {
+        guard let root = projectRoot(for: projectID) else {
+            sendControl(.error(message: "unknown project"), to: connection)
+            return
+        }
+        Task { [weak self] in
+            let files = await GitService.changes(in: root).map {
+                WireChange(
+                    path: $0.path, status: $0.status.letter,
+                    additions: $0.additions, deletions: $0.deletions,
+                    isBinary: $0.isBinary, isStaged: $0.isStaged
+                )
+            }
+            self?.sendControl(.changes(files: files), to: connection)
+        }
+    }
+
+    /// One changed file's diff. Rows come back with *full* file context so the phone
+    /// can fold unchanged runs into bands the reader expands; past the byte cap the
+    /// reassembled text would be a multi-megabyte frame, so that case degrades to
+    /// git's default 3-line context and says so (`fullContext: false`).
+    private func handleReadDiff(projectID: String, path: String, on connection: NWConnection) {
+        guard let root = projectRoot(for: projectID) else {
+            sendControl(.error(message: "unknown project"), to: connection)
+            return
+        }
+        Task { [weak self] in
+            guard let change = await GitService.changes(in: root).first(where: { $0.path == path }) else {
+                self?.sendControl(.error(message: "\(path) has no working-tree changes"), to: connection)
+                return
+            }
+            guard !change.isBinary else {
+                self?.sendControl(
+                    .diff(WireDiff(path: path, text: "", fullContext: false, binary: true)),
+                    to: connection
+                )
+                return
+            }
+            let full = Self.unifiedText(await GitService.diffRows(for: change, in: root))
+            let fits = full.utf8.count <= Self.maxDiffBytes
+            let text = fits ? full : await GitService.diffText(for: change, in: root)
+            self?.sendControl(
+                .diff(WireDiff(path: path, text: text, fullContext: fits)),
+                to: connection
+            )
+        }
+    }
+
+    /// 2 MB of diff text — ~50k lines of source, well inside the socket's 8 MB frame
+    /// cap and past anything a phone reader can usefully scroll.
+    nonisolated private static let maxDiffBytes = 2 << 20
+
+    /// Reassembles parsed rows into unified-diff text for the wire. The phone re-parses
+    /// with the same rules (`DiffParser`), so the round trip is lossless for everything
+    /// it renders; only the file-header plumbing the parser already drops is gone.
+    nonisolated static func unifiedText(_ rows: [DiffRow]) -> String {
+        rows.map { row in
+            switch row.kind {
+            case .hunk: return row.text
+            case .addition: return "+" + row.text
+            case .deletion: return "-" + row.text
+            case .context: return " " + row.text
+            }
+        }.joined(separator: "\n")
     }
 
     nonisolated private static let maxFileBytes = 1 << 20 // 1 MB — plenty for "peek at a source file"

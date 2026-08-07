@@ -93,14 +93,19 @@ final class TerminalViewController: UIViewController {
     )
 
     // Drawer
-    private lazy var inspectorNav = UINavigationController(
-        rootViewController: InspectorViewController(
+    private lazy var inspector: InspectorViewController = {
+        let inspector = InspectorViewController(
             session: session,
             companionURL: {
                 if case .companion(let url) = backend { url } else { nil }
             }()
         )
-    )
+        inspector.onSendToAgent = { [weak self] text in
+            self?.sendSnippetToPrompt(text)
+        }
+        return inspector
+    }()
+    private lazy var inspectorNav = UINavigationController(rootViewController: inspector)
     private let dimView = UIControl()
     private var drawerOpen = false
     /// Direction the surface pan locked at its start: rightward = back to
@@ -631,6 +636,15 @@ final class TerminalViewController: UIViewController {
         uploadClient?.send(
             .upload(projectID: projectID, name: item.name, base64: item.data.base64EncodedString())
         )
+    }
+
+    /// Pastes a diff selection into the TUI's input line — the drawer's "Send to Agent",
+    /// and the phone twin of the desktop's "Add to Chat". Bracketed paste keeps the
+    /// whole block one literal insert instead of a line-by-line submit, and the drawer
+    /// steps aside so the prompt it landed in is visible.
+    private func sendSnippetToPrompt(_ text: String) {
+        terminalView.send(Data(("\u{1B}[200~" + text + "\u{1B}[201~").utf8))
+        setDrawer(open: false, animated: true)
     }
 
     /// Types the uploaded file's Mac path into the TUI's input line, where it
