@@ -79,9 +79,7 @@ from the real front matter).
 | draft | design | [调研：下一批 AgentAdapter 的落盘格式（OpenCode / Pi / Amp / Cursor / Kimi）](design/20260711-agent-transcript-survey.md) |
 | draft | design | ["Markdown preview — Apple-grade reading typography"](design/20260718-markdown-preview-reading-typography.md) |
 | draft | design | [Device Architecture — one server per device, every UI a client](design/20260805-termiod-device-architecture.md) |
-| draft | design | [Device Architecture — one server per device, every UI a client](design/termiod-device-architecture.md) |
 | draft | design | [Hot path, attach join point, and client classes](design/20260805-termiod-hot-path-and-client-classes.md) |
-| draft | design | [Hot path, attach join point, and client classes](design/termiod-hot-path-and-client-classes.md) |
 | draft | design | [Issue Triage → 本地 agent（GitHub / Linear 事件驱动 termio session）](design/20260723-issue-triage-local-agent.md) |
 | draft | design | [Mac retention analytics (no app changes)](design/20260715-mac-retention-analytics.md) |
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/20260708-remote-projects.md) |
