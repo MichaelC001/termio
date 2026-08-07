@@ -4,9 +4,10 @@
 
 use crate::paths;
 use crate::protocol::{
-    read_frame, write_control, write_data, write_event, write_grid_payload, write_history_payload,
-    write_snapshot, AttachMode, Control, ErrorCode, Event, Frame, SessionInfo, Snapshot,
-    HOST_CAPABILITIES, PROTOCOL_VERSION, SUPPORTED_PROTOCOLS,
+    encode_file_chunk, read_frame, write_control, write_data, write_event, write_file_payload,
+    write_grid_payload, write_history_payload, write_snapshot, AttachMode, Control, ErrorCode,
+    Event, FileChunk, Frame, SessionInfo, Snapshot, FILE_CHUNK_HEADER_SIZE, HOST_CAPABILITIES,
+    MAX_FILE_FRAME_SIZE, PROTOCOL_VERSION, SUPPORTED_PROTOCOLS,
 };
 use crate::resource::Registry;
 use crate::session::{
@@ -390,6 +391,7 @@ enum Outbound {
     Snapshot(Snapshot),
     History(Bytes),
     Grid(Bytes),
+    File(Bytes),
 }
 
 async fn write_outbound(
@@ -420,6 +422,7 @@ async fn write_outbound(
                 backlog.release(len);
                 result
             }
+            Outbound::File(payload) => write_file_payload(&mut wr, &payload).await,
         };
         if result.is_err() {
             break;
@@ -632,6 +635,15 @@ async fn run_connection(
                             None,
                             ErrorCode::ProtoError,
                             "grid-diff frames are host-to-client only",
+                            false,
+                        )));
+                        return Ok(());
+                    }
+                    Ok(Some(Frame::File(_))) => {
+                        let _ = out.send(Outbound::Control(error(
+                            None,
+                            ErrorCode::ProtoError,
+                            "file frames are host-to-client only",
                             false,
                         )));
                         return Ok(());
@@ -865,6 +877,95 @@ async fn process_control(
             manager.resources.unsubscribe(&id, &connection.client_id);
             send_response(out, response_cache, seq, Control::Ok { re: seq });
         }
+        Control::FsList {
+            root,
+            paths,
+            page,
+            seq,
+        } => {
+            if !connection.capabilities.contains("files") {
+                let response = error(
+                    seq,
+                    ErrorCode::Denied,
+                    "the files capability was not negotiated",
+                    false,
+                );
+                send_response(out, response_cache, seq, response);
+            } else {
+                // Stamp with the resource cursor *before* walking, so a change
+                // landing mid-listing makes the stamp stale (client re-lists)
+                // rather than falsely fresh.
+                let stamp = manager.resources.fs_seq(&root);
+                let out = out.clone();
+                tokio::spawn(async move {
+                    let listed =
+                        tokio::task::spawn_blocking(move || crate::files::list(&root, &paths, page))
+                            .await;
+                    let response = match listed {
+                        Ok(Ok(listings)) => Control::FsListed {
+                            seq: stamp,
+                            listings,
+                            re: seq,
+                        },
+                        Ok(Err(e)) => error(seq, ErrorCode::Denied, format!("{e:#}"), false),
+                        Err(e) => error(seq, ErrorCode::Internal, e.to_string(), true),
+                    };
+                    let _ = out.send(Outbound::Control(response));
+                });
+            }
+        }
+        Control::FsRead {
+            path,
+            offset,
+            length,
+            seq,
+        } => {
+            if !connection.capabilities.contains("files") {
+                let response = error(
+                    seq,
+                    ErrorCode::Denied,
+                    "the files capability was not negotiated",
+                    false,
+                );
+                send_response(out, response_cache, seq, response);
+            } else {
+                let out = out.clone();
+                tokio::spawn(async move {
+                    let window = tokio::task::spawn_blocking(move || {
+                        crate::files::read(&path, offset, length)
+                    })
+                    .await;
+                    match window {
+                        Ok(Ok(window)) => {
+                            let _ = out.send(Outbound::Control(Control::FsFile {
+                                size: window.size,
+                                offset: window.offset,
+                                length: window.data.len() as u64,
+                                truncated: window.truncated,
+                                re: seq,
+                            }));
+                            send_file_chunks(&out, seq.unwrap_or(0), window.offset, &window.data);
+                        }
+                        Ok(Err(e)) => {
+                            let _ = out.send(Outbound::Control(error(
+                                seq,
+                                ErrorCode::Denied,
+                                format!("{e:#}"),
+                                false,
+                            )));
+                        }
+                        Err(e) => {
+                            let _ = out.send(Outbound::Control(error(
+                                seq,
+                                ErrorCode::Internal,
+                                e.to_string(),
+                                true,
+                            )));
+                        }
+                    }
+                });
+            }
+        }
         Control::Wait {
             target,
             until,
@@ -945,9 +1046,48 @@ async fn process_control(
         | Control::WaitResult { .. }
         | Control::ResizeClaim { .. }
         | Control::Subscribed { .. }
+        | Control::FsListed { .. }
+        | Control::FsFile { .. }
         | Control::Error { .. } => {}
     }
     Ok(ControlFlow::Continue)
+}
+
+/// Ship an `fs.read` window as `F` chunks: 64 KiB fair-write pieces, the last
+/// one flagged, and an empty flagged chunk for an empty window so the client
+/// always has one uniform termination signal.
+fn send_file_chunks(out: &mpsc::UnboundedSender<Outbound>, re: u64, offset: u64, data: &[u8]) {
+    let piece = MAX_FILE_FRAME_SIZE - FILE_CHUNK_HEADER_SIZE;
+    let mut sent = 0usize;
+    loop {
+        let end = (sent + piece).min(data.len());
+        let chunk = FileChunk {
+            re,
+            offset: offset + sent as u64,
+            last: end == data.len(),
+            data: data[sent..end].to_vec(),
+        };
+        match encode_file_chunk(&chunk) {
+            Ok(payload) => {
+                if out.send(Outbound::File(Bytes::from(payload))).is_err() {
+                    return;
+                }
+            }
+            Err(e) => {
+                let _ = out.send(Outbound::Control(error(
+                    None,
+                    ErrorCode::Internal,
+                    e.to_string(),
+                    true,
+                )));
+                return;
+            }
+        }
+        if end == data.len() {
+            return;
+        }
+        sent = end;
+    }
 }
 
 fn send_response(
@@ -1138,6 +1278,15 @@ async fn run_attach(
                     None,
                     ErrorCode::ProtoError,
                     "grid-diff frames are host-to-client only",
+                    false,
+                )));
+                break;
+            }
+            Ok(Some(Frame::File(_))) => {
+                let _ = out.send(Outbound::Control(error(
+                    None,
+                    ErrorCode::ProtoError,
+                    "file frames are host-to-client only",
                     false,
                 )));
                 break;

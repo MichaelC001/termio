@@ -20,6 +20,7 @@ pub const KIND_EVENT: u8 = b'E';
 pub const KIND_SNAPSHOT: u8 = b'S';
 pub const KIND_HISTORY: u8 = b'H';
 pub const KIND_GRID: u8 = b'G';
+pub const KIND_FILE: u8 = b'F';
 
 pub const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 pub const MAX_DATA_FRAME_SIZE: usize = 64 * 1024;
@@ -33,6 +34,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "grid_diff",
     "resources",
     "fs_watch",
+    "files",
 ];
 pub const SNAPSHOT_FORMAT_VERSION: u8 = 1;
 /// Snapshot payload carrying **VT sequences** instead of packed cells.
@@ -50,6 +52,12 @@ pub const HISTORY_HEADER_SIZE: usize = 9;
 pub const MAX_HISTORY_FRAME_SIZE: usize = 64 * 1024;
 pub const GRID_FORMAT_VERSION: u8 = 1;
 pub const GRID_HEADER_SIZE: usize = 16;
+/// `F` chunk header: request id (u64be), offset (u64be), last flag (u8).
+pub const FILE_CHUNK_HEADER_SIZE: usize = 17;
+/// Whole-frame cap for `F`, matching the `D`/`H` fair-write chunk size so a
+/// file read never parks a keystroke behind more than one chunk on a shared
+/// pipe (§C.12 head-of-line discipline).
+pub const MAX_FILE_FRAME_SIZE: usize = 64 * 1024;
 
 /// A single decoded frame off the wire.
 #[derive(Debug)]
@@ -61,6 +69,17 @@ pub enum Frame {
     Snapshot(Snapshot),
     History(HistoryChunk),
     Grid(GridDiff),
+    File(FileChunk),
+}
+
+/// One `F` frame of `fs.read` content (§C.12), host → client only. `re` ties
+/// the chunk back to the `fs_read` request whose `fs_file` reply preceded it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileChunk {
+    pub re: u64,
+    pub offset: u64,
+    pub last: bool,
+    pub data: Vec<u8>,
 }
 
 /// Engine-independent 16-byte cell representation used by snapshot v1.
@@ -111,6 +130,44 @@ pub struct GridDiff {
     pub cursor_y: u16,
     pub alt_screen: bool,
     pub dirty_rows: Vec<GridRow>,
+}
+
+/// What a directory entry is, as far as the tree needs to know (§C.12).
+/// `unloaded_dir` marks a directory the host will never walk on its own
+/// (VCS internals today); a client may still list it explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryKind {
+    File,
+    Dir,
+    Symlink,
+    UnloadedDir,
+}
+
+/// One row of an `fs.list` page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub kind: EntryKind,
+    pub size: u64,
+    /// Seconds since the Unix epoch; 0 when the filesystem cannot say.
+    pub mtime: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symlink_target: Option<String>,
+}
+
+/// The listing for one requested path inside an `fs_listed` reply. A path
+/// that vanished or escapes the root fails alone (`error`), so a batched
+/// speculative request is never all-or-nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PathListing {
+    pub path: String,
+    #[serde(default)]
+    pub entries: Vec<DirEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_page: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,6 +339,31 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// List directories under a workspace root (§C.12, capability `files`).
+    /// Batched and speculative: a client SHOULD name a rendered directory
+    /// together with its visible child dirs. `page` continues one path's
+    /// listing past the per-page entry cap.
+    FsList {
+        root: String,
+        paths: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        page: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    /// Read a file (§C.12, capability `files`). The reply is one `fs_file`
+    /// header followed by `F` chunks. Without a range the read is capped at
+    /// the 1 MiB preview budget; `offset`/`length` window the file for the
+    /// editor later.
+    FsRead {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        length: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
     Wait {
         target: String,
         until: Vec<String>,
@@ -349,6 +431,28 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },
+    /// Reply to `fs_list`. `seq` is the `fs:` resource's current cursor at
+    /// listing time — the freshness proof that lets clients cache listings
+    /// until an `fs_changed` batch names the directory (0 when no watch is
+    /// running, i.e. nothing will invalidate the cache).
+    FsListed {
+        seq: u64,
+        listings: Vec<PathListing>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
+    /// Reply header for `fs_read`: `length` bytes from `offset` follow as `F`
+    /// chunks. `truncated` means the served window stopped short of what was
+    /// asked (the 1 MiB soft cap); `size` lets the client ask for the rest.
+    FsFile {
+        size: u64,
+        offset: u64,
+        length: u64,
+        #[serde(default)]
+        truncated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
     /// Sent when the attached session's process exits (retained for v0).
     Exited { id: String, status: i32 },
     WaitResult {
@@ -392,6 +496,8 @@ impl Control {
             | Control::Subscribe { seq, .. }
             | Control::SubscribeResource { seq, .. }
             | Control::UnsubscribeResource { seq, .. }
+            | Control::FsList { seq, .. }
+            | Control::FsRead { seq, .. }
             | Control::Wait { seq, .. }
             | Control::SetStatus { seq, .. } => *seq,
             _ => None,
@@ -535,6 +641,57 @@ pub async fn write_history_payload<W: AsyncWriteExt + Unpin>(
 
 pub async fn write_grid_payload<W: AsyncWriteExt + Unpin>(w: &mut W, payload: &[u8]) -> Result<()> {
     write_frame(w, KIND_GRID, payload).await
+}
+
+pub async fn write_file_payload<W: AsyncWriteExt + Unpin>(w: &mut W, payload: &[u8]) -> Result<()> {
+    if payload.len() > MAX_FILE_FRAME_SIZE {
+        bail!(
+            "file payload too large: {} > {MAX_FILE_FRAME_SIZE}",
+            payload.len()
+        );
+    }
+    write_frame(w, KIND_FILE, payload).await
+}
+
+/// File-chunk payload: re:u64be, offset:u64be, last:u8, then the bytes.
+pub fn encode_file_chunk(chunk: &FileChunk) -> Result<Vec<u8>> {
+    let payload_len = FILE_CHUNK_HEADER_SIZE
+        .checked_add(chunk.data.len())
+        .ok_or_else(|| anyhow::anyhow!("file chunk length overflow"))?;
+    if payload_len > MAX_FILE_FRAME_SIZE {
+        bail!("file payload too large: {payload_len} > {MAX_FILE_FRAME_SIZE}");
+    }
+    let mut payload = Vec::with_capacity(payload_len);
+    payload.extend_from_slice(&chunk.re.to_be_bytes());
+    payload.extend_from_slice(&chunk.offset.to_be_bytes());
+    payload.push(u8::from(chunk.last));
+    payload.extend_from_slice(&chunk.data);
+    Ok(payload)
+}
+
+pub fn decode_file_chunk(payload: &[u8]) -> Result<FileChunk> {
+    if payload.len() < FILE_CHUNK_HEADER_SIZE {
+        bail!("malformed file chunk header");
+    }
+    if payload.len() > MAX_FILE_FRAME_SIZE {
+        bail!(
+            "file payload too large: {} > {MAX_FILE_FRAME_SIZE}",
+            payload.len()
+        );
+    }
+    let re = u64::from_be_bytes(payload[0..8].try_into().expect("sized slice"));
+    let offset = u64::from_be_bytes(payload[8..16].try_into().expect("sized slice"));
+    let last = match payload[16] {
+        0 => false,
+        1 => true,
+        other => bail!("invalid file chunk last flag {other}"),
+    };
+    Ok(FileChunk {
+        re,
+        offset,
+        last,
+        data: payload[FILE_CHUNK_HEADER_SIZE..].to_vec(),
+    })
 }
 
 /// Snapshot payload v1:
@@ -908,6 +1065,7 @@ pub async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<Fra
             | KIND_SNAPSHOT
             | KIND_HISTORY
             | KIND_GRID
+            | KIND_FILE
     ) {
         bail!("unknown frame kind {kind:#x}");
     }
@@ -937,6 +1095,7 @@ pub async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<Fra
         KIND_SNAPSHOT => Ok(Some(Frame::Snapshot(decode_snapshot_payload(&payload)?))),
         KIND_HISTORY => Ok(Some(Frame::History(decode_history_payload(&payload)?))),
         KIND_GRID => Ok(Some(Frame::Grid(decode_grid_payload(&payload)?))),
+        KIND_FILE => Ok(Some(Frame::File(decode_file_chunk(&payload)?))),
         _ => unreachable!("frame kind validated above"),
     }
 }
@@ -944,10 +1103,41 @@ pub async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<Fra
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_grid_payload, decode_history_payload, decode_snapshot_payload, encode_grid_payload,
-        encode_history_payload, encode_snapshot_payload, Control, GridDiff, GridRow, HistoryChunk,
-        Snapshot, WireCell,
+        decode_file_chunk, decode_grid_payload, decode_history_payload, decode_snapshot_payload,
+        encode_file_chunk, encode_grid_payload, encode_history_payload, encode_snapshot_payload,
+        Control, FileChunk, GridDiff, GridRow, HistoryChunk, Snapshot, WireCell,
+        FILE_CHUNK_HEADER_SIZE, MAX_FILE_FRAME_SIZE,
     };
+
+    #[test]
+    fn file_chunk_round_trip_and_size_cap() {
+        let chunk = FileChunk {
+            re: 91,
+            offset: 65536,
+            last: true,
+            data: b"preview bytes".to_vec(),
+        };
+        let encoded = encode_file_chunk(&chunk).unwrap();
+        assert_eq!(decode_file_chunk(&encoded).unwrap(), chunk);
+
+        let empty = FileChunk {
+            re: 1,
+            offset: 0,
+            last: true,
+            data: Vec::new(),
+        };
+        let encoded = encode_file_chunk(&empty).unwrap();
+        assert_eq!(decode_file_chunk(&encoded).unwrap(), empty);
+
+        let oversize = FileChunk {
+            re: 1,
+            offset: 0,
+            last: false,
+            data: vec![0; MAX_FILE_FRAME_SIZE - FILE_CHUNK_HEADER_SIZE + 1],
+        };
+        assert!(encode_file_chunk(&oversize).is_err());
+        assert!(decode_file_chunk(&[0; FILE_CHUNK_HEADER_SIZE - 1]).is_err());
+    }
 
     #[test]
     fn history_payload_round_trip() {

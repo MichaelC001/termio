@@ -186,6 +186,20 @@ impl Registry {
         Ok(format!("{FS_PREFIX}{}", canonical.display()))
     }
 
+    /// The `fs:` resource cursor for a workspace root, or 0 when nothing is
+    /// watching it. `fs.list` replies are stamped with this so cached listings
+    /// carry a freshness proof (§C.12); 0 honestly says "no watch — nothing
+    /// will invalidate what you cache".
+    pub fn fs_seq(&self, root: &str) -> u64 {
+        let Ok(id) = Registry::fs_resource_id(root) else {
+            return 0;
+        };
+        let Some(state) = self.watches.lock().unwrap().get(&id).cloned() else {
+            return 0;
+        };
+        state.lock().unwrap().seq
+    }
+
     /// Subscribe `client` to `resource`, resuming from `since` when possible.
     /// The first subscriber starts the watch; the last to leave stops it.
     pub fn subscribe(

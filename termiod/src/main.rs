@@ -9,6 +9,7 @@
 
 mod client;
 mod daemon;
+mod files;
 mod paths;
 mod protocol;
 mod pty;

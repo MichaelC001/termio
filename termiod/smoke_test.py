@@ -152,6 +152,34 @@ def decode_history(payload):
     }
 
 
+def decode_file_chunk(payload):
+    """Decode a §C.12 F frame: re u64be, offset u64be, last u8, bytes."""
+    if len(payload) < 17:
+        raise ValueError("invalid file chunk header")
+    re_id, offset = struct.unpack(">QQ", payload[0:16])
+    last = payload[16] == 1
+    return {"re": re_id, "offset": offset, "last": last, "data": payload[17:]}
+
+
+def recv_file_body(client, re_id, timeout=4.0):
+    """Collect F chunks for one fs_read until the flagged last chunk."""
+    body = b""
+    end = time.time() + timeout
+    chunks = []
+    while time.time() < end:
+        kind, payload = client.recv_frame(max(0.05, end - time.time()))
+        if kind != "F":
+            continue
+        chunk = decode_file_chunk(payload)
+        if chunk["re"] != re_id:
+            continue
+        chunks.append(chunk)
+        body += chunk["data"]
+        if chunk["last"]:
+            return body, chunks
+    raise EOFError("no final file chunk")
+
+
 def decode_grid(payload):
     """Decode a Phase 1e G payload into its dirty full-width rows."""
     if len(payload) < 16 or payload[0] != 1:
@@ -1250,6 +1278,108 @@ def main():
     daemon.terminate()
     daemon.wait()
     shutil.rmtree(grave_dir, ignore_errors=True)
+
+    print("\n# 11. file request plane: fs.list pages + stubs, fs.read chunks (§C.12)")
+    proj = f"{SOCK_DIR}/fileplane"
+    shutil.rmtree(proj, ignore_errors=True)
+    os.makedirs(f"{proj}/src", exist_ok=True)
+    os.makedirs(f"{proj}/.git", exist_ok=True)
+    with open(f"{proj}/.git/config", "w") as f:
+        f.write("[core]\n")
+    with open(f"{proj}/README.md", "w") as f:
+        f.write("file plane preview bytes")
+    with open(f"{proj}/src/lib.rs", "w") as f:
+        f.write("pub fn hello() {}\n")
+    os.symlink("/", f"{proj}/escape")
+
+    ungated = WireClient(caps=["events"])
+    ungated.send_control(
+        {"op": "fs_list", "root": proj, "paths": ["."], "seq": 90}
+    )
+    denied, _ = ungated.recv_matching(
+        lambda kind, msg: kind == "C"
+        and msg.get("op") == "error"
+        and msg.get("code") == "denied"
+        and msg.get("re") == 90
+    )
+    check("files: fs_list without the capability is denied", denied is not None)
+    ungated.close()
+
+    fs = WireClient(caps=["files"])
+    fs.send_control(
+        {"op": "fs_list", "root": proj, "paths": [".", "src", "escape"], "seq": 91}
+    )
+    listed, _ = fs.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "fs_listed" and msg.get("re") == 91
+    )
+    by_path = {l["path"]: l for l in (listed[1]["listings"] if listed else [])}
+    root_entries = {e["name"]: e for e in by_path.get(".", {}).get("entries", [])}
+    check(
+        "fs.list: batched paths answer per-path with sorted entries and a seq stamp",
+        listed is not None
+        and "seq" in listed[1]
+        and set(by_path) == {".", "src", "escape"}
+        and [e["name"] for e in by_path["."]["entries"]]
+        == sorted(e["name"] for e in by_path["."]["entries"])
+        and by_path["src"]["entries"][0]["name"] == "lib.rs"
+        and by_path["src"]["entries"][0]["kind"] == "file",
+    )
+    check(
+        "fs.list: VCS dirs are unloaded_dir stubs, symlinks carry their target",
+        root_entries.get(".git", {}).get("kind") == "unloaded_dir"
+        and root_entries.get("escape", {}).get("kind") == "symlink"
+        and root_entries.get("escape", {}).get("symlink_target") == "/"
+        and root_entries.get("src", {}).get("kind") == "dir",
+    )
+    check(
+        "fs.list: a path escaping the root fails alone, not the batch",
+        by_path.get("escape", {}).get("error") is not None
+        and by_path.get("src", {}).get("error") is None,
+    )
+
+    fs.send_control({"op": "fs_read", "path": f"{proj}/README.md", "seq": 92})
+    header, _ = fs.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "fs_file" and msg.get("re") == 92
+    )
+    body, chunks = recv_file_body(fs, 92)
+    check(
+        "fs.read: header + flagged F chunks deliver the file",
+        header is not None
+        and header[1]["size"] == len("file plane preview bytes")
+        and header[1]["truncated"] is False
+        and body == b"file plane preview bytes",
+    )
+
+    fs.send_control(
+        {"op": "fs_read", "path": f"{proj}/README.md", "offset": 5, "length": 5, "seq": 93}
+    )
+    ranged, _ = fs.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "fs_file" and msg.get("re") == 93
+    )
+    ranged_body, _ = recv_file_body(fs, 93)
+    check(
+        "fs.read: range windows the file",
+        ranged is not None and ranged[1]["offset"] == 5 and ranged_body == b"plane",
+    )
+
+    big = f"{proj}/big.bin"
+    with open(big, "wb") as f:
+        f.write(os.urandom(1024 * 1024 + 4096))
+    fs.send_control({"op": "fs_read", "path": big, "seq": 94})
+    capped, _ = fs.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "fs_file" and msg.get("re") == 94
+    )
+    capped_body, capped_chunks = recv_file_body(fs, 94, timeout=8.0)
+    check(
+        "fs.read: 1 MiB soft cap truncates and says so, chunks stay ≤64 KiB",
+        capped is not None
+        and capped[1]["truncated"] is True
+        and len(capped_body) == 1024 * 1024
+        and all(len(c["data"]) <= 64 * 1024 - 17 for c in capped_chunks)
+        and sum(1 for c in capped_chunks if c["last"]) == 1,
+    )
+    fs.close()
+    shutil.rmtree(proj, ignore_errors=True)
 
     print()
     if FAILURES:
