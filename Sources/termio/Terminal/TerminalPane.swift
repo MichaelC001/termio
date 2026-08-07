@@ -189,13 +189,24 @@ struct TerminalPane: View {
                     }
                 }
             }
-            // The ⌘⌥⇧ drag's preview (issue #183): the drop-zone highlight is
-            // what resolves the ambiguity a drag-rearrange otherwise has — you
-            // see the half (or the swap) the release would commit.
+            // The handle that starts a rearrange, on the pane the pointer is
+            // near (see `PaneDragRearrange`). Never hit-testable: the press is
+            // taken by the event monitor, so this is purely the affordance.
+            if let layout, !zoomed, store.paneDrag == nil,
+               let hovered = store.paneHandleHover, let frame = layout.frames[hovered] {
+                PaneGrabHandle(paneFrame: frame)
+                    .allowsHitTesting(false)
+            }
+            // The drag's preview (issue #183): the drop-zone highlight is what
+            // resolves the ambiguity a drag-rearrange otherwise has — you see
+            // the half (or the swap) the release would commit.
             if let drag = store.paneDrag, let layout, !zoomed {
                 PaneDragOverlay(drag: drag, layout: layout)
             }
         }
+        // The handle fades rather than blinking as the pointer crosses into the
+        // reveal band; short enough that it still feels attached to the pointer.
+        .animation(.easeOut(duration: 0.12), value: store.paneHandleHover)
     }
 
     /// A surface becoming first responder is the source of truth for split selection.
@@ -670,12 +681,30 @@ private final class TerminalFocusDriver {
     }
 }
 
-/// The visual half of the ⌘⌥⇧ pane drag (issue #183): a wash over the lifted
+/// The visual half of the pane drag (issue #183): a wash over the lifted
 /// source pane plus a highlight over the region the release would commit —
 /// the half of the target the pane would occupy, or the whole target for a
 /// swap. Geometry comes straight from the tree's `layout`, so the preview and
 /// the drop can never disagree. The tint family is the file-drop wash's
 /// desaturated blue-grey, not accent blue.
+/// The pane's drag affordance: ghostty's ellipsis strip on the top edge, shown
+/// while the pointer is near it. Drawing only — the press that starts the drag
+/// is hit-tested in `PaneDragRearrange`, so this never stands between the
+/// pointer and the terminal.
+private struct PaneGrabHandle: View {
+    let paneFrame: CGRect
+
+    var body: some View {
+        let rect = PaneDragRearrange.handleRect(in: paneFrame.size)
+        Image(systemName: "ellipsis")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.primary.opacity(0.55))
+            .frame(width: rect.width, height: rect.height)
+            .position(x: paneFrame.minX + rect.midX, y: paneFrame.minY + rect.midY)
+            .transition(.opacity)
+    }
+}
+
 private struct PaneDragOverlay: View {
     let drag: PaneDragState
     let layout: SplitNode.PaneLayout
