@@ -1,7 +1,7 @@
 # termiod benchmark — the anti-100x property
 
 `bench_100x.py` measures the one architectural claim behind the whole design
-(see `docs/design/termiod-session-protocol.md` §C.6): a session mux that must
+(see `docs/design/20260730-termiod-session-protocol.md` §C.6): a session mux that must
 **parse** every PTY byte into a grid throttles the producer through PTY
 backpressure, while a mux that **tees** raw bytes and never parses on the hot
 path drains at wire speed and never throttles it.

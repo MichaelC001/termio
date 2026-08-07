@@ -1051,7 +1051,7 @@ final class TermioStore: ObservableObject {
     }
 
     /// State files from before the loose-terminals entity existed (see
-    /// docs/design/loose-terminal-entity.md) modeled scratch terminals as a plain
+    /// docs/design/20260713-loose-terminal-entity.md) modeled scratch terminals as a plain
     /// project rooted at `$HOME`. Re-tag that container as `.terminals` (with the
     /// fixed section name) so it renders as the Terminals section rather than a
     /// fake home project. Idempotent — an already-tagged container passes through
@@ -1291,7 +1291,7 @@ final class TermioStore: ObservableObject {
         }
         // A loose terminal is labeled by its live cwd's basename (`~` at home):
         // the session owns its path, so `cd ~/code/foo` renames the row to `foo`
-        // (see docs/design/loose-terminal-entity.md). Falls back to the cwd
+        // (see docs/design/20260713-loose-terminal-entity.md). Falls back to the cwd
         // persisted from the last run, then to a bare `Terminal` before the
         // shell's first OSC 7 report. Project terminals keep the plain label —
         // their place is the project, not wherever they've wandered.

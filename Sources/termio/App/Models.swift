@@ -12,7 +12,7 @@ struct RecentProject: Identifiable, Hashable, Codable {
 }
 
 /// What a sidebar section *is*. The kinds have differing ownership arrows
-/// (see docs/design/loose-terminal-entity.md): a `.folder` project's path is its
+/// (see docs/design/20260713-loose-terminal-entity.md): a `.folder` project's path is its
 /// identity and owns its sessions; the `.terminals` container is presentation
 /// only — each loose terminal session owns its *own* mutable path (the live cwd),
 /// and the container's `path` is just the spawn fallback (`$HOME`). The `.chats`
@@ -101,7 +101,7 @@ struct Project: Identifiable, Hashable, Codable {
     /// device it actually reaches. From then on `deviceID` is the identity and the
     /// alias is demoted to **one route among several** — merging two aliases that
     /// resolve to one device is a later step, specified in §9.5 of
-    /// docs/design/termiod-device-architecture.md and deliberately not performed yet.
+    /// docs/design/20260805-termiod-device-architecture.md and deliberately not performed yet.
     var sshHost: String?
 
     /// The device (`host_id`) this container's alias was found to lead to, filled in
@@ -390,7 +390,7 @@ extension Project {
     /// shell session, so a new user lands in a working terminal instead of
     /// dev-machine placeholders. The shell starts at `$HOME` (its `path`), but the
     /// section is presented as "Terminals", not as a home *project* — the terminal
-    /// is the entity, its cwd just a property (see docs/design/loose-terminal-entity.md).
+    /// is the entity, its cwd just a property (see docs/design/20260713-loose-terminal-entity.md).
     ///
     /// The working directory must be the home directory — never
     /// `currentDirectoryPath`, which is `/` when the app is launched from Finder

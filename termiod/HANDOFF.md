@@ -20,8 +20,8 @@ far. Read this whole file before dispatching anyone.
 
 `termiod` is a durable session host: it owns every PTY, and Mac/iOS/CLI/remote
 are all **attach clients**. Detach ≠ kill. The design is written up in
-`docs/design/termiod-session-protocol.md` (the spec) and
-`termiod-session-mux.md` (product/competitive). Read §A of the protocol doc.
+`docs/design/20260730-termiod-session-protocol.md` (the spec) and
+`20260730-termiod-session-mux.md` (product/competitive). Read §A of the protocol doc.
 
 **The one load-bearing idea — input replication, not state sync.** A VT parser
 is a deterministic state machine: same bytes in → same screen out. The host
@@ -58,7 +58,7 @@ server-maintained grid. This is what makes termiod fast; tmux does the opposite
 | `c87a034` | **#180** `bytes::Bytes` zero-copy fan-out + bounded 4 MiB per-client backlog. Kills the (C+2)×n copies AND unbounded memory. Slow clients dropped + logged. |
 | `ae6f4f8` | `opt-level=3` re-bench → no material change (confirms hot path is memcpy/syscall-bound, not compute-bound) |
 | `75b1e58` | **#179** non-interactive `attach --observe` mode (pure copy-to-stdout, never claims writer, no stdin-EOF exit). Fixes the 0-bytes-over-SSH bug; unblocks scripting + the live backlog-drop test |
-| `f677026` | #181 spike: evaluated `alacritty_terminal` vs `libghostty-vt`. Standalone proof `termiod/spike/vt-sidecar` (alacritty). Report: `docs/design/termiod-vt-sidecar-spike.md` |
+| `f677026` | #181 spike: evaluated `alacritty_terminal` vs `libghostty-vt`. Standalone proof `termiod/spike/vt-sidecar` (alacritty). Report: `docs/design/20260731-termiod-vt-sidecar-spike.md` |
 | `bd1ead5` | Corrected §C.6: libghostty-vt 1.3.2 cells are **opaque** — no wire-ready 16-byte cell; conversion required regardless of engine |
 | `5e956aa` | **DECISION:** v1 VT engine = **libghostty-vt** (overrode the spike's alacritty pick) — see §3 |
 | `1aa8d23` | **#181 Phase 0 done:** libghostty-vt FFI build proof `termiod/spike/vt-ffi` — builds, FFIs from Rust, produces the correct snapshot, cross-compiles to aarch64-musl. Verified independently on both Mac and VPS. |
@@ -107,10 +107,10 @@ no throughput regression (16–24×), the backlog drop fires ("dropping slow cli
   - `spike/vt-ffi/` — **libghostty-vt FFI proof (the chosen engine)**. `build.rs`
     shells Zig (herdr's pattern), bindgens `include/ghostty/vt.h`, links the
     static lib. Vendored libghostty-vt `1.3.2-HEAD-+c5a21edfc`.
-- `docs/design/termiod-session-protocol.md` — **the spec** (§A invariant, §C.5/§C.6
+- `docs/design/20260730-termiod-session-protocol.md` — **the spec** (§A invariant, §C.5/§C.6
   terminal plane, §D transports/QUIC, §E matrix, §F risks — incl. #9 pipe-mode,
   #10 backlog, #11 resize, and the general v1 plan). Read this first.
-- `docs/design/termiod-session-mux.md`, `termiod-vt-sidecar-spike.md`.
+- `docs/design/20260730-termiod-session-mux.md`, `20260731-termiod-vt-sidecar-spike.md`.
 
 **Toolchains:**
 - Mac Zig 0.15.2: `~/.local/share/termiod-toolchains/zig-0.15.2/zig`. Build the FFI
@@ -286,7 +286,7 @@ aarch64-musl (`ukvps`). Hands-on Mac→Linux test steps: `DEPLOY.md`.
 ## 8. Pointers
 
 - Issues: #164 (epic), #179 ✅, #180 ✅, #181 (active). Design: the three
-  `docs/design/termiod-*.md` files. Bench: `termiod/bench/`.
+  `docs/design/YYYYMMDD-termiod-*.md` files. Bench: `termiod/bench/`.
 - Prior art on disk: herdr vendors libghostty-vt at
   `/private/tmp/herdr-inspect/vendor/libghostty-vt/` (build.zig + CMakeLists +
   `include/ghostty/vt.h`); local ghostty checkout at `~/Documents/GitHub/ghostty`.

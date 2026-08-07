@@ -664,7 +664,7 @@ enum GitService {
     }
 
     /// The `owner/repo` slug when the origin remote points at github.com — the
-    /// Issues pane's zero-config binding (docs/design/issue-tracker-integration.md).
+    /// Issues pane's zero-config binding (docs/design/20260726-issue-tracker-integration.md).
     /// `nil` for non-GitHub remotes or a repo with no origin.
     static func gitHubRepoSlug(in dir: String) async -> String? {
         await offMain {

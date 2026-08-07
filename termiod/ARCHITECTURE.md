@@ -8,7 +8,7 @@
 | | Host · protocol · clients · pipes plug independently | One hop: client → protocol → host → PTY |
 | | Any client, any pipe, any host | No second session owner, no nested WM, no invented crypto |
 
-Local is remote to localhost. Design: `docs/design/termiod-session-mux.md`.
+Local is remote to localhost. Design: `docs/design/20260730-termiod-session-mux.md`.
 
 ## Three parts
 

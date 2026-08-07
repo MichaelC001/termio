@@ -332,7 +332,7 @@ final class SessionControlListener {
 struct SessionWatchEvent {
     let projectID: UUID
     /// Canonical deep link (`termio://session/<uuid>`) — the address that
-    /// survives promotion (docs/design/session-deep-link.md).
+    /// survives promotion (docs/design/20260801-session-deep-link.md).
     let link: String
     /// Wire status token (`working` / `idle` / `done` / `needs-you`), or the
     /// watch-plane `stalled` — a supervision judgment broadcast without ever

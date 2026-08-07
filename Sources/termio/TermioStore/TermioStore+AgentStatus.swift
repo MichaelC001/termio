@@ -107,7 +107,7 @@ extension TermioStore {
             if let path = carriedTranscript {
                 // A hook-carried path can name a *new* conversation id in its filename
                 // (after `/clear`), so advance the resume pin to match — a no-op unless
-                // it actually rotated. See docs/design/agent-resume-identity.md.
+                // it actually rotated. See docs/design/20260716-agent-resume-identity.md.
                 reconcileResumeID(id, transcriptPath: path)
             }
             if let conversation = conversationToken(report.conversationID) {

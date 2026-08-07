@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -114,6 +115,120 @@ enum Termiod {
             ?? "$HOME/.local/bin/termiod"
     }
 
+    /// Options that make the SSH connection a resource this app holds rather
+    /// than one it re-establishes per session. Without a master, every session
+    /// and every reconnect pays a full TCP handshake plus SSH key exchange —
+    /// measured at 230–300 ms against a VPS, against 26–33 ms once a master
+    /// exists.
+    ///
+    /// Nothing is injected when the user's own config already configures
+    /// multiplexing for this host. A command-line `-o` outranks
+    /// `~/.ssh/config`, so injecting unconditionally would override a
+    /// deliberate `ControlMaster no`, and the config is authoritative for how
+    /// to reach a host. Answers are cached per host because `ssh -G` forks and
+    /// this sits on the path that opens a session.
+    static func multiplexingArguments(host: String) -> [String] {
+        if let cached = multiplexingLock.withLock({ multiplexingCache[host] }) {
+            return cached
+        }
+        // The probe runs outside the lock (never hold a lock across a fork); a
+        // rare duplicate lookup just recomputes the same answer.
+        let resolved = resolveMultiplexingArguments(host: host)
+        multiplexingLock.withLock { multiplexingCache[host] = resolved }
+        return resolved
+    }
+
+    private static let multiplexingLock = NSLock()
+    private static var multiplexingCache: [String: [String]] = [:]
+
+    private static func resolveMultiplexingArguments(host: String) -> [String] {
+        guard userLeavesMultiplexingToUs(host: host),
+              let directory = controlSocketDirectory() else { return [] }
+        let path = directory.appendingPathComponent(controlSocketName(for: host)).path
+        // A Unix socket path is capped at 104 bytes, and an over-long
+        // ControlPath makes ssh fail outright rather than degrade. An unusually
+        // long temporary directory must cost multiplexing, never the session.
+        guard path.utf8.count < 100 else { return [] }
+        return ["-o", "ControlMaster=auto",
+                "-o", "ControlPath=\(path)",
+                "-o", "ControlPersist=10m"]
+    }
+
+    /// `ssh -G <host>` prints the fully-resolved effective config. Multiplexing
+    /// is ours to set only when the user has configured neither half of it;
+    /// `false` and `none` are what OpenSSH prints for those defaults. A failed
+    /// probe answers "no", so a broken probe can never smuggle options past a
+    /// config it could not read.
+    private static func userLeavesMultiplexingToUs(host: String) -> Bool {
+        guard let config = effectiveSSHConfig(host: host) else { return false }
+        var master: String?
+        var path: String?
+        for line in config.split(separator: "\n") {
+            let fields = line.split(separator: " ", maxSplits: 1)
+            guard fields.count == 2 else { continue }
+            let value = fields[1].trimmingCharacters(in: .whitespaces).lowercased()
+            switch fields[0].lowercased() {
+            case "controlmaster": master = value
+            case "controlpath": path = value
+            default: continue
+            }
+        }
+        // A missing `controlmaster` line means an OpenSSH too old to be read
+        // this way, so leave its config alone.
+        guard let master, ["false", "no", "none"].contains(master) else { return false }
+        // OpenSSH omits `controlpath` entirely when it is unset (confirmed on
+        // 10.2p1) where older versions print `none`; both mean the user has
+        // chosen no path. Requiring the line to be present made this whole
+        // function answer "no" on a current macOS, which is a silent no-op —
+        // the exact failure this is meant to end.
+        return path == nil || path == "none"
+    }
+
+    private static func effectiveSSHConfig(host: String) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.arguments = ["-G", host]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        // Drain before waiting: a full pipe would deadlock the child.
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Masters live under the per-user temporary directory rather than
+    /// `~/.ssh`: they are runtime state, and the user's ssh directory is not
+    /// ours to write into. 0700 because a control socket is a live
+    /// authenticated connection to the host — anyone who can open it is on the
+    /// far machine without presenting a key.
+    private static func controlSocketDirectory() -> URL? {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("termio-ssh" + AppChannel.suffix, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+        } catch {
+            return nil
+        }
+        return directory
+    }
+
+    /// A short, stable name per host: stable so a master survives an app
+    /// restart, short so the socket path stays inside the 104-byte cap. This is
+    /// what OpenSSH's own `%C` token does, computed here so the length is ours
+    /// to control rather than a property of whichever OpenSSH is installed.
+    private static func controlSocketName(for host: String) -> String {
+        SHA256.hash(data: Data(host.utf8))
+            .prefix(8)
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
     /// A bidirectional byte channel to a daemon. Local is one Unix-socket fd
     /// used for both directions; SSH is a pipe pair around an `ssh <host>
     /// termiod stdio` child — the exact same framed protocol either way, which
@@ -181,7 +296,9 @@ enum Termiod {
             posix_spawn_file_actions_addclose(&fileActions, fromChild[0])
 
             let command = "\(remoteBinary()) stdio"
-            let arguments = ["ssh", "-o", "ServerAliveInterval=15", host, command]
+            let arguments = ["ssh", "-o", "ServerAliveInterval=15"]
+                + multiplexingArguments(host: host)
+                + [host, command]
             let argv: [UnsafeMutablePointer<CChar>?] = arguments.map { strdup($0) } + [nil]
             defer { argv.forEach { free($0) } }
 

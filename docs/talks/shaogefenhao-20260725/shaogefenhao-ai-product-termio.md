@@ -406,7 +406,7 @@ conventional commit · rebuild · 验证
 **例子：状态点不对 / `/clear` 后 trace 旧数据**
 
 1. 现象截图进会话（用户投诉）
-2. 写 / 改 design doc（`clear-conversation-rotation.md`）
+2. 写 / 改 design doc（`20260720-clear-conversation-rotation.md`）
 3. worktree 实现 → PR
 4. hooks + title 规则回归
 5. `conventional-commit` → review → merge
@@ -594,9 +594,9 @@ Q & A
 | 主题 | 从这里读 |
 | --- | --- |
 | Agent 模型 | `Sources/termio/AgentDefinition.swift` |
-| 状态与 hooks | `TermioStore` · `HookListener` · `docs/design/vibe-island-status.md` |
+| 状态与 hooks | `TermioStore` · `HookListener` · `docs/design/20260719-vibe-island-status.md` |
 | Agent 配置 | `Sources/termio/Resources/agents/*.json` |
-| 设计：Agent 抽象 | `docs/design/agent-abstraction-and-configuration.md` |
+| 设计：Agent 抽象 | `docs/design/20260718-agent-abstraction-and-configuration.md` |
 | Companion 协议 | `Shared/.../WireProtocol.swift` |
 | 竞品与差异 | `docs/competitive-analysis/09-*.md` |
 | Skills | `.claude/skills/*/SKILL.md` |

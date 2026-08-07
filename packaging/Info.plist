@@ -24,7 +24,7 @@
     <true/>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.developer-tools</string>
-    <!-- Session deep links (docs/design/session-deep-link.md). The dev bundle
+    <!-- Session deep links (docs/design/20260801-session-deep-link.md). The dev bundle
          claims termio-dev:// instead — build-app.sh rewrites the scheme — so
          the two channels never route each other's links. -->
     <key>CFBundleURLTypes</key>

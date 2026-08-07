@@ -1598,7 +1598,7 @@ private final class DisplayTerminalView: UITerminalView {
     /// few it trips its renderer-health failsafe — the "This terminal is
     /// non-functional" panel painted straight into the surface. Coalescing the
     /// drag onto this link caps us at one drawable per frame, so the pool never
-    /// empties. See docs/design/ios-scroll-renderer-health.md.
+    /// empties. See docs/design/20260706-ios-scroll-renderer-health.md.
     private var scrollPump: CADisplayLink?
     /// Set by pan `.changed`; the pump consumes it once per frame during a drag.
     private var needsScrollDraw = false

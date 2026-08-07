@@ -2,7 +2,7 @@
 """
 Anti-100x benchmark for termiod.
 
-Thesis under test (from docs/design/termiod-session-protocol.md §C.6):
+Thesis under test (from docs/design/20260730-termiod-session-protocol.md §C.6):
 a session mux that must PARSE every PTY byte into a grid (tmux) throttles the
 producer through PTY backpressure; a mux that TEES raw bytes and never parses
 on the hot path (termiod) drains at wire speed and never throttles it. So the

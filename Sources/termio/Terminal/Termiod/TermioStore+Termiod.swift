@@ -24,11 +24,10 @@ extension TermioStore {
         let remoteHost = session.termiodRemoteHost
         // A remote session runs on the VPS, so the Mac's cwd, PATH-laden env,
         // and shell path are all wrong there — hand the remote its own login
-        // shell (empty argv/env) and let it set up its own environment. The one
-        // thing that *does* travel is the remote cwd, when the caller chose one
-        // (a cloned repo directory): the remote daemon `cd`s there before the
-        // shell, so the terminal opens inside it. Local sessions keep the full
-        // spec, unchanged.
+        // shell (empty argv) and let it set up its own environment. The remote
+        // cwd travels when the caller chose one (a cloned repo directory): the
+        // remote daemon `cd`s there before the shell. Local sessions keep the
+        // full spec, unchanged.
         let specification = remoteHost == nil
             ? Termiod.CreateSpecification(
                 cwd: cwd,
@@ -39,7 +38,7 @@ extension TermioStore {
             : Termiod.CreateSpecification(
                 cwd: session.termiodRemoteCwd ?? "",
                 argv: [],
-                env: [],
+                env: Self.presentationEnvironment(from: env),
                 rows: UInt16(clamping: lastHostGridRows),
                 cols: UInt16(clamping: lastHostGridColumns))
         return TermiodSessionLink(
@@ -49,6 +48,29 @@ extension TermioStore {
             rows: lastHostGridRows,
             cols: lastHostGridColumns
         )
+    }
+
+    /// The half of the session environment that describes *how output should
+    /// look*, which belongs to the client no matter which machine the process
+    /// runs on. Everything else — `PATH`, `HOME`, `SHELL`, anything naming a
+    /// path on this Mac — stays behind, because it describes where the process
+    /// runs and the device owns that.
+    ///
+    /// Withholding all of it is what made a remote agent render washed out: a
+    /// program that cannot see `COLORTERM` decides the terminal is 256-colour
+    /// and quantises the user's theme to the nearest palette entry, and that
+    /// decision is made before a single byte reaches the client, where no
+    /// amount of correct rendering can undo it. Plain `ssh` cannot fix this
+    /// from the client side at all — it forwards only `TERM` plus the config's
+    /// `SendEnv` whitelist, so `COLORTERM` needs `sshd` changes on the far end.
+    /// Spawning the process ourselves means we simply declare it.
+    ///
+    /// `TERMIO_SESSION` is deliberately *not* here: it is identity, not
+    /// presentation, and a hook that echoes it back would be reporting to a
+    /// control socket on the wrong machine.
+    static func presentationEnvironment(from env: [String: String]) -> [[String]] {
+        ["TERM", "COLORTERM", "TERM_PROGRAM", "FORCE_HYPERLINK"]
+            .compactMap { key in env[key].map { [key, $0] } }
     }
 
     /// Wires the channel to the surface and registers it. Output enters the
@@ -101,7 +123,7 @@ extension TermioStore {
     /// written down.
     ///
     /// It does **not** merge two containers that turn out to be one device. That
-    /// rule is specified in §9.5 of docs/design/termiod-device-architecture.md and
+    /// rule is specified in §9.5 of docs/design/20260805-termiod-device-architecture.md and
     /// left unexecuted on purpose — merging is a step to add once the identities
     /// are recorded, not a rewrite, and it must not happen before the conflict
     /// case (a cloned VM carrying a duplicate `host_id`) has an answer.

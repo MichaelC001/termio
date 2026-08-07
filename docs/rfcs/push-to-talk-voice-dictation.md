@@ -5,7 +5,7 @@ type: rfc
 created: 2026-07-04
 updated: 2026-07-04
 related:
-  - ios-terminal-input.md
+260703-ios-terminal-input.md
 ---
 
 # Push-to-talk voice dictation (macOS, OpenAI) + iOS terminal space key

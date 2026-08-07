@@ -619,7 +619,7 @@ extension TermioStore {
     /// styles whose filename *is* the id — other agents advance through an
     /// identity-bearing report or turn-boundary re-discovery, which land in the same
     /// `adoptConversationID`. Fed by the hook-carried transcript path in
-    /// `applyStatusReport`. See docs/design/agent-resume-identity.md.
+    /// `applyStatusReport`. See docs/design/20260716-agent-resume-identity.md.
     func reconcileResumeID(_ id: Session.ID, transcriptPath: String) {
         guard let session = session(id),
               let liveID = session.agent.resumeSpec.conversationID(fromTranscriptPath: transcriptPath)
@@ -975,7 +975,7 @@ extension TermioStore {
     /// shell's OSC 7 or the kernel poll): publishes it for the sidebar row label
     /// and the cwd-following inspector, and — for a loose terminal only — persists
     /// it on the session itself, since the cwd is that entity's own path (the
-    /// shell respawns there next launch; see docs/design/loose-terminal-entity.md).
+    /// shell respawns there next launch; see docs/design/20260713-loose-terminal-entity.md).
     func noteWorkingDirectory(_ cwd: String, for id: Session.ID) {
         setWorkingDirectory(cwd, for: id)
         guard let location = locate(id),
