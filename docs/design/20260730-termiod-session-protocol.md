@@ -3,7 +3,7 @@ title: termiod Session Protocol
 status: draft
 type: design
 created: 2026-07-30
-updated: 2026-08-05
+updated: 2026-08-07
 related:
   - 20260730-termiod-session-mux.md
   - 20260708-session-daemon-architecture.md
@@ -27,7 +27,12 @@ rather than a WAN adjective; qualified §D.1's roaming argument now that a
 tailnet supplies migration to plain TCP; recorded why WebTransport stays
 refused *even though* a web client is now planned (§D.1); split §F #2's "own
 SSH" into the three senses it was conflating; added §C.11, the spawn-environment
-half of the presentation boundary. -->
+half of the presentation boundary.
+2026-08-07: added §C.12 (file request plane — lazy+cached+predictive listings,
+`fs.read`/`fs.search`/`fs.match` with a coverage-honest host name index, and
+the chunked `upload.*` verbs with HOL discipline) and §C.13 (`git:` resource
+kind — Zed's two-axis status vocabulary, read-only, one event shape + `git.diff`),
+from a design pass against Zed's replicate-everything remote worktree model. -->
 
 
 # Design: termiod Session Protocol
@@ -550,6 +555,115 @@ matching this over `ssh` requires editing `SendEnv` *and* the server's
 `AcceptEnv` and restarting `sshd`. termiod spawns the process, so it simply
 declares the environment. Same VPS, same agent: through `ssh` the colours are
 wrong, through termio they are right.
+
+### C.12 File request plane — remote tree, reads, search, uploads
+
+§C.10's `fs:` resources solve *change notification*; this section adds the
+**pull side** (listings, reads, search) and the **write side** (uploads), so a
+remote project gets a working file tree, drag-file upload, and paste-image —
+without replicating the tree to the client. Everything here rides the control
+channel with the existing `seq`/`re` request ids and typed errors; none of it
+touches `fan_out`.
+
+**Posture: lazy + cached + predictive, never a client replica.** Zed replicates
+the whole worktree snapshot to every client (SumTree replica streamed as
+chunked `UpdateWorktree`; ignored/external dirs excepted as unloaded stubs, a
+pull RPC expands them). That buys a zero-RTT tree and a client-side fuzzy
+finder at the price of a full initial scan, tree-sized memory on both ends,
+and snapshot resync on reconnect. termiod inverts it: attach costs one
+listing, and three mechanisms buy back the replica's perceived speed:
+
+1. **Cached listings, watcher-invalidated.** Every `fs.list` reply is stamped
+   with the `fs:` resource's current `seq`. Clients cache listings
+   indefinitely; the existing `fs_changed` batches are the invalidation feed
+   (a batch naming a cached dir → re-list it). Visited dirs are 0-RTT until
+   they actually change — freshness is proven by cursor, not guessed by TTL.
+2. **Batched, speculative listing.** `fs.list {root, paths: […], page?}`
+   accepts many paths. Clients SHOULD list a rendered directory together with
+   its visible child dirs (the only possible next clicks), making expansion
+   0-RTT in the common case and one RTT worst-case.
+3. **Host-side name index for the fuzzy finder.** `fs.match {root, query,
+   limit}` matches file *names* against a paths-only index the host builds
+   lazily at idle priority after the first subscribe, honoring the same
+   ignore rules as the watcher, kept incremental by it afterwards. Replies
+   carry `coverage: 0.0–1.0` so a client can say "still indexing" instead of
+   silently missing files. The index is evictable state, never
+   correctness-bearing. This is what gives an iPhone a monorepo fuzzy finder
+   in kilobytes of client memory.
+
+**Verbs** (capability `files`):
+
+| Verb | Shape | Rules |
+| --- | --- | --- |
+| `fs.list` | `{root, paths[], page?}` → per-path `{entries[], next_page?, seq}` | entry = `{name, kind: file\|dir\|symlink\|unloaded_dir, size, mtime, symlink_target?}`; pages capped (~2,000 entries); ignored/external dirs are `unloaded_dir` stubs — never walked until explicitly listed (the one Zed lesson kept as invariant) |
+| `fs.read` | `{path, range?}` → chunked binary | 1 MiB soft cap for preview parity with the companion; `range` for the editor later |
+| `fs.search` | `{root, query, limit}` → streamed result events, terminal reply | host runs `git grep`; cancellable by request id (⇧⌘F) |
+| `fs.match` | `{root, query, limit}` → `{paths[], coverage}` | filename fuzzy (⌘⇧O); see index above |
+
+**Uploads** (capability `upload`) — one mechanism, three gestures (drag onto a
+tree folder, drag into the terminal, paste an image at a remote agent):
+
+```
+→ upload.open   {dest, size, sha256, mode?}    ← {upload_id}
+→ U <upload_id, offset> + ≤64 KiB payload      ← {ack, offset}   (×N, credit-of-one)
+→ upload.commit {upload_id}                    ← {path}
+   (or upload.abort {upload_id})
+```
+
+- `dest` is a path under the project root **or** `temp:` — the session-scoped
+  scratch dir (`…/session-<id>/paste-<n>.png`, 0600, reaped with the
+  session). Paste-image and drag-into-terminal upload to `temp:` and then
+  inject the returned path into the PTY as bracketed-paste text; drag-onto-
+  tree uploads to the real path and injects nothing — the `fs_changed` push
+  makes the file appear in every attached client's tree.
+- Host writes to a dotfile, verifies size + sha256 on commit, `rename()`s
+  into place. Re-`open` with the same hash is idempotent. No resume in v1
+  (abort/retry; memory stays O(chunk)); `{resume: upload_id}` is a
+  compatible later extension.
+- **Head-of-line discipline** (the anti-100× clause for a shared pipe):
+  credit-of-one — the client sends the next chunk only after the previous
+  ack — and the daemon's writer drains PTY frames before upload chunks.
+  Worst-case added keystroke latency is one chunk (~5 ms at 100 Mbit/s),
+  bounded by construction. On the QUIC binding uploads get their own stream
+  and the discipline is free.
+- **Confinement**: the host canonicalises `dest` and rejects escapes from
+  the project root / session temp dir (dotdot, symlink traversal). Old
+  daemons without the capability degrade cleanly at `hello`.
+
+**Not in scope, deliberately**: download-direction drag-out (symmetric,
+later — `fs.read` already covers preview), rsync-style tree sync,
+thumbnails, and any in-band TTY file transfer à la kitty's `kitten
+transfer` — the control plane exists precisely so the TTY never moonlights
+as a file channel.
+
+### C.13 `git:` resource kind — status as a subscription, read-only
+
+The git tree is the second consumer of §C.10's one mechanism — id
+`git:<canonical repo root>`, cursor, ring, `gap` semantics, linger — nothing
+new to learn. The host computes status off the watcher's existing `git_meta`
+signal (index/HEAD/refs moved → debounced `git status --porcelain=v2` →
+publish a delta batch):
+
+```
+E {ev:"git_changed", resource:"git:/work/termio", seq:12,
+   updated_statuses:[{path, status}], removed_paths:[…],
+   branch?, ahead_behind?, head?, conflicts?}
+```
+
+**Status vocabulary is adopted from Zed verbatim** — two axes per tracked
+file (`{index_status, worktree_status}` over
+added/modified/deleted/renamed/…), plus `untracked | ignored |
+unmerged{first_head, second_head}`, with the merge-conflict path set
+first-class. It is battle-tested and maps 1:1 onto the GitHub-Desktop-shaped
+changes pane.
+
+**Read-only by design.** No stage/commit/push verbs — the user commits in
+the terminal, which is the same app. This deletes the majority of Zed's git
+surface (mutation RPCs, optimistic-update reconciliation, a write-permission
+model) and is why the whole kind fits in one event shape plus one verb:
+`git.diff {path, staged?}` → unified diff, rendered client-side. Zed's proto
+carries deprecated `RepositoryEntry` debris from migrating git between two
+replication schemes; a single-mechanism resource plane cannot drift that way.
 
 ## D. Transport bindings
 
