@@ -25,6 +25,10 @@ struct FileBrowserView: View {
     /// list runs an update pass and the mutation reaches the rows (the `root`
     /// reference itself never changes on an incremental reload).
     @State private var treeRevision = 0
+    /// Bumped per `refresh()` call; an off-main root read that finishes after a newer
+    /// refresh (or after the project moved) compares stale and discards its result,
+    /// so roots can never land out of order.
+    @State private var refreshGeneration = 0
     /// Reload targets accumulated while a reload is already in flight, keyed by URL
     /// so repeat events for one directory coalesce. Unioned rather than replaced —
     /// a newer batch must never orphan an older disjoint one, or those directories
@@ -47,52 +51,23 @@ struct FileBrowserView: View {
     private var projectPath: String? { store.inspectorProjectPath }
 
     var body: some View {
-        VStack(spacing: 0) {
-            switch store.inspectorTab {
-            case .files:
+        ZStack {
+            // The Files pane is ALWAYS mounted; a tab switch merely covers it. A
+            // fresh `List(children:)` re-realizes every row of the outline, which
+            // on a huge root (a home directory) costs whole seconds per switch —
+            // and loses the tree's disclosure state besides (#207). Same
+            // always-mounted-under-an-opaque-overlay shape as `InspectorRoot`.
+            VStack(spacing: 0) {
                 if let root { header(root: root) }
                 content
-            case .search:
-                if let root {
-                    FileSearchView(
-                        rootURL: root.url,
-                        font: settings.interfaceFont,
-                        onDismiss: { store.inspectorTab = .files },
-                        onOpen: { url, line in store.openFileInEditor(url, at: line) }
-                    )
-                    // Fresh identity per project, so a stale query/result set
-                    // doesn't carry over when the root moves.
-                    .id(root.url)
-                } else {
-                    noProject
-                }
-            case .changes:
-                if let repoRoot = projectPath {
-                    // Fresh identity per repo, so the panel model (selection, draft message,
-                    // PR status) resets cleanly when the selected project moves.
-                    // The visibility closure reads the store live (weakly — the model may
-                    // outlive a closing window), so a collapsed inspector parks the pane's
-                    // auto-refresh even while this view stays in the hierarchy.
-                    GitChangesView(
-                        repoRoot: repoRoot,
-                        changeCount: $store.gitChangeCount,
-                        isPaneVisible: { [weak store] in store?.inspectorVisible ?? true }
-                    )
-                    .id(repoRoot)
-                } else {
-                    content
-                }
-            case .issues:
-                if let repoRoot = projectPath {
-                    // Fresh identity per repo, like Changes: the panel model (connection
-                    // phase, binding, list, pushed-in detail) resets when the project moves.
-                    IssuesView(repoRoot: repoRoot)
-                        .id(repoRoot)
-                } else {
-                    noProject
-                }
-            case .info:
-                SessionInfoView()
+            }
+            .allowsHitTesting(store.inspectorTab == .files)
+            .accessibilityHidden(store.inspectorTab != .files)
+            if store.inspectorTab != .files {
+                activePane
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // Opaque terminal background so the live tree never shows through.
+                    .background(Color(nsColor: settings.terminalBackgroundColor).ignoresSafeArea())
             }
         }
         // The file column lives on the terminal side, so it takes the terminal's own background
@@ -156,6 +131,14 @@ struct FileBrowserView: View {
             refresh()
             if store.inspectorTab != .changes { seedChangeCount() }
         }
+        // Covering or uncovering the always-mounted tree resets its scroll view's
+        // wheel increment (SwiftUI re-configures the scroll view on the overlay
+        // flip, and no row update follows to heal it — see `OutlineViewFixups`);
+        // reassert once the switch's update pass has settled.
+        .onChange(of: store.inspectorTab) {
+            let outline = browserState.outlineView
+            DispatchQueue.main.async { OutlineViewFixups.assertWheelIncrement(on: outline) }
+        }
         .onChange(of: browserState.selection) {
             // The table fires native selection on a clean click — reliably, unlike a
             // click recognizer, which `NSOutlineView`'s own primary-button tracking
@@ -208,6 +191,56 @@ struct FileBrowserView: View {
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
     }
 
+    /// The non-Files pane covering the always-mounted tree (see `body`).
+    @ViewBuilder
+    private var activePane: some View {
+        switch store.inspectorTab {
+        case .files:
+            EmptyView()
+        case .search:
+            if let root {
+                FileSearchView(
+                    rootURL: root.url,
+                    font: settings.interfaceFont,
+                    onDismiss: { store.inspectorTab = .files },
+                    onOpen: { url, line in store.openFileInEditor(url, at: line) }
+                )
+                // Fresh identity per project, so a stale query/result set
+                // doesn't carry over when the root moves.
+                .id(root.url)
+            } else {
+                noProject
+            }
+        case .changes:
+            if let repoRoot = projectPath {
+                // Fresh identity per repo, so the panel model (selection, draft message,
+                // PR status) resets cleanly when the selected project moves.
+                // The visibility closure reads the store live (weakly — the model may
+                // outlive a closing window), so a collapsed inspector parks the pane's
+                // auto-refresh even while this view stays in the hierarchy.
+                GitChangesView(
+                    repoRoot: repoRoot,
+                    changeCount: $store.gitChangeCount,
+                    isPaneVisible: { [weak store] in store?.inspectorVisible ?? true }
+                )
+                .id(repoRoot)
+            } else {
+                noProject
+            }
+        case .issues:
+            if let repoRoot = projectPath {
+                // Fresh identity per repo, like Changes: the panel model (connection
+                // phase, binding, list, pushed-in detail) resets when the project moves.
+                IssuesView(repoRoot: repoRoot)
+                    .id(repoRoot)
+            } else {
+                noProject
+            }
+        case .info:
+            SessionInfoView()
+        }
+    }
+
     @ViewBuilder
     private var content: some View {
         if let root {
@@ -228,6 +261,10 @@ struct FileBrowserView: View {
             }
             // Collapse All rebuilds the list by changing its identity (see `treeGeneration`).
             .id(treeGeneration)
+        } else if projectPath != nil {
+            // The off-main root read is still in flight; hold the pane blank rather
+            // than flashing the no-project copy for the moment a huge root takes.
+            Color.clear
         } else {
             noProject
         }
@@ -297,14 +334,35 @@ struct FileBrowserView: View {
     /// Rebuilds the tree from the current project path. Called on appear, whenever
     /// the selected session moves to a different project, and after a drop. Watcher
     /// batches accumulated so far are superseded by the full rebuild, so drop them.
+    ///
+    /// The disk reads run off the main thread and the assembled root lands back on
+    /// main pre-realized, so the swap's first render reads nothing. Realizing a huge
+    /// root (a home directory) synchronously was ~100 ms of main-thread I/O, re-paid
+    /// on every full rescan — which a high-churn root produces constantly — and it
+    /// landed as the inspector's tab-switch stutter (#207). The outgoing tree keeps
+    /// showing until the new root is ready; on an ordinary project the gap is a few
+    /// milliseconds.
     private func refresh() {
         _ = watcher.drainTreeBatch()
         pendingReloads.removeAll()
+        refreshGeneration &+= 1
         guard let projectPath else {
             root = nil
             return
         }
-        root = FileNode(url: URL(fileURLWithPath: projectPath), isDirectory: true)
+        let generation = refreshGeneration
+        let rootURL = URL(fileURLWithPath: projectPath)
+        // What the outgoing tree had realized — re-listed off main so the swap
+        // keeps the outline's expanded subtree without a main-thread read.
+        let realized = root?.url == rootURL ? (root?.realizedDirectoryURLs() ?? []) : []
+        Task {
+            let listings = await Task.detached(priority: .userInitiated) {
+                FileNode.listingsForRefresh(of: rootURL, realized: realized)
+            }.value
+            // The project moved, or a newer refresh superseded this one, while we read.
+            guard generation == refreshGeneration else { return }
+            root = FileNode.preloaded(url: rootURL, isDirectory: true, listings: listings)
+        }
     }
 
     /// Reloads just the realized directories a settled watcher batch touched — the
@@ -352,8 +410,14 @@ struct FileBrowserView: View {
                 // `refresh` already cleared the queue; the fresh root re-reads
                 // its directories as the outline realizes them.
                 guard root === rootNow else { break }
-                for (url, listing) in zip(urls, listings) { laps[url]?.applyReloaded(listing) }
-                treeRevision &+= 1
+                var changedAny = false
+                for (url, listing) in zip(urls, listings) where laps[url]?.applyReloaded(listing) == true {
+                    changedAny = true
+                }
+                // Only a changed row set is worth an outline update pass — churn
+                // inside files (the common case on a busy root) adopts every node
+                // and would re-walk the whole realized tree for nothing.
+                if changedAny { treeRevision &+= 1 }
             }
             reloadInFlight = false
         }

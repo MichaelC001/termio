@@ -592,6 +592,14 @@ struct OutlineViewFixups: NSViewRepresentable {
         DispatchQueue.main.async { Self.apply(from: nsView) }
     }
 
+    /// Reasserts the wheel increment on an outline captured earlier (see
+    /// `OutlineViewCapture`) — for callers that know a specific update just reset
+    /// it, like the inspector's tab switch covering the always-mounted file tree.
+    static func assertWheelIncrement(on outline: NSOutlineView?) {
+        guard let scroll = outline?.enclosingScrollView, scroll.verticalLineScroll != 24 else { return }
+        scroll.verticalLineScroll = 24
+    }
+
     private static func apply(from view: NSView) {
         var ancestor = view.superview
         while let current = ancestor {
@@ -600,12 +608,41 @@ struct OutlineViewFixups: NSViewRepresentable {
                 if table.selectionHighlightStyle != .none {
                     table.selectionHighlightStyle = .none
                 }
-                if let scroll = table.enclosingScrollView, scroll.verticalLineScroll != 24 {
-                    scroll.verticalLineScroll = 24
+                if let scroll = table.enclosingScrollView {
+                    if scroll.verticalLineScroll != 24 {
+                        scroll.verticalLineScroll = 24
+                    }
+                    enforce(scroll)
                 }
                 return
             }
             ancestor = current.superview
         }
     }
+
+    /// SwiftUI re-configures the List's scroll view on some structural updates
+    /// (covering the pane with another tab's overlay is one), resetting
+    /// `verticalLineScroll` back to the 1pt it mirrors from `rowHeight` — and a
+    /// property-less representable gets no `updateNSView` afterward to re-run
+    /// `apply`, so a one-shot write stays clobbered on an always-mounted list.
+    /// This observer watches the clip view's bounds (they change on every scroll)
+    /// and re-asserts the increment the moment a reset scroll view first moves, so
+    /// a wheel is never slow for more than its first notch. One observer per
+    /// scroll view; the token dies with the scroll view it's associated to.
+    private static func enforce(_ scroll: NSScrollView) {
+        guard objc_getAssociatedObject(scroll, &enforcementKey) == nil else { return }
+        scroll.contentView.postsBoundsChangedNotifications = true
+        let token = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: scroll.contentView,
+            queue: nil
+        ) { [weak scroll] _ in
+            guard let scroll, scroll.verticalLineScroll != 24 else { return }
+            scroll.verticalLineScroll = 24
+        }
+        objc_setAssociatedObject(scroll, &enforcementKey, token, .OBJC_ASSOCIATION_RETAIN)
+    }
 }
+
+/// Unique address keying the enforcement token onto its scroll view.
+private var enforcementKey: UInt8 = 0

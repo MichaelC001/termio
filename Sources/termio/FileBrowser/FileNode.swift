@@ -46,8 +46,14 @@ final class FileNode: Identifiable {
     }
 
     /// `nil` for a file (so the outline draws no disclosure triangle); a folder's
-    /// contents — read lazily and cached — for a directory. SwiftUI only asks for
-    /// the children of an *expanded* node, so this stays cheap on a large tree.
+    /// contents — read lazily and cached — for a directory. The outline realizes the
+    /// children of every *rendered* directory row, expanded or not — it needs them to
+    /// decide which rows get a disclosure triangle — so rendering a level costs one
+    /// listing per folder row on it: one level ahead of what the user opened, never
+    /// the whole tree. On a huge root that one level is still ~100 ms of disk I/O
+    /// (#207), so the initial and refresh listings are read off main and seeded via
+    /// `preloaded`; this getter is the lazy path for levels an expansion click
+    /// uncovers first.
     ///
     /// A symlink that points at one of its own ancestors therefore nests forever, one
     /// level per click. That's the Finder's and the VS Code explorer's behavior too:
@@ -67,6 +73,62 @@ final class FileNode: Identifiable {
     /// the watcher path skips it — the next expansion reads the disk fresh anyway.
     var isLoaded: Bool { loadedChildren != nil }
 
+    /// Every realized directory in this subtree, itself included — what is (or was)
+    /// on screen, so a refresh can re-list exactly that set off the main thread
+    /// before swapping roots (see `listingsForRefresh`).
+    func realizedDirectoryURLs() -> [URL] {
+        guard isDirectory, let loadedChildren else { return [] }
+        var urls = [url]
+        for child in loadedChildren {
+            urls.append(contentsOf: child.realizedDirectoryURLs())
+        }
+        return urls
+    }
+
+    /// A node for `url` whose subtree is pre-realized wherever `listings` holds that
+    /// directory's contents — built on main from listings read off it, so the swap's
+    /// first render touches no disk. Directories absent from `listings` stay lazy,
+    /// exactly as if never expanded.
+    static func preloaded(
+        url: URL, isDirectory: Bool, isSymbolicLink: Bool = false,
+        listings: [URL: [(url: URL, isDirectory: Bool, isSymbolicLink: Bool)]]
+    ) -> FileNode {
+        let node = FileNode(url: url, isDirectory: isDirectory, isSymbolicLink: isSymbolicLink)
+        if isDirectory, let listing = listings[url] {
+            node.loadedChildren = listing.map {
+                preloaded(url: $0.url, isDirectory: $0.isDirectory, isSymbolicLink: $0.isSymbolicLink, listings: listings)
+            }
+        }
+        return node
+    }
+
+    /// Every listing the outline needs to render a fresh root for `rootURL` without
+    /// a main-thread read: the root itself, every directory in `realized` (what the
+    /// outgoing tree had realized — which, because the outline realizes the children
+    /// of every *rendered* directory row (see `children`), already covers every
+    /// listing rendering will ask for), plus the root listing's own directories so
+    /// the very first render (nothing realized yet) is read-free too. Never lists
+    /// deeper: sweeping the children of every realized directory instead would make
+    /// each refresh realize one level more than the last — unbounded creep on a
+    /// high-churn root that full-rescans often, which is thousands of extra live
+    /// nodes for every later update pass to re-walk (#207). Plain values, safe to
+    /// run off main; a directory that vanished since `realized` was captured just
+    /// lists empty.
+    static func listingsForRefresh(
+        of rootURL: URL, realized: [URL]
+    ) -> [URL: [(url: URL, isDirectory: Bool, isSymbolicLink: Bool)]] {
+        var listings = [rootURL: listContents(of: rootURL)]
+        for url in realized where listings[url] == nil {
+            listings[url] = listContents(of: url)
+        }
+        if let rootListing = listings[rootURL] {
+            for entry in rootListing where entry.isDirectory && listings[entry.url] == nil {
+                listings[entry.url] = listContents(of: entry.url)
+            }
+        }
+        return listings
+    }
+
     /// The realized node at `path` (itself or a descendant), walking only realized
     /// children — never triggering a directory read. Nil when `path` isn't part of
     /// the realized tree, which is what lets a high-churn root (a home directory)
@@ -83,12 +145,16 @@ final class FileNode: Identifiable {
 
     /// Replaces this directory's realized contents with `entries` (a fresh disk
     /// listing), adopting the existing child node — realized subtree, and with it
-    /// the outline's expansion state — wherever the entry survived.
-    func applyReloaded(_ entries: [(url: URL, isDirectory: Bool, isSymbolicLink: Bool)]) {
-        guard isDirectory, let current = loadedChildren else { return }
+    /// the outline's expansion state — wherever the entry survived. Returns whether
+    /// the row set actually changed: churn *inside* files leaves the listing's
+    /// shape identical, every node is adopted, and nothing on screen moved — the
+    /// caller then skips the outline update pass, which on a huge realized tree is
+    /// a real main-thread cost per watcher batch (#207).
+    func applyReloaded(_ entries: [(url: URL, isDirectory: Bool, isSymbolicLink: Bool)]) -> Bool {
+        guard isDirectory, let current = loadedChildren else { return false }
         var existing = [URL: FileNode]()
         for child in current { existing[child.url] = child }
-        loadedChildren = entries.map { entry in
+        let reloaded = entries.map { entry in
             // Same URL but a different kind (a file replaced by a folder, a real folder
             // replaced by a link to one) is a new entry — both flags are immutable on
             // the node.
@@ -99,6 +165,10 @@ final class FileNode: Identifiable {
             }
             return FileNode(url: entry.url, isDirectory: entry.isDirectory, isSymbolicLink: entry.isSymbolicLink)
         }
+        let changed = reloaded.count != current.count
+            || !zip(reloaded, current).allSatisfy { $0 === $1 }
+        loadedChildren = reloaded
+        return changed
     }
 
     /// Directory entries, folders first then files, each alphabetized the way the
