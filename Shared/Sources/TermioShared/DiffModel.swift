@@ -13,15 +13,16 @@ public struct DiffLine: Identifiable, Sendable, Equatable {
     public let text: String
     public let oldLine: Int?
     public let newLine: Int?
-    /// The changed span within a paired deletion/addition line, in `Character`
+    /// The changed spans within a paired deletion/addition line, in `Character`
     /// offsets — rendered with a stronger tint so a one-word edit inside a long line
-    /// reads at a glance. `nil` when the line has no counterpart, or the two sides
-    /// share too little for a span to mean anything.
-    public var emphasis: Range<Int>?
+    /// reads at a glance. A line with two separate edits carries two spans. Empty when
+    /// the line has no counterpart, or the two sides share too little for spans to mean
+    /// anything.
+    public var emphasis: [Range<Int>]
 
     public init(
         id: Int, kind: Kind, text: String, oldLine: Int?, newLine: Int?,
-        emphasis: Range<Int>? = nil
+        emphasis: [Range<Int>] = []
     ) {
         self.id = id
         self.kind = kind
@@ -38,10 +39,66 @@ public enum DiffItem: Sendable, Equatable {
     case line(DiffLine)
     /// A folded run, named by the line range it hides (new-side numbers, so it reads
     /// against the gutter) — "227–348" says where you are; a count would only describe
-    /// the fold. `expandable` bands (full-context diffs) hold their hidden lines and
-    /// splice them back in when tapped; fixed bands (a 3-line-context diff, where the
-    /// hidden lines were never fetched) only mark the gap.
-    case band(id: Int, lines: ClosedRange<Int>, expandable: Bool)
+    /// the fold. `controls` are the directions the run can be revealed from; empty means
+    /// the band is inert (a 3-line-context diff, where the hidden lines were never
+    /// fetched, so there is nothing to splice back in). `heading` is git's section
+    /// heading when the gap came from a hunk boundary — the enclosing scope being skipped.
+    case band(id: Int, lines: ClosedRange<Int>, controls: DiffBandControls, heading: String?)
+}
+
+/// Which end of a folded run a reveal acts on. The direction is the one the reader is
+/// looking: `up` pulls down the lines nearest the code *below* the band, `down` the lines
+/// nearest the code above it. `all` drops the band entirely.
+public enum DiffBandDirection: Sendable {
+    case up, down, all
+}
+
+/// The reveal directions a band offers. A run with nothing rendered above it has no
+/// downward control (there is no code to continue from), and likewise upward. Where the
+/// control is *drawn* is a renderer's business — the desktop puts buttons in the gutter,
+/// the phone makes the whole row one tap target — but which ones exist is model.
+public struct DiffBandControls: OptionSet, Sendable, Equatable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+    public static let up = DiffBandControls(rawValue: 1 << 0)
+    public static let down = DiffBandControls(rawValue: 1 << 1)
+}
+
+/// How much of each folded run the reader has revealed, keyed by the run's anchor line id.
+/// The anchor is the run's first hidden line, which is stable as the run shrinks: the
+/// always-shown context lines on either side never move, so revealing from one end never
+/// renames the band.
+public struct DiffExpansion: Sendable {
+    /// Lines revealed per step, matching what every other review surface uses. Revealing
+    /// a 400-line gap in one jump loses the reader's place.
+    public static let step = 20
+
+    private struct Reveal {
+        var head = 0
+        var tail = 0
+    }
+
+    private var reveals: [Int: Reveal] = [:]
+
+    public init() {}
+
+    public mutating func reveal(_ anchor: Int, _ direction: DiffBandDirection) {
+        var reveal = reveals[anchor] ?? Reveal()
+        switch direction {
+        case .down: reveal.head += Self.step
+        case .up: reveal.tail += Self.step
+        // Halved rather than `Int.max`, so a later step still adds without trapping.
+        case .all: reveal.head = Int.max / 2
+        }
+        reveals[anchor] = reveal
+    }
+
+    /// How many of a run's `count` hidden lines to splice back in at each end.
+    public func revealed(_ anchor: Int, of count: Int) -> (head: Int, tail: Int) {
+        guard let reveal = reveals[anchor] else { return (0, 0) }
+        let head = min(reveal.head, count)
+        return (head, min(reveal.tail, count - head))
+    }
 }
 
 /// Parsing and folding unified-diff text, kept free of any UI framework so both ends
@@ -89,7 +146,8 @@ public enum DiffParser {
     /// becomes a band), unchanged runs longer than a handful of lines collapse to a
     /// band keeping 3 lines of context on the side(s) facing a change, and ids in
     /// `expanded` splice their hidden lines back in.
-    public static func displayItems(lines rows: [DiffLine], expanded: Set<Int>) -> [DiffItem] {
+    public static func displayItems(lines rows: [DiffLine],
+                                    expansion: DiffExpansion) -> [DiffItem] {
         var items: [DiffItem] = []
         var run: [DiffLine] = []
         var sawChange = false
@@ -109,16 +167,21 @@ public enum DiffParser {
             // A slice, not a copy: a folded run can be thousands of lines, and the
             // collapsed case only reads its two ends.
             let hiddenRows = run[head..<(run.count - tail)]
-            guard let firstHidden = hiddenRows.first, let lastHidden = hiddenRows.last else { return }
-            if expanded.contains(firstHidden.id) {
-                items += hiddenRows.map(DiffItem.line)
-            } else {
+            guard let anchor = hiddenRows.first?.id else { return }
+            let revealed = expansion.revealed(anchor, of: hiddenRows.count)
+            items += hiddenRows.prefix(revealed.head).map(DiffItem.line)
+            let stillHidden = hiddenRows.dropFirst(revealed.head).dropLast(revealed.tail)
+            if let firstHidden = stillHidden.first, let lastHidden = stillHidden.last {
+                // A control only points somewhere there is code to continue from.
+                var controls: DiffBandControls = []
+                if !items.isEmpty { controls.insert(.down) }
+                if !isLast || revealed.tail > 0 { controls.insert(.up) }
                 let first = firstHidden.newLine ?? firstHidden.oldLine ?? 0
                 let last = lastHidden.newLine ?? lastHidden.oldLine ?? first
-                items.append(.band(
-                    id: firstHidden.id, lines: first...max(first, last), expandable: true
-                ))
+                items.append(.band(id: anchor, lines: first...max(first, last),
+                                   controls: controls, heading: nil))
             }
+            items += hiddenRows.suffix(revealed.tail).map(DiffItem.line)
             items += run.suffix(tail).map(DiffItem.line)
         }
 
@@ -128,7 +191,8 @@ public enum DiffParser {
                 flush(isLast: false)
                 if let start = row.newLine, start > lastNewLine + 1 {
                     items.append(.band(
-                        id: row.id, lines: (lastNewLine + 1)...(start - 1), expandable: false
+                        id: row.id, lines: (lastNewLine + 1)...(start - 1),
+                        controls: [], heading: hunkHeading(row.text)
                     ))
                 }
             case .context:
@@ -149,11 +213,9 @@ public enum DiffParser {
         return items
     }
 
-    // MARK: Intraline
-
-    /// Marks the changed span inside modified lines: within each run, a block of
+    /// Marks the changed spans inside modified lines: within each run, a block of
     /// deletions immediately followed by a block of additions is paired index-wise, and
-    /// each pair gets its common prefix/suffix stripped to leave the span that changed.
+    /// each pair is word-diffed by `DiffIntraline`.
     private static func applyIntraline(_ rows: inout [DiffLine]) {
         var i = 0
         while i < rows.count {
@@ -163,47 +225,13 @@ public enum DiffParser {
             let addStart = i
             while i < rows.count, rows[i].kind == .addition { i += 1 }
             for k in 0..<min(addStart - delStart, i - addStart) {
-                guard let (old, new) = emphasisRanges(rows[delStart + k].text, rows[addStart + k].text)
+                guard let spans = DiffIntraline.spans(old: rows[delStart + k].text,
+                                                      new: rows[addStart + k].text)
                 else { continue }
-                rows[delStart + k].emphasis = old
-                rows[addStart + k].emphasis = new
+                rows[delStart + k].emphasis = spans.old
+                rows[addStart + k].emphasis = spans.new
             }
         }
-    }
-
-    /// The changed spans of a deletion/addition pair: the common prefix and suffix are
-    /// peeled off, then the boundaries snap outward to whole words so renaming
-    /// `newValue` → `oldValue` highlights the identifiers, not a `ldValue` tail. `nil`
-    /// when the sides share under a fifth of the shorter line — a rewrite, where
-    /// span-highlighting the whole line would just be noise.
-    private static func emphasisRanges(_ oldText: String, _ newText: String) -> (Range<Int>, Range<Int>)? {
-        guard oldText != newText, oldText.count <= 2000, newText.count <= 2000 else { return nil }
-        let o = Array(oldText), n = Array(newText)
-        var prefix = 0
-        while prefix < o.count, prefix < n.count, o[prefix] == n[prefix] { prefix += 1 }
-        var suffix = 0
-        while suffix < o.count - prefix, suffix < n.count - prefix,
-              o[o.count - 1 - suffix] == n[n.count - 1 - suffix] { suffix += 1 }
-        guard (prefix + suffix) * 5 >= min(o.count, n.count) else { return nil }
-
-        // CJK scripts have no intra-word boundaries, so snapping there would swallow the
-        // whole run — every ideograph/kana counts as its own boundary instead.
-        func isWord(_ c: Character) -> Bool {
-            guard c.isLetter || c.isNumber || c == "_" else { return false }
-            guard let scalar = c.unicodeScalars.first else { return false }
-            return scalar.value < 0x2E80
-        }
-        while prefix > 0, isWord(o[prefix - 1]),
-              (prefix < o.count - suffix && isWord(o[prefix]))
-                || (prefix < n.count - suffix && isWord(n[prefix])) {
-            prefix -= 1
-        }
-        while suffix > 0, isWord(o[o.count - suffix]),
-              (o.count - suffix > prefix && isWord(o[o.count - suffix - 1]))
-                || (n.count - suffix > prefix && isWord(n[n.count - suffix - 1])) {
-            suffix -= 1
-        }
-        return (prefix..<(o.count - suffix), prefix..<(n.count - suffix))
     }
 
     // MARK: Line scanning
@@ -217,6 +245,16 @@ public enum DiffParser {
 
     private static func isFileHeader(_ line: Substring) -> Bool {
         fileHeaderPrefixes.contains(where: line.hasPrefix)
+    }
+
+    /// The section heading git appends to a hunk header (`@@ -a,b +c,d @@ func foo() {`) —
+    /// the enclosing scope of the lines that follow, which a folded band shows to say what
+    /// is being skipped.
+    public static func hunkHeading(_ text: String) -> String? {
+        let parts = text.components(separatedBy: "@@")
+        guard parts.count >= 3 else { return nil }
+        let heading = parts[2...].joined(separator: "@@").trimmingCharacters(in: .whitespaces)
+        return heading.isEmpty ? nil : heading
     }
 
     /// Pulls the starting old and new line numbers out of `@@ -a,b +c,d @@`.

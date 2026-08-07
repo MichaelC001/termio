@@ -110,6 +110,21 @@ extension AppSettings {
         return ChromeTheme.overlayInk(onDark: dark, alpha: dark ? 0.55 : 0.42)
     }
 
+    /// The diff's add/delete tints, resolved against the same theme `gutterInk` reads so
+    /// the washes and the numbers drawn on them can never disagree about which slot is
+    /// showing. `terminalBackgroundColor` is dynamic and would resolve against whatever
+    /// `NSAppearance.current` happened to be during the Oklab mix — the theme's own
+    /// background is the already-resolved counterpart.
+    func diffPalette(for colorScheme: ColorScheme) -> DiffPalette {
+        let theme = chromeTheme(for: colorScheme)
+        let dark = theme?.isDark ?? (colorScheme == .dark)
+        let background = theme.map { NSColor($0.background) }
+            ?? (dark
+                ? NSColor(srgbRed: 0x21 / 255.0, green: 0x21 / 255.0, blue: 0x21 / 255.0, alpha: 1)
+                : .white)
+        return DiffPalette(background: background, isDark: dark)
+    }
+
     var terminalBackgroundColor: NSColor {
         let lightBackground = chromeTheme(for: .light)?.background
         let darkBackground = chromeTheme(for: .dark)?.background

@@ -31,7 +31,7 @@ final class DiffViewController: UIViewController {
     var onSendToAgent: ((String) -> Void)?
 
     private var rows: [DiffLine] = []
-    private var expanded: Set<Int> = []
+    private var expansion = DiffExpansion()
     /// The path a `readDiff` is in flight for, so a late reply for the previous file
     /// can't paint over the current one.
     private var pendingPath: String?
@@ -227,7 +227,7 @@ final class DiffViewController: UIViewController {
     private func reloadFile() {
         guard let change else { return }
         rows = []
-        expanded = []
+        expansion = DiffExpansion()
         textView.document = nil
         storage.setAttributedString(NSAttributedString())
         titleLabel.text = change.name
@@ -286,7 +286,7 @@ final class DiffViewController: UIViewController {
     /// first revealed line stays where the band was, so expanding never teleports the
     /// reader. nil rebuilds from the top.
     private func rebuild(anchor: (rowId: Int, y: CGFloat)? = nil) {
-        let items = DiffParser.displayItems(lines: rows, expanded: expanded)
+        let items = DiffParser.displayItems(lines: rows, expansion: expansion)
         let built = DiffDocument.build(items: items, font: MobileSettings.shared.codeFont())
         textView.document = built
         storage.setAttributedString(built.attributed)
@@ -357,7 +357,9 @@ final class DiffViewController: UIViewController {
             return
         }
         let anchorY = textView.rect(forParagraph: line).minY - textView.contentOffset.y
-        expanded.insert(line.rowId)
+        // One tap reveals the whole gap — a phone has no room for a per-direction control,
+        // so the row is the button and `.all` is the only reveal it asks for.
+        expansion.reveal(line.rowId, .all)
         rebuild(anchor: (line.rowId, anchorY))
     }
 
@@ -478,10 +480,14 @@ final class DiffDocument {
                     number: row.kind == .deletion ? row.oldLine : row.newLine
                 ))
                 location += length
-            case .band(let id, let range, let expandable):
+            case .band(let id, let range, let controls, let heading):
                 // The range names the code the fold hides, against the same numbers the
-                // gutter shows. A count would only describe the fold itself.
-                let label = "\(range.lowerBound)–\(range.upperBound)"
+                // gutter shows. A count would only describe the fold itself. git's section
+                // heading rides along when the gap came from a hunk boundary — on a phone
+                // it is the only hint of what scope you are skipping over.
+                let expandable = !controls.isEmpty
+                let rangeLabel = "\(range.lowerBound)–\(range.upperBound)"
+                let label = heading.map { "\(rangeLabel)  \($0)" } ?? rangeLabel
                 text += label
                 text += "\n"
                 let length = (label as NSString).length + 1
@@ -514,7 +520,8 @@ final class DiffDocument {
         attributed.beginEditing()
         for (item, line) in zip(items, lines) {
             switch item {
-            case .band(_, _, let expandable):
+            case .band(_, _, let controls, _):
+                let expandable = !controls.isEmpty
                 attributed.addAttributes([
                     .font: UIFont.roundedCounter(size: 11, weight: .medium),
                     // A fixed band is inert (its lines were never fetched), so it sits a
@@ -532,15 +539,19 @@ final class DiffDocument {
                     return style
                 }()
                 attributed.addAttribute(.paragraphStyle, value: style, range: line.range)
-                guard let emphasis = row.emphasis, !emphasis.isEmpty,
-                      let range = utf16Range(of: emphasis, in: row.text) else { continue }
+                guard !row.emphasis.isEmpty else { continue }
                 let color: UIColor = row.kind == .addition
                     ? UIColor.systemGreen.withAlphaComponent(0.3)
                     : UIColor.systemRed.withAlphaComponent(0.3)
-                attributed.addAttribute(
-                    .backgroundColor, value: color,
-                    range: NSRange(location: line.range.location + range.location, length: range.length)
-                )
+                // A line with two separate edits carries two spans.
+                for span in row.emphasis {
+                    guard !span.isEmpty, let range = utf16Range(of: span, in: row.text) else { continue }
+                    attributed.addAttribute(
+                        .backgroundColor, value: color,
+                        range: NSRange(location: line.range.location + range.location,
+                                       length: range.length)
+                    )
+                }
             }
         }
         attributed.endEditing()

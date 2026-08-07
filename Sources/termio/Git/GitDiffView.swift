@@ -1,3 +1,4 @@
+import TermioShared
 import AppKit
 import SwiftUI
 
@@ -34,8 +35,8 @@ struct GitDiffView: View {
     /// Syntax-colored line content per row id, filled by a background pass after the
     /// rows land; the document renders plain until then.
     @State private var styledLines: [Int: NSAttributedString] = [:]
-    /// Ids (first hidden row) of the collapsed bands the user has expanded.
-    @State private var expanded: Set<Int> = []
+    /// How much of each collapsed run the reader has revealed.
+    @State private var expansion = DiffExpansion()
 
     // Find bar — the same `FileFindBar` the code editor uses, over the diff's read-only text.
     @State private var findBarVisible = false
@@ -64,6 +65,12 @@ struct GitDiffView: View {
         .onKeyPress(.rightArrow) { walk(+1) ? .handled : .ignored }
         .onExitCommand(perform: onClose)
         .task(id: request) { await load() }
+        // Appearance flips change both the wash palette and the highlighter theme.
+        .task(id: colorScheme) {
+            guard !rows.isEmpty else { return }
+            rebuildDocument()
+            await buildStyledLines(rows)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .termioShowFindBar)) { _ in
             openFindBar()
         }
@@ -199,12 +206,9 @@ struct GitDiffView: View {
                 font: settings.resolvedTerminalFont(),
                 backgroundColor: settings.terminalBackgroundColor,
                 numberColor: settings.gutterInk(for: colorScheme),
-                onExpand: { id in
-                    expanded.insert(id)
-                    self.document = DiffDocument.build(
-                        rows: rows, expanded: expanded,
-                        codeFont: settings.resolvedTerminalFont(),
-                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
+                onExpand: { anchor, direction in
+                    expansion.reveal(anchor, direction)
+                    rebuildDocument()
                 },
                 onWalk: { walk($0) },
                 onClose: onClose,
@@ -261,13 +265,22 @@ struct GitDiffView: View {
         let parsed = await GitService.diffRows(
             for: request.change, in: request.repoRoot, commit: request.commit, range: request.range)
         rows = parsed
-        document = parsed.isEmpty
-            ? nil
-            : DiffDocument.build(rows: parsed, expanded: expanded,
-                                 codeFont: settings.resolvedTerminalFont(),
-                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
+        rebuildDocument()
         isLoading = false
         await buildStyledLines(parsed)
+    }
+
+    /// Lays the rows out again with the palette that applies *now*. The tints are opaque,
+    /// pre-mixed against the terminal background and baked into the document's emphasis
+    /// spans, so unlike the dynamic system colors they replaced they do not re-resolve on
+    /// their own when the appearance flips — the document has to be rebuilt.
+    private func rebuildDocument() {
+        document = rows.isEmpty
+            ? nil
+            : DiffDocument.build(rows: rows, expansion: expansion,
+                                 palette: settings.diffPalette(for: colorScheme),
+                                 codeFont: settings.resolvedTerminalFont(),
+                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
     }
 
     /// Colors the code through `DiffHighlighter` (the editor's Highlightr pipeline
