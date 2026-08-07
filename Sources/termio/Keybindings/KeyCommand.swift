@@ -19,7 +19,9 @@ enum KeyCommandID: String, CaseIterable, Identifiable {
     case newPullRequest = "branch.new-pull-request"
     // Panes
     case splitRight = "pane.split-right"
+    case splitLeft = "pane.split-left"
     case splitDown = "pane.split-down"
+    case splitUp = "pane.split-up"
     case splitZoom = "pane.zoom"
     // Raw value predates the Ungroup rename — kept so saved keybindings resolve.
     case ungroup = "pane.close"
@@ -90,8 +92,13 @@ enum KeyCommandCatalog {
         // Panes
         .init(id: .splitRight, category: "Panes", title: "Split Right",
               defaultShortcut: .init(modifiers: [.command], key: .char("d"))),
+        // Left and Up ship unbound, the way ghostty ships them: the two directions
+        // people reach for constantly earn the keys, the mirrored pair stays a
+        // menu verb until a user decides otherwise in Settings ▸ Keyboard.
+        .init(id: .splitLeft, category: "Panes", title: "Split Left", defaultShortcut: nil),
         .init(id: .splitDown, category: "Panes", title: "Split Down",
               defaultShortcut: .init(modifiers: [.command, .shift], key: .char("d"))),
+        .init(id: .splitUp, category: "Panes", title: "Split Up", defaultShortcut: nil),
         .init(id: .splitZoom, category: "Panes", title: "Zoom Split",
               defaultShortcut: .init(modifiers: [.command, .shift], key: .return)),
         .init(id: .ungroup, category: "Panes", title: "Ungroup",
