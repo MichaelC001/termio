@@ -93,14 +93,19 @@ final class TerminalViewController: UIViewController {
     )
 
     // Drawer
-    private lazy var inspectorNav = UINavigationController(
-        rootViewController: InspectorViewController(
+    private lazy var inspector: InspectorViewController = {
+        let inspector = InspectorViewController(
             session: session,
             companionURL: {
                 if case .companion(let url) = backend { url } else { nil }
             }()
         )
-    )
+        inspector.onSendToAgent = { [weak self] text in
+            self?.sendSnippetToPrompt(text)
+        }
+        return inspector
+    }()
+    private lazy var inspectorNav = UINavigationController(rootViewController: inspector)
     private let dimView = UIControl()
     private var drawerOpen = false
     /// Direction the surface pan locked at its start: rightward = back to
@@ -633,12 +638,25 @@ final class TerminalViewController: UIViewController {
         )
     }
 
+    /// Pastes a diff selection into the TUI's input line — the drawer's "Send to Agent",
+    /// and the phone twin of the desktop's "Add to Chat". Bracketed paste keeps the
+    /// whole block one literal insert instead of a line-by-line submit, and the drawer
+    /// steps aside so the prompt it landed in is visible.
+    private func sendSnippetToPrompt(_ text: String) {
+        pasteIntoPrompt(text)
+        setDrawer(open: false, animated: true)
+    }
+
+    /// Bracketed paste: the whole block lands as one literal insert instead of a
+    /// line-by-line submit, and the TUI's own Return still sends it.
+    private func pasteIntoPrompt(_ text: String) {
+        terminalView.send(Data(("\u{1B}[200~" + text + "\u{1B}[201~").utf8))
+    }
+
     /// Types the uploaded file's Mac path into the TUI's input line, where it
-    /// stays editable and submits with the TUI's own Return. Bracketed paste
-    /// keeps a name with spaces one literal insert; the trailing space
-    /// separates it from whatever gets typed next.
+    /// stays editable. The trailing space separates it from whatever gets typed next.
     private func typeUploadedPath(_ path: String) {
-        terminalView.send(Data(("\u{1B}[200~" + path + " \u{1B}[201~").utf8))
+        pasteIntoPrompt(path + " ")
     }
 
     private func reportSkipped(oversized: [String], unreadable: [String] = []) {

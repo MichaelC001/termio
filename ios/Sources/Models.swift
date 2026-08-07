@@ -188,24 +188,25 @@ extension MockProject {
 
 // MARK: - Mock file tree
 
+/// The bundled sample tree, shown when there is no Mac behind the drawer (the demo
+/// sessions and App Store screenshots). Browsed the same way a live project is —
+/// one directory per screen — so the offline path exercises the real UI.
 final class FileNode {
     let name: String
     let children: [FileNode]?
     let changed: Bool
-    var isExpanded: Bool
 
     var isDirectory: Bool { children != nil }
 
-    init(_ name: String, changed: Bool = false, expanded: Bool = false, children: [FileNode]? = nil) {
+    init(_ name: String, changed: Bool = false, children: [FileNode]? = nil) {
         self.name = name
         self.changed = changed
         self.children = children
-        isExpanded = expanded
     }
 
     static let sampleRoot: [FileNode] = [
-        FileNode("Sources", expanded: true, children: [
-            FileNode("termio", expanded: true, children: [
+        FileNode("Sources", children: [
+            FileNode("termio", children: [
                 FileNode("App.swift", changed: true),
                 FileNode("Models.swift"),
                 FileNode("SessionInfoView.swift", changed: true),
@@ -227,48 +228,100 @@ final class FileNode {
         FileNode("README.md"),
     ]
 
-    /// Flattens the tree into visible rows (respecting collapsed dirs).
-    static func visibleRows(from roots: [FileNode], depth: Int = 0) -> [(node: FileNode, depth: Int)] {
-        var rows: [(FileNode, Int)] = []
-        for node in roots {
-            rows.append((node, depth))
-            if node.isDirectory, node.isExpanded, let children = node.children {
-                rows.append(contentsOf: visibleRows(from: children, depth: depth + 1))
+    /// One directory's entries in the same shape the wire delivers, so the browser has a
+    /// single code path. "" is the root.
+    static func sampleEntries(at path: String) -> [WireFileEntry] {
+        var level = sampleRoot
+        if !path.isEmpty {
+            for component in path.split(separator: "/") {
+                guard let node = level.first(where: { $0.name == component }),
+                      let children = node.children else { return [] }
+                level = children
             }
         }
-        return rows
+        return level.map {
+            WireFileEntry(name: $0.name, isDir: $0.isDirectory, changed: $0.changed || containsChange($0))
+        }
+    }
+
+    /// Every file in the tree as a repo-relative path, for the offline filename search.
+    static func flattened(_ nodes: [FileNode] = sampleRoot, prefix: String = "") -> [String] {
+        nodes.flatMap { node -> [String] in
+            let path = prefix.isEmpty ? node.name : "\(prefix)/\(node.name)"
+            guard let children = node.children else { return [path] }
+            return flattened(children, prefix: path)
+        }
+    }
+
+    private static func containsChange(_ node: FileNode) -> Bool {
+        guard let children = node.children else { return node.changed }
+        return children.contains { $0.changed || containsChange($0) }
     }
 }
 
 // MARK: - Mock changes
 
-struct MockChange {
-    let kind: String // "M" / "A" / "D"
-    let path: String
-    let additions: Int
-    let deletions: Int
-
-    static let samples: [MockChange] = [
-        .init(kind: "M", path: "Sources/termio/App.swift", additions: 40, deletions: 12),
-        .init(kind: "M", path: "Sources/termio/SessionInfoView.swift", additions: 18, deletions: 3),
-        .init(kind: "M", path: "Sources/termio/TermioStore/TermioStore+TerminalSurface.swift", additions: 62, deletions: 41),
-        .init(kind: "A", path: "Sources/termio/SessionHost.swift", additions: 120, deletions: 0),
+/// The offline Changes pane and its diff — the same `WireChange` and unified-diff text a
+/// live Mac sends, so the demo renders through the real reader rather than a stand-in.
+enum MockChanges {
+    static let samples: [WireChange] = [
+        WireChange(path: "Sources/termio/App.swift", status: "M", additions: 40, deletions: 12),
+        WireChange(path: "Sources/termio/SessionInfoView.swift", status: "M", additions: 18, deletions: 3),
+        WireChange(
+            path: "Sources/termio/TermioStore/TermioStore+TerminalSurface.swift",
+            status: "M", additions: 62, deletions: 41
+        ),
+        WireChange(path: "Sources/termio/SessionHost.swift", status: "A", additions: 120, deletions: 0),
     ]
 
+    /// Full-context sample: one long unchanged run, so the fold band and its reveal are
+    /// visible offline exactly as they behave on a real full-context diff.
     static let sampleDiff = """
-    @@ -41,7 +41,9 @@ func makeContentSplitViewController() {
-         let sidebar = NSSplitViewItem(sidebarWithViewController: sidebarVC)
+    @@ -1,44 +1,48 @@
+     import AppKit
+     import SwiftUI
+    \u{20}
+     /// The window's content: a sidebar of sessions beside the terminal surface.
+     /// Layout is AppKit's, so the sidebar can run the full height of the window.
+     struct ContentSplit {
+         let store: TermioStore
+    \u{20}
+         var sidebarWidth: CGFloat = 220
+         var minimumSidebarWidth: CGFloat = 180
+         var maximumSidebarWidth: CGFloat = 420
+    \u{20}
+         func makeSplitViewController() -> NSSplitViewController {
+             let controller = NSSplitViewController()
+             controller.splitView.dividerStyle = .thin
+             return controller
+         }
+    \u{20}
+         func makeSidebarItem(_ viewController: NSViewController) -> NSSplitViewItem {
+             let item = NSSplitViewItem(sidebarWithViewController: viewController)
+             item.minimumThickness = minimumSidebarWidth
+             item.maximumThickness = maximumSidebarWidth
+             return item
+         }
+     }
+    \u{20}
+     func makeContentSplitViewController(store: TermioStore) -> NSSplitViewController {
+         let split = ContentSplit(store: store)
+         let splitViewController = split.makeSplitViewController()
+         let sidebar = split.makeSidebarItem(SidebarViewController(store: store))
          sidebar.minimumThickness = 220
     -    window.styleMask.insert(.fullSizeContentView)
     +    sidebar.titlebarSeparatorStyle = .automatic
     +    window.titlebarAppearsTransparent = true
     +    window.styleMask.insert(.fullSizeContentView)
          splitViewController.addSplitViewItem(sidebar)
-
-    @@ -88,6 +90,12 @@ func applyTheme(_ theme: TerminalTheme) {
+         splitViewController.addSplitViewItem(NSSplitViewItem(viewController: terminalVC))
+         return splitViewController
+     }
+    \u{20}
+     func applyTheme(_ theme: TerminalTheme, to window: NSWindow) {
          controller.setTheme(theme)
-    +    // Resolve the dynamic color statically: fullscreen windows on
-    +    // macOS 26 do not re-evaluate NSColor appearance providers.
+    +    // Resolve the dynamic color statically: fullscreen windows on macOS 26
+    +    // do not re-evaluate an NSColor's appearance provider.
     +    let resolved = theme.background.resolvedColor(for: window)
     +    window.backgroundColor = resolved
          inspector.refresh()

@@ -80,6 +80,9 @@ let package = Package(
             name: "termioTests",
             dependencies: [
                 "termio",
+                // The shared diff model the iOS reader parses with — pure logic,
+                // so it is tested here rather than in an Xcode-only test bundle.
+                .product(name: "TermioShared", package: "Shared"),
             ],
             path: "Tests/termioTests",
             swiftSettings: [
