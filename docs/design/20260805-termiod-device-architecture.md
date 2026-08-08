@@ -3,7 +3,7 @@ title: Device Architecture — one server per device, every UI a client
 status: draft
 type: design
 created: 2026-08-05
-updated: 2026-08-05
+updated: 2026-08-08
 related:
   - 20260730-termiod-session-protocol.md
   - 20260730-termiod-session-mux.md
@@ -98,6 +98,33 @@ three roads, and switching networks does not fork your state.
 database, per §H #8 (never embed SSH). The parser already handles wildcards,
 negation, `Include`, and `%h` (`Sources/termio/Settings/SSHConfig.swift`).
 
+**Discovery is a separate question from that, and currently unanswered.** "No
+host database" governs where a *route* comes from; it says nothing about how a
+route gets into `~/.ssh/config` in the first place. Today the answer is "the user
+already did it": adding a box means hand-writing an alias, then a deploy that
+cross-compiles a musl binary on the Mac and `scp`s it. Superlogical productises
+the same step — **Announced:** *"Servers can automatically join a tailscale …
+and clients can automatically find them with one config."*
+
+The shape that closes the gap without acquiring a host database is a **provider
+interface**: a discovery provider enumerates candidate routes, and everything
+downstream is unchanged — connect, read `host_id`, record the device. Providers:
+`~/.ssh/config` (today, always present), a tailnet (`tailscale status --json`,
+read-only, no account in the protocol), Bonjour on a LAN, later others. Rules
+that keep this from becoming the thing §H #8 forbids:
+
+- A provider **proposes routes; it never becomes an identity.** Devices are still
+  discovered by handshake (§2), so a tailnet name is one more road to a
+  `host_id`, exactly like an alias.
+- **No provider is required**, and none may be a dependency of the session
+  protocol. A user with only `~/.ssh/config` loses nothing.
+- Credentials stay where they are. A provider answers *what hosts exist*, never
+  *how to authenticate* — that remains system OpenSSH and the user's config.
+
+Pair this with the content-addressed install in §6 and prebuilt per-arch
+binaries: "add a machine" should be pick-from-list, not a toolchain exercise.
+Scheduled as §8.8.
+
 **Open question (§9.1):** `host_id` is not intrinsic — a cloned VM or a reused
 container image carries the same one, and a reinstall mints a new one. See §9.
 
@@ -127,6 +154,19 @@ have to parse too, and isn't that still double parsing?
 That is termiod's anti-100× invariant, stated by someone who arrived at it
 independently. **We are already on this architecture; nothing here needs to
 change.** The invariant, restated with the extra precision his answer supplies:
+
+**A second independent witness, added 2026-08-08.** [zmx](https://zmx.sh/)
+(neurosnap) is session persistence in Zig — abduco's one-daemon-per-session plus
+shpool's state restoration — and it reaches the same place from a third
+direction, using the *same library termiod binds*: *"ghostty-vt doesn't sit in
+the middle of an active terminal session, it simply receives all the same data
+the client receives so it can re-hydrate clients that connect."* Three
+implementations, no shared code, one design. Treat the invariant as settled and
+stop re-deriving it. Two consequences worth carrying: the persistence layer is
+commoditising, so *"sessions survive disconnect"* cannot be the pitch by the time
+we ship; and zmx's client is a plain tty, which is why it needs `autossh` for
+reconnection where a protocol client can repair its own link (§5.1) — and why it
+covers the any-terminal case that our replica model does not (§9.6).
 
 > The authoritative VT is fed **in parallel with**, never **between**, the PTY
 > and the clients. The host parsing slowly must never slow a client down; a
@@ -231,6 +271,59 @@ resource at the last applied `seq`. No retry ceiling — a retry loses nothing �
 which is strictly stronger than Zed's bounded `MAX_RECONNECT_ATTEMPTS` and than
 VS Code's reconnection tokens, which die with the server PID.
 
+### 5.1 The connection is an object, not a side effect of attaching
+
+The paragraph above has read as description since it was written. It is not:
+the POC opens **one connection per session**, owned by that session's link and
+destroyed with it (`Termiod.Transport` is created inside `TermiodSessionLink`),
+plus a whole additional connection for every `list`, `kill`, and device probe.
+Nothing in the app models "the link to this device." This section makes the
+requirement explicit so §8 can schedule it.
+
+> **A device connection is a durable object with its own lifecycle.** It is
+> opened before, and outlives, any session that uses it. Sessions, resource
+> subscriptions, requests, and transfers are **channels** on it. Closing a pane
+> closes a channel and never the connection; a network drop is repaired once,
+> at the connection, and every channel recovers with it.
+
+Why this is the shape rather than a tidier version of per-session pipes:
+
+- **A dropped pipe currently reads as session death.** With no object above the
+  session there is nowhere for "reconnecting" to live, so the client's only
+  vocabulary for a lost link is `exited` — and the pane reports a death that did
+  not happen while the session keeps running on the device.
+- **Cost is paid per pane instead of per machine.** Cold SSH is 216–292 ms
+  against 26–33 ms warm (measured 2026-08-05); N panes on one box means N key
+  exchanges and N reconnect storms after a network change.
+- **It is the same rule the host already follows.** One daemon per device, one
+  roster, one `host_id`. A client that opens a connection per session is
+  modelling the device as N machines, which is exactly the mistake §2 rejects
+  one level up.
+- **This is the substance of "the mux owns SSH."** Hashimoto's objection to
+  `ssh → remote mux` is not about nesting; it is that the remote connection
+  should be a managed, durable resource of the mux rather than a transient
+  process each client spawns for itself. Termio's answer differs on *custody* —
+  system OpenSSH, the user's `~/.ssh/config`, §H #8 — and should not differ on
+  *ownership*.
+
+**Two levels, deliberately separated so the cheap one is not blocked:**
+
+| | Mechanism | Buys | Protocol change |
+| --- | --- | --- | --- |
+| **A** | `ControlMaster`/`ControlPersist`/`ControlPath` on the app's ssh invocation — the option set `remote::ssh_multiplex_args()` already builds for the CLI | one TCP + one auth per device; warm-connect latency | none |
+| **B** | Channel ids in the framing, so one pipe carries N sessions plus the resource, request, and transfer planes; a `TermiodConnection` per device owning health and reconnect | reconnect-once semantics; the four planes actually sharing a connection; a coherent "device is reachable / degraded / gone" state for the UI | additive `proto` bump — `hello` fixes one role per connection today |
+
+Do **A** immediately; it is an argument list. **B** is the design change, and it
+is a prerequisite for the WebSocket binding (§8.7) rather than a parallel track —
+a second transport is worth far more once one connection carries everything.
+
+**What reconnect owes, stated normatively.** On reconnect the client MUST
+re-attach every live session by name and re-subscribe every resource at its last
+applied cursor; the device MUST answer each with either continuity or an explicit
+`gap`. A client MUST NOT report a session as exited because its transport failed —
+`exited` means the host said so. Backoff is bounded per attempt and unbounded in
+count.
+
 **Transfer is its own plane, not a request verb.** Under the device model,
 moving a screenshot to the box an agent runs on is not "uploading to a server";
 it is Universal Clipboard between two of your machines, and the direction is
@@ -275,17 +368,20 @@ reply threads, and superlogical.com.
 | Scrollback streamed newest-first | yes | same (`H`) |
 | Overflow degrade | queue → **tombstone** → full resync | ring → `gap: true` → snapshot |
 | Splits | native windows/tabs, **one connection per PTY** | native panes; §H #7 forbids a nested WM |
+| Remote connection ownership | *"the mux owns SSH"* — a durable, managed resource of the mux, explicitly not `ssh → remote mux` | **agreed in §5.1, not built** — the POC opens one client-owned ssh per session. Custody differs (system OpenSSH, user's config); ownership should not |
+| Host discovery | **direct Tailscale enrollment**: *"servers can automatically join a tailscale … clients can automatically find them with one config"* | `~/.ssh/config` only; provider interface specified §2, **not built** |
 | Legacy terminals | **compat mode**: a libghostty in the middle | not built |
-| Wire protocol | custom binary, *"predominantly part of libghostty"*, called an **open protocol** | our own framed protocol |
-| Remote transport | **WebSockets over HTTP** (browser is first-class); "not at all guaranteed to be final" | **SSH only** — a trust choice (§H #8) |
+| Wire protocol | custom binary, *"predominantly part of libghostty"*, called an **open protocol** | our own framed protocol. **Checked 2026-08-08: no spec, no OSS release — beta waitlist only.** Nothing to adopt yet; re-evaluate when it lands |
+| Remote transport | **WebSockets over HTTP** (browser is first-class); "not at all guaranteed to be final" | **SSH only** — a trust choice (§H #8). WS as a *second binding* of the same protocol is §8.7 |
+| Phone client | attaches to the session like any other client | **mirrors the Mac** over the companion channel — the live exception to §H #4, closed by §8.7 |
 | Live human sharing | day one | not a v1 goal |
 | Where compute lives | **Unknown** | **the user's own machines, never ours** |
 | Agent status in the protocol | **Unknown** | first-class workstream object |
 
-**The architecture is not the differentiation.** Two teams converged on the
-same design independently, which is the strongest evidence available that it is
-correct — and it means nothing here is defensible as a moat. The bottom three
-rows are.
+**The architecture is not the differentiation.** Three implementations converged
+on the same design independently — Superlogical, zmx (§3), and termiod — which is
+the strongest evidence available that it is correct, and it means nothing here is
+defensible as a moat. The bottom three rows are.
 
 **Two things worth acting on:**
 
@@ -328,17 +424,38 @@ Each step is independently shippable and mostly removes code.
    the previous daemon died under it. **Not done:** the last screen (§6 asks for
    it; capturing it needs a snapshot request threaded through the sidecar's
    shutdown path), and the Linux systemd `--user` + `enable-linger` unit.
-4. **Delete the fork.** Remove the `TERMIO_TERMIOD` flag, the in-process
+4. **Own the connection (§5.1).** The step this ladder was missing, and the one
+   the remote plane is currently failing on. **4a:** put
+   `remote::ssh_multiplex_args()`'s option set on the app's own ssh invocation —
+   `ControlMaster`, `ControlPersist`, `ControlPath`, and the `BatchMode` /
+   `ConnectTimeout` every other ssh call site in the app already sets but this
+   one does not, so an unloaded key currently prompts onto an unread stderr and
+   the attach hangs with no error. **4b:** a `TermiodConnection` per device that
+   owns the transport, its health, and reconnect; `TermiodSessionLink` becomes a
+   client of it instead of a transport owner, and a transport failure stops being
+   reported as `exited`. **4c:** channel ids in the framing (additive `proto`
+   bump) so the four planes genuinely share one pipe. 4a is an argument list; 4b
+   is where the durability promise is actually kept.
+5. **Delete the fork.** Remove the `TERMIO_TERMIOD` flag, the in-process
    `PTYProcess` path, per-session remote host, and every "Remote" menu verb.
    `New Terminal` opens on the current device.
-5. **Device switcher** in window chrome, with readiness state. Only meaningful
-   after step 4 — before it, local is still a special case.
-6. **Request plane**, then file tree and git move to the current device.
-7. **Transfer plane**, then clipboard and image paste work across devices.
+6. **Device switcher** in window chrome, with readiness state. Only meaningful
+   after step 5 — before it, local is still a special case. Reads the connection
+   state from step 4b, so a device can show *degraded* rather than only
+   present/absent.
+7. **WebSocket binding** of the same framed protocol, after 4c. This is what
+   makes the phone a client of a *device* rather than a mirror of the Mac — and
+   it is the one place the repo currently contradicts §H #4, since the companion
+   channel is already a second protocol. SSH stays the default trust plane; a
+   binding is not a policy.
+8. **Discovery providers** (§2) and prebuilt per-arch install (§6), so adding a
+   machine is pick-from-list rather than hand-written alias plus cross-compile.
+9. **Request plane**, then file tree and git move to the current device.
+10. **Transfer plane**, then clipboard and image paste work across devices.
 
-Steps 1–4 are net deletions. The features people are waiting for (files, git,
-image paste) are 6–7, and they are last **on purpose**: built before the device
-model exists, each would grow its own local/remote fork.
+Steps 1–5 are net deletions or net structure. The features people are waiting for
+(files, git, image paste) are 9–10, and they are last **on purpose**: built before
+the device model exists, each would grow its own local/remote fork.
 
 ---
 
@@ -437,6 +554,16 @@ model exists, each would grow its own local/remote fork.
      container has to record the aliases it absorbed. A user who splits a
      wrongly merged container should get their two blocks back, not a manual
      rebuild.
+
+6. **Is a plain terminal a supported client?** A replica needs libghostty, so
+   `ssh box && termiod attach` only works from a termio client — while zmx (§3)
+   and Superlogical's announced *compat mode* both cover it, zmx for free because
+   its client is a tty. Serving it means the host renders for that one client: a
+   scoped, per-client exception to §4, off the shared tee, and a real cost. Not
+   serving it means the CLI is a debugging tool rather than a surface anyone
+   outside termio can use, and that we are strictly narrower than a one-person
+   project on the axis users evaluate first. The trade is understood; the call is
+   not made. Tracked as §C.4 / §F.5 in the client-classes doc.
 
 ---
 

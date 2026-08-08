@@ -3,7 +3,7 @@ title: Superlogical research brief (Codex / competitive)
 status: draft
 type: design
 created: 2026-08-05
-updated: 2026-08-05
+updated: 2026-08-08
 related:
   - 20260730-termiod-session-protocol.md
   - 20260805-termiod-device-architecture.md
@@ -51,7 +51,8 @@ related:
   - In launch-day replies, Hashimoto distinguished Superlogical from terminal-within-a-terminal muxes such as tmux and Herdr. His position is that cloning that architecture is a **dead end for Superlogical’s goals**, because it preserves the nested terminal boundary rather than making the durable session and its state the primary system.
   - The stated direction is a dedicated mux server/network layer with purpose-built clients. The mux **“owns SSH”** rather than treating remote work solely as an external `ssh → remote tmux` composition.
   - cmux is closer in UI technology because it is a native application built on libghostty, but Superlogical’s intended boundary is broader: durable network sessions, multiple client types, discovery, reconnection, sharing, and eventually non-terminal work.
-  - **Inference:** This points toward a structured, reconnectable client/server protocol and server-owned session lifecycle instead of merely replaying one terminal byte stream. Superlogical has not published its wire protocol, terminal-state authority, snapshot/diff model, SSH credential design, or conflict semantics, so those details should not be stated as facts. [Mitchell’s replies](https://x.com/mitchellh/with_replies), [Superlogical](https://www.superlogical.com/)
+  - **Inference:** This points toward a structured, reconnectable client/server protocol and server-owned session lifecycle instead of merely replaying one terminal byte stream. [Mitchell’s replies](https://x.com/mitchellh/with_replies), [Superlogical](https://www.superlogical.com/)
+  - **Updated 2026-08-08.** Two of the items listed here as unpublished have since been described. **Terminal-state authority** and the **snapshot/diff model** are **Announced**: the server parses authoritatively, the tee happens ahead of it, clients receive raw bytes, and screen diffs are rejected as the transport. Still genuinely **Unknown**: the wire protocol itself (no spec, no OSS release — the site offers a beta waitlist), SSH credential custody, and conflict/concurrency semantics. Do not state those as facts.
 
 - **SSH ownership**
   - “The mux owns SSH” suggests remote connections are durable session resources managed by the mux rather than transient processes established independently by every client.
@@ -137,24 +138,21 @@ related:
   - Define which state comes from agent integrations and which may be inferred from PTY output.
   - Rationale: this is termio’s clearest remaining wedge and must be architectural, not a sidebar added to a generic mux.
 
-- **Revisit the raw-PTY-first protocol decision before freezing it.**
-  - A raw byte stream is useful for bootstrap compatibility, but make terminal snapshots/diffs and authoritative reconnect state an early design decision rather than an optional distant optimization.
-  - Rationale: heterogeneous web/macOS/iOS clients, late attachment, native scrollback, session sharing, and resynchronization become harder if the protocol assumes one continuously connected emulator.
-  - **Inference from Superlogical’s architecture comments:** terminal-in-terminal compatibility is valuable, but should not become termiod’s permanent semantic boundary.
+- **Revisit the raw-PTY-first protocol decision before freezing it. — SUPERSEDED 2026-08-08. Do not implement.**
+  - *Original recommendation, kept for the record:* a raw byte stream is useful for bootstrap compatibility, but make terminal snapshots/diffs and authoritative reconnect state an early design decision rather than an optional distant optimization — because heterogeneous web/macOS/iOS clients, late attachment, native scrollback, sharing, and resynchronization get harder if the protocol assumes one continuously connected emulator.
+  - **Why it is withdrawn.** It was inferred on launch day, before Superlogical described its architecture, and the primary sources invert it. **Announced:** *“we take the PTY bytes, we **tee them off to all the clients, and we send them raw like SSH**”*; and, asked directly whether the server parses too, *“Yes, the server parses too. But the teeing happens ahead of the server.”* On diffs specifically: *“The issue with the screen diffing is **less performance and more making it very difficult to allow native scrollback, selection**.”*
+  - Acting on this bullet would move termiod **away** from Superlogical's design and break the anti-100× invariant. The staged contract it asks for already exists: raw `D` is the transport, `S` is the attach/resync bootstrap, `G` is an opt-in pressure valve that MUST NOT be chosen by transport class. See [20260805-termiod-device-architecture.md](20260805-termiod-device-architecture.md) §3 and [20260805-termiod-hot-path-and-client-classes.md](20260805-termiod-hot-path-and-client-classes.md) §D.4.
+  - What survives from the concern: late attachment and resync are real, and they are answered by the **JOIN** invariant and the `gap`/forced-resync path, not by changing what the transport carries.
 
-- **Reconcile this document with `20260708-session-daemon-architecture.md`.**
-  - One document currently favors raw PTY bytes with grid diffs deferred; the other describes a server-side libghostty terminal model as authoritative.
-  - Choose and document a staged contract, for example:
-    - raw byte passthrough for bring-up and compatibility;
-    - server-side terminal state for persistence and resync;
-    - snapshot plus incremental diff protocol for full clients;
-    - optional raw stream for debugging or simple clients.
-  - Rationale: the contradiction affects protocol stability, scrollback ownership, reconnect correctness, and mobile-client complexity.
+- **Reconcile this document with `20260708-session-daemon-architecture.md`. — RESOLVED 2026-08-08.**
+  - The apparent contradiction was a false one: both are true at once, and the resolution is that the authoritative VT runs **in parallel with**, never **between**, the PTY and the clients. Raw bytes are the transport; server-side terminal state exists for snapshots, peek-without-attach, and catch-up.
+  - The staged contract is therefore: raw `D` always; `S` for attach and resync; `H` for scrollback, newest-first; `G` opt-in under pressure only. Recorded in [20260805-termiod-device-architecture.md](20260805-termiod-device-architecture.md) §3.
 
 - **Clarify the SSH boundary.**
   - Replace “Superlogical owns SSH as product: yes” with a sourced, narrower statement: integrated SSH/remote connectivity is part of its mux architecture, but implementation and custody details are unpublished.
   - Describe termio’s use of system SSH as a deliberate trust and compatibility choice, not merely missing functionality.
   - Rationale: system SSH reduces security scope and preserves user configuration, while integrated SSH may offer smoother discovery and reconnection. The trade-off should be explicit.
+  - **Added 2026-08-08 — the part of “the mux owns SSH” that is a real critique, and lands.** *Using* system SSH is the trust choice and stays. *Who owns the connection* is a separate question, and termio currently answers it the way Mitchell calls a dead end: the Mac client opens **one `ssh` process per session**, owned by that pane and killed with it (`TermiodClient.swift` `Transport.ssh`), plus one more for every `list`/`kill`/probe, with no `ControlMaster` on that path — so a dropped pipe reads as session death rather than a reconnect. Owning SSH means the **device connection** is the durable object: one link per device, N sessions as channels on it, health and reconnect at that layer, outliving any pane. That is already what [20260805-termiod-device-architecture.md](20260805-termiod-device-architecture.md) §5 describes and §8 now schedules; the gap is implementation, not direction.
 
 - **Promote discovery to a first-class subsystem.**
   - Define a provider interface for static SSH config, Bonjour/local discovery, Tailscale, and future integrations.
