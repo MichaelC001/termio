@@ -26,6 +26,8 @@ export const discordUrl = "https://discord.gg/H9DKVwsE5f";
 // workflow (.github/workflows/release.yml) overwrites this object on every tag.
 export const downloadUrl = "https://downloads.termio.sh/termio.dmg";
 
+export const testflightUrl = "https://testflight.apple.com/join/1Arf1UKR";
+
 // Real app captures for the hero carousel (public/screenshots/hero*.png, all
 // 3024×1898 @2x). The hero cross-fades through these; the first one is the LCP
 // image, so lead with the strongest shot.

@@ -5,7 +5,7 @@ import { HeroGradient } from "@/components/hero-gradient";
 import { HeroCarousel } from "@/components/hero-carousel";
 import { AppleMark } from "@/components/section-label";
 import { AgentMarquee } from "@/components/agent-icons";
-import { downloadUrl, heroSlides, supportedAgents } from "@/lib/site";
+import { downloadUrl, heroSlides, supportedAgents, testflightUrl } from "@/lib/site";
 
 export function Hero() {
   return (
@@ -61,6 +61,15 @@ export function Hero() {
             >
               <AppleMark />
               Download for Mac
+            </a>
+            <a
+              href={testflightUrl}
+              className={cn(
+                buttonVariants({ variant: "ghost" }),
+                "h-12 rounded-full border border-white/20 bg-white/5 px-7 text-base text-white/90 backdrop-blur-sm hover:bg-white/10 hover:text-white",
+              )}
+            >
+              Download for iOS Beta
             </a>
           </div>
         </Reveal>

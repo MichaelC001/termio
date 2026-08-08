@@ -1,4 +1,5 @@
 import { markdownUrl, orderedDocPages, siteUrl } from "@/lib/docs-llms";
+import { testflightUrl } from "@/lib/site";
 
 // /llms.txt — the llmstxt.org index for agents: what Termio is, plus every doc
 // page linked in its raw-Markdown form so an agent never has to parse the HTML
@@ -26,6 +27,7 @@ export function GET() {
     "## Optional",
     "",
     `- [Changelog](${siteUrl}/changelog): release history`,
+    `- [iPhone companion beta](${testflightUrl}): TestFlight — mirrors Mac sessions live on the phone`,
     `- [Full docs in one file](${siteUrl}/llms-full.txt): every page above, concatenated`,
     `- Programmatic docs search: \`GET ${siteUrl}/api/search?query=<terms>\` returns JSON results with page URLs`,
   ].join("\n");

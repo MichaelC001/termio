@@ -3,6 +3,7 @@ import { Hero } from "@/components/sections/hero";
 import { AgentShowcase } from "@/components/sections/agent-showcase";
 import { Orchestration } from "@/components/sections/orchestration";
 import { FeatureGrid } from "@/components/sections/feature-grid";
+import { Companion } from "@/components/sections/companion";
 import { Faq } from "@/components/sections/faq";
 import { CtaBand } from "@/components/sections/cta-band";
 import { SiteFooter } from "@/components/site-footer";
@@ -35,6 +36,7 @@ export default function Home() {
       <SiteNav />
       <main className="flex-1">
         <Hero />
+        <Companion />
         <AgentShowcase />
         <Orchestration />
         <FeatureGrid />
