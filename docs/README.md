@@ -9,9 +9,11 @@ page when you browse `docs/`.
   **YAML front matter** at the top of the file. Subfolders (`design/`,
   `competitive-analysis/`, …) are just loose grouping — the authoritative
   category is the front matter `type`, **not** the path.
-- **Product promo assets** (App Store shots, social covers) stay under
-  `marketing/` in this repo. **Strategy / pitch markdown** lives in the sibling
-  `pitch` repo: `/Users/yuanjiwei/Documents/GitHub/pitch/termio`.
+- **Product promo assets and posts** (App Store shots, social covers, launch
+  posts) live in the sibling private `marketing` repo:
+  `/Users/yuanjiwei/Documents/GitHub/marketing/termio`. **Strategy / pitch
+  markdown** lives in the sibling `pitch` repo:
+  `/Users/yuanjiwei/Documents/GitHub/pitch/termio`.
 - Each doc declares: `title`, `status`, `type`, `created`/`updated`, and optional
   `related`. The front matter is the **single source of truth** for status —
   there is no separate status file to keep in sync.
