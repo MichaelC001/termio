@@ -168,7 +168,8 @@ termio sessions watch                      # stream status changes as they happe
 ```
 
 An iPhone companion app — your sessions mirrored on your phone, with
-push-to-talk voice input — is on its way to the App Store.
+push-to-talk voice input — is in public beta:
+[join on TestFlight](https://testflight.apple.com/join/1Arf1UKR).
 
 ## Install
 
@@ -180,6 +181,10 @@ Or install with [Homebrew](https://brew.sh):
 ```sh
 brew install --cask termio-sh/tap/termio
 ```
+
+**On iPhone**: get the companion beta on
+[TestFlight](https://testflight.apple.com/join/1Arf1UKR), then pair it by
+scanning the QR code in the Mac app's Settings ▸ Mobile.
 
 ## Build from source
 
