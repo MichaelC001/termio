@@ -205,7 +205,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Finder/Xcode drop theirs. KVO catches every collapse path (toolbar toggle, View menu,
         // divider drag). No `.initial`: the launch-time sync below runs after the autosave restore.
         sidebarCollapseObserver = sidebarSplitItem?.observe(\.isCollapsed, options: [.new]) { [weak self] item, _ in
-            MainActor.assumeIsolated { self?.setNavigatorItemsVisible(!item.isCollapsed) }
+            let collapsed = item.isCollapsed
+            MainActor.assumeIsolated { self?.setNavigatorItemsVisible(!collapsed) }
         }
         // Mirror the inspector's live collapse state onto the store, so panes it hosts
         // can idle while hidden (a collapsed item keeps its view hierarchy alive — the
@@ -1556,18 +1557,22 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     private weak var splitViewController: NSSplitViewController?
     private weak var branchPickerHostingView: NSView?
     private var branchPickerWidthConstraint: NSLayoutConstraint?
-    private var terminalPaneFrameObserver: NSObjectProtocol?
+
+    /// Holds the pane-frame observation token. Its removal lives in this bag's
+    /// own deinit: the delegate's deinit is nonisolated in Swift 6 and cannot
+    /// read main-actor state, but dropping the delegate drops the bag, which
+    /// still unhooks the observer.
+    private final class FrameObserverBag: @unchecked Sendable {
+        var token: NSObjectProtocol?
+        deinit { if let token { NotificationCenter.default.removeObserver(token) } }
+    }
+
+    private let frameObserver = FrameObserverBag()
 
     init(store: TermioStore, settings: AppSettings, splitViewController: NSSplitViewController?) {
         self.store = store
         self.settings = settings
         self.splitViewController = splitViewController
-    }
-
-    deinit {
-        if let terminalPaneFrameObserver {
-            NotificationCenter.default.removeObserver(terminalPaneFrameObserver)
-        }
     }
 
     /// Lets the title use the room its toolbar section actually has, up to a generous ceiling.
@@ -1591,10 +1596,10 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     private func observeTerminalPaneWidth() {
         guard let terminalView = terminalPaneView else { return }
         terminalView.postsFrameChangedNotifications = true
-        if let terminalPaneFrameObserver {
-            NotificationCenter.default.removeObserver(terminalPaneFrameObserver)
+        if let token = frameObserver.token {
+            NotificationCenter.default.removeObserver(token)
         }
-        terminalPaneFrameObserver = NotificationCenter.default.addObserver(
+        frameObserver.token = NotificationCenter.default.addObserver(
             forName: NSView.frameDidChangeNotification,
             object: terminalView,
             queue: .main

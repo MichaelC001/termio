@@ -71,9 +71,7 @@ let package = Package(
                 .copy("LangIcons"),
             ],
             swiftSettings: [
-                // Relax strict concurrency for the AppKit/SwiftUI glue; the app is
-                // single-window and main-actor bound in practice.
-                .swiftLanguageMode(.v5),
+                .swiftLanguageMode(.v6),
             ]
         ),
         .testTarget(

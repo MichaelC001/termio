@@ -45,7 +45,7 @@ struct FileTreeList: View {
 /// thread continuously. Closure properties would make the plain view compare
 /// unequal every time, so equality is spelled out over the values that actually
 /// affect the rows; the closures are stable for the life of the pane and skipped.
-private struct EquatableTree: View, Equatable {
+private struct EquatableTree: View, @MainActor Equatable {
     let nodes: [FileNode]
     let revision: Int
     @Binding var selection: URL?
@@ -644,5 +644,6 @@ struct OutlineViewFixups: NSViewRepresentable {
     }
 }
 
-/// Unique address keying the enforcement token onto its scroll view.
-private var enforcementKey: UInt8 = 0
+/// Unique address keying the enforcement token onto its scroll view. Only its
+/// address is ever taken; the value itself is never read or written.
+nonisolated(unsafe) private var enforcementKey: UInt8 = 0

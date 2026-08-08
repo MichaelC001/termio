@@ -26,7 +26,11 @@ import Combine
 ///
 /// All reads run off the main thread; `branches` is only ever mutated on main,
 /// so SwiftUI observers stay safe.
-final class BranchModel: ObservableObject {
+///
+/// @unchecked: state is partitioned, not shared — each stored property's doc
+/// says whether it is main-only or `queue`-only, and every crossing hops
+/// explicitly. That partition is the synchronization the compiler cannot see.
+final class BranchModel: ObservableObject, @unchecked Sendable {
     /// Folder path → branch label (the branch name, or a short commit SHA when the
     /// folder is in a detached HEAD). Absent when the folder is not a git repo, so
     /// callers can hide the branch chip entirely.

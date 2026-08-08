@@ -300,7 +300,7 @@ struct GitDiffView: View {
             font: settings.resolvedTerminalFont()
         )
         guard !Task.isCancelled else { return }
-        styledLines = styled
+        styledLines = styled.byRow
     }
 }
 

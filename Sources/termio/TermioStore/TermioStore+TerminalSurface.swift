@@ -729,15 +729,15 @@ extension TermioStore {
     /// attaches (the session was created but never shown).
     private func warmUpRendering(_ state: TerminalViewState) {
         let started = Date()
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak state] timer in
-            MainActor.assumeIsolated {
-                guard let state else { timer.invalidate(); return }
+        let ref = WeakMainActorRef(state)
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { timer in
+            let keepPumping = MainActor.assumeIsolated { () -> Bool in
+                guard let state = ref.value else { return false }
                 state.controller.tick()
                 let elapsed = Date().timeIntervalSince(started)
-                if (state.surfaceSize != nil && elapsed > 2.0) || elapsed > 6.0 {
-                    timer.invalidate()
-                }
+                return !((state.surfaceSize != nil && elapsed > 2.0) || elapsed > 6.0)
             }
+            if !keepPumping { timer.invalidate() }
         }
         RunLoop.main.add(timer, forMode: .common)
     }
@@ -854,13 +854,16 @@ extension TermioStore {
     /// surface above, same fix: pump while it matters, stop when it doesn't.
     func beginPaneDragRepaint() {
         paneDragRepaintTimer?.invalidate()
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
-            MainActor.assumeIsolated {
-                guard let self else { timer.invalidate(); return }
+        let ref = WeakMainActorRef(self)
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { timer in
+            let keepPumping = MainActor.assumeIsolated { () -> Bool in
+                guard let self = ref.value else { return false }
                 for id in self.visiblePaneIDs {
                     self.surfaces[id]?.controller.tick()
                 }
+                return true
             }
+            if !keepPumping { timer.invalidate() }
         }
         RunLoop.main.add(timer, forMode: .common)
         paneDragRepaintTimer = timer
@@ -879,14 +882,14 @@ extension TermioStore {
 
     private func pumpRendering(_ state: TerminalViewState, duration: TimeInterval) {
         let started = Date()
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak state] timer in
-            MainActor.assumeIsolated {
-                guard let state else { timer.invalidate(); return }
+        let ref = WeakMainActorRef(state)
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { timer in
+            let keepPumping = MainActor.assumeIsolated { () -> Bool in
+                guard let state = ref.value else { return false }
                 state.controller.tick()
-                if Date().timeIntervalSince(started) > duration {
-                    timer.invalidate()
-                }
+                return Date().timeIntervalSince(started) <= duration
             }
+            if !keepPumping { timer.invalidate() }
         }
         RunLoop.main.add(timer, forMode: .common)
     }
@@ -1018,4 +1021,13 @@ extension TermioStore {
         }
         return true
     }
+}
+
+/// Carries a weak main-actor reference into a pump timer's @Sendable closure.
+/// @unchecked: the timers are added to RunLoop.main only, and their closures
+/// re-enter the main actor (`assumeIsolated`) before touching the referent.
+private struct WeakMainActorRef<Value: AnyObject>: @unchecked Sendable {
+    private weak var referent: Value?
+    init(_ value: Value) { referent = value }
+    @MainActor var value: Value? { referent }
 }
