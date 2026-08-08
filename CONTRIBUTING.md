@@ -58,6 +58,12 @@ The iOS app lives in `ios/` (`TermioMobile.xcodeproj`, scheme `TermioMobile`).
 `ios/dev-run.sh` builds and installs it pointed at this Mac's companion server.
 Shared wire-protocol code lives in `Shared/` and is used by both platforms.
 
+Simulator builds need no signing. For a device build, put your Apple
+Development team in a `SharedXcodeSettings/DeveloperSettings.xcconfig` next to
+your clone — `ios/Signing.xcconfig` gives the exact path and format. Keeping it
+outside the repo means nothing local ever lands in git, and one copy covers
+every clone and worktree.
+
 ## Code conventions
 
 From `AGENTS.md` (the authoritative copy, also what AI coding agents read):
