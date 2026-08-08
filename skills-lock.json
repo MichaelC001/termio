@@ -13,6 +13,14 @@
       "skillPath": "skills/apple-design/SKILL.md",
       "computedHash": "8b94db67cb9edaad5f1501010804caa610131f1d2dfda0a27664b2e858deade3"
     },
+    "asc": {
+      "source": "rorkai/app-store-connect-cli-skills",
+      "sourceType": "github",
+      "pinnedCommit": "e30039abddbe388179324d0f9cdccb66c3843115",
+      "skillPath": "skills/asc/SKILL.md",
+      "vendoredPath": "skills/asc/references",
+      "computedHash": "1594d37450d810f5af6144fadafa379ac84cf3f5c139dd12a62e3ee13f351131"
+    },
     "emil-design-eng": {
       "source": "emilkowalski/skill",
       "sourceType": "github",

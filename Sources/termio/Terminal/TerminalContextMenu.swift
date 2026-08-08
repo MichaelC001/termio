@@ -121,16 +121,6 @@ final class TerminalContextMenu: NSObject {
                                symbol: "rectangle.bottomhalf.inset.filled"))
         menu.addItem(storeItem("Split Up", action: #selector(splitUp),
                                symbol: "rectangle.tophalf.inset.filled"))
-        // "Flip Layout" turns just the divider that holds the clicked pane and
-        // its neighbour from side-by-side to stacked (or back) — the honest
-        // inverse of the "Split Right"/"Split Down" that made the pair. Nested
-        // splits stay put, matching iTerm2's local, per-pane model (which has no
-        // whole-layout transpose). Only offered when the pane is in a group, so
-        // there is always a branch to flip.
-        if let id = clickedSessionID, let store, store.isInSplitGroup(id) {
-            menu.addItem(storeItem("Flip Layout", action: #selector(flipLayout),
-                                   symbol: "arrow.triangle.2.circlepath"))
-        }
         // "Ungroup" is the layout half: the pane leaves the split group but its
         // session stays alive in the sidebar — the same action the sidebar row
         // names "Ungroup" (the inverse of "Group with"). Its glyph is Split
@@ -179,10 +169,6 @@ final class TerminalContextMenu: NSObject {
     @objc private func splitDown() { store?.splitSelectedPane(.vertical) }
     @objc private func splitUp() { store?.splitSelectedPane(.vertical, slot: .first) }
     @objc private func ungroup() { store?.ungroupSelectedPane() }
-    @objc private func flipLayout() {
-        guard let id = clickedSessionID else { return }
-        store?.flipPaneLayout(id)
-    }
     @objc private func closeSession() {
         guard let id = clickedSessionID else { return }
         store?.closeSession(id)

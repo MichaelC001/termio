@@ -149,10 +149,16 @@ Companion:
 - Third-party skills vendored from other repos are recorded in
   `skills-lock.json` with their upstream source and hash. Do not hand-edit them;
   re-pull from upstream instead.
-- Skills that encode this repo's workflows: `macos-rebuild-dev`,
-  `ios-rebuild-dev`, `app-screenshot-debug`, `bump-version`, `doc`,
-  `conventional-commit`, `feedback-to-issue`, `check-ghostty-update`,
-  `og-generation`.
+- Skills that encode this repo's workflows, by area:
+  - Build & run: `macos-rebuild-dev`, `ios-rebuild-dev`, `app-screenshot-debug`
+  - Release: `bump-version`, `check-ghostty-update`, `asc` (App Store Connect)
+  - Repo hygiene: `conventional-commit`, `doc`, `issue-creator`
+  - Web/landing: `og-generation`
+  - Research: `dia-source-analysis`
+- Vendored design/UI skills (emilkowalski pack, keep upstream names):
+  `apple-design`, `emil-design-eng`, `prototype`, `pick-ui-library`,
+  `animation-vocabulary`, `find-animation-opportunities`, `improve-animations`,
+  `review-animations`.
 
 ## Code conventions
 

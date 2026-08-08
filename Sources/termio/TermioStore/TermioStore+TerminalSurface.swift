@@ -871,6 +871,40 @@ extension TermioStore {
         pumpRendering(state, duration: 0.25)
     }
 
+    /// Keeps every visible surface painting for the length of a pane drag.
+    ///
+    /// The drag overlay washes translucently over the *live* surfaces, so the
+    /// layer underneath is re-blended every frame of the gesture. Ghostty.app
+    /// affords that by ticking the core every vsync from a display link; this
+    /// embedding advances only on a PTY-output wakeup (see `warmUpRendering`),
+    /// so a quiet terminal hands the compositor its last frame for the whole
+    /// drag and the wash smears stale pixels. Same failure as the uncovered
+    /// surface above, same fix: pump while it matters, stop when it doesn't.
+    func beginPaneDragRepaint() {
+        paneDragRepaintTimer?.invalidate()
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
+            MainActor.assumeIsolated {
+                guard let self else { timer.invalidate(); return }
+                for id in self.visiblePaneIDs {
+                    self.surfaces[id]?.controller.tick()
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        paneDragRepaintTimer = timer
+    }
+
+    /// Ends the drag pump, with one last pass so the panes settle on a fresh
+    /// frame after the tree has been rebuilt under them.
+    func endPaneDragRepaint() {
+        paneDragRepaintTimer?.invalidate()
+        paneDragRepaintTimer = nil
+        for id in visiblePaneIDs {
+            guard let state = surfaces[id] else { continue }
+            pumpRendering(state, duration: 0.25)
+        }
+    }
+
     private func pumpRendering(_ state: TerminalViewState, duration: TimeInterval) {
         let started = Date()
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak state] timer in
