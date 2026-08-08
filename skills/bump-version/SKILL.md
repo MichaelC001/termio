@@ -62,8 +62,8 @@ the tag *is* the version.
 ## 4. Watch the Release workflow
 
 ```sh
-gh run watch --repo jiweiyuan/termio \
-  "$(gh run list --repo jiweiyuan/termio -w Release -L1 --json databaseId -q '.[0].databaseId')"
+gh run watch --repo termio-sh/termio \
+  "$(gh run list --repo termio-sh/termio -w Release -L1 --json databaseId -q '.[0].databaseId')"
 ```
 
 Report green/red to the user. If it fails, diagnose from the run log; the

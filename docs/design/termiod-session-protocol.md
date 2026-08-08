@@ -645,11 +645,11 @@ announced has `needs_you` on the wire.
 ## G. Phased roadmap
 
 Mapped to the three-step sequence (§0 of the mux doc) and the GitHub epic
-[#164](https://github.com/jiweiyuan/termio/issues/164):
+[#164](https://github.com/termio-sh/termio/issues/164):
 
 | Step | Protocol work | Repo milestone |
 | --- | --- | --- |
-| **1 · Incredible host** | **v0 frozen** (shipped in POC, [#177](https://github.com/jiweiyuan/termio/pull/177)). **v0.1 implemented** (branch commit `6855552`): `hello`+caps, `seq`/`re`, error codes, `E` frames, `send`/`wait`, `workstream` in CreateSpec — 28 local + 8 fake-ssh smoke checks green. **Live VPS e2e passed 2026-07-30** on `ukvps` (aarch64, static-musl cross-compile deploy): detach ≠ kill across hard disconnect, send-without-attach, set-status; echo 12.1 ms median, throughput ≈ local | #170 local host: Mac app attaches over Unix socket; sessions survive app quit. #171 SSH deploy helper. #172 remote open (same protocol, SSH pipe) |
+| **1 · Incredible host** | **v0 frozen** (shipped in POC, [#177](https://github.com/termio-sh/termio/pull/177)). **v0.1 implemented** (branch commit `6855552`): `hello`+caps, `seq`/`re`, error codes, `E` frames, `send`/`wait`, `workstream` in CreateSpec — 28 local + 8 fake-ssh smoke checks green. **Live VPS e2e passed 2026-07-30** on `ukvps` (aarch64, static-musl cross-compile deploy): detach ≠ kill across hard disconnect, send-without-attach, set-status; echo 12.1 ms median, throughput ≈ local | #170 local host: Mac app attaches over Unix socket; sessions survive app quit. #171 SSH deploy helper. #172 remote open (same protocol, SSH pipe) |
 | **2 · Composable agent surface** | **v1**: host-side vt authority, `S` snapshot on attach/resize, host-side status sources (hooks/OSC on the host, heuristics as fallback), approvals in events. `termio sessions` CLI re-based on control channel (retires transcript scraping) | Post-#172: iOS roster + needs-you from `subscribe`; unify companion semantics onto the protocol |
 | **3 · Multi-device operable** | **v1.1**: `G` dirty-row diffs (phone first); QUIC spike behind the channel abstraction; WSS relay binding with blind-pipe rule | Discovery providers (static SSH config, optional Tailscale); phone-direct decision falls due here |
 

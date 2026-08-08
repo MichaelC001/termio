@@ -85,7 +85,7 @@ protocol IssueProvider: Sendable {
 
 读 + 派活在前（每日高频 + 差异点，且派活只是「拼 prompt + 现成 deliver 路径」的小步）；写在后（每个写操作都有浏览器兜底）；Linear 收尾（协议从第一天就管住它，conformance 不急）。
 
-1. **M1 读（issues + PRs）**：协议 + GitHub provider（device flow、列表、详情、kind filter）、tab + 零态 + 列表 + 详情渲染。→ [#99](https://github.com/jiweiyuan/termio/issues/99)
-2. **M2 派活**：Send to Agent（prompt 模板、目标 session 选择），issue 与 PR 同一条路径。→ [#102](https://github.com/jiweiyuan/termio/issues/102)
-3. **M3 写**：reaction、label 编辑、评论（GitHub，issue 与 PR 通用）。→ [#100](https://github.com/jiweiyuan/termio/issues/100)
-4. **M4 Linear**：API key connect、GraphQL provider、binding 选择器。→ [#101](https://github.com/jiweiyuan/termio/issues/101)
+1. **M1 读（issues + PRs）**：协议 + GitHub provider（device flow、列表、详情、kind filter）、tab + 零态 + 列表 + 详情渲染。→ [#99](https://github.com/termio-sh/termio/issues/99)
+2. **M2 派活**：Send to Agent（prompt 模板、目标 session 选择），issue 与 PR 同一条路径。→ [#102](https://github.com/termio-sh/termio/issues/102)
+3. **M3 写**：reaction、label 编辑、评论（GitHub，issue 与 PR 通用）。→ [#100](https://github.com/termio-sh/termio/issues/100)
+4. **M4 Linear**：API key connect、GraphQL provider、binding 选择器。→ [#101](https://github.com/termio-sh/termio/issues/101)

@@ -48,7 +48,7 @@ website Download button), existing installs auto-update via Sparkle from
 
 | Thing | Value |
 | --- | --- |
-| Repo | `jiweiyuan/termio` (private) |
+| Repo | `termio-sh/termio` (private) |
 | Apple Team ID | `<TEAM_ID>` (<YOUR_NAME>) |
 | Developer ID Application | `<YOUR_NAME> (<TEAM_ID>)` — SHA-1 `<CERT_SHA1>` |
 | ASC API key (Team key "termio") | Key ID `<ASC_KEY_ID>`, Issuer ID `<ASC_ISSUER_ID>`, role **Developer** |
@@ -71,7 +71,7 @@ password, the R2 secret access key) live only in GitHub Secrets and your vault.
 
 The workflow reads these eleven secrets. **None is a GitHub token** — Actions
 injects `GITHUB_TOKEN` automatically. Check state with
-`gh secret list --repo jiweiyuan/termio`.
+`gh secret list --repo termio-sh/termio`.
 
 | Secret | Purpose | Required |
 | --- | --- | --- |
@@ -103,7 +103,7 @@ expansion and dies with `zsh: event not found`. (The `!` prefix only means
 "run in the termio session"; it isn't part of the command.)
 
 ```sh
-gh secret set R2_SECRET_ACCESS_KEY --repo jiweiyuan/termio   # prompts, no echo
+gh secret set R2_SECRET_ACCESS_KEY --repo termio-sh/termio   # prompts, no echo
 ```
 
 ## One-time setup
@@ -131,9 +131,9 @@ shows an **Access Key ID** and a **Secret Access Key** (secret shown once — co
 now). Ignore the Bearer "Token value"; the workflow uses the S3 API only.
 
 ```sh
-gh secret set R2_ACCESS_KEY_ID     --repo jiweiyuan/termio
-gh secret set R2_SECRET_ACCESS_KEY --repo jiweiyuan/termio
-gh secret set R2_ENDPOINT          --repo jiweiyuan/termio   # https://<accountid>.r2.cloudflarestorage.com
+gh secret set R2_ACCESS_KEY_ID     --repo termio-sh/termio
+gh secret set R2_SECRET_ACCESS_KEY --repo termio-sh/termio
+gh secret set R2_ENDPOINT          --repo termio-sh/termio   # https://<accountid>.r2.cloudflarestorage.com
 ```
 
 **CLI derivation (alternative):** an R2 S3 credential is derived from a normal
@@ -151,8 +151,8 @@ codesigning | grep "Developer ID"`), export it non-interactively:
 ```sh
 P12="$TMPDIR/devid.p12"; PW="$(openssl rand -hex 12)"
 security export -t identities -f pkcs12 -P "$PW" -o "$P12"
-base64 -i "$P12" | gh secret set DEVELOPER_ID_CERT_P12 --repo jiweiyuan/termio
-printf '%s' "$PW" | gh secret set DEVELOPER_ID_CERT_PASSWORD --repo jiweiyuan/termio
+base64 -i "$P12" | gh secret set DEVELOPER_ID_CERT_P12 --repo termio-sh/termio
+printf '%s' "$PW" | gh secret set DEVELOPER_ID_CERT_PASSWORD --repo termio-sh/termio
 rm -f "$P12"
 ```
 
@@ -167,9 +167,9 @@ ID** is shown above the key list — one per account, shared across all keys.
 
 ```sh
 KEYID=<ASC_KEY_ID>                                  # filename = AuthKey_<KEYID>.p8
-base64 -i ~/Downloads/AuthKey_$KEYID.p8 | gh secret set ASC_API_KEY --repo jiweiyuan/termio
-printf '%s' "$KEYID"                              | gh secret set ASC_KEY_ID    --repo jiweiyuan/termio
-gh secret set ASC_ISSUER_ID --repo jiweiyuan/termio   # prompts; paste the issuer UUID
+base64 -i ~/Downloads/AuthKey_$KEYID.p8 | gh secret set ASC_API_KEY --repo termio-sh/termio
+printf '%s' "$KEYID"                              | gh secret set ASC_KEY_ID    --repo termio-sh/termio
+gh secret set ASC_ISSUER_ID --repo termio-sh/termio   # prompts; paste the issuer UUID
 # Back up the .p8 — it can never be re-downloaded:
 mkdir -p ~/.appstoreconnect/private_keys && cp ~/Downloads/AuthKey_$KEYID.p8 ~/.appstoreconnect/private_keys/
 chmod 700 ~/.appstoreconnect ~/.appstoreconnect/private_keys && chmod 600 ~/.appstoreconnect/private_keys/*.p8
@@ -200,8 +200,8 @@ My Profile → **API Tokens** → Create Custom Token:
 - Do **not** use the Global API Key.
 
 ```sh
-gh secret set CLOUDFLARE_API_TOKEN --repo jiweiyuan/termio   # the token value
-gh secret set CLOUDFLARE_ZONE_ID   --repo jiweiyuan/termio   # the termio.sh zone ID
+gh secret set CLOUDFLARE_API_TOKEN --repo termio-sh/termio   # the token value
+gh secret set CLOUDFLARE_ZONE_ID   --repo termio-sh/termio   # the termio.sh zone ID
 ```
 
 Once set, the purge is fully automatic on every tag — there is no per-release
@@ -232,7 +232,7 @@ is just a `vX.Y.Z` tag on `main` — the tag *is* the release marker.
 4. Watch the **Release** workflow:
 
    ```sh
-   gh run watch --repo jiweiyuan/termio $(gh run list --repo jiweiyuan/termio -w Release -L1 --json databaseId -q '.[0].databaseId')
+   gh run watch --repo termio-sh/termio $(gh run list --repo termio-sh/termio -w Release -L1 --json databaseId -q '.[0].databaseId')
    ```
 
 5. When it's green, run the verification below.

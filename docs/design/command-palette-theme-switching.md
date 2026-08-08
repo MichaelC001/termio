@@ -10,7 +10,7 @@ updated: 2026-07-27
 
 > Make trying a terminal theme a fast, keyboard-first flow — search, preview live
 > on the real terminal, commit or revert — instead of a trip through Settings.
-> Implements [#118](https://github.com/jiweiyuan/termio/issues/118).
+> Implements [#118](https://github.com/termio-sh/termio/issues/118).
 
 ## Problem
 

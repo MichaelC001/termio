@@ -388,7 +388,7 @@ Native Apple clients alone are **table stakes** vs Superlogical; **ADE actions**
 
 ## 8. Open decisions
 
-1. ~~Host language for Linux~~ → **Rust POC shipped** ([#177](https://github.com/jiweiyuan/termio/pull/177) / #170–#172); revisit only if spike fails product needs.
+1. ~~Host language for Linux~~ → **Rust POC shipped** ([#177](https://github.com/termio-sh/termio/pull/177) / #170–#172); revisit only if spike fails product needs.
 2. Multi-viewer write policy (single writer vs lock vs CRDT — default single writer).
 3. Sharing with external identities: v1 non-goal or scoped feature?
 4. Phone → Mac gateway vs phone-direct-to-remote-termiod first.
@@ -429,5 +429,5 @@ Native Apple clients alone are **table stakes** vs Superlogical; **ADE actions**
 
 **Build `termiod` as a Superlogical-class durable session host** — three clean parts (host · protocol · clients), local = remote to localhost, SSH only a pipe — then win with an **agent-native, local-first ADE** on that foundation. Do not race “multiplexer for all work”; do not describe the architecture as a CLI.
 
-Tracking issue: https://github.com/jiweiyuan/termio/issues/164  
-POC: https://github.com/jiweiyuan/termio/pull/177
+Tracking issue: https://github.com/termio-sh/termio/issues/164  
+POC: https://github.com/termio-sh/termio/pull/177

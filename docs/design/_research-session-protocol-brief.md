@@ -37,7 +37,7 @@ You are a senior systems architect. Think deeply and write a **sharp design note
 - `docs/design/termiod-session-mux.md`
 - `docs/design/session-daemon-architecture.md`
 - POC crate: `termiod/` (branch `termiod/rust-poc`, draft PR #177)
-- Epic: https://github.com/jiweiyuan/termio/issues/164
+- Epic: https://github.com/termio-sh/termio/issues/164
 - Children: #170 (local host), #171 (SSH deploy), #172 (remote open)
 
 **POC already shipped (draft):**

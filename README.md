@@ -215,12 +215,12 @@ Design notes, RFCs, and bug write-ups live in [`docs/`](docs/README.md).
 ## Community
 
 - **[Discord](https://discord.gg/H9DKVwsE5f)** — chat with the developer and other users
-- **[GitHub Issues](https://github.com/jiweiyuan/termio/issues)** — bugs and feature requests
+- **[GitHub Issues](https://github.com/termio-sh/termio/issues)** — bugs and feature requests
 
 ## Contributors
 
-<a href="https://github.com/jiweiyuan/termio/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=jiweiyuan/termio" alt="Contributors" />
+<a href="https://github.com/termio-sh/termio/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=termio-sh/termio" alt="Contributors" />
 </a>
 
 ## License
