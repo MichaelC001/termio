@@ -13,6 +13,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case agents
     case usage
     case mobile
+    case community
 
     var id: String { rawValue }
 
@@ -31,6 +32,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .agents: return "Agents"
         case .usage: return "Usage"
         case .mobile: return "Mobile"
+        case .community: return "Community"
         }
     }
 
@@ -47,6 +49,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .agents: return .bot
         case .usage: return .dashboardSpeed
         case .mobile: return .smartPhone
+        case .community: return .bubbleChat
         }
     }
 
@@ -63,6 +66,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .agents: return "Agent presets, live status, and control"
         case .usage: return "Token usage for your connected agents"
         case .mobile: return "Pair your iPhone and remote access"
+        case .community: return "Discord, GitHub, and the WeChat group"
         }
     }
 }

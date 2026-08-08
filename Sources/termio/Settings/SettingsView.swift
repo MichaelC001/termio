@@ -80,6 +80,7 @@ struct SettingsView: View {
         case .agents: AgentSettingsTab(settings: settings)
         case .usage: UsageSettingsTab(settings: settings, usage: usage)
         case .mobile: MobileSettingsTab()
+        case .community: CommunitySettingsTab()
         }
     }
 }
