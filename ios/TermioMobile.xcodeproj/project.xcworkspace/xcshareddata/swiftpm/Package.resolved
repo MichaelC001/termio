@@ -14,8 +14,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/jiweiyuan/libghostty-swift",
       "state" : {
-        "revision" : "611af68c33428be364fd29f119ce83c524d8ebd8",
-        "version" : "1.0.14"
+        "revision" : "ffc7c068e89b12b2b1a1375dd0d7e6ef82403f62",
+        "version" : "1.0.15"
       }
     },
     {
