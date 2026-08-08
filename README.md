@@ -8,6 +8,8 @@
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-555?logo=discord&logoColor=white)](https://discord.gg/H9DKVwsE5f)
 
+<p>English | <a href="README.zh-CN.md">简体中文</a> | <a href="README.zh-TW.md">繁體中文</a> | <a href="README.ja.md">日本語</a> | <a href="README.ko.md">한국어</a></p>
+
 <br />
 
 Run Claude Code, Codex, and any CLI agent side by side in a native Mac app —<br />
