@@ -163,13 +163,13 @@ termio sessions watch                      # 实时流式输出状态变化
 <table>
 <tr>
 <td width="33%">
-  <img src="web/landing/public/screenshots/iphone-claude.webp" alt="iPhone 上实时镜像的 Claude Code 会话" width="100%" />
+  <img src="web/landing/public/screenshots/phone-mirror.webp" alt="iPhone 上实时镜像的 Claude Code 会话" width="100%" />
 </td>
 <td width="33%">
-  <img src="web/landing/public/screenshots/iphone-keys.webp" alt="键盘上方带 esc、tab、ctrl 和方向键的按键栏" width="100%" />
+  <img src="web/landing/public/screenshots/phone-keys.webp" alt="键盘上方带 esc、tab、ctrl 和方向键的按键栏" width="100%" />
 </td>
 <td width="33%">
-  <img src="web/landing/public/screenshots/iphone-voice.webp" alt="按住说话的语音输入正在转写进提示词" width="100%" />
+  <img src="web/landing/public/screenshots/phone-projects.webp" alt="列出项目及其检出分支的主页" width="100%" />
 </td>
 </tr>
 </table>

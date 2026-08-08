@@ -172,13 +172,13 @@ termio sessions watch                      # 即時串流狀態變化
 <table>
 <tr>
 <td width="33%">
-  <img src="web/landing/public/screenshots/iphone-claude.webp" alt="一個即時的 Claude Code 工作階段鏡射到 iPhone 上" width="100%" />
+  <img src="web/landing/public/screenshots/phone-mirror.webp" alt="一個即時的 Claude Code 工作階段鏡射到 iPhone 上" width="100%" />
 </td>
 <td width="33%">
-  <img src="web/landing/public/screenshots/iphone-keys.webp" alt="鍵盤上方帶有 esc、tab、ctrl 與方向鍵的按鍵列" width="100%" />
+  <img src="web/landing/public/screenshots/phone-keys.webp" alt="鍵盤上方帶有 esc、tab、ctrl 與方向鍵的按鍵列" width="100%" />
 </td>
 <td width="33%">
-  <img src="web/landing/public/screenshots/iphone-voice.webp" alt="按住說話的語音輸入正轉寫進提示" width="100%" />
+  <img src="web/landing/public/screenshots/phone-projects.webp" alt="列出專案及其簽出分支的首頁" width="100%" />
 </td>
 </tr>
 </table>

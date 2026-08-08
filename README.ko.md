@@ -185,13 +185,13 @@ termio sessions watch                      # 상태 변화를 실시간으로 �
 <table>
 <tr>
 <td width="33%">
-  <img src="web/landing/public/screenshots/iphone-claude.webp" alt="iPhone에 실시간으로 미러링된 Claude Code 세션" width="100%" />
+  <img src="web/landing/public/screenshots/phone-mirror.webp" alt="iPhone에 실시간으로 미러링된 Claude Code 세션" width="100%" />
 </td>
 <td width="33%">
-  <img src="web/landing/public/screenshots/iphone-keys.webp" alt="키보드 위의 esc, tab, ctrl, 화살표 키가 있는 키 바" width="100%" />
+  <img src="web/landing/public/screenshots/phone-keys.webp" alt="키보드 위의 esc, tab, ctrl, 화살표 키가 있는 키 바" width="100%" />
 </td>
 <td width="33%">
-  <img src="web/landing/public/screenshots/iphone-voice.webp" alt="길게 눌러 말하기로 프롬프트에 받아쓰는 음성 입력" width="100%" />
+  <img src="web/landing/public/screenshots/phone-projects.webp" alt="프로젝트와 체크아웃된 브랜치를 나열하는 홈 화면" width="100%" />
 </td>
 </tr>
 </table>

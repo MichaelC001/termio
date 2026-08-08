@@ -159,13 +159,13 @@ termio sessions watch                      # ステータスの変化をリア�
 <table>
 <tr>
 <td width="33%">
-  <img src="web/landing/public/screenshots/iphone-claude.webp" alt="iPhone にミラーリングされたライブ Claude Code セッション" width="100%" />
+  <img src="web/landing/public/screenshots/phone-mirror.webp" alt="iPhone にミラーリングされたライブ Claude Code セッション" width="100%" />
 </td>
 <td width="33%">
-  <img src="web/landing/public/screenshots/iphone-keys.webp" alt="キーボードの上に esc、tab、ctrl、矢印キーを備えたキーバー" width="100%" />
+  <img src="web/landing/public/screenshots/phone-keys.webp" alt="キーボードの上に esc、tab、ctrl、矢印キーを備えたキーバー" width="100%" />
 </td>
 <td width="33%">
-  <img src="web/landing/public/screenshots/iphone-voice.webp" alt="長押しで話した音声をプロンプトに文字起こしする音声入力" width="100%" />
+  <img src="web/landing/public/screenshots/phone-projects.webp" alt="プロジェクトとチェックアウト中のブランチを一覧表示するホーム画面" width="100%" />
 </td>
 </tr>
 </table>
