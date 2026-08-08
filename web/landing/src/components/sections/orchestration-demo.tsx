@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useInView } from "@/lib/use-in-view";
-import { TerminalBackdrop } from "@/components/terminal-backdrop";
 import { AgentIcon } from "@/components/agent-icons";
 
 // The orchestration section's animated demo: a hub-and-spoke graph (claude
@@ -265,16 +264,13 @@ export function OrchestrationDemo() {
     : null;
 
   return (
-    // One terminal window: a solid near-black panel with the Paper
-    // grain-gradient glow spanning the full window, behind both the session
-    // graph (left) and the live CLI transcript (right).
+    // One terminal window: a solid near-black panel holding the session graph
+    // (left) and the live CLI transcript (right).
     <div
       ref={ref}
       className="relative overflow-hidden rounded-3xl bg-[#0b0e12] shadow-[0_24px_64px_rgba(10,12,16,0.45)]"
     >
       <div className="relative">
-        {/* Grain-gradient glow spans the whole window, behind both panes. */}
-        <TerminalBackdrop />
         {/* minmax(0,…) everywhere: a plain implicit column would take the
             transcript pre's min-content width (its longest unbreakable line),
             blowing the column wider than the card on phones — the graph pane
