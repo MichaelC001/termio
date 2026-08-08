@@ -203,32 +203,6 @@ brew install --cask termio-sh/tap/termio
 [TestFlight](https://testflight.apple.com/join/1Arf1UKR), then pair it by
 scanning the QR code in the Mac app's Settings ▸ Mobile.
 
-## Build from source
-
-```sh
-swift build   # resolves libghostty-spm + compiles
-swift run     # launches the app
-```
-
-Requires macOS 14+ and Swift 6 (Xcode 26). No `zig` toolchain needed —
-[libghostty-swift](https://github.com/jiweiyuan/libghostty-swift) ships a
-prebuilt `GhosttyKit.xcframework`.
-
-`Sources/termio/` is grouped by feature:
-
-| Folder | What lives there |
-| --- | --- |
-| `App/` | app bootstrap, window/menu, models, logging |
-| `Terminal/` | terminal pane, split tree, link opening; `Terminal/Ghostty/` isolates the libghostty/PTY boundary (`PTYProcess`) |
-| `Sidebar/` | projects → sessions list, status dots |
-| `Agents/` | agent definitions, session store, hook listener, sessions CLI control |
-| `Companion/` | iPhone companion server, tunnel + usage monitors |
-| `Editor/` · `Git/` · `FileBrowser/` · `Settings/` · `Info/` | inspector + settings surfaces |
-| `TermioStore/` | central state + per-session terminal `SurfaceCache` |
-| `Theme/` · `CommandPalette/` · `Welcome/` · `Browser/` | supporting UI |
-
-Design notes, RFCs, and bug write-ups live in [`docs/`](docs/README.md).
-
 ## Community
 
 - **[Discord](https://discord.gg/H9DKVwsE5f)** — chat with the developer and other users
