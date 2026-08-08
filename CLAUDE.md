@@ -31,11 +31,7 @@ positioning.** Build it.
 
 ## Architectural non-negotiables
 
-<<<<<<< HEAD
 These come from `docs/design/20260730-termiod-session-protocol.md` §A and §H. Violating one
-=======
-These come from `docs/design/termiod-session-protocol.md` §A and §H. Violating one
->>>>>>> origin/main
 is a design regression, not a tradeoff:
 
 1. **Anti-100× invariant** — byte delivery never blocks on host-side VT parse. The
