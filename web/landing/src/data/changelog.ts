@@ -17,6 +17,169 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.30.0",
+    date: "2026-08-07",
+    title: "A smoother pane drag",
+    changes: {
+      improved: [
+        "Pane drag: the grab handle now appears only along a pane’s top edge, brightens under the pointer, and shows a preview of the pane you’re dragging.",
+        "Flip Layout is gone. Drag a pane onto a neighbour’s edge instead.",
+      ],
+    },
+  },
+  {
+    version: "0.29.0",
+    date: "2026-08-07",
+    title: "Real diffs on your phone",
+    changes: {
+      new: [
+        "iOS Changes: the phone now lists the Mac’s working-tree changes and opens real diffs with syntax highlighting, soft wrapping, collapsible unchanged regions, and Send to Agent.",
+        "Panes: Split Left and Split Up join the menus and command palette. A grab handle at each pane’s top edge replaces the ⌘⌥⇧ drag and Move Pane menu.",
+      ],
+      improved: [
+        "Diffs mix line tints into the terminal background, reveal collapsed regions 20 lines at a time, and highlight separate edits within one line.",
+        "The inspector file tree stays responsive on huge project roots and marks symlinked files and folders, with Show Original in the row menu.",
+      ],
+      fixed: [
+        "Split, pane-focus, Settings, Quit, and full-screen shortcuts work while a terminal pane has focus.",
+      ],
+    },
+  },
+  {
+    version: "0.28.2",
+    date: "2026-08-07",
+    title: "Plain context menus",
+    changes: {
+      fixed: [
+        "Context menus no longer show stray icons or a Services submenu in the editor, Markdown preview, diffs, file previews, and issue conversations.",
+      ],
+    },
+  },
+  {
+    version: "0.28.1",
+    date: "2026-08-05",
+    title: "Voice transcription that falls back",
+    changes: {
+      new: [
+        "iOS Voice: OpenAI dictation transcribes through Realtime, then falls back to file transcription and on-device speech on iOS 26 if the earlier paths fail.",
+      ],
+      improved: [
+        "Install and reinstall buttons in Settings now report which command-line tool, hook, or instruction-file updates succeeded and which need attention.",
+      ],
+      fixed: [
+        "A second termio instance no longer steals the session-control socket, and the CLI distinguishes a refused connection from a timeout.",
+        "Dragged sessions carry their real termio:// link and reject links for another app channel.",
+      ],
+    },
+  },
+  {
+    version: "0.28.0",
+    date: "2026-08-03",
+    title: "Send files and selections to chat",
+    changes: {
+      new: [
+        "Add to Chat: file rows, editors, Markdown previews, diffs, and GitHub issues can send the selected text, file path, or issue URL to the coding agent in the current session.",
+        "Session menu: move through sessions with ⌘⇧[ and ⌘⇧], or jump straight to one from a project submenu. New Worktree and New Pull Request also join the File menu and command palette.",
+        "iOS: long-pressing a terminal opens Paste directly, and the tab bar uses native Liquid Glass.",
+      ],
+      improved: [
+        "The file tree reloads only visible directories that changed, and working indicators no longer force a layout pass on every animation frame.",
+      ],
+    },
+  },
+  {
+    version: "0.27.0",
+    date: "2026-08-02",
+    title: "Flip a pane pair",
+    changes: {
+      new: [
+        "Flip Layout turns the divider around one pane from side-by-side to stacked, or back, without changing its ratio or nested panes.",
+        "iOS: long-press terminal text to select and copy it, or paste from the same system menu.",
+      ],
+      fixed: [
+        "File-tree expansion survives opening and closing a detail. The Issues/Pull Requests and Changes/History selections also survive details and session switches.",
+        "Mouse-wheel scrolling is back to normal speed in list-based inspector panes, and terminal, diff, and file-preview menus drop macOS extras that do not apply.",
+      ],
+    },
+  },
+  {
+    version: "0.26.0",
+    date: "2026-08-01",
+    title: "Drag panes into place",
+    changes: {
+      new: [
+        "Pane rearranging: hold ⌘⌥⇧ and drag a pane onto another pane’s edge to re-split it, or onto the center to swap them. The highlighted drop zone previews the result; Esc cancels.",
+        "Session links: termio sessions accepts termio://session/<uuid>, a full or partial ID, or a display title. Copy Session Link and local deep-link opening use the same address; the old agent@id form is gone.",
+      ],
+      improved: [
+        "Code line height is adjustable from 1.0× to 2.0× in Settings › Appearance › Font and applies to both the editor and diffs. The terminal grid is unchanged.",
+      ],
+      fixed: [
+        "Closing a maximized inspector detail no longer crushes the app window into a narrow strip.",
+        "Links in GitHub issue and pull-request details open in the browser instead of replacing the conversation inside termio.",
+      ],
+    },
+  },
+  {
+    version: "0.25.1",
+    date: "2026-07-31",
+    title: "Spawn without shrinking the caller",
+    changes: {
+      improved: [
+        "Sessions spawned through the CLI now stack on the far side of the caller’s divider, so the caller keeps its full width or height as more siblings appear.",
+        "The pane menu adds directional Move Pane actions, and the iOS compose button moves within thumb’s reach at the bottom of terminal, chat, and project pages.",
+      ],
+    },
+  },
+  {
+    version: "0.25.0",
+    date: "2026-07-30",
+    title: "Each session keeps its inspector",
+    changes: {
+      new: [
+        "Inspector layout follows the session: its selected inspector tab, open detail, list visibility, and maximized state return when you switch back. The selected tab and an open file also survive relaunch.",
+        "termio notify lets an agent post a native macOS notification through its session; clicking the notification focuses that session.",
+        "Pull requests show all changed files in one continuous diff, and session traces render pasted images inline with Markdown user turns.",
+      ],
+      improved: [
+        "GitHub issue and pull-request lists and details open from a stale-while-revalidate cache instead of showing a fresh spinner on every session switch.",
+      ],
+    },
+  },
+  {
+    version: "0.24.0",
+    date: "2026-07-28",
+    title: "Resize and maximize the inspector",
+    changes: {
+      improved: [
+        "Drag the seam between an inspector list and its detail to resize the list; double-click resets it, and the width survives relaunch.",
+        "A maximized detail fills the content area beside the project sidebar and hides inspector tabs that would act behind it. Pull-request files switch to one-column navigation when the inspector is narrow.",
+        "Agent status now stays in one place: a green ring around the leading icon means done, orange means needs you, and a comet means working. Grok also reports working and idle state through terminal progress events.",
+        "iOS gestures follow swipe velocity and fall back to simple fades when Reduce Motion is on.",
+      ],
+      fixed: [
+        "A GitHub 403 now offers Reconnect and Grant Org Access instead of leaving the Issues pane empty with no next action.",
+        "Opening a detail no longer force-grows the inspector, and file-preview headers keep their close and maximize controls.",
+      ],
+    },
+  },
+  {
+    version: "0.23.0",
+    date: "2026-07-28",
+    title: "Inspector details beside the terminal",
+    changes: {
+      new: [
+        "Files, diffs, GitHub issues and pull requests, and session traces now open in a detail column beside the live terminal. A narrow inspector switches to a single detail column.",
+        "File editor: open files get a pinned header, Cut, Copy, and Paste shortcuts, Esc to close, and the same find bar used by diffs.",
+        "iOS Voice: record from the terminal keyboard’s + menu and transcribe with your OpenAI or ElevenLabs key. The Terminals + menu can also start a local terminal or connect to a host from the Mac’s ~/.ssh/config.",
+      ],
+      fixed: [
+        "Live agent status repairs its hooks when another tool overwrites them and offers an Enable status action when running agents stop reporting.",
+        "A session that needs you keeps its status mark after you open it and clears only when the agent proceeds.",
+      ],
+    },
+  },
+  {
     version: "0.22.0",
     date: "2026-07-27",
     title: "Switch themes without leaving the terminal",
