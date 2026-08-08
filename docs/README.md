@@ -85,6 +85,7 @@ from the real front matter).
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/20260708-remote-projects.md) |
 | draft | design | [Session Daemon Architecture (termiod — one model for local, remote, mobile)](design/20260708-session-daemon-architecture.md) |
 | draft | design | [Session deep links (termio:// addresses)](design/20260801-session-deep-link.md) |
+| draft | design | [Sessions CLI v3 — command design (better than tmux)](design/20260808-sessions-cli-v3-command-design.md) |
 | draft | design | [Sidebar scroll performance — per-session runtime state](design/20260724-sidebar-scroll-performance.md) |
 | draft | design | [Superlogical research brief (Codex / competitive)](design/20260805-_research-superlogical-codex-brief.md) |
 | draft | design | [termiod — Agent-native session mux](design/20260730-termiod-session-mux.md) |

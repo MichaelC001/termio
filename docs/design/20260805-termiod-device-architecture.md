@@ -3,7 +3,7 @@ title: Device Architecture — one server per device, every UI a client
 status: draft
 type: design
 created: 2026-08-05
-updated: 2026-08-08
+updated: 2026-08-06
 related:
   - 20260730-termiod-session-protocol.md
   - 20260730-termiod-session-mux.md
@@ -41,9 +41,14 @@ protocol; nothing here guesses at one.
    learned the expensive way (§4).
 5. **Four planes, one connection, one recovery rule.** Terminal, resource
    subscription, request, device transfer — all resumable by cursor.
+6. **Every UI is a viewer, and a viewer connects to the device it is showing —
+   never through another viewer.** iOS is not a satellite of the Mac; they are
+   clients of the same kind. The Mac may therefore hold nothing iOS needs,
+   which forces workspaces onto the device (§2).
 
 What this retires: the local/remote fork in the app, `TERMIO_TERMIOD` as a
-flag, per-session remote host, and every menu verb with "Remote" in its name.
+flag, per-session remote host, every menu verb with "Remote" in its name, and
+the companion wire that made the phone a mirror of a Mac.
 
 ---
 
@@ -127,6 +132,60 @@ Scheduled as §8.8.
 
 **Open question (§9.1):** `host_id` is not intrinsic — a cloned VM or a reused
 container image carries the same one, and a reinstall mints a new one. See §9.
+
+### 2.1 Viewers attach directly — one hop, always
+
+Every UI is a **viewer**. A viewer connects to the device whose state it is
+showing, and to no one else:
+
+```
+Linux device (termiod)              Mac device (termiod)
+      ▲        ▲                        ▲        ▲
+      │        │                        │        │
+     Mac      iOS                      Mac      iOS      ← peers, not a hierarchy
+```
+
+Not `iOS → Mac → Linux`. The Mac appears twice — once as a device that runs
+sessions, once as a viewer that shows some device's state — but it never stands
+between the phone and a third machine. There is nothing it could add there
+except latency and a Mac that has to be awake.
+
+**Consequence: the Mac may hold nothing a viewer needs.** This is the load-
+bearing half of the rule and the reason it is not merely tidy. Today the
+project tree lives in the Mac's `StateFile`; a phone talking straight to a
+Linux box would have no way to learn what projects exist on it. Either the Mac
+is on the path (violating the rule) or that state does not belong to the Mac.
+
+This also retires the companion wire — the phone rendering a mirror of a Mac's
+surface — which §H #9 of the protocol spec already condemned as "the cautionary
+tale". The phone becomes a client of *this* protocol, not a screen for another
+client.
+
+### 2.2 Workspaces live on the device, not in a viewer
+
+A **workspace** is a directory root on a device — what the UI calls a project,
+and what `git worktree` extends. §B of the protocol spec introduced it as the
+scope for filesystem and git operations. This rule promotes it: a workspace is
+a **first-class, enumerable object owned by the device's `termiod`**.
+
+The consequence is worth stating plainly, because it collapses a distinction
+the product currently makes:
+
+> There is no "local project" and "remote project". There is a **workspace on a
+> device**, and the Mac happens to be one of the devices.
+
+| Today | Under this rule |
+| --- | --- |
+| `Project` = a path on the Mac | Workspace = `(device, path)`, registered with that device's `termiod` |
+| Opening a remote project = a special mode | Opening any project = pick a device, pick a workspace |
+| Worktrees created by the Mac running `git worktree add` | Created on the device (request plane `exec`, §5) |
+| The Mac's `StateFile` owns the project tree | Each device owns its own list; viewers cache it |
+| File tree / git read local disk, greyed out for remote | Always read the workspace's device |
+
+`termiod` currently knows only about sessions — id, name, cwd, command. It does
+not know what a project is. **That gap is what makes "open a remote project"
+impossible today**, and closing it is a precondition for the phone being a
+peer rather than a satellite.
 
 ---
 
@@ -249,6 +308,33 @@ colours. The split and the reasoning are specified in the protocol doc §C.11.
 Stated once, covering both halves: **the client declares how output should be
 produced and how it should look; the device decides only where it runs.**
 
+### 4.1 What each side owns
+
+The presentation boundary is one instance of a general split. Once viewers are
+peers (§2.1), every piece of state has to belong to exactly one side, and the
+test is simple: *would two people watching the same session from two machines
+expect to share it?*
+
+| Owned by the **device** | Owned by the **viewer** |
+| --- | --- |
+| PTY, process, exit status | rendering, font, theme, palette |
+| filesystem, git state | selection, scroll position, **viewport** |
+| workspaces and worktrees (§2.2) | window and split layout |
+| agent workstream status | **clipboard** |
+| scrollback content (authoritative) | how much scrollback is shown, and where |
+
+Mitchell states the viewport half from the same conclusion: each client owns
+its own viewport and its own selection, and he names tmux's shared viewport —
+one client scrolling scrolls everyone's window — as the defect to avoid.
+
+**This is also the correct account of the image-paste failure.** The clipboard
+sits on the viewer side; the agent runs on the device side. Pasting a
+screenshot is not "uploading to a server", it is **crossing this boundary**,
+and today the crossing does not exist — the local mechanism is the agent
+reading the Mac's pasteboard itself, which has no meaning when the agent is on
+a VPS. The transfer plane (§5) is the crossing, and it is symmetric because
+both sides are the user's own.
+
 The spawn-environment half was closed on 2026-08-05
 (`TermioStore.presentationEnvironment(from:)`). One known gap remains, recorded
 rather than silently carried: the packed-cell encoding still ships resolved RGB
@@ -263,7 +349,7 @@ to a Mirror (client-classes doc §D.4).
 | **Terminal** | raw bytes (default) · `S` VT snapshot (bootstrap) · `G` diffs (opt-in only — §3) | snapshot + seq | shipped |
 | **Resource** | subscriptions with `seq` + bounded ring + linger (`fs:` first) | re-subscribe at cursor | `fs:` shipped |
 | **Request** | `exec`, `list`, `read`, `write` | idempotent, request id | **not built** |
-| **Transfer** | bytes *between devices*: clipboard, images, files | resume at offset | **not built** |
+| **Transfer** | bytes across the viewer↔device boundary (§4.1): clipboard, images, files | resume at offset | **not built** |
 
 All four ride one connection per device, multiplexed by channel id, over one
 SSH ControlMaster. Reconnect is not a feature: open a pipe, re-subscribe every
@@ -451,7 +537,18 @@ Each step is independently shippable and mostly removes code.
 8. **Discovery providers** (§2) and prebuilt per-arch install (§6), so adding a
    machine is pick-from-list rather than hand-written alias plus cross-compile.
 9. **Request plane**, then file tree and git move to the current device.
-10. **Transfer plane**, then clipboard and image paste work across devices.
+10. **Transfer plane**, then clipboard and image paste cross the viewer↔device
+    boundary (§4.1).
+11. **Workspaces on the device (§2.2).** `termiod` gains a workspace registry —
+    enumerate, open, and create worktrees on the device that owns them. This is
+    what makes "open a remote project" a normal action rather than a mode, and
+    it must land before a phone can talk to a Linux box usefully: until the
+    device can answer *what projects are here*, the only place to ask is a Mac,
+    which is exactly the hop §2.1 removes.
+12. **iOS as a peer client.** The phone speaks this protocol to the device it
+    is showing, and the companion wire is deleted. Gated on §9.6 (how the phone
+    reaches a device without embedding SSH) — the topology is decided, the
+    transport is not.
 
 Steps 1–5 are net deletions or net structure. The features people are waiting for
 (files, git, image paste) are 9–10, and they are last **on purpose**: built before
@@ -555,7 +652,22 @@ the device model exists, each would grow its own local/remote fork.
      wrongly merged container should get their two blocks back, not a manual
      rebuild.
 
-6. **Is a plain terminal a supported client?** A replica needs libghostty, so
+6. **How does iOS reach a device directly?** §2.1 forbids routing the phone
+   through a Mac, and this is the one place that rule currently has no answer.
+   SSH is the transport and §H #8 forbids embedding an SSH or crypto library;
+   iOS has no system OpenSSH, and an in-app SSH client has been built and
+   removed twice. Note the reachability inversion that makes this worth
+   solving rather than working around: **a Linux VPS is easier for a phone to
+   reach than a Mac** — public address, always awake — whereas the Mac sits
+   behind NAT and sleeps, which is precisely what the companion tunnel keeps
+   failing at. The candidate that does not violate anything is **borrowed
+   identity**: a tailnet, or a pairing-pinned host certificate (TOFU, as SSH
+   itself does), which is what §D.1 of the protocol spec already reserves for
+   the QUIC binding. That section was written as "later, if earned"; this is
+   the requirement that earns it. Explicitly rejected: making the Mac a
+   "transparent relay" for the phone — it satisfies the letter of the topology
+   while keeping a Mac on the path, which is the thing being removed.
+7. **Is a plain terminal a supported client?** A replica needs libghostty, so
    `ssh box && termiod attach` only works from a termio client — while zmx (§3)
    and Superlogical's announced *compat mode* both cover it, zmx for free because
    its client is a tty. Serving it means the host renders for that one client: a
