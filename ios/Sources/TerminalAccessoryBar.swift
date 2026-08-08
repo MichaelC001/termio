@@ -17,14 +17,14 @@ enum TerminalKeyCatalog {
     /// the long tail follows.
     static let all: [TerminalControlKey] = [
         TerminalControlKey(
-            id: "shiftTab", title: "⇧⇥",
-            detail: "Cycle permission modes — default, accept edits, plan",
-            payload: Data("\u{1B}[Z".utf8)
-        ),
-        TerminalControlKey(
             id: "tab", title: "tab",
             detail: "Autocomplete, accept a suggestion",
             payload: Data([0x09])
+        ),
+        TerminalControlKey(
+            id: "shiftTab", title: "⇧⇥",
+            detail: "Cycle permission modes — default, accept edits, plan",
+            payload: Data("\u{1B}[Z".utf8)
         ),
         TerminalControlKey(
             id: "ctrlO", title: "^O",
@@ -71,7 +71,7 @@ enum TerminalKeyCatalog {
     /// The research-backed hot set for driving Claude Code from a phone.
     /// Tab earns its default slot on ubiquity: 11 of 12 surveyed mobile
     /// terminals ship it on their bar (completion + field navigation).
-    static let defaultIDs = ["shiftTab", "tab", "ctrlO", "ctrlC", "ctrlL"]
+    static let defaultIDs = ["tab", "shiftTab", "ctrlO", "ctrlC", "ctrlL"]
 
     static func keys(for ids: [String]) -> [TerminalControlKey] {
         all.filter { ids.contains($0.id) }
@@ -116,7 +116,7 @@ enum TerminalStickyVisual {
 /// only carries what a terminal needs and the keyboard lacks, in a stable
 /// grid so every key is always in the same place:
 ///
-///   esc  ⇧⇥  tab  home  ↑  end  ⤒
+///   esc  tab  ⇧⇥  home  ↑  end  ⤒
 ///    +   ctrl alt   ←   ↓   →   ⤓
 ///
 /// Two conventions get their corner: esc holds the terminal's top-left, and
@@ -170,8 +170,8 @@ final class TerminalAccessoryBar: UIInputView {
         // inverted-T arrows only read as one cluster if ↑ sits exactly over ↓.
         let top = makeRow([
             makeEscButton(),
-            makeKeyButton(title: "⇧⇥", payload: Data("\u{1B}[Z".utf8)),
             makeKeyButton(title: "tab", payload: Data([0x09])),
+            makeKeyButton(title: "⇧⇥", payload: Data("\u{1B}[Z".utf8)),
             makeKeyButton(title: "home", payload: Data("\u{1B}[H".utf8)),
             makeKeyButton(title: "↑", payload: Data("\u{1B}[A".utf8), repeats: true),
             makeKeyButton(title: "end", payload: Data("\u{1B}[F".utf8)),
