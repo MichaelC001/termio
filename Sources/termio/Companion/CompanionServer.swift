@@ -384,6 +384,13 @@ final class CompanionServer {
             handleTrace(sessionID: sessionID, dark: dark, on: connection)
         case .sshConfigHosts:
             sendControl(.sshConfigList(hosts: Self.parseSSHConfigHosts()), to: connection)
+        case .unsupported(let type):
+            // The phone speaks a newer vocabulary than this Mac. Nothing to do
+            // but say so: the request is silently dropped either way, and this
+            // line is the only trace of why the phone's button did nothing.
+            Log.companion.notice(
+                "ignoring unsupported control \(type, privacy: .public) — this Mac is older than the phone"
+            )
         case .auth, .exit, .error, .started, .fileList, .file, .written, .uploaded,
              .searchResults, .traceHTML, .sshConfigList, .changes, .diff:
             break
