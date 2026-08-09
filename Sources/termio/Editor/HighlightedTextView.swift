@@ -197,6 +197,9 @@ struct HighlightedTextView: NSViewRepresentable {
             textView.setSelectedRange(
                 NSRange(location: location, length: min(selection.length, length - location))
             )
+            // A programmatic replace bypasses textDidChange, so the gutter's line anchor
+            // must be reset here.
+            coordinator.ruler?.invalidateLineAnchor()
         }
         apply(to: textView)
         scrollView.backgroundColor = backgroundColor
@@ -261,6 +264,7 @@ struct HighlightedTextView: NSViewRepresentable {
         textView.typingAttributes[.baselineOffset] = Self.baselineOffset(lineSpacing: lineSpacing)
         if let saving = textView as? SavingTextView {
             saving.currentLineColor = currentLineColor
+            saving.caretIndicatorColor = caretColor
             // The matched pair glows in the caret's own accent, dimmed to a wash.
             saving.bracketHighlightColor = caretColor.withAlphaComponent(0.28)
         }
@@ -334,6 +338,7 @@ struct HighlightedTextView: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             text.wrappedValue = textView.string
+            ruler?.invalidateLineAnchor()
             ruler?.needsDisplay = true
             if !appliedFindQuery.isEmpty {
                 find.recompute(query: appliedFindQuery, options: appliedFindOptions, in: textView)
@@ -341,6 +346,7 @@ struct HighlightedTextView: NSViewRepresentable {
                 // typing in the document, not navigating, so don't steal the scroll or re-pulse
                 // the find indicator.
                 find.paint(focused: min(appliedFocusedIndex, find.matches.count - 1), reveal: false, in: textView)
+                (textView as? SavingTextView)?.reassertBracketMatch()
                 notifyMatchCount()
             }
         }
@@ -366,6 +372,7 @@ struct HighlightedTextView: NSViewRepresentable {
             // moved, so we don't churn the temporary attributes or re-fire the find pulse.
             guard queryChanged || focusedIndex != appliedFocusedIndex else { return }
             find.paint(focused: focusedIndex, reveal: true, in: textView)
+            (textView as? SavingTextView)?.reassertBracketMatch()
             appliedFocusedIndex = focusedIndex
         }
 
@@ -393,9 +400,34 @@ private final class SavingTextView: NSTextView {
     var addToChat: ((String?) -> Void)?
     var canAddToChat: (() -> Bool)?
     /// Full-width wash under the caret's line; `.clear` (or a read-only buffer) draws nothing.
-    var currentLineColor: NSColor = .clear { didSet { needsDisplay = true } }
+    /// Reassigned from every representable update, so only a genuine change may invalidate —
+    /// an unconditional `didSet` forced a full-view repaint per keystroke, defeating the
+    /// caret-line optimization in `caretDidMove`.
+    var currentLineColor: NSColor = .clear {
+        didSet { if currentLineColor != oldValue { needsDisplay = true } }
+    }
     /// Background wash on a bracket pair when the caret sits against one of them.
     var bracketHighlightColor: NSColor = .clear
+
+    /// The system insertion indicator (macOS 14's `NSTextInsertionIndicator`) in place of the
+    /// legacy hard-blink caret — the same soft fade-and-glide caret Xcode shows. TextKit 2 text
+    /// views adopt it automatically; this TextKit 1 view hosts it as a subview instead: the
+    /// legacy caret draw is suppressed in `drawInsertionPoint`, and the indicator is repositioned
+    /// (with a short glide) on every caret move.
+    private let insertionIndicator = NSTextInsertionIndicator()
+    /// Tint for the indicator; the view's own `insertionPointColor` no longer draws anything.
+    var caretIndicatorColor: NSColor = .textColor {
+        didSet { insertionIndicator.color = caretIndicatorColor }
+    }
+
+    override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
+        super.init(frame: frameRect, textContainer: container)
+        insertionIndicator.displayMode = .hidden
+        addSubview(insertionIndicator)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     /// The bracket pair currently washed, so the previous pair can be cleanly un-washed.
     private var bracketRanges: [NSRange] = []
@@ -510,6 +542,113 @@ private final class SavingTextView: NSTextView {
         NotificationCenter.default.post(name: .termioCloseContentOverlay, object: nil)
     }
 
+    // MARK: Insertion indicator
+
+    /// The caret's bar width, matching the system indicator's own preference.
+    private static let caretWidth: CGFloat = 2
+
+    /// Whether this view currently holds first-responder status. Tracked here because inside
+    /// `resignFirstResponder` the window still reports the *old* responder — asking the window
+    /// would keep the caret alive through the handoff.
+    private var isCaretFocused = false
+
+    /// The legacy caret stays undrawn — `insertionIndicator` is the caret.
+    override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {}
+
+    override var isEditable: Bool {
+        didSet { updateInsertionIndicator() }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted {
+            isCaretFocused = true
+            updateInsertionIndicator()
+        }
+        return accepted
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let accepted = super.resignFirstResponder()
+        if accepted {
+            isCaretFocused = false
+            updateInsertionIndicator()
+        }
+        return accepted
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        // A resize re-wraps the text, moving the caret's rect without any selection change.
+        updateInsertionIndicator()
+    }
+
+    /// The caret follows the platform convention of showing only in the key window: re-evaluate
+    /// on every key-status change of whichever window the view lands in.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        for observer in windowKeyObservers { NotificationCenter.default.removeObserver(observer) }
+        windowKeyObservers = []
+        guard let window else { return }
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+            windowKeyObservers.append(NotificationCenter.default.addObserver(
+                forName: name, object: window, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateInsertionIndicator() }
+            })
+        }
+    }
+
+    private var windowKeyObservers: [NSObjectProtocol] = []
+
+    deinit {
+        for observer in windowKeyObservers { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    /// The one decision point for the caret: every input that can change its visibility or rect
+    /// (selection, focus, editability, resize, window key status) funnels through here.
+    private func updateInsertionIndicator() {
+        guard isEditable, isCaretFocused, selectedRange().length == 0,
+              let window, window.isKeyWindow else {
+            insertionIndicator.displayMode = .hidden
+            return
+        }
+        // `firstRect` (the input-method geometry query) over hand-rolled layout math: it already
+        // answers for wrapped lines, marked text, and the trailing newline — the round-trip
+        // through screen coordinates is the price of not duplicating those cases here.
+        let caret = NSRange(location: selectedRange().location, length: 0)
+        var rect = convert(
+            window.convertFromScreen(firstRect(forCharacterRange: caret, actualRange: nil)),
+            from: nil
+        )
+        if rect.height <= 0 {
+            // An empty document has no glyphs for `firstRect` to measure; stand the caret at the
+            // text origin at the line height every real line will use.
+            let height = fixedLineHeight
+            guard height > 0 else {
+                insertionIndicator.displayMode = .hidden
+                return
+            }
+            let padding = textContainer?.lineFragmentPadding ?? 0
+            rect = NSRect(x: textContainerOrigin.x + padding, y: textContainerOrigin.y,
+                          width: 0, height: height)
+        }
+        rect.size.width = Self.caretWidth
+        // Always snap to the new position — a glide between caret positions read as lag on every
+        // click (user report). The smoothness this indicator buys is the soft blink, not movement.
+        insertionIndicator.frame = rect
+        insertionIndicator.displayMode = .automatic
+    }
+
+    /// The fixed line height the paragraph style enforces, falling back to the font's natural
+    /// height — shared by the empty-document caret and the empty-document current-line band so
+    /// the two can never disagree.
+    private var fixedLineHeight: CGFloat {
+        if let height = defaultParagraphStyle?.minimumLineHeight, height > 0 { return height }
+        guard let layoutManager else { return 0 }
+        return layoutManager.defaultLineHeight(for: font ?? .systemFont(ofSize: 12))
+    }
+
     // MARK: Current line
 
     /// Xcode-style band under the logical line holding the caret (all of its wrapped rows),
@@ -529,14 +668,7 @@ private final class SavingTextView: NSTextView {
             // fragment separately.
             lineRect = layoutManager.extraLineFragmentRect
             if lineRect.isEmpty {
-                // Match the fixed line height the paragraph style enforces, not the font's
-                // natural height — otherwise the empty-document band draws shorter than every
-                // real line's.
-                let fixedHeight = defaultParagraphStyle?.minimumLineHeight ?? 0
-                let height = fixedHeight > 0
-                    ? fixedHeight
-                    : layoutManager.defaultLineHeight(for: font ?? .systemFont(ofSize: 12))
-                lineRect = NSRect(x: 0, y: 0, width: 0, height: height)
+                lineRect = NSRect(x: 0, y: 0, width: 0, height: fixedLineHeight)
             }
         } else {
             let caret = min(selection.location, text.length - 1)
@@ -550,6 +682,13 @@ private final class SavingTextView: NSTextView {
         guard lineRect.intersects(rect) else { return }
         currentLineColor.setFill()
         lineRect.fill()
+    }
+
+    /// The find bar's repaint clears the temporary background color over the whole document,
+    /// taking the bracket wash with it while `bracketRanges` still claims it's applied — re-derive
+    /// the wash after any find repaint so the pair doesn't silently vanish until the caret moves.
+    func reassertBracketMatch() {
+        updateBracketMatch()
     }
 
     /// Selection moved: the line band follows the caret, and the bracket wash re-derives.
@@ -573,6 +712,7 @@ private final class SavingTextView: NSTextView {
             needsDisplay = true
         }
         updateBracketMatch()
+        updateInsertionIndicator()
     }
 
     // MARK: Bracket matching

@@ -208,11 +208,11 @@ open class CodeAttributedString : NSTextStorage
     
     func setupListeners()
     {
-        highlightr.themeChanged =
-            { [weak self] _ in
-                    guard let self = self else { return }
-                    self.highlight(NSMakeRange(0, self.stringStorage.length))
-        }
+        // termio deviation: upstream re-highlighted the whole document from `themeChanged` here.
+        // The editor re-themes, re-fonts, and re-metrics as one package and then triggers a single
+        // explicit re-highlight (`HighlightedTextView.updateNSView`) — the automatic pass ran the
+        // same whole-document work a second time and could apply results computed with stale font
+        // metrics, since it fired before the new metrics were assigned.
     }
     
     

@@ -75,12 +75,15 @@ struct FileEditorView: View {
     /// whole-document relayout — seconds of beachball on a generated 600 KB YAML.
     private static let highlightByteLimit = 256 * 1024
 
-    /// The highlight.js language id, sniffed once from the file extension (`nil` lets highlight.js
-    /// auto-detect). Stable for the lifetime of the open file.
+    /// The highlight.js language id, sniffed once from the file extension. `nil` renders the file
+    /// as plain text — the storage skips highlighting entirely without a language (there is no
+    /// auto-detect pass). Stable for the lifetime of the open file.
     private let language: String?
     /// The file's path relative to its git root — shown next to the name like the diff header
-    /// (`GitDiffView`), so the two overlays read the same. `nil` outside a repo.
-    private let relativePath: String?
+    /// (`GitDiffView`), so the two overlays read the same. `nil` outside a repo. Resolved in
+    /// `load()` alongside the file read: the walk-up-for-`.git` is filesystem work, and this
+    /// init re-runs on every parent render.
+    @State private var relativePath: String?
 
     init(url: URL, settings: AppSettings, readOnly: Bool = false, jumpLine: Int? = nil,
          onClose: @escaping () -> Void) {
@@ -91,13 +94,12 @@ struct FileEditorView: View {
         self.onClose = onClose
         // No I/O here: SwiftUI re-runs this init on every parent render (the store's
         // session churn), and only the first init per `.id(url)` identity keeps its
-        // state — a sync read would hit the disk over and over just to be discarded.
-        // The actual load happens once, in `.task`.
+        // state — filesystem work would hit the disk over and over just to be discarded.
+        // The actual load (and the git-root walk) happens once, in `.task`.
         // A jump-to-line open (content-search hit, cmd-click) targets the *source*, so it
         // must land in Edit — Preview has no lines to jump to and would swallow the scroll.
         _mode = State(initialValue: Self.isMarkdown(url) && jumpLine == nil ? .preview : .edit)
         self.language = Self.highlightLanguage(for: url)
-        self.relativePath = Self.repoRelativePath(for: url)
     }
 
     /// Markdown files get the Edit/Preview toggle; sniffed from the extension only (matching
@@ -106,14 +108,6 @@ struct FileEditorView: View {
         ["md", "markdown", "mdx"].contains(url.pathExtension.lowercased())
     }
     private var isMarkdown: Bool { Self.isMarkdown(url) }
-
-    /// The file's path relative to its git root (the form the diff header shows, e.g.
-    /// `core 2/lib/fs.ts`). `nil` when the file isn't inside a git work tree.
-    private static func repoRelativePath(for url: URL) -> String? {
-        let file = url.standardizedFileURL
-        guard let root = GitRoot.find(for: file) else { return nil }
-        return String(file.path.dropFirst(root.path.count + 1))
-    }
 
     private var isDirty: Bool { text != savedText }
 
@@ -176,6 +170,12 @@ struct FileEditorView: View {
         // peek never writes, so neither the debounce nor the exit flush is armed.
         .onChange(of: text) {
             if !readOnly { scheduleSave() }
+        }
+        // A fresh jump target while a Markdown file sits in Preview (clicking another
+        // content-search hit): the jump needs the source editor's lines, so flip to Edit
+        // first — Preview has no text view to scroll and would swallow it.
+        .onChange(of: jumpLine) {
+            if jumpLine != nil, mode == .preview { mode = .edit }
         }
         .onExitCommand { close() }
         // A safety flush if the overlay goes away without the close button (file switch, app quit).
@@ -415,10 +415,18 @@ struct FileEditorView: View {
     /// also flip `highlightDisabled` so the editor renders them as plain text.
     private func load() async {
         let url = url
-        let result: (text: String?, bytes: Int) = await Task.detached(priority: .userInitiated) {
-            guard let data = try? Data(contentsOf: url) else { return (nil, 0) }
-            return (String(data: data, encoding: .utf8), data.count)
-        }.value
+        let result: (text: String?, bytes: Int, relativePath: String?) =
+            await Task.detached(priority: .userInitiated) {
+                // The repo-relative header path rides the same background hop as the read:
+                // GitRoot walks ancestors with filesystem checks, which stalls on network mounts.
+                let file = url.standardizedFileURL
+                let relative = GitRoot.find(for: file).map {
+                    String(file.path.dropFirst($0.path.count + 1))
+                }
+                guard let data = try? Data(contentsOf: url) else { return (nil, 0, relative) }
+                return (String(data: data, encoding: .utf8), data.count, relative)
+            }.value
+        relativePath = result.relativePath
         guard let contents = result.text else {
             loadFailed = true
             return
@@ -445,7 +453,8 @@ struct FileEditorView: View {
     /// Maps a file to a highlight.js language id, matched against grammars the bundled highlight.js
     /// actually ships (e.g. it has no `toml`/`jsonc` — those fold into `ini`/`json`). The whole file
     /// name is checked first (so `Dockerfile`, `Cargo.lock`, `yarn.lock`, … resolve by name, not
-    /// extension), then the extension. Unknown files return `nil` to let highlight.js auto-detect.
+    /// extension), then the extension. Unknown files return `nil` and render as plain text — the
+    /// storage treats a missing language as "don't highlight", not as an auto-detect request.
     /// Shared with `GitDiffView`, which colors diff lines through the same grammar set.
     static func highlightLanguage(for url: URL) -> String? {
         // Extension-less or specially-named files, keyed by the whole (lowercased) name.
