@@ -59,9 +59,15 @@ struct AppearanceSettingsTab: View {
             } header: {
                 SectionHeaderLabel(title: "Terminal font")
             } footer: {
-                Text("Line height applies to the file editor and diffs; the terminal keeps the font's own.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if settings.inheritsGhosttyDefaults {
+                    Text("Line height applies to the file editor and diffs; the terminal keeps the font's own. Font and theme values you haven't set here follow your Ghostty config.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Line height applies to the file editor and diffs; the terminal keeps the font's own.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Section {
                 Picker("Style", selection: $settings.cursorStyle) {
