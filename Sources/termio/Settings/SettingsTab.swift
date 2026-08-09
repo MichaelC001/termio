@@ -6,7 +6,6 @@ import SwiftUI
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case appearance
-    case interface
     case terminal
     case ssh
     case keyboard
@@ -25,7 +24,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "General"
         case .appearance: return "Appearance"
-        case .interface: return "Interface"
         case .terminal: return "Terminal"
         case .ssh: return "SSH"
         case .keyboard: return "Keyboard"
@@ -42,7 +40,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general: return .settings
         case .appearance: return .paintBrush
-        case .interface: return .sidebarLeft
         case .terminal: return .terminal
         case .ssh: return .serverStack
         case .keyboard: return .keyboard
@@ -58,8 +55,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .general: return "Notifications and the termio command-line tool"
-        case .appearance: return "Terminal font, theme, cursor, and window"
-        case .interface: return "The app's own sidebar font and density"
+        case .appearance: return "Theme, fonts, cursor, and window"
         case .terminal: return "Scrollback history and text selection"
         case .ssh: return "Your ~/.ssh/config hosts, one click away"
         case .keyboard: return "Keyboard shortcuts for every command"

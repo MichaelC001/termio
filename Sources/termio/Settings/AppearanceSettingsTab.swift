@@ -57,7 +57,7 @@ struct AppearanceSettingsTab: View {
                 }
                 Toggle("Thicken glyphs", isOn: $settings.fontThicken)
             } header: {
-                SectionHeaderLabel(title: "Font")
+                SectionHeaderLabel(title: "Terminal font")
             } footer: {
                 Text("Line height applies to the file editor and diffs; the terminal keeps the font's own.")
                     .font(.caption)
@@ -95,6 +95,35 @@ struct AppearanceSettingsTab: View {
                 SectionHeaderLabel(title: "Window")
             } footer: {
                 Text("Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                FontFamilyField(
+                    title: "Family",
+                    prompt: "System",
+                    families: InstalledFonts.all,
+                    previewSize: settings.interfaceFontSize,
+                    monospacedDefault: false,
+                    family: $settings.interfaceFontFamily
+                )
+                Stepper(value: $settings.interfaceFontSize, in: 9...20, step: 1) {
+                    Text("Size: \(Int(settings.interfaceFontSize)) pt")
+                }
+                LabeledContent("Row padding") {
+                    HStack(spacing: 8) {
+                        Slider(value: $settings.interfaceRowPadding, in: 0...12, step: 1)
+                            .frame(width: 160)
+                        Text("\(Int(settings.interfaceRowPadding)) pt")
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 40, alignment: .trailing)
+                    }
+                }
+            } header: {
+                SectionHeaderLabel(title: "Sidebar")
+            } footer: {
+                Text("The project and session list. Kept separate from the terminal font, and need not be monospaced.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
