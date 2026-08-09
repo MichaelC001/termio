@@ -189,6 +189,20 @@ brew install --cask termio-sh/tap/termio
 [TestFlight](https://testflight.apple.com/join/1Arf1UKR) 获取配套应用公测版，
 再扫描 Mac 应用 Settings ▸ Mobile 中的二维码完成配对。
 
+## 路线图
+
+- **Web 支持与远程服务器** — 会话运行在您自己的机器上（VPS、开发机），从任意
+  浏览器接入，终端还可以通过链接分享。
+- **Mux 服务器** — 持久会话主机：会话活在机器上，而不是连接里。合上笔记本，
+  智能体继续干活；重新连上，屏幕原样恢复。
+- **问题分诊** — 在应用内直接查看 GitHub、GitLab、Linear 的 issue，随手交给
+  智能体处理。
+- **移动端 TUI → GUI** — 在实时镜像之上，把智能体会话可选地渲染成 GUI。
+- **Windows 支持** — 原生 Windows 应用，同样的理念、同样的终端内核，不是
+  Electron 移植。
+
+欢迎在 [GitHub Issues](https://github.com/termio-sh/termio/issues) 关注进展或参与讨论。
+
 ## 社区
 
 - **[Discord](https://discord.gg/H9DKVwsE5f)** — 与开发者和其他用户交流

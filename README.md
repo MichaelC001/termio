@@ -205,6 +205,23 @@ brew install --cask termio-sh/tap/termio
 [TestFlight](https://testflight.apple.com/join/1Arf1UKR), then pair it by
 scanning the QR code in the Mac app's Settings ▸ Mobile.
 
+## Roadmap
+
+- **Web support & remote server** — sessions running on a machine you own — a
+  VPS, a devbox — attached from any browser, with terminals you can share by
+  link.
+- **Mux server** — a durable session host: the session lives on the box, not in
+  the connection. Shut the laptop and the agent keeps working; reattach and the
+  exact screen comes back.
+- **Issue triage** — GitHub, GitLab, and Linear issues inside the app, ready to
+  hand straight to an agent.
+- **TUI → GUI on mobile** — an optional GUI rendering of agent sessions on the
+  phone, built on top of the live mirror.
+- **Windows support** — termio as a native Windows app. Same idea, same
+  terminal core, no Electron.
+
+Follow along or weigh in on [GitHub Issues](https://github.com/termio-sh/termio/issues).
+
 ## Community
 
 - **[Discord](https://discord.gg/H9DKVwsE5f)** — chat with the developer and other users

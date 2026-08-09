@@ -198,6 +198,20 @@ brew install --cask termio-sh/tap/termio
 [TestFlight](https://testflight.apple.com/join/1Arf1UKR) 取得配套應用程式
 測試版，再掃描 Mac 應用程式「設定 ▸ 行動裝置」中的 QR code 完成配對。
 
+## 路線圖
+
+- **Web 支援與遠端伺服器** — 工作階段跑在您自己的機器上（VPS、開發機），從任何
+  瀏覽器連上，終端機還能透過連結分享。
+- **Mux 伺服器** — 持久的工作階段主機：工作階段活在機器上，而不是連線裡。闔上
+  筆電，智能體繼續工作；重新連上，畫面原樣恢復。
+- **問題分流** — 在應用程式內直接檢視 GitHub、GitLab、Linear 的 issue，隨手
+  交給智能體處理。
+- **行動端 TUI → GUI** — 在即時鏡像之上，把智能體工作階段選擇性地渲染成 GUI。
+- **Windows 支援** — 原生 Windows 應用程式，同樣的理念、同樣的終端機核心，
+  不是 Electron 移植。
+
+歡迎在 [GitHub Issues](https://github.com/termio-sh/termio/issues) 追蹤進展或參與討論。
+
 ## 社群
 
 - **[Discord](https://discord.gg/H9DKVwsE5f)** — 與開發者及其他使用者交流

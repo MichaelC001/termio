@@ -182,6 +182,22 @@ brew install --cask termio-sh/tap/termio
 
 **iPhone では**: [TestFlight](https://testflight.apple.com/join/1Arf1UKR) でコンパニオンのベータ版を入手し、Mac アプリの設定 ▸ Mobile に表示される QR コードをスキャンしてペアリングしてください。
 
+## ロードマップ
+
+- **Web 対応とリモートサーバー** — VPS や開発マシンなど自分のマシンでセッションを
+  動かし、どのブラウザからでも接続。ターミナルはリンクで共有できます。
+- **Mux サーバー** — 永続的なセッションホスト。セッションは接続ではなくマシン側に
+  生きるので、ノートを閉じてもエージェントは動き続け、再接続すれば画面がそのまま
+  戻ります。
+- **Issue トリアージ** — GitHub・GitLab・Linear の issue をアプリ内で確認し、
+  そのままエージェントに任せられます。
+- **モバイルの TUI → GUI** — ライブミラーの上に、エージェントセッションを GUI として
+  表示するオプション。
+- **Windows 対応** — ネイティブの Windows アプリ。同じ思想、同じターミナルコアで、
+  Electron 移植ではありません。
+
+進捗のフォローやご意見は [GitHub Issues](https://github.com/termio-sh/termio/issues) へ。
+
 ## コミュニティ
 
 - **[Discord](https://discord.gg/H9DKVwsE5f)** — 開発者やほかのユーザーと交流できます

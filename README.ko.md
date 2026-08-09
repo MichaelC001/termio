@@ -211,6 +211,21 @@ brew install --cask termio-sh/tap/termio
 컴패니언 베타를 받은 뒤, Mac 앱의 Settings ▸ Mobile에 뜨는 QR 코드를
 스캔해서 페어링하면 돼요.
 
+## 로드맵
+
+- **웹 지원과 원격 서버** — VPS나 개발 머신 등 내 머신에서 세션을 돌리고, 어느
+  브라우저에서든 붙을 수 있어요. 터미널은 링크로 공유할 수 있고요.
+- **Mux 서버** — 세션이 연결이 아니라 머신에 살아 있는 영속 세션 호스트예요.
+  노트북을 덮어도 에이전트는 계속 일하고, 다시 붙으면 화면이 그대로 돌아와요.
+- **이슈 트리아지** — GitHub, GitLab, Linear 이슈를 앱 안에서 보고 바로
+  에이전트에게 맡겨요.
+- **모바일 TUI → GUI** — 라이브 미러 위에 에이전트 세션을 GUI로 보여주는
+  옵션이에요.
+- **Windows 지원** — 네이티브 Windows 앱이에요. 같은 철학, 같은 터미널 코어로,
+  Electron 포팅이 아니에요.
+
+진행 상황은 [GitHub Issues](https://github.com/termio-sh/termio/issues)에서 지켜보거나 의견을 남겨 주세요.
+
 ## 커뮤니티
 
 - **[Discord](https://discord.gg/H9DKVwsE5f)** — 개발자, 다른 사용자들과 이야기 나눠요
