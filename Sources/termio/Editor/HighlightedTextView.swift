@@ -7,7 +7,6 @@ import SwiftUI
 /// long lines wrap rather than scroll horizontally.
 struct HighlightedTextView: NSViewRepresentable {
     @Binding var text: String
-    @Binding var cursor: EditorCursor?
     let language: String?
     let theme: String
     let font: NSFont
@@ -46,13 +45,14 @@ struct HighlightedTextView: NSViewRepresentable {
     /// Invoked when the user presses ⌘S — flushes the buffer to disk immediately.
     let onSave: () -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(text: $text, cursor: $cursor) }
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
 
     func makeNSView(context: Context) -> NSScrollView {
         let storage = context.coordinator.textStorage
         _ = storage.highlightr.setTheme(to: theme)
         storage.highlightr.theme.setCodeFont(font)
-        storage.highlightr.theme.codeParagraphStyle = Self.paragraphStyle(lineSpacing: lineSpacing)
+        storage.highlightr.theme.codeParagraphStyle = Self.paragraphStyle(font: font, lineSpacing: lineSpacing)
+        storage.highlightr.theme.codeBaselineOffset = Self.baselineOffset(lineSpacing: lineSpacing)
         storage.language = language
         context.coordinator.appliedTheme = theme
         context.coordinator.appliedFont = font
@@ -103,7 +103,8 @@ struct HighlightedTextView: NSViewRepresentable {
         // Xcode-style line-number gutter down the leading edge.
         let ruler = LineNumberRulerView(
             scrollView: scrollView, editorFont: font,
-            numberColor: lineNumberColor, gutterColor: backgroundColor
+            numberColor: lineNumberColor, gutterColor: backgroundColor,
+            baselineShift: Self.gutterBaselineShift(font: font, lineSpacing: lineSpacing)
         )
         scrollView.verticalRulerView = ruler
         scrollView.hasVerticalRuler = true
@@ -161,12 +162,10 @@ struct HighlightedTextView: NSViewRepresentable {
             needsRehighlight = true
         }
         if coordinator.appliedFont != font {
-            storage.highlightr.theme.setCodeFont(font)
             coordinator.appliedFont = font
             needsRehighlight = true
         }
         if coordinator.appliedLineSpacing != lineSpacing {
-            storage.highlightr.theme.codeParagraphStyle = Self.paragraphStyle(lineSpacing: lineSpacing)
             coordinator.appliedLineSpacing = lineSpacing
             needsRehighlight = true
         }
@@ -176,15 +175,36 @@ struct HighlightedTextView: NSViewRepresentable {
         }
         // Setting the language re-runs the highlight over the whole document, applying any new theme
         // colors — so it doubles as the "re-color everything" trigger after a theme/font change.
-        if needsRehighlight { storage.language = language }
+        // `setTheme` above replaces the whole `Theme` instance (dropping its font and line metrics),
+        // so the font, line height, and baseline lift are reasserted as one package first.
+        if needsRehighlight {
+            storage.highlightr.theme.setCodeFont(font)
+            storage.highlightr.theme.codeParagraphStyle = Self.paragraphStyle(font: font, lineSpacing: lineSpacing)
+            storage.highlightr.theme.codeBaselineOffset = Self.baselineOffset(lineSpacing: lineSpacing)
+            storage.language = language
+        }
 
         // Only overwrite on a genuine external change — writing on every keystroke would stomp the
-        // insertion point. In practice text only changes from inside this view.
-        if textView.string != text { textView.string = text }
+        // insertion point. Never while an input method is composing: marked text lives in the view
+        // but not in the binding (AppKit doesn't fire textDidChange for setMarkedText), so the two
+        // strings differ for the whole composition — overwriting then kills the composition and
+        // throws the caret to the end of the document on any unrelated SwiftUI re-render.
+        if textView.string != text, !textView.hasMarkedText() {
+            let selection = textView.selectedRange()
+            textView.string = text
+            let length = (text as NSString).length
+            let location = min(selection.location, length)
+            textView.setSelectedRange(
+                NSRange(location: location, length: min(selection.length, length - location))
+            )
+        }
         apply(to: textView)
         scrollView.backgroundColor = backgroundColor
         scrollView.contentView.backgroundColor = backgroundColor
-        coordinator.ruler?.restyle(editorFont: font, numberColor: lineNumberColor, gutterColor: backgroundColor)
+        coordinator.ruler?.restyle(
+            editorFont: font, numberColor: lineNumberColor, gutterColor: backgroundColor,
+            baselineShift: Self.gutterBaselineShift(font: font, lineSpacing: lineSpacing)
+        )
 
         // A new jump target while the same file stays open (the user clicked another search hit).
         if jumpToLine != coordinator.appliedJumpLine {
@@ -198,19 +218,47 @@ struct HighlightedTextView: NSViewRepresentable {
 
     /// Shared between the theme's highlight attributes and the view's typing attributes so
     /// freshly typed text lays out at the same height before its first highlight pass.
-    static func paragraphStyle(lineSpacing: CGFloat) -> NSParagraphStyle {
+    /// A fixed line height (the font's natural height plus the configured extra) instead of
+    /// `lineSpacing`: TextKit hangs `lineSpacing` entirely *below* the glyphs, which left the
+    /// text riding the top of the current-line band and the caret. Fixing the height makes the
+    /// glyphs bottom-align instead; `baselineOffset(lineSpacing:)` lifts them to the center.
+    static func paragraphStyle(font: NSFont, lineSpacing: CGFloat) -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
-        style.lineSpacing = lineSpacing
+        let height = NSLayoutManager().defaultLineHeight(for: font) + lineSpacing
+        style.minimumLineHeight = height
+        style.maximumLineHeight = height
         return style
     }
 
+    /// Half the extra leading — lifts the bottom-aligned glyphs to sit centered in the fixed-height
+    /// line. Must travel with `paragraphStyle(font:lineSpacing:)` everywhere (typing attributes and
+    /// the theme's highlight attributes alike), or freshly typed text would jump on its first
+    /// highlight pass.
+    static func baselineOffset(lineSpacing: CGFloat) -> CGFloat {
+        lineSpacing / 2
+    }
+
+    /// How far below each line fragment's top the glyph tops now sit (the font's own leading plus
+    /// the centering lift) — the gutter shifts its numbers by the same amount so they keep riding
+    /// the code's baseline.
+    static func gutterBaselineShift(font: NSFont, lineSpacing: CGFloat) -> CGFloat {
+        let natural = NSLayoutManager().defaultLineHeight(for: font)
+        let leading = max(0, natural - font.ascender + font.descender)
+        return leading + baselineOffset(lineSpacing: lineSpacing)
+    }
+
     private func apply(to textView: NSTextView) {
-        textView.font = font
+        // `NSText.font` is a whole-document setter — assigning it stamps the plain face over
+        // every glyph, wiping the bold/italic variants the markdown highlight applied (invisible
+        // in code files, a per-keystroke flicker of `**strong**` runs in markdown). Only touch it
+        // when the configured font genuinely changed; the re-highlight rebuilds the variants.
+        if textView.font != font { textView.font = font }
         textView.backgroundColor = backgroundColor
         textView.insertionPointColor = caretColor
-        let style = Self.paragraphStyle(lineSpacing: lineSpacing)
+        let style = Self.paragraphStyle(font: font, lineSpacing: lineSpacing)
         textView.defaultParagraphStyle = style
         textView.typingAttributes[.paragraphStyle] = style
+        textView.typingAttributes[.baselineOffset] = Self.baselineOffset(lineSpacing: lineSpacing)
         if let saving = textView as? SavingTextView {
             saving.currentLineColor = currentLineColor
             // The matched pair glows in the caret's own accent, dimmed to a wash.
@@ -245,35 +293,42 @@ struct HighlightedTextView: NSViewRepresentable {
         weak var ruler: LineNumberRulerView?
         var onMatchesChanged: ((Int) -> Void)?
         private let text: Binding<String>
-        private let cursor: Binding<EditorCursor?>
         private let find = TextFindEngine()
         private var appliedFindQuery: String = ""
         private var appliedFindOptions: FindOptions = FindOptions()
         private var appliedFocusedIndex: Int = -1
+        /// Block-based notification tokens, removed on teardown — without this every opened file
+        /// left two registrations behind for the lifetime of the process.
+        private var observers: [NSObjectProtocol] = []
 
-        init(text: Binding<String>, cursor: Binding<EditorCursor?>) {
+        init(text: Binding<String>) {
             self.text = text
-            self.cursor = cursor
+        }
+
+        deinit {
+            for observer in observers {
+                NotificationCenter.default.removeObserver(observer)
+            }
         }
 
         /// Redraw the gutter whenever the text view's frame changes — new lines grow it, a window
         /// resize re-wraps it; both shift where each line sits.
         func observeFrame(of textView: NSTextView) {
-            NotificationCenter.default.addObserver(
+            observers.append(NotificationCenter.default.addObserver(
                 forName: NSView.frameDidChangeNotification, object: textView, queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated { self?.ruler?.needsDisplay = true }
-            }
+            })
         }
 
         /// Fully redraw the gutter on every scroll tick — AppKit's copy-on-scroll otherwise leaves
         /// stale, smeared numbers (and numbers stranded in the titlebar strip) behind.
         func observeScroll(of scrollView: NSScrollView) {
-            NotificationCenter.default.addObserver(
+            observers.append(NotificationCenter.default.addObserver(
                 forName: NSView.boundsDidChangeNotification, object: scrollView.contentView, queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated { self?.ruler?.needsDisplay = true }
-            }
+            })
         }
 
         func textDidChange(_ notification: Notification) {
@@ -293,11 +348,6 @@ struct HighlightedTextView: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             (textView as? SavingTextView)?.caretDidMove()
-            let location = textView.selectedRange().location
-            let full = textView.string as NSString
-            guard location <= full.length else { return }
-            let (line, column) = TextPositions.lineColumn(utf16Offset: location, in: full)
-            cursor.wrappedValue = EditorCursor(line: line, column: column)
         }
 
         /// Recompute + repaint after a new query, option change, or focus move. Same query
@@ -479,7 +529,14 @@ private final class SavingTextView: NSTextView {
             // fragment separately.
             lineRect = layoutManager.extraLineFragmentRect
             if lineRect.isEmpty {
-                lineRect = NSRect(x: 0, y: 0, width: 0, height: layoutManager.defaultLineHeight(for: font ?? .systemFont(ofSize: 12)))
+                // Match the fixed line height the paragraph style enforces, not the font's
+                // natural height — otherwise the empty-document band draws shorter than every
+                // real line's.
+                let fixedHeight = defaultParagraphStyle?.minimumLineHeight ?? 0
+                let height = fixedHeight > 0
+                    ? fixedHeight
+                    : layoutManager.defaultLineHeight(for: font ?? .systemFont(ofSize: 12))
+                lineRect = NSRect(x: 0, y: 0, width: 0, height: height)
             }
         } else {
             let caret = min(selection.location, text.length - 1)

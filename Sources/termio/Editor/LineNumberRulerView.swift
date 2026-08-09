@@ -7,13 +7,19 @@ final class LineNumberRulerView: NSRulerView {
     private var numberFont: NSFont
     private var numberColor: NSColor
     private var gutterColor: NSColor
+    /// How far below each line fragment's top the editor's glyph tops sit (the centering lift
+    /// from its fixed line height). The numbers shift by the same amount to stay on the code's
+    /// baseline instead of floating above it.
+    private var baselineShift: CGFloat
 
     override var isOpaque: Bool { true }
 
-    init(scrollView: NSScrollView, editorFont: NSFont, numberColor: NSColor, gutterColor: NSColor) {
+    init(scrollView: NSScrollView, editorFont: NSFont, numberColor: NSColor, gutterColor: NSColor,
+         baselineShift: CGFloat) {
         self.numberFont = Self.gutterFont(for: editorFont)
         self.numberColor = numberColor
         self.gutterColor = gutterColor
+        self.baselineShift = baselineShift
         super.init(scrollView: scrollView, orientation: .verticalRuler)
         clientView = scrollView.documentView
         ruleThickness = 42
@@ -22,10 +28,12 @@ final class LineNumberRulerView: NSRulerView {
     @available(*, unavailable)
     required init(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    func restyle(editorFont: NSFont, numberColor: NSColor, gutterColor: NSColor) {
+    func restyle(editorFont: NSFont, numberColor: NSColor, gutterColor: NSColor,
+                 baselineShift: CGFloat) {
         numberFont = Self.gutterFont(for: editorFont)
         self.numberColor = numberColor
         self.gutterColor = gutterColor
+        self.baselineShift = baselineShift
         needsDisplay = true
     }
 
@@ -63,7 +71,7 @@ final class LineNumberRulerView: NSRulerView {
             let string = "\(number)" as NSString
             let size = string.size(withAttributes: attributes)
             let x = self.ruleThickness - size.width - 6
-            let y = fragMinY + inset + yOffset
+            let y = fragMinY + inset + yOffset + self.baselineShift
             let topClipInset = self.window.map { 1 / $0.backingScaleFactor } ?? 0
             guard y > self.bounds.minY + topClipInset else { return }
             string.draw(at: NSPoint(x: x, y: y), withAttributes: attributes)

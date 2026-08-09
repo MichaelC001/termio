@@ -25,5 +25,3 @@ enum FileActivation {
     ]
 }
 
-/// A caret position for the footer, 1-based the way an editor's status bar reads.
-struct EditorCursor: Equatable { var line: Int; var column: Int }

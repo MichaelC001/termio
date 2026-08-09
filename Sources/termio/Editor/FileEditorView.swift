@@ -57,7 +57,6 @@ struct FileEditorView: View {
     /// Set when the file is too large for syntax highlighting (see `highlightByteLimit`).
     @State private var highlightDisabled = false
     @State private var saveError: String?
-    @State private var cursor: EditorCursor?
     /// The pending debounced write, cancelled and rescheduled on each keystroke.
     @State private var saveTask: Task<Void, Never>?
     @State private var findBarVisible = false
@@ -203,7 +202,6 @@ struct FileEditorView: View {
         } else {
             HighlightedTextView(
                 text: $text,
-                cursor: $cursor,
                 language: highlightDisabled ? nil : language,
                 theme: colorScheme == .dark ? "xcode-dark" : "xcode",
                 font: editorFont,
