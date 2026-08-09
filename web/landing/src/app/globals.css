@@ -97,7 +97,9 @@
   color-scheme: dark;
   --background: #08080a;
   --foreground: #f4f4f6;
-  --card: #0c0c0f;
+  /* Card sits one clear step above the page black — #0c0c0f was only ~4 gray
+     levels off #08080a, invisible on most panels. */
+  --card: #121217;
   --card-foreground: #f4f4f6;
   --popover: #0e0e12;
   --popover-foreground: #f4f4f6;
