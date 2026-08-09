@@ -5,6 +5,7 @@ import { Orchestration } from "@/components/sections/orchestration";
 import { FeatureGrid } from "@/components/sections/feature-grid";
 import { Companion } from "@/components/sections/companion";
 import { Faq } from "@/components/sections/faq";
+import { GitHubBand } from "@/components/sections/github-band";
 import { CtaBand } from "@/components/sections/cta-band";
 import { SiteFooter } from "@/components/site-footer";
 import { HeroGradient } from "@/components/hero-gradient";
@@ -36,11 +37,12 @@ export default function Home() {
       <SiteNav />
       <main className="flex-1">
         <Hero />
-        <Companion />
         <AgentShowcase />
         <Orchestration />
         <FeatureGrid />
+        <Companion />
         <Faq />
+        <GitHubBand />
       </main>
       {/* Shaded outro — mirrors the hero. The CTA band and footer share one slow
           aurora (same MeshGradient), and the footer floats over it as glass,
