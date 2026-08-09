@@ -544,6 +544,14 @@ private final class SavingTextView: NSTextView {
 
     // MARK: Insertion indicator
 
+    /// The caret's bar width, matching the system indicator's own preference.
+    private static let caretWidth: CGFloat = 2
+
+    /// Whether this view currently holds first-responder status. Tracked here because inside
+    /// `resignFirstResponder` the window still reports the *old* responder — asking the window
+    /// would keep the caret alive through the handoff.
+    private var isCaretFocused = false
+
     /// The legacy caret stays undrawn — `insertionIndicator` is the caret.
     override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {}
 
@@ -553,13 +561,19 @@ private final class SavingTextView: NSTextView {
 
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
-        if accepted { updateInsertionIndicator(animated: false) }
+        if accepted {
+            isCaretFocused = true
+            updateInsertionIndicator(animated: false)
+        }
         return accepted
     }
 
     override func resignFirstResponder() -> Bool {
         let accepted = super.resignFirstResponder()
-        if accepted { insertionIndicator.displayMode = .hidden }
+        if accepted {
+            isCaretFocused = false
+            updateInsertionIndicator(animated: false)
+        }
         return accepted
     }
 
@@ -569,12 +583,39 @@ private final class SavingTextView: NSTextView {
         updateInsertionIndicator(animated: false)
     }
 
+    /// The caret follows the platform convention of showing only in the key window: re-evaluate
+    /// on every key-status change of whichever window the view lands in.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        for observer in windowKeyObservers { NotificationCenter.default.removeObserver(observer) }
+        windowKeyObservers = []
+        guard let window else { return }
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+            windowKeyObservers.append(NotificationCenter.default.addObserver(
+                forName: name, object: window, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateInsertionIndicator(animated: false) }
+            })
+        }
+    }
+
+    private var windowKeyObservers: [NSObjectProtocol] = []
+
+    deinit {
+        for observer in windowKeyObservers { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    /// The one decision point for the caret: every input that can change its visibility or rect
+    /// (selection, focus, editability, resize, window key status) funnels through here.
     private func updateInsertionIndicator(animated: Bool) {
-        guard isEditable, selectedRange().length == 0, let window,
-              window.firstResponder === self else {
+        guard isEditable, isCaretFocused, selectedRange().length == 0,
+              let window, window.isKeyWindow else {
             insertionIndicator.displayMode = .hidden
             return
         }
+        // `firstRect` (the input-method geometry query) over hand-rolled layout math: it already
+        // answers for wrapped lines, marked text, and the trailing newline — the round-trip
+        // through screen coordinates is the price of not duplicating those cases here.
         let caret = NSRange(location: selectedRange().location, length: 0)
         var rect = convert(
             window.convertFromScreen(firstRect(forCharacterRange: caret, actualRange: nil)),
@@ -582,14 +623,17 @@ private final class SavingTextView: NSTextView {
         )
         if rect.height <= 0 {
             // An empty document has no glyphs for `firstRect` to measure; stand the caret at the
-            // text origin at the fixed line height.
-            let height = defaultParagraphStyle?.minimumLineHeight
-                ?? layoutManager?.defaultLineHeight(for: font ?? .systemFont(ofSize: 12)) ?? 14
-            let padding = textContainer?.lineFragmentPadding ?? 5
+            // text origin at the line height every real line will use.
+            let height = fixedLineHeight
+            guard height > 0 else {
+                insertionIndicator.displayMode = .hidden
+                return
+            }
+            let padding = textContainer?.lineFragmentPadding ?? 0
             rect = NSRect(x: textContainerOrigin.x + padding, y: textContainerOrigin.y,
                           width: 0, height: height)
         }
-        rect.size.width = 2
+        rect.size.width = Self.caretWidth
         // Glide only between two on-screen positions; appearing (or a passive relayout) snaps,
         // so the caret never animates in from a stale corner.
         if animated, insertionIndicator.displayMode != .hidden {
@@ -603,6 +647,15 @@ private final class SavingTextView: NSTextView {
             insertionIndicator.frame = rect
         }
         insertionIndicator.displayMode = .automatic
+    }
+
+    /// The fixed line height the paragraph style enforces, falling back to the font's natural
+    /// height — shared by the empty-document caret and the empty-document current-line band so
+    /// the two can never disagree.
+    private var fixedLineHeight: CGFloat {
+        if let height = defaultParagraphStyle?.minimumLineHeight, height > 0 { return height }
+        guard let layoutManager else { return 0 }
+        return layoutManager.defaultLineHeight(for: font ?? .systemFont(ofSize: 12))
     }
 
     // MARK: Current line
@@ -624,14 +677,7 @@ private final class SavingTextView: NSTextView {
             // fragment separately.
             lineRect = layoutManager.extraLineFragmentRect
             if lineRect.isEmpty {
-                // Match the fixed line height the paragraph style enforces, not the font's
-                // natural height — otherwise the empty-document band draws shorter than every
-                // real line's.
-                let fixedHeight = defaultParagraphStyle?.minimumLineHeight ?? 0
-                let height = fixedHeight > 0
-                    ? fixedHeight
-                    : layoutManager.defaultLineHeight(for: font ?? .systemFont(ofSize: 12))
-                lineRect = NSRect(x: 0, y: 0, width: 0, height: height)
+                lineRect = NSRect(x: 0, y: 0, width: 0, height: fixedLineHeight)
             }
         } else {
             let caret = min(selection.location, text.length - 1)
