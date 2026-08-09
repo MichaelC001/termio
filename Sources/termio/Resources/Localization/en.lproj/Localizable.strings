@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>App language</key>
+	<string>App language</string>
+	<key>Language</key>
+	<string>Language</string>
+	<key>Later</key>
+	<string>Later</string>
+	<key>Relaunch Now</key>
+	<string>Relaunch Now</string>
+	<key>Relaunch termio to switch language?</key>
+	<string>Relaunch termio to switch language?</string>
+	<key>Running terminal sessions will end. You can relaunch later instead.</key>
+	<string>Running terminal sessions will end. You can relaunch later instead.</string>
+	<key>System (%@)</key>
+	<string>System (%@)</string>
+	<key>Takes effect after termio relaunches.</key>
+	<string>Takes effect after termio relaunches.</string>
+</dict>
+</plist>

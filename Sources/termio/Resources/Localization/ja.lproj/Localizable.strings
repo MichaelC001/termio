@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>App language</key>
+	<string>アプリの言語</string>
+	<key>Language</key>
+	<string>言語</string>
+	<key>Later</key>
+	<string>後で</string>
+	<key>Relaunch Now</key>
+	<string>今すぐ再起動</string>
+	<key>Relaunch termio to switch language?</key>
+	<string>言語を切り替えるために termio を再起動しますか？</string>
+	<key>Running terminal sessions will end. You can relaunch later instead.</key>
+	<string>実行中のターミナルセッションは終了します。後で再起動することもできます。</string>
+	<key>System (%@)</key>
+	<string>システム（%@）</string>
+	<key>Takes effect after termio relaunches.</key>
+	<string>termio の再起動後に有効になります。</string>
+</dict>
+</plist>

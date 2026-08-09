@@ -12,6 +12,11 @@ struct GeneralSettingsTab: View {
     var body: some View {
         Form {
             Section {
+                LanguageRow()
+            } header: {
+                SectionHeaderLabel(title: String(localized: "Language", bundle: .termioResources))
+            }
+            Section {
                 Toggle(isOn: $settings.notifyOnTaskCompletion) {
                     SettingsLabel(
                         .huge(.checkCircle),
