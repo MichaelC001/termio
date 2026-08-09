@@ -467,7 +467,7 @@
 			repositoryURL = "https://github.com/jiweiyuan/libghostty-swift";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 1.0.14;
+				minimumVersion = 1.0.15;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
