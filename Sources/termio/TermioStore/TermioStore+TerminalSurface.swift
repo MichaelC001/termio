@@ -764,6 +764,15 @@ extension TermioStore {
             for fallback in settings.ghosttyFontFallbacks where fallback != settings.fontFamily {
                 builder.withFontFamily(fallback)
             }
+            // When the chain still can't draw hanzi, close with a purpose-built dual-width
+            // CJK face if one is installed — otherwise the system falls back to proportional
+            // PingFang per glyph, whose weight and metrics visibly fight the Latin face.
+            // (The grid's cell width still follows the primary; only a dual-width *primary*
+            // removes the spacing gaps entirely.)
+            let chain = [settings.fontFamily] + settings.ghosttyFontFallbacks
+            if let cjkFallback = InstalledFonts.cjkMonospaceFallback(existingChain: chain) {
+                builder.withFontFamily(cjkFallback)
+            }
         }
         builder.withFontSize(Float(settings.fontSize))
         builder.withFontThicken(settings.fontThicken)

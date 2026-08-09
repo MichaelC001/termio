@@ -255,6 +255,32 @@ enum InstalledFonts {
             return font.isFixedPitch
         }.sorted()
     }
+
+    /// Dual-width CJK monospace faces users commonly install, in preference order —
+    /// each draws hanzi at exactly two terminal cells, so falling back to one keeps
+    /// weight and style consistent with the Latin face.
+    private static let cjkFallbackCandidates = [
+        "Sarasa Term SC", "Sarasa Mono SC", "Sarasa Fixed SC",
+        "Maple Mono NF CN", "Maple Mono CN",
+        "LXGW WenKai Mono",
+        "Noto Sans Mono CJK SC",
+    ]
+
+    /// The first installed CJK-capable face to append to the terminal's font chain, or
+    /// `nil` when the chain already covers CJK (checked against U+4E00 on each face) or
+    /// none of the known candidates is installed. Silent by design: no setting, just a
+    /// better fallback than the system's proportional PingFang when the user has a
+    /// purpose-built face on disk.
+    static func cjkMonospaceFallback(existingChain: [String]) -> String? {
+        let han = Unicode.Scalar(0x4E00)
+        for family in existingChain where !family.isEmpty {
+            guard let font = NSFont(name: family, size: 12), let han else { continue }
+            if (font.coveredCharacterSet as CharacterSet).contains(han) { return nil }
+        }
+        return cjkFallbackCandidates.first { candidate in
+            !existingChain.contains(candidate) && NSFont(name: candidate, size: 12) != nil
+        }
+    }
 }
 
 /// A font-family editor: a native pop-up menu of installed families above a live
