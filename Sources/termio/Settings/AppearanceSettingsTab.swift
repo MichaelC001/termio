@@ -16,7 +16,7 @@ struct AppearanceSettingsTab: View {
             } header: {
                 SectionHeaderLabel(title: "Appearance")
             } footer: {
-                Text("Pin termio to a light or dark look, or follow the system. The light and dark terminal themes below apply to the matching appearance.")
+                Text("Pin Termio to a light or dark look, or follow the system. The light and dark terminal themes below apply to the matching appearance.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -36,7 +36,7 @@ struct AppearanceSettingsTab: View {
             } header: {
                 SectionHeaderLabel(title: "Theme")
             } footer: {
-                Text("termio switches between these as macOS changes appearance; leave a slot on the default for termio's own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”")
+                Text("Termio switches between these as macOS changes appearance; leave a slot on the default for Termio's own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

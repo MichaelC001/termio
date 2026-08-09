@@ -178,18 +178,18 @@ outcomes so scripts can branch without parsing: **0** settled, **1** error
 - **Heartbeat.** In `--json` mode the app writes `{"heartbeat":true}` after 30
   seconds of silence, so a quiet stream is distinguishable from a dead one.
 - **Exit codes.** `0` after Ctrl-C (the normal end of supervision), `2` when
-  the stream closed from the app side — "I chose to stop" and "termio went
+  the stream closed from the app side — "I chose to stop" and "Termio went
   away" are different outcomes.
 
 ### Spawned sessions know their caller
 
-When one termio session spawns another, the delivered prompt opens with a short
+When one Termio session spawns another, the delivered prompt opens with a short
 provenance envelope: it names the caller's link and allows exactly one
 back-channel — a mid-task question, or a one-line completion ping, via
 `termio sessions send <caller-link> …`. Nothing else travels that way: no
 conversation, no delegating tasks back. Results stay transcript-as-truth — the
 supervisor reads the worker's transcript, with `watch` as the backstop. A
-`spawn` from a plain shell (outside any termio session) gets no envelope.
+`spawn` from a plain shell (outside any Termio session) gets no envelope.
 
 ### Fail loud
 

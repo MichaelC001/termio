@@ -61,9 +61,9 @@ website Download button), existing installs auto-update via Sparkle from
 These are identifiers, not secrets — the real secrets (the `.p8` bytes, the cert
 password, the R2 secret access key) live only in GitHub Secrets and your vault.
 
-> **termio needs no provisioning profile.** Unlike oakreader (which declares a
+> **Termio needs no provisioning profile.** Unlike oakreader (which declares a
 > restricted `keychain-access-groups` entitlement and therefore embeds a
-> Developer ID profile), termio has no restricted entitlements, so plain
+> Developer ID profile), Termio has no restricted entitlements, so plain
 > Developer-ID signing + notarization is enough. Don't copy oakreader's
 > `PROVISIONING_PROFILE` step.
 
@@ -100,7 +100,7 @@ anyway.
 reads it without echoing — use this. Do **not** paste a `!printf ... | gh ...`
 one-liner into a normal terminal: zsh treats the leading `!` as history
 expansion and dies with `zsh: event not found`. (The `!` prefix only means
-"run in the termio session"; it isn't part of the command.)
+"run in the Termio session"; it isn't part of the command.)
 
 ```sh
 gh secret set R2_SECRET_ACCESS_KEY --repo termio-sh/termio   # prompts, no echo
@@ -110,7 +110,7 @@ gh secret set R2_SECRET_ACCESS_KEY --repo termio-sh/termio   # prompts, no echo
 
 Do these once. Most are shared with oakreader (same Apple account, same R2
 account, same Sparkle key), but GitHub secrets are write-only, so each value must
-be set on termio's repo directly — you can't copy them across repos.
+be set on Termio's repo directly — you can't copy them across repos.
 
 ### 1. Cloudflare R2 bucket + domain (required)
 
@@ -209,7 +209,7 @@ cache step to run by hand.
 
 ## Per-release runbook
 
-termio is **trunk-based** (since 2026-07-19): `main` is the single default
+Termio is **trunk-based** (since 2026-07-19): `main` is the single default
 branch and the development trunk. Feature work goes on short-lived branches →
 PR → merge into `main`; there is no separate `dev`/`release` branch. A release
 is just a `vX.Y.Z` tag on `main` — the tag *is* the release marker.

@@ -45,7 +45,7 @@ struct WelcomeView: View {
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 96, height: 96)
             VStack(spacing: 4) {
-                Text("termio")
+                Text("Termio")
                     .font(.system(size: 32, weight: .bold))
                 Text("Start an agent in a project.")
                     .font(.system(size: 13))

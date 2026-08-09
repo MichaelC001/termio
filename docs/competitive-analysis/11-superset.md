@@ -11,10 +11,10 @@ related:
 
 # Superset (superset.sh)
 
-> **The heavyweight in termio's exact category**: YC-backed, ~11k★ in 5 months,
+> **The heavyweight in Termio's exact category**: YC-backed, ~11k★ in 5 months,
 > orchestrates CLI agents in parallel **git worktrees** with built-in terminal,
 > diff/review, editor, remote hosts, CLI/SDK/MCP. Where cmux converged on
-> termio's *terminal* bets, Superset converged on the *worktree + review +
+> Termio's *terminal* bets, Superset converged on the *worktree + review +
 > remote* bets — but on Electron, with accounts and a cloud sync layer.
 
 Source: local clone at `~/Documents/GitHub/superset` (commit 5f7b79f,
@@ -69,15 +69,15 @@ built-in terminal/diff/editor, and one-click handoff to your real editor.
   (`apps/desktop/src/main/lib/agent-setup/`). Pane status is an explicit state
   machine — `idle | working | permission | review | failed` with a priority
   order — driving chimes, macOS notifications, and a dock badge count
-  (suppressed when the pane is visible). Same architecture family as termio's
+  (suppressed when the pane is visible). Same architecture family as Termio's
   hook + status-promotion pipeline.
 - **Managed agent binaries**: Superset *installs and updates* most agents
   itself (`desktop-agent-capabilities.ts` marks 11 of 12 as managed) — the
-  "self-managed install, no nag" pattern termio deferred for LSP, applied to
+  "self-managed install, no nag" pattern Termio deferred for LSP, applied to
   the agents themselves.
 - **ACP**: host-service implements the Agent Client Protocol (0.56) with a
   persisted session registry — stateful structured sessions alongside the raw
-  PTY. (Convergent with termio's mobile-protocol choice of ACP vocabulary.)
+  PTY. (Convergent with Termio's mobile-protocol choice of ACP vocabulary.)
 - **Review/diff/editor built-in**: custom diff viewer on `@pierre/diffs`,
   CodeMirror 6 editor with Shiki highlighting, Tiptap-based **⌘I prompt
   editor** (multiline, @-file mentions).
@@ -100,7 +100,7 @@ built-in terminal/diff/editor, and one-click handoff to your real editor.
 - **Electron + xterm.js**: heavier, and terminal fidelity/latency is a real
   gap vs libghostty — TUI-heavy agents (Claude Code) are its worst case.
 - **Account + cloud gravity**: better-auth, ElectricSQL sync, Stripe schema —
-  the local app is entangled with a platform. termio is free, no-account,
+  the local app is entangled with a platform. Termio is free, no-account,
   local-only by principle.
 - **Enormous surface area** (11 apps, 20 packages, relay, admin, Discord
   triage bot) for a ~1.x product — the anti-thesis of 小而美; ELv2 also isn't
@@ -108,13 +108,13 @@ built-in terminal/diff/editor, and one-click handoff to your real editor.
 - Session persistence is memory-only in a daemon — a crash still loses
   everything; no disk-backed scrollback.
 
-## vs. termio / takeaways
+## vs. Termio / takeaways
 
 - **Category validation, again**: Superset independently landed on nearly
-  every termio mechanism — worktree isolation, hook-driven status with a
+  every Termio mechanism — worktree isolation, hook-driven status with a
   needs-attention priority, chime/badge ambience, ACP for the structured
   plane, sessions CLI. The bets are right; the fight is execution and taste.
-- **termio's defensible line vs Superset** is the mirror of its line vs cmux:
+- **Termio's defensible line vs Superset** is the mirror of its line vs cmux:
   **native Swift + libghostty rendering** (Superset's weakest layer), **free /
   no account / no cloud**, and a deliberately small surface. Don't chase its
   breadth (editor, SDK, admin planes).
@@ -128,7 +128,7 @@ built-in terminal/diff/editor, and one-click handoff to your real editor.
   3. Explicit pane-status **priority ordering** (permission > failed >
      working > review > idle) for aggregating multi-session state into one
      badge.
-- **Watch**: their v2 "unified CLI" and MCP v2 — same territory as termio's
+- **Watch**: their v2 "unified CLI" and MCP v2 — same territory as Termio's
   sessions CLI v2 design; worth a re-read before finalizing that doc.
 
 ## References

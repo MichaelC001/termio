@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<img alt="termio" src="web/landing/public/logo.png" width="88" />
+<img alt="Termio" src="web/landing/public/logo.png" width="88" />
 
 ### ターミナルファーストのエージェンティック開発環境
 
@@ -23,13 +23,23 @@ Claude Code、Codex をはじめ、あらゆる CLI エージェントをネイ�
 
 <br />
 
-<img alt="ダークモードの termio: プロジェクトサイドバーの横で動作するライブ Claude Code セッション" src="web/landing/public/screenshots/hero1.png" width="100%" />
+<img alt="ダークモードの Termio: プロジェクトサイドバーの横で動作するライブ Claude Code セッション" src="web/landing/public/screenshots/hero1.png" width="100%" />
 
 </div>
 
+## インストール
+
+**[macOS 版 Termio をダウンロード](https://downloads.termio.sh/termio.dmg)** — 無料、アカウント不要、macOS 14 以降に対応。[Homebrew](https://brew.sh) でもインストールできます:
+
+```sh
+brew install --cask termio-sh/tap/termio
+```
+
+**iPhone では**: [TestFlight](https://testflight.apple.com/join/1Arf1UKR) でコンパニオンのベータ版を入手し、Mac アプリの設定 ▸ Mobile に表示される QR コードをスキャンしてペアリングしてください。
+
 ## エージェントの仕事を見守るために
 
-IDE は、人間がコードを打ち込むことを前提に設計されてきました。コードの大半をエージェントが書くようになると、環境の役割は変わります。そこはエージェントが働く場所であり、あなたが指示し、レビューし、行き詰まったエージェントを助ける場所です。termio はまさにその環境です。エージェントがすでに住んでいる場所だからこそターミナルファーストであり、複数のエージェントが同時に動き、そのほとんどは手がかからず、ひとつだけが詰まっている — そんな新しい仕事のかたちのために作られています。（詳しい議論は [*From IDE to ADE*](docs/essays/from-ide-to-ade.md) をご覧ください。）
+IDE は、人間がコードを打ち込むことを前提に設計されてきました。コードの大半をエージェントが書くようになると、環境の役割は変わります。そこはエージェントが働く場所であり、あなたが指示し、レビューし、行き詰まったエージェントを助ける場所です。Termio はまさにその環境です。エージェントがすでに住んでいる場所だからこそターミナルファーストであり、複数のエージェントが同時に動き、そのほとんどは手がかからず、ひとつだけが詰まっている — そんな新しい仕事のかたちのために作られています。（詳しい議論は [*From IDE to ADE*](docs/essays/from-ide-to-ade.md) をご覧ください。）
 
 - **Web ビューではない、本物のターミナル。** Swift + AppKit を
   [libghostty](https://ghostty.org)（Ghostty のターミナルコア）の上に構築し、
@@ -37,7 +47,7 @@ IDE は、人間がコードを打ち込むことを前提に設計されてき�
 - **プロジェクト → セッション。** サイドバーは実際の作業の構造をそのまま映します。
   各プロジェクトが自分のターミナルとエージェントを持ち、その下に並行タスク用の
   git ワークツリーがネストされます。
-- **設定ゼロのステータス表示。** termio は各エージェント固有のフックを自動で配線し、
+- **設定ゼロのステータス表示。** Termio は各エージェント固有のフックを自動で配線し、
   エージェントがもともと発しているシグナルを読み取ります。作業中・アイドル・
   *要対応* — セッションごとのドットに加え、メニューバーのトレイは普段は静かに、
   エージェントの作業中は脈打ち、あなたの対応待ちになると鳴って知らせます。
@@ -66,7 +76,7 @@ IDE は、人間がコードを打ち込むことを前提に設計されてき�
 
 ### エージェントがあなたを必要とする瞬間がわかる
 
-セッションドットが作業中／アイドル／要対応を示し、どのアプリからでも一目で確認できるメニューバーのトレイに集約されます。トレイでセッションを選べば、termio がそのセッションを前面に呼び出します。
+セッションドットが作業中／アイドル／要対応を示し、どのアプリからでも一目で確認できるメニューバーのトレイに集約されます。トレイでセッションを選べば、Termio がそのセッションを前面に呼び出します。
 
 </td>
 <td width="50%">
@@ -139,11 +149,11 @@ IDE は、人間がコードを打ち込むことを前提に設計されてき�
 ## お使いのエージェントで動く
 
 Claude Code、Codex、Gemini CLI、Grok、Cursor Agent、Copilot、Amp、OpenCode、
-Pi、Kimi — そのほかどんな CLI エージェントでも動きます。セッションは本物のターミナルそのものだからです。組み込み対応のエージェントは、termio がそれぞれのフックやプラグインを自動でインストールするため、初回起動からステータス検出が機能します。
+Pi、Kimi — そのほかどんな CLI エージェントでも動きます。セッションは本物のターミナルそのものだからです。組み込み対応のエージェントは、Termio がそれぞれのフックやプラグインを自動でインストールするため、初回起動からステータス検出が機能します。
 
 ## ターミナルから操作する
 
-termio には `termio` CLI が同梱されており、セッションをスクリプトから操作できます — エージェント自身からも。termio の中で動くエージェントは、兄弟セッションを起動してタスクを渡し、返答を読み取れます。
+Termio には `termio` CLI が同梱されており、セッションをスクリプトから操作できます — エージェント自身からも。Termio の中で動くエージェントは、兄弟セッションを起動してタスクを渡し、返答を読み取れます。
 
 ```sh
 termio sessions list                       # 誰が作業中か、アイドルか、あなたを待っているか
@@ -170,18 +180,6 @@ termio sessions watch                      # ステータスの変化をリア�
 </tr>
 </table>
 
-## インストール
-
-**[macOS 版 termio をダウンロード](https://downloads.termio.sh/termio.dmg)** — 無料、アカウント不要です。macOS 14 以降に対応しています。
-
-[Homebrew](https://brew.sh) でもインストールできます:
-
-```sh
-brew install --cask termio-sh/tap/termio
-```
-
-**iPhone では**: [TestFlight](https://testflight.apple.com/join/1Arf1UKR) でコンパニオンのベータ版を入手し、Mac アプリの設定 ▸ Mobile に表示される QR コードをスキャンしてペアリングしてください。
-
 ## ロードマップ
 
 - **Linux リモートサーバー** — VPS や開発マシンなど、自分の Linux マシンで
@@ -201,6 +199,11 @@ brew install --cask termio-sh/tap/termio
 進捗のフォローやご意見は [GitHub Issues](https://github.com/termio-sh/termio/issues) へ。
 
 ## コミュニティ
+
+**Termio は長期的なメンテナーを募集しています。** Termio を気に入って使っていて、
+上のロードマップのどこか — Linux リモートサーバー、Web クライアント、Windows、
+iOS コンパニオンアプリ — を担当してみたい方は、Discord で声をかけるか、issue を
+拾ってみてください。
 
 - **[Discord](https://discord.gg/H9DKVwsE5f)** — 開発者やほかのユーザーと交流できます
 - **[GitHub Issues](https://github.com/termio-sh/termio/issues)** — バグ報告と機能リクエスト

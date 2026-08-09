@@ -132,8 +132,8 @@ private struct UsageAgentDetail: View {
         Form {
             Section {
                 Text(agent == .claudeCode
-                    ? "termio can show \(agent.displayName)'s token usage and plan limits by reading its local session logs and its sign-in from your login Keychain. Nothing is read until you allow it; macOS will ask once about the Keychain."
-                    : "termio can show \(agent.displayName)'s token usage and plan limits by reading its local session logs and its `auth.json` sign-in. Nothing is read until you allow it.")
+                    ? "Termio can show \(agent.displayName)'s token usage and plan limits by reading its local session logs and its sign-in from your login Keychain. Nothing is read until you allow it; macOS will ask once about the Keychain."
+                    : "Termio can show \(agent.displayName)'s token usage and plan limits by reading its local session logs and its `auth.json` sign-in. Nothing is read until you allow it.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Button("Allow Usage Access") {

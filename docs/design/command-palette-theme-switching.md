@@ -48,7 +48,7 @@ search, grouping, and keyboard nav; each theme is a `PaletteItem` of kind `.them
    restore it on any dismissal that isn't a commit (`endThemeBrowsing`), and seed the
    highlight to the current theme so the opening preview is a no-op. `Enter`/click
    commits; Esc, click-away, and switching modes all revert.
-5. **No dedicated chord** (no `⌘K ⌘T`). termio has no chord-prefix system and one
+5. **No dedicated chord** (no `⌘K ⌘T`). Termio has no chord-prefix system and one
    feature doesn't justify introducing one; the palette command is the entry point.
 
 ### North stars

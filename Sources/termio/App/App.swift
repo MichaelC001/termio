@@ -1319,7 +1319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 alert.messageText = "Couldn't open a pull request page"
                 alert.informativeText = "Push the current branch to the repository's "
                     + "remote first, then try again. (The remote also needs to be a "
-                    + "forge termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)"
+                    + "forge Termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)"
                 alert.alertStyle = .warning
                 alert.runModal()
             }

@@ -1,6 +1,6 @@
 <div align="center">
 
-<img alt="termio" src="web/landing/public/logo.png" width="88" />
+<img alt="Termio" src="web/landing/public/logo.png" width="88" />
 
 ### The Terminal-first Agentic Development Environment
 
@@ -21,15 +21,28 @@ every session live in the sidebar, and a menu-bar dot that tells you who needs y
 
 <br />
 
-<img alt="termio in dark mode: a live Claude Code session next to the project sidebar" src="web/landing/public/screenshots/hero1.png" width="100%" />
+<img alt="Termio in dark mode: a live Claude Code session next to the project sidebar" src="web/landing/public/screenshots/hero1.png" width="100%" />
 
 </div>
+
+## Install
+
+**[Download Termio for macOS](https://downloads.termio.sh/termio.dmg)** — free,
+no account, macOS 14+. Or with [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask termio-sh/tap/termio
+```
+
+**On iPhone**: get the companion beta on
+[TestFlight](https://testflight.apple.com/join/1Arf1UKR), then pair it by
+scanning the QR code in the Mac app's Settings ▸ Mobile.
 
 ## Built for watching agents work
 
 The IDE was built around a person typing code. When agents write most of the
 code, the environment's job changes: it's where agents work and where you
-direct, review, and unblock them. termio is that environment — Terminal-first,
+direct, review, and unblock them. Termio is that environment — Terminal-first,
 because that's where the agents already live — built for the new
 shape of the work: several agents going at once, most of them fine without
 you, one of them stuck. (The longer argument:
@@ -41,7 +54,7 @@ you, one of them stuck. (The longer argument:
 - **Projects → sessions.** The sidebar mirrors how you actually work: each
   project holds its terminals and agents, with git worktrees nested beneath it
   for parallel tasks.
-- **Status with zero setup.** termio wires up each agent's own hooks and reads
+- **Status with zero setup.** Termio wires up each agent's own hooks and reads
   the signals agents already emit. Working, idle, or *needs you* — per-session
   dots, and a menu-bar tray that stays calm, pulses while agents work, and
   rings when one is blocked on you.
@@ -73,7 +86,7 @@ elsewhere.
 ### Knows when an agent needs you
 
 Session dots show working / idle / needs-you, aggregated into a menu-bar tray
-you can glance at from any app. Pick a session from the tray and termio brings
+you can glance at from any app. Pick a session from the tray and Termio brings
 it to the front.
 
 </td>
@@ -153,13 +166,13 @@ Jump to any session, project, or action from one search box.
 
 Claude Code, Codex, Gemini CLI, Grok, Cursor Agent, Copilot, Amp, OpenCode,
 Pi, Kimi — and any other CLI agent, because a session is just a real terminal.
-For the built-in agents, termio installs each one's own hook or plugin
+For the built-in agents, Termio installs each one's own hook or plugin
 automatically, so status detection works the first time you launch them.
 
 ## Drive it from the terminal
 
-termio ships a `termio` CLI, so sessions are scriptable — including by the
-agents themselves. An agent running inside termio can spawn a sibling, hand it
+Termio ships a `termio` CLI, so sessions are scriptable — including by the
+agents themselves. An agent running inside Termio can spawn a sibling, hand it
 a task, and read back the reply:
 
 ```sh
@@ -190,21 +203,6 @@ public beta: [join on TestFlight](https://testflight.apple.com/join/1Arf1UKR).
 </tr>
 </table>
 
-## Install
-
-**[Download termio for macOS](https://downloads.termio.sh/termio.dmg)** — free,
-no account. Requires macOS 14+.
-
-Or install with [Homebrew](https://brew.sh):
-
-```sh
-brew install --cask termio-sh/tap/termio
-```
-
-**On iPhone**: get the companion beta on
-[TestFlight](https://testflight.apple.com/join/1Arf1UKR), then pair it by
-scanning the QR code in the Mac app's Settings ▸ Mobile.
-
 ## Roadmap
 
 - **Linux remote server** — run sessions on a Linux machine you own — a VPS, a
@@ -216,7 +214,7 @@ scanning the QR code in the Mac app's Settings ▸ Mobile.
   hand straight to an agent.
 - **TUI → GUI on mobile** — an optional GUI rendering of agent sessions on the
   phone, built on top of the live mirror.
-- **Windows support** — termio as a native Windows app. Same idea, same
+- **Windows support** — Termio as a native Windows app. Same idea, same
   terminal core, no Electron.
 - **Web support** — attach to your sessions from any browser, with terminals
   you can share by link.
@@ -224,6 +222,11 @@ scanning the QR code in the Mac app's Settings ▸ Mobile.
 Follow along or weigh in on [GitHub Issues](https://github.com/termio-sh/termio/issues).
 
 ## Community
+
+**Termio is looking for long-term maintainers.** If you love using it and
+would like to own an area of the roadmap above — the Linux remote server, the
+web client, Windows, or the iOS companion — join the Discord and say hi, or
+just pick up an issue.
 
 - **[Discord](https://discord.gg/H9DKVwsE5f)** — chat with the developer and other users
 - **[GitHub Issues](https://github.com/termio-sh/termio/issues)** — bugs and feature requests
