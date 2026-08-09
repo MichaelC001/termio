@@ -35,7 +35,7 @@ export const changelog: ChangelogEntry[] = [
     title: "Your agents can tap you on the shoulder",
     changes: {
       new: [
-        "Task notifications: when an agent finishes a task — or stops to ask you something — while termio is in the background, a native macOS notification appears with the agent's icon; click it to jump straight to that session. Quick replies and answer-only chat turns stay quiet, and a blocked agent always gets through. Toggle it (and its sound) in Settings › General.",
+        "Task notifications: when an agent finishes a task — or stops to ask you something — while Termio is in the background, a native macOS notification appears with the agent's icon; click it to jump straight to that session. Quick replies and answer-only chat turns stay quiet, and a blocked agent always gets through. Toggle it (and its sound) in Settings › General.",
         "Issues: a new inspector pane lists the project's GitHub issues and pull requests, readable without leaving the terminal.",
         "SSH: an SSH settings tab reads ~/.ssh/config as the source of truth, with Test Connection probes — and New SSH Connection now lists your config hosts, one click to connect.",
         "Sessions CLI: send and spawn take --wait to block until the turn settles, and watch emits stalled events when a working session stops making progress.",
@@ -105,7 +105,7 @@ export const changelog: ChangelogEntry[] = [
     changes: {
       new: [
         "Split panes: agents started from the CLI auto-split beside their caller, and any two sessions can be grouped or ungrouped by hand.",
-        "termio is now MIT-licensed.",
+        "Termio is now MIT-licensed.",
       ],
       improved: [
         "Sidebar scrolling stays smooth with many busy sessions.",
@@ -179,7 +179,7 @@ export const changelog: ChangelogEntry[] = [
     title: "Agent status you can trust",
     changes: {
       new: [
-        "Status from the source: termio now reads the status marks agents broadcast in their terminal titles — Claude's spinner, Codex and Grok's \"Action Required\" — so the sidebar lights up the instant a turn starts, ends, or blocks on you.",
+        "Status from the source: Termio now reads the status marks agents broadcast in their terminal titles — Claude's spinner, Codex and Grok's \"Action Required\" — so the sidebar lights up the instant a turn starts, ends, or blocks on you.",
         "Grok joins the built-in agent lineup.",
         "Markdown: .md files open in an Edit/Preview editor with a book-quality reading view.",
         "Agent manifests: the built-in lineup is now driven by editable manifest files, with a redesigned Agents settings pane — reorder the roster or add your own agents.",
@@ -200,7 +200,7 @@ export const changelog: ChangelogEntry[] = [
     title: "Sandbox retirement",
     changes: {
       improved: [
-        "The per-project Seatbelt sandbox has been retired: modern agents ship their own sandboxes, and macOS is deprecating the mechanism termio's relied on. One project setting fewer.",
+        "The per-project Seatbelt sandbox has been retired: modern agents ship their own sandboxes, and macOS is deprecating the mechanism Termio's relied on. One project setting fewer.",
       ],
       fixed: [
         "Folders in the file tree expand and collapse from a single click on the row.",
@@ -264,7 +264,7 @@ export const changelog: ChangelogEntry[] = [
   {
     version: "0.8.0",
     date: "2026-07-15",
-    title: "termio notices your agents",
+    title: "Termio notices your agents",
     changes: {
       new: [
         "Start claude, codex, or any agent by hand in a plain terminal and its row upgrades itself — brand icon, live title, working status — no setup required.",

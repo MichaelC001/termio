@@ -139,7 +139,7 @@ const beamPathBack = (y: number) =>
 
 // Per-status pill styling for the worker nodes.
 // Borderless light pills: status reads through a small colored dot inside the
-// pill (plus the idle dimming) — the same status language as termio's own
+// pill (plus the idle dimming) — the same status language as Termio's own
 // sidebar. Glows/box-shadows around foreignObject content clip into hard
 // blocks in some browsers, so no halo at all.
 const STATUS_DOT: Record<Status, string> = {

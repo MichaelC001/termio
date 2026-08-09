@@ -128,7 +128,7 @@ Coding agent 的「家」天然在终端：
 
 同桌面位置的产品：Unpeel · cmux · Conductor · herdr · Warp Oz …
 
-**termio 押注的差异：**
+**Termio 押注的差异：**
 
 1. **原生 + libghostty + 零配置状态 + 菜单栏 ambient**
 2. **first-class worktree / 会话编排**（不是「建议你自己用 git」）
@@ -347,7 +347,7 @@ termio agent report <working|attention|done|idle>
 
 # 技术小结：三个难点的共性
 
-| 难点 | 核心矛盾 | termio 的解法 |
+| 难点 | 核心矛盾 | Termio 的解法 |
 | --- | --- | --- |
 | 终端 | 真 PTY vs 易嵌入 | 拥有 surface + 缓存 + 修上游 |
 | Agent | 多 CLI 碎片 vs 统一体验 | Manifest + hook contract + 多层状态 |
@@ -506,11 +506,11 @@ conventional commit · rebuild · 验证
 4. **本地 + 移动监督** 会是专业用户的默认形态  
    云 ADE 服务另一群人
 5. **Agent 会编排 agent**  
-   Sessions MCP / 结构化协议是下一层（termio 路线图上的 moat 位）
+   Sessions MCP / 结构化协议是下一层（Termio 路线图上的 moat 位）
 
 ---
 
-# termio 还在爬的坡
+# Termio 还在爬的坡
 
 | 方向 | 状态感 |
 | --- | --- |

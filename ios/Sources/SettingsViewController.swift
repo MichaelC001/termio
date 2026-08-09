@@ -613,7 +613,7 @@ final class ConnectivitySettingsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         guard section == Section.mac.rawValue else { return nil }
-        return "Pair once with the address termio on your Mac is serving — every project and session rides this one link."
+        return "Pair once with the address Termio on your Mac is serving — every project and session rides this one link."
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -680,7 +680,7 @@ final class ConnectivitySettingsViewController: UITableViewController {
     private func presentEditAddress() {
         let alert = UIAlertController(
             title: "Connect to Mac",
-            message: "The address termio on your Mac is serving.",
+            message: "The address Termio on your Mac is serving.",
             preferredStyle: .alert
         )
         alert.addTextField { field in

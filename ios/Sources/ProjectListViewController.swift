@@ -238,7 +238,7 @@ final class ProjectListViewController: UIViewController {
             emptyState.configure(
                 icon: .devicePair,
                 title: "No Mac connected",
-                message: "Open termio on your Mac, then pair this phone to see and drive your projects from here.",
+                message: "Open Termio on your Mac, then pair this phone to see and drive your projects from here.",
                 actionTitle: "Connect a Mac",
                 busy: false
             )
@@ -249,7 +249,7 @@ final class ProjectListViewController: UIViewController {
             emptyState.configure(
                 icon: .wifiError,
                 title: "Can't reach your Mac",
-                message: "It may be asleep or off your network. termio keeps trying — reopen the lid, or tap to retry now.",
+                message: "It may be asleep or off your network. Termio keeps trying — reopen the lid, or tap to retry now.",
                 actionTitle: "Try Again",
                 busy: false
             )
@@ -268,7 +268,7 @@ final class ProjectListViewController: UIViewController {
             emptyState.configure(
                 icon: .folder,
                 title: "No projects open",
-                message: "Open a project in termio on your Mac and it'll show up here.",
+                message: "Open a project in Termio on your Mac and it'll show up here.",
                 actionTitle: nil,
                 busy: false
             )

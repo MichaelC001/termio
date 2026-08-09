@@ -499,7 +499,7 @@ extension TermioStore {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.prompt = "Open"
-        panel.message = "Choose a project folder to open in termio."
+        panel.message = "Choose a project folder to open in Termio."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         addProject(at: url)
     }

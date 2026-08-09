@@ -1,4 +1,4 @@
-# termio docs — wiki
+# Termio docs — wiki
 
 How the docs in this folder are organized. GitHub renders this as the landing
 page when you browse `docs/`.
@@ -65,7 +65,7 @@ from the real front matter).
 | done | design | [Config-driven agent resume](design/config-driven-agent-resume.md) |
 | done | design | [Quick theme switching from the command palette](design/command-palette-theme-switching.md) |
 | done | design | [Vibe Island 式 Agent 状态层（Claude Code hooks）](design/vibe-island-status.md) |
-| done | research | ["ADE 赛道全景表（2026-07）：开源 + 闭源一张表，termio 亮点"](competitive-analysis/10-landscape-table-2026-07.md) |
+| done | research | ["ADE 赛道全景表（2026-07）：开源 + 闭源一张表，Termio 亮点"](competitive-analysis/10-landscape-table-2026-07.md) |
 | done | research | ["Competitive analysis: claude-squad"](competitive-analysis/05-claude-squad.md) |
 | done | research | ["Competitive analysis: cmux (manaflow-ai)"](competitive-analysis/02-cmux.md) |
 | done | research | ["Competitive analysis: Conductor"](competitive-analysis/03-conductor.md) |
@@ -75,14 +75,14 @@ from the real front matter).
 | done | research | ["Competitive analysis: Unpeel"](competitive-analysis/01-unpeel.md) |
 | done | research | ["Competitive analysis: Vibe Island family (status monitors)"](competitive-analysis/07-vibe-island.md) |
 | done | research | ["Competitive analysis: Warp (alternative paradigm)"](competitive-analysis/08-warp.md) |
-| done | research | ["termio differentiation, gaps, and risks"](competitive-analysis/09-differentiation-and-gaps.md) |
+| done | research | ["Termio differentiation, gaps, and risks"](competitive-analysis/09-differentiation-and-gaps.md) |
 | draft (v2) | design | [移动端 Agent UI 协议 —— PTY 之上的旁路结构面（ACP 词汇）](design/mobile-agent-ui-protocol.md) |
 | draft | design | [分享 Agent 会话（带密码的实时分享链接）](design/session-share.md) |
 | draft | design | [调研：下一批 AgentAdapter 的落盘格式（OpenCode / Pi / Amp / Cursor / Kimi）](design/agent-transcript-survey.md) |
 | draft | design | ["Markdown preview — Apple-grade reading typography"](design/markdown-preview-reading-typography.md) |
 | draft | design | [Device Architecture — one server per device, every UI a client](design/termiod-device-architecture.md) |
 | draft | design | [Hot path, attach join point, and client classes](design/termiod-hot-path-and-client-classes.md) |
-| draft | design | [Issue Triage → 本地 agent（GitHub / Linear 事件驱动 termio session）](design/issue-triage-local-agent.md) |
+| draft | design | [Issue Triage → 本地 agent（GitHub / Linear 事件驱动 Termio session）](design/issue-triage-local-agent.md) |
 | draft | design | [Mac retention analytics (no app changes)](design/mac-retention-analytics.md) |
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/remote-projects.md) |
 | draft | design | [Session Daemon Architecture (termiod — one model for local, remote, mobile)](design/session-daemon-architecture.md) |

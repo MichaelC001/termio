@@ -288,7 +288,7 @@ final class CompanionServer {
             }
             Log.companion.notice("phone declared wire version \(wire, privacy: .public)")
             guard wire >= Wire.minimumClient else {
-                refuse(connection, message: "Update termio on your phone to connect to this Mac.")
+                refuse(connection, message: "Update Termio on your phone to connect to this Mac.")
                 return
             }
             authenticatedWireByConnection[id] = wire

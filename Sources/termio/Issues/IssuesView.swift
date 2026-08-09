@@ -205,7 +205,7 @@ struct IssuesView: View {
         case .connecting(let userCode):
             zeroState(
                 title: "Enter Code on GitHub",
-                message: "Type this code at github.com/login/device to approve termio. Waiting for approval…"
+                message: "Type this code at github.com/login/device to approve Termio. Waiting for approval…"
             ) {
                 Text(userCode)
                     .font(.system(size: 22, weight: .semibold, design: .monospaced))
@@ -265,7 +265,7 @@ struct IssuesView: View {
                 // authorized termio. Switch account, or grant org access.
                 zeroState(
                     title: "Couldn’t Load",
-                    message: "Reconnect to sign in with a different account, or grant termio access to the organization that owns this repository."
+                    message: "Reconnect to sign in with a different account, or grant Termio access to the organization that owns this repository."
                 ) {
                     Button("Reconnect") { Task { await model.reconnect() } }
                         .buttonStyle(.borderedProminent)

@@ -97,7 +97,7 @@ struct SSHSettingsTab: View {
                 SettingsLabel(
                     .huge(.fileDoc),
                     title: "~/.ssh/config",
-                    subtext: "Reads ~/.ssh/config directly — termio keeps no separate host list."
+                    subtext: "Reads ~/.ssh/config directly — Termio keeps no separate host list."
                 )
             }
         } header: {

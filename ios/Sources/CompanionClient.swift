@@ -210,7 +210,7 @@ final class CompanionClient: NSObject {
                     if let roster = CompanionRoster.decode(text) {
                         lastServerError = nil
                         if roster.wire < Wire.minimumServer {
-                            onConnectionFailure?("Update termio on your Mac to connect this phone.")
+                            onConnectionFailure?("Update Termio on your Mac to connect this phone.")
                             stop()
                         } else {
                             onRoster?(roster)
