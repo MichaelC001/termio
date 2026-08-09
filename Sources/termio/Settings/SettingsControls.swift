@@ -266,20 +266,37 @@ enum InstalledFonts {
         "Noto Sans Mono CJK SC",
     ]
 
+    /// The first installed candidate, probed once per process — fonts installed mid-run are
+    /// deliberately not tracked (a relaunch picks them up).
+    @MainActor private static let installedCJKCandidate: String? =
+        cjkFallbackCandidates.first { NSFont(name: $0, size: 12) != nil }
+
+    /// Whether a family can draw hanzi, memoized per process: `coveredCharacterSet` allocates
+    /// a full coverage bitmap on every call, and the caller sits on the re-style path that
+    /// runs once per open surface on every settings change.
+    @MainActor private static var hanCoverage: [String: Bool] = [:]
+
     /// The first installed CJK-capable face to append to the terminal's font chain, or
-    /// `nil` when the chain already covers CJK (checked against U+4E00 on each face) or
-    /// none of the known candidates is installed. Silent by design: no setting, just a
-    /// better fallback than the system's proportional PingFang when the user has a
-    /// purpose-built face on disk.
-    static func cjkMonospaceFallback(existingChain: [String]) -> String? {
-        let han = Unicode.Scalar(0x4E00)
+    /// `nil` when the chain already covers CJK (checked against U+4E00) or none of the known
+    /// candidates is installed. Silent by design: no setting, just a better fallback than the
+    /// system's proportional PingFang when the user has a purpose-built face on disk.
+    @MainActor static func cjkMonospaceFallback(existingChain: [String]) -> String? {
+        guard let han = Unicode.Scalar(0x4E00) else { return nil }
         for family in existingChain where !family.isEmpty {
-            guard let font = NSFont(name: family, size: 12), let han else { continue }
-            if (font.coveredCharacterSet as CharacterSet).contains(han) { return nil }
+            let covers: Bool
+            if let cached = hanCoverage[family] {
+                covers = cached
+            } else {
+                covers = NSFont(name: family, size: 12)
+                    .map { ($0.coveredCharacterSet as CharacterSet).contains(han) } ?? false
+                hanCoverage[family] = covers
+            }
+            if covers { return nil }
         }
-        return cjkFallbackCandidates.first { candidate in
-            !existingChain.contains(candidate) && NSFont(name: candidate, size: 12) != nil
+        guard let candidate = installedCJKCandidate, !existingChain.contains(candidate) else {
+            return nil
         }
+        return candidate
     }
 }
 
