@@ -758,6 +758,12 @@ extension TermioStore {
     private func applyAppearance(to builder: inout TerminalConfiguration.Builder) {
         if !settings.fontFamily.isEmpty {
             builder.withFontFamily(settings.fontFamily)
+            // Fallback faces from the user's Ghostty config ride along even over a
+            // termio-chosen primary — repeated font-family keys form Ghostty's fallback
+            // chain, and they only engage for glyphs the primary lacks (CJK above all).
+            for fallback in settings.ghosttyFontFallbacks where fallback != settings.fontFamily {
+                builder.withFontFamily(fallback)
+            }
         }
         builder.withFontSize(Float(settings.fontSize))
         builder.withFontThicken(settings.fontThicken)
