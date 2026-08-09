@@ -178,8 +178,17 @@ a task, and read back the reply:
 ```sh
 termio sessions list                       # who's working, idle, or waiting on you
 termio sessions spawn "fix the flaky test" # start a new agent session on a prompt
-termio sessions send claude@ab12cd34 "1"   # answer a sibling's permission prompt
+termio sessions send ab12cd34 "1"          # answer a sibling's permission prompt
 termio sessions watch                      # stream status changes as they happen
+```
+
+Agents learn this themselves: Session control installs a `termio`
+[agent skill](https://termio.sh/skill.md) into each agent's skills folder
+(`~/.claude/skills`, `~/.codex/skills`) and keeps it current on every launch.
+Any other agent can install the same skill straight from this repo:
+
+```sh
+npx skills add termio-sh/termio --skill termio
 ```
 
 ## On your iPhone
