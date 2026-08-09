@@ -556,14 +556,14 @@ private final class SavingTextView: NSTextView {
     override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {}
 
     override var isEditable: Bool {
-        didSet { updateInsertionIndicator(animated: false) }
+        didSet { updateInsertionIndicator() }
     }
 
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
         if accepted {
             isCaretFocused = true
-            updateInsertionIndicator(animated: false)
+            updateInsertionIndicator()
         }
         return accepted
     }
@@ -572,7 +572,7 @@ private final class SavingTextView: NSTextView {
         let accepted = super.resignFirstResponder()
         if accepted {
             isCaretFocused = false
-            updateInsertionIndicator(animated: false)
+            updateInsertionIndicator()
         }
         return accepted
     }
@@ -580,7 +580,7 @@ private final class SavingTextView: NSTextView {
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         // A resize re-wraps the text, moving the caret's rect without any selection change.
-        updateInsertionIndicator(animated: false)
+        updateInsertionIndicator()
     }
 
     /// The caret follows the platform convention of showing only in the key window: re-evaluate
@@ -594,7 +594,7 @@ private final class SavingTextView: NSTextView {
             windowKeyObservers.append(NotificationCenter.default.addObserver(
                 forName: name, object: window, queue: .main
             ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.updateInsertionIndicator(animated: false) }
+                MainActor.assumeIsolated { self?.updateInsertionIndicator() }
             })
         }
     }
@@ -607,7 +607,7 @@ private final class SavingTextView: NSTextView {
 
     /// The one decision point for the caret: every input that can change its visibility or rect
     /// (selection, focus, editability, resize, window key status) funnels through here.
-    private func updateInsertionIndicator(animated: Bool) {
+    private func updateInsertionIndicator() {
         guard isEditable, isCaretFocused, selectedRange().length == 0,
               let window, window.isKeyWindow else {
             insertionIndicator.displayMode = .hidden
@@ -634,18 +634,9 @@ private final class SavingTextView: NSTextView {
                           width: 0, height: height)
         }
         rect.size.width = Self.caretWidth
-        // Glide only between two on-screen positions; appearing (or a passive relayout) snaps,
-        // so the caret never animates in from a stale corner.
-        if animated, insertionIndicator.displayMode != .hidden {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.07
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                context.allowsImplicitAnimation = true
-                insertionIndicator.frame = rect
-            }
-        } else {
-            insertionIndicator.frame = rect
-        }
+        // Always snap to the new position — a glide between caret positions read as lag on every
+        // click (user report). The smoothness this indicator buys is the soft blink, not movement.
+        insertionIndicator.frame = rect
         insertionIndicator.displayMode = .automatic
     }
 
@@ -721,7 +712,7 @@ private final class SavingTextView: NSTextView {
             needsDisplay = true
         }
         updateBracketMatch()
-        updateInsertionIndicator(animated: true)
+        updateInsertionIndicator()
     }
 
     // MARK: Bracket matching
