@@ -264,6 +264,7 @@ struct HighlightedTextView: NSViewRepresentable {
         textView.typingAttributes[.baselineOffset] = Self.baselineOffset(lineSpacing: lineSpacing)
         if let saving = textView as? SavingTextView {
             saving.currentLineColor = currentLineColor
+            saving.caretIndicatorColor = caretColor
             // The matched pair glows in the caret's own accent, dimmed to a wash.
             saving.bracketHighlightColor = caretColor.withAlphaComponent(0.28)
         }
@@ -408,6 +409,26 @@ private final class SavingTextView: NSTextView {
     /// Background wash on a bracket pair when the caret sits against one of them.
     var bracketHighlightColor: NSColor = .clear
 
+    /// The system insertion indicator (macOS 14's `NSTextInsertionIndicator`) in place of the
+    /// legacy hard-blink caret — the same soft fade-and-glide caret Xcode shows. TextKit 2 text
+    /// views adopt it automatically; this TextKit 1 view hosts it as a subview instead: the
+    /// legacy caret draw is suppressed in `drawInsertionPoint`, and the indicator is repositioned
+    /// (with a short glide) on every caret move.
+    private let insertionIndicator = NSTextInsertionIndicator()
+    /// Tint for the indicator; the view's own `insertionPointColor` no longer draws anything.
+    var caretIndicatorColor: NSColor = .textColor {
+        didSet { insertionIndicator.color = caretIndicatorColor }
+    }
+
+    override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
+        super.init(frame: frameRect, textContainer: container)
+        insertionIndicator.displayMode = .hidden
+        addSubview(insertionIndicator)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
     /// The bracket pair currently washed, so the previous pair can be cleanly un-washed.
     private var bracketRanges: [NSRange] = []
     /// Start offset of the line last painted with the current-line band (-1 = none), so caret
@@ -521,6 +542,69 @@ private final class SavingTextView: NSTextView {
         NotificationCenter.default.post(name: .termioCloseContentOverlay, object: nil)
     }
 
+    // MARK: Insertion indicator
+
+    /// The legacy caret stays undrawn — `insertionIndicator` is the caret.
+    override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {}
+
+    override var isEditable: Bool {
+        didSet { updateInsertionIndicator(animated: false) }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { updateInsertionIndicator(animated: false) }
+        return accepted
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let accepted = super.resignFirstResponder()
+        if accepted { insertionIndicator.displayMode = .hidden }
+        return accepted
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        // A resize re-wraps the text, moving the caret's rect without any selection change.
+        updateInsertionIndicator(animated: false)
+    }
+
+    private func updateInsertionIndicator(animated: Bool) {
+        guard isEditable, selectedRange().length == 0, let window,
+              window.firstResponder === self else {
+            insertionIndicator.displayMode = .hidden
+            return
+        }
+        let caret = NSRange(location: selectedRange().location, length: 0)
+        var rect = convert(
+            window.convertFromScreen(firstRect(forCharacterRange: caret, actualRange: nil)),
+            from: nil
+        )
+        if rect.height <= 0 {
+            // An empty document has no glyphs for `firstRect` to measure; stand the caret at the
+            // text origin at the fixed line height.
+            let height = defaultParagraphStyle?.minimumLineHeight
+                ?? layoutManager?.defaultLineHeight(for: font ?? .systemFont(ofSize: 12)) ?? 14
+            let padding = textContainer?.lineFragmentPadding ?? 5
+            rect = NSRect(x: textContainerOrigin.x + padding, y: textContainerOrigin.y,
+                          width: 0, height: height)
+        }
+        rect.size.width = 2
+        // Glide only between two on-screen positions; appearing (or a passive relayout) snaps,
+        // so the caret never animates in from a stale corner.
+        if animated, insertionIndicator.displayMode != .hidden {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.07
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                context.allowsImplicitAnimation = true
+                insertionIndicator.frame = rect
+            }
+        } else {
+            insertionIndicator.frame = rect
+        }
+        insertionIndicator.displayMode = .automatic
+    }
+
     // MARK: Current line
 
     /// Xcode-style band under the logical line holding the caret (all of its wrapped rows),
@@ -591,6 +675,7 @@ private final class SavingTextView: NSTextView {
             needsDisplay = true
         }
         updateBracketMatch()
+        updateInsertionIndicator(animated: true)
     }
 
     // MARK: Bracket matching
