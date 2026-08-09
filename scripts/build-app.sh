@@ -73,6 +73,11 @@ else
     sign_identity="-"
 fi
 
+# Regenerate the compiled .lproj resources from the String Catalog so a shipped
+# build can never carry strings that lag an edited Localizable.xcstrings.
+echo "==> Compiling localized strings"
+"$repo_root/scripts/compile-strings.sh"
+
 echo "==> Building $app_name ($configuration)"
 swift build -c "$configuration"
 

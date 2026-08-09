@@ -14,13 +14,16 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 catalog="$repo_root/Sources/termio/Resources/Localizable.xcstrings"
 output_dir="$repo_root/Sources/termio/Resources/Localization"
 
-rm -rf "$output_dir"
-xcrun xcstringstool compile "$catalog" --output-directory "$output_dir"
+# Compile into a scratch directory and only replace the checked-in output once
+# every step has succeeded, so a bad catalog can't leave the checkout stringless.
+scratch_dir="$(mktemp -d)"
+trap 'rm -rf "$scratch_dir"' EXIT
+xcrun xcstringstool compile "$catalog" --output-directory "$scratch_dir"
 
 # xcstringstool emits only translated languages; the source language exists
 # solely as the keys. Emit an explicit en.lproj so an English user resolves to
 # real English strings instead of whatever localization CFBundle falls back to.
-python3 - "$catalog" "$output_dir/en.lproj/Localizable.strings" <<'PYTHON'
+python3 - "$catalog" "$scratch_dir/en.lproj/Localizable.strings" <<'PYTHON'
 import json, os, plistlib, sys
 
 catalog_path, out_path = sys.argv[1], sys.argv[2]
@@ -35,6 +38,10 @@ os.makedirs(os.path.dirname(out_path), exist_ok=True)
 with open(out_path, "wb") as f:
     plistlib.dump(strings, f)
 PYTHON
+
+rm -rf "$output_dir"
+mv "$scratch_dir" "$output_dir"
+trap - EXIT
 
 echo "Compiled $(basename "$catalog") -> ${output_dir#$repo_root/}:"
 ls "$output_dir"

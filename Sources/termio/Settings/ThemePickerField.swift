@@ -12,6 +12,9 @@ import GhosttyTheme
 /// hand-rolled. Selecting applies live: the terminal recolors as you browse.
 struct ThemePickerField: View {
     let title: String
+    /// Whether this slot renders in dark appearance. Explicit rather than read
+    /// from the localized title, which is display-only.
+    let prefersDark: Bool
     @Binding var selection: String
     /// The user's own theme names, passed in so the parent's reload state stays the
     /// single source of truth for what lives in the Themes folder.
@@ -139,15 +142,9 @@ struct ThemePickerField: View {
         .padding(.vertical, 8)
     }
 
-    /// Whether this slot is the one that renders in dark appearance, read from its
-    /// label. Used to flag a theme whose own brightness fights the slot — e.g. a
-    /// light theme dropped into the Dark slot, which renders light when the app is
-    /// dark and looks "wrong."
-    private var slotPrefersDark: Bool { title == localized("Dark") }
-
     private var appearanceMismatchHint: String? {
         guard let definition = ThemeLibrary.theme(named: selection) else { return nil }
-        guard definition.isDark != slotPrefersDark else { return nil }
+        guard definition.isDark != prefersDark else { return nil }
         return definition.isDark
             ? localized("\(selection) is a dark theme in the \(title) slot.")
             : localized("\(selection) is a light theme in the \(title) slot.")
@@ -193,17 +190,17 @@ struct ThemePickerField: View {
     /// The catalog half this slot draws from — dark themes for the Dark slot, light
     /// for the Light slot.
     private var slotBundledNames: [String] {
-        slotPrefersDark ? ThemeLibrary.darkBundledThemeNames : ThemeLibrary.lightBundledThemeNames
+        prefersDark ? ThemeLibrary.darkBundledThemeNames : ThemeLibrary.lightBundledThemeNames
     }
     private var slotPopularNames: [String] {
-        slotPrefersDark ? ThemeLibrary.popularDarkThemeNames : ThemeLibrary.popularLightThemeNames
+        prefersDark ? ThemeLibrary.popularDarkThemeNames : ThemeLibrary.popularLightThemeNames
     }
     /// Custom themes are kept too, but only those matching the slot's brightness, so
     /// the same "wrong way" rule holds for user-dropped files.
     private var slotCustomNames: [String] {
-        userThemeNames.filter { ThemeLibrary.theme(named: $0)?.isDark == slotPrefersDark }
+        userThemeNames.filter { ThemeLibrary.theme(named: $0)?.isDark == prefersDark }
     }
-    private var allLabel: String { slotPrefersDark ? localized("All Dark Themes") : localized("All Light Themes") }
+    private var allLabel: String { prefersDark ? localized("All Dark Themes") : localized("All Light Themes") }
 
     private var filteredCustom: [String] { slotCustomNames.filter(matches) }
     private var filteredBundled: [String] { slotBundledNames.filter(matches) }

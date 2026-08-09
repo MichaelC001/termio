@@ -44,6 +44,19 @@ enum LanguageOverride {
     /// Captured once so later defaults writes don't shift the comparison point.
     static let active: String = Bundle.termioResources.preferredLocalizations.first ?? "en"
 
+    /// What the app would resolve to with no override. Read from the global
+    /// defaults domain: asking this process (or the bundle) would just echo an
+    /// active override back, so with Chinese applied the "System" item would
+    /// wrongly present the system language as Chinese too.
+    static var systemResolved: String {
+        let global = UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain)
+        let preferences = global?[defaultsKey] as? [String] ?? ["en"]
+        return Bundle.preferredLocalizations(
+            from: Bundle.termioResources.localizations.filter { $0 != "Base" },
+            forPreferences: preferences
+        ).first ?? "en"
+    }
+
     /// A language's name in that language ("简体中文", "日本語"), the convention
     /// that keeps every entry recognizable to its own speakers.
     static func endonym(for code: String) -> String {
@@ -60,7 +73,9 @@ enum LanguageOverride {
         if bundleURL.pathExtension == "app" {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
-            process.arguments = ["-c", "sleep 0.5; /usr/bin/open \"\(bundleURL.path)\""]
+            // The path rides as a positional argument — interpolating it into
+            // the command string would hand any shell syntax in it to sh.
+            process.arguments = ["-c", "sleep 0.5; /usr/bin/open \"$0\"", bundleURL.path]
             do {
                 try process.run()
             } catch {
@@ -81,7 +96,7 @@ struct LanguageRow: View {
 
     var body: some View {
         Picker(selection: $selection) {
-            Text(localized("System (\(LanguageOverride.endonym(for: LanguageOverride.active)))"))
+            Text(localized("System (\(LanguageOverride.endonym(for: LanguageOverride.systemResolved)))"))
                 .tag("")
             Divider()
             ForEach(LanguageOverride.available, id: \.self) { code in
@@ -96,9 +111,7 @@ struct LanguageRow: View {
         }
         .onChange(of: selection) { _, newValue in
             LanguageOverride.apply(newValue.isEmpty ? nil : newValue)
-            let effective = newValue.isEmpty
-                ? Bundle.termioResources.preferredLocalizations.first ?? "en"
-                : newValue
+            let effective = newValue.isEmpty ? LanguageOverride.systemResolved : newValue
             if effective != LanguageOverride.active {
                 confirmingRelaunch = true
             }

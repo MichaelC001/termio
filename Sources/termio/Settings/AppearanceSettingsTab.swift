@@ -21,8 +21,8 @@ struct AppearanceSettingsTab: View {
                     .foregroundStyle(.secondary)
             }
             Section {
-                ThemePickerField(title: localized("Light"), selection: $settings.lightThemeName, userThemeNames: userThemeNames)
-                ThemePickerField(title: localized("Dark"), selection: $settings.darkThemeName, userThemeNames: userThemeNames)
+                ThemePickerField(title: localized("Light"), prefersDark: false, selection: $settings.lightThemeName, userThemeNames: userThemeNames)
+                ThemePickerField(title: localized("Dark"), prefersDark: true, selection: $settings.darkThemeName, userThemeNames: userThemeNames)
                 HStack {
                     Button(localized("Open Themes Folder…"), action: openThemesFolder)
                     Spacer()
