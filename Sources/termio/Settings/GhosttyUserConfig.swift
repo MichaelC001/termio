@@ -9,30 +9,36 @@ import Foundation
 /// Only top-level `key = value` lines are read; `config-file` includes are deliberately not
 /// followed — this is a launch-time convenience, not a reimplementation of Ghostty's loader.
 struct GhosttyUserConfig {
+    /// `theme` as written — the *form* matters downstream: a bare name is Ghostty's
+    /// "one theme regardless of appearance" (termio inherits it only into the appearance it
+    /// belongs to), while the `light:Name,dark:Name` split form names each slot explicitly
+    /// (termio honors both slots verbatim, even when the two names are equal).
+    enum ThemeSetting: Equatable {
+        case bare(String)
+        case split(light: String?, dark: String?)
+    }
+
     /// `font-family` values in declaration order — Ghostty treats repeats as a fallback chain
     /// and an empty value as a chain reset. The first entry is the primary face.
     var fontFamilies: [String] = []
     var fontSize: Double?
-    /// `theme` verbatim: a bare name, or Ghostty's `light:Name,dark:Name` split form.
-    var theme: String?
+    var themeSetting: ThemeSetting?
 
-    var isEmpty: Bool { fontFamilies.isEmpty && fontSize == nil && theme == nil }
+    var isEmpty: Bool { fontFamilies.isEmpty && fontSize == nil && themeSetting == nil }
 
-    /// The theme name for each appearance. A bare name applies to both, matching Ghostty.
-    var themeNames: (light: String?, dark: String?) {
-        guard let theme else { return (nil, nil) }
-        guard theme.contains(":") else { return (theme, theme) }
+    static func parseThemeSetting(_ value: String) -> ThemeSetting {
         var light: String?
         var dark: String?
-        for part in theme.split(separator: ",") {
+        var sawSplitForm = false
+        for part in value.split(separator: ",") {
             let pair = part.split(separator: ":", maxSplits: 1)
             guard pair.count == 2 else { continue }
-            let mode = pair[0].trimmingCharacters(in: .whitespaces)
+            let mode = pair[0].trimmingCharacters(in: .whitespaces).lowercased()
             let name = pair[1].trimmingCharacters(in: .whitespaces)
-            if mode == "light" { light = name }
-            if mode == "dark" { dark = name }
+            if mode == "light" { light = name; sawSplitForm = true }
+            if mode == "dark" { dark = name; sawSplitForm = true }
         }
-        return (light, dark)
+        return sawSplitForm ? .split(light: light, dark: dark) : .bare(value)
     }
 
     /// Reads the files Ghostty itself loads on macOS, in Ghostty's order — the XDG file first,
@@ -78,7 +84,7 @@ struct GhosttyUserConfig {
             case "font-size":
                 fontSize = Double(value)
             case "theme":
-                theme = value.isEmpty ? nil : value
+                themeSetting = value.isEmpty ? nil : Self.parseThemeSetting(value)
             default:
                 break
             }

@@ -49,19 +49,27 @@ final class GhosttyUserConfigTests: XCTestCase {
         theme = Nord
         """)
         XCTAssertEqual(config.fontSize, 16)
-        XCTAssertEqual(config.theme, "Nord")
+        XCTAssertEqual(config.themeSetting, .bare("Nord"))
     }
 
-    func testBareThemeAppliesToBothAppearances() {
-        let names = parsed("theme = Dracula").themeNames
-        XCTAssertEqual(names.light, "Dracula")
-        XCTAssertEqual(names.dark, "Dracula")
+    func testBareThemeParsesAsBareForm() {
+        XCTAssertEqual(parsed("theme = Dracula").themeSetting, .bare("Dracula"))
     }
 
     func testSplitThemeFormParsesPerAppearance() {
-        let names = parsed("theme = light:Solarized Light, dark:Nord").themeNames
-        XCTAssertEqual(names.light, "Solarized Light")
-        XCTAssertEqual(names.dark, "Nord")
+        XCTAssertEqual(
+            parsed("theme = light:Solarized Light, dark:Nord").themeSetting,
+            .split(light: "Solarized Light", dark: "Nord")
+        )
+    }
+
+    func testExplicitSplitWithEqualNamesStaysSplit() {
+        // `light:Nord,dark:Nord` is an explicit per-appearance choice, not the bare form —
+        // it must inherit into both slots.
+        XCTAssertEqual(
+            parsed("theme = light:Nord,dark:Nord").themeSetting,
+            .split(light: "Nord", dark: "Nord")
+        )
     }
 
     func testDuplicateFontFamiliesCollapse() {

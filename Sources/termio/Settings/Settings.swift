@@ -393,15 +393,45 @@ final class AppSettings: ObservableObject {
     /// Resolves a Ghostty theme name against the bundled catalog, tolerating the naming drift
     /// between Ghostty's theme list and the catalog's iTerm2-Color-Schemes names
     /// ("catppuccin-latte" vs "Catppuccin Latte", "Tokyo Night" vs "tokyonight"): exact match
-    /// first, then a case/separator-insensitive one, returning the catalog's canonical name.
-    private static func resolveGhosttyTheme(_ name: String) -> String? {
-        if GhosttyThemeCatalog.theme(named: name) != nil { return name }
+    /// first, then a case/separator-insensitive one. (termio's custom user themes are
+    /// deliberately not consulted — a Ghostty config can only mean Ghostty's own theme names.)
+    private static func resolveGhosttyTheme(_ name: String) -> GhosttyThemeDefinition? {
+        if let exact = GhosttyThemeCatalog.theme(named: name) { return exact }
         let normalized = normalizeThemeName(name)
-        return GhosttyThemeCatalog.allThemes.first { normalizeThemeName($0.name) == normalized }?.name
+        return GhosttyThemeCatalog.allThemes.first { normalizeThemeName($0.name) == normalized }
     }
 
     private static func normalizeThemeName(_ name: String) -> String {
         name.lowercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    /// The Ghostty config's contribution to the registration defaults — the middle layer of
+    /// termio setting > Ghostty config > built-in default. Only names the bundled catalog
+    /// resolves inherit; Ghostty also accepts custom theme files termio has no way to render.
+    private static func ghosttyRegistrationOverrides(from ghostty: GhosttyUserConfig) -> [String: Any] {
+        var overrides: [String: Any] = [:]
+        if let family = ghostty.fontFamilies.first { overrides[Key.fontFamily] = family }
+        if let size = ghostty.fontSize { overrides[Key.fontSize] = size }
+        switch ghostty.themeSetting {
+        case .bare(let name):
+            // Ghostty applies a bare `theme = X` in both appearances, but termio wraps the
+            // terminal in light/dark *chrome* — a dark theme inherited into the light slot
+            // makes a half-dark window (light sidebar, dark canvas). A bare theme lands only
+            // in the appearance it belongs to; the other slot keeps termio's own canvas.
+            if let definition = resolveGhosttyTheme(name) {
+                overrides[definition.isDark ? Key.darkThemeName : Key.lightThemeName] = definition.name
+            }
+        case .split(let light, let dark):
+            if let light, let definition = resolveGhosttyTheme(light) {
+                overrides[Key.lightThemeName] = definition.name
+            }
+            if let dark, let definition = resolveGhosttyTheme(dark) {
+                overrides[Key.darkThemeName] = definition.name
+            }
+        case nil:
+            break
+        }
+        return overrides
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -468,28 +498,8 @@ final class AppSettings: ObservableObject {
         let ghostty = GhosttyUserConfig.load()
         inheritsGhosttyDefaults = !ghostty.isEmpty
         ghosttyFontFallbacks = Array(ghostty.fontFamilies.dropFirst())
-        if let family = ghostty.fontFamilies.first { registered[Key.fontFamily] = family }
-        if let size = ghostty.fontSize { registered[Key.fontSize] = size }
-        // Only names the bundled catalog resolves inherit — Ghostty also accepts custom theme
-        // files termio has no way to render.
-        let ghosttyThemes = ghostty.themeNames
-        if ghosttyThemes.light == ghosttyThemes.dark {
-            // Ghostty applies a bare `theme = X` in both appearances, but termio wraps the
-            // terminal in light/dark *chrome* — a dark theme inherited into the light slot
-            // makes a half-dark window (light sidebar, dark canvas). Inherit the theme only
-            // into the appearance it belongs to; the other slot keeps termio's own canvas.
-            if let bare = ghosttyThemes.light,
-               let resolved = Self.resolveGhosttyTheme(bare),
-               let definition = GhosttyThemeCatalog.theme(named: resolved) {
-                registered[definition.isDark ? Key.darkThemeName : Key.lightThemeName] = resolved
-            }
-        } else {
-            if let light = ghosttyThemes.light, let resolved = Self.resolveGhosttyTheme(light) {
-                registered[Key.lightThemeName] = resolved
-            }
-            if let dark = ghosttyThemes.dark, let resolved = Self.resolveGhosttyTheme(dark) {
-                registered[Key.darkThemeName] = resolved
-            }
+        registered.merge(Self.ghosttyRegistrationOverrides(from: ghostty)) { _, ghosttyValue in
+            ghosttyValue
         }
 
         defaults.register(defaults: registered)
