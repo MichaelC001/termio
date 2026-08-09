@@ -473,11 +473,23 @@ final class AppSettings: ObservableObject {
         // Only names the bundled catalog resolves inherit — Ghostty also accepts custom theme
         // files termio has no way to render.
         let ghosttyThemes = ghostty.themeNames
-        if let light = ghosttyThemes.light, let resolved = Self.resolveGhosttyTheme(light) {
-            registered[Key.lightThemeName] = resolved
-        }
-        if let dark = ghosttyThemes.dark, let resolved = Self.resolveGhosttyTheme(dark) {
-            registered[Key.darkThemeName] = resolved
+        if ghosttyThemes.light == ghosttyThemes.dark {
+            // Ghostty applies a bare `theme = X` in both appearances, but termio wraps the
+            // terminal in light/dark *chrome* — a dark theme inherited into the light slot
+            // makes a half-dark window (light sidebar, dark canvas). Inherit the theme only
+            // into the appearance it belongs to; the other slot keeps termio's own canvas.
+            if let bare = ghosttyThemes.light,
+               let resolved = Self.resolveGhosttyTheme(bare),
+               let definition = GhosttyThemeCatalog.theme(named: resolved) {
+                registered[definition.isDark ? Key.darkThemeName : Key.lightThemeName] = resolved
+            }
+        } else {
+            if let light = ghosttyThemes.light, let resolved = Self.resolveGhosttyTheme(light) {
+                registered[Key.lightThemeName] = resolved
+            }
+            if let dark = ghosttyThemes.dark, let resolved = Self.resolveGhosttyTheme(dark) {
+                registered[Key.darkThemeName] = resolved
+            }
         }
 
         defaults.register(defaults: registered)
