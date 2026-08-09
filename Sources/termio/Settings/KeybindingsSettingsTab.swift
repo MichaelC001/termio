@@ -50,7 +50,7 @@ struct KeybindingsSettingsTab: View {
             }
         }
         .formStyle(.grouped)
-        .searchable(text: $query, placement: .toolbar, prompt: "Search commands")
+        .searchable(text: $query, placement: .toolbar, prompt: Text(localized("Search commands")))
     }
 
     // MARK: - Pieces
@@ -81,13 +81,13 @@ struct KeybindingsSettingsTab: View {
     /// with the recording hints as its footer, replacing the old pinned bottom bar.
     private var restoreSection: some View {
         Section {
-            Button("Restore Defaults") {
+            Button(localized("Restore Defaults")) {
                 keys.resetAll()
                 clearRejection()
             }
             .disabled(keys.overrides.isEmpty)
         } footer: {
-            Text("Shortcuts must include ⌘ so they can't shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel.")
+            Text(localized("Shortcuts must include ⌘ so they can't shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -208,7 +208,7 @@ final class RecorderSearchField: NSSearchField, NSSearchFieldDelegate {
         delegate = self
         alignment = .center
         wantsLayer = true
-        placeholderString = "Record Shortcut"
+        placeholderString = localized("Record Shortcut")
         // The magnifier and the ⨯ hide via transparency, never by detaching the
         // cells: macOS 26's accessibility builds this cell's AX children by
         // inserting both button cells into an array without a nil check, so a
@@ -269,7 +269,7 @@ final class RecorderSearchField: NSSearchField, NSSearchFieldDelegate {
         // The current glyphs stay visible while recording (as upstream does) —
         // writing `stringValue` here would end the just-started editing session,
         // whose did-end notification tears the recording straight back down.
-        placeholderString = "Press Shortcut…"
+        placeholderString = localized("Press Shortcut…")
         // The field editor attaches just after focus lands; hide its caret then
         // (there is nothing to type — the monitor consumes every key).
         DispatchQueue.main.async { [weak self] in
@@ -331,7 +331,7 @@ final class RecorderSearchField: NSSearchField, NSSearchFieldDelegate {
             NotificationCenter.default.removeObserver(windowObserver)
             self.windowObserver = nil
         }
-        placeholderString = "Record Shortcut"
+        placeholderString = localized("Record Shortcut")
         stringValue = currentDisplay ?? ""
         setShowsCancel(currentCustomized)
     }

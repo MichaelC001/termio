@@ -82,7 +82,6 @@ let package = Package(
                 // CFBundle's language matching is case-sensitive about the script
                 // subtag, so a processed zh-Hans silently resolves to English.
                 .copy("Resources/Localization/en.lproj"),
-                .copy("Resources/Localization/ja.lproj"),
                 .copy("Resources/Localization/zh-Hans.lproj"),
                 // Devicon language/tool logos (one SVG per file type), loaded by name
                 // for the file tree; see LangIconCatalog / LangIconView. Kept as a

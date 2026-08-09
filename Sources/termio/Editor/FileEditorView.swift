@@ -148,9 +148,9 @@ struct FileEditorView: View {
         Group {
             if loadFailed {
                 ContentUnavailableView(
-                    "Can't Open as Text",
+                    localized("Can't Open as Text"),
                     huge: .fileQuestion,
-                    description: Text("\(url.lastPathComponent) isn't a UTF-8 text file.")
+                    description: Text(localized("\(url.lastPathComponent) isn't a UTF-8 text file."))
                 )
             } else if !loaded {
                 // The bare background while the async read runs — small files land
@@ -272,7 +272,7 @@ struct FileEditorView: View {
                 Circle()
                     .fill(Color.secondary)
                     .frame(width: 5, height: 5)
-                    .help("Unsaved changes — saving…")
+                    .help(localized("Unsaved changes — saving…"))
                     .transition(.opacity)
             }
             if let saveError {
@@ -312,8 +312,8 @@ struct FileEditorView: View {
     /// track to sit on over termio's transparent chrome.
     private var modeToggle: some View {
         HStack(spacing: 0) {
-            modeSegment(.edit, icon: .edit, help: "Edit source")
-            modeSegment(.preview, icon: .view, help: "Preview")
+            modeSegment(.edit, icon: .edit, help: localized("Edit source"))
+            modeSegment(.preview, icon: .view, help: localized("Preview"))
         }
         .background { modePill }
         .padding(2)
@@ -440,7 +440,7 @@ struct FileEditorView: View {
             savedText = text
             saveError = nil
         } catch {
-            saveError = "Save failed: \(error.localizedDescription)"
+            saveError = localized("Save failed: \(error.localizedDescription)")
         }
     }
 

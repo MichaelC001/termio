@@ -14,70 +14,70 @@ struct AppearanceSettingsTab: View {
             Section {
                 AppearanceModePicker(selection: $settings.appearanceMode)
             } header: {
-                SectionHeaderLabel(title: "Appearance")
+                SectionHeaderLabel(title: localized("Appearance"))
             } footer: {
-                Text("Pin termio to a light or dark look, or follow the system. The light and dark terminal themes below apply to the matching appearance.")
+                Text(localized("Pin termio to a light or dark look, or follow the system. The light and dark terminal themes below apply to the matching appearance."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Section {
-                ThemePickerField(title: "Light", selection: $settings.lightThemeName, userThemeNames: userThemeNames)
-                ThemePickerField(title: "Dark", selection: $settings.darkThemeName, userThemeNames: userThemeNames)
+                ThemePickerField(title: localized("Light"), selection: $settings.lightThemeName, userThemeNames: userThemeNames)
+                ThemePickerField(title: localized("Dark"), selection: $settings.darkThemeName, userThemeNames: userThemeNames)
                 HStack {
-                    Button("Open Themes Folder…", action: openThemesFolder)
+                    Button(localized("Open Themes Folder…"), action: openThemesFolder)
                     Spacer()
                     if !userThemeNames.isEmpty {
-                        Text("\(userThemeNames.count) custom")
+                        Text(localized("\(userThemeNames.count) custom"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Button("Reload", action: reloadUserThemes)
+                    Button(localized("Reload"), action: reloadUserThemes)
                 }
             } header: {
-                SectionHeaderLabel(title: "Theme")
+                SectionHeaderLabel(title: localized("Theme"))
             } footer: {
-                Text("termio switches between these as macOS changes appearance; leave a slot on the default for termio's own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”")
+                Text(localized("termio switches between these as macOS changes appearance; leave a slot on the default for termio's own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Section {
                 FontFamilyField(
-                    title: "Family",
-                    prompt: "System monospace",
+                    title: localized("Family"),
+                    prompt: localized("System monospace"),
                     families: InstalledFonts.monospaced,
                     previewSize: settings.fontSize,
                     monospacedDefault: true,
                     family: $settings.fontFamily
                 )
                 Stepper(value: $settings.fontSize, in: 8...32, step: 1) {
-                    Text("Size: \(Int(settings.fontSize)) pt")
+                    Text(localized("Size: \(Int(settings.fontSize)) pt"))
                 }
                 Stepper(value: $settings.codeLineHeight, in: 1.0...2.0, step: 0.1) {
-                    Text("Line height: \(settings.codeLineHeight, specifier: "%.1f")×")
+                    Text(localized("Line height: \(String(format: "%.1f", settings.codeLineHeight))×"))
                 }
-                Toggle("Thicken glyphs", isOn: $settings.fontThicken)
+                Toggle(localized("Thicken glyphs"), isOn: $settings.fontThicken)
             } header: {
-                SectionHeaderLabel(title: "Font")
+                SectionHeaderLabel(title: localized("Font"))
             } footer: {
-                Text("Line height applies to the file editor and diffs; the terminal keeps the font's own.")
+                Text(localized("Line height applies to the file editor and diffs; the terminal keeps the font's own."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Section {
-                Picker("Style", selection: $settings.cursorStyle) {
+                Picker(localized("Style"), selection: $settings.cursorStyle) {
                     ForEach(CursorStyle.allCases) { style in
                         Text(style.displayName).tag(style)
                     }
                 }
-                Toggle("Blink", isOn: $settings.cursorBlink)
+                Toggle(localized("Blink"), isOn: $settings.cursorBlink)
             } header: {
-                SectionHeaderLabel(title: "Cursor")
+                SectionHeaderLabel(title: localized("Cursor"))
             }
             Section {
                 Stepper(value: $settings.windowPadding, in: 0...40, step: 2) {
-                    Text("Padding: \(settings.windowPadding) pt")
+                    Text(localized("Padding: \(settings.windowPadding) pt"))
                 }
-                LabeledContent("Opacity") {
+                LabeledContent(localized("Opacity")) {
                     HStack(spacing: 8) {
                         Slider(value: $settings.backgroundOpacity, in: 0.2...1.0)
                             .frame(width: 160)
@@ -88,13 +88,13 @@ struct AppearanceSettingsTab: View {
                     }
                 }
                 Stepper(value: $settings.backgroundBlur, in: 0...60, step: 5) {
-                    Text("Blur: \(settings.backgroundBlur)")
+                    Text(localized("Blur: \(settings.backgroundBlur)"))
                 }
                 .disabled(settings.backgroundOpacity >= 1.0)
             } header: {
-                SectionHeaderLabel(title: "Window")
+                SectionHeaderLabel(title: localized("Window"))
             } footer: {
-                Text("Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity.")
+                Text(localized("Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

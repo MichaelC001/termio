@@ -31,7 +31,7 @@ struct ThemePickerField: View {
                     if let definition = ThemeLibrary.theme(named: selection) {
                         ThemeSwatch(definition: definition, compact: true)
                     }
-                    Text(selection.isEmpty ? "Terminal default" : selection)
+                    Text(selection.isEmpty ? localized("Terminal default") : selection)
                         .lineLimit(1)
                     Spacer(minLength: 6)
                     Image(systemName: "chevron.up.chevron.down")
@@ -69,7 +69,7 @@ struct ThemePickerField: View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            TextField("Search themes", text: $query)
+            TextField(localized("Search themes"), text: $query)
                 .textFieldStyle(.plain)
                 .focused($searchFocused)
             if !query.isEmpty {
@@ -90,16 +90,16 @@ struct ThemePickerField: View {
             ScrollViewReader { proxy in
                 List(selection: $highlighted) {
                     if query.isEmpty {
-                        themeRow(name: "", display: "Terminal default", definition: nil)
+                        themeRow(name: "", display: localized("Terminal default"), definition: nil)
                     }
                     if !filteredCustom.isEmpty {
-                        Section("Custom") { themeRows(filteredCustom) }
+                        Section(localized("Custom")) { themeRows(filteredCustom) }
                     }
                     if query.isEmpty {
                         // Only the slot's own brightness: the Dark slot lists dark
                         // themes, the Light slot lists light ones, so a slot can never
                         // offer a theme that would render the wrong way.
-                        Section("Popular") { themeRows(slotPopularNames) }
+                        Section(localized("Popular")) { themeRows(slotPopularNames) }
                         Section(allLabel) { themeRows(slotBundledNames) }
                     } else {
                         Section(resultsLabel) { themeRows(filteredBundled) }
@@ -126,13 +126,13 @@ struct ThemePickerField: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             } else {
-                Text(selection.isEmpty ? "Terminal default" : selection)
+                Text(selection.isEmpty ? localized("Terminal default") : selection)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
-            Button("Done") { isPresented = false }
+            Button(localized("Done")) { isPresented = false }
                 .keyboardShortcut(.defaultAction)
         }
         .padding(.horizontal, 10)
@@ -143,13 +143,14 @@ struct ThemePickerField: View {
     /// label. Used to flag a theme whose own brightness fights the slot — e.g. a
     /// light theme dropped into the Dark slot, which renders light when the app is
     /// dark and looks "wrong."
-    private var slotPrefersDark: Bool { title.localizedCaseInsensitiveContains("dark") }
+    private var slotPrefersDark: Bool { title == localized("Dark") }
 
     private var appearanceMismatchHint: String? {
         guard let definition = ThemeLibrary.theme(named: selection) else { return nil }
         guard definition.isDark != slotPrefersDark else { return nil }
-        let kind = definition.isDark ? "a dark" : "a light"
-        return "\(selection) is \(kind) theme in the \(title) slot."
+        return definition.isDark
+            ? localized("\(selection) is a dark theme in the \(title) slot.")
+            : localized("\(selection) is a light theme in the \(title) slot.")
     }
 
     private var emptyState: some View {
@@ -157,7 +158,7 @@ struct ThemePickerField: View {
             Image(systemName: "paintpalette")
                 .font(.system(size: 28))
                 .foregroundStyle(.tertiary)
-            Text("No themes match “\(query)”")
+            Text(localized("No themes match “\(query)”"))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -202,7 +203,7 @@ struct ThemePickerField: View {
     private var slotCustomNames: [String] {
         userThemeNames.filter { ThemeLibrary.theme(named: $0)?.isDark == slotPrefersDark }
     }
-    private var allLabel: String { slotPrefersDark ? "All Dark Themes" : "All Light Themes" }
+    private var allLabel: String { slotPrefersDark ? localized("All Dark Themes") : localized("All Light Themes") }
 
     private var filteredCustom: [String] { slotCustomNames.filter(matches) }
     private var filteredBundled: [String] { slotBundledNames.filter(matches) }
@@ -211,7 +212,7 @@ struct ThemePickerField: View {
     }
     private var resultsLabel: String {
         let count = filteredCustom.count + filteredBundled.count
-        return count == 1 ? "1 result" : "\(count) results"
+        return count == 1 ? localized("1 result") : localized("\(count) results")
     }
 }
 

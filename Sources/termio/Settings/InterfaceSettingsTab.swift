@@ -10,36 +10,36 @@ struct InterfaceSettingsTab: View {
         Form {
             Section {
                 FontFamilyField(
-                    title: "Family",
-                    prompt: "System",
+                    title: localized("Family"),
+                    prompt: localized("System"),
                     families: InstalledFonts.all,
                     previewSize: settings.interfaceFontSize,
                     monospacedDefault: false,
                     family: $settings.interfaceFontFamily
                 )
                 Stepper(value: $settings.interfaceFontSize, in: 9...20, step: 1) {
-                    Text("Size: \(Int(settings.interfaceFontSize)) pt")
+                    Text(localized("Size: \(Int(settings.interfaceFontSize)) pt"))
                 }
             } header: {
-                SectionHeaderLabel(title: "Sidebar font")
+                SectionHeaderLabel(title: localized("Sidebar font"))
             } footer: {
-                Text("Applies to the project and session list. Need not be monospaced.")
+                Text(localized("Applies to the project and session list. Need not be monospaced."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Section {
-                LabeledContent("Row padding") {
+                LabeledContent(localized("Row padding")) {
                     HStack(spacing: 8) {
                         Slider(value: $settings.interfaceRowPadding, in: 0...12, step: 1)
                             .frame(width: 160)
-                        Text("\(Int(settings.interfaceRowPadding)) pt")
+                        Text(localized("\(Int(settings.interfaceRowPadding)) pt"))
                             .font(.callout.monospacedDigit())
                             .foregroundStyle(.secondary)
                             .frame(width: 40, alignment: .trailing)
                     }
                 }
             } header: {
-                SectionHeaderLabel(title: "Density")
+                SectionHeaderLabel(title: localized("Density"))
             }
         }
         .formStyle(.grouped)

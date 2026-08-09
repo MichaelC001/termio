@@ -119,8 +119,8 @@ struct CustomAgentEditorSheet: View {
         VStack(spacing: 0) {
             Form {
                 Section {
-                    TextField("Name", text: $draft.name, prompt: Text("My Agent"))
-                    LabeledContent("Command") {
+                    TextField(localized("Name"), text: $draft.name, prompt: Text(localized("My Agent")))
+                    LabeledContent(localized("Command")) {
                         TextField(
                             "", text: $draft.command,
                             prompt: Text("my-agent --flag"))
@@ -130,24 +130,24 @@ struct CustomAgentEditorSheet: View {
                         .labelsHidden()
                     }
                 } header: {
-                    SectionHeaderLabel(title: existing == nil ? "New Agent" : "Edit Agent")
+                    SectionHeaderLabel(title: existing == nil ? localized("New Agent") : localized("Edit Agent"))
                 } footer: {
-                    Text("The command is run in a login shell, so anything on your PATH works.")
+                    Text(localized("The command is run in a login shell, so anything on your PATH works."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
                 Section {
-                    LabeledContent("Icon") {
+                    LabeledContent(localized("Icon")) {
                         HStack(spacing: 8) {
-                            TextField("", text: $draft.symbol, prompt: Text("SF Symbol name"))
+                            TextField("", text: $draft.symbol, prompt: Text(localized("SF Symbol name")))
                                 .textFieldStyle(.plain)
                                 .multilineTextAlignment(.trailing)
                                 .labelsHidden()
                             IconBadge(iconPreview)
                         }
                     }
-                    LabeledContent("Skip-permissions flag") {
+                    LabeledContent(localized("Skip-permissions flag")) {
                         TextField("", text: $draft.permissionBypassFlag, prompt: Text("--yolo"))
                             .textFieldStyle(.plain)
                             .multilineTextAlignment(.trailing)
@@ -155,7 +155,7 @@ struct CustomAgentEditorSheet: View {
                             .labelsHidden()
                     }
                 } footer: {
-                    Text("Both optional. The flag powers the agent's “Skip permission prompts” switch; leave it empty if the CLI has none.")
+                    Text(localized("Both optional. The flag powers the agent's “Skip permission prompts” switch; leave it empty if the CLI has none."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -172,9 +172,9 @@ struct CustomAgentEditorSheet: View {
             Divider()
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button(localized("Cancel")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button(existing == nil ? "Add" : "Save") { save() }
+                Button(existing == nil ? localized("Add") : localized("Save")) { save() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!draft.isValid)
             }

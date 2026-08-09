@@ -81,8 +81,7 @@ struct LanguageRow: View {
 
     var body: some View {
         Picker(selection: $selection) {
-            Text(String(localized: "System (\(LanguageOverride.endonym(for: LanguageOverride.active)))",
-                        bundle: .termioResources))
+            Text(localized("System (\(LanguageOverride.endonym(for: LanguageOverride.active)))"))
                 .tag("")
             Divider()
             ForEach(LanguageOverride.available, id: \.self) { code in
@@ -91,8 +90,8 @@ struct LanguageRow: View {
         } label: {
             SettingsLabel(
                 .huge(.textFont),
-                title: String(localized: "App language", bundle: .termioResources),
-                subtext: String(localized: "Takes effect after termio relaunches.", bundle: .termioResources)
+                title: localized("App language"),
+                subtext: localized("Takes effect after termio relaunches.")
             )
         }
         .onChange(of: selection) { _, newValue in
@@ -104,16 +103,15 @@ struct LanguageRow: View {
                 confirmingRelaunch = true
             }
         }
-        .alert(String(localized: "Relaunch termio to switch language?", bundle: .termioResources),
+        .alert(localized("Relaunch termio to switch language?"),
                isPresented: $confirmingRelaunch) {
-            Button(String(localized: "Later", bundle: .termioResources), role: .cancel) {}
+            Button(localized("Later"), role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
-            Button(String(localized: "Relaunch Now", bundle: .termioResources)) {
+            Button(localized("Relaunch Now")) {
                 LanguageOverride.relaunch()
             }
         } message: {
-            Text(String(localized: "Running terminal sessions will end. You can relaunch later instead.",
-                        bundle: .termioResources))
+            Text(localized("Running terminal sessions will end. You can relaunch later instead."))
         }
     }
 }

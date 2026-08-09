@@ -76,13 +76,13 @@ struct FilePreviewView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
                     .contextMenu {
-                        Button("Copy Image") {
+                        Button(localized("Copy Image")) {
                             // The NSImage goes on the pasteboard as bitmap data, so it pastes
                             // into chat and design apps as the picture, not a file path.
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.writeObjects([image])
                         }
-                        Button("Reveal in Finder") {
+                        Button(localized("Reveal in Finder")) {
                             NSWorkspace.shared.activateFileViewerSelecting([url])
                         }
                     }

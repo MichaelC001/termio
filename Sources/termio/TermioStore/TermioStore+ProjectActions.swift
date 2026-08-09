@@ -95,7 +95,7 @@ extension TermioStore {
         do {
             try FileManager.default.createDirectory(at: worktreeRoot, withIntermediateDirectories: true)
         } catch {
-            presentWorktreeFailure(message: "Couldn't create the worktrees folder: \(error.localizedDescription)")
+            presentWorktreeFailure(message: localized("Couldn't create the worktrees folder: \(error.localizedDescription)"))
             return
         }
         // Create the worktree on a fresh branch named after it, not detached. A
@@ -107,7 +107,7 @@ extension TermioStore {
         // the branch needs its own guard, since a branch can exist with no worktree.
         let branchName = uniqueBranchName(base: dirName, in: project.path)
         guard runGit(["worktree", "add", "-b", branchName, worktreePath, "HEAD"], in: project.path) != nil else {
-            presentWorktreeFailure(message: "git couldn't create a worktree for “\(project.name)”. Is it a git repository with at least one commit?")
+            presentWorktreeFailure(message: localized("git couldn't create a worktree for “\(project.name)”. Is it a git repository with at least one commit?"))
             return
         }
 
@@ -140,15 +140,15 @@ extension TermioStore {
 
         guard let status = runGit(["status", "--porcelain"], in: worktree.path) else {
             presentWorktreeFailure(
-                title: "Couldn't inspect worktree",
-                message: "git couldn't check “\((worktree.path as NSString).lastPathComponent)” for changes, so it was not removed."
+                title: localized("Couldn't inspect worktree"),
+                message: localized("git couldn't check “\((worktree.path as NSString).lastPathComponent)” for changes, so it was not removed.")
             )
             return
         }
         guard status.isEmpty else {
             presentWorktreeFailure(
-                title: "Worktree has changes",
-                message: "Commit or discard the changes in “\((worktree.path as NSString).lastPathComponent)” before removing it."
+                title: localized("Worktree has changes"),
+                message: localized("Commit or discard the changes in “\((worktree.path as NSString).lastPathComponent)” before removing it.")
             )
             return
         }
@@ -159,8 +159,8 @@ extension TermioStore {
         let branch = runGit(["rev-parse", "--abbrev-ref", "HEAD"], in: worktree.path)
         guard runGit(["worktree", "remove", worktree.path], in: projects[projectIndex].path) != nil else {
             presentWorktreeFailure(
-                title: "Couldn't remove worktree",
-                message: "git couldn't remove “\((worktree.path as NSString).lastPathComponent)”."
+                title: localized("Couldn't remove worktree"),
+                message: localized("git couldn't remove “\((worktree.path as NSString).lastPathComponent)”.")
             )
             return
         }
@@ -181,8 +181,8 @@ extension TermioStore {
         }
         if !pruneSucceeded {
             presentWorktreeFailure(
-                title: "Worktree removed",
-                message: "The folder was removed, but git couldn't prune its stale worktree metadata."
+                title: localized("Worktree removed"),
+                message: localized("The folder was removed, but git couldn't prune its stale worktree metadata.")
             )
         }
     }
@@ -223,10 +223,10 @@ extension TermioStore {
     /// or emptied. Mirrors the file-browser rename prompt so both feel the same.
     private func promptForWorktreeName(defaultName: String) -> String? {
         let alert = NSAlert()
-        alert.messageText = "New Worktree"
-        alert.informativeText = "Name the worktree. A new branch of this name is created from HEAD and nested under this project."
-        alert.addButton(withTitle: "Create")
-        alert.addButton(withTitle: "Cancel")
+        alert.messageText = localized("New Worktree")
+        alert.informativeText = localized("Name the worktree. A new branch of this name is created from HEAD and nested under this project.")
+        alert.addButton(withTitle: localized("Create"))
+        alert.addButton(withTitle: localized("Cancel"))
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.stringValue = defaultName
         alert.accessoryView = field
@@ -263,7 +263,7 @@ extension TermioStore {
     /// Reports a worktree lifecycle failure instead of leaving an operation's
     /// partial or refused outcome silent.
     private func presentWorktreeFailure(
-        title: String = "Couldn't create worktree session",
+        title: String = localized("Couldn't create worktree session"),
         message: String
     ) {
         let alert = NSAlert()
@@ -380,10 +380,10 @@ extension TermioStore {
     /// isn't in the config still works. Empty entry or Cancel does nothing.
     func presentSSHConnectPanel() {
         let alert = NSAlert()
-        alert.messageText = "New SSH Connection"
-        alert.informativeText = "Enter a host from your ~/.ssh/config, or a user@host to connect to."
-        alert.addButton(withTitle: "Connect")
-        alert.addButton(withTitle: "Cancel")
+        alert.messageText = localized("New SSH Connection")
+        alert.informativeText = localized("Enter a host from your ~/.ssh/config, or a user@host to connect to.")
+        alert.addButton(withTitle: localized("Connect"))
+        alert.addButton(withTitle: localized("Cancel"))
 
         let combo = NSComboBox(frame: NSRect(x: 0, y: 0, width: 260, height: 26))
         combo.completes = true
@@ -498,8 +498,8 @@ extension TermioStore {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.prompt = "Open"
-        panel.message = "Choose a project folder to open in termio."
+        panel.prompt = localized("Open")
+        panel.message = localized("Choose a project folder to open in termio.")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         addProject(at: url)
     }
@@ -571,9 +571,9 @@ extension TermioStore {
         let session = projects[projectIndex].sessions[sessionIndex]
 
         let alert = NSAlert()
-        alert.messageText = "Rename Session"
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
+        alert.messageText = localized("Rename Session")
+        alert.addButton(withTitle: localized("Rename"))
+        alert.addButton(withTitle: localized("Cancel"))
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.stringValue = displayTitle(for: session)
         alert.accessoryView = field

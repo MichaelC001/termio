@@ -209,14 +209,14 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
 
         if menu.items.isEmpty {
-            let empty = NSMenuItem(title: "All caught up", action: nil, keyEquivalent: "")
+            let empty = NSMenuItem(title: localized("All caught up"), action: nil, keyEquivalent: "")
             empty.isEnabled = false
             menu.addItem(empty)
         }
 
         menu.addItem(.separator())
         menu.addItem(
-            withTitle: "Quit Termio",
+            withTitle: localized("Quit Termio"),
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q"
         )
