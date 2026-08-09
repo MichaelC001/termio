@@ -207,9 +207,8 @@ scanning the QR code in the Mac app's Settings ▸ Mobile.
 
 ## Roadmap
 
-- **Web support & remote server** — sessions running on a machine you own — a
-  VPS, a devbox — attached from any browser, with terminals you can share by
-  link.
+- **Linux remote server** — run sessions on a Linux machine you own — a VPS, a
+  devbox — supervised from the Mac app.
 - **Mux server** — a durable session host: the session lives on the box, not in
   the connection. Shut the laptop and the agent keeps working; reattach and the
   exact screen comes back.
@@ -219,6 +218,8 @@ scanning the QR code in the Mac app's Settings ▸ Mobile.
   phone, built on top of the live mirror.
 - **Windows support** — termio as a native Windows app. Same idea, same
   terminal core, no Electron.
+- **Web support** — attach to your sessions from any browser, with terminals
+  you can share by link.
 
 Follow along or weigh in on [GitHub Issues](https://github.com/termio-sh/termio/issues).
 

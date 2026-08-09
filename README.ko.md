@@ -213,8 +213,8 @@ brew install --cask termio-sh/tap/termio
 
 ## 로드맵
 
-- **웹 지원과 원격 서버** — VPS나 개발 머신 등 내 머신에서 세션을 돌리고, 어느
-  브라우저에서든 붙을 수 있어요. 터미널은 링크로 공유할 수 있고요.
+- **Linux 원격 서버** — VPS나 개발 머신 등 내 Linux 머신에서 세션을 돌리고,
+  Mac 앱에서 관리할 수 있어요.
 - **Mux 서버** — 세션이 연결이 아니라 머신에 살아 있는 영속 세션 호스트예요.
   노트북을 덮어도 에이전트는 계속 일하고, 다시 붙으면 화면이 그대로 돌아와요.
 - **이슈 트리아지** — GitHub, GitLab, Linear 이슈를 앱 안에서 보고 바로
@@ -223,6 +223,8 @@ brew install --cask termio-sh/tap/termio
   옵션이에요.
 - **Windows 지원** — 네이티브 Windows 앱이에요. 같은 철학, 같은 터미널 코어로,
   Electron 포팅이 아니에요.
+- **웹 지원** — 어느 브라우저에서든 세션에 붙을 수 있어요. 터미널은 링크로
+  공유할 수 있고요.
 
 진행 상황은 [GitHub Issues](https://github.com/termio-sh/termio/issues)에서 지켜보거나 의견을 남겨 주세요.
 

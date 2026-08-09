@@ -200,8 +200,8 @@ brew install --cask termio-sh/tap/termio
 
 ## 路線圖
 
-- **Web 支援與遠端伺服器** — 工作階段跑在您自己的機器上（VPS、開發機），從任何
-  瀏覽器連上，終端機還能透過連結分享。
+- **Linux 遠端伺服器** — 工作階段跑在您自己的 Linux 機器上（VPS、開發機），
+  在 Mac 應用程式中統一管理。
 - **Mux 伺服器** — 持久的工作階段主機：工作階段活在機器上，而不是連線裡。闔上
   筆電，智能體繼續工作；重新連上，畫面原樣恢復。
 - **問題分流** — 在應用程式內直接檢視 GitHub、GitLab、Linear 的 issue，隨手
@@ -209,6 +209,7 @@ brew install --cask termio-sh/tap/termio
 - **行動端 TUI → GUI** — 在即時鏡像之上，把智能體工作階段選擇性地渲染成 GUI。
 - **Windows 支援** — 原生 Windows 應用程式，同樣的理念、同樣的終端機核心，
   不是 Electron 移植。
+- **Web 支援** — 從任何瀏覽器連上工作階段，終端機還能透過連結分享。
 
 歡迎在 [GitHub Issues](https://github.com/termio-sh/termio/issues) 追蹤進展或參與討論。
 

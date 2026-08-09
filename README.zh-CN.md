@@ -191,8 +191,8 @@ brew install --cask termio-sh/tap/termio
 
 ## 路线图
 
-- **Web 支持与远程服务器** — 会话运行在您自己的机器上（VPS、开发机），从任意
-  浏览器接入，终端还可以通过链接分享。
+- **Linux 远程服务器** — 会话运行在您自己的 Linux 机器上（VPS、开发机），
+  在 Mac 应用中统一管理。
 - **Mux 服务器** — 持久会话主机：会话活在机器上，而不是连接里。合上笔记本，
   智能体继续干活；重新连上，屏幕原样恢复。
 - **问题分诊** — 在应用内直接查看 GitHub、GitLab、Linear 的 issue，随手交给
@@ -200,6 +200,7 @@ brew install --cask termio-sh/tap/termio
 - **移动端 TUI → GUI** — 在实时镜像之上，把智能体会话可选地渲染成 GUI。
 - **Windows 支持** — 原生 Windows 应用，同样的理念、同样的终端内核，不是
   Electron 移植。
+- **Web 支持** — 从任意浏览器接入会话，终端还可以通过链接分享。
 
 欢迎在 [GitHub Issues](https://github.com/termio-sh/termio/issues) 关注进展或参与讨论。
 
