@@ -340,9 +340,44 @@ extension Notification.Name {
 
 // MARK: - Companion link state
 
-/// The app-wide view of the single Mac roster link. The sidebar owns the
-/// socket and keeps `state` current; other screens (the Connectivity settings
-/// page, the sidebar's presence dot) observe `stateDidChange` and read it.
+/// One Mac this phone has paired with — the Slack-workspace model: several
+/// stay paired, one is active at a time. `id` is the Mac's stable `macID`
+/// from the roster; until the first roster names it (a fresh pairing, or an
+/// older Mac that never will) it holds a locally minted placeholder that
+/// `CompanionLink.adoptIdentity` replaces in place.
+struct PairedMac: Codable, Equatable {
+    var id: String
+    var name: String
+    /// ws(s)://host:port, with the pairing token held separately in `token`.
+    var address: String
+    var token: String?
+
+    /// The URL the socket dials: the address with the token riding the `t`
+    /// query param — the shape the Mac's QR encodes and `CompanionClient`
+    /// reads the token back out of.
+    var connectURL: URL? {
+        guard var components = URLComponents(string: address) else { return nil }
+        if let token {
+            var items = components.queryItems ?? []
+            items.append(URLQueryItem(name: "t", value: token))
+            components.queryItems = items
+        }
+        return components.url
+    }
+
+    /// "studio.local:8787" — the row caption; scheme is noise and the token
+    /// is a secret.
+    var displayAddress: String {
+        guard let url = URL(string: address), let host = url.host else { return address }
+        let port = url.port.map { ":\($0)" } ?? ""
+        return host + port
+    }
+}
+
+/// The app-wide view of the Mac roster link: the paired-Mac list, which one
+/// is active, and the active link's live state. The sidebar owns the socket
+/// and keeps `state` current; other screens (the Connectivity settings page,
+/// the device rail) observe the notifications and read back.
 enum CompanionLink {
     enum State: Equatable {
         /// No Mac address saved.
@@ -363,15 +398,172 @@ enum CompanionLink {
     }
 
     static let stateDidChange = Notification.Name("CompanionLinkStateDidChange")
-    /// Posted when a screen other than the sidebar changes the pairing (the
-    /// Connectivity page's connect/forget); the sidebar reacts by reconnecting
-    /// to `savedURL` or tearing the link down.
+    /// Posted when the active pairing changes (a new pairing, a switch, a
+    /// forget); the socket's owner reacts by reconnecting to `savedURL` or
+    /// tearing the link down.
     static let pairingDidChange = Notification.Name("CompanionPairingDidChange")
+    /// Posted when the paired-Mac list or the active choice changes for any
+    /// reason (including an identity adoption that only renames an entry) —
+    /// the Connectivity page and the device rail reload on it.
+    static let macsDidChange = Notification.Name("CompanionMacsDidChange")
 
-    static let defaultsKey = "companion.rosterURL"
+    private static let macsKey = "companion.pairedMacs"
+    private static let activeKey = "companion.activeMacID"
+    /// The pre-multi-Mac single URL (token embedded as `?t=`); folded into
+    /// `pairedMacs` on first read so an update keeps its pairing.
+    private static let legacyURLKey = "companion.rosterURL"
 
-    static var savedURL: URL? {
-        UserDefaults.standard.string(forKey: defaultsKey).flatMap(URL.init(string:))
+    static var pairedMacs: [PairedMac] {
+        migrateIfNeeded()
+        guard let data = UserDefaults.standard.data(forKey: macsKey),
+              let macs = try? JSONDecoder().decode([PairedMac].self, from: data)
+        else { return [] }
+        return macs
+    }
+
+    static var activeMacID: String? {
+        migrateIfNeeded()
+        return UserDefaults.standard.string(forKey: activeKey)
+    }
+
+    /// The Mac the app talks to. A dangling or missing active id falls back
+    /// to the first entry so a paired phone never strands itself.
+    static var activeMac: PairedMac? {
+        let macs = pairedMacs
+        guard let id = activeMacID, let match = macs.first(where: { $0.id == id }) else {
+            return macs.first
+        }
+        return match
+    }
+
+    /// The active Mac's dial URL — nil when nothing is paired.
+    static var savedURL: URL? { activeMac?.connectURL }
+
+    /// A scanned QR or typed address. When the exact address+token is already
+    /// on the list this just switches to that entry; otherwise it adds a
+    /// placeholder entry the first roster will name — and if that roster
+    /// reveals an already-known Mac (a re-scan after a tunnel restart),
+    /// `adoptIdentity` folds the fresh address into the known entry instead
+    /// of keeping a duplicate. Returns false for an unparseable address.
+    @discardableResult
+    static func pair(rawAddress: String) -> Bool {
+        guard let url = normalize(rawAddress) else { return false }
+        let token = token(of: url)
+        let address = strippedAddress(of: url)
+        var macs = pairedMacs
+        if let existing = macs.first(where: { $0.address == address && $0.token == token }) {
+            setActive(existing.id)
+            return true
+        }
+        let mac = PairedMac(
+            id: "local-\(UUID().uuidString)",
+            name: url.host ?? "Mac",
+            address: address,
+            token: token
+        )
+        macs.append(mac)
+        save(macs)
+        setActive(mac.id)
+        return true
+    }
+
+    /// The active connection's roster named its Mac. Adopt the identity into
+    /// the active entry — or, when that `macID` is already on the list under
+    /// another entry (a re-scan of a known Mac through a placeholder), update
+    /// the known entry's address/token in place and drop the placeholder.
+    /// Never posts `pairingDidChange`: the socket is already on the right Mac.
+    static func adoptIdentity(macID: String, name: String?) {
+        var macs = pairedMacs
+        guard let activeID = activeMac?.id,
+              let activeIndex = macs.firstIndex(where: { $0.id == activeID })
+        else { return }
+        if let knownIndex = macs.firstIndex(where: { $0.id == macID }), knownIndex != activeIndex {
+            macs[knownIndex].address = macs[activeIndex].address
+            macs[knownIndex].token = macs[activeIndex].token
+            if let name { macs[knownIndex].name = name }
+            macs.remove(at: activeIndex)
+            save(macs)
+            UserDefaults.standard.set(macID, forKey: activeKey)
+            NotificationCenter.default.post(name: macsDidChange, object: nil)
+            return
+        }
+        var entry = macs[activeIndex]
+        var changed = false
+        if entry.id != macID {
+            entry.id = macID
+            changed = true
+        }
+        if let name, entry.name != name {
+            entry.name = name
+            changed = true
+        }
+        guard changed else { return }
+        macs[activeIndex] = entry
+        save(macs)
+        UserDefaults.standard.set(macID, forKey: activeKey)
+        NotificationCenter.default.post(name: macsDidChange, object: nil)
+    }
+
+    /// Switch the active Mac — the tap on a switcher tile or a Connectivity
+    /// row. The socket's owner tears down and redials on `pairingDidChange`.
+    static func switchTo(_ id: String) {
+        guard id != activeMac?.id, pairedMacs.contains(where: { $0.id == id }) else { return }
+        setActive(id)
+    }
+
+    /// Forget one Mac, leaving the others intact. Forgetting the active one
+    /// promotes the next entry (or lands unpaired when it was the last).
+    static func forget(_ id: String) {
+        let wasActive = activeMac?.id == id
+        var macs = pairedMacs
+        macs.removeAll { $0.id == id }
+        save(macs)
+        if wasActive {
+            if let next = macs.first?.id {
+                UserDefaults.standard.set(next, forKey: activeKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: activeKey)
+            }
+            NotificationCenter.default.post(name: pairingDidChange, object: nil)
+        }
+        NotificationCenter.default.post(name: macsDidChange, object: nil)
+    }
+
+    private static func setActive(_ id: String) {
+        UserDefaults.standard.set(id, forKey: activeKey)
+        NotificationCenter.default.post(name: macsDidChange, object: nil)
+        NotificationCenter.default.post(name: pairingDidChange, object: nil)
+    }
+
+    private static func save(_ macs: [PairedMac]) {
+        guard let data = try? JSONEncoder().encode(macs) else { return }
+        UserDefaults.standard.set(data, forKey: macsKey)
+    }
+
+    private static func migrateIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard let raw = defaults.string(forKey: legacyURLKey) else { return }
+        defaults.removeObject(forKey: legacyURLKey)
+        guard defaults.data(forKey: macsKey) == nil, let url = URL(string: raw) else { return }
+        let mac = PairedMac(
+            id: "local-\(UUID().uuidString)",
+            name: url.host ?? "Mac",
+            address: strippedAddress(of: url),
+            token: token(of: url)
+        )
+        save([mac])
+        defaults.set(mac.id, forKey: activeKey)
+    }
+
+    /// The URL minus its `t` query param — what `PairedMac.address` stores,
+    /// so the same Mac scanned twice compares equal regardless of token.
+    private static func strippedAddress(of url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.absoluteString
+        }
+        let remaining = (components.queryItems ?? []).filter { $0.name != "t" }
+        components.queryItems = remaining.isEmpty ? nil : remaining
+        return components.url?.absoluteString ?? url.absoluteString
     }
 
     /// Bare-host shorthand: "studio.local" → ws://studio.local:8787. Tunnel
