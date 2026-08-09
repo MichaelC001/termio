@@ -629,6 +629,14 @@ public struct RosterAgent: Codable, Sendable, Equatable {
 public struct CompanionRoster: Codable, Sendable, Equatable {
     public let t: String
     public let wire: Int
+    /// The serving Mac's stable identity — a UUID minted once and persisted on
+    /// the Mac — so the phone can keep several Macs paired and key them by
+    /// something that survives tunnel restarts and DHCP renumbering (the URL
+    /// does neither). nil from an older Mac that predates multi-Mac pairing.
+    public let macID: String?
+    /// The Mac's user-facing computer name ("Jiwei's MacBook Pro"), for the
+    /// phone's paired-Mac list and switcher tiles. nil from an older Mac.
+    public let macName: String?
     public let projects: [RosterProject]
     /// The agents the Mac has enabled in Settings ▸ Agents, in preset order —
     /// the phone's new-session menu mirrors this instead of a fixed list. Empty
@@ -637,20 +645,25 @@ public struct CompanionRoster: Codable, Sendable, Equatable {
     public let agents: [RosterAgent]
 
     public init(
-        projects: [RosterProject], agents: [RosterAgent] = [], wire: Int = Wire.current
+        projects: [RosterProject], agents: [RosterAgent] = [], wire: Int = Wire.current,
+        macID: String? = nil, macName: String? = nil
     ) {
         t = "roster"
         self.wire = wire
+        self.macID = macID
+        self.macName = macName
         self.projects = projects
         self.agents = agents
     }
 
-    private enum CodingKeys: String, CodingKey { case t, wire, projects, agents }
+    private enum CodingKeys: String, CodingKey { case t, wire, macID, macName, projects, agents }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         t = try c.decode(String.self, forKey: .t)
         wire = try c.decodeIfPresent(Int.self, forKey: .wire) ?? Wire.legacy
+        macID = try c.decodeIfPresent(String.self, forKey: .macID)
+        macName = try c.decodeIfPresent(String.self, forKey: .macName)
         projects = try c.decodeIfPresent([RosterProject].self, forKey: .projects) ?? []
         agents = try c.decodeIfPresent([RosterAgent].self, forKey: .agents) ?? []
     }
