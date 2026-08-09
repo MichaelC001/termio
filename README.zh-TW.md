@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<img alt="termio" src="web/landing/public/logo.png" width="88" />
+<img alt="Termio" src="web/landing/public/logo.png" width="88" />
 
 ### 終端機優先的智能體開發環境
 
@@ -23,15 +23,28 @@
 
 <br />
 
-<img alt="深色模式下的 termio：一個即時的 Claude Code 工作階段，旁邊是專案側邊欄" src="web/landing/public/screenshots/hero1.png" width="100%" />
+<img alt="深色模式下的 Termio：一個即時的 Claude Code 工作階段，旁邊是專案側邊欄" src="web/landing/public/screenshots/hero1.png" width="100%" />
 
 </div>
+
+## 安裝
+
+**[下載 macOS 版 Termio](https://downloads.termio.sh/termio.dmg)** — 免費、
+不需帳號，需要 macOS 14 或以上版本。或透過 [Homebrew](https://brew.sh) 安裝：
+
+```sh
+brew install --cask termio-sh/tap/termio
+```
+
+**iPhone 端**：先到
+[TestFlight](https://testflight.apple.com/join/1Arf1UKR) 取得配套應用程式
+測試版，再掃描 Mac 應用程式「設定 ▸ 行動裝置」中的 QR code 完成配對。
 
 ## 為看著智能體工作而打造
 
 IDE 是圍繞著「人打字寫程式」設計的。當大部分程式碼改由智能體來寫，
 開發環境的職責也隨之改變：它是智能體工作的地方，也是您下指令、審閱成果、
-幫它們排除障礙的地方。termio 就是這樣的環境 — 之所以終端機優先，
+幫它們排除障礙的地方。Termio 就是這樣的環境 — 之所以終端機優先，
 是因為智能體本來就活在終端機裡 — 專為新型態的工作而生：多個智能體同時進行，
 大多數不勞您操心，但總有一個卡住等您。（完整論述請見
 [*From IDE to ADE*](docs/essays/from-ide-to-ade.md)。）
@@ -42,7 +55,7 @@ IDE 是圍繞著「人打字寫程式」設計的。當大部分程式碼改由�
 - **專案 → 工作階段。** 側邊欄對應您實際的工作方式：每個專案容納自己的
   終端機與智能體，git 工作樹（worktree）以巢狀方式收在專案底下，方便平行
   處理多項任務。
-- **零設定的狀態偵測。** termio 會自動接上各智能體自己的 hook，讀取智能體
+- **零設定的狀態偵測。** Termio 會自動接上各智能體自己的 hook，讀取智能體
   本來就會發出的訊號。工作中、閒置、*需要您* — 每個工作階段都有狀態
   圓點，選單列圖示平時保持安靜，智能體工作時輕輕脈動，一旦有智能體被您
   卡住就會提醒您。
@@ -73,7 +86,7 @@ IDE 是圍繞著「人打字寫程式」設計的。當大部分程式碼改由�
 ### 知道智能體何時需要您
 
 工作階段圓點顯示工作中 / 閒置 / 需要您，並彙整至選單列圖示，
-無論身在哪個應用程式都能一眼掌握。從選單列點選工作階段，termio
+無論身在哪個應用程式都能一眼掌握。從選單列點選工作階段，Termio
 就會把它帶到最前面
 
 </td>
@@ -147,13 +160,13 @@ Ghostty 風格的工作階段內分割：左邊跑智能體，右邊放開發伺
 
 Claude Code、Codex、Gemini CLI、Grok、Cursor Agent、Copilot、Amp、OpenCode、
 Pi、Kimi — 任何 CLI 智能體都行，因為工作階段本來就是一個真正的終端機。
-對於內建支援的智能體，termio 會自動安裝各自的 hook 或外掛，
+對於內建支援的智能體，Termio 會自動安裝各自的 hook 或外掛，
 第一次啟動就能偵測狀態。
 
 ## 從終端機驅動
 
-termio 附帶 `termio` CLI，工作階段因此可以用腳本操作 — 智能體自己也能操作。
-在 termio 裡執行的智能體可以生出一個同儕、交付任務，再把回覆讀回來：
+Termio 附帶 `termio` CLI，工作階段因此可以用腳本操作 — 智能體自己也能操作。
+在 Termio 裡執行的智能體可以生出一個同儕、交付任務，再把回覆讀回來：
 
 ```sh
 termio sessions list                       # 誰在工作、閒置，或正在等你
@@ -183,21 +196,6 @@ termio sessions watch                      # 即時串流狀態變化
 </tr>
 </table>
 
-## 安裝
-
-**[下載 macOS 版 termio](https://downloads.termio.sh/termio.dmg)** — 免費、
-不需帳號。需要 macOS 14 或以上版本。
-
-或透過 [Homebrew](https://brew.sh) 安裝：
-
-```sh
-brew install --cask termio-sh/tap/termio
-```
-
-**iPhone 端**：先到
-[TestFlight](https://testflight.apple.com/join/1Arf1UKR) 取得配套應用程式
-測試版，再掃描 Mac 應用程式「設定 ▸ 行動裝置」中的 QR code 完成配對。
-
 ## 路線圖
 
 - **Linux 遠端伺服器** — 工作階段跑在您自己的 Linux 機器上（VPS、開發機），
@@ -214,6 +212,10 @@ brew install --cask termio-sh/tap/termio
 歡迎在 [GitHub Issues](https://github.com/termio-sh/termio/issues) 追蹤進展或參與討論。
 
 ## 社群
+
+**Termio 正在尋找長期維護者。** 如果您喜歡使用 Termio，也想負責路線圖中的
+某一塊 — Linux 遠端伺服器、Web 用戶端、Windows 或 iOS 配套應用程式 —
+歡迎到 Discord 打聲招呼，或直接認領一個 issue。
 
 - **[Discord](https://discord.gg/H9DKVwsE5f)** — 與開發者及其他使用者交流
 - **[GitHub Issues](https://github.com/termio-sh/termio/issues)** — 回報錯誤與提出功能建議

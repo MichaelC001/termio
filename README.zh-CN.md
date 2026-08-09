@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<img alt="termio" src="web/landing/public/logo.png" width="88" />
+<img alt="Termio" src="web/landing/public/logo.png" width="88" />
 
 ### 终端优先的智能体开发环境
 
@@ -23,13 +23,26 @@
 
 <br />
 
-<img alt="深色模式下的 termio：一个正在运行的 Claude Code 会话，旁边是项目侧边栏" src="web/landing/public/screenshots/hero1.png" width="100%" />
+<img alt="深色模式下的 Termio：一个正在运行的 Claude Code 会话，旁边是项目侧边栏" src="web/landing/public/screenshots/hero1.png" width="100%" />
 
 </div>
 
+## 安装
+
+**[下载 macOS 版 Termio](https://downloads.termio.sh/termio.dmg)**——免费、
+无需账号，需要 macOS 14 或更高版本。也可以通过 [Homebrew](https://brew.sh) 安装：
+
+```sh
+brew install --cask termio-sh/tap/termio
+```
+
+**在 iPhone 上**：从
+[TestFlight](https://testflight.apple.com/join/1Arf1UKR) 获取配套应用公测版，
+再扫描 Mac 应用 Settings ▸ Mobile 中的二维码完成配对。
+
 ## 为“看着智能体干活”而生
 
-IDE 是围绕一个人敲代码设计的。当大部分代码改由 AI 编码智能体来写，环境的职责也随之改变：它既是智能体干活的地方，也是您指挥、审阅、为它们解困的地方。termio 正是这样一个环境——之所以终端优先，是因为智能体本来就活在终端里；它为工作的新形态而造：几个智能体同时推进，大多数无需您操心，偶尔有一个卡住等您。（更完整的论述见
+IDE 是围绕一个人敲代码设计的。当大部分代码改由 AI 编码智能体来写，环境的职责也随之改变：它既是智能体干活的地方，也是您指挥、审阅、为它们解困的地方。Termio 正是这样一个环境——之所以终端优先，是因为智能体本来就活在终端里；它为工作的新形态而造：几个智能体同时推进，大多数无需您操心，偶尔有一个卡住等您。（更完整的论述见
 [*From IDE to ADE*](docs/essays/from-ide-to-ade.md)。）
 
 - **真正的终端，不是网页视图。** Swift + AppKit，基于
@@ -37,7 +50,7 @@ IDE 是围绕一个人敲代码设计的。当大部分代码改由 AI 编码智
   没有 Electron，也没有 xterm.js。
 - **项目 → 会话。** 侧边栏映射您真实的工作方式：每个项目容纳自己的终端和智能体，
   git 工作树嵌套在项目之下，用于并行推进多个任务。
-- **状态零配置。** termio 自动接好每个智能体自带的 hook，读取智能体本就发出的信号。
+- **状态零配置。** Termio 自动接好每个智能体自带的 hook，读取智能体本就发出的信号。
   工作中、空闲，还是*等您处理*——每个会话都有状态圆点；菜单栏托盘平时安静，
   智能体干活时脉动，有智能体被您卡住时响铃提醒。
 - **审阅不必离开。** 只读的 git 面板（变更、历史、统一 diff）、
@@ -66,7 +79,7 @@ IDE 是围绕一个人敲代码设计的。当大部分代码改由 AI 编码智
 ### 知道智能体何时需要您
 
 会话圆点显示工作中 / 空闲 / 等您处理，并汇总到菜单栏托盘，在任何应用里
-瞥一眼便知；从托盘选中一个会话，termio 会把它带到最前面
+瞥一眼便知；从托盘选中一个会话，Termio 会把它带到最前面
 
 </td>
 <td width="50%">
@@ -139,13 +152,13 @@ IDE 是围绕一个人敲代码设计的。当大部分代码改由 AI 编码智
 
 Claude Code、Codex、Gemini CLI、Grok、Cursor Agent、Copilot、Amp、OpenCode、
 Pi、Kimi——以及任何其他 CLI 智能体，因为会话就是一个货真价实的终端。
-对于内置支持的智能体，termio 会自动安装它们各自的 hook 或插件，
+对于内置支持的智能体，Termio 会自动安装它们各自的 hook 或插件，
 您第一次启动它们时状态检测就已就绪。
 
 ## 从终端驱动
 
-termio 附带 `termio` CLI，会话因此可以脚本化——智能体自己也能调用。
-运行在 termio 里的智能体可以派生一个同伴会话，交给它一个任务，再读回结果：
+Termio 附带 `termio` CLI，会话因此可以脚本化——智能体自己也能调用。
+运行在 Termio 里的智能体可以派生一个同伴会话，交给它一个任务，再读回结果：
 
 ```sh
 termio sessions list                       # 谁在工作、空闲，或在等你
@@ -174,21 +187,6 @@ termio sessions watch                      # 实时流式输出状态变化
 </tr>
 </table>
 
-## 安装
-
-**[下载 macOS 版 termio](https://downloads.termio.sh/termio.dmg)**——免费，
-无需账号。需要 macOS 14 或更高版本。
-
-也可以通过 [Homebrew](https://brew.sh) 安装：
-
-```sh
-brew install --cask termio-sh/tap/termio
-```
-
-**在 iPhone 上**：从
-[TestFlight](https://testflight.apple.com/join/1Arf1UKR) 获取配套应用公测版，
-再扫描 Mac 应用 Settings ▸ Mobile 中的二维码完成配对。
-
 ## 路线图
 
 - **Linux 远程服务器** — 会话运行在您自己的 Linux 机器上（VPS、开发机），
@@ -205,6 +203,10 @@ brew install --cask termio-sh/tap/termio
 欢迎在 [GitHub Issues](https://github.com/termio-sh/termio/issues) 关注进展或参与讨论。
 
 ## 社区
+
+**Termio 正在寻找长期维护者。** 如果您喜欢用 Termio，也想负责路线图中的
+某一块——Linux 远程服务器、Web 客户端、Windows 或 iOS 配套应用——欢迎来
+Discord 打个招呼，或直接认领一个 issue。
 
 - **[Discord](https://discord.gg/H9DKVwsE5f)** — 与开发者和其他用户交流
 - **[GitHub Issues](https://github.com/termio-sh/termio/issues)** — 报告 bug、提出功能需求
