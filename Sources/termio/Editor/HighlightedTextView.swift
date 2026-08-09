@@ -197,6 +197,9 @@ struct HighlightedTextView: NSViewRepresentable {
             textView.setSelectedRange(
                 NSRange(location: location, length: min(selection.length, length - location))
             )
+            // A programmatic replace bypasses textDidChange, so the gutter's line anchor
+            // must be reset here.
+            coordinator.ruler?.invalidateLineAnchor()
         }
         apply(to: textView)
         scrollView.backgroundColor = backgroundColor
@@ -334,6 +337,7 @@ struct HighlightedTextView: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             text.wrappedValue = textView.string
+            ruler?.invalidateLineAnchor()
             ruler?.needsDisplay = true
             if !appliedFindQuery.isEmpty {
                 find.recompute(query: appliedFindQuery, options: appliedFindOptions, in: textView)
@@ -341,6 +345,7 @@ struct HighlightedTextView: NSViewRepresentable {
                 // typing in the document, not navigating, so don't steal the scroll or re-pulse
                 // the find indicator.
                 find.paint(focused: min(appliedFocusedIndex, find.matches.count - 1), reveal: false, in: textView)
+                (textView as? SavingTextView)?.reassertBracketMatch()
                 notifyMatchCount()
             }
         }
@@ -366,6 +371,7 @@ struct HighlightedTextView: NSViewRepresentable {
             // moved, so we don't churn the temporary attributes or re-fire the find pulse.
             guard queryChanged || focusedIndex != appliedFocusedIndex else { return }
             find.paint(focused: focusedIndex, reveal: true, in: textView)
+            (textView as? SavingTextView)?.reassertBracketMatch()
             appliedFocusedIndex = focusedIndex
         }
 
@@ -393,7 +399,12 @@ private final class SavingTextView: NSTextView {
     var addToChat: ((String?) -> Void)?
     var canAddToChat: (() -> Bool)?
     /// Full-width wash under the caret's line; `.clear` (or a read-only buffer) draws nothing.
-    var currentLineColor: NSColor = .clear { didSet { needsDisplay = true } }
+    /// Reassigned from every representable update, so only a genuine change may invalidate —
+    /// an unconditional `didSet` forced a full-view repaint per keystroke, defeating the
+    /// caret-line optimization in `caretDidMove`.
+    var currentLineColor: NSColor = .clear {
+        didSet { if currentLineColor != oldValue { needsDisplay = true } }
+    }
     /// Background wash on a bracket pair when the caret sits against one of them.
     var bracketHighlightColor: NSColor = .clear
 
@@ -550,6 +561,13 @@ private final class SavingTextView: NSTextView {
         guard lineRect.intersects(rect) else { return }
         currentLineColor.setFill()
         lineRect.fill()
+    }
+
+    /// The find bar's repaint clears the temporary background color over the whole document,
+    /// taking the bracket wash with it while `bracketRanges` still claims it's applied — re-derive
+    /// the wash after any find repaint so the pair doesn't silently vanish until the caret moves.
+    func reassertBracketMatch() {
+        updateBracketMatch()
     }
 
     /// Selection moved: the line band follows the caret, and the bracket wash re-derives.
