@@ -367,7 +367,13 @@ enum MarkdownReaderRenderer {
     .reader .alert-caution { --alert-color: var(--alert-caution); }
     /* Math: MathML, laid out by WebKit in the prose face. A display formula gets its own
        centered line and scrolls rather than widening the page. */
-    .reader math { font-family: var(--font-prose); font-size: 1.05em; }
+    /* `math` is the CSS generic family, which WebKit resolves to a font carrying an
+       OpenType MATH table (STIX Two Math on macOS). That table is what sizes radicals,
+       stretches braces and parentheses to their content, and puts a sum's limits above and
+       below the sigma. Setting the prose face here instead — which is what this rule used
+       to do — costs all of it: the integral sign stops growing, its bounds collapse into
+       ordinary sub/superscripts, and delimiters stay one line tall around a fraction. */
+    .reader math { font-family: math; font-size: 1.05em; }
     .reader .math-display { margin: 1.4em 0; text-align: center;
       overflow-x: auto; max-width: 100%; }
     .reader .math-source { display: inline-block; }
