@@ -33,13 +33,39 @@ enum MarkdownReaderRenderer {
         \(css)
         </style>
         </head>
-        <body class="reader">
+        <body class="reader\(isCJK(body) ? " cjk" : "")">
         \(frontmatter.map(frontmatterHTML) ?? "")
         \(MarkdownHTML.html(body, softBreaksAsBreaks: false, documentMode: true))
         </body>
         </html>
         """
     }
+
+    /// Whether to read this document as CJK text. The reader's metrics are Latin metrics —
+    /// 1.6 leading suits a Latin x-height and looks cramped under Han glyphs, which fill
+    /// their em square; the reverse is also true, so loosening for everyone makes English
+    /// lists drift apart. CSS can't tell the two apart mid-paragraph, but the host can look
+    /// at the source, so the decision is made once, here, and the page just wears a class.
+    ///
+    /// A ratio rather than "contains any Han": an English design doc quoting one Chinese
+    /// term is still an English document and keeps the Latin register.
+    static func isCJK(_ source: String) -> Bool {
+        var han = 0
+        var total = 0
+        for scalar in source.unicodeScalars where !CharacterSet.whitespacesAndNewlines.contains(scalar) {
+            total += 1
+            if cjkRanges.contains(where: { $0.contains(scalar.value) }) { han += 1 }
+        }
+        guard total > 0 else { return false }
+        return Double(han) / Double(total) >= 0.1
+    }
+
+    /// CJK Unified Ideographs (plus extension A), Hiragana/Katakana, Hangul syllables, and
+    /// the full-width punctuation that travels with them.
+    private static let cjkRanges: [ClosedRange<UInt32>] = [
+        0x3000...0x303F, 0x3040...0x30FF, 0x3400...0x4DBF, 0x4E00...0x9FFF,
+        0xAC00...0xD7AF, 0xFF00...0xFF60,
+    ]
 
     // MARK: - YAML frontmatter
 
@@ -167,7 +193,12 @@ enum MarkdownReaderRenderer {
           --accent: \(t.accent);
           --line: \(t.isDark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.10)");
           --soft: \(t.isDark ? "rgba(255,255,255,0.045)" : "rgba(0,0,0,0.035)");
-          --font-prose: "iA Writer Quattro", -apple-system, system-ui, sans-serif;
+          /* Quattro carries no Han glyphs, so a Chinese run falls through to whatever
+             comes next. Name the Apple CJK faces rather than let `-apple-system` decide:
+             this is the face Chinese prose is set in, and it should not depend on stack
+             order. Latin never reaches them — Quattro covers it. */
+          --font-prose: "iA Writer Quattro", "PingFang SC", "PingFang TC",
+            "Hiragino Sans GB", -apple-system, system-ui, sans-serif;
         \(alertVariables(dark: t.isDark))
         }
         """
@@ -234,6 +265,17 @@ enum MarkdownReaderRenderer {
       font-feature-settings: "kern", "liga", "calt";
       overflow-wrap: anywhere; word-break: break-word;
     }
+    /* A CJK document, decided from the source by `isCJK`. Han glyphs fill their em square
+       and carry no ascender/descender rhythm, so the Latin 1.6 reads as a wall; 1.8 is the
+       leading Chinese web typography settles on. Headings lose the optical negative
+       tracking — that is a Latin correction, and on a square grid it only crowds. */
+    .reader.cjk { line-height: 1.8; }
+    .reader.cjk h1, .reader.cjk h2, .reader.cjk h3,
+    .reader.cjk h4, .reader.cjk h5, .reader.cjk h6 { letter-spacing: 0; line-height: 1.4; }
+    /* Strict breaking keeps a line from opening on 、。) and lets closing punctuation hang
+       into the margin instead of forcing an early wrap. */
+    .reader.cjk p, .reader.cjk li, .reader.cjk blockquote { line-break: strict; }
+    .reader.cjk { hanging-punctuation: allow-end; }
     .reader > *:first-child { margin-top: 0; }
     .reader > *:last-child { margin-bottom: 0; }
     /* Headings carry hierarchy through weight + space, not rules or color — no

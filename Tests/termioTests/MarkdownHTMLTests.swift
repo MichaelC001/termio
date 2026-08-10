@@ -284,6 +284,47 @@ final class MarkdownFeatureSheetTests: XCTestCase {
     }
 }
 
+/// Which typographic register a document is set in. CSS can't tell Han from Latin inside a
+/// paragraph, so the reader decides once per document from the source; these pin where the
+/// line falls.
+final class ReaderScriptDetectionTests: XCTestCase {
+    private let theme = TraceTheme.builtin(dark: true)
+
+    func testChineseProseIsCJK() {
+        XCTAssertTrue(MarkdownReaderRenderer.isCJK(
+            "会话活在机器上,而不是连接里。断开不等于杀死,agent 会继续工作。"))
+    }
+
+    func testEnglishProseIsNot() {
+        XCTAssertFalse(MarkdownReaderRenderer.isCJK(
+            "The session lives on the box, not in the connection. Detach is not kill."))
+    }
+
+    func testAnEnglishDocumentQuotingOneTermKeepsTheLatinRegister() {
+        let source = String(
+            repeating: "Byte delivery never blocks on the host-side VT parse. ", count: 8)
+            + "The docs call this 旁路."
+        XCTAssertFalse(MarkdownReaderRenderer.isCJK(source), "one quoted term flipped the register")
+    }
+
+    func testJapaneseAndKoreanCount() {
+        XCTAssertTrue(MarkdownReaderRenderer.isCJK("セッションはマシン上で生きている"))
+        XCTAssertTrue(MarkdownReaderRenderer.isCJK("세션은 기계에서 살아 있습니다"))
+    }
+
+    func testBodyClassCarriesTheDecision() {
+        let chinese = MarkdownReaderRenderer.document(
+            "# 设计\n\n会话活在机器上,断开不等于杀死。\n", theme: theme, fontFamily: "",
+            embedFonts: false)
+        XCTAssertTrue(chinese.contains(#"<body class="reader cjk">"#), "the CJK class is missing")
+
+        let english = MarkdownReaderRenderer.document(
+            "# Design\n\nThe session lives on the box.\n", theme: theme, fontFamily: "",
+            embedFonts: false)
+        XCTAssertTrue(english.contains(#"<body class="reader">"#), "an English document was set as CJK")
+    }
+}
+
 /// The pure half of diagram rendering — finding fences and swapping them — which every
 /// surface shares and which needs no web view to test.
 final class MermaidSubstitutionTests: XCTestCase {
