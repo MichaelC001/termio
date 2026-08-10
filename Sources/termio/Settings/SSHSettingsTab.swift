@@ -42,12 +42,13 @@ struct SSHSettingsTab: View {
                 url: target.url,
                 settings: settings,
                 jumpLine: target.line,
+                showsInspectorChrome: false,
                 onClose: { configEditor = nil }
             )
             .frame(minWidth: 640, minHeight: 460)
-            // FileEditorView delegates its close to an external toolbar that only
-            // exists over the terminal pane — in a sheet there's none, so supply
-            // one. Escape closes too; the visible button is the guaranteed way out.
+            // The editor's own header controls belong to the inspector, which a sheet
+            // doesn't have — so supply the one control that still applies. Escape closes
+            // too; the visible button is the guaranteed way out.
             .overlay(alignment: .topTrailing) {
                 Button { configEditor = nil } label: {
                     Image(systemName: "xmark")

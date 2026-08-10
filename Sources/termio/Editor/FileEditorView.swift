@@ -22,19 +22,19 @@ struct FileEditorView: View {
     /// Dismisses the overlay (clears `store.openFileURL`) and hands focus back to the terminal.
     let onClose: () -> Void
 
-    /// For the right-click "Add to Chat" on both faces (editor and Markdown reader):
-    /// the gate and the prompt insertion live on the store.
-    @EnvironmentObject private var store: TermioStore
+    /// The right-click "Add to Chat" on both faces (editor and Markdown reader), supplied by the
+    /// host rather than read out of the environment — the editor also opens from the Settings
+    /// window, whose SwiftUI root is a separate `NSHostingView` with no store in scope. The
+    /// argument is the selected text, `nil` for the whole document (Cursor's split: selection →
+    /// snippet, file → reference). Left nil where there is no session to send to; the menu item
+    /// then never appears.
+    let addToChat: ((String?) -> Void)?
+    let canAddToChat: (() -> Bool)?
 
-    /// Cursor's split, shared by both faces: a selection goes over as the pasted
-    /// snippet itself; no selection means the document, which lands as its path.
-    private func addToChat(selection: String?) {
-        if let selection {
-            _ = store.addSnippetToSelectedSessionPrompt(selection)
-        } else {
-            _ = store.addPathToSelectedSessionPrompt(url)
-        }
-    }
+    /// Whether the header carries the inspector's window controls (hide list / maximize / close).
+    /// A sheet has no list column to collapse and no inspector to fill, so it hosts the editor
+    /// without them and supplies its own way out.
+    let showsInspectorChrome: Bool
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -86,11 +86,15 @@ struct FileEditorView: View {
     @State private var relativePath: String?
 
     init(url: URL, settings: AppSettings, readOnly: Bool = false, jumpLine: Int? = nil,
-         onClose: @escaping () -> Void) {
+         addToChat: ((String?) -> Void)? = nil, canAddToChat: (() -> Bool)? = nil,
+         showsInspectorChrome: Bool = true, onClose: @escaping () -> Void) {
         self.url = url
         self.settings = settings
         self.readOnly = readOnly
         self.jumpLine = jumpLine
+        self.addToChat = addToChat
+        self.canAddToChat = canAddToChat
+        self.showsInspectorChrome = showsInspectorChrome
         self.onClose = onClose
         // No I/O here: SwiftUI re-runs this init on every parent render (the store's
         // session churn), and only the first init per `.id(url)` identity keeps its
@@ -195,8 +199,8 @@ struct FileEditorView: View {
                 fileURL: url,
                 settings: settings,
                 colorScheme: colorScheme,
-                addToChat: { addToChat(selection: $0) },
-                canAddToChat: { store.selectedSessionRunsAgent }
+                addToChat: addToChat,
+                canAddToChat: canAddToChat
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -220,8 +224,8 @@ struct FileEditorView: View {
                     if count > 0, findFocusedIndex >= count { findFocusedIndex = 0 }
                 },
                 showsCloseMenuItem: true,
-                addToChat: { addToChat(selection: $0) },
-                canAddToChat: { store.selectedSessionRunsAgent },
+                addToChat: addToChat,
+                canAddToChat: canAddToChat,
                 onSave: saveNow
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -286,7 +290,9 @@ struct FileEditorView: View {
             }
             // The content-area window controls (hide list / maximize / close) ride the header's
             // trailing edge, after the file's own controls.
-            InspectorDetailChromeButtons()
+            if showsInspectorChrome {
+                InspectorDetailChromeButtons()
+            }
         }
         // Leading edge matches the Markdown reader's body padding (20) so the file name lines up
         // with the document text beneath it.
@@ -465,6 +471,13 @@ struct FileEditorView: View {
         case "gemfile", "podfile", "rakefile", "gemfile.lock": return "ruby"
         case "cargo.lock", "poetry.lock", "pipfile": return "ini" // TOML-ish (no toml grammar)
         case "yarn.lock": return "yaml"
+        // highlight.js ships no ssh_config grammar; `properties` is the closest fit — an
+        // ssh_config line *is* `Directive value`, which it colors as key + rest-of-line value
+        // (`ini` needs `=` or `[section]` and would leave the whole file grey). The bare name
+        // `config` only qualifies inside `.ssh`, since it's also git's ini-style config.
+        case "ssh_config", "sshd_config": return "properties"
+        case "config" where url.deletingLastPathComponent().lastPathComponent == ".ssh":
+            return "properties"
         case ".gitignore", ".dockerignore", ".npmignore": return "bash"
         case ".env", ".editorconfig", ".npmrc": return "ini"
         case "nginx.conf": return "nginx"
