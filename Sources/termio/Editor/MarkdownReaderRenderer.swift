@@ -29,7 +29,8 @@ enum MarkdownReaderRenderer {
         \(embedFonts ? quattroFontFaces : "")
         \(themeVariables(theme))
         :root { --font-mono: \(monoStack(fontFamily)); }
-        \(highlightTheme(dark: theme.isDark))
+        \(MarkdownSkin.highlightTheme(dark: theme.isDark))
+        \(MarkdownSkin.css(scope: ".reader "))
         \(css)
         </style>
         </head>
@@ -199,37 +200,8 @@ enum MarkdownReaderRenderer {
              order. Latin never reaches them — Quattro covers it. */
           --font-prose: "iA Writer Quattro", "PingFang SC", "PingFang TC",
             "Hiragino Sans GB", -apple-system, system-ui, sans-serif;
-        \(alertVariables(dark: t.isDark))
+        \(MarkdownSkin.alertVariables(dark: t.isDark))
         }
-        """
-    }
-
-    /// The five GitHub alert hues, as note / tip / important / warning / caution.
-    static func alertVariables(dark: Bool) -> String {
-        let colors = dark
-            ? ["#4493f8", "#3fb950", "#ab7df8", "#d29922", "#f85149"]
-            : ["#0969da", "#1a7f37", "#8250df", "#9a6700", "#cf222e"]
-        return zip(["note", "tip", "important", "warning", "caution"], colors)
-            .map { "  --alert-\($0): \($1);" }
-            .joined(separator: "\n")
-    }
-
-    /// highlight.js token colors for fenced code, taken from the same xcode / xcode-dark
-    /// themes the source editor uses — so a code block in Preview is colored exactly like
-    /// the file behind it. The theme's own `.hljs` background and padding are overridden
-    /// by the reader stylesheet, which owns how a code block looks.
-    static func highlightTheme(dark: Bool) -> String {
-        guard let url = Bundle.termioResources.url(
-                  forResource: dark ? "xcode-dark.min" : "xcode.min", withExtension: "css"),
-              let css = try? String(contentsOf: url, encoding: .utf8)
-        else { return "" }
-        // Both xcode themes paint `diff` additions and deletions on opaque pastel fills
-        // meant for a white editor gutter; on a dark page that is white-on-mint. Replace
-        // them with a tint of the page's own text color, which reads on either.
-        return css + """
-
-        .hljs-addition { background: color-mix(in srgb, #3fb950 20%, transparent); color: inherit; }
-        .hljs-deletion { background: color-mix(in srgb, #f85149 20%, transparent); color: inherit; }
         """
     }
 
@@ -285,8 +257,6 @@ enum MarkdownReaderRenderer {
     .reader.cjk { hanging-punctuation: allow-end; }
     /* 标点挤压 — see CJKPunctuation. The span is emitted only for a mark that runs into
        another one, so single punctuation keeps its full width. */
-    .reader .punctuation-half { margin-inline-end: -0.5em; }
-    .reader .punctuation-quarter { margin-inline-end: -0.25em; }
     .reader > *:first-child { margin-top: 0; }
     .reader > *:last-child { margin-bottom: 0; }
     /* Headings carry hierarchy through weight + space, not rules or color — no
@@ -323,7 +293,6 @@ enum MarkdownReaderRenderer {
     .reader pre code { background: none; padding: 0; font-size: 13.5px; line-height: 1.6; }
     /* The hljs theme ships its own background, padding and base color for `.hljs`; the
        block's look belongs to this stylesheet, so only the token colors survive. */
-    .reader pre code.hljs { display: block; background: none; padding: 0; color: inherit; }
     .reader img { max-width: 100%; margin: 0.6em 0; border-radius: 6px; }
     /* `<kbd>` is on the raw-HTML whitelist and READMEs use it for shortcuts; without a
        key cap it reads as ordinary text. */
@@ -364,11 +333,6 @@ enum MarkdownReaderRenderer {
     .reader .alert-title { margin: 0 0 0.35em; color: var(--alert-color);
       font-size: 13px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
     .reader .alert > *:last-child { margin-bottom: 0; }
-    .reader .alert-note { --alert-color: var(--alert-note); }
-    .reader .alert-tip { --alert-color: var(--alert-tip); }
-    .reader .alert-important { --alert-color: var(--alert-important); }
-    .reader .alert-warning { --alert-color: var(--alert-warning); }
-    .reader .alert-caution { --alert-color: var(--alert-caution); }
     /* Math: MathML, laid out by WebKit in the prose face. A display formula gets its own
        centered line and scrolls rather than widening the page. */
     /* `math` is the CSS generic family, which WebKit resolves to a font carrying an
@@ -378,8 +342,7 @@ enum MarkdownReaderRenderer {
        to do — costs all of it: the integral sign stops growing, its bounds collapse into
        ordinary sub/superscripts, and delimiters stay one line tall around a fraction. */
     .reader math { font-family: math; font-size: 1.05em; }
-    .reader .math-display { margin: 1.4em 0; text-align: center;
-      overflow-x: auto; max-width: 100%; }
+    .reader .math-display { margin: 1.4em 0; }
     .reader .math-source { display: inline-block; }
     /* Diagrams: centered on their own line, scrolling rather than widening the page.
        Mermaid sizes its SVG in absolute units, so the height has to stay auto or a
@@ -388,11 +351,9 @@ enum MarkdownReaderRenderer {
       overflow-x: auto; max-width: 100%; }
     .reader .mermaid svg { max-width: 100%; height: auto; }
     /* Footnotes: a quiet apparatus block after the prose, separated by a rule. */
-    .reader .footnote-ref a { text-decoration: none; }
     .reader .footnotes { margin-top: 3em; padding-top: 1.4em; border-top: 1px solid var(--line);
       font-size: 15px; color: var(--muted); }
     .reader .footnotes li { margin: 0.5em 0; }
-    .reader .footnotes p { display: inline; margin: 0; }
-    .reader .footnote-back { margin-left: 0.4em; text-decoration: none; }
+    .reader .footnote-back { margin-left: 0.4em; }
     """
 }
