@@ -89,6 +89,10 @@ let package = Package(
                 .product(name: "TermioShared", package: "Shared"),
             ],
             path: "Tests/termioTests",
+            // The Markdown feature sheet is both the end-to-end fixture
+            // `MarkdownFeatureSheetTests` renders and the document to open in the
+            // reader when judging the result by eye.
+            resources: [.copy("Fixtures")],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
             ]
