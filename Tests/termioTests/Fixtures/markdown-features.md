@@ -6,8 +6,10 @@ type: test
 
 # Markdown feature sheet
 
-Open this file in termio's Markdown preview to see every GitHub construct the renderer
-supports. Anything that renders as literal source here is a regression.
+Open this file in termio's Markdown preview to see every construct the renderer handles.
+Anything that renders as literal source here is a regression — except the `mermaid` block,
+which is [not implemented yet](#mermaid-not-implemented-yet) and is expected to show as
+plain source.
 
 ## Headings and anchors
 
@@ -15,9 +17,17 @@ Every heading carries a GitHub-style slug id, so a table of contents works:
 
 - [Alerts](#alerts)
 - [Code and syntax highlighting](#code-and-syntax-highlighting)
+- [Mermaid](#mermaid-not-implemented-yet)
 - [Math](#math)
 - [Footnotes](#footnotes)
+- [Raw HTML](#raw-html)
 - [Duplicate](#duplicate) and [the second one](#duplicate-1)
+
+#### Fourth-level heading
+
+##### Fifth-level heading
+
+###### Sixth-level heading
 
 ## Alerts
 
@@ -40,6 +50,8 @@ Every heading carries a GitHub-style slug id, so a table of contents works:
 A plain quote is still a plain quote:
 
 > Not an alert. No colored rule, no label.
+>
+> > A quote inside a quote.
 
 ## Links
 
@@ -47,8 +59,10 @@ Bare URLs autolink: https://github.com/termio-sh/termio and www.termio.sh both b
 links. Sentence punctuation stays out of them — see https://termio.sh/docs.
 A link in parens (https://termio.sh/docs) keeps its closing paren outside.
 
-Emails do not autolink: hi@termio.sh. Markdown links win over autolinking:
-[https://a.example](https://termio.sh).
+Emails do not autolink: hi@termio.sh, but an explicit [mailto: link](mailto:hi@termio.sh)
+works. Markdown links win over autolinking: [https://a.example](https://termio.sh).
+Relative links resolve against this file's folder: [the test suite](../MarkdownHTMLTests.swift).
+In-page anchors jump within the document: [back to the top](#markdown-feature-sheet).
 
 ## Emoji
 
@@ -81,10 +95,39 @@ An unknown language stays plain, never mis-colored:
 { this is not any language highlight.js knows }
 ```
 
+A fence with no language at all stays plain too:
+
+```
+plain preformatted text
+    indentation preserved
+```
+
 Shell fences keep their dollars: `echo $PATH` inline, and in a block:
 
 ```sh
 echo "$HOME and $USER are not math"
+```
+
+## Mermaid (not implemented yet)
+
+Diagram fences are **not** rendered. The source stays readable as a plain code block,
+which is the current, deliberate behavior:
+
+```mermaid
+graph LR
+    PTY[PTY bytes] --> Pipe
+    Pipe --> Client[client VT]
+    Pipe --> Sidecar[authoritative VT]
+    Sidecar -->|snapshot on attach| Client
+```
+
+```mermaid
+sequenceDiagram
+    participant Phone
+    participant Mac
+    Phone->>Mac: attach(session)
+    Mac-->>Phone: snapshot
+    Mac-->>Phone: byte stream
 ```
 
 ## Math
@@ -108,13 +151,30 @@ Prices are not math: it costs $5 and $6 more later.
 
 Byte delivery never blocks on the host-side VT parse[^anti100x], and state syncs only at
 boundaries[^boundaries]. The first reference gets number 1 even when its definition comes
-second.
+second, and a note can be referenced twice[^anti100x].
 
 [^boundaries]: Snapshots on attach, resize and resync — never per frame.
 [^anti100x]: The anti-100× invariant. Any per-frame grid encoder between the PTY and the
     pipe rebuilds the tmux tax.
 
-## Tables, tasks, and the rest
+## Lists
+
+1. Ordered list
+2. Second item
+   1. Nested ordered item
+   2. Another one
+3. Third item
+
+- Unordered list
+  - Nested bullet
+    - Third level
+- Back to the top level
+
+- [x] task list, checked
+- [ ] task list, unchecked
+- [x] tasks mix with **bold**, `code`, and [links](https://termio.sh)
+
+## Tables
 
 | Construct | Where it renders | Notes |
 | --- | --- | --- |
@@ -122,9 +182,44 @@ second.
 | Math | reader, trace, issues | MathML, no web fonts |
 | Highlighting | reader, trace, issues | 192 languages |
 
-- [x] task list, checked
-- [ ] task list, unchecked
-- ~~strikethrough~~, **bold**, *italic*, `inline code`
+## Images
+
+Relative paths resolve against this file's folder:
+
+![the termio app icon](../../../packaging/AppIcon.png)
+
+## Raw HTML
+
+Whitelisted markup passes through the sanitizer, so README layout works:
+
+<details>
+<summary>A collapsed section</summary>
+
+Hidden until you open it. Markdown inside still renders: **bold** and `code`.
+
+</details>
+
+<table>
+<tr>
+<td width="50%"><img src="../../../packaging/AppIcon.png" alt="left" width="120"></td>
+<td width="50%">The screenshot-grid idiom: a layout table keeps its cell ratios instead of
+shrink-wrapping to content.</td>
+</tr>
+</table>
+
+Script tags do not: <script>alert(1)</script> renders as visible text.
+
+## Inline odds and ends
+
+~~strikethrough~~, **bold**, *italic*, ***both***, `inline code`, <kbd>⌘</kbd><kbd>K</kbd>,
+H<sub>2</sub>O, x<sup>2</sup>, and an entity: AT&amp;T.
+
+Escapes hold: \*not emphasis\* and \$not math\$.
+
+A hard line break ends this line with two spaces,  
+so this sentence starts on its own line.
+
+---
 
 ## Duplicate
 

@@ -227,7 +227,9 @@ final class MarkdownFeatureSheetTests: XCTestCase {
         let html = MarkdownHTML.html(try featureSheet(), softBreaksAsBreaks: false, documentMode: true)
         for fragment in [
             #"<h2 id="alerts">"#,          // heading anchors
+            #"id="mermaid-not-implemented-yet""#,  // the sheet's own TOC links resolve
             #"id="duplicate-1""#,          // slug de-duplication
+            "<h6 id=",                     // every heading level
             "alert alert-caution",         // all five alert kinds present
             "🚀",                          // emoji shortcodes
             "hljs-keyword",                // fenced-code highlighting
@@ -236,11 +238,33 @@ final class MarkdownFeatureSheetTests: XCTestCase {
             #"<section class="footnotes">"#,
             #"<a href="https://github.com/termio-sh/termio">"#,  // bare-URL autolink
             #"<a href="http://www.termio.sh">"#,
+            #"<a href="mailto:hi@termio.sh">"#,
+            #"<a href="../MarkdownHTMLTests.swift">"#,           // relative link
+            "<ol>", "<ul>",                // ordered, unordered and nested lists
+            #"<li class="task">"#,
+            "<table>", "<thead>",          // GFM table
+            #"<img src="../../../packaging/AppIcon.png""#,
+            "<details", "<summary>",       // whitelisted raw HTML
+            #"<td width="50%">"#,          // the README layout-table idiom
+            "<kbd>", "<sub>", "<sup>",
+            "<hr>",
+            "<blockquote><p>A quote inside a quote.</p></blockquote>",  // nested quote
         ] {
             XCTAssertTrue(html.contains(fragment), "\(fragment) is missing from the output")
         }
         // Prose that merely looks like markup stays prose.
         XCTAssertTrue(html.contains("costs $5 and $6"), "prose dollars were eaten by math")
         XCTAssertTrue(html.contains("10:30"), "a clock time was eaten by emoji substitution")
+        XCTAssertTrue(html.contains("*not emphasis*"), "a backslash escape was not honored")
+        XCTAssertFalse(html.contains("<script>"), "a script tag survived the sanitizer")
+    }
+
+    /// Mermaid is deliberately not implemented: a diagram fence keeps its source as a
+    /// plain, unhighlighted code block. Pinned so the sheet's claim stays true — and so
+    /// the day mermaid does render, this test is the reminder to update the sheet.
+    func testMermaidFencesStayPlainSource() throws {
+        let html = MarkdownHTML.html(try featureSheet(), softBreaksAsBreaks: false, documentMode: true)
+        XCTAssertTrue(html.contains(#"<pre><code class="language-mermaid hljs">graph LR"#), html)
+        XCTAssertTrue(html.contains("sequenceDiagram"))
     }
 }

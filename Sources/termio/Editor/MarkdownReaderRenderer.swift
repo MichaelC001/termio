@@ -272,6 +272,11 @@ enum MarkdownReaderRenderer {
        block's look belongs to this stylesheet, so only the token colors survive. */
     .reader pre code.hljs { display: block; background: none; padding: 0; color: inherit; }
     .reader img { max-width: 100%; margin: 0.6em 0; border-radius: 6px; }
+    /* `<kbd>` is on the raw-HTML whitelist and READMEs use it for shortcuts; without a
+       key cap it reads as ordinary text. */
+    .reader kbd { font: 0.78em var(--font-mono); background: var(--soft);
+      border: 1px solid var(--line); border-radius: 4px; padding: 0.15em 0.4em;
+      vertical-align: 0.05em; }
     /* Tables: horizontal rules only, like a native document — no grid, no outer box.
        Sizing follows github-markdown-css: `width: max-content` lays the table out at its
        natural content width so the browser's column balancing works unsquashed (equal-ish,
