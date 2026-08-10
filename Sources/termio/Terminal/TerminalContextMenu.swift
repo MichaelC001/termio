@@ -51,11 +51,11 @@ final class TerminalContextMenu: NSObject {
         else { return false }
 
         // Resolve the pane by geometry rather than `hitTest`: every activated
-        // session stays mounted (invisible ones at full pane size, see
-        // `TerminalPane`), and raw AppKit hit-testing doesn't honor SwiftUI's
-        // `allowsHitTesting(false)` on those, so the topmost view under the
-        // cursor may be a hidden sibling. Visible panes tile without
-        // overlapping, so "contains the point and is visible" is unambiguous.
+        // session stays mounted, hidden ones included (see `TerminalPane`), and
+        // raw AppKit hit-testing doesn't honor SwiftUI's `allowsHitTesting(false)`
+        // on those, so the topmost view under the cursor may be a hidden sibling.
+        // Visible panes tile without overlapping, so "contains the point and is
+        // visible" is unambiguous.
         let point = event.locationInWindow
         let target = terminalViews(in: contentView).first { view in
             guard view.window === window,
