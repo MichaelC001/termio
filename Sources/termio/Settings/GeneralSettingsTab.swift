@@ -1,36 +1,39 @@
 import SwiftUI
 import UserNotifications
 
-/// App-level settings that aren't about a specific surface: task-completion
-/// notifications, the `termio` command-line tool, and the machine-wide agent
-/// integrations (status hooks, session control). The latter three install termio's
-/// wiring outside the app — PATH, agent configs, instruction files — rather than
-/// configure a particular agent, so they live here rather than in the Agents tab.
+/// App-level settings that aren't about a specific surface: the `termio`
+/// command-line tool, the machine-wide agent integrations (the session-control
+/// skill, status hooks), and task-completion notifications. The first three
+/// install termio's wiring outside the app — PATH, agent configs, instruction
+/// files — rather than configure a particular agent, so they live here rather
+/// than in the Agents tab.
 struct GeneralSettingsTab: View {
     @ObservedObject var settings: AppSettings
 
     var body: some View {
         Form {
             Section {
-                Toggle(isOn: $settings.notifyOnTaskCompletion) {
-                    SettingsLabel(
-                        .huge(.checkCircle),
-                        title: "Task completion",
-                        subtext: "Posts a notification when an agent finishes or needs you while Termio is in the background."
-                    )
-                }
-                .toggleStyle(.switch)
-                if settings.notifyOnTaskCompletion {
-                    Toggle("Play sound", isOn: $settings.notificationSoundEnabled)
-                    NotificationPermissionRow()
-                }
-            } header: {
-                SectionHeaderLabel(title: "Notifications")
-            }
-            Section {
                 CommandLineToolRow()
             } header: {
                 SectionHeaderLabel(title: "Command line")
+            }
+            Section {
+                Toggle(isOn: $settings.sessionControlEnabled) {
+                    SettingsLabel(
+                        .huge(.gitBranch),
+                        title: "Session control",
+                        subtext: "Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command. Installs the termio skill into each agent's skills folder."
+                    )
+                }
+                .toggleStyle(.switch)
+                if settings.sessionControlEnabled {
+                    InstallButtonRow(title: "Reinstall skill") {
+                        .summarizing(SessionSkillInstaller.sync(enabled: true),
+                                     headline: "Skill reinstalled", unit: "files")
+                    }
+                }
+            } header: {
+                SectionHeaderLabel(title: "Agent skill")
             }
             Section {
                 Toggle(isOn: $settings.agentHooksEnabled) {
@@ -53,22 +56,20 @@ struct GeneralSettingsTab: View {
                 SectionHeaderLabel(title: "Status")
             }
             Section {
-                Toggle(isOn: $settings.sessionControlEnabled) {
+                Toggle(isOn: $settings.notifyOnTaskCompletion) {
                     SettingsLabel(
-                        .huge(.gitBranch),
-                        title: "Session control",
-                        subtext: "Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command. Installs the termio skill into each agent's skills folder."
+                        .huge(.checkCircle),
+                        title: "Task completion",
+                        subtext: "Posts a notification when an agent finishes or needs you while Termio is in the background."
                     )
                 }
                 .toggleStyle(.switch)
-                if settings.sessionControlEnabled {
-                    InstallButtonRow(title: "Reinstall skill") {
-                        .summarizing(SessionSkillInstaller.sync(enabled: true),
-                                     headline: "Skill reinstalled", unit: "files")
-                    }
+                if settings.notifyOnTaskCompletion {
+                    Toggle("Play sound", isOn: $settings.notificationSoundEnabled)
+                    NotificationPermissionRow()
                 }
             } header: {
-                SectionHeaderLabel(title: "Orchestration")
+                SectionHeaderLabel(title: "Notifications")
             }
             Section {
                 Toggle(isOn: $settings.githubIntegrationEnabled) {
