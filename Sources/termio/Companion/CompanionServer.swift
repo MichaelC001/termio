@@ -385,16 +385,32 @@ final class CompanionServer {
         case .sshConfigHosts:
             sendControl(.sshConfigList(hosts: Self.parseSSHConfigHosts()), to: connection)
         case .unsupported(let type):
-            // The phone speaks a newer vocabulary than this Mac. Nothing to do
-            // but say so: the request is silently dropped either way, and this
-            // line is the only trace of why the phone's button did nothing.
+            // Usually the phone speaks a newer vocabulary than this Mac, and
+            // this line is the only trace of why its button did nothing. But
+            // the tag is remote input — a paired phone chooses it — so it is
+            // sanitized before it reaches a `.public` log field, and the line
+            // states what happened rather than guessing which end is older.
             Log.companion.notice(
-                "ignoring unsupported control \(type, privacy: .public) — this Mac is older than the phone"
+                "ignoring unsupported control \(Self.loggableTag(type), privacy: .public)"
             )
         case .auth, .exit, .error, .started, .fileList, .file, .written, .uploaded,
              .searchResults, .traceHTML, .sshConfigList, .changes, .diff:
             break
         }
+    }
+
+    /// A wire tag reduced to something safe to write into a `.public` log field.
+    ///
+    /// The tag arrives from the phone, so it can carry newlines that forge extra
+    /// log lines, or a payload long enough to bury the surrounding entries. Only
+    /// the shape a real tag has survives — letters, digits, and the separators
+    /// the vocabulary already uses — and only the first 40 characters of it.
+    nonisolated static func loggableTag(_ tag: String) -> String {
+        let kept = tag.prefix(40).map { character -> Character in
+            character.isLetter || character.isNumber || character == "." || character == "-"
+                || character == "_" ? character : "?"
+        }
+        return kept.isEmpty ? "(empty)" : String(kept)
     }
 
     /// The Mac user's connectable `~/.ssh/config` hosts (see `SSHConfigFile`),

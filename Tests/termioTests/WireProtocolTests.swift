@@ -86,4 +86,71 @@ final class WireProtocolTests: XCTestCase {
     func testMalformedControlFrameStillDecodesToNil() {
         XCTAssertNil(CompanionControl.decode("not json at all"))
     }
+
+    /// A bad element is not always an object. The slot-consuming decode has to
+    /// swallow scalars, null, and arrays too, or the array truncates at the
+    /// first one of those and everything after it is lost.
+    func testRosterSkipsNonObjectSessionEntries() throws {
+        for bad in ["null", "42", #""a string""#, "[1,2]", "[]", "true"] {
+            let json = """
+            {"t":"roster","projects":[{"id":"p1","name":"termio","path":"/tmp/termio","sessions":[\
+            {"id":"s1","title":"Good","agent":"claude","status":"idle"},\
+            \(bad),\
+            {"id":"s3","title":"Also good","agent":"codex","status":"working"}]}]}
+            """
+
+            let decoded = try XCTUnwrap(CompanionRoster.decode(json), "failed for \(bad)")
+
+            XCTAssertEqual(
+                decoded.projects.first?.sessions.map(\.id), ["s1", "s3"],
+                "the element after \(bad) was lost"
+            )
+        }
+    }
+
+    func testRosterDropsOnlyTheUnreadableAgent() throws {
+        let json = """
+        {"t":"roster","projects":[],"agents":[\
+        {"id":"claude","name":"Claude Code"},\
+        {"id":"missing name"},\
+        {"id":"codex","name":"Codex"}]}
+        """
+
+        let decoded = try XCTUnwrap(CompanionRoster.decode(json))
+
+        XCTAssertEqual(decoded.agents.map(\.id), ["claude", "codex"])
+    }
+
+    /// `RosterProject` decodes through a hand-written `init(from:)` while its
+    /// encoder stays synthesized, so the two can drift apart. Every optional
+    /// field has to be populated or the round trip proves nothing.
+    func testPopulatedRosterRoundTrips() throws {
+        let roster = CompanionRoster(
+            projects: [
+                RosterProject(
+                    id: "p1", name: "termio", path: "/tmp/termio",
+                    branch: "fix/wire-tolerance", kind: "folder",
+                    sessions: [
+                        RosterSession(
+                            id: "s1", title: "Session", agent: "claude", status: "working",
+                            subtitle: "Working — Bash", branch: "fix/wire-tolerance"
+                        )
+                    ]
+                )
+            ],
+            agents: [RosterAgent(id: "claude", name: "Claude Code", tintHex: "#D97757")]
+        )
+
+        XCTAssertEqual(CompanionRoster.decode(roster.encodedJSON()), roster)
+    }
+
+    /// Re-encoding an unsupported message must not hand a peer the command this
+    /// build refused to read: `.unsupported("startTerminal")` may never come
+    /// back out as a real `.startTerminal`.
+    func testUnsupportedDoesNotReEncodeAsARealCommand() {
+        let unsupported = CompanionControl.unsupported(type: "startTerminal")
+
+        XCTAssertNotEqual(CompanionControl.decode(unsupported.encoded()), .startTerminal)
+        XCTAssertEqual(CompanionControl.decode(unsupported.encoded()), unsupported)
+    }
 }

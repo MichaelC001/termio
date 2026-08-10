@@ -255,10 +255,12 @@ public enum CompanionControl: Codable, Sendable, Equatable {
                 .replacingOccurrences(of: "\"", with: "\\\"")
             return #"{"t":"error","message":"\#(escaped)"}"#
         case .unsupported(let type):
-            // Re-encoding keeps only what was understood: the tag. Nothing
-            // originates this case, so this exists to satisfy the switch and to
-            // round-trip in tests.
-            return Self.json(["t": type])
+            // The tag is carried under its own envelope rather than re-emitted
+            // as itself. Echoing the raw tag would turn a message this build
+            // could not read into one a peer *can*: forwarding an unsupported
+            // `startTerminal` would spawn a terminal. What was not understood on
+            // the way in must not become a command on the way out.
+            return Self.json(["t": "unsupported", "of": type])
         }
     }
 
@@ -416,6 +418,11 @@ public enum CompanionControl: Codable, Sendable, Equatable {
         case "error":
             guard let message = obj["message"] as? String else { return nil }
             return .error(message: message)
+        case "unsupported":
+            // Only reachable from this build's own `encoded()`; a peer never
+            // originates it. Named so the envelope round-trips instead of
+            // decaying into a second layer of "unsupported".
+            return .unsupported(type: obj["of"] as? String ?? "")
         default:
             return .unsupported(type: type)
         }
