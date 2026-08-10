@@ -283,6 +283,10 @@ enum MarkdownReaderRenderer {
        into the margin instead of forcing an early wrap. */
     .reader.cjk p, .reader.cjk li, .reader.cjk blockquote { line-break: strict; }
     .reader.cjk { hanging-punctuation: allow-end; }
+    /* 标点挤压 — see CJKPunctuation. The span is emitted only for a mark that runs into
+       another one, so single punctuation keeps its full width. */
+    .reader .punctuation-half { margin-inline-end: -0.5em; }
+    .reader .punctuation-quarter { margin-inline-end: -0.25em; }
     .reader > *:first-child { margin-top: 0; }
     .reader > *:last-child { margin-bottom: 0; }
     /* Headings carry hierarchy through weight + space, not rules or color — no

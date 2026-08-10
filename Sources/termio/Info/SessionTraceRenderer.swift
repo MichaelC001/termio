@@ -931,6 +931,8 @@ enum SessionTraceRenderer {
     .text.md .alert-important { --alert-color: var(--alert-important); }
     .text.md .alert-warning { --alert-color: var(--alert-warning); }
     .text.md .alert-caution { --alert-color: var(--alert-caution); }
+    .text.md .punctuation-half { margin-inline-end: -0.5em; }
+    .text.md .punctuation-quarter { margin-inline-end: -0.25em; }
     .text.md .math-display { margin: 10px 0; text-align: center; overflow-x: auto; max-width: 100%; }
     .text.md .footnotes { margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--line);
       font-size: 12.5px; color: var(--muted); }

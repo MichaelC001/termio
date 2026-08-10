@@ -270,6 +270,73 @@ enum MarkdownPreprocessor {
     }
 }
 
+// MARK: - Punctuation compression
+
+/// 标点挤压 — the one thing Chinese typesetting does that no browser does for you.
+///
+/// A full-width mark owns a full em with its glyph sitting on one side, so two in a row
+/// (`。（`, `）、`) leave a gap the width of a character in the middle of a sentence.
+/// Chinese typesetting closes it by pulling the first mark of the pair back; the pair
+/// rules and the ½ / ¼ amounts are Heti's (sivan/heti, MIT), which is the reference
+/// implementation of this on the web.
+///
+/// The cheaper routes were measured first and both were wrong: PingFang's `palt` is a
+/// no-op under WebKit, and `halt` compresses *every* mark, including single ones, which
+/// costs a sentence its ordinary rhythm. `text-spacing-trim`, the CSS property meant for
+/// exactly this, isn't in WebKit yet.
+///
+/// Heti needs JavaScript to walk the DOM for this; termio builds the HTML itself, so the
+/// same wrapping happens at render time and the page still runs nothing. The rule is
+/// local to a pair of characters, so it needs no notion of what language the document is
+/// in — these marks only ever occur in CJK text.
+enum CJKPunctuation {
+    private static let stop: Set<Character> = ["。", "．", "，", "、", "：", "；", "！", "‼", "？", "⁇"]
+    private static let open: Set<Character> = ["「", "『", "（", "《", "〈", "【", "〖", "〔", "［", "｛"]
+    private static let close: Set<Character> = ["」", "』", "）", "》", "〉", "】", "〗", "〕", "］", "｝"]
+    private static let separator: Set<Character> = ["·", "・", "‧"]
+    private static let quoteOpen: Set<Character> = ["“", "‘"]
+    private static let quoteClose: Set<Character> = ["”", "’"]
+
+    static func compressed(_ text: String) -> String {
+        guard text.contains(where: { isMark($0) }) else { return text }
+        var out = ""
+        let characters = Array(text)
+        for (index, character) in characters.enumerated() {
+            let next = index + 1 < characters.count ? characters[index + 1] : nil
+            switch amount(character, followedBy: next) {
+            case .none: out.append(character)
+            case .half: out += "<span class=\"punctuation-half\">\(character)</span>"
+            case .quarter: out += "<span class=\"punctuation-quarter\">\(character)</span>"
+            }
+        }
+        return out
+    }
+
+    private enum Amount { case none, half, quarter }
+
+    private static func amount(_ character: Character, followedBy next: Character?) -> Amount {
+        guard let next else { return .none }
+        // A stop or a bracket running into another bracket closes by half an em.
+        if stop.contains(character), open.contains(next) || close.contains(next) { return .half }
+        if open.contains(character), open.contains(next) { return .half }
+        if close.contains(character),
+           stop.contains(next) || open.contains(next) || close.contains(next) { return .half }
+        // A middot, or a curly quote, carries less of its own space, so it closes by a
+        // quarter — closing it by half would collide the glyphs.
+        if separator.contains(character), open.contains(next) { return .quarter }
+        if close.contains(character), separator.contains(next) { return .quarter }
+        if stop.contains(character),
+           quoteOpen.contains(next) || quoteClose.contains(next) { return .quarter }
+        if quoteOpen.contains(character), open.contains(next) { return .quarter }
+        return .none
+    }
+
+    private static func isMark(_ character: Character) -> Bool {
+        stop.contains(character) || open.contains(character) || close.contains(character)
+            || separator.contains(character) || quoteOpen.contains(character)
+    }
+}
+
 // MARK: - Alerts
 
 /// GitHub's blockquote alerts. Rendered as a titled, tinted block rather than GitHub's
@@ -504,12 +571,13 @@ private struct HTMLVisitor: MarkupVisitor {
 
     /// Everything that rewrites plain prose, in the one order that composes: emoji first
     /// (its `:` delimiters can't collide with anything else), then footnote references,
-    /// then the math sentinels planted before parsing.
+    /// then the math sentinels planted before parsing, then punctuation compression, which
+    /// must run last so it never inspects a character that later becomes markup.
     private mutating func inlineSubstitutions(_ escaped: String) -> String {
         var html = MarkdownEmoji.substitute(escaped)
         html = footnoteReferences(in: html)
         html = mathSentinels(in: html)
-        return html
+        return CJKPunctuation.compressed(html)
     }
 
     mutating func visitInlineCode(_ code: InlineCode) -> String {

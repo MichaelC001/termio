@@ -923,6 +923,8 @@ private enum IssueDetailHTML {
         .alert-important { --alert-color: var(--alert-important); }
         .alert-warning { --alert-color: var(--alert-warning); }
         .alert-caution { --alert-color: var(--alert-caution); }
+        .punctuation-half { margin-inline-end: -0.5em; }
+        .punctuation-quarter { margin-inline-end: -0.25em; }
         .math-display { text-align: center; overflow-x: auto; max-width: 100%; }
         .footnotes { margin-top: 12px; padding-top: 8px;
                      border-top: 1px solid rgba(128,128,128,.3); font-size: 12px;

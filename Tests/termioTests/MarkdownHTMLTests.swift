@@ -325,6 +325,47 @@ final class ReaderScriptDetectionTests: XCTestCase {
     }
 }
 
+/// 标点挤压: a full-width mark that runs into another one gets pulled back, and nothing
+/// else does. Over-compression is the failure mode worth guarding — it costs an ordinary
+/// sentence its rhythm — so most of these pin what is *not* touched.
+final class CJKPunctuationTests: XCTestCase {
+    func testAdjacentMarksCompress() {
+        XCTAssertEqual(
+            CJKPunctuation.compressed("里。（断开）"),
+            #"里<span class="punctuation-half">。</span>（断开）"#)
+        XCTAssertEqual(
+            CJKPunctuation.compressed("（断开）。"),
+            #"（断开<span class="punctuation-half">）</span>。"#)
+    }
+
+    func testCurlyQuotesAndMiddotsCompressByAQuarter() {
+        XCTAssertEqual(
+            CJKPunctuation.compressed("说。“好”"),
+            #"说<span class="punctuation-quarter">。</span>“好”"#)
+        XCTAssertEqual(
+            CJKPunctuation.compressed("甲·（乙）"),
+            #"甲<span class="punctuation-quarter">·</span>（乙）"#)
+    }
+
+    func testLonePunctuationIsUntouched() {
+        XCTAssertEqual(CJKPunctuation.compressed("会话活在机器上，而不是连接里。"),
+                       "会话活在机器上，而不是连接里。")
+        XCTAssertEqual(CJKPunctuation.compressed("（断开）不等于杀死"), "（断开）不等于杀死")
+    }
+
+    func testLatinTextIsUntouched() {
+        let latin = "The session lives on the box, not in the connection. (Detach.)"
+        XCTAssertEqual(CJKPunctuation.compressed(latin), latin)
+    }
+
+    func testCodeKeepsItsExactCharacters() {
+        // Compression runs on prose text nodes only; a code span is never a text node.
+        let html = MarkdownHTML.html("`（a）。（b）` 与 里。（外）", documentMode: true)
+        XCTAssertTrue(html.contains("<code>（a）。（b）</code>"), html)
+        XCTAssertTrue(html.contains(#"<span class="punctuation-half">。</span>"#), html)
+    }
+}
+
 /// The pure half of diagram rendering — finding fences and swapping them — which every
 /// surface shares and which needs no web view to test.
 final class MermaidSubstitutionTests: XCTestCase {
