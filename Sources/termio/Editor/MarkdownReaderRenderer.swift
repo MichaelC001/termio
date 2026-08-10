@@ -269,9 +269,16 @@ enum MarkdownReaderRenderer {
        and carry no ascender/descender rhythm, so the Latin 1.6 reads as a wall; 1.8 is the
        leading Chinese web typography settles on. Headings lose the optical negative
        tracking — that is a Latin correction, and on a square grid it only crowds. */
-    .reader.cjk { line-height: 1.8; }
+    .reader.cjk { line-height: 1.8; letter-spacing: 0.02em; text-autospace: normal; }
     .reader.cjk h1, .reader.cjk h2, .reader.cjk h3,
     .reader.cjk h4, .reader.cjk h5, .reader.cjk h6 { letter-spacing: 0; line-height: 1.4; }
+    /* Tracking is for prose only. A monospaced grid, a URL and a key cap all mean something
+       by their exact width, and Heti's own reset drops tracking on them for that reason. */
+    .reader.cjk code, .reader.cjk pre, .reader.cjk kbd, .reader.cjk a { letter-spacing: normal; }
+    /* Chinese has no italic tradition — an oblique Han glyph is synthesized by the
+       rasterizer and reads as a rendering fault. Emphasis becomes weight instead, which is
+       what Chinese typography has always used. */
+    .reader.cjk em { font-style: normal; font-weight: 600; }
     /* Strict breaking keeps a line from opening on 、。) and lets closing punctuation hang
        into the margin instead of forcing an early wrap. */
     .reader.cjk p, .reader.cjk li, .reader.cjk blockquote { line-break: strict; }
