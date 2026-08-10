@@ -181,13 +181,13 @@ public enum HugeIcon: Hashable, Sendable {
     case edit
     case view
     case settings
-    case paintBrush
+    case paintBoard
     case sidebarLeft
     case serverStack
     case keyboard
     case bot
-    case dashboardSpeed
-    case smartPhone
+    case chartColumn
+    case smartPhoneWifi
     case network
     case gitBranch
     case key
@@ -288,10 +288,12 @@ public enum HugeIcon: Hashable, Sendable {
         case .settings:
             // Hugeicons "settings-02": a gear with a center circle — the General tab.
             return "M15.5 12C15.5 13.933 13.933 15.5 12 15.5C10.067 15.5 8.5 13.933 8.5 12C8.5 10.067 10.067 8.5 12 8.5C13.933 8.5 15.5 10.067 15.5 12Z M21.011 14.0965C21.5329 13.9558 21.7939 13.8854 21.8969 13.7508C22 13.6163 22 13.3998 22 12.9669V11.0332C22 10.6003 22 10.3838 21.8969 10.2493C21.7938 10.1147 21.5329 10.0443 21.011 9.90358C19.0606 9.37759 17.8399 7.33851 18.3433 5.40087C18.4817 4.86799 18.5509 4.60156 18.4848 4.44529C18.4187 4.28902 18.2291 4.18134 17.8497 3.96596L16.125 2.98673C15.7528 2.77539 15.5667 2.66972 15.3997 2.69222C15.2326 2.71472 15.0442 2.90273 14.6672 3.27873C13.208 4.73448 10.7936 4.73442 9.33434 3.27864C8.95743 2.90263 8.76898 2.71463 8.60193 2.69212C8.43489 2.66962 8.24877 2.77529 7.87653 2.98663L6.15184 3.96587C5.77253 4.18123 5.58287 4.28891 5.51678 4.44515C5.45068 4.6014 5.51987 4.86787 5.65825 5.4008C6.16137 7.3385 4.93972 9.37763 2.98902 9.9036C2.46712 10.0443 2.20617 10.1147 2.10308 10.2492C2 10.3838 2 10.6003 2 11.0332V12.9669C2 13.3998 2 13.6163 2.10308 13.7508C2.20615 13.8854 2.46711 13.9558 2.98902 14.0965C4.9394 14.6225 6.16008 16.6616 5.65672 18.5992C5.51829 19.1321 5.44907 19.3985 5.51516 19.5548C5.58126 19.7111 5.77092 19.8188 6.15025 20.0341L7.87495 21.0134C8.24721 21.2247 8.43334 21.3304 8.6004 21.3079C8.76746 21.2854 8.95588 21.0973 9.33271 20.7213C10.7927 19.2644 13.2088 19.2643 14.6689 20.7212C15.0457 21.0973 15.2341 21.2853 15.4012 21.3078C15.5682 21.3303 15.7544 21.2246 16.1266 21.0133L17.8513 20.034C18.2307 19.8187 18.4204 19.711 18.4864 19.5547C18.5525 19.3984 18.4833 19.132 18.3448 18.5991C17.8412 16.6616 19.0609 14.6226 21.011 14.0965Z"
-        case .paintBrush:
-            // Hugeicons "paint-brush-01": an angled brush with two bristle ticks —
-            // the Appearance tab.
-            return "M3.89089 20.8727L3 21L3.12727 20.1091C3.32086 18.754 3.41765 18.0764 3.71832 17.4751C4.01899 16.8738 4.50296 16.3898 5.47091 15.4218L16.9827 3.91009C17.4062 3.48654 17.618 3.27476 17.8464 3.16155C18.2811 2.94615 18.7914 2.94615 19.2261 3.16155C19.4546 3.27476 19.6663 3.48654 20.0899 3.91009C20.5135 4.33365 20.7252 4.54543 20.8385 4.77389C21.0539 5.20856 21.0539 5.71889 20.8385 6.15356C20.7252 6.38201 20.5135 6.59379 20.0899 7.01735L8.57816 18.5291C7.61022 19.497 7.12625 19.981 6.52491 20.2817C5.92357 20.5823 5.246 20.6791 3.89089 20.8727Z M6 15L9 18M8.5 12.5L11.5 15.5"
+        case .paintBoard:
+            // Hugeicons "paint-board": a palette with two paint wells and a thumb
+            // hole — the Appearance tab. Chosen over "paint-brush-01", whose angled
+            // shaft collapses into the `edit` pencil at sidebar size. The source's
+            // two `<circle>` wells are transcribed as arc subpaths.
+            return "M22 12c0-5.523-4.477-10-10-10S2 6.477 2 12s4.477 10 10 10c.842 0 2 .116 2-1c0-.609-.317-1.079-.631-1.546c-.46-.683-.917-1.359-.369-2.454c.667-1.333 1.778-1.333 3.482-1.333c.851 0 1.851 0 3.018-.167c2.101-.3 2.5-1.592 2.5-3.5Z M11 8.5a1.5 1.5 0 1 0-3 0a1.5 1.5 0 0 0 3 0Z M18 9.5a1.5 1.5 0 1 0-3 0a1.5 1.5 0 0 0 3 0Z M7.125 15H7m.25 0a.25.25 0 1 1-.5 0a.25.25 0 0 1 .5 0Z"
         case .sidebarLeft:
             // Hugeicons "sidebar-left": a window with a left rail and two rail rows —
             // the Interface tab.
@@ -305,18 +307,22 @@ public enum HugeIcon: Hashable, Sendable {
             // cable stub — the Keyboard tab.
             return "M14.5 7H9.5C6.21252 7 4.56878 7 3.46243 7.90796C3.25989 8.07418 3.07418 8.25989 2.90796 8.46243C2 9.56878 2 11.2125 2 14.5C2 17.7875 2 19.4312 2.90796 20.5376C3.07418 20.7401 3.25989 20.9258 3.46243 21.092C4.56878 22 6.21252 22 9.5 22H14.5C17.7875 22 19.4312 22 20.5376 21.092C20.7401 20.9258 20.9258 20.7401 21.092 20.5376C22 19.4312 22 17.7875 22 14.5C22 11.2125 22 9.56878 21.092 8.46243C20.9258 8.25989 20.7401 8.07418 20.5376 7.90796C19.4312 7 17.7875 7 14.5 7Z M12 7V5C12 4.44772 12.4477 4 13 4C13.5523 4 14 3.55228 14 3V2 M7 12L8 12 M11.5 12L12.5 12 M16 12L17 12 M7 17L17 17"
         case .bot:
-            // Hugeicons "bot": a robot head with antenna, ears, eyes, and mouth —
-            // the Agents tab.
-            return "M13 7H11C8.19108 7 6.78661 7 5.77772 7.67412C5.34096 7.96596 4.96596 8.34096 4.67412 8.77772C4 9.78661 4 11.1911 4 14C4 16.8089 4 18.2134 4.67412 19.2223C4.96596 19.659 5.34096 20.034 5.77772 20.3259C6.78661 21 8.19108 21 11 21H13C15.8089 21 17.2134 21 18.2223 20.3259C18.659 20.034 19.034 19.659 19.3259 19.2223C20 18.2134 20 16.8089 20 14C20 11.1911 20 9.78661 19.3259 8.77772C19.034 8.34096 18.659 7.96596 18.2223 7.67412C17.2134 7 15.8089 7 13 7Z M4 14H2 M10 17H14 M22 14H20 M15 11V13 M9 11V13 M12 7C12 5.11438 12 4.17157 11.4142 3.58579C10.8284 3 9.88562 3 8 3"
-        case .dashboardSpeed:
-            // Hugeicons "dashboard-speed-02": an open gauge arc with a needle and
-            // pivot circle (no enclosing box) — the Usage tab. The source's
-            // `<circle>` element is transcribed as two arc subpath halves.
-            return "M15 18a3 3 0 1 0-6 0a3 3 0 0 0 6 0Z M12 15V10 M22 13C22 7.47715 17.5228 3 12 3C6.47715 3 2 7.47715 2 13"
-        case .smartPhone:
-            // Hugeicons "smart-phone-01": a phone body with a home-indicator dot —
-            // the Mobile tab.
-            return "M13.5 2H10.5C8.14298 2 6.96447 2 6.23223 2.73223C5.5 3.46447 5.5 4.64298 5.5 7V17C5.5 19.357 5.5 20.5355 6.23223 21.2678C6.96447 22 8.14298 22 10.5 22H13.5C15.857 22 17.0355 22 17.7678 21.2678C18.5 20.5355 18.5 19.357 18.5 17V7C18.5 4.64298 18.5 3.46447 17.7678 2.73223C17.0355 2 15.857 2 13.5 2Z M12.125 19H12"
+            // Hugeicons "robot-01": an antenna'd head with two eye dots over a
+            // shoulder arc — agents. Preferred over Hugeicons' own "bot", whose
+            // ear stubs and mouth bar silt up into a grey block at sidebar size.
+            return "M12 4V2m8 20a8 8 0 1 0-16 0M9.375 8.25H9.25m.25 0a.25.25 0 1 1-.5 0a.25.25 0 0 1 .5 0m5.375 0h-.125m.25 0a.25.25 0 1 1-.5 0a.25.25 0 0 1 .5 0 M15.154 4H8.846c-1.255 0-1.883 0-2.372.22A2.5 2.5 0 0 0 5.22 5.474C5 5.964 5 6.591 5 7.846c0 2.008 0 3.013.352 3.796a4 4 0 0 0 2.006 2.006C8.141 14 9.146 14 11.154 14h1.692c2.008 0 3.013 0 3.796-.352a4 4 0 0 0 2.006-2.006C19 10.859 19 9.854 19 7.846c0-1.255 0-1.883-.22-2.372a2.5 2.5 0 0 0-1.254-1.254C17.036 4 16.409 4 15.154 4"
+        case .chartColumn:
+            // Hugeicons "chart-column": three bars over an L axis — the Usage tab.
+            // Replaces "dashboard-speed-02", whose thin gauge arc and pivot dot
+            // read as an unrelated smudge at sidebar size. Unboxed on purpose, so
+            // it doesn't echo the framed terminal and keyboard marks beside it.
+            return "M8 9v8m5-12v12m5-4v4M3 3v10c0 3.771 0 5.657 1.172 6.828S7.229 21 11 21h10"
+        case .smartPhoneWifi:
+            // Hugeicons "smartphone-wifi": a phone with signal arcs rising off its
+            // corner — the Mobile tab, which is about pairing an iPhone rather than
+            // about phones. A bare "smart-phone-01" body is an empty rounded box at
+            // sidebar size; the arcs are what make it read.
+            return "M8 6c-1.627.03-2.562.168-3.195.812C4 7.632 4 8.953 4 11.595v4.802c0 2.641 0 3.962.805 4.783c.806.82 2.102.82 4.695.82s3.89 0 4.695-.82c.805-.821.805-2.142.805-4.783v-2.901m-2.5-6.631a4 4 0 0 1 5 .01M15 10h.01M10 3.755a8 8 0 0 1 10 0M9 19h1"
         case .network:
             // Hugeicons "internet": a line globe — a remote/SSH link.
             return "M22 12a10 10 0 1 0 -20 0a10 10 0 0 0 20 0Z M16 12a4 10 0 1 0 -8 0a4 10 0 0 0 8 0Z M2 12H22"
