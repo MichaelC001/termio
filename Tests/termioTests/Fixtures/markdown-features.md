@@ -7,9 +7,7 @@ type: test
 # Markdown feature sheet
 
 Open this file in termio's Markdown preview to see every construct the renderer handles.
-Anything that renders as literal source here is a regression — except the `mermaid` block,
-which is [not implemented yet](#mermaid-not-implemented-yet) and is expected to show as
-plain source.
+Anything that renders as literal source here is a regression.
 
 ## Headings and anchors
 
@@ -17,7 +15,7 @@ Every heading carries a GitHub-style slug id, so a table of contents works:
 
 - [Alerts](#alerts)
 - [Code and syntax highlighting](#code-and-syntax-highlighting)
-- [Mermaid](#mermaid-not-implemented-yet)
+- [Mermaid diagrams](#mermaid-diagrams)
 - [Math](#math)
 - [Footnotes](#footnotes)
 - [Raw HTML](#raw-html)
@@ -108,10 +106,10 @@ Shell fences keep their dollars: `echo $PATH` inline, and in a block:
 echo "$HOME and $USER are not math"
 ```
 
-## Mermaid (not implemented yet)
+## Mermaid diagrams
 
-Diagram fences are **not** rendered. The source stays readable as a plain code block,
-which is the current, deliberate behavior:
+Diagram fences are drawn as SVG, in the app's colors. A diagram that fails to parse keeps
+its source instead, so a typo costs you the picture and nothing else:
 
 ```mermaid
 graph LR

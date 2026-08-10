@@ -577,6 +577,13 @@ private struct DetailTaskKey: Hashable {
     let model: ObjectIdentifier
 }
 
+/// What a diagram render depends on: the diagrams in the open item and the colors to draw
+/// them in. Anything else about the item can change without re-drawing.
+private struct DiagramTaskKey: Hashable {
+    let sources: [String]
+    let theme: MermaidRenderer.Theme
+}
+
 struct IssueDetailView: View {
     let item: IssueSummary
     @ObservedObject var model: IssuesPanelModel
@@ -591,6 +598,8 @@ struct IssueDetailView: View {
 
     private enum Tab: Hashable { case conversation, files }
     @State private var tab: Tab = .conversation
+    /// Mermaid diagrams found in the body or comments, once drawn — see `conversationBody`.
+    @State private var diagrams: [String: String] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -691,11 +700,16 @@ struct IssueDetailView: View {
     @ViewBuilder
     private var conversationBody: some View {
         if let detail = model.detail {
+            let theme = TraceTheme.resolve(settings: settings, colorScheme: colorScheme)
+            let document = IssueDetailHTML.page(detail, theme: theme)
+            let sources = MermaidRenderer.sources(in: document)
+            let mermaidTheme = MermaidRenderer.Theme(theme)
+            // GitHub draws mermaid in issue and PR bodies, so the pane does too — drawn
+            // off to the side and swapped in, like the reader and the trace.
+            let drawn = diagrams.merging(
+                MermaidRenderer.shared.cachedDiagrams(for: sources, theme: mermaidTheme)) { _, new in new }
             IssueWebView(
-                html: IssueDetailHTML.page(
-                    detail,
-                    theme: TraceTheme.resolve(settings: settings, colorScheme: colorScheme)
-                ),
+                html: MermaidRenderer.applying(drawn, to: document),
                 background: settings.terminalBackgroundColor,
                 // Selected conversation text goes over as the pasted snippet; a
                 // selection-less click hands the agent the item's GitHub URL — the
@@ -714,6 +728,10 @@ struct IssueDetailView: View {
             // collapses the detail to a sliver — and the empty area paints the window background
             // (reads as a black window, most visibly across a minimize/restore relayout).
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .task(id: DiagramTaskKey(sources: sources, theme: mermaidTheme)) {
+                guard !sources.isEmpty else { return }
+                diagrams = await MermaidRenderer.shared.diagrams(for: sources, theme: mermaidTheme)
+            }
         } else if let error = model.detailError {
             ContentUnavailableView("Couldn’t Load", huge: .github, description: Text(error))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

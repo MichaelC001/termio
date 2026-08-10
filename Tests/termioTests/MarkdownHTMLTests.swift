@@ -227,7 +227,7 @@ final class MarkdownFeatureSheetTests: XCTestCase {
         let html = MarkdownHTML.html(try featureSheet(), softBreaksAsBreaks: false, documentMode: true)
         for fragment in [
             #"<h2 id="alerts">"#,          // heading anchors
-            #"id="mermaid-not-implemented-yet""#,  // the sheet's own TOC links resolve
+            #"id="mermaid-diagrams""#,     // the sheet's own TOC links resolve
             #"id="duplicate-1""#,          // slug de-duplication
             "<h6 id=",                     // every heading level
             "alert alert-caution",         // all five alert kinds present
@@ -259,12 +259,65 @@ final class MarkdownFeatureSheetTests: XCTestCase {
         XCTAssertFalse(html.contains("<script>"), "a script tag survived the sanitizer")
     }
 
-    /// Mermaid is deliberately not implemented: a diagram fence keeps its source as a
-    /// plain, unhighlighted code block. Pinned so the sheet's claim stays true — and so
-    /// the day mermaid does render, this test is the reminder to update the sheet.
-    func testMermaidFencesStayPlainSource() throws {
-        let html = MarkdownHTML.html(try featureSheet(), softBreaksAsBreaks: false, documentMode: true)
-        XCTAssertTrue(html.contains(#"<pre><code class="language-mermaid hljs">graph LR"#), html)
-        XCTAssertTrue(html.contains("sequenceDiagram"))
+    /// The sheet's two diagrams, through the full pipeline: found in the built page, drawn
+    /// by the offscreen engine, swapped back in as SVG.
+    @MainActor
+    func testFeatureSheetDiagramsRenderToSVG() async throws {
+        let theme = MermaidRenderer.Theme(TraceTheme.builtin(dark: true))
+        let document = MarkdownHTML.html(
+            try featureSheet(), softBreaksAsBreaks: false, documentMode: true)
+        let sources = MermaidRenderer.sources(in: document)
+        XCTAssertEqual(sources.count, 2, "the sheet should hold a flowchart and a sequence diagram")
+
+        let drawn = await MermaidRenderer.shared.diagrams(for: sources, theme: theme)
+        try XCTSkipIf(drawn.isEmpty, "no window server to run the mermaid harness in")
+        XCTAssertEqual(drawn.count, 2)
+
+        let rendered = MermaidRenderer.applying(drawn, to: document)
+        XCTAssertTrue(rendered.contains(#"<figure class="mermaid"><svg"#), "diagrams were not swapped in")
+        XCTAssertFalse(rendered.contains(#"class="language-mermaid"#), "a fence survived the swap")
+        // What the renderer refuses to hand back, restated as an assertion about output
+        // that lands in a page which can read local files.
+        for marker in ["<script", "javascript:", "<foreignObject", "onload="] {
+            XCTAssertFalse(rendered.contains(marker), "\(marker) reached the page")
+        }
+    }
+}
+
+/// The pure half of diagram rendering — finding fences and swapping them — which every
+/// surface shares and which needs no web view to test.
+final class MermaidSubstitutionTests: XCTestCase {
+    private let markdown = "before\n\n```mermaid\ngraph LR\n  A --> B\n```\n\nafter\n"
+
+    func testFenceIsFoundWithItsSourceUnescaped() {
+        let html = MarkdownHTML.html(markdown, softBreaksAsBreaks: false, documentMode: true)
+        XCTAssertEqual(MermaidRenderer.sources(in: html), ["graph LR\n  A --> B"])
+    }
+
+    func testEscapedCharactersSurviveTheRoundTrip() {
+        let source = "graph LR\n  A[\"a & b\"] --> B[\"<c>\"]"
+        let html = MarkdownHTML.html("```mermaid\n\(source)\n```", documentMode: true)
+        XCTAssertEqual(MermaidRenderer.sources(in: html), [source])
+    }
+
+    func testDiagramReplacesItsFence() {
+        let html = MarkdownHTML.html(markdown, softBreaksAsBreaks: false, documentMode: true)
+        let svg = "<svg id=\"x\"><g></g></svg>"
+        let out = MermaidRenderer.applying(["graph LR\n  A --> B": svg], to: html)
+        XCTAssertTrue(out.contains("<figure class=\"mermaid\">\(svg)</figure>"), out)
+        XCTAssertFalse(out.contains("language-mermaid"), out)
+        XCTAssertTrue(out.contains("<p>before</p>"), out)
+    }
+
+    func testUndrawnFenceKeepsItsSource() {
+        let html = MarkdownHTML.html(markdown, softBreaksAsBreaks: false, documentMode: true)
+        XCTAssertEqual(MermaidRenderer.applying([:], to: html), html)
+        // A stale set from a previous document substitutes nothing in this one.
+        XCTAssertEqual(MermaidRenderer.applying(["graph TD\n  X --> Y": "<svg/>"], to: html), html)
+    }
+
+    func testOnlyMermaidFencesAreTouched() {
+        let html = MarkdownHTML.html("```swift\nlet x = 1\n```", documentMode: true)
+        XCTAssertTrue(MermaidRenderer.sources(in: html).isEmpty)
     }
 }

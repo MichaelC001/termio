@@ -322,6 +322,12 @@ enum MarkdownReaderRenderer {
     .reader .math-display { margin: 1.4em 0; text-align: center;
       overflow-x: auto; max-width: 100%; }
     .reader .math-source { display: inline-block; }
+    /* Diagrams: centered on their own line, scrolling rather than widening the page.
+       Mermaid sizes its SVG in absolute units, so the height has to stay auto or a
+       narrow pane squashes the drawing. */
+    .reader .mermaid { margin: 1.6em 0; padding: 0; text-align: center;
+      overflow-x: auto; max-width: 100%; }
+    .reader .mermaid svg { max-width: 100%; height: auto; }
     /* Footnotes: a quiet apparatus block after the prose, separated by a rule. */
     .reader .footnote-ref a { text-decoration: none; }
     .reader .footnotes { margin-top: 3em; padding-top: 1.4em; border-top: 1px solid var(--line);

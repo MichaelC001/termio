@@ -26,6 +26,10 @@ enum MarkdownHTML {
     /// (relative paths resolve against the reader's base URL), relative links work, and raw
     /// HTML passes through `HTMLSanitizer`'s whitelist (the README `<table>` screenshot
     /// grid renders as layout, while script/style/event handlers still die).
+    ///
+    /// A ```` ```mermaid ```` fence renders as a code block here. Drawing it needs a DOM,
+    /// so `MermaidRenderer` swaps the fences for SVG in a second pass over this output —
+    /// which keeps this function synchronous and every surface on one mechanism.
     static func html(
         _ source: String, softBreaksAsBreaks: Bool = true, documentMode: Bool = false
     ) -> String {
@@ -321,6 +325,11 @@ private struct HTMLVisitor: MarkupVisitor {
         self.footnotes = footnotes
     }
 
+    /// A code block's text as both the collector and the renderer see it.
+    static func codeText(_ block: CodeBlock) -> String {
+        block.code.hasSuffix("\n") ? String(block.code.dropLast()) : block.code
+    }
+
     mutating func defaultVisit(_ markup: Markup) -> String {
         children(markup)
     }
@@ -366,7 +375,7 @@ private struct HTMLVisitor: MarkupVisitor {
     /// highlighted here (never auto-detected — a three-line block guesses wrong and the
     /// colors lie), and everything else keeps the plain escaped `<code>` it always had.
     mutating func visitCodeBlock(_ c: CodeBlock) -> String {
-        let code = c.code.hasSuffix("\n") ? String(c.code.dropLast()) : c.code
+        let code = Self.codeText(c)
         let language = c.language?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
         if language == "math", let html = MarkdownScripting.math(code, display: true) {
             return "<div class=\"math math-display\">\(html)</div>"
