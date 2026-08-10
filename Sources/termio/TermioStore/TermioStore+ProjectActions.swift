@@ -9,6 +9,7 @@ extension TermioStore {
         to projectID: Project.ID,
         agent: AgentPreset = .terminal,
         worktreePath: String? = nil,
+        spawnDirectory: String? = nil,
         takeFocus: Bool = true
     ) -> Session.ID? {
         guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return nil }
@@ -19,6 +20,7 @@ extension TermioStore {
             : agent.displayName
         var session = Session(title: title, agent: agent)
         session.worktreePath = worktreePath
+        session.spawnDirectory = spawnDirectory
         projects[index].sessions.append(session)
         if takeFocus {
             selectedSessionID = session.id
@@ -282,6 +284,38 @@ extension TermioStore {
     /// it reappears on relaunch (the shells themselves restart fresh).
     func addScratchTerminal() { addScratchSession(agent: .terminal) }
 
+    /// Opens a terminal where the user already is — New Terminal (⌘T). The shell
+    /// starts in the focused session's working directory and the row lands beside it:
+    /// in the same project and worktree bucket for a real project, in the Terminals
+    /// section for a loose shell or a scratch chat (a shell has no business in the
+    /// Chats funnel).
+    ///
+    /// The directory is the cwd the session reported over OSC 7. A shell without
+    /// integration never reports one, and an SSH terminal reports a path that exists
+    /// only on the remote host, so anything that isn't a local directory falls through
+    /// to the session's own anchor — and to `$HOME` with nothing focused, which is
+    /// what New Terminal at Home does on purpose.
+    func addTerminalHere() {
+        guard let id = selectedSessionID,
+              let project = project(for: id),
+              let session = session(id) else {
+            addScratchTerminal()
+            return
+        }
+        let reported = Self.existingDirectory(
+            workingDirectory(for: id) ?? session.lastWorkingDirectory)
+        let directory = reported
+            ?? session.spawnDirectory
+            ?? session.worktreePath
+            ?? project.path
+        guard project.kind == .folder else {
+            addScratchSession(agent: .terminal, spawnDirectory: directory)
+            return
+        }
+        addSession(to: project.id, agent: .terminal,
+                   worktreePath: session.worktreePath, spawnDirectory: directory)
+    }
+
     /// The agent a bare **New Chat** launches, resolved in priority order:
     /// 1. the agent the user pinned in Settings ▸ Agents (`defaultChatAgentID`),
     /// 2. else "Last used" — the last agent a chat was started with,
@@ -323,7 +357,11 @@ extension TermioStore {
     /// `.terminals` funnel for shells, the `.chats` funnel for agents — so a second
     /// click just grows another row there and selects it, rather than piling up
     /// duplicate sections.
-    func addScratchSession(agent: AgentPreset = .terminal) {
+    ///
+    /// `spawnDirectory` overrides where a scratch *terminal* starts, so ⌘T from a
+    /// loose shell opens its sibling at the same cwd. Agents ignore it: being confined
+    /// to the scoped workspace is the point.
+    func addScratchSession(agent: AgentPreset = .terminal, spawnDirectory: String? = nil) {
         // Both funnels are matched by kind, not path: the `.terminals` container's
         // `path` is just the `$HOME` spawn fallback, and the single `.chats` container
         // gathers every agent (Claude, Codex, …) that spawns in the scratch workspace.
@@ -332,12 +370,14 @@ extension TermioStore {
         // action relaunches whatever you actually use (see `defaultChatAgent`).
         if agent != .terminal { settings.lastChatAgentID = agent.rawValue }
         let containerKind: ProjectKind = agent == .terminal ? .terminals : .chats
+        let seededDirectory = agent == .terminal ? spawnDirectory : nil
         if let existing = projects.first(where: { $0.kind == containerKind }) {
-            addSession(to: existing.id, agent: agent)
+            addSession(to: existing.id, agent: agent, spawnDirectory: seededDirectory)
             return
         }
         let title = agent == .terminal ? "Terminal 1" : agent.displayName
-        let session = Session(title: title, agent: agent)
+        var session = Session(title: title, agent: agent)
+        session.spawnDirectory = seededDirectory
         let project = Project(
             name: agent == .terminal ? "Terminals" : "Chats",
             path: path,

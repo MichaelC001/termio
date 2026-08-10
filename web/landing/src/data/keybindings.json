@@ -10,6 +10,11 @@
           "shortcut": "⌘T"
         },
         {
+          "id": "newTerminalAtHome",
+          "title": "New Terminal at Home",
+          "shortcut": null
+        },
+        {
           "id": "newChat",
           "title": "New Chat",
           "shortcut": "⌘N"
