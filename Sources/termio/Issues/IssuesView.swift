@@ -857,7 +857,10 @@ private enum IssueDetailHTML {
 
     private static func css(_ theme: TraceTheme) -> String {
         """
-        :root { color-scheme: \(theme.isDark ? "dark" : "light"); }
+        \(MarkdownReaderRenderer.highlightTheme(dark: theme.isDark))
+        :root { color-scheme: \(theme.isDark ? "dark" : "light");
+        \(MarkdownReaderRenderer.alertVariables(dark: theme.isDark))
+        }
         body { margin: 0; padding: 14px 16px 24px; background: \(theme.background);
                color: \(theme.foreground); font: 13px/1.55 -apple-system, sans-serif;
                word-wrap: break-word; }
@@ -893,6 +896,21 @@ private enum IssueDetailHTML {
         li.task { list-style: none; margin-left: -18px; }
         .task-box { vertical-align: -3px; margin-right: 4px; color: \(theme.secondary); }
         .task-box.checked { color: \(theme.accent); }
+        pre code.hljs { display: block; background: none; padding: 0; color: inherit; }
+        .alert { padding: 1px 0 1px 10px; border-left: 3px solid var(--alert-color); }
+        .alert-title { margin: 0 0 4px; color: var(--alert-color); font-size: 10.5px;
+                       font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+        .alert-note { --alert-color: var(--alert-note); }
+        .alert-tip { --alert-color: var(--alert-tip); }
+        .alert-important { --alert-color: var(--alert-important); }
+        .alert-warning { --alert-color: var(--alert-warning); }
+        .alert-caution { --alert-color: var(--alert-caution); }
+        .math-display { text-align: center; overflow-x: auto; max-width: 100%; }
+        .footnotes { margin-top: 12px; padding-top: 8px;
+                     border-top: 1px solid rgba(128,128,128,.3); font-size: 12px;
+                     color: \(theme.secondary); }
+        .footnotes p { display: inline; margin: 0; }
+        .footnote-ref a, .footnote-back { text-decoration: none; }
         """
     }
 

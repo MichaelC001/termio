@@ -29,6 +29,7 @@ enum MarkdownReaderRenderer {
         \(embedFonts ? quattroFontFaces : "")
         \(themeVariables(theme))
         :root { --font-mono: \(monoStack(fontFamily)); }
+        \(highlightTheme(dark: theme.isDark))
         \(css)
         </style>
         </head>
@@ -150,6 +151,11 @@ enum MarkdownReaderRenderer {
 
     /// The live termio theme injected as CSS custom properties; the stylesheet references
     /// them, so the reader always matches the app's current colors.
+    ///
+    /// The alert hues are fixed rather than theme-derived: an alert's whole job is to say
+    /// *which* kind it is at a glance, and a palette that follows the chrome accent would
+    /// make five kinds look like one. Both sets are tuned to sit on the reader's
+    /// background without shouting.
     private static func themeVariables(_ t: TraceTheme) -> String {
         """
         :root {
@@ -162,7 +168,37 @@ enum MarkdownReaderRenderer {
           --line: \(t.isDark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.10)");
           --soft: \(t.isDark ? "rgba(255,255,255,0.045)" : "rgba(0,0,0,0.035)");
           --font-prose: "iA Writer Quattro", -apple-system, system-ui, sans-serif;
+        \(alertVariables(dark: t.isDark))
         }
+        """
+    }
+
+    /// The five GitHub alert hues, as note / tip / important / warning / caution.
+    static func alertVariables(dark: Bool) -> String {
+        let colors = dark
+            ? ["#4493f8", "#3fb950", "#ab7df8", "#d29922", "#f85149"]
+            : ["#0969da", "#1a7f37", "#8250df", "#9a6700", "#cf222e"]
+        return zip(["note", "tip", "important", "warning", "caution"], colors)
+            .map { "  --alert-\($0): \($1);" }
+            .joined(separator: "\n")
+    }
+
+    /// highlight.js token colors for fenced code, taken from the same xcode / xcode-dark
+    /// themes the source editor uses — so a code block in Preview is colored exactly like
+    /// the file behind it. The theme's own `.hljs` background and padding are overridden
+    /// by the reader stylesheet, which owns how a code block looks.
+    static func highlightTheme(dark: Bool) -> String {
+        guard let url = Bundle.termioResources.url(
+                  forResource: dark ? "xcode-dark.min" : "xcode.min", withExtension: "css"),
+              let css = try? String(contentsOf: url, encoding: .utf8)
+        else { return "" }
+        // Both xcode themes paint `diff` additions and deletions on opaque pastel fills
+        // meant for a white editor gutter; on a dark page that is white-on-mint. Replace
+        // them with a tint of the page's own text color, which reads on either.
+        return css + """
+
+        .hljs-addition { background: color-mix(in srgb, #3fb950 20%, transparent); color: inherit; }
+        .hljs-deletion { background: color-mix(in srgb, #f85149 20%, transparent); color: inherit; }
         """
     }
 
@@ -232,6 +268,9 @@ enum MarkdownReaderRenderer {
     .reader pre { background: var(--soft); border-radius: 8px;
       padding: 15px 18px; margin: 1.3em 0; overflow-x: auto; max-width: 100%; }
     .reader pre code { background: none; padding: 0; font-size: 13.5px; line-height: 1.6; }
+    /* The hljs theme ships its own background, padding and base color for `.hljs`; the
+       block's look belongs to this stylesheet, so only the token colors survive. */
+    .reader pre code.hljs { display: block; background: none; padding: 0; color: inherit; }
     .reader img { max-width: 100%; margin: 0.6em 0; border-radius: 6px; }
     /* Tables: horizontal rules only, like a native document — no grid, no outer box.
        Sizing follows github-markdown-css: `width: max-content` lays the table out at its
@@ -260,5 +299,30 @@ enum MarkdownReaderRenderer {
     .reader .frontmatter div { display: contents; }
     .reader .frontmatter dt { color: var(--muted); font: 12.5px/1.75 var(--font-mono); }
     .reader .frontmatter dd { margin: 0; font-size: 14.5px; line-height: 1.5; }
+    /* Alerts: a colored rule and a colored label, no icon and no filled card. The kind is
+       carried by the word and the hue — the same restraint the headings follow. */
+    .reader .alert { margin: 1.4em 0; padding: 2px 0 2px 20px;
+      border-left: 2px solid var(--alert-color); }
+    .reader .alert-title { margin: 0 0 0.35em; color: var(--alert-color);
+      font-size: 13px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+    .reader .alert > *:last-child { margin-bottom: 0; }
+    .reader .alert-note { --alert-color: var(--alert-note); }
+    .reader .alert-tip { --alert-color: var(--alert-tip); }
+    .reader .alert-important { --alert-color: var(--alert-important); }
+    .reader .alert-warning { --alert-color: var(--alert-warning); }
+    .reader .alert-caution { --alert-color: var(--alert-caution); }
+    /* Math: MathML, laid out by WebKit in the prose face. A display formula gets its own
+       centered line and scrolls rather than widening the page. */
+    .reader math { font-family: var(--font-prose); font-size: 1.05em; }
+    .reader .math-display { margin: 1.4em 0; text-align: center;
+      overflow-x: auto; max-width: 100%; }
+    .reader .math-source { display: inline-block; }
+    /* Footnotes: a quiet apparatus block after the prose, separated by a rule. */
+    .reader .footnote-ref a { text-decoration: none; }
+    .reader .footnotes { margin-top: 3em; padding-top: 1.4em; border-top: 1px solid var(--line);
+      font-size: 15px; color: var(--muted); }
+    .reader .footnotes li { margin: 0.5em 0; }
+    .reader .footnotes p { display: inline; margin: 0; }
+    .reader .footnote-back { margin-left: 0.4em; text-decoration: none; }
     """
 }
