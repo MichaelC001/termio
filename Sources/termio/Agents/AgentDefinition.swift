@@ -323,6 +323,7 @@ extension AgentDefinition {
     static var claudeCode: AgentDefinition { AgentCatalog.shared.definition(for: "claudeCode") }
     static var codex: AgentDefinition { AgentCatalog.shared.definition(for: "codex") }
     static var opencode: AgentDefinition { AgentCatalog.shared.definition(for: "opencode") }
+    static var kimi: AgentDefinition { AgentCatalog.shared.definition(for: "kimi") }
 
     /// Resolves a free-text agent name from the CLI (`termio sessions send --agent claude`)
     /// to a definition, accepting the id, the display name, and common aliases.

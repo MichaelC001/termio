@@ -26,11 +26,11 @@ struct AgentUsage: Hashable, Sendable {
 
 /// Reads the usage limits of the coding agents termio runs, on demand.
 ///
-/// The data comes for free: termio already launches `claude` and `codex`, and
-/// those CLIs leave OAuth credentials on disk. We reuse exactly those — no login
-/// flow, no stored passwords — and call each provider's usage endpoint, the same
-/// approach as steipete's CodexBar. Only the two agents with a clean local-cred
-/// endpoint are supported; the rest simply show nothing.
+/// The data comes for free: termio already launches `claude`, `codex`, and
+/// `kimi`, and those CLIs leave OAuth credentials on disk. We reuse exactly
+/// those — no login flow, no stored passwords — and call each provider's usage
+/// endpoint, the same approach as steipete's CodexBar. Only the agents with a
+/// clean local-cred endpoint are supported; the rest simply show nothing.
 ///
 /// Reading another app's data is opt-in per agent (`usageAuthorizedAgents`), and
 /// nothing runs in the background: refreshes happen only when the Usage tab asks.
@@ -52,7 +52,7 @@ final class UsageMonitor: ObservableObject {
 
     /// The agents with a usable local-credential usage endpoint. Kept here so the
     /// UI can ask "is this agent monitorable?" without duplicating the list.
-    static let supportedAgents: [AgentPreset] = [.claudeCode, .codex]
+    static let supportedAgents: [AgentPreset] = [.claudeCode, .codex, .kimi]
 
     private let settings: AppSettings
     private var refreshTask: Task<Void, Never>?
@@ -132,6 +132,8 @@ final class UsageMonitor: ObservableObject {
             && settings.isUsageAuthorized(.claudeCode)
         let codexEnabled = settings.isAgentEnabled(.codex)
             && settings.isUsageAuthorized(.codex)
+        let kimiEnabled = settings.isAgentEnabled(.kimi)
+            && settings.isUsageAuthorized(.kimi)
         isScanning = true
         scanTask = Task.detached(priority: .utility) { [weak self] in
             let windows = DateWindows()
@@ -143,6 +145,10 @@ final class UsageMonitor: ObservableObject {
             if codexEnabled {
                 let codex = Self.scanCodex(windows)
                 if !codex.isEmpty { scanned[.codex] = codex }
+            }
+            if kimiEnabled {
+                let kimi = Self.scanKimi(windows)
+                if !kimi.isEmpty { scanned[.kimi] = kimi }
             }
             let result = scanned
             await self?.finishTokenScan(result)
@@ -171,6 +177,7 @@ final class UsageMonitor: ObservableObject {
     ) async -> FetchOutcome {
         if agent == .claudeCode { return await fetchClaude(allowKeychain: allowKeychain) }
         if agent == .codex { return FetchOutcome(usage: await fetchCodex()) }
+        if agent == .kimi { return FetchOutcome(usage: await fetchKimi()) }
         return FetchOutcome()
     }
 
@@ -215,6 +222,93 @@ final class UsageMonitor: ObservableObject {
         let windows = [limit.primary_window, limit.secondary_window]
             .compactMap { $0?.window() }
         return windows.isEmpty ? nil : AgentUsage(windows: windows)
+    }
+
+    /// Kimi: OAuth bearer from `$KIMI_CODE_HOME/credentials/kimi-code.json`
+    /// (default `~/.kimi-code`). The `/usages` payload is a weekly summary lane
+    /// plus rolling rate-limit windows (e.g. the 5-hour one), with absolute
+    /// used/limit counts rather than percents. The endpoint is private and its
+    /// key spellings have drifted, so the read is dictionary-tolerant instead of
+    /// Codable — mirroring the CLI's own deliberately loose parser.
+    private nonisolated static func fetchKimi() async -> AgentUsage? {
+        guard let token = await kimiAccessToken() else { return nil }
+        var request = URLRequest(url: URL(string: "https://api.kimi.com/coding/v1/usages")!)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        guard let payload = await getObject(request) else { return nil }
+
+        var windows: [UsageWindow] = []
+        if let summary = payload["usage"] as? [String: Any],
+           let window = kimiWindow(summary, label: "Weekly", reset: kimiResetDate(summary)) {
+            windows.append(window)
+        }
+        for lane in payload["limits"] as? [[String: Any]] ?? [] {
+            let detail = (lane["detail"] as? [String: Any]) ?? lane
+            let label = kimiWindowLabel(lane["window"] as? [String: Any])
+                ?? lane["name"] as? String ?? "Usage"
+            let reset = kimiResetDate(lane) ?? kimiResetDate(detail)
+            if let window = kimiWindow(detail, label: label, reset: reset) {
+                windows.append(window)
+            }
+        }
+        return windows.isEmpty ? nil : AgentUsage(windows: windows)
+    }
+
+    /// A window for one Kimi lane: used/limit counts to a percent, `nil` when the
+    /// lane has nothing measurable. `used` falls back to `limit - remaining`, the
+    /// other spelling the service has shipped.
+    private nonisolated static func kimiWindow(
+        _ lane: [String: Any], label: String, reset: Date?
+    ) -> UsageWindow? {
+        guard let limit = kimiCount(lane["limit"]), limit > 0 else { return nil }
+        guard let used = kimiCount(lane["used"])
+            ?? kimiCount(lane["remaining"]).map({ limit - $0 }) else { return nil }
+        return UsageWindow(
+            label: label,
+            usedPercent: Int((used / limit * 100).rounded()),
+            resetsAt: reset)
+    }
+
+    /// Reads a count that the service encodes as a JSON string (`"limit": "100"`)
+    /// or a number, depending on the field.
+    private nonisolated static func kimiCount(_ value: Any?) -> Double? {
+        if let number = value as? Double { return number }
+        if let string = value as? String { return Double(string) }
+        return nil
+    }
+
+    /// The reset instant of a Kimi lane, tolerating every key the service has
+    /// used: absolute ISO strings (`resetAt`/`reset_at`/`resetTime`/`reset_time`)
+    /// or relative seconds (`reset_in`/`resetIn`/`ttl`).
+    private nonisolated static func kimiResetDate(_ lane: [String: Any]) -> Date? {
+        for key in ["resetAt", "reset_at", "resetTime", "reset_time"] {
+            if let string = lane[key] as? String, let date = UsageWindow.parseISO8601(string) {
+                return date
+            }
+        }
+        for key in ["reset_in", "resetIn", "ttl"] {
+            if let seconds = kimiCount(lane[key]) {
+                return Date().addingTimeInterval(seconds)
+            }
+        }
+        return nil
+    }
+
+    /// Names a rate-limit window from its duration — 300 minutes reads "5h",
+    /// seven days "Weekly" — so the lanes share the other providers' vocabulary.
+    /// `timeUnit` arrives in proto-enum form (`TIME_UNIT_MINUTE`).
+    private nonisolated static func kimiWindowLabel(_ window: [String: Any]?) -> String? {
+        guard let duration = kimiCount(window?["duration"]),
+              let unit = (window?["timeUnit"] as? String)?.uppercased() else { return nil }
+        let multiplier: Double = unit.contains("MINUTE") ? 60
+            : unit.contains("HOUR") ? 3600
+            : unit.contains("DAY") ? 86_400 : 0
+        let seconds = duration * multiplier
+        guard seconds > 0 else { return nil }
+        switch seconds {
+        case ..<(8 * 86_400): return "\(Int((seconds / 3600).rounded()))h"
+        case ..<(30 * 86_400): return "Weekly"
+        default: return "Monthly"
+        }
     }
 
     // MARK: - Credentials
@@ -265,6 +359,106 @@ final class UsageMonitor: ObservableObject {
         return tokens["access_token"] as? String
     }
 
+    /// The Kimi Code data root — `KIMI_CODE_HOME` when set, else `~/.kimi-code`.
+    /// The legacy `~/.kimi` home predates the rename and is not read.
+    private nonisolated static func kimiHome() -> URL {
+        ProcessInfo.processInfo.environment["KIMI_CODE_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".kimi-code")
+    }
+
+    /// The OAuth pair the Kimi CLI stores in `credentials/kimi-code.json`. The
+    /// access token lives 15 minutes, so a read almost always refreshes first,
+    /// and the rotated pair must be written back or the stored token dies.
+    private struct KimiCredential {
+        var accessToken: String
+        var refreshToken: String
+        /// Unix seconds.
+        var expiresAt: TimeInterval
+        var expiresIn: TimeInterval
+    }
+
+    private nonisolated static func parseKimiCredential(_ data: Data) -> KimiCredential? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let accessToken = root["access_token"] as? String, !accessToken.isEmpty,
+              let refreshToken = root["refresh_token"] as? String, !refreshToken.isEmpty,
+              let expiresAt = root["expires_at"] as? Double else { return nil }
+        return KimiCredential(
+            accessToken: accessToken, refreshToken: refreshToken,
+            expiresAt: expiresAt, expiresIn: (root["expires_in"] as? Double) ?? 900)
+    }
+
+    /// A usable Kimi access token, refreshing first when the stored one is inside
+    /// the CLI's own trigger window (under half the token's life, floored at five
+    /// minutes). Any failure is "no reading" — termio never writes the CLI's
+    /// logged-out tombstone.
+    private nonisolated static func kimiAccessToken() async -> String? {
+        let file = kimiHome().appendingPathComponent("credentials/kimi-code.json")
+        func freshCredential() -> KimiCredential? {
+            guard let credential = (try? Data(contentsOf: file)).flatMap(parseKimiCredential) else {
+                return nil
+            }
+            let threshold = max(300, credential.expiresIn / 2)
+            return credential.expiresAt - Date().timeIntervalSince1970 >= threshold
+                ? credential : nil
+        }
+        if let credential = freshCredential() { return credential.accessToken }
+        // Stale: re-read first — the CLI refreshes lazily too and may have just
+        // beaten us to it — then refresh with what is actually on disk.
+        guard let stale = (try? Data(contentsOf: file)).flatMap(parseKimiCredential) else {
+            return nil
+        }
+        return await refreshKimiCredential(file: file, stale: stale)?.accessToken
+    }
+
+    /// Exchanges the refresh token at the CLI's OAuth host and persists the
+    /// rotated pair. The write-back is skipped when the file's refresh token has
+    /// changed under us — that's the CLI having refreshed concurrently, and its
+    /// newer pair must win (overwriting it would strand the CLI logged out).
+    private nonisolated static func refreshKimiCredential(
+        file: URL, stale: KimiCredential
+    ) async -> KimiCredential? {
+        var request = URLRequest(url: URL(string: "https://auth.kimi.com/api/oauth/token")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let refreshToken = stale.refreshToken
+            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? stale.refreshToken
+        request.httpBody = Data(
+            "client_id=17e5f671-d194-4dfb-9706-5516cb48c098&grant_type=refresh_token&refresh_token=\(refreshToken)".utf8)
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let accessToken = root["access_token"] as? String else { return nil }
+        let expiresIn = (root["expires_in"] as? Double) ?? stale.expiresIn
+        let refreshed = KimiCredential(
+            accessToken: accessToken,
+            refreshToken: (root["refresh_token"] as? String) ?? stale.refreshToken,
+            expiresAt: Date().timeIntervalSince1970 + expiresIn,
+            expiresIn: expiresIn)
+        if let current = (try? Data(contentsOf: file)).flatMap(parseKimiCredential),
+           current.refreshToken == stale.refreshToken {
+            writeKimiCredential(refreshed, to: file)
+        }
+        return refreshed
+    }
+
+    /// Atomically rewrites the credential file with the rotated pair, keeping any
+    /// other fields and the CLI's 0600 permissions.
+    private nonisolated static func writeKimiCredential(_ credential: KimiCredential, to file: URL) {
+        var root = ((try? Data(contentsOf: file)).flatMap {
+            try? JSONSerialization.jsonObject(with: $0)
+        } as? [String: Any]) ?? [:]
+        root["access_token"] = credential.accessToken
+        root["refresh_token"] = credential.refreshToken
+        root["expires_in"] = credential.expiresIn
+        root["expires_at"] = credential.expiresAt
+        guard let data = try? JSONSerialization.data(withJSONObject: root) else { return }
+        try? data.write(to: file, options: .atomic)
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: file.path)
+    }
+
     private enum KeychainRead {
         case success(Data)
         /// The user refused the system's access prompt (Deny, or cancelling the
@@ -308,6 +502,18 @@ final class UsageMonitor: ObservableObject {
               let http = response as? HTTPURLResponse,
               (200..<300).contains(http.statusCode) else { return nil }
         return try? JSONDecoder().decode(T.self, from: data)
+    }
+
+    /// The dictionary-shaped sibling of `getJSON`, for endpoints whose wire
+    /// format drifts (Kimi's `/usages` has shipped several reset-time spellings).
+    private nonisolated static func getObject(_ request: URLRequest) async -> [String: Any]? {
+        var request = request
+        request.timeoutInterval = 12
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 }
 
@@ -699,6 +905,51 @@ extension UsageMonitor {
             }
         }
         return result
+    }
+
+    /// Scans Kimi Code's wire logs (`$KIMI_CODE_HOME/sessions/*/*/agents/*/wire.jsonl`)
+    /// for `usage.record` events and totals tokens into the windows and per-day
+    /// buckets. One record per LLM step plus one per compaction summary — both
+    /// count, so nothing is filtered by `usageScope`. The mtime prefilter is the
+    /// same append-only shortcut as Claude's scan. Records carry no id, so there
+    /// is no de-dup: a forked session's copied history double-counts while the
+    /// fork is inside the scan window. No dollar estimate: termio doesn't carry
+    /// Kimi pricing.
+    nonisolated static func scanKimi(_ windows: DateWindows) -> AgentTokenUsage {
+        let sessions = kimiHome().appendingPathComponent("sessions")
+        var usage = AgentTokenUsage(hasCost: false)
+        let recordProbe = Data("\"usage.record\"".utf8)
+        var resolver = DayResolver()
+        let keys: [URLResourceKey] = [.contentModificationDateKey]
+        guard let walker = FileManager.default.enumerator(
+            at: sessions, includingPropertiesForKeys: keys) else { return usage }
+        for case let url as URL in walker where url.lastPathComponent == "wire.jsonl" {
+            if let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate, modified < windows.scanStart {
+                continue
+            }
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { continue }
+            for line in data.split(separator: 0x0A) {
+                guard line.range(of: recordProbe) != nil,
+                    let object = try? JSONSerialization.jsonObject(
+                        with: Data(line)) as? [String: Any],
+                    object["type"] as? String == "usage.record",
+                    let milliseconds = object["time"] as? Double else { continue }
+                let timestamp = Date(timeIntervalSince1970: milliseconds / 1000)
+                guard timestamp >= windows.scanStart,
+                      let usageObject = object["usage"] as? [String: Any] else { continue }
+
+                let input = usageObject["inputOther"] as? Int ?? 0
+                let output = usageObject["output"] as? Int ?? 0
+                let cacheWrite = usageObject["inputCacheCreation"] as? Int ?? 0
+                let cacheRead = usageObject["inputCacheRead"] as? Int ?? 0
+                let day = resolver.day(for: timestamp, calendar: windows.calendar)
+                bucket(&usage, at: timestamp, day: day, in: windows, TokenWindowStats(
+                    input: input, output: output, cacheWrite: cacheWrite,
+                    cacheRead: cacheRead, costUSD: 0))
+            }
+        }
+        return usage
     }
 }
 

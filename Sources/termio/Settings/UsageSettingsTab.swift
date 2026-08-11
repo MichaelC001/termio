@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The coding-plan usage limits for the agents termio runs, reusing the OAuth
-/// credentials the `claude` and `codex` CLIs already leave on disk — the same
-/// approach as steipete's CodexBar, scoped to the two agents with a clean
+/// credentials the `claude`, `codex`, and `kimi` CLIs already leave on disk —
+/// the same approach as steipete's CodexBar, scoped to the agents with a clean
 /// local-cred endpoint. A reference view, not an ambient one: it pulls fresh on
 /// open and on Refresh, so a glance here tells you whether to start that long run.
 struct UsageSettingsTab: View {
@@ -45,7 +45,7 @@ struct UsageSettingsTab: View {
     private var emptyState: some View {
         Form {
             Section {
-                Text("Enable Claude Code or Codex in the Agents tab to see their usage here.")
+                Text("Enable Claude Code, Codex, or Kimi in the Agents tab to see their usage here.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } header: {
@@ -133,6 +133,8 @@ private struct UsageAgentDetail: View {
             Section {
                 Text(agent == .claudeCode
                     ? "Termio can show \(agent.displayName)'s token usage and plan limits by reading its local session logs and its sign-in from your login Keychain. Nothing is read until you allow it; macOS will ask once about the Keychain."
+                    : agent == .kimi
+                    ? "Termio can show \(agent.displayName)'s token usage and plan limits by reading its local session logs and its `credentials/kimi-code.json` sign-in. Nothing is read until you allow it."
                     : "Termio can show \(agent.displayName)'s token usage and plan limits by reading its local session logs and its `auth.json` sign-in. Nothing is read until you allow it.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
