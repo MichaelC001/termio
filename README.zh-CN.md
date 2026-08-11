@@ -41,7 +41,7 @@ brew install --cask termio-sh/tap/termio
 [TestFlight](https://testflight.apple.com/join/1Arf1UKR) 获取配套应用公测版，
 再扫描 Mac 应用 Settings ▸ Mobile 中的二维码完成配对。
 
-## 为 Agentic Coding & Engineering 而生
+## 终端优先的 AI 编程开发环境
 
 IDE 是围绕一个人敲代码设计的。当大部分代码改由 AI 编码智能体来写，环境的职责也随之改变：它既是智能体干活的地方，也是您指挥、审阅、为它们解困的地方。Termio 正是这样一个环境——之所以终端优先，是因为智能体本来就活在终端里；它为工作的新形态而造：几个智能体同时推进，大多数无需您操心，偶尔有一个卡住等您。（更完整的论述见
 [*From IDE to ADE*](docs/essays/from-ide-to-ade.md)。）
