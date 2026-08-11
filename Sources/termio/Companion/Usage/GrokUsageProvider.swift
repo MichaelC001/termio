@@ -70,13 +70,11 @@ struct GrokUsageProvider: UsageProvider {
     }
 
     /// A usable access token. The CLI treats a token as dead five minutes before
-    /// `expires_at`; under that buffer this refreshes via OIDC discovery,
-    /// re-reading the file first in case a running CLI already did.
+    /// `expires_at`; under that buffer this refreshes via OIDC discovery.
     private func accessToken() async -> String? {
         guard let stored = credential() else { return nil }
         if stored.expiresAt.timeIntervalSinceNow > 300 { return stored.accessToken }
-        guard let stale = credential() else { return nil }
-        return await refresh(stale)?.accessToken
+        return await refresh(stored)?.accessToken
     }
 
     /// Exchanges the refresh token at the discovered token endpoint and persists

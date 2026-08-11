@@ -114,10 +114,7 @@ struct KimiUsageProvider: UsageProvider {
         if stored.expiresAt - Date().timeIntervalSince1970 >= threshold {
             return stored.accessToken
         }
-        // Stale: re-read first — the CLI refreshes lazily too and may have just
-        // beaten us to it — then refresh with what is actually on disk.
-        guard let stale = credential() else { return nil }
-        return await refresh(stale)?.accessToken
+        return await refresh(stored)?.accessToken
     }
 
     /// Exchanges the refresh token at the CLI's OAuth host and persists the

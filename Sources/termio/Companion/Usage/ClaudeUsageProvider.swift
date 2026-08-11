@@ -12,6 +12,11 @@ import Security
 struct ClaudeUsageProvider: UsageProvider {
     var agent: AgentPreset { .claudeCode }
 
+    /// Claude Code has no home-directory override, so this one is fixed.
+    private var home: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
+    }
+
     // MARK: - Plan limits
 
     /// `five_hour` → session lane, `seven_day` → weekly lane.
@@ -44,8 +49,7 @@ struct ClaudeUsageProvider: UsageProvider {
     }
 
     private func accessToken(allowKeychain: Bool) -> Credential {
-        let file = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/.credentials.json")
+        let file = home.appendingPathComponent(".credentials.json")
         if let token = jsonObject(at: file).flatMap(parseToken) { return .token(token) }
         guard allowKeychain else { return .unavailable }
         switch keychainPassword(service: "Claude Code-credentials") {
@@ -103,11 +107,10 @@ struct ClaudeUsageProvider: UsageProvider {
     /// Each line is one API turn carrying `message.usage` and `message.model`.
     /// Duplicate turns (re-emitted on resume) are de-duplicated by request id.
     func tokenUsage(in windows: DateWindows) -> AgentTokenUsage {
-        let root = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects")
         var tally = TokenTally(windows, hasCost: true)
         UsageLog.records(
-            under: root, probe: Data("\"usage\"".utf8), since: windows.scanStart,
+            under: home.appendingPathComponent("projects"),
+            probe: Data("\"usage\"".utf8), since: windows.scanStart,
             isLog: { $0.pathExtension == "jsonl" }
         ) { object in
             guard let timestampString = object["timestamp"] as? String,
