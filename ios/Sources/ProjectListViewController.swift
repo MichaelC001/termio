@@ -340,9 +340,9 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
         // Headers only when the strip splits the page in two; a plain project
         // list under the "Projects" page title needs no second label.
         guard sections.count > 1 else { return nil }
-        let header = tableView.dequeueReusableHeaderFooterView(
+        guard let header = tableView.dequeueReusableHeaderFooterView(
             withIdentifier: SectionCapView.reuseID
-        ) as! SectionCapView
+        ) as? SectionCapView else { return nil }
         header.configure(title: sections[section] == .needsYou ? "Needs You" : "Projects")
         return header
     }
