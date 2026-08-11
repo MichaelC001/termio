@@ -26,8 +26,8 @@ struct AgentUsage: Hashable, Sendable {
 
 /// Reads the usage limits of the coding agents termio runs, on demand.
 ///
-/// The data comes for free: termio already launches `claude`, `codex`, and
-/// `kimi`, and those CLIs leave OAuth credentials on disk. We reuse exactly
+/// The data comes for free: termio already launches `claude`, `codex`, `kimi`,
+/// and `grok`, and those CLIs leave OAuth credentials on disk. We reuse exactly
 /// those — no login flow, no stored passwords — and call each provider's usage
 /// endpoint, the same approach as steipete's CodexBar. Only the agents with a
 /// clean local-cred endpoint are supported; the rest simply show nothing.
@@ -52,7 +52,7 @@ final class UsageMonitor: ObservableObject {
 
     /// The agents with a usable local-credential usage endpoint. Kept here so the
     /// UI can ask "is this agent monitorable?" without duplicating the list.
-    static let supportedAgents: [AgentPreset] = [.claudeCode, .codex, .kimi]
+    static let supportedAgents: [AgentPreset] = [.claudeCode, .codex, .kimi, .grok]
 
     private let settings: AppSettings
     private var refreshTask: Task<Void, Never>?
@@ -134,6 +134,8 @@ final class UsageMonitor: ObservableObject {
             && settings.isUsageAuthorized(.codex)
         let kimiEnabled = settings.isAgentEnabled(.kimi)
             && settings.isUsageAuthorized(.kimi)
+        let grokEnabled = settings.isAgentEnabled(.grok)
+            && settings.isUsageAuthorized(.grok)
         isScanning = true
         scanTask = Task.detached(priority: .utility) { [weak self] in
             let windows = DateWindows()
@@ -149,6 +151,10 @@ final class UsageMonitor: ObservableObject {
             if kimiEnabled {
                 let kimi = Self.scanKimi(windows)
                 if !kimi.isEmpty { scanned[.kimi] = kimi }
+            }
+            if grokEnabled {
+                let grok = Self.scanGrok(windows)
+                if !grok.isEmpty { scanned[.grok] = grok }
             }
             let result = scanned
             await self?.finishTokenScan(result)
@@ -178,6 +184,7 @@ final class UsageMonitor: ObservableObject {
         if agent == .claudeCode { return await fetchClaude(allowKeychain: allowKeychain) }
         if agent == .codex { return FetchOutcome(usage: await fetchCodex()) }
         if agent == .kimi { return FetchOutcome(usage: await fetchKimi()) }
+        if agent == .grok { return FetchOutcome(usage: await fetchGrok()) }
         return FetchOutcome()
     }
 
@@ -259,18 +266,19 @@ final class UsageMonitor: ObservableObject {
     private nonisolated static func kimiWindow(
         _ lane: [String: Any], label: String, reset: Date?
     ) -> UsageWindow? {
-        guard let limit = kimiCount(lane["limit"]), limit > 0 else { return nil }
-        guard let used = kimiCount(lane["used"])
-            ?? kimiCount(lane["remaining"]).map({ limit - $0 }) else { return nil }
+        guard let limit = usageCount(lane["limit"]), limit > 0 else { return nil }
+        guard let used = usageCount(lane["used"])
+            ?? usageCount(lane["remaining"]).map({ limit - $0 }) else { return nil }
         return UsageWindow(
             label: label,
             usedPercent: Int((used / limit * 100).rounded()),
             resetsAt: reset)
     }
 
-    /// Reads a count that the service encodes as a JSON string (`"limit": "100"`)
-    /// or a number, depending on the field.
-    private nonisolated static func kimiCount(_ value: Any?) -> Double? {
+    /// Reads a count that a service encodes as a JSON string (`"limit": "100"`)
+    /// or a number, depending on the field — both Kimi's `/usages` and Grok's
+    /// billing payload mix the two.
+    private nonisolated static func usageCount(_ value: Any?) -> Double? {
         if let number = value as? Double { return number }
         if let string = value as? String { return Double(string) }
         return nil
@@ -286,7 +294,7 @@ final class UsageMonitor: ObservableObject {
             }
         }
         for key in ["reset_in", "resetIn", "ttl"] {
-            if let seconds = kimiCount(lane[key]) {
+            if let seconds = usageCount(lane[key]) {
                 return Date().addingTimeInterval(seconds)
             }
         }
@@ -297,7 +305,7 @@ final class UsageMonitor: ObservableObject {
     /// seven days "Weekly" — so the lanes share the other providers' vocabulary.
     /// `timeUnit` arrives in proto-enum form (`TIME_UNIT_MINUTE`).
     private nonisolated static func kimiWindowLabel(_ window: [String: Any]?) -> String? {
-        guard let duration = kimiCount(window?["duration"]),
+        guard let duration = usageCount(window?["duration"]),
               let unit = (window?["timeUnit"] as? String)?.uppercased() else { return nil }
         let multiplier: Double = unit.contains("MINUTE") ? 60
             : unit.contains("HOUR") ? 3600
@@ -309,6 +317,27 @@ final class UsageMonitor: ObservableObject {
         case ..<(30 * 86_400): return "Weekly"
         default: return "Monthly"
         }
+    }
+
+    /// Grok: bearer from `$GROK_HOME/auth.json` (default `~/.grok`) against the
+    /// CLI's chat proxy. `creditUsagePercent` is the plan's fill and
+    /// `currentPeriod` names the window and when it resets; the proxy answers to
+    /// the bearer alone, no extra headers needed.
+    private nonisolated static func fetchGrok() async -> AgentUsage? {
+        guard let token = await grokAccessToken() else { return nil }
+        var request = URLRequest(
+            url: URL(string: "https://cli-chat-proxy.grok.com/v1/billing?format=credits")!)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        guard let payload = await getObject(request),
+              let config = payload["config"] as? [String: Any],
+              let percent = usageCount(config["creditUsagePercent"]) else { return nil }
+        let period = config["currentPeriod"] as? [String: Any]
+        let type = (period?["type"] as? String) ?? ""
+        let label = type.contains("WEEK") ? "Weekly"
+            : type.contains("MONTH") ? "Monthly" : "Usage"
+        let reset = (period?["end"] as? String).flatMap(UsageWindow.parseISO8601)
+        return AgentUsage(windows: [UsageWindow(
+            label: label, usedPercent: Int(percent.rounded()), resetsAt: reset)])
     }
 
     // MARK: - Credentials
@@ -453,6 +482,124 @@ final class UsageMonitor: ObservableObject {
         root["refresh_token"] = credential.refreshToken
         root["expires_in"] = credential.expiresIn
         root["expires_at"] = credential.expiresAt
+        guard let data = try? JSONSerialization.data(withJSONObject: root) else { return }
+        try? data.write(to: file, options: .atomic)
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: file.path)
+    }
+
+    /// The Grok CLI data root — `GROK_HOME` when set, else `~/.grok`.
+    private nonisolated static func grokHome() -> URL {
+        ProcessInfo.processInfo.environment["GROK_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".grok")
+    }
+
+    /// The OIDC entry from Grok's `auth.json` (a scope→credential map). `key` is
+    /// the access token; `expires_at` is an RFC 3339 string. API-key entries are
+    /// skipped — the billing endpoint doesn't answer for them, the same reason
+    /// the CLI hides its own /usage there.
+    private struct GrokCredential {
+        /// The entry's key in the auth.json map, needed for the write-back.
+        var scope: String
+        var accessToken: String
+        var refreshToken: String
+        var issuer: String
+        var clientId: String
+        var expiresAt: Date
+    }
+
+    private nonisolated static func grokCredential() -> GrokCredential? {
+        let file = grokHome().appendingPathComponent("auth.json")
+        guard let scopes = ((try? Data(contentsOf: file)).flatMap {
+            try? JSONSerialization.jsonObject(with: $0)
+        } as? [String: Any]) else { return nil }
+        var fallback: GrokCredential?
+        for (scope, value) in scopes {
+            guard let entry = value as? [String: Any],
+                  let key = entry["key"] as? String, !key.isEmpty,
+                  let refreshToken = entry["refresh_token"] as? String, !refreshToken.isEmpty,
+                  let expiresAt = (entry["expires_at"] as? String)
+                    .flatMap(UsageWindow.parseISO8601) else { continue }
+            let credential = GrokCredential(
+                scope: scope, accessToken: key, refreshToken: refreshToken,
+                issuer: (entry["oidc_issuer"] as? String) ?? "https://auth.x.ai",
+                clientId: (entry["oidc_client_id"] as? String) ?? "",
+                expiresAt: expiresAt)
+            if entry["auth_mode"] as? String == "oidc" { return credential }
+            fallback = fallback ?? credential
+        }
+        return fallback
+    }
+
+    /// A usable Grok access token. The CLI treats a token as dead five minutes
+    /// before `expires_at`; under that buffer this refreshes via OIDC discovery,
+    /// re-reading the file first in case a running CLI already did.
+    private nonisolated static func grokAccessToken() async -> String? {
+        func freshCredential() -> GrokCredential? {
+            guard let credential = grokCredential(),
+                  credential.expiresAt.timeIntervalSinceNow > 300 else { return nil }
+            return credential
+        }
+        if let credential = freshCredential() { return credential.accessToken }
+        guard let stale = grokCredential() else { return nil }
+        return await refreshGrokCredential(stale: stale)?.accessToken
+    }
+
+    /// Exchanges the refresh token at the discovered token endpoint and persists
+    /// the rotated pair. As with Kimi, the write-back is skipped when the file's
+    /// refresh token changed under us — a running CLI refreshed concurrently and
+    /// its newer pair must win.
+    private nonisolated static func refreshGrokCredential(
+        stale: GrokCredential
+    ) async -> GrokCredential? {
+        guard let discovery = await getObject(URLRequest(url: URL(
+                string: "\(stale.issuer)/.well-known/openid-configuration")!)),
+              let tokenEndpoint = discovery["token_endpoint"] as? String,
+              let url = URL(string: tokenEndpoint) else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let allowed = CharacterSet.urlQueryAllowed
+        let refreshToken = stale.refreshToken.addingPercentEncoding(withAllowedCharacters: allowed)
+            ?? stale.refreshToken
+        let clientId = stale.clientId.addingPercentEncoding(withAllowedCharacters: allowed)
+            ?? stale.clientId
+        request.httpBody = Data(
+            "grant_type=refresh_token&refresh_token=\(refreshToken)&client_id=\(clientId)".utf8)
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let accessToken = root["access_token"] as? String else { return nil }
+        // The CLI falls back to a 30-day TTL when the response carries no expiry.
+        let expiresIn = (root["expires_in"] as? Double) ?? 30 * 86_400
+        let refreshed = GrokCredential(
+            scope: stale.scope, accessToken: accessToken,
+            refreshToken: (root["refresh_token"] as? String) ?? stale.refreshToken,
+            issuer: stale.issuer, clientId: stale.clientId,
+            expiresAt: Date().addingTimeInterval(expiresIn))
+        if let current = grokCredential(), current.refreshToken == stale.refreshToken {
+            writeGrokCredential(refreshed)
+        }
+        return refreshed
+    }
+
+    /// Atomically rewrites `auth.json` with the rotated pair inside its scope
+    /// entry, keeping the other scopes, the entry's profile fields, and the
+    /// CLI's 0600 permissions.
+    private nonisolated static func writeGrokCredential(_ credential: GrokCredential) {
+        let file = grokHome().appendingPathComponent("auth.json")
+        guard var root = ((try? Data(contentsOf: file)).flatMap {
+            try? JSONSerialization.jsonObject(with: $0)
+        } as? [String: Any]),
+              var entry = root[credential.scope] as? [String: Any] else { return }
+        entry["key"] = credential.accessToken
+        entry["refresh_token"] = credential.refreshToken
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        entry["expires_at"] = formatter.string(from: credential.expiresAt)
+        root[credential.scope] = entry
         guard let data = try? JSONSerialization.data(withJSONObject: root) else { return }
         try? data.write(to: file, options: .atomic)
         try? FileManager.default.setAttributes(
@@ -947,6 +1094,55 @@ extension UsageMonitor {
                 bucket(&usage, at: timestamp, day: day, in: windows, TokenWindowStats(
                     input: input, output: output, cacheWrite: cacheWrite,
                     cacheRead: cacheRead, costUSD: 0))
+            }
+        }
+        return usage
+    }
+
+    /// Scans Grok's session updates (`$GROK_HOME/sessions/*/*/updates.jsonl`) for
+    /// `turn_completed` rows — one per prompt, de-duplicated by `prompt_id` —
+    /// and totals tokens into the windows and per-day buckets. `inputTokens`
+    /// counts the cache lanes too, so they are split out to keep the total
+    /// matching Grok's own `totalTokens`. Same append-only mtime prefilter as
+    /// the other scanners; a torn trailing line just fails to parse. No dollar
+    /// estimate: termio doesn't carry xAI pricing.
+    nonisolated static func scanGrok(_ windows: DateWindows) -> AgentTokenUsage {
+        let sessions = grokHome().appendingPathComponent("sessions")
+        var usage = AgentTokenUsage(hasCost: false)
+        let turnProbe = Data("\"turn_completed\"".utf8)
+        var seen = Set<Int>()
+        var resolver = DayResolver()
+        let keys: [URLResourceKey] = [.contentModificationDateKey]
+        guard let walker = FileManager.default.enumerator(
+            at: sessions, includingPropertiesForKeys: keys) else { return usage }
+        for case let url as URL in walker where url.lastPathComponent == "updates.jsonl" {
+            if let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate, modified < windows.scanStart {
+                continue
+            }
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { continue }
+            for line in data.split(separator: 0x0A) {
+                guard line.range(of: turnProbe) != nil,
+                    let object = try? JSONSerialization.jsonObject(
+                        with: Data(line)) as? [String: Any],
+                    let seconds = object["timestamp"] as? Double,
+                    let params = object["params"] as? [String: Any],
+                    let update = params["update"] as? [String: Any],
+                    update["sessionUpdate"] as? String == "turn_completed",
+                    let usageObject = update["usage"] as? [String: Any] else { continue }
+                let timestamp = Date(timeIntervalSince1970: seconds)
+                guard timestamp >= windows.scanStart else { continue }
+                if let promptId = update["prompt_id"] as? String,
+                   !seen.insert(promptId.hashValue).inserted { continue }
+
+                let inputTotal = usageObject["inputTokens"] as? Int ?? 0
+                let cached = usageObject["cachedReadTokens"] as? Int ?? 0
+                let cacheWrite = usageObject["cacheCreationTokens"] as? Int ?? 0
+                let output = usageObject["outputTokens"] as? Int ?? 0
+                let day = resolver.day(for: timestamp, calendar: windows.calendar)
+                bucket(&usage, at: timestamp, day: day, in: windows, TokenWindowStats(
+                    input: max(0, inputTotal - cached - cacheWrite), output: output,
+                    cacheWrite: cacheWrite, cacheRead: cached, costUSD: 0))
             }
         }
         return usage

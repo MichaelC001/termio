@@ -1,10 +1,11 @@
 import SwiftUI
 
 /// The coding-plan usage limits for the agents termio runs, reusing the OAuth
-/// credentials the `claude`, `codex`, and `kimi` CLIs already leave on disk —
-/// the same approach as steipete's CodexBar, scoped to the agents with a clean
-/// local-cred endpoint. A reference view, not an ambient one: it pulls fresh on
-/// open and on Refresh, so a glance here tells you whether to start that long run.
+/// credentials the `claude`, `codex`, `kimi`, and `grok` CLIs already leave on
+/// disk — the same approach as steipete's CodexBar, scoped to the agents with a
+/// clean local-cred endpoint. A reference view, not an ambient one: it pulls
+/// fresh on open and on Refresh, so a glance here tells you whether to start
+/// that long run.
 struct UsageSettingsTab: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var usage: UsageMonitor
@@ -45,7 +46,7 @@ struct UsageSettingsTab: View {
     private var emptyState: some View {
         Form {
             Section {
-                Text("Enable Claude Code, Codex, or Kimi in the Agents tab to see their usage here.")
+                Text("Enable Claude Code, Codex, Kimi, or Grok in the Agents tab to see their usage here.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } header: {
