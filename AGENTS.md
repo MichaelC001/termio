@@ -222,6 +222,23 @@ Dependencies and vendored code:
   not edit it by hand — use the `doc` skill, which writes the front matter on
   create and regenerates the index.
 
+The user-facing docs site is `web/landing/content/docs`, and three things there
+are derived rather than written:
+
+- **The shortcut tables** come from `KeyCommandCatalog`. Change a binding in
+  Swift, then `pnpm keybindings:sync` in `web/landing`. Never restate a shortcut
+  by hand — the page renders `<Keybindings category="…" />` from the generated
+  JSON.
+- **The translations** (`<page>.<locale>.mdx`) are made from the English page and
+  record which revision they came from. After editing an English page, retranslate
+  it and re-run `pnpm docs:stamp`; anchors that other pages link to carry an
+  explicit English id (`## 状态 [#status]`) so a link works in every language.
+  Locale wording follows `content/docs/.i18n/glossary.<locale>.json`, which tracks
+  the app's own localized UI strings.
+- **The changelog** (`src/data/changelog.ts`) must cover the newest release tag.
+
+`pnpm docs:check` enforces all three, and the `Docs` workflow runs it.
+
 ## Releases
 
 Releases are cut by pushing a version tag; nothing in the repo needs editing.
