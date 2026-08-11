@@ -41,7 +41,7 @@ brew install --cask termio-sh/tap/termio
 [TestFlight](https://testflight.apple.com/join/1Arf1UKR) 取得配套應用程式
 測試版，再掃描 Mac 應用程式「設定 ▸ 行動裝置」中的 QR code 完成配對。
 
-## 為 Agentic Coding & Engineering 而打造
+## 終端機優先的 AI 程式開發環境
 
 IDE 是圍繞著「人打字寫程式」設計的。當大部分程式碼改由智能體來寫，
 開發環境的職責也隨之改變：它是智能體工作的地方，也是您下指令、審閱成果、
