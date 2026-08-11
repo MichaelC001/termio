@@ -14,8 +14,9 @@
 
 <br />
 
-在一个原生 Mac 应用中并排运行 Claude Code、Codex 和任意 CLI 智能体——<br />
-每个会话都实时显示在侧边栏，菜单栏的小圆点会告诉您谁在等您。
+在真正的 Mac 终端里并排运行 Claude Code、Codex 和任意 CLI 智能体——<br />
+Swift 与 libghostty，没有 Electron。菜单栏的小圆点告诉您谁在等您，<br />
+离开座位时，iPhone 会替您盯着。
 
 <br />
 
@@ -40,7 +41,7 @@ brew install --cask termio-sh/tap/termio
 [TestFlight](https://testflight.apple.com/join/1Arf1UKR) 获取配套应用公测版，
 再扫描 Mac 应用 Settings ▸ Mobile 中的二维码完成配对。
 
-## 为“看着智能体干活”而生
+## 为 Agentic Coding & Engineering 而生
 
 IDE 是围绕一个人敲代码设计的。当大部分代码改由 AI 编码智能体来写，环境的职责也随之改变：它既是智能体干活的地方，也是您指挥、审阅、为它们解困的地方。Termio 正是这样一个环境——之所以终端优先，是因为智能体本来就活在终端里；它为工作的新形态而造：几个智能体同时推进，大多数无需您操心，偶尔有一个卡住等您。（更完整的论述见
 [*From IDE to ADE*](docs/essays/from-ide-to-ade.md)。）
