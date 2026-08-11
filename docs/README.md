@@ -92,6 +92,7 @@ from the real front matter).
 | draft | essay | ["How Claude Code Got the Mouse: Reverse-Engineering the Clickable Terminal"](essays/how-claude-code-got-the-mouse.md) |
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/sandbox-seatbelt.md) |
 | draft | rfc | [Automation — scheduled agent runs](rfcs/automation-scheduled-agent-runs.md) |
+| draft | rfc | [Companion Wire Protocol](design/companion-wire-protocol.md) |
 | draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](rfcs/fork-libghostty-spm.md) |
 | draft | rfc | [Loose terminals as first-class entities](design/loose-terminal-entity.md) |
 | draft | rfc | [Onboarding —— 首次启动体验设计](design/onboarding.md) |
