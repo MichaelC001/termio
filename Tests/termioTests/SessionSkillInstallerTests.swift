@@ -60,20 +60,34 @@ final class SessionSkillInstallerTests: XCTestCase {
         XCTAssertTrue(url.path.hasPrefix(home + "/custom/skills/termio/"))
     }
 
-    /// The bundled manifests drive the installed surface: every skills-capable agent
-    /// declares its directory, and agents whose ecosystem isn't confirmed stay
-    /// undeclared so no stray directory gets created for them.
+    /// The bundled manifests drive the installed surface: every agent declares its
+    /// skills directory, verified against each vendor's documented location so a
+    /// typo in a manifest can't silently install into a directory the agent never
+    /// reads.
     func testBundledSkillDeclarationsMatchCatalog() throws {
         let catalog = AgentCatalog.shared
-        let declared = Set(catalog.bundled.compactMap(\.skillDir))
-        for directory in [
-            "~/.claude/skills", "~/.codex/skills", "~/.cursor/skills",
-            "~/.grok/skills", "~/.config/opencode/skills", "~/.pi/agent/skills",
-        ] {
-            XCTAssertTrue(declared.contains(directory), "\(directory) is missing from the bundled manifests")
+        let expected: [String: String] = [
+            "claudeCode": "~/.claude/skills",
+            "codex": "~/.codex/skills",
+            "cursor": "~/.cursor/skills",
+            "grok": "~/.grok/skills",
+            "opencode": "~/.config/opencode/skills",
+            "pi": "~/.pi/agent/skills",
+            "amp": "~/.config/agents/skills",
+            "antigravity": "~/.gemini/antigravity/skills",
+            "hermes": "~/.hermes/skills",
+            "kimi": "~/.kimi-code/skills",
+        ]
+        for (id, directory) in expected {
+            let definition = catalog.definition(for: id)
+            XCTAssertEqual(
+                definition.skillDir, directory,
+                "\(id) must declare skills at its vendor-documented directory")
         }
-        for id in ["amp", "antigravity", "hermes", "kimi"] {
-            XCTAssertNil(catalog.definition(for: id).skillDir, "\(id) must not declare skills yet")
-        }
+        // Every bundled coding agent declares skills — none should be skipped.
+        let undeclared = catalog.bundled.filter { $0.skillDir == nil && $0.id != "terminal" }
+        XCTAssertTrue(
+            undeclared.isEmpty,
+            "agents without a skills declaration: \(undeclared.map(\.id))")
     }
 }
