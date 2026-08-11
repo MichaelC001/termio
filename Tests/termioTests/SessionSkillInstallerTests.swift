@@ -60,6 +60,30 @@ final class SessionSkillInstallerTests: XCTestCase {
         XCTAssertTrue(url.path.hasPrefix(home + "/custom/skills/termio/"))
     }
 
+    /// Installation skips agents whose CLI isn't installed — a machine without
+    /// Cursor must not grow a `~/.cursor/skills` directory it cannot use. The
+    /// predicate is injectable, so this is testable without touching real PATHs.
+    func testSkillTargetsSkipUninstalledAgents() throws {
+        let bundled = AgentCatalog.shared.bundled.filter { $0.id != "terminal" }
+        let all = SessionSkillInstaller.skillTargets(installed: { _ in true })
+        let targeted = Set(all.map(\.name))
+        for agent in bundled where agent.skillDir != nil {
+            XCTAssertTrue(
+                targeted.contains(agent.displayName),
+                "\(agent.id) should be targeted when its CLI is installed")
+        }
+
+        let onlyClaude = SessionSkillInstaller.skillTargets(installed: { $0.id == "claudeCode" })
+        XCTAssertEqual(onlyClaude.map(\.name), ["Claude Code"])
+
+        XCTAssertTrue(SessionSkillInstaller.skillTargets(installed: { _ in false }).isEmpty)
+
+        // Uninstall sweeps every declared directory regardless of what's installed,
+        // so a skill left behind by an agent removed later still gets cleaned.
+        let sweep = SessionSkillInstaller.allKnownSkillTargets
+        XCTAssertGreaterThanOrEqual(sweep.count, bundled.filter { $0.skillDir != nil }.count)
+    }
+
     /// The bundled manifests drive the installed surface: every agent declares its
     /// skills directory, verified against each vendor's documented location so a
     /// typo in a manifest can't silently install into a directory the agent never

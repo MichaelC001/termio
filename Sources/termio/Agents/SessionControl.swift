@@ -530,12 +530,21 @@ enum SessionSkillInstaller {
     /// The skill file an agent's declared skills directory will carry, per agent in
     /// the catalog. Installation follows `AgentCatalog.all` so a user override's
     /// `skills` declaration wins; duplicate directories (an override of a bundled
-    /// id) install once.
-    static var skillTargets: [(name: String, url: URL)] {
+    /// id) install once. Only agents whose CLI is actually installed get the skill,
+    /// so a machine without, say, Cursor never grows a `~/.cursor/skills` directory
+    /// it cannot use — `sync` re-checks on every launch, so an agent installed later
+    /// is picked up automatically. The `installed` predicate is injectable for
+    /// tests; the default resolves the agent's command like a session launch would.
+    static func skillTargets(
+        installed: (AgentDefinition) -> Bool = { agent in
+            guard let command = agent.command else { return true }
+            return AgentAvailability.isCommandInstalled(command)
+        }
+    ) -> [(name: String, url: URL)] {
         let catalog = AgentCatalog.shared
         var seen = Set<String>()
         return catalog.all.compactMap { agent in
-            guard let directory = agent.skillDir else { return nil }
+            guard let directory = agent.skillDir, installed(agent) else { return nil }
             let url = skillFileURL(directory: directory)
             guard seen.insert(url.path).inserted else { return nil }
             return (agent.displayName, url)
@@ -598,10 +607,10 @@ enum SessionSkillInstaller {
             guard let skill else {
                 FileHandle.standardError.write(
                     Data("termio: session skill resource missing from the app bundle\n".utf8))
-                for (name, _) in skillTargets { outcome.record(name, installed: false) }
+                for (name, _) in skillTargets() { outcome.record(name, installed: false) }
                 return outcome
             }
-            for (name, url) in skillTargets {
+            for (name, url) in skillTargets() {
                 outcome.record(name, installed: write(skill, to: url))
             }
         } else {
