@@ -481,7 +481,9 @@ final class UsageMonitor: ObservableObject {
         root["access_token"] = credential.accessToken
         root["refresh_token"] = credential.refreshToken
         root["expires_in"] = credential.expiresIn
-        root["expires_at"] = credential.expiresAt
+        // Whole seconds, the CLI's own wire shape — a fractional double would
+        // read fine today but is a needless divergence to debug later.
+        root["expires_at"] = Int(credential.expiresAt)
         guard let data = try? JSONSerialization.data(withJSONObject: root) else { return }
         try? data.write(to: file, options: .atomic)
         try? FileManager.default.setAttributes(
