@@ -38,4 +38,42 @@ final class SessionSkillInstallerTests: XCTestCase {
         XCTAssertTrue(skill.hasPrefix("---\nname: termio\n"))
         XCTAssertTrue(skill.hasSuffix("\n"))
     }
+
+    /// A manifest's `skills.dir` is the declaration the installer trusts — a user
+    /// dropping a custom agent into `~/.termio/config/agents/` gets its skill
+    /// installed through the same field, no code change.
+    func testManifestSkillsDeclaresDirectory() throws {
+        let json = """
+        { "id": "custom", "name": "Custom", "skills": { "dir": "~/.custom/skills" } }
+        """
+        let manifest = try JSONDecoder().decode(AgentManifest.self, from: Data(json.utf8))
+        XCTAssertEqual(manifest.skills?.dir, "~/.custom/skills")
+    }
+
+    /// A declared skills directory resolves to `<dir>/termio/SKILL.md` with `~`
+    /// expanded — the only pure logic between the manifest and the file system.
+    func testSkillFileURLExpandsTilde() throws {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let url = SessionSkillInstaller.skillFileURL(directory: "~/custom/skills")
+        XCTAssertEqual(url.lastPathComponent, "SKILL.md")
+        XCTAssertEqual(url.deletingLastPathComponent().lastPathComponent, "termio")
+        XCTAssertTrue(url.path.hasPrefix(home + "/custom/skills/termio/"))
+    }
+
+    /// The bundled manifests drive the installed surface: every skills-capable agent
+    /// declares its directory, and agents whose ecosystem isn't confirmed stay
+    /// undeclared so no stray directory gets created for them.
+    func testBundledSkillDeclarationsMatchCatalog() throws {
+        let catalog = AgentCatalog.shared
+        let declared = Set(catalog.bundled.compactMap(\.skillDir))
+        for directory in [
+            "~/.claude/skills", "~/.codex/skills", "~/.cursor/skills",
+            "~/.grok/skills", "~/.config/opencode/skills", "~/.pi/agent/skills",
+        ] {
+            XCTAssertTrue(declared.contains(directory), "\(directory) is missing from the bundled manifests")
+        }
+        for id in ["amp", "antigravity", "hermes", "kimi"] {
+            XCTAssertNil(catalog.definition(for: id).skillDir, "\(id) must not declare skills yet")
+        }
+    }
 }
