@@ -171,7 +171,7 @@ final class TerminalContextMenu: NSObject {
     @objc private func ungroup() { store?.ungroupSelectedPane() }
     @objc private func closeSession() {
         guard let id = clickedSessionID else { return }
-        store?.closeSession(id)
+        store?.requestCloseSession(id)
     }
 
     @objc private func openLink() {

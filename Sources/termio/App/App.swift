@@ -1286,6 +1286,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// where the last pane's ⌘W closes its container. That close is just a
     /// close: the app and every session keep running (issue #242).
     @objc func ungroupPane(_ sender: Any?) {
+        // Menu actions hang off the app delegate, not a window, so this has to
+        // resolve its own target: without the key-window check, ⌘W pressed in
+        // Settings reaches past it and ungroups a pane in the terminal behind.
+        // No key window at all (the main window is closed) means there is
+        // nothing on screen to close, so ⌘W does nothing rather than mutating
+        // an invisible layout.
+        guard let keyWindow = NSApp.keyWindow else { return }
+        guard keyWindow === window else {
+            keyWindow.performClose(sender)
+            return
+        }
         if store.splitRoot != nil {
             store.ungroupSelectedPane()
         } else {
@@ -1293,9 +1304,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    /// File ▸ Close Window (⌘⇧W) — closes the whole window regardless of splits.
+    /// File ▸ Close Window (⌘⇧W) — closes the frontmost window regardless of
+    /// splits, so it dismisses Settings when Settings is what's in front.
     @objc func closeMainWindow(_ sender: Any?) {
-        window?.performClose(sender)
+        (NSApp.keyWindow ?? window)?.performClose(sender)
     }
 
     /// View ▸ Zoom Split (⌘⇧↩) — maximise the focused pane, or restore the split.
@@ -2186,6 +2198,32 @@ private func buildMainMenu() -> NSMenu {
     let sessionMenu = NSMenu(title: "Session")
     sessionMenu.delegate = NSApp.delegate as? AppDelegate
     sessionItem.submenu = sessionMenu
+
+    // Window menu — the standard one every Mac app has and termio didn't, which is
+    // why ⌘M did nothing. These actions travel the responder chain to whichever
+    // window is key (Settings included), so they need no delegate plumbing.
+    // Handing the menu to `NSApp.windowsMenu` lets AppKit keep its window list in it.
+    let windowItem = NSMenuItem()
+    mainMenu.addItem(windowItem)
+    let windowMenu = NSMenu(title: "Window")
+    windowMenu.addItem(
+        withTitle: "Minimize",
+        action: #selector(NSWindow.performMiniaturize(_:)),
+        keyEquivalent: "m"
+    )
+    windowMenu.addItem(
+        withTitle: "Zoom",
+        action: #selector(NSWindow.performZoom(_:)),
+        keyEquivalent: ""
+    )
+    windowMenu.addItem(.separator())
+    windowMenu.addItem(
+        withTitle: "Bring All to Front",
+        action: #selector(NSApplication.arrangeInFront(_:)),
+        keyEquivalent: ""
+    )
+    windowItem.submenu = windowMenu
+    NSApp.windowsMenu = windowMenu
 
     return mainMenu
 }

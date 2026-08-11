@@ -585,6 +585,46 @@ extension TermioStore {
         projects[projectIndex].sessions[sessionIndex].title = name
     }
 
+    /// The user-facing "Close Session": the same teardown as `closeSession`, but it
+    /// asks first when there is live work to lose. Only the interactive entry points
+    /// (the sidebar row, the terminal's context menu) route through here — a session
+    /// whose process already exited, the `termio sessions close` CLI, and the phone's
+    /// stop button all closed deliberately and call `closeSession` directly.
+    func requestCloseSession(_ id: Session.ID) {
+        guard let session = session(id) else { return }
+        guard let reason = closeConfirmationReason(for: session) else {
+            closeSession(id)
+            return
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Close “\(displayTitle(for: session))”?"
+        alert.informativeText = reason
+        // Cancel first so it owns both Return and Escape; the destructive button
+        // takes a deliberate click (see the quit confirmation in `App.swift`).
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Close Session")
+        alert.buttons.last?.hasDestructiveAction = true
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        closeSession(id)
+    }
+
+    /// Why closing this session needs confirming, or `nil` when it doesn't. Keyed on
+    /// what the session would actually *lose*, not on its attention status: a `done`
+    /// or `idle` agent still holds a whole conversation, and looking at a session is
+    /// enough to settle it back to `idle`, so status is the wrong safety signal. A
+    /// plain shell is the one free case — closing one parked at its prompt costs
+    /// nothing, which is the carve-out iTerm2 makes too.
+    private func closeConfirmationReason(for session: Session) -> String? {
+        guard let pty = ptyProcesses[session.id], pty.isAlive else { return nil }
+        guard session.agent.isShell else {
+            return "\(session.agent.displayName) is running in this session. "
+                + "Closing it ends the conversation and stops the process."
+        }
+        guard pty.hasForegroundJob else { return nil }
+        return "A command is still running in this session. Closing it stops the command."
+    }
+
     /// Closes a session: drops its cached surface (which tears down the PTY) and
     /// moves the selection to a neighbouring session if the closed one was active.
     /// Any git worktree created for the session is deliberately left on disk — it
