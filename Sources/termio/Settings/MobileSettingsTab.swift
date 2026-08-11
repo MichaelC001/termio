@@ -17,6 +17,11 @@ struct MobileSettingsTab: View {
     @State private var token = PairingToken.current
     @ObservedObject private var tunnel = TunnelManager.shared
     @ObservedObject private var mobile = MobileAccess.shared
+    /// Draft custom-relay fields, loaded from the persisted values on appear and
+    /// written back only when the user commits them, so a half-typed command
+    /// never becomes the live spec mid-keystroke.
+    @State private var customCommand = ""
+    @State private var customURLPattern = ""
 
     /// A tunnel is up (or coming up): the QR carries the public URL, not the LAN
     /// address, and the LAN host picker no longer applies.
@@ -73,6 +78,9 @@ struct MobileSettingsTab: View {
                             Text(provider == .off ? "Off — LAN only" : provider.label).tag(provider)
                         }
                     }
+                    // The custom-relay editor: shown only when Custom is picked,
+                    // so the common third-party path stays uncluttered.
+                    if tunnel.provider == .custom { customTunnelEditor }
                     if !onTunnel, hosts.count > 1 {
                         Picker("Address", selection: $selectedHost) {
                             ForEach(hosts, id: \.self) { host in
@@ -84,9 +92,11 @@ struct MobileSettingsTab: View {
                 } header: {
                     SectionHeaderLabel(title: "Connect iPhone")
                 } footer: {
-                    footnote(onTunnel
-                        ? "On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network."
-                        : "On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.")
+                    // Say plainly whose server the phone's traffic crosses, so
+                    // the "can I self-host the relay?" question is answered in
+                    // the app: the bundled providers all terminate on a third
+                    // party, Custom is one the user runs themselves.
+                    footnote(tunnelFootnote)
                 }
 
                 Section {
@@ -111,7 +121,75 @@ struct MobileSettingsTab: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear(perform: refreshHosts)
+        .onAppear {
+            refreshHosts()
+            let custom = CustomTunnel.current
+            customCommand = custom.command
+            customURLPattern = custom.urlPattern
+        }
+    }
+
+    /// Whose server the phone's traffic crosses, phrased for the current
+    /// selection: a self-hosted Custom relay, a bundled third-party tunnel, or
+    /// LAN-only. Answers the "is the relay self-hostable?" question in the app.
+    private var tunnelFootnote: String {
+        if tunnel.provider == .custom {
+            return "On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path."
+        }
+        if onTunnel {
+            return "On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead."
+        }
+        return "On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN."
+    }
+
+    /// Command + URL-pattern editor for a self-hosted relay. A run-any-command
+    /// field is a code-execution surface, so it is fronted by an explicit
+    /// warning rather than presented as a bare text field — the command runs on
+    /// the user's own machine, with their own privileges, and only when they
+    /// select Custom. Committed on submit (or via Apply) so a half-typed command
+    /// never becomes the live spec.
+    @ViewBuilder
+    private var customTunnelEditor: some View {
+        TextField("Command", text: $customCommand, prompt: Text("cloudflared tunnel run --url http://127.0.0.1:{port} my-tunnel"))
+            .font(.system(.callout, design: .monospaced))
+            .onSubmit(commitCustomTunnel)
+        TextField("URL Pattern", text: $customURLPattern, prompt: Text(#"https://[a-z0-9-]+\.example\.com"#))
+            .font(.system(.callout, design: .monospaced))
+            .onSubmit(commitCustomTunnel)
+        HStack {
+            if !customURLPattern.isEmpty, !patternCompiles {
+                Label("Not a valid regular expression", systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
+            Spacer()
+            Button("Apply", action: commitCustomTunnel)
+                .disabled(!customTunnelChanged)
+        }
+        footnote("Runs on this Mac with your privileges when Custom is selected — no shell, arguments split on spaces. Use {port} for the companion port; the URL pattern is a regex matching the public https URL your relay prints.")
+    }
+
+    /// Whether the draft URL pattern is a compilable regex.
+    private var patternCompiles: Bool {
+        (try? NSRegularExpression(pattern: customURLPattern)) != nil
+    }
+
+    /// Whether the draft differs from what's persisted (drives the Apply button).
+    private var customTunnelChanged: Bool {
+        let saved = CustomTunnel.current
+        return customCommand != saved.command || customURLPattern != saved.urlPattern
+    }
+
+    /// Persist the draft relay and, if Custom is the active provider, restart the
+    /// tunnel so the new command takes effect. Trimmed so trailing whitespace
+    /// doesn't smuggle an empty argv token in.
+    private func commitCustomTunnel() {
+        let command = customCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = customURLPattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        CustomTunnel.save(command: command, urlPattern: pattern)
+        customCommand = command
+        customURLPattern = pattern
+        if tunnel.provider == .custom { tunnel.reloadCustom() }
     }
 
     private func footnote(_ text: String) -> some View {
