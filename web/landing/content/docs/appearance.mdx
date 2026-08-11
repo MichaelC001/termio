@@ -12,6 +12,14 @@ Termio uses Ghostty-format themes, so anything from the wider Ghostty theme
 ecosystem works. Pick a light and a dark theme from **Settings ▸ Appearance** and
 Termio follows the system between them.
 
+If you already use Ghostty, there's nothing to pick on a fresh install: Termio
+reads your `~/.config/ghostty/config` on first launch and starts with the font and
+theme you chose there.
+
+To browse the catalog with your terminals as the preview, open the Command Palette
+(`⇧⌘P`) and pick **Change Theme…** — arrowing through the list restyles your open
+terminals live, Return keeps the theme, Escape puts it back.
+
 To add your own, drop a Ghostty `.toml` theme file into:
 
 ```
@@ -31,20 +39,25 @@ while you work — `⌘=` to grow, `⌘-` to shrink, `⌘0` to reset.
 
 The same tab tunes the cursor (block, bar, or underline; steady or blinking) and
 the window itself — padding around the terminal, and background opacity and blur
-for a translucent window over your desktop.
+for a translucent window over your desktop. The app's own chrome lives here too:
+the sidebar's font and density.
 
 ## The rest of Settings
 
 The other tabs cover the rest of the app:
 
-- **General** — install the [`termio` command-line tool](/docs/session-control).
-- **Interface** — sidebar font and density.
+- **General** — install the [`termio` command-line tool](/docs/session-control),
+  and choose whether Termio installs its agent skill and raises task
+  notifications.
 - **Terminal** — scrollback history and text selection.
+- **SSH** — your `~/.ssh/config` hosts, with a Test Connection probe. Termio reads
+  that file as the source of truth and never rewrites it behind your back.
 - **Keyboard** — rebind any shortcut; see [Keyboard shortcuts](/docs/keyboard).
-- **Agents** — enable agents and turn on [session
+- **Agents** — add agents, enable them, and turn on [session
   control](/docs/session-control).
 - **Usage** — token usage for agents you sign in to (Claude Code, Codex). Termio
   reuses each CLI's own credentials to show you where you stand against your
   limits; it stores nothing of its own.
 - **Mobile** — pairing and remote access for the [iPhone
   companion](/docs/iphone).
+- **Community** — where to find the project: GitHub, Discord, and the WeChat group.
