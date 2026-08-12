@@ -31,10 +31,10 @@ struct GitHistoryView: View {
                     .controlSize(.small)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.commits.isEmpty {
-                ContentUnavailableView(
+                PaneEmptyState(
                     localized("No History"),
-                    huge: .clock,
-                    description: Text(localized("This branch has no commits yet."))
+                    icon: .clock,
+                    message: localized("This branch has no commits yet.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {

@@ -144,10 +144,10 @@ struct FileEditorView: View {
         // the safe-area top; padding it again just opened a dead band above the header.)
         Group {
             if loadFailed {
-                ContentUnavailableView(
+                PaneEmptyState(
                     localized("Can’t open as text"),
-                    huge: .fileQuestion,
-                    description: Text(localized("\(url.lastPathComponent) isn’t a UTF-8 text file."))
+                    icon: .fileQuestion,
+                    message: localized("\(url.lastPathComponent) isn’t a UTF-8 text file.")
                 )
             } else if !loaded {
                 // The bare background while the async read runs — small files land

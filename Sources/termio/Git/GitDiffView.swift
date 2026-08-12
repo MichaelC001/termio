@@ -254,10 +254,10 @@ struct GitDiffView: View {
                 }
             }
         } else {
-            ContentUnavailableView(
+            PaneEmptyState(
                 localized("No Diff"),
-                huge: .fileDoc,
-                description: Text(localized("No textual changes to show."))
+                icon: .fileDoc,
+                message: localized("No textual changes to show.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }

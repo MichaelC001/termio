@@ -271,10 +271,10 @@ struct FileBrowserView: View {
 
     /// The empty state the Files and Search panes share when no session is selected.
     private var noProject: some View {
-        ContentUnavailableView(
+        PaneEmptyState(
             localized("No Project"),
-            huge: .folder,
-            description: Text(localized("Select a session to browse its files."))
+            icon: .folder,
+            message: localized("Select a session to browse its files.")
         )
     }
 

@@ -120,10 +120,10 @@ struct PRFilesSplitView: View {
             // Rebuild for each file so the diff, syntax colors, and scroll reset cleanly.
             .id(change.path)
         } else {
-            ContentUnavailableView(
+            PaneEmptyState(
                 localized("No File Selected"),
-                huge: .fileDoc,
-                description: Text(localized("Pick a file on the left to see its changes."))
+                icon: .fileDoc,
+                message: localized("Pick a file on the left to see its changes.")
             )
         }
     }
@@ -236,12 +236,12 @@ private struct PRFileDiffBody: View {
                 onClose: onClose
             )
         } else {
-            ContentUnavailableView(
+            PaneEmptyState(
                 change.isBinary ? localized("Binary File") : localized("No Diff"),
-                huge: .fileDoc,
-                description: Text(change.isBinary
+                icon: .fileDoc,
+                message: change.isBinary
                     ? localized("This file is binary — open it on GitHub to view.")
-                    : localized("This diff is too large to show here — open the file on GitHub."))
+                    : localized("This diff is too large to show here — open the file on GitHub.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }

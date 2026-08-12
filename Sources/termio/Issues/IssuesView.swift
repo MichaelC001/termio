@@ -286,10 +286,10 @@ struct IssuesView: View {
                 }
             }
         } else if model.items.isEmpty {
-            ContentUnavailableView(
+            PaneEmptyState(
                 model.query.kind == .issue ? localized("No Issues") : localized("No Pull Requests"),
-                huge: .checkCircle,
-                description: Text(emptyMessage)
+                icon: .checkCircle,
+                message: emptyMessage
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -738,7 +738,7 @@ struct IssueDetailView: View {
                 diagrams = await MermaidRenderer.shared.diagrams(for: sources, theme: mermaidTheme)
             }
         } else if let error = model.detailError {
-            ContentUnavailableView(localized("Couldn’t load"), huge: .github, description: Text(error))
+            PaneEmptyState(localized("Couldn’t load"), icon: .github, message: error)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ProgressView()
@@ -763,9 +763,9 @@ struct IssueDetailView: View {
                 .controlSize(.small)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ContentUnavailableView(
-                localized("No Files"), huge: .fileDoc,
-                description: Text(localized("This pull request changes no files."))
+            PaneEmptyState(
+                localized("No Files"), icon: .fileDoc,
+                message: localized("This pull request changes no files.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
