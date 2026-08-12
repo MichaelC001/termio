@@ -99,7 +99,7 @@ final class PaneDragRearrange {
         }
         monitor(.leftMouseDown) { [weak self] in self?.began($0) ?? false }
         monitor(.leftMouseDragged) { [weak self] in self?.moved($0) ?? false }
-        monitor(.leftMouseUp) { [weak self] in self?.ended($0) ?? false }
+        monitor(.leftMouseUp) { [weak self] _ in self?.ended() ?? false }
         monitor(.keyDown) { [weak self] in self?.pressedKey($0) ?? false }
         // Never consumed: the reveal only reads the pointer, so it can't
         // interfere with a TUI's own mouse reporting.
@@ -192,7 +192,7 @@ final class PaneDragRearrange {
         return true
     }
 
-    private func ended(_ event: NSEvent) -> Bool {
+    private func ended() -> Bool {
         guard dragging else { return false }
         defer { finish() }
         guard !cancelled, let store, let drag = store.paneDrag,

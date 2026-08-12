@@ -201,7 +201,6 @@ struct FileBrowserView: View {
             if let root {
                 FileSearchView(
                     rootURL: root.url,
-                    font: settings.interfaceFont,
                     onDismiss: { store.inspectorTab = .files },
                     onOpen: { url, line in store.openFileInEditor(url, at: line) }
                 )

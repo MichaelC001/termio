@@ -33,7 +33,6 @@ final class MermaidRenderer: NSObject {
         let panel: String
         let foreground: String
         let muted: String
-        let accent: String
         let line: String
 
         init(_ theme: TraceTheme) {
@@ -41,7 +40,6 @@ final class MermaidRenderer: NSObject {
             panel = theme.panel
             foreground = theme.foreground
             muted = theme.secondary
-            accent = theme.accent
             line = theme.isDark ? "rgba(255,255,255,0.22)" : "rgba(0,0,0,0.22)"
         }
     }

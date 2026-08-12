@@ -22,15 +22,14 @@ final class IssueCache {
         let number: Int
     }
 
-    /// One fetched item: the conversation plus (for PRs) the changed files, their inline patches,
-    /// and branch facts — everything `loadDetail` populates in one shot, so a warm read restores the
+    /// One fetched item: the conversation plus (for PRs) the changed files and their inline
+    /// patches — everything `loadDetail` populates in one shot, so a warm read restores the
     /// whole detail with no further network or git work. `fetchedAt` drives the revalidation dedupe
     /// window.
     struct Entry {
         var detail: IssueDetail
         var prFiles: [GitChange]
         var prFilePatches: [String: String]
-        var prInfo: PullRequestGitInfo?
         /// The conversation is cached the instant it lands — *before* a PR's heavy `/files`
         /// response — so even opening a PR and immediately switching away warms the cache. This
         /// marks whether that file list has since folded in: `false` means "files still pending",
@@ -46,7 +45,6 @@ final class IssueCache {
             detail == other.detail
                 && prFiles == other.prFiles
                 && prFilePatches == other.prFilePatches
-                && prInfo == other.prInfo
         }
     }
 

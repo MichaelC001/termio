@@ -312,7 +312,6 @@ final class IssuesPanelModel: ObservableObject {
         detailError = nil
         prFiles = []
         prFilePatches = [:]
-        prInfo = nil
         prFilesLoading = false
         do {
             let conversation = try await provider.detail(item.number, in: container)
@@ -321,7 +320,7 @@ final class IssuesPanelModel: ObservableObject {
             // Cache the conversation the moment it lands — before a PR's heavy file list — so a
             // switch-away still warms the cache. `filesLoaded: false` marks the pending files.
             cache?.store(
-                .init(detail: conversation, prFiles: [], prFilePatches: [:], prInfo: nil,
+                .init(detail: conversation, prFiles: [], prFilePatches: [:],
                       filesLoaded: item.kind != .pullRequest, fetchedAt: Date()),
                 container, item.number)
             if item.kind == .pullRequest {
@@ -333,25 +332,22 @@ final class IssuesPanelModel: ObservableObject {
         }
     }
 
-    /// Fetches a PR's branch facts + changed files (`/files` carries every patch inline, the heavy
-    /// part) and folds them into the already-shown conversation, upgrading the cache entry to
+    /// Fetches a PR's changed files (`/files` carries every patch inline, the heavy part) and folds
+    /// them into the already-shown conversation, upgrading the cache entry to
     /// `filesLoaded: true`. Runs behind the conversation so the default tab never waits on it; a
     /// failure just leaves the Files tab empty rather than erroring the whole detail.
     private func loadPRFiles(_ item: IssueSummary, provider: GitHubIssueProvider,
                              container: IssueContainer, conversation: IssueDetail) async {
         prFilesLoading = true
-        async let info = provider.pullRequestGitInfo(item.number, in: container)
-        async let files = provider.pullRequestFiles(item.number, in: container)
         do {
-            let (prI, loadedFiles) = try await (info, files)
+            let loadedFiles = try await provider.pullRequestFiles(item.number, in: container)
             guard openItem?.number == item.number else { prFilesLoading = false; return }
             let mapped = prFileMapping(loadedFiles)
-            prInfo = prI
             prFiles = mapped.changes
             prFilePatches = mapped.patches
             cache?.store(
                 .init(detail: conversation, prFiles: mapped.changes, prFilePatches: mapped.patches,
-                      prInfo: prI, filesLoaded: true, fetchedAt: Date()),
+                      filesLoaded: true, fetchedAt: Date()),
                 container, item.number)
         } catch {
             // The conversation stays; the Files tab simply shows no files.
@@ -377,14 +373,13 @@ final class IssuesPanelModel: ObservableObject {
         detail = entry.detail
         prFiles = entry.prFiles
         prFilePatches = entry.prFilePatches
-        prInfo = entry.prInfo
         prFilesLoading = false
         detailError = nil
     }
 
-    /// One network round-trip for an item's full detail: the conversation, and for a PR its git
-    /// info and changed files (with each file's inline patch keyed by path). Pure fetch — no
-    /// state writes — so both the cold and revalidation paths share it.
+    /// One network round-trip for an item's full detail: the conversation, and for a PR its
+    /// changed files (with each file's inline patch keyed by path). Pure fetch — no state
+    /// writes — so both the cold and revalidation paths share it.
     private func fetchEntry(
         _ item: IssueSummary,
         provider: GitHubIssueProvider,
@@ -392,29 +387,27 @@ final class IssuesPanelModel: ObservableObject {
     ) async throws -> IssueCache.Entry {
         if item.kind == .pullRequest {
             async let loadedDetail = provider.detail(item.number, in: container)
-            async let info = provider.pullRequestGitInfo(item.number, in: container)
             async let files = provider.pullRequestFiles(item.number, in: container)
-            let (detail, prInfo, loadedFiles) = try await (loadedDetail, info, files)
+            let (detail, loadedFiles) = try await (loadedDetail, files)
             let mapped = prFileMapping(loadedFiles)
             return .init(
                 detail: detail, prFiles: mapped.changes, prFilePatches: mapped.patches,
-                prInfo: prInfo, filesLoaded: true, fetchedAt: Date())
+                filesLoaded: true, fetchedAt: Date())
         } else {
             let detail = try await provider.detail(item.number, in: container)
             return .init(
-                detail: detail, prFiles: [], prFilePatches: [:], prInfo: nil,
+                detail: detail, prFiles: [], prFilePatches: [:],
                 filesLoaded: true, fetchedAt: Date())
         }
     }
 
     // MARK: Pull-request extras
 
-    /// The PR's changed files (empty for issues) and branch facts.
+    /// The PR's changed files (empty for issues).
     @Published private(set) var prFiles: [GitChange] = []
     /// Each file's inline unified-diff patch from the API, keyed by path — what the Files
     /// tab renders. Absent keys are files GitHub gave no patch for (binary / too large).
     @Published private(set) var prFilePatches: [String: String] = [:]
-    @Published private(set) var prInfo: PullRequestGitInfo?
 
     /// The PR's file list is still in flight *after* the conversation has already rendered —
     /// the two are fetched separately so the (small, fast) conversation isn't gated behind the

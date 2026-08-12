@@ -69,11 +69,6 @@ struct SettingsLabel: View {
         self.titleFont = titleFont
     }
 
-    /// Convenience for the common SF Symbol case, mirroring `IconBadge(symbol:)`.
-    init(symbol: String, title: String, subtext: String? = nil, titleFont: Font = .headline) {
-        self.init(.symbol(symbol), title: title, subtext: subtext, titleFont: titleFont)
-    }
-
     /// Icon-less row, for a nested sub-option that hangs under an icon-led row.
     init(title: String, subtext: String? = nil, titleFont: Font = .body) {
         self.icon = nil

@@ -716,7 +716,6 @@ struct IssueDetailView: View {
                 MermaidRenderer.shared.cachedDiagrams(for: sources, theme: mermaidTheme)) { _, new in new }
             IssueWebView(
                 html: MermaidRenderer.applying(drawn, to: document),
-                background: settings.terminalBackgroundColor,
                 // Selected conversation text goes over as the pasted snippet; a
                 // selection-less click hands the agent the item's GitHub URL — the
                 // same token dragging the list row inserts.
@@ -942,7 +941,6 @@ private enum IssueDetailHTML {
 /// page: transparent while loading, links open in the browser.
 private struct IssueWebView: NSViewRepresentable {
     let html: String
-    let background: NSColor
     /// "Add to Chat" in the conversation's right-click menu — selection as pasted
     /// snippet, `nil` (no selection) as the item's GitHub URL. Injected by
     /// `IssueDetailView`, which holds both the item and the store.
