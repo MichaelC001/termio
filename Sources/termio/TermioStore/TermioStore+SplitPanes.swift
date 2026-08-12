@@ -173,6 +173,7 @@ extension TermioStore {
     func detachFromSplit(_ id: Session.ID) {
         guard let group = groupIndex(containing: id) else { return }
         setGroup(at: group, to: splitGroups[group].removing(leaf: id))
+        gatherSplitRuns()
         selectedSessionID = id
         isPaneZoomed = false
     }
@@ -251,6 +252,7 @@ extension TermioStore {
               let group = groupIndex(containing: focusedID) else { return }
         let neighbor = neighborPane(of: focusedID, in: splitGroups[group])
         setGroup(at: group, to: splitGroups[group].removing(leaf: focusedID))
+        gatherSplitRuns()
         if let neighbor { selectedSessionID = neighbor }
         isPaneZoomed = false
     }
@@ -338,6 +340,25 @@ extension TermioStore {
         return preferred
     }
 
+    /// Restores the invariant every split group's sidebar bracket is drawn from:
+    /// a group's rows are one adjacent run (see `splitLinkMarks`). Insertion keeps
+    /// the run intact by construction, but a row can still be lifted out from
+    /// under it — "Ungroup" leaves the detached row wedged between its former
+    /// mates, and a drag can drop a stranger into the middle. The bracket then
+    /// spans only the longest surviving run, so a three-pane group reads as a
+    /// two-row bracket while three panes are on screen.
+    func gatherSplitRuns() {
+        let groups = splitGroups.map(\.leafIDs)
+        for index in projects.indices {
+            let rows = projects[index].sessions.map(\.id)
+            let gathered = gatheringSplitRuns(rows, groups: groups)
+            guard gathered != rows else { continue }
+            let byID = Dictionary(projects[index].sessions.map { ($0.id, $0) },
+                                  uniquingKeysWith: { first, _ in first })
+            projects[index].sessions = gathered.compactMap { byID[$0] }
+        }
+    }
+
     /// Installs a mutated group, dissolving it when fewer than two panes remain
     /// (absence of a group *is* the single-pane state).
     private func setGroup(at index: Int, to tree: SplitNode?) {
@@ -356,4 +377,36 @@ extension TermioStore {
         if index + 1 < leaves.count { return leaves[index + 1] }
         return index > 0 ? leaves[index - 1] : nil
     }
+}
+
+/// Reorders one project's session rows so each split group's members sit
+/// together. A run lands where its own first member already sat and its members
+/// keep their relative order, so the gesture that broke the run is what moves:
+/// a detached pane, or a stranger dragged into the middle, slides just below the
+/// group it interrupted. Pure and idempotent — rows already in runs come back
+/// untouched, which is what lets the store call it after every such mutation.
+func gatheringSplitRuns(_ rows: [Session.ID], groups: [[Session.ID]]) -> [Session.ID] {
+    var groupOf: [Session.ID: Int] = [:]
+    for (index, members) in groups.enumerated() {
+        for id in members { groupOf[id] = index }
+    }
+    guard rows.contains(where: { groupOf[$0] != nil }) else { return rows }
+
+    // Row order, not tree order: the sidebar's own order is what the user
+    // arranged, and gathering must not silently re-sort a run to match the layout.
+    var membersInRowOrder: [Int: [Session.ID]] = [:]
+    for id in rows {
+        guard let group = groupOf[id] else { continue }
+        membersInRowOrder[group, default: []].append(id)
+    }
+
+    var emitted: Set<Int> = []
+    var gathered: [Session.ID] = []
+    for id in rows {
+        guard let group = groupOf[id] else { gathered.append(id); continue }
+        if emitted.insert(group).inserted {
+            gathered.append(contentsOf: membersInRowOrder[group] ?? [id])
+        }
+    }
+    return gathered
 }
