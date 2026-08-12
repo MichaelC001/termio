@@ -47,6 +47,13 @@ struct FileBrowserView: View {
     /// parking pattern as `GitPanelModel`; replayed once when the pane is next visible.
     @State private var pendingWatcherRefresh = false
 
+    /// The host of the selected session when it is an SSH session. Non-nil means the
+    /// local disk isn't this session's disk: `inspectorProjectPath` resolves to nil,
+    /// so the watcher, the root read, and the drop target all stand down on their own.
+    private var sshHost: String? {
+        store.selectedSessionID.flatMap(store.session)?.sshHost
+    }
+
     /// The directory the tree is rooted at — see `TermioStore.inspectorProjectPath`.
     private var projectPath: String? { store.inspectorProjectPath }
 
@@ -57,9 +64,17 @@ struct FileBrowserView: View {
             // on a huge root (a home directory) costs whole seconds per switch —
             // and loses the tree's disclosure state besides (#207). Same
             // always-mounted-under-an-opaque-overlay shape as `InspectorRoot`.
-            VStack(spacing: 0) {
-                if let root { header(root: root) }
-                content
+            Group {
+                if let host = sshHost {
+                    // Fresh identity per host, so tree state never leaks between hosts.
+                    RemoteFileTreeView(host: host)
+                        .id(host)
+                } else {
+                    VStack(spacing: 0) {
+                        if let root { header(root: root) }
+                        content
+                    }
+                }
             }
             .allowsHitTesting(store.inspectorTab == .files)
             .accessibilityHidden(store.inspectorTab != .files)
@@ -198,7 +213,9 @@ struct FileBrowserView: View {
         case .files:
             EmptyView()
         case .search:
-            if let root {
+            if sshHost != nil {
+                remoteUnavailable(pane: localized("Search"))
+            } else if let root {
                 FileSearchView(
                     rootURL: root.url,
                     onDismiss: { store.inspectorTab = .files },
@@ -211,7 +228,9 @@ struct FileBrowserView: View {
                 noProject
             }
         case .changes:
-            if let repoRoot = projectPath {
+            if sshHost != nil {
+                remoteUnavailable(pane: localized("Changes"))
+            } else if let repoRoot = projectPath {
                 // Fresh identity per repo, so the panel model (selection, draft message,
                 // PR status) resets cleanly when the selected project moves.
                 // The visibility closure reads the store live (weakly — the model may
@@ -227,7 +246,9 @@ struct FileBrowserView: View {
                 noProject
             }
         case .issues:
-            if let repoRoot = projectPath {
+            if sshHost != nil {
+                remoteUnavailable(pane: localized("Issues"))
+            } else if let repoRoot = projectPath {
                 // Fresh identity per repo, like Changes: the panel model (connection
                 // phase, binding, list, pushed-in detail) resets when the project moves.
                 IssuesView(repoRoot: repoRoot)
@@ -267,6 +288,16 @@ struct FileBrowserView: View {
         } else {
             noProject
         }
+    }
+
+    /// What a pane that only reads local disk shows for an SSH session. Honest about
+    /// the gap rather than showing the Mac's own files under a remote session.
+    private func remoteUnavailable(pane: String) -> some View {
+        PaneEmptyState(
+            localized("Remote session"),
+            icon: .serverStack,
+            message: localized("\(pane) isn’t available for SSH sessions yet.")
+        )
     }
 
     /// The empty state the Files and Search panes share when no session is selected.
