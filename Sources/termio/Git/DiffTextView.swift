@@ -17,6 +17,9 @@ struct DiffTextPane: NSViewRepresentable {
     /// once they land; the document renders plain until then.
     let styled: [Int: NSAttributedString]
     let font: NSFont
+    /// The terminal's `Thicken glyphs`, so a diff and the terminal beside it are smoothed
+    /// the same way (see `DiffWashLayoutManager.thickenGlyphs`).
+    let thickenGlyphs: Bool
     let backgroundColor: NSColor
     /// Line-number ink, from the shared `gutterInk(for:)` so the diff's gutter and the
     /// file editor's read as one family.
@@ -171,6 +174,7 @@ struct DiffTextPane: NSViewRepresentable {
     private func apply(to textView: DiffTextView, layoutManager: DiffWashLayoutManager,
                        ruler: DiffGutterRulerView, coordinator: Coordinator) {
         textView.backgroundColor = backgroundColor
+        layoutManager.thickenGlyphs = thickenGlyphs
         if coordinator.appliedDocument !== document {
             coordinator.appliedDocument = document
             coordinator.appliedStyled = nil
@@ -458,6 +462,18 @@ final class DiffTextView: NSTextView {
 /// composites on top.
 final class DiffWashLayoutManager: NSLayoutManager {
     var document: DiffDocument?
+    /// Follows the terminal's `Thicken glyphs`. Ghostty rasterizes its own glyphs and only
+    /// dilates them when that switch is on, while AppKit smooths every glyph it draws — so
+    /// the same face at the same size reads heavier in a diff than in the terminal one pane
+    /// over. Turning smoothing off with the switch keeps one setting over both surfaces.
+    var thickenGlyphs = false
+
+    override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+        if !thickenGlyphs {
+            NSGraphicsContext.current?.cgContext.setShouldSmoothFonts(false)
+        }
+        super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
+    }
 
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         if let document, let container = textContainers.first {
