@@ -1252,6 +1252,7 @@
       }
     },
     "Custom": {
+      "comment": "Picker entry for a user-supplied item rather than a built-in one. Shown in both the theme picker and the Mobile tunnel picker, so keep it context-neutral.",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -5198,6 +5199,7 @@
       }
     },
     "On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.": {
+      "comment": "Footer under Settings ▸ Mobile ▸ Connect iPhone when the user runs their own relay. “Mac pill” is a control in the iPhone app and ▸ separates steps in a menu path.",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -5208,6 +5210,7 @@
       }
     },
     "On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.": {
+      "comment": "Footer under Settings ▸ Mobile ▸ Connect iPhone when a bundled third-party tunnel is selected. “Custom” names another entry in the same picker — translate it identically.",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -5218,6 +5221,7 @@
       }
     },
     "URL Pattern": {
+      "comment": "Label for the Settings ▸ Mobile field holding a regular expression that matches the public URL a self-hosted tunnel prints on start-up.",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -5228,6 +5232,7 @@
       }
     },
     "Not a valid regular expression": {
+      "comment": "Inline warning shown beneath the URL Pattern field when what the user typed does not compile as a regular expression.",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -5238,6 +5243,7 @@
       }
     },
     "Apply": {
+      "comment": "Button that saves the custom tunnel command and restarts the tunnel.",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -5248,6 +5254,7 @@
       }
     },
     "Runs on this Mac with your privileges when Custom is selected — no shell, arguments split on spaces. Use {port} for the companion port; the URL pattern is a regex matching the public https URL your relay prints.": {
+      "comment": "Help text beneath the custom tunnel fields. “{port}” is a literal token the app substitutes at runtime — keep it exactly as written. “Custom” names an entry in the tunnel picker above.",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -5258,6 +5265,7 @@
       }
     },
     "Font": {
+      "comment": "Category grouping the font-size shortcuts in Settings ▸ Keyboard.",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
