@@ -65,7 +65,7 @@ every agent died with no confirmation. Two users reported it the same day.
 | ⌃⌘F | Toggle full screen | presentation |
 | ⌘T / ⌘N | New Terminal / New Chat | creation |
 | ⌘Q | Quit — **confirms** when any session is working or needs you | process |
-| *(unbound)* | Close Session — **confirms** while its PTY is alive | process |
+| *(unbound)* | Close Session — **confirms** only for a shell with a command running | process |
 
 Closing the window keeps the app running with every session alive; the Dock icon
 brings the window back. Only ⌘Q reaches the teardown that kills PTYs.
@@ -84,24 +84,31 @@ how alarming the command sounds:
 
 - **⌘Q** confirms when a session is `working` or `needs-you`. An all-idle app
   quits without a word.
-- **Close Session** confirms whenever the session's PTY is alive — with one
-  carve-out: a plain shell parked at its prompt costs nothing to close, so it
-  doesn't ask. This is the same carve-out iTerm2 makes.
+- **Close Session** confirms only for a plain shell with a command running in
+  front of it — the iTerm2 carve-out. Agent sessions close without a word.
 - **⌘W** never confirms, because after #242 it destroys nothing.
 
-Two traps this policy avoids, both found while building it:
+The first cut of this rule confirmed whenever the session's PTY was alive, and
+that shipped. It was wrong for a reason worth recording: an agent session's PTY
+is alive from the moment it opens until the moment it closes, so "confirm on a
+live PTY" is not a rule about live work at all — it fires on **every** close of
+**every** agent session. That is the tax paragraph above describing itself. What
+it was protecting is weaker than the dialog claimed, too: an agent conversation
+is on disk and resumes, while a command typed into a shell has no other record.
 
-1. **Attention status is not process safety.** Keying Close Session off
+Two traps found while building this, kept because they still bound the design:
+
+1. **Attention status is not process safety.** Keying the confirmation off
    `working` / `needs-you` looks right and is wrong: a `done` or `idle` agent
    still holds an entire conversation, and merely *looking* at a session settles
-   it back to `idle`. What matters is whether a process is alive, not whether it
-   currently wants you.
+   it back to `idle`. Status can't carry a safety decision — part of why the
+   answer for agent sessions is not to ask at all.
 2. **A live agent looks idle to the kernel.** `tcgetpgrp` on the PTY master
    reports the foreground process group, which is how iTerm2 decides whether a
    pane is busy. A running `claude` shares the shell's process group, so that
-   check reports *no foreground job* for a live agent — verified. The rule is
-   therefore: a non-shell session with a live PTY always confirms; a plain shell
-   confirms only when something is actually running in front of it.
+   check reports *no foreground job* for a live agent — verified. The shell
+   carve-out is therefore keyed on `agent.isShell` first and the kernel probe
+   second, so an agent that *does* fork a child still never prompts.
 
 ## How the neighbours answer this
 
@@ -158,23 +165,25 @@ running" — the same policy as termio's Close Session, reached independently.
 
 The difference is the liveness probe. Ghostty asks the **shell** (OSC 133 command
 marks, via shell integration); termio asks the **kernel** (`tcgetpgrp` on the PTY
-master) plus the session's declared agent. Ghostty's signal is the more general
-one, but it depends on shell integration being installed and emitting marks;
-termio's works regardless of the user's shell config, at the cost of needing the
-agent carve-out described above.
+master), and only for a session whose declared agent is a shell. Ghostty's signal
+is the more general one, but it depends on shell integration being installed and
+emitting marks; termio's works regardless of the user's shell config, at the cost
+of saying nothing about an agent — which termio answers by not asking for agent
+sessions at all.
 
 Its close dialog also defaults focus to **Cancel**, so Return cancels. termio's
 does the same, after a first cut where Escape landed on the destructive button.
 Two independent implementations converging on that is the strongest signal in this
 doc that it's the right default.
 
-Worth watching: Ghostty users are actively pushing back on the dialog —
+Ghostty users push back on that dialog even at its lower frequency —
 [#9669](https://github.com/ghostty-org/ghostty/discussions/9669) asks for a
 `force_close_surface` action to bypass it,
 [#7357](https://github.com/ghostty-org/ghostty/discussions/7357) asks how to
-remove it entirely. That is the failure mode this design avoids by keeping the
-prompt off ⌘W: a confirmation that fires constantly becomes something users
-engineer their way around.
+remove it entirely. A confirmation that fires constantly becomes something users
+engineer their way around; that is why the prompt stays off ⌘W, and why the
+version of Close Session that asked on every agent close didn't survive first
+contact with using it.
 
 ### Raycast — the command layer, not the window layer
 
