@@ -505,6 +505,15 @@ final class PTYProcess: @unchecked Sendable {
     /// keystrokes via the companion bridge, synthetic `sessions send` text — so
     /// this is the one place input can be timestamped for all of them. Guarded
     /// by `writeLock` like the rest of the writer state.
+    ///
+    /// It cuts the other way too: in `.inMemory` mode this is also how libghostty
+    /// answers protocol queries — DSR, DA, XTGETTCAP — and a reply is
+    /// indistinguishable from a keystroke here, so a TUI that queries more often
+    /// than `userInputQuietWindow` starves `noteOutputActivity`'s idle→working
+    /// promotion. Hooks are no escape: a session is on that path *because* it has
+    /// hooks (`statusRules` is nil then), and `antigravity`/`hermes` have neither.
+    /// The fix is to stamp the key/paste entry and the companion input handler
+    /// instead of every stdin byte.
     private var lastInputAtLocked = Date.distantPast
 
     /// Thread-safe read of the last stdin-write instant. The status tap reads it
