@@ -3,7 +3,7 @@ title: Browser Control over CDP
 status: draft
 type: design
 created: 2026-08-07
-updated: 2026-08-07
+updated: 2026-08-12
 related:
   - companion-wire-protocol.md
   - termiod-session-protocol.md
@@ -68,9 +68,10 @@ in the way. Chrome's protocol is documented, versioned by Chrome, and heavily
 represented in model training data. A hand-rolled vocabulary is none of those,
 and every name in it has to be taught in a skill file.
 
-This is not speculative. `runbrowser` shipped the verb design and then removed
-it: 38 CLI commands to 11, 28 HTTP routes to 6, and a `@ref` element-handle
-system deleted outright. Each verb had existed in five places at once — a CLI
+This is not speculative. `termio-sh/browser` (formerly `runbrowser`) shipped the
+verb design and then removed it: 38 CLI commands to 11, 28 HTTP routes to 6, and
+a `@ref` element-handle system deleted outright. Each verb existed in five
+places at once — a CLI
 registration, a client method, an HTTP route, a server-side implementation, and
 a doc line — and they had drifted far enough that three tab routes were being
 called with no route registered to serve them. See
@@ -81,6 +82,37 @@ CDP passthrough) and `browser-use/browser-harness` (one code-execution entry
 point, raw `cdp()`, coordinate clicks from accessibility-tree boxes). termio
 belongs at the second pole for a reason specific to it: **the agent already has
 a shell.** A verb CLI re-implements, badly, what the agent can do by piping.
+
+### Prior art, and the limit of this argument
+
+`remorses/playwriter` (3.7k stars) is the same architecture — Chrome extension,
+`chrome.debugger`, WebSocket relay on port 19988 — and `runbrowser` began as a
+fork of it. Its interface is not verbs and not raw CDP: it runs **real
+Playwright** in a stateful sandbox, so the agent writes
+`await page.locator('aria-ref=e5').click()`.
+
+The "don't invent a vocabulary" argument does **not** dispose of that. Playwright
+is not a vocabulary we invented — it is a de facto standard with more
+training-data presence than raw CDP calls, and `page.click()` is not a naive
+wrapper around `Input.dispatchMouseEvent`. It is auto-waiting plus actionability
+checks (visible, stable, enabled, receives events) refined over years. On the
+two axes that matter most it is simply better than what is specified here:
+grounding (`aria-ref` handles) and event-driven waiting (`waitForResponse`,
+`Promise.all`).
+
+We are not adopting it, for reasons of dependency rather than design:
+
+- It requires **Node plus Playwright** on the machine. termio ships no JS
+  runtime and must not acquire one — the same objection that rules out bundling
+  `bun`.
+- playwriter depends on `@xmorse/playwright-core`, a **fork** of playwright-core.
+  Driving a browser through an extension relay needed patches upstream does not
+  carry. Adopting Playwright would mean depending on someone's fork of a large,
+  fast-moving Google library, or maintaining our own.
+
+So: same wire as playwriter, none of playwriter's dependencies, and — stated
+plainly rather than hidden — **a thinner layer than playwriter's by choice.**
+Where that thinness costs real capability, the answer is §7, not a Node runtime.
 
 **`status` earns its place** because it is the one fact that is not about the
 page. Whether a browser is attached, and which target this session is bound to,
@@ -178,24 +210,48 @@ Every response echoes the target it acted on. Agents lose their thread between
 turns, and self-describing output survives context compaction where implicit
 server-side state does not.
 
-## 7. The known gap: events
+## 7. The two known gaps, and where they get closed
 
-`cdp` sends commands and returns results. CDP is commands **and** events, and
-this design currently delivers none of them. That forecloses:
+Raw CDP is missing two things Playwright gives away for free. Both are real, and
+the answer to both is **the extension**, not a runtime on the Mac.
 
-- waiting on navigation, popups, dialogs, download completion
-- capturing network or console activity caused by an action
-- screencast frames, which arrive as `Page.screencastFrame`
-- out-of-process iframe and worker target attachment
+**Events.** `cdp` sends commands and returns results. CDP is commands *and*
+events, and this design currently delivers none of them. That forecloses waiting
+on navigation, popups, dialogs and download completion; capturing the network or
+console activity an action caused; screencast frames, which arrive as
+`Page.screencastFrame`; and out-of-process iframe or worker attachment. Polling
+for an observable side effect covers loads and most SPA waiting, but genuinely
+does not cover downloads or dialogs, and the skill must say so rather than let
+an agent discover it by retrying.
 
-The workaround is polling for an observable side effect, which covers loads and
-most SPA waiting but genuinely does not cover downloads or dialogs. The skill
-must say so plainly rather than letting an agent discover it by retrying.
+**Actionability.** `Input.dispatchMouseEvent` at a computed coordinate has no
+notion of whether the element is visible, stable, enabled, scrolled into view,
+or covered by an overlay. Writing those steps into a skill file as prose is a
+hand-rolled, unverified reimplementation of the thing Playwright spent years
+getting right — precisely the mistake §2 claims to avoid, just relocated from
+code into documentation.
 
-If this needs solving, the shape that preserves the minimalism is a third verb —
+**The extension is already JavaScript running in the page.** That is the part
+worth noticing: actionability does not need Node on the host. A content script
+can wait for visible + stable + enabled, scroll into view, and then dispatch —
+on the order of a hundred lines, no runtime anywhere, and it recovers most of
+what Playwright's `click()` actually buys. The same applies to grounding: stable
+element handles minted in-page survive better than backend node ids resolved
+host-side.
+
+So the split is:
+
+- **`cdp`** stays the escape hatch and the whole protocol.
+- **The extension** owns the few behaviours that are genuinely hard and
+  genuinely reusable: actionability, stable handles, and an event subscription
+  the host can read.
+
+The host-side surface for events, when it lands, should be one verb —
 `termio browser events subscribe|read` — not a per-case `wait` vocabulary.
-**Deliberately deferred:** it should be designed once, with a real task that
-needs it, rather than guessed at now.
+
+**Deliberately deferred:** both are designed against a real task that needs
+them, not guessed at now. What is decided is *where they live* — in the
+extension, not in a skill file and not behind a Node dependency.
 
 ## 8. Remote sessions: the part that is ours
 
@@ -238,9 +294,12 @@ in their browser from their pocket.
 
 ## 11. Open questions
 
-1. **Where the extension source lives** — `chrome-extension/` in this repo,
-   beside the Mac app, iOS app and `Shared/`, or a separate `termio-sh/browser`.
-   Leaning in-repo: it must stay in lockstep with the protocol it speaks.
+1. ~~Where the extension source lives.~~ **Decided:** `termio-sh/browser`, its
+   own repo, transferred from `runbrowser/runbrowser` with history intact. The
+   accepted cost is cross-repo protocol sync — the extension and the companion
+   server define two ends of one contract and now ship from two repos, which is
+   the skew problem `companion-wire-protocol.md` exists to describe. Version the
+   handshake accordingly.
 2. **Web Store listing** — unavoidable cost, and the long pole. v0 can ship the
    extension unpacked in the bundle with the Settings button revealing it and
    opening `chrome://extensions`; that unblocks everything else.
@@ -259,4 +318,7 @@ in their browser from their pocket.
 - `chrome-devtools-mcp` tool reference:
   <https://github.com/ChromeDevTools/chrome-devtools-mcp>
 - The verb-removal accounting: `rfcs/minimal-cdp-surface.md` in
-  <https://github.com/runbrowser/runbrowser>
+  <https://github.com/termio-sh/browser>
+- `remorses/playwriter` — the upstream this forked from; Playwright in a
+  stateful sandbox over the same extension relay:
+  <https://github.com/remorses/playwriter>
