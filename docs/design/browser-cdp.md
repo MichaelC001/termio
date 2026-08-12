@@ -71,17 +71,15 @@ and every name in it has to be taught in a skill file.
 This is not speculative. `termio-sh/browser` (formerly `runbrowser`) shipped the
 verb design and then removed it: 38 CLI commands to 11, 28 HTTP routes to 6, and
 a `@ref` element-handle system deleted outright. Each verb existed in five
-places at once — a CLI
-registration, a client method, an HTTP route, a server-side implementation, and
-a doc line — and they had drifted far enough that three tab routes were being
-called with no route registered to serve them. See
-`rfcs/minimal-cdp-surface.md` in that repo for the full accounting.
+places at once — a CLI registration, a client method, an HTTP route, a
+server-side implementation and a doc line — and they had drifted far enough
+that three tab routes were being called with no route registered to serve them.
+`rfcs/minimal-cdp-surface.md` in that repo has the full accounting.
 
-The industry poles are `chrome-devtools-mcp` (51 tools, `uid` handles, no raw
-CDP passthrough) and `browser-use/browser-harness` (one code-execution entry
-point, raw `cdp()`, coordinate clicks from accessibility-tree boxes). termio
-belongs at the second pole for a reason specific to it: **the agent already has
-a shell.** A verb CLI re-implements, badly, what the agent can do by piping.
+The reason to sit at the raw end rather than the `chrome-devtools-mcp` end
+(51 tools, `uid` handles, no CDP passthrough) is specific to termio: **the agent
+already has a shell.** A verb CLI re-implements, badly, what the agent can do by
+piping. Everything below is why that is necessary but not sufficient.
 
 ### Prior art, and the limit of this argument
 
@@ -113,6 +111,27 @@ We are not adopting it, for reasons of dependency rather than design:
 So: same wire as playwriter, none of playwriter's dependencies, and — stated
 plainly rather than hidden — **a thinner layer than playwriter's by choice.**
 Where that thinness costs real capability, the answer is §7, not a Node runtime.
+
+`browser-use/browser-harness` (16.6k stars) is the third design, and reading it
+carefully is what produced §7. Its interface is one code-execution entry point
+with ~25 thin helpers, and it clicks with `click_at_xy` computed from an
+accessibility-tree box — **no visibility, stability, enabled or obstruction
+check**, exactly the weakness of raw CDP. It compensates with two bets nobody
+else makes: the agent **edits its own helpers mid-task** when something is
+missing, and site-specific knowledge accumulates as **per-domain markdown**
+loaded on demand. The repo's mass is in the latter — roughly 20KB per site.
+
+Two theories of reliability, then. Playwright makes the primitive strong so the
+agent need not think; browser-harness accepts a weak primitive and invests in
+the loop that repairs it. They are complementary, not opposed, and §7 takes
+from both.
+
+One asymmetry disqualifies browser-harness as a model for the transport,
+though: it connects over `--remote-debugging-port` and launches Chrome itself.
+Per §1 that **cannot reach the user's default profile** on Chrome 136+. It
+automates *a* browser; termio automates *your* browser. Its design choices —
+coordinate clicks, launch-your-own — are reasonable in a world where the
+profile does not matter, and are not reasonable here.
 
 **`status` earns its place** because it is the one fact that is not about the
 page. Whether a browser is attached, and which target this session is bound to,
@@ -253,6 +272,43 @@ The host-side surface for events, when it lands, should be one verb —
 them, not guessed at now. What is decided is *where they live* — in the
 extension, not in a skill file and not behind a Node dependency.
 
+### The two capabilities that cost nothing
+
+browser-harness's distinctive bets are the cheapest things on this list for
+termio, and they are currently missing from the design.
+
+**Self-repair.** browser-harness lets the agent edit `agent_helpers.py`
+mid-task: hit a missing capability, write it, re-run. That requires a code
+execution environment with an editable helpers file — which **termio's agent
+already has**, because it is sitting in a shell with a filesystem. The cost is
+not code; it is one instruction in the skill: *when you work out a CDP sequence
+that works, write it to a script and reuse it, rather than re-deriving it next
+turn.* Without that sentence the agent re-derives the same click sequence every
+time and we get browser-harness's weak primitive with none of its recovery.
+
+**Domain knowledge.** The long tail — this site needs a scroll before the button
+is real, that one rejects synthetic events — is not eliminable by any interface.
+browser-harness stores it as per-domain markdown. termio's equivalent already
+exists: **skills**, with a distribution format defined in
+[agent-plugins.md](./agent-plugins.md). Also free.
+
+That yields the full picture:
+
+| need | answer | cost |
+| --- | --- | --- |
+| grounding | AX tree + stable handles minted in-extension | small |
+| actionability | extension content script | ~100 lines |
+| waiting / events | `browser events subscribe\|read` | the one real gap |
+| self-repair | agent writes scripts to disk — say so in the skill | free |
+| domain knowledge | skills, distributed as plugins | free |
+| escape hatch | `cdp` | done |
+
+Which is stronger than the alternatives on their own terms: better primitives
+than browser-harness, fewer dependencies than playwriter, and the only one of
+the three that reaches a logged-in profile at all. **Events remain the honest
+weak spot** — the one item where both are ahead and no amount of skill-writing
+substitutes.
+
 ## 8. Remote sessions: the part that is ours
 
 `termio browser` from a termiod session on a VPS routes back over the same
@@ -322,3 +378,6 @@ in their browser from their pocket.
 - `remorses/playwriter` — the upstream this forked from; Playwright in a
   stateful sandbox over the same extension relay:
   <https://github.com/remorses/playwriter>
+- `browser-use/browser-harness` — thin CDP helpers, agent-editable at runtime,
+  with per-domain knowledge as markdown:
+  <https://github.com/browser-use/browser-harness>
