@@ -33,7 +33,11 @@ enum MarkdownScripting {
     }
 }
 
-private final class ScriptEngine {
+// @unchecked: every stored property is touched only with `lock` held — the same
+// lock the doc above names as what makes one `JSContext` safe to share between
+// the companion queue and the main thread. Retire with `Mutex` once the
+// deployment floor reaches macOS 15.
+private final class ScriptEngine: @unchecked Sendable {
     static let shared = ScriptEngine()
 
     private let lock = NSLock()

@@ -478,7 +478,9 @@ struct AgentHookSpec: Hashable {
 /// one after Settings writes or deletes a user manifest.
 final class AgentCatalog {
     private static let sharedLock = NSLock()
-    private static var _shared = AgentCatalog()
+    // Guarded by `sharedLock` on every access; the lock is the synchronization
+    // the compiler cannot see.
+    nonisolated(unsafe) private static var _shared = AgentCatalog()
 
     static var shared: AgentCatalog {
         sharedLock.withLock { _shared }

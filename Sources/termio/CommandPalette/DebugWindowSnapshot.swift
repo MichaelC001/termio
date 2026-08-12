@@ -18,13 +18,18 @@ enum DebugWindowSnapshot {
             suspensionBehavior: .deliverImmediately)
     }
 
-    private final class Trigger: NSObject {
+    // @unchecked: stateless — it exists only as a selector target, and `fire`
+    // hops to the main actor before touching anything.
+    private final class Trigger: NSObject, @unchecked Sendable {
         static let shared = Trigger()
         @objc func fire(_ note: Notification) {
-            DispatchQueue.main.async { DebugWindowSnapshot.capture() }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { DebugWindowSnapshot.capture() }
+            }
         }
     }
 
+    @MainActor
     static func capture() {
         guard let window = NSApp.windows.first(where: {
             $0.frameAutosaveName == AppDelegate.mainWindowFrameAutosaveName

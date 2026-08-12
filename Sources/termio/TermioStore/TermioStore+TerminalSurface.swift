@@ -370,7 +370,14 @@ extension TermioStore {
                     // usually microseconds, but they take locks and can stall under
                     // memory pressure or on a slow mount, and a main-thread stall is a
                     // beachball. Only the @MainActor-published tree writes hop to main.
-                    let work = DispatchWorkItem {
+                    //
+                    // `@Sendable` is what says "off the main thread" to the compiler,
+                    // and it is load-bearing: a closure written in this main-actor
+                    // scope otherwise inherits main-actor isolation, and the block
+                    // `DispatchWorkItem` wraps it in re-checks that isolation when the
+                    // utility queue runs it — a trap on the first poll rather than a
+                    // hop. Marking it also makes the captures checked for real.
+                    let work = DispatchWorkItem { @Sendable [weak self, weak pty] in
                         guard let pty else { return }
                         // A hand-started agent (a `claude` typed at the prompt) becomes
                         // the foreground process; when it exits the shell returns and
@@ -379,8 +386,10 @@ extension TermioStore {
                             .flatMap { AgentCatalog.shared.agent(forForegroundArguments: $0) }
                         let cwd = followCwd ? pty.currentWorkingDirectory() : nil
                         DispatchQueue.main.async {
-                            self?.noteForegroundAgent(detected, for: sessionID)
-                            if let cwd { self?.noteWorkingDirectory(cwd, for: sessionID) }
+                            MainActor.assumeIsolated {
+                                self?.noteForegroundAgent(detected, for: sessionID)
+                                if let cwd { self?.noteWorkingDirectory(cwd, for: sessionID) }
+                            }
                         }
                     }
                     pendingPoll = work
@@ -741,15 +750,15 @@ extension TermioStore {
     /// attaches (the session was created but never shown).
     private func warmUpRendering(_ state: TerminalViewState) {
         let started = Date()
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak state] timer in
-            MainActor.assumeIsolated {
-                guard let state else { timer.invalidate(); return }
+        let ref = WeakMainActorRef(state)
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { timer in
+            let keepPumping = MainActor.assumeIsolated { () -> Bool in
+                guard let state = ref.value else { return false }
                 state.controller.tick()
                 let elapsed = Date().timeIntervalSince(started)
-                if (state.surfaceSize != nil && elapsed > 2.0) || elapsed > 6.0 {
-                    timer.invalidate()
-                }
+                return !((state.surfaceSize != nil && elapsed > 2.0) || elapsed > 6.0)
             }
+            if !keepPumping { timer.invalidate() }
         }
         RunLoop.main.add(timer, forMode: .common)
     }
@@ -881,13 +890,16 @@ extension TermioStore {
     /// surface above, same fix: pump while it matters, stop when it doesn't.
     func beginPaneDragRepaint() {
         paneDragRepaintTimer?.invalidate()
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
-            MainActor.assumeIsolated {
-                guard let self else { timer.invalidate(); return }
+        let ref = WeakMainActorRef(self)
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { timer in
+            let keepPumping = MainActor.assumeIsolated { () -> Bool in
+                guard let self = ref.value else { return false }
                 for id in self.visiblePaneIDs {
                     self.surfaces[id]?.controller.tick()
                 }
+                return true
             }
+            if !keepPumping { timer.invalidate() }
         }
         RunLoop.main.add(timer, forMode: .common)
         paneDragRepaintTimer = timer
@@ -906,14 +918,14 @@ extension TermioStore {
 
     private func pumpRendering(_ state: TerminalViewState, duration: TimeInterval) {
         let started = Date()
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak state] timer in
-            MainActor.assumeIsolated {
-                guard let state else { timer.invalidate(); return }
+        let ref = WeakMainActorRef(state)
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { timer in
+            let keepPumping = MainActor.assumeIsolated { () -> Bool in
+                guard let state = ref.value else { return false }
                 state.controller.tick()
-                if Date().timeIntervalSince(started) > duration {
-                    timer.invalidate()
-                }
+                return Date().timeIntervalSince(started) <= duration
             }
+            if !keepPumping { timer.invalidate() }
         }
         RunLoop.main.add(timer, forMode: .common)
     }
@@ -1033,4 +1045,13 @@ extension TermioStore {
         }
         return true
     }
+}
+
+/// Carries a weak main-actor reference into a pump timer's @Sendable closure.
+/// @unchecked: the timers are added to RunLoop.main only, and their closures
+/// re-enter the main actor (`assumeIsolated`) before touching the referent.
+private struct WeakMainActorRef<Value: AnyObject>: @unchecked Sendable {
+    private weak var referent: Value?
+    init(_ value: Value) { referent = value }
+    @MainActor var value: Value? { referent }
 }

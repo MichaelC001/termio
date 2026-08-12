@@ -199,9 +199,21 @@ final class RecorderSearchField: NSSearchField, NSSearchFieldDelegate {
     private var currentDisplay: String?
     private var currentCustomized = false
     private var isRecording = false
-    private var eventMonitor: Any?
+    /// Holds the recording session's event monitor and window observer. Their
+    /// last-resort teardown lives in this bag's own deinit: the recorder's
+    /// deinit is nonisolated in Swift 6 and cannot touch main-actor state, but
+    /// dropping the recorder drops the bag, which still removes both handles.
+    private final class RecordingMonitors: @unchecked Sendable {
+        var eventMonitor: Any?
+        var windowObserver: NSObjectProtocol?
+        deinit {
+            if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
+            if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) }
+        }
+    }
+
+    private let monitors = RecordingMonitors()
     private var cancelCell: NSButtonCell?
-    private var windowObserver: NSObjectProtocol?
 
     init() {
         super.init(frame: .zero)
@@ -226,11 +238,6 @@ final class RecorderSearchField: NSSearchField, NSSearchFieldDelegate {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
-
-    deinit {
-        if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
-        if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) }
-    }
 
     /// The upstream control's fixed footprint, one width for every row.
     override var intrinsicContentSize: NSSize {
@@ -275,10 +282,10 @@ final class RecorderSearchField: NSSearchField, NSSearchFieldDelegate {
         DispatchQueue.main.async { [weak self] in
             (self?.currentEditor() as? NSTextView)?.insertionPointColor = .clear
         }
-        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        monitors.eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handle(event)
         }
-        windowObserver = NotificationCenter.default.addObserver(
+        monitors.windowObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification, object: window, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.blur() }
@@ -323,13 +330,13 @@ final class RecorderSearchField: NSSearchField, NSSearchFieldDelegate {
     private func endRecording() {
         guard isRecording else { return }
         isRecording = false
-        if let eventMonitor {
+        if let eventMonitor = monitors.eventMonitor {
             NSEvent.removeMonitor(eventMonitor)
-            self.eventMonitor = nil
+            monitors.eventMonitor = nil
         }
-        if let windowObserver {
+        if let windowObserver = monitors.windowObserver {
             NotificationCenter.default.removeObserver(windowObserver)
-            self.windowObserver = nil
+            monitors.windowObserver = nil
         }
         placeholderString = localized("Record Shortcut")
         stringValue = currentDisplay ?? ""

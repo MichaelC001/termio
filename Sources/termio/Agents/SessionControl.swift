@@ -58,7 +58,10 @@ struct ControlRequest: Decodable {
 ///
 /// This type owns only the transport. Resolving the caller's project, enforcing
 /// project scope, and acting on sessions all live in `TermioStore` (the handler).
-final class SessionControlListener {
+// @unchecked: the handler closures are immutable @MainActor values, and every
+// mutable property is confined to `queue`; the queue is the synchronization the
+// compiler cannot see.
+final class SessionControlListener: @unchecked Sendable {
     /// The control socket, alongside the status socket and session tree under
     /// termio's Application Support directory. Deliberately a *different* file from
     /// `HookListener.socketURL`: this one accepts drive commands, not status pings.
@@ -368,7 +371,9 @@ struct SessionWatchEvent {
 /// client (`… | nc -U`) half-closes its write side as soon as it has sent the
 /// request, which would look like a disconnect while the client is very much still
 /// reading. `SO_NOSIGPIPE` keeps that failing write from signalling the whole app.
-final class SessionWatchHub {
+// @unchecked: every mutable property is confined to `queue`, per the isolation
+// story above; the queue is the synchronization the compiler cannot see.
+final class SessionWatchHub: @unchecked Sendable {
     static let shared = SessionWatchHub()
 
     private struct Subscriber {

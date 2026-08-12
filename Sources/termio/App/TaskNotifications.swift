@@ -196,9 +196,11 @@ final class TaskNotificationCenter: NSObject {
                          identifier: String,
                          agent: AgentPreset?,
                          precondition: @escaping () -> Bool = { true }) {
+        // The whole flow stays on the main actor — content and precondition
+        // never cross an isolation boundary; only the awaits on the center do.
         let center = UNUserNotificationCenter.current()
-        func post() {
-            DispatchQueue.main.async {
+        Task { @MainActor in
+            let post = {
                 guard precondition() else { return }
                 // The banner's leading icon is always termio's own (macOS reserves
                 // it for the posting app), so the agent's mark rides as the trailing
@@ -213,20 +215,17 @@ final class TaskNotificationCenter: NSObject {
                     }
                 }
             }
-        }
-        center.getNotificationSettings { settings in
-            switch settings.authorizationStatus {
+            switch await center.notificationSettings().authorizationStatus {
             case .authorized, .provisional, .ephemeral:
                 post()
             case .notDetermined:
                 // No decision yet — request now. An ad-hoc-signed dev build is
                 // rejected outright here (UNErrorDomain 1: dev builds can never
                 // banner — test on a release build); a denial reads granted=false.
-                center.requestAuthorization(options: [.alert, .sound]) { granted, error in
-                    if let error {
-                        Log.app.error("notification authorization failed: \(error.localizedDescription, privacy: .public)")
-                    }
-                    if granted { post() }
+                do {
+                    if try await center.requestAuthorization(options: [.alert, .sound]) { post() }
+                } catch {
+                    Log.app.error("notification authorization failed: \(error.localizedDescription, privacy: .public)")
                 }
             default:
                 break  // .denied — the user said no; nothing to post.
@@ -335,9 +334,21 @@ extension TaskNotificationCenter: UNUserNotificationCenterDelegate {
     ) {
         let userInfo = response.notification.request.content.userInfo
         let id = (userInfo[Self.sessionKey] as? String).flatMap(UUID.init)
+        // The handler is UN's own continuation — called exactly once, after the
+        // main-actor work; the box only carries it across the hop.
+        let done = UncheckedSendable(completionHandler)
         DispatchQueue.main.async {
-            if let id { self.store?.revealSession(id) }
-            completionHandler()
+            MainActor.assumeIsolated {
+                if let id { self.store?.revealSession(id) }
+            }
+            done.value()
         }
     }
+}
+
+/// Carries a non-Sendable value across a hop the compiler cannot check; every
+/// use site documents why the crossing is safe.
+private struct UncheckedSendable<Value>: @unchecked Sendable {
+    let value: Value
+    init(_ value: Value) { self.value = value }
 }

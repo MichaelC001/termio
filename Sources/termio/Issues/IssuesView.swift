@@ -1087,26 +1087,26 @@ final class GitHubAssetSchemeHandler: NSObject, WKURLSchemeHandler {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            DispatchQueue.main.async {
-                if let error {
-                    settle { $0.didFailWithError(error) }
-                } else if let data, let response {
-                    settle {
-                        // Frame the payload under the request's own custom-scheme URL so
-                        // WebKit doesn't reject a response that arrived over https.
-                        let framed = URLResponse(
-                            url: $0.request.url ?? url, mimeType: response.mimeType,
-                            expectedContentLength: data.count, textEncodingName: nil)
-                        $0.didReceive(framed)
-                        $0.didReceive(data)
-                        $0.didFinish()
-                    }
-                } else {
-                    settle { $0.didFailWithError(URLError(.badServerResponse)) }
+        // The scheme task must never leave the main actor (WebKit traps on
+        // off-main use), so the load runs in a main-actor task and only the
+        // Sendable request/data/response cross to URLSession and back.
+        Task { @MainActor in
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                settle {
+                    // Frame the payload under the request's own custom-scheme URL so
+                    // WebKit doesn't reject a response that arrived over https.
+                    let framed = URLResponse(
+                        url: $0.request.url ?? url, mimeType: response.mimeType,
+                        expectedContentLength: data.count, textEncodingName: nil)
+                    $0.didReceive(framed)
+                    $0.didReceive(data)
+                    $0.didFinish()
                 }
+            } catch {
+                settle { $0.didFailWithError(error) }
             }
-        }.resume()
+        }
     }
 
     func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {

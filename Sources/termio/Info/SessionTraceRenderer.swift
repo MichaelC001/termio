@@ -94,16 +94,12 @@ enum SessionTraceRenderer {
     }
 
     /// Both Claude and Codex stamp their timestamps with fractional seconds
-    /// (`…:01.327Z`), which the default `ISO8601DateFormatter` won't parse — so try the
-    /// fractional format first and fall back to the plain one.
-    private static let isoFractional: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-    private static let iso = ISO8601DateFormatter()
+    /// (`…:01.327Z`), which the default ISO 8601 style won't parse — so try the
+    /// fractional style first and fall back to the plain one.
+    private static let isoFractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+    private static let iso = Date.ISO8601FormatStyle()
     private static func date(from string: String) -> Date? {
-        isoFractional.date(from: string) ?? iso.date(from: string)
+        (try? isoFractional.parse(string)) ?? (try? iso.parse(string))
     }
 
     private static func analyze(_ rows: [[String: Any]]) -> Stats {
