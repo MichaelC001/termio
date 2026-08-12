@@ -376,8 +376,8 @@ struct PairedMac: Codable, Equatable {
 
 /// The app-wide view of the Mac roster link: the paired-Mac list, which one
 /// is active, and the active link's live state. The sidebar owns the socket
-/// and keeps `state` current; other screens (the Connectivity settings page,
-/// the device rail) observe the notifications and read back.
+/// and keeps `state` current; other screens (the Devices settings page)
+/// observe the notifications and read back.
 enum CompanionLink {
     enum State: Equatable {
         /// No Mac address saved.
@@ -404,7 +404,7 @@ enum CompanionLink {
     static let pairingDidChange = Notification.Name("CompanionPairingDidChange")
     /// Posted when the paired-Mac list or the active choice changes for any
     /// reason (including an identity adoption that only renames an entry) —
-    /// the Connectivity page and the device rail reload on it.
+    /// the Devices page reloads on it.
     static let macsDidChange = Notification.Name("CompanionMacsDidChange")
 
     private static let macsKey = "companion.pairedMacs"
@@ -504,8 +504,8 @@ enum CompanionLink {
         NotificationCenter.default.post(name: macsDidChange, object: nil)
     }
 
-    /// Switch the active Mac — the tap on a switcher tile or a Connectivity
-    /// row. The socket's owner tears down and redials on `pairingDidChange`.
+    /// Switch the active Mac — the tap on a row in the Devices page. The socket's
+    /// owner tears down and redials on `pairingDidChange`.
     static func switchTo(_ id: String) {
         guard id != activeMac?.id, pairedMacs.contains(where: { $0.id == id }) else { return }
         setActive(id)

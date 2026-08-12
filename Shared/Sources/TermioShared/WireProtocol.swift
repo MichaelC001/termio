@@ -698,7 +698,7 @@ public struct CompanionRoster: Codable, Sendable, Equatable {
     /// does neither). nil from an older Mac that predates multi-Mac pairing.
     public let macID: String?
     /// The Mac's user-facing computer name ("Jiwei's MacBook Pro"), for the
-    /// phone's paired-Mac list and switcher tiles. nil from an older Mac.
+    /// phone's paired-Mac list. nil from an older Mac.
     public let macName: String?
     public let projects: [RosterProject]
     /// The agents the Mac has enabled in Settings ▸ Agents, in preset order —

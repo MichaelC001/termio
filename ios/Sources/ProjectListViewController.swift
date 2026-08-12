@@ -27,8 +27,6 @@ final class ProjectListViewController: UIViewController {
     private var sortByName = UserDefaults.standard.string(forKey: "sessions.sortOrder") == "name"
 
     private let filterButton = UIButton(type: .system)
-    /// The Slack-style paired-Mac switcher, revealed by a left-edge swipe.
-    private let macRail = MacSwitcherRail()
     private let tableView = UITableView(frame: .zero, style: .grouped)
     /// The Telegram/iMessage-style zero state shown when there are no projects
     /// to list — never fake rows. Its copy tracks `CompanionLink.state`.
@@ -56,8 +54,6 @@ final class ProjectListViewController: UIViewController {
         let topBar = configureTopBar()
         configureTable(below: topBar)
         configureEmptyState(below: topBar)
-        macRail.attach(to: view)
-        macRail.onAddMac = { [weak self] in self?.presentPairingScanner() }
         refilter()
         rosterObserver = NotificationCenter.default.addObserver(
             forName: RosterStore.didChange, object: nil, queue: .main
@@ -146,24 +142,14 @@ final class ProjectListViewController: UIViewController {
         refilter()
     }
 
-    /// The rail's ＋ tile: pair a new Mac by scanning its QR, same path as
-    /// Settings ▸ Connectivity ▸ Scan QR Code.
-    private func presentPairingScanner() {
-        let scanner = QRScannerViewController()
-        scanner.onCode = { code in
-            CompanionLink.pair(rawAddress: code)
-        }
-        present(UINavigationController(rootViewController: scanner), animated: true)
-    }
-
-    private func presentSettings(deepLinkToConnectivity: Bool = false) {
+    private func presentSettings(deepLinkToDevices: Bool = false) {
         // The sheet inherits the window's app-wide Appearance override, same
         // as every other screen.
         let nav = UINavigationController(rootViewController: SettingsViewController())
-        if deepLinkToConnectivity {
-            // "Connect a Mac" promises pairing, so land on the Connectivity
-            // page itself; back reveals full Settings, swipe-down dismisses.
-            nav.pushViewController(ConnectivitySettingsViewController(), animated: false)
+        if deepLinkToDevices {
+            // "Connect a Mac" promises pairing, so land on the Devices page
+            // itself; back reveals full Settings, swipe-down dismisses.
+            nav.pushViewController(DevicesSettingsViewController(), animated: false)
         }
         present(nav, animated: true)
     }
@@ -323,11 +309,11 @@ final class ProjectListViewController: UIViewController {
     /// immediate reconnect and drop back to the "Connecting…" copy.
     private func emptyStateAction() {
         if case .unpaired = CompanionLink.state {
-            presentSettings(deepLinkToConnectivity: true)
+            presentSettings(deepLinkToDevices: true)
             return
         }
         if case .failed = CompanionLink.state {
-            presentSettings(deepLinkToConnectivity: true)
+            presentSettings(deepLinkToDevices: true)
             return
         }
         reconnectStalled = false

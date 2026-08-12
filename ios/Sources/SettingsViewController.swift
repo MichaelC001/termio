@@ -5,7 +5,7 @@ import UIKit
 
 /// The app's settings sheet — ChatGPT-style two-level: this root is a small
 /// menu of categories, each pushing its own page, plus an About group.
-/// Connectivity leads (the Mac link is the app's lifeline — its row carries
+/// Devices leads (the Mac link is the app's lifeline — its row carries
 /// the live link status inline, the only at-a-glance copy of it since the
 /// session list dropped its device pill); Appearance carries the terminal look.
 final class SettingsViewController: UITableViewController {
@@ -14,11 +14,11 @@ final class SettingsViewController: UITableViewController {
     }
 
     private enum Row: Int, CaseIterable {
-        case connectivity, appearance, terminalKeyboard, voice
+        case devices, appearance, terminalKeyboard, voice
 
         var title: String {
             switch self {
-            case .connectivity: "Connectivity"
+            case .devices: "Devices"
             case .appearance: "Appearance"
             case .terminalKeyboard: "Terminal Keyboard"
             case .voice: "Voice"
@@ -29,7 +29,7 @@ final class SettingsViewController: UITableViewController {
         /// matches the native tab bar and the Mac settings sidebar.
         var icon: HugeIcon {
             switch self {
-            case .connectivity: .wireless
+            case .devices: .wireless
             case .appearance: .paintBoard
             case .terminalKeyboard: .keyboard
             case .voice: .voice
@@ -38,7 +38,7 @@ final class SettingsViewController: UITableViewController {
 
         func makePage() -> UIViewController {
             switch self {
-            case .connectivity: ConnectivitySettingsViewController()
+            case .devices: DevicesSettingsViewController()
             case .appearance: AppearanceSettingsViewController()
             case .terminalKeyboard: TerminalKeyboardSettingsViewController()
             case .voice: VoiceSettingsViewController()
@@ -105,7 +105,7 @@ final class SettingsViewController: UITableViewController {
             }
             navigationItem.rightBarButtonItem = closeItem
         }
-        // The Connectivity row's inline status tracks the live link.
+        // The Devices row's inline status tracks the live link.
         stateObserver = NotificationCenter.default.addObserver(
             forName: CompanionLink.stateDidChange, object: nil, queue: .main
         ) { [weak self] _ in
@@ -115,13 +115,13 @@ final class SettingsViewController: UITableViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        // Coming back from Connectivity after pairing/forgetting: refresh
+        // Coming back from the Devices page after pairing/forgetting: refresh
         // the inline status.
         tableView.reloadData()
     }
 
-    /// The Connectivity row's detail: a presence dot + the state. Shared with
-    /// the Connectivity page's active-Mac row so the two always read the same.
+    /// The Devices row's detail: a presence dot + the state. Shared with the
+    /// Devices page's active-Mac row so the two always read the same.
     static func linkStatus(textStyle: UIFont.TextStyle = .body) -> NSAttributedString {
         let (color, text): (UIColor, String) = switch CompanionLink.state {
         case .unpaired: (.tertiaryLabel, "Not Paired")
@@ -174,7 +174,7 @@ final class SettingsViewController: UITableViewController {
             cell.imageView?.image = row.icon.strokeImage(boxSize: 22)
             cell.imageView?.tintColor = .label
             cell.accessoryType = .disclosureIndicator
-            if row == .connectivity {
+            if row == .devices {
                 cell.detailTextLabel?.attributedText = Self.linkStatus()
             }
         default:
@@ -549,15 +549,15 @@ final class VoiceSettingsViewController: UITableViewController {
     }
 }
 
-// MARK: - Connectivity
+// MARK: - Devices
 
-/// The paired-Mac list — Slack's workspace model in settings form: every
-/// paired Mac keeps a row, the active one is checkmarked and carries the live
-/// link status, tapping another switches the whole app to it, and each Mac
-/// can be forgotten on its own (swipe). Adding a Mac scans its QR or takes a
-/// typed address. The sidebar owns the socket; this page edits `CompanionLink`
-/// and the socket's owner follows `pairingDidChange`.
-final class ConnectivitySettingsViewController: UITableViewController {
+/// The paired-Mac list, shaped like Settings ▸ Bluetooth's My Devices: every
+/// paired Mac keeps a row carrying its connection state, tapping one switches
+/// the whole app to it, and its ⓘ opens that Mac's own page for the address and
+/// Forget. Adding a Mac scans its QR or takes a typed address. The sidebar owns
+/// the socket; this page edits `CompanionLink` and the socket's owner follows
+/// `pairingDidChange`.
+final class DevicesSettingsViewController: UITableViewController {
     private enum Section {
         case macs, add
     }
@@ -594,7 +594,7 @@ final class ConnectivitySettingsViewController: UITableViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Connectivity"
+        title = "Devices"
         themeObserver = installThemeBackdrop()
         stateObserver = NotificationCenter.default.addObserver(
             forName: CompanionLink.stateDidChange, object: nil, queue: .main
@@ -630,15 +630,15 @@ final class ConnectivitySettingsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         switch sections[section] {
-        case .macs: "Macs"
-        case .add: "Add a Mac"
+        case .macs: "My Devices"
+        case .add: "Add a Device"
         }
     }
 
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         switch sections[section] {
         case .macs:
-            "One Mac is connected at a time — tap another to switch to it. Swipe a Mac to forget it."
+            "One device is connected at a time — tap another to switch to it. Switching closes the terminals open on this phone; the sessions keep running on the Mac."
         case .add:
             "Scan the QR code in Settings ▸ Mobile on the Mac you want to pair. Re-scanning a paired Mac updates its address."
         }
@@ -649,31 +649,33 @@ final class ConnectivitySettingsViewController: UITableViewController {
         case .macs:
             let mac = macs[indexPath.row]
             let isActive = mac.id == CompanionLink.activeMac?.id
-            let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
-            cell.imageView?.image = HugeIcon.link.strokeImage(boxSize: 22)
-            cell.imageView?.tintColor = .label
+            let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
             cell.textLabel?.text = mac.name
-            cell.accessoryType = isActive ? .checkmark : .none
+            // Wi-Fi's selection mark: the checkmark leads the row, leaving the
+            // trailing side to the state and the ⓘ. The unselected rows carry
+            // the same glyph drawn clear, so every name starts on one column.
+            // Scaled off the body text style, or it stays 17pt while the names
+            // grow with the reader's text size and the column drifts.
+            let checkmark = UIImage(
+                systemName: "checkmark",
+                withConfiguration: UIImage.SymbolConfiguration(textStyle: .body)
+            )
+            cell.imageView?.image = isActive
+                ? checkmark
+                : checkmark?.withTintColor(.clear, renderingMode: .alwaysOriginal)
+            cell.imageView?.tintColor = cell.tintColor
+            // The connection state is the row's value, Bluetooth-style, so the
+            // selected Mac also says whether the link to it is actually up.
             if isActive {
-                // The active row doubles as the status line, so switching and
-                // link health read off one screen.
-                let line = NSMutableAttributedString(
-                    attributedString: SettingsViewController.linkStatus(textStyle: .footnote)
-                )
-                line.append(NSAttributedString(
-                    string: "  ·  \(mac.displayAddress)",
-                    attributes: [
-                        .foregroundColor: UIColor.secondaryLabel,
-                        .font: UIFont.preferredFont(forTextStyle: .footnote),
-                    ]
-                ))
-                cell.detailTextLabel?.attributedText = line
+                cell.detailTextLabel?.attributedText = SettingsViewController.linkStatus()
             } else {
-                cell.detailTextLabel?.text = mac.displayAddress
-                cell.detailTextLabel?.textColor = .secondaryLabel
-                cell.detailTextLabel?.font = .preferredFont(forTextStyle: .footnote)
+                cell.detailTextLabel?.text = "Not Connected"
             }
-            cell.detailTextLabel?.lineBreakMode = .byTruncatingMiddle
+            cell.accessoryType = .detailButton
+            // A checkmark is a picture: VoiceOver reads the name and the state
+            // but would never say which device is the chosen one without the
+            // trait carrying it.
+            if isActive { cell.accessibilityTraits.insert(.selected) }
             return cell
         case .add:
             let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
@@ -703,18 +705,15 @@ final class ConnectivitySettingsViewController: UITableViewController {
         }
     }
 
-    /// Forget per Mac — forgetting one leaves the others intact.
+    /// The ⓘ button opens that Mac's own page — address and Forget live there,
+    /// the way a Wi-Fi network's details do.
     override func tableView(
-        _ tableView: UITableView,
-        trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
-    ) -> UISwipeActionsConfiguration? {
-        guard sections[indexPath.section] == .macs else { return nil }
-        let mac = macs[indexPath.row]
-        let forget = UIContextualAction(style: .destructive, title: "Forget") { _, _, done in
-            CompanionLink.forget(mac.id)
-            done(true)
-        }
-        return UISwipeActionsConfiguration(actions: [forget])
+        _ tableView: UITableView, accessoryButtonTappedForRowWith indexPath: IndexPath
+    ) {
+        guard sections[indexPath.section] == .macs else { return }
+        navigationController?.pushViewController(
+            MacDetailViewController(macID: macs[indexPath.row].id), animated: true
+        )
     }
 
     // MARK: - Actions
@@ -747,6 +746,128 @@ final class ConnectivitySettingsViewController: UITableViewController {
             CompanionLink.pair(rawAddress: code)
         }
         present(UINavigationController(rootViewController: scanner), animated: true)
+    }
+}
+
+/// One paired Mac's page, behind the ⓘ on the Devices list — Settings ▸
+/// Wi-Fi's network details, translated: the live state, the address the socket
+/// dials, and Forget. Read-only: an address changes by re-scanning that Mac's
+/// QR, which folds into this entry rather than adding a second one.
+final class MacDetailViewController: UITableViewController {
+    private enum Row: Int, CaseIterable {
+        case status, address
+    }
+
+    private let macID: String
+    private var mac: PairedMac?
+
+    private var stateObserver: NSObjectProtocol?
+    private var macsObserver: NSObjectProtocol?
+    private var themeObserver: NSObjectProtocol?
+
+    init(macID: String) {
+        self.macID = macID
+        super.init(style: .insetGrouped)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    deinit {
+        if let stateObserver {
+            NotificationCenter.default.removeObserver(stateObserver)
+        }
+        if let macsObserver {
+            NotificationCenter.default.removeObserver(macsObserver)
+        }
+        if let themeObserver {
+            NotificationCenter.default.removeObserver(themeObserver)
+        }
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        themeObserver = installThemeBackdrop()
+        stateObserver = NotificationCenter.default.addObserver(
+            forName: CompanionLink.stateDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.reload()
+        }
+        macsObserver = NotificationCenter.default.addObserver(
+            forName: CompanionLink.macsDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.reload()
+        }
+        reload()
+    }
+
+    private func reload() {
+        // Forgotten from under us (or from another screen): there is nothing
+        // left to show, so leave rather than render a stale page.
+        guard let match = CompanionLink.pairedMacs.first(where: { $0.id == macID }) else {
+            navigationController?.popViewController(animated: true)
+            return
+        }
+        mac = match
+        title = match.name
+        tableView.reloadData()
+    }
+
+    // MARK: - Table
+
+    override func numberOfSections(in tableView: UITableView) -> Int { 2 }
+
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        section == 0 ? Row.allCases.count : 1
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        guard indexPath.section == 0 else {
+            let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+            cell.textLabel?.text = "Forget This Mac"
+            cell.textLabel?.textColor = .systemRed
+            return cell
+        }
+        let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
+        cell.selectionStyle = .none
+        switch Row(rawValue: indexPath.row) {
+        case .status, nil:
+            cell.textLabel?.text = "Status"
+            if macID == CompanionLink.activeMac?.id {
+                cell.detailTextLabel?.attributedText = SettingsViewController.linkStatus()
+            } else {
+                cell.detailTextLabel?.text = "Not Connected"
+            }
+        case .address:
+            cell.textLabel?.text = "Address"
+            // Host + port only: the scheme is noise and the pairing token
+            // riding the query is a secret.
+            cell.detailTextLabel?.text = mac?.displayAddress
+            cell.detailTextLabel?.lineBreakMode = .byTruncatingMiddle
+        }
+        return cell
+    }
+
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard indexPath.section == 1 else { return }
+        confirmForget()
+    }
+
+    /// Forgetting drops the address and the pairing token, so it costs a new
+    /// QR scan to undo — worth a confirmation, the way Wi-Fi confirms.
+    private func confirmForget() {
+        let alert = UIAlertController(
+            title: "Forget \(mac?.name ?? "This Mac")?",
+            message: "You'll need to scan its QR code again to reconnect.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Forget", style: .destructive) { [weak self] _ in
+            guard let self else { return }
+            CompanionLink.forget(macID)
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
     }
 }
 

@@ -87,7 +87,7 @@ final class RosterStore {
 
     func start() {
         connectIfConfigured()
-        // The Connectivity settings page edits the pairing; the socket's
+        // The Devices settings page edits the pairing; the socket's
         // owner follows it.
         pairingObserver = NotificationCenter.default.addObserver(
             forName: CompanionLink.pairingDidChange, object: nil, queue: .main
