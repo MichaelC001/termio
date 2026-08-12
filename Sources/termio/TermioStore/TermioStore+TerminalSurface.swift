@@ -370,7 +370,14 @@ extension TermioStore {
                     // usually microseconds, but they take locks and can stall under
                     // memory pressure or on a slow mount, and a main-thread stall is a
                     // beachball. Only the @MainActor-published tree writes hop to main.
-                    let work = DispatchWorkItem {
+                    //
+                    // `@Sendable` is what says "off the main thread" to the compiler,
+                    // and it is load-bearing: a closure written in this main-actor
+                    // scope otherwise inherits main-actor isolation, and the block
+                    // `DispatchWorkItem` wraps it in re-checks that isolation when the
+                    // utility queue runs it — a trap on the first poll rather than a
+                    // hop. Marking it also makes the captures checked for real.
+                    let work = DispatchWorkItem { @Sendable [weak self, weak pty] in
                         guard let pty else { return }
                         // A hand-started agent (a `claude` typed at the prompt) becomes
                         // the foreground process; when it exits the shell returns and
@@ -379,8 +386,10 @@ extension TermioStore {
                             .flatMap { AgentCatalog.shared.agent(forForegroundArguments: $0) }
                         let cwd = followCwd ? pty.currentWorkingDirectory() : nil
                         DispatchQueue.main.async {
-                            self?.noteForegroundAgent(detected, for: sessionID)
-                            if let cwd { self?.noteWorkingDirectory(cwd, for: sessionID) }
+                            MainActor.assumeIsolated {
+                                self?.noteForegroundAgent(detected, for: sessionID)
+                                if let cwd { self?.noteWorkingDirectory(cwd, for: sessionID) }
+                            }
                         }
                     }
                     pendingPoll = work

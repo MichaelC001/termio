@@ -637,8 +637,13 @@ struct OutlineViewFixups: NSViewRepresentable {
             object: scroll.contentView,
             queue: nil
         ) { [weak scroll] _ in
-            guard let scroll, scroll.verticalLineScroll != 24 else { return }
-            scroll.verticalLineScroll = 24
+            // `queue: nil` delivers on the posting thread, and AppKit posts a clip
+            // view's bounds change on main — the isolation the scroll view's own
+            // properties require.
+            MainActor.assumeIsolated {
+                guard let scroll, scroll.verticalLineScroll != 24 else { return }
+                scroll.verticalLineScroll = 24
+            }
         }
         objc_setAssociatedObject(scroll, &enforcementKey, token, .OBJC_ASSOCIATION_RETAIN)
     }
