@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The Agents tab as a master–detail split: a left column listing the user's
@@ -16,13 +17,6 @@ struct AgentSettingsTab: View {
     }
 
     @State private var selection: Pane = .general
-
-    /// What the custom-agent sheet is doing; `nil` existing means "create".
-    private struct EditorTarget: Identifiable {
-        let existing: AgentPreset?
-        var id: String { existing?.id ?? "new" }
-    }
-    @State private var editorTarget: EditorTarget?
 
     /// Bumped after every catalog reload. `AgentDefinition` equality is by id, so
     /// without this a rename would leave stale rows on screen; referencing the
@@ -48,10 +42,12 @@ struct AgentSettingsTab: View {
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .sheet(item: $editorTarget) { target in
-            CustomAgentEditorSheet(existing: target.existing) { id in
-                agentSaved(id)
-            }
+        // Custom agents are edited in their manifest, in another app. Re-reading
+        // the catalog when termio comes back to the front is what makes that land.
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in
+            AgentCatalog.reload()
+            catalogVersion += 1
         }
     }
 
@@ -82,21 +78,11 @@ struct AgentSettingsTab: View {
             .scrollContentBackground(.hidden)
 
             Divider()
-            Menu {
-                // Plain text rows: AppKit menus rasterize custom SwiftUI icon views
-                // at their natural image size, not the badge frame.
-                ForEach(addableAgents) { preset in
-                    Button(preset.displayName) { add(preset) }
-                }
-                if !addableAgents.isEmpty { Divider() }
-                Button(localized("Custom Agent…")) { editorTarget = EditorTarget(existing: nil) }
-            } label: {
-                Label(localized("Add Agent"), systemImage: "plus")
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            AddAgentBar(
+                addable: addableAgents,
+                onAdd: add,
+                onCustom: createCustomAgent
+            )
         }
     }
 
@@ -115,8 +101,7 @@ struct AgentSettingsTab: View {
                     onRemove: { remove(preset) },
                     // Editing and deletion exist only for agents backed by a user
                     // manifest; bundled agents just leave the list.
-                    onEdit: AgentCatalog.shared.isUserDefined(preset.id)
-                        ? { editorTarget = EditorTarget(existing: preset) } : nil,
+                    isUserDefined: AgentCatalog.shared.isUserDefined(preset.id),
                     onDelete: AgentCatalog.shared.isUserDefined(preset.id)
                         ? { deleteCustom(preset) } : nil
                 )
@@ -139,7 +124,7 @@ struct AgentSettingsTab: View {
             } header: {
                 SectionHeaderLabel(title: localized("New chat"))
             } footer: {
-                Text(localized("The agents in the list are offered when starting a new session, in that order — drag to reorder, select one to configure it."))
+                Text(localized("Drag the list to change the order agents appear in."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -165,20 +150,24 @@ struct AgentSettingsTab: View {
         settings.removeAgent(preset)
     }
 
-    /// After the sheet writes a manifest: refresh the catalog, make sure the agent
-    /// is on the list, select it, and let the availability probe decide its switch
-    /// (same contract as `add`).
-    private func agentSaved(_ id: String) {
+    /// Seeds a starter manifest, puts it on the list, and opens the file — the
+    /// manifest is the editor for a custom agent, so Settings' job ends at handing
+    /// over a valid one. The row lands with its switch off (the placeholder command
+    /// resolves to nothing) and turns on once the file names a real CLI.
+    private func createCustomAgent() {
+        let created: (id: String, file: URL)
+        do {
+            created = try UserAgentStore.createTemplate()
+        } catch {
+            AgentCatalog.log("could not create a custom agent manifest: \(error)")
+            NSSound.beep()
+            return
+        }
         AgentCatalog.reload()
         catalogVersion += 1
-        let definition = AgentCatalog.shared.definition(for: id)
-        settings.addAgent(definition)
-        selection = .agent(id)
-        Task { @MainActor in
-            if await AgentAvailability.isCommandAvailable(settings.command(for: definition) ?? "") {
-                settings.setAgent(definition, enabled: true)
-            }
-        }
+        settings.addAgent(AgentCatalog.shared.definition(for: created.id))
+        selection = .agent(created.id)
+        NSWorkspace.shared.open(created.file)
     }
 
     /// Deletes a user agent's manifest file (its sessions survive via the id-only
@@ -201,6 +190,57 @@ struct AgentSettingsTab: View {
         var ids = listedAgents.map(\.id)
         ids.move(fromOffsets: source, toOffset: destination)
         settings.setEnabledOrder(ids)
+    }
+}
+
+/// The list's footer action, shaped like the sidebar bottom bars in Mail and
+/// Reminders: the whole bar is the pull-down's hit target, so the control reads as
+/// part of the column rather than a small floating button, and its hover highlight
+/// lines up with the list rows above it.
+private struct AddAgentBar: View {
+    let addable: [AgentPreset]
+    let onAdd: (AgentPreset) -> Void
+    let onCustom: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Menu {
+            // Plain text rows: AppKit menus rasterize custom SwiftUI icon views
+            // at their natural image size, not the badge frame.
+            ForEach(addable) { preset in
+                Button(preset.displayName) { onAdd(preset) }
+            }
+            if !addable.isEmpty { Divider() }
+            Button(localized("Custom Agent…")) { onCustom() }
+        } label: {
+            HStack(spacing: 8) {
+                // Same 22pt frame IconBadge uses, so the plus sits in the rows'
+                // icon column instead of starting its own margin.
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22)
+                Text(localized("Add Agent"))
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, minHeight: 28)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.primary.opacity(hovering ? 0.07 : 0))
+            )
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .onHover { hovering = $0 }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 5)
     }
 }
 
@@ -251,8 +291,9 @@ private struct AgentDetailPane: View {
     @ObservedObject var settings: AppSettings
     let preset: AgentPreset
     let onRemove: () -> Void
-    /// Set only for user-manifest agents: reopens the creation form prefilled.
-    var onEdit: (() -> Void)?
+    /// True for agents backed by a manifest in the user's config folder — the only
+    /// ones whose file can be opened or deleted from here.
+    var isUserDefined = false
     /// Set only for user-manifest agents: deletes the manifest file.
     var onDelete: (() -> Void)?
 
@@ -274,9 +315,14 @@ private struct AgentDetailPane: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    if let onEdit {
+                    if isUserDefined {
                         Spacer(minLength: 8)
-                        Button(localized("Edit…")) { onEdit() }
+                        Button(localized("Reveal in Finder")) {
+                            UserAgentStore.reveal(id: preset.id)
+                        }
+                        Button(localized("Edit Manifest")) {
+                            UserAgentStore.open(id: preset.id)
+                        }
                     }
                 }
                 .padding(.vertical, 2)
