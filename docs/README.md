@@ -10,10 +10,8 @@ page when you browse `docs/`.
   `competitive-analysis/`, …) are just loose grouping — the authoritative
   category is the front matter `type`, **not** the path.
 - **Product promo assets and posts** (App Store shots, social covers, launch
-  posts) live in the sibling private `marketing` repo:
-  `/Users/yuanjiwei/Documents/GitHub/marketing/termio`. **Strategy / pitch
-  markdown** lives in the sibling `pitch` repo:
-  `/Users/yuanjiwei/Documents/GitHub/pitch/termio`.
+  posts) live in a private sibling `marketing` repo, and **strategy / pitch
+  markdown** in a private sibling `pitch` repo — neither ships here.
 - Each doc declares: `title`, `status`, `type`, `created`/`updated`, and optional
   `related`. The front matter is the **single source of truth** for status —
   there is no separate status file to keep in sync.
@@ -36,7 +34,6 @@ from the real front matter).
 <!-- BEGIN docs-index -->
 | status | type | title |
 | --- | --- | --- |
-|  |  | [](talks/shaogefenhao-20260725/shaogefenhao-ai-product-termio.md) |
 | active | backlog | [Backlog](backlog/backlog.md) |
 | active | bug | [iOS libghostty "non-functional" panel + surface-teardown crash — fix journey](bug/ios-ghostty-renderer-panic-and-teardown-uaf.md) |
 | active | design | ["Issue tracker 集成：inspector Issues tab（GitHub / Linear，per-project provider）"](design/issue-tracker-integration.md) |
@@ -44,6 +41,7 @@ from the real front matter).
 | active | design | [iOS libghostty "non-functional" panel + teardown UAF — root-cause findings](design/ios-ghostty-renderer-panic-investigation-findings.md) |
 | active | design | [iOS terminal input & attachments](design/ios-terminal-input.md) |
 | active | design | [iOS TestFlight runbook — build, upload, and drive ASC from the API](runbook/ios-testflight-runbook.md) |
+| active | design | [Keyboard and command design](design/keyboard-command-design.md) |
 | active | design | [macOS release runbook — cut, notarize, publish termio.dmg](runbook/macos-release-runbook.md) |
 | active | design | [Research brief — termiod Session Protocol (for design agent)](design/_research-session-protocol-brief.md) |
 | active | design | [Sessions CLI v2 — reliability & command design](design/sessions-cli-v2.md) |
@@ -80,6 +78,8 @@ from the real front matter).
 | draft | design | [分享 Agent 会话（带密码的实时分享链接）](design/session-share.md) |
 | draft | design | [调研：下一批 AgentAdapter 的落盘格式（OpenCode / Pi / Amp / Cursor / Kimi）](design/agent-transcript-survey.md) |
 | draft | design | ["Markdown preview — Apple-grade reading typography"](design/markdown-preview-reading-typography.md) |
+| draft | design | [Agent Plugins](design/agent-plugins.md) |
+| draft | design | [Browser Control over CDP](design/browser-cdp.md) |
 | draft | design | [Device Architecture — one server per device, every UI a client](design/termiod-device-architecture.md) |
 | draft | design | [Hot path, attach join point, and client classes](design/termiod-hot-path-and-client-classes.md) |
 | draft | design | [Issue Triage → 本地 agent（GitHub / Linear 事件驱动 Termio session）](design/issue-triage-local-agent.md) |
@@ -94,6 +94,7 @@ from the real front matter).
 | draft | essay | ["How Claude Code Got the Mouse: Reverse-Engineering the Clickable Terminal"](essays/how-claude-code-got-the-mouse.md) |
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/sandbox-seatbelt.md) |
 | draft | rfc | [Automation — scheduled agent runs](rfcs/automation-scheduled-agent-runs.md) |
+| draft | rfc | [Companion Wire Protocol](design/companion-wire-protocol.md) |
 | draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](rfcs/fork-libghostty-spm.md) |
 | draft | rfc | [Loose terminals as first-class entities](design/loose-terminal-entity.md) |
 | draft | rfc | [Onboarding —— 首次启动体验设计](design/onboarding.md) |

@@ -17,6 +17,195 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.35.0",
+    date: "2026-08-12",
+    title: "Runs on Intel Macs",
+    changes: {
+      new: [
+        "Universal binary: Termio runs on Intel Macs as well as Apple silicon, from the same download.",
+        "Usage: Kimi Code and Grok plan limits and token usage sit next to Claude Code and Codex, after a per-agent Allow.",
+      ],
+      improved: [
+        "New Terminal (⌘T) opens in the focused session's working directory, beside that session. File ▸ New Terminal at Home still starts at your home directory.",
+      ],
+      fixed: [
+        "⌘W no longer quits Termio — closing the window leaves every session and agent alive, and the Dock icon brings it back. Quitting, or closing a session that is still running something, now asks first.",
+        "A split group's sidebar bracket covers the same rows as the panes on screen.",
+        "The reveal arrows in a diff's collapsed bands point the way the reveal walks.",
+      ],
+    },
+  },
+  {
+    version: "0.34.0",
+    date: "2026-08-10",
+    title: "Markdown that renders like GitHub",
+    changes: {
+      improved: [
+        "Markdown renders GitHub-flavored: alerts, heading anchors, autolinks, emoji, footnotes, math, and mermaid diagrams — in the inspector's preview, in a session trace, and on the phone.",
+      ],
+    },
+  },
+  {
+    version: "0.33.2",
+    date: "2026-08-10",
+    title: "A settings crash, gone",
+    changes: {
+      fixed: ["Editing ~/.ssh/config from Settings no longer crashes."],
+    },
+  },
+  {
+    version: "0.33.0",
+    date: "2026-08-09",
+    title: "Session control, as a skill",
+    changes: {
+      new: [
+        "Agent skill: Termio installs a termio skill into the agents that support one, so an agent can see its sibling sessions, spawn one, send a prompt, and read the reply — without you pasting CLI instructions into a prompt. Switch it off in Settings ▸ General.",
+      ],
+      improved: [
+        "Settings ▸ General leads with the command line and names the skill section.",
+      ],
+    },
+  },
+  {
+    version: "0.32.0",
+    date: "2026-08-09",
+    title: "The font and theme you already picked",
+    changes: {
+      new: [
+        "Ghostty config inheritance: on first launch Termio reads your ~/.config/ghostty/config and starts with the font and theme you already chose there.",
+      ],
+      improved: [
+        "The Interface settings tab folded into Appearance.",
+        "An installed dual-width CJK face is appended to the font stack silently, so Chinese, Japanese, and Korean columns line up.",
+      ],
+      fixed: [
+        "The editor's caret snaps to its new position instead of gliding, text sits centered in its line, Markdown bold stops flickering, and per-keystroke redraw churn is gone.",
+      ],
+    },
+  },
+  {
+    version: "0.31.0",
+    date: "2026-08-08",
+    title: "The phone says why it can't connect",
+    changes: {
+      improved: [
+        "The companion wire protocol is versioned: a phone and a Mac on mismatched builds now say so instead of failing quietly.",
+      ],
+      fixed: [
+        "History diffs a merge commit against its first parent, and the diff header stays on one line in a narrow pane.",
+      ],
+    },
+  },
+  {
+    version: "0.29.0",
+    date: "2026-08-07",
+    title: "Your phone shows the real diff",
+    changes: {
+      new: [
+        "The iPhone shows your Mac's actual changes and diffs, rendered on the Mac.",
+        "Split Left and Split Up join Split Right and Split Down.",
+      ],
+      improved: [
+        "Pane rearrange moved off a modifier chord onto a grab handle that appears on the pane header when you hover it.",
+        "The diff's washes, bands, and intraline spans were redrawn.",
+        "The inspector's file tree stays fast on huge project roots.",
+      ],
+      fixed: [
+        "The terminal surface stopped swallowing Termio's own shortcuts.",
+      ],
+    },
+  },
+  {
+    version: "0.28.0",
+    date: "2026-08-03",
+    title: "Add to Chat",
+    changes: {
+      new: [
+        "Add to Chat: pick it from a file-tree row's menu and the file's path lands in the agent's prompt, ready to send.",
+        "iPhone: long-press the terminal to paste.",
+      ],
+      improved: [
+        "macOS AutoFill and Services items are gone from the terminal, diff, editor, and file-preview menus, and Settings' install buttons confirm what they actually did.",
+      ],
+    },
+  },
+  {
+    version: "0.27.0",
+    date: "2026-08-02",
+    title: "Stack a pane, or lay it side by side",
+    changes: {
+      new: [
+        "Flip a pane pair between side-by-side and stacked from the pane menu.",
+        "iPhone: long-press to select text in the terminal, and paste from the same menu.",
+      ],
+      fixed: [
+        "The file tree keeps its expansion when a detail opens and closes.",
+        "Mouse-wheel scrolling is back to full speed in the sidebar, git, and issue panes.",
+        "The Issues list keeps its kind under an open detail, and the git pane keeps its mode under an open diff.",
+      ],
+    },
+  },
+  {
+    version: "0.26.0",
+    date: "2026-08-01",
+    title: "Drag a pane where you want it",
+    changes: {
+      new: [
+        "Rearrange panes by dragging one onto a neighbour: an overlay previews the drop, an edge half places the pane on that side, and the center swaps the two.",
+      ],
+    },
+  },
+  {
+    version: "0.25.0",
+    date: "2026-07-30",
+    title: "Notifications an agent can raise",
+    changes: {
+      new: [
+        "termio notify: an agent can raise a native macOS notification from its own shell — a title, a body, and a click that jumps to the session it came from.",
+        "The inspector's side is per session, so one session can keep files on the right while another keeps them on the left.",
+        "Issues: a pull request's files read as one continuous multi-file diff.",
+      ],
+      improved: [
+        "The pane a CLI-spawned agent anchors to keeps its full size, and the pane context menu grew.",
+        "iPhone: theme-tinted chrome and a bigger attach menu.",
+      ],
+    },
+  },
+  {
+    version: "0.24.0",
+    date: "2026-07-28",
+    title: "An inspector that gets out of the way",
+    changes: {
+      new: [
+        "Grok's OSC 9;4 progress is read as an in-band busy/idle signal, so its status no longer depends on hooks.",
+      ],
+      improved: [
+        "The inspector's list column resizes, its tabs became one flat pill, and a maximized detail sits beside the sidebar with the tabs hidden.",
+        "The your-turn status moved to a ring around the session's icon.",
+        "iPhone: gestures follow your finger's velocity, with Reduce Motion fallbacks.",
+      ],
+      fixed: [
+        "Issues recovers from a GitHub 403 with a reconnect and a grant-org-access prompt.",
+        "The file preview header keeps its close and maximize controls, and opening a detail no longer force-grows the inspector.",
+      ],
+    },
+  },
+  {
+    version: "0.23.0",
+    date: "2026-07-28",
+    title: "A real editor in the inspector",
+    changes: {
+      new: [
+        "Two-column inspector: files, diffs, pull requests, and session traces open in a detail column beside the list instead of replacing it.",
+        "The file editor grew a pinned header and an in-editor find bar (contributed by @brelian), both wearing one Liquid Glass design shared with the diff.",
+        "iPhone: voice-to-text dictation from the terminal keyboard's ＋ menu, and a ＋ that offers what makes sense on each of the three tabs.",
+      ],
+      fixed: [
+        "Agent hooks survive another tool overwriting the shared hook config.",
+      ],
+    },
+  },
+  {
     version: "0.22.0",
     date: "2026-07-27",
     title: "Switch themes without leaving the terminal",

@@ -45,7 +45,7 @@ export function GitHubStarCount({
   if (stars === null) return null;
   return (
     <span className="ml-1 inline-flex items-center gap-1 border-l border-primary-foreground/20 pl-3 text-primary-foreground/70">
-      <StarMark className="h-3.5 w-3.5" />
+      <StarMark className="h-3.5 w-3.5 text-brand-gold" />
       {formatStarCount(stars)}
     </span>
   );

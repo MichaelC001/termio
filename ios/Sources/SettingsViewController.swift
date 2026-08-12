@@ -30,7 +30,7 @@ final class SettingsViewController: UITableViewController {
         var icon: HugeIcon {
             switch self {
             case .connectivity: .wireless
-            case .appearance: .paintBrush
+            case .appearance: .paintBoard
             case .terminalKeyboard: .keyboard
             case .voice: .voice
             }

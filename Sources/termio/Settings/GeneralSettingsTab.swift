@@ -1,36 +1,39 @@
 import SwiftUI
 import UserNotifications
 
-/// App-level settings that aren't about a specific surface: task-completion
-/// notifications, the `termio` command-line tool, and the machine-wide agent
-/// integrations (status hooks, session control). The latter three install termio's
-/// wiring outside the app — PATH, agent configs, instruction files — rather than
-/// configure a particular agent, so they live here rather than in the Agents tab.
+/// App-level settings that aren't about a specific surface: the `termio`
+/// command-line tool, the machine-wide agent integrations (the session-control
+/// skill, status hooks), and task-completion notifications. The first three
+/// install termio's wiring outside the app — PATH, agent configs, instruction
+/// files — rather than configure a particular agent, so they live here rather
+/// than in the Agents tab.
 struct GeneralSettingsTab: View {
     @ObservedObject var settings: AppSettings
 
     var body: some View {
         Form {
             Section {
-                Toggle(isOn: $settings.notifyOnTaskCompletion) {
-                    SettingsLabel(
-                        .huge(.checkCircle),
-                        title: "Task completion",
-                        subtext: "Posts a notification when an agent finishes or needs you while Termio is in the background."
-                    )
-                }
-                .toggleStyle(.switch)
-                if settings.notifyOnTaskCompletion {
-                    Toggle("Play sound", isOn: $settings.notificationSoundEnabled)
-                    NotificationPermissionRow()
-                }
-            } header: {
-                SectionHeaderLabel(title: "Notifications")
-            }
-            Section {
                 CommandLineToolRow()
             } header: {
                 SectionHeaderLabel(title: "Command line")
+            }
+            Section {
+                Toggle(isOn: $settings.sessionControlEnabled) {
+                    SettingsLabel(
+                        .huge(.gitBranch),
+                        title: "Session control",
+                        subtext: "Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command. Installs the termio skill into each agent's skills folder."
+                    )
+                }
+                .toggleStyle(.switch)
+                if settings.sessionControlEnabled {
+                    InstallButtonRow(title: "Reinstall skill") {
+                        .summarizing(SessionSkillInstaller.sync(enabled: true),
+                                     headline: "Skill reinstalled", unit: "agents")
+                    }
+                }
+            } header: {
+                SectionHeaderLabel(title: "Agent skill")
             }
             Section {
                 Toggle(isOn: $settings.agentHooksEnabled) {
@@ -53,22 +56,20 @@ struct GeneralSettingsTab: View {
                 SectionHeaderLabel(title: "Status")
             }
             Section {
-                Toggle(isOn: $settings.sessionControlEnabled) {
+                Toggle(isOn: $settings.notifyOnTaskCompletion) {
                     SettingsLabel(
-                        .huge(.gitBranch),
-                        title: "Session control",
-                        subtext: "Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command."
+                        .huge(.checkCircle),
+                        title: "Task completion",
+                        subtext: "Posts a notification when an agent finishes or needs you while Termio is in the background."
                     )
                 }
                 .toggleStyle(.switch)
-                if settings.sessionControlEnabled {
-                    InstallButtonRow(title: "Reinstall note") {
-                        .summarizing(SessionSkillInstaller.sync(enabled: true),
-                                     headline: "Note reinstalled", unit: "files")
-                    }
+                if settings.notifyOnTaskCompletion {
+                    Toggle("Play sound", isOn: $settings.notificationSoundEnabled)
+                    NotificationPermissionRow()
                 }
             } header: {
-                SectionHeaderLabel(title: "Orchestration")
+                SectionHeaderLabel(title: "Notifications")
             }
             Section {
                 Toggle(isOn: $settings.githubIntegrationEnabled) {
@@ -140,22 +141,22 @@ private struct NotificationPermissionRow: View {
     }
 }
 
-/// Installs and reports the `termio` command-line tool. It audits on appear so the
-/// row always reflects reality (a moved app shows "Update"), and re-audits after
-/// the install action so the button and caption update in place.
+/// Installs and reports the `termio` command-line tool, as a switch like the other
+/// feature rows: on means the PATH symlink exists, off removes it. The switch is
+/// bound to the audit, not a stored preference, so it always reflects reality (a
+/// declined admin prompt snaps it back). It audits on appear (a moved app shows
+/// "Update") and re-audits after every action so the caption updates in place.
 private struct CommandLineToolRow: View {
     @State private var status: CommandLineTool.Status = .notInstalled
     @State private var state = InstallFeedbackState()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
+            Toggle(isOn: Binding(get: { isOn }, set: { setEnabled($0) })) {
                 SettingsLabel(.huge(.terminal), title: "Command-line tool", subtext: description)
-                Spacer()
-                if let title = buttonTitle {
-                    Button(title) { install() }
-                }
             }
+            .toggleStyle(.switch)
+            .disabled(!isSwitchable)
             if let feedback = state.feedback {
                 // Aligned under the caption, past the row's icon badge.
                 InstallFeedbackLabel(feedback: feedback)
@@ -164,31 +165,62 @@ private struct CommandLineToolRow: View {
         }
         .onAppear { status = CommandLineTool.audit() }
         .autoDismissing($state)
+        if isOn {
+            // For re-linking after something else has touched /usr/local/bin;
+            // install is idempotent. Reports through its own feedback line.
+            InstallButtonRow(title: buttonTitle) { withAnimation { runInstall() } }
+        }
+    }
+
+    private var isOn: Bool {
+        switch status {
+        case .installed, .stale: return true
+        case .notInstalled, .conflict, .unavailable: return false
+        }
+    }
+
+    /// A conflicting file isn't ours to remove and a bare binary has nothing to
+    /// link, so in both states the switch is disabled and the caption explains.
+    private var isSwitchable: Bool {
+        switch status {
+        case .installed, .stale, .notInstalled: return true
+        case .conflict, .unavailable: return false
+        }
+    }
+
+    private func setEnabled(_ enabled: Bool) {
+        withAnimation {
+            if enabled {
+                state.show(runInstall())
+            } else {
+                status = CommandLineTool.uninstall()
+                state.show(isOn
+                    ? .failure("Couldn’t remove \(CommandLineTool.installURL.path).")
+                    : .success("Removed from PATH."))
+            }
+        }
     }
 
     /// Installs, then reports the fresh audit. The caption alone can't carry this:
     /// a declined admin prompt leaves the row reading exactly as it did before the
     /// click, so success and cancellation would be indistinguishable. The
     /// confirmation stays short — the caption above it already names the path — and
-    /// echoes the verb of the button that was pressed.
-    private func install() {
-        // Echo the verb the button offered: an "Update" that lands says "Updated."
+    /// echoes the verb that was offered: an "Update" that lands says "Updated."
+    private func runInstall() -> InstallFeedback {
         let wasStale: Bool
         if case .stale = status { wasStale = true } else { wasStale = false }
         let result = CommandLineTool.install()
-        withAnimation {
-            status = result
-            switch result {
-            case .installed:
-                state.show(.success(wasStale ? "Updated." : "Installed."))
-            case .conflict:
-                state.show(.failure("Something else already owns \(CommandLineTool.installURL.path)."))
-            case .unavailable:
-                state.show(.failure("No bundled tool to install from."))
-            case .notInstalled, .stale:
-                let directory = CommandLineTool.installURL.deletingLastPathComponent().path
-                state.show(.failure("Couldn’t link `\(CommandLineTool.toolName)` into \(directory)."))
-            }
+        status = result
+        switch result {
+        case .installed:
+            return .success(wasStale ? "Updated." : "Installed.")
+        case .conflict:
+            return .failure("Something else already owns \(CommandLineTool.installURL.path).")
+        case .unavailable:
+            return .failure("No bundled tool to install from.")
+        case .notInstalled, .stale:
+            let directory = CommandLineTool.installURL.deletingLastPathComponent().path
+            return .failure("Couldn’t link `\(CommandLineTool.toolName)` into \(directory).")
         }
     }
 
@@ -200,7 +232,7 @@ private struct CommandLineToolRow: View {
         case .stale(let path):
             return "An older install points at \(path). Update it to this version of Termio."
         case .notInstalled:
-            return "Install `\(tool)` so you (and agents) can run `\(tool) sessions …` from any shell. Links to /usr/local/bin."
+            return "Links `\(tool)` into /usr/local/bin so you (and agents) can run `\(tool) sessions …` from any shell."
         case .conflict:
             return "A different `\(tool)` already exists at \(CommandLineTool.installURL.path). Remove it first — Termio won't overwrite a file it didn't create."
         case .unavailable:
@@ -208,12 +240,8 @@ private struct CommandLineToolRow: View {
         }
     }
 
-    private var buttonTitle: String? {
-        switch status {
-        case .installed: return "Reinstall"
-        case .stale: return "Update"
-        case .notInstalled: return "Install"
-        case .conflict, .unavailable: return nil
-        }
+    private var buttonTitle: String {
+        if case .stale = status { return "Update" }
+        return "Reinstall"
     }
 }

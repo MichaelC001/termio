@@ -29,16 +29,44 @@ enum MarkdownReaderRenderer {
         \(embedFonts ? quattroFontFaces : "")
         \(themeVariables(theme))
         :root { --font-mono: \(monoStack(fontFamily)); }
+        \(MarkdownSkin.highlightTheme(dark: theme.isDark))
+        \(MarkdownSkin.css(scope: ".reader "))
         \(css)
         </style>
         </head>
-        <body class="reader">
+        <body class="reader\(isCJK(body) ? " cjk" : "")">
         \(frontmatter.map(frontmatterHTML) ?? "")
         \(MarkdownHTML.html(body, softBreaksAsBreaks: false, documentMode: true))
         </body>
         </html>
         """
     }
+
+    /// Whether to read this document as CJK text. The reader's metrics are Latin metrics —
+    /// 1.6 leading suits a Latin x-height and looks cramped under Han glyphs, which fill
+    /// their em square; the reverse is also true, so loosening for everyone makes English
+    /// lists drift apart. CSS can't tell the two apart mid-paragraph, but the host can look
+    /// at the source, so the decision is made once, here, and the page just wears a class.
+    ///
+    /// A ratio rather than "contains any Han": an English design doc quoting one Chinese
+    /// term is still an English document and keeps the Latin register.
+    static func isCJK(_ source: String) -> Bool {
+        var han = 0
+        var total = 0
+        for scalar in source.unicodeScalars where !CharacterSet.whitespacesAndNewlines.contains(scalar) {
+            total += 1
+            if cjkRanges.contains(where: { $0.contains(scalar.value) }) { han += 1 }
+        }
+        guard total > 0 else { return false }
+        return Double(han) / Double(total) >= 0.1
+    }
+
+    /// CJK Unified Ideographs (plus extension A), Hiragana/Katakana, Hangul syllables, and
+    /// the full-width punctuation that travels with them.
+    private static let cjkRanges: [ClosedRange<UInt32>] = [
+        0x3000...0x303F, 0x3040...0x30FF, 0x3400...0x4DBF, 0x4E00...0x9FFF,
+        0xAC00...0xD7AF, 0xFF00...0xFF60,
+    ]
 
     // MARK: - YAML frontmatter
 
@@ -150,6 +178,11 @@ enum MarkdownReaderRenderer {
 
     /// The live termio theme injected as CSS custom properties; the stylesheet references
     /// them, so the reader always matches the app's current colors.
+    ///
+    /// The alert hues are fixed rather than theme-derived: an alert's whole job is to say
+    /// *which* kind it is at a glance, and a palette that follows the chrome accent would
+    /// make five kinds look like one. Both sets are tuned to sit on the reader's
+    /// background without shouting.
     private static func themeVariables(_ t: TraceTheme) -> String {
         """
         :root {
@@ -161,7 +194,13 @@ enum MarkdownReaderRenderer {
           --accent: \(t.accent);
           --line: \(t.isDark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.10)");
           --soft: \(t.isDark ? "rgba(255,255,255,0.045)" : "rgba(0,0,0,0.035)");
-          --font-prose: "iA Writer Quattro", -apple-system, system-ui, sans-serif;
+          /* Quattro carries no Han glyphs, so a Chinese run falls through to whatever
+             comes next. Name the Apple CJK faces rather than let `-apple-system` decide:
+             this is the face Chinese prose is set in, and it should not depend on stack
+             order. Latin never reaches them — Quattro covers it. */
+          --font-prose: "iA Writer Quattro", "PingFang SC", "PingFang TC",
+            "Hiragino Sans GB", -apple-system, system-ui, sans-serif;
+        \(MarkdownSkin.alertVariables(dark: t.isDark))
         }
         """
     }
@@ -198,6 +237,26 @@ enum MarkdownReaderRenderer {
       font-feature-settings: "kern", "liga", "calt";
       overflow-wrap: anywhere; word-break: break-word;
     }
+    /* A CJK document, decided from the source by `isCJK`. Han glyphs fill their em square
+       and carry no ascender/descender rhythm, so the Latin 1.6 reads as a wall; 1.8 is the
+       leading Chinese web typography settles on. Headings lose the optical negative
+       tracking — that is a Latin correction, and on a square grid it only crowds. */
+    .reader.cjk { line-height: 1.8; letter-spacing: 0.02em; text-autospace: normal; }
+    .reader.cjk h1, .reader.cjk h2, .reader.cjk h3,
+    .reader.cjk h4, .reader.cjk h5, .reader.cjk h6 { letter-spacing: 0; line-height: 1.4; }
+    /* Tracking is for prose only. A monospaced grid, a URL and a key cap all mean something
+       by their exact width, and Heti's own reset drops tracking on them for that reason. */
+    .reader.cjk code, .reader.cjk pre, .reader.cjk kbd, .reader.cjk a { letter-spacing: normal; }
+    /* Chinese has no italic tradition — an oblique Han glyph is synthesized by the
+       rasterizer and reads as a rendering fault. Emphasis becomes weight instead, which is
+       what Chinese typography has always used. */
+    .reader.cjk em { font-style: normal; font-weight: 600; }
+    /* Strict breaking keeps a line from opening on 、。) and lets closing punctuation hang
+       into the margin instead of forcing an early wrap. */
+    .reader.cjk p, .reader.cjk li, .reader.cjk blockquote { line-break: strict; }
+    .reader.cjk { hanging-punctuation: allow-end; }
+    /* 标点挤压 — see CJKPunctuation. The span is emitted only for a mark that runs into
+       another one, so single punctuation keeps its full width. */
     .reader > *:first-child { margin-top: 0; }
     .reader > *:last-child { margin-bottom: 0; }
     /* Headings carry hierarchy through weight + space, not rules or color — no
@@ -232,7 +291,14 @@ enum MarkdownReaderRenderer {
     .reader pre { background: var(--soft); border-radius: 8px;
       padding: 15px 18px; margin: 1.3em 0; overflow-x: auto; max-width: 100%; }
     .reader pre code { background: none; padding: 0; font-size: 13.5px; line-height: 1.6; }
+    /* The hljs theme ships its own background, padding and base color for `.hljs`; the
+       block's look belongs to this stylesheet, so only the token colors survive. */
     .reader img { max-width: 100%; margin: 0.6em 0; border-radius: 6px; }
+    /* `<kbd>` is on the raw-HTML whitelist and READMEs use it for shortcuts; without a
+       key cap it reads as ordinary text. */
+    .reader kbd { font: 0.78em var(--font-mono); background: var(--soft);
+      border: 1px solid var(--line); border-radius: 4px; padding: 0.15em 0.4em;
+      vertical-align: 0.05em; }
     /* Tables: horizontal rules only, like a native document — no grid, no outer box.
        Sizing follows github-markdown-css: `width: max-content` lays the table out at its
        natural content width so the browser's column balancing works unsquashed (equal-ish,
@@ -260,5 +326,34 @@ enum MarkdownReaderRenderer {
     .reader .frontmatter div { display: contents; }
     .reader .frontmatter dt { color: var(--muted); font: 12.5px/1.75 var(--font-mono); }
     .reader .frontmatter dd { margin: 0; font-size: 14.5px; line-height: 1.5; }
+    /* Alerts: a colored rule and a colored label, no icon and no filled card. The kind is
+       carried by the word and the hue — the same restraint the headings follow. */
+    .reader .alert { margin: 1.4em 0; padding: 2px 0 2px 20px;
+      border-left: 2px solid var(--alert-color); }
+    .reader .alert-title { margin: 0 0 0.35em; color: var(--alert-color);
+      font-size: 13px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+    .reader .alert > *:last-child { margin-bottom: 0; }
+    /* Math: MathML, laid out by WebKit in the prose face. A display formula gets its own
+       centered line and scrolls rather than widening the page. */
+    /* `math` is the CSS generic family, which WebKit resolves to a font carrying an
+       OpenType MATH table (STIX Two Math on macOS). That table is what sizes radicals,
+       stretches braces and parentheses to their content, and puts a sum's limits above and
+       below the sigma. Setting the prose face here instead — which is what this rule used
+       to do — costs all of it: the integral sign stops growing, its bounds collapse into
+       ordinary sub/superscripts, and delimiters stay one line tall around a fraction. */
+    .reader math { font-family: math; font-size: 1.05em; }
+    .reader .math-display { margin: 1.4em 0; }
+    .reader .math-source { display: inline-block; }
+    /* Diagrams: centered on their own line, scrolling rather than widening the page.
+       Mermaid sizes its SVG in absolute units, so the height has to stay auto or a
+       narrow pane squashes the drawing. */
+    .reader .mermaid { margin: 1.6em 0; padding: 0; text-align: center;
+      overflow-x: auto; max-width: 100%; }
+    .reader .mermaid svg { max-width: 100%; height: auto; }
+    /* Footnotes: a quiet apparatus block after the prose, separated by a rule. */
+    .reader .footnotes { margin-top: 3em; padding-top: 1.4em; border-top: 1px solid var(--line);
+      font-size: 15px; color: var(--muted); }
+    .reader .footnotes li { margin: 0.5em 0; }
+    .reader .footnote-back { margin-left: 0.4em; }
     """
 }

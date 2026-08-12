@@ -12,8 +12,9 @@
 
 <br />
 
-Run Claude Code, Codex, and any CLI agent side by side in a native Mac app —<br />
-every session live in the sidebar, and a menu-bar dot that tells you who needs you.
+Run Claude Code, Codex, and any CLI agent side by side in a real Mac terminal —<br />
+Swift and libghostty, no Electron. A menu-bar dot tells you which one needs you,<br />
+and your iPhone tells you when you're away from the desk.
 
 <br />
 
@@ -38,7 +39,7 @@ brew install --cask termio-sh/tap/termio
 [TestFlight](https://testflight.apple.com/join/1Arf1UKR), then pair it by
 scanning the QR code in the Mac app's Settings ▸ Mobile.
 
-## Built for watching agents work
+## Built for agentic coding and engineering
 
 The IDE was built around a person typing code. When agents write most of the
 code, the environment's job changes: it's where agents work and where you
@@ -178,8 +179,17 @@ a task, and read back the reply:
 ```sh
 termio sessions list                       # who's working, idle, or waiting on you
 termio sessions spawn "fix the flaky test" # start a new agent session on a prompt
-termio sessions send claude@ab12cd34 "1"   # answer a sibling's permission prompt
+termio sessions send ab12cd34 "1"          # answer a sibling's permission prompt
 termio sessions watch                      # stream status changes as they happen
+```
+
+Agents learn this themselves: Session control installs a `termio`
+[agent skill](https://termio.sh/skill.md) into each agent's skills folder
+(`~/.claude/skills`, `~/.codex/skills`) and keeps it current on every launch.
+Any other agent can install the same skill straight from this repo:
+
+```sh
+npx skills add termio-sh/termio --skill termio
 ```
 
 ## On your iPhone

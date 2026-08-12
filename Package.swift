@@ -65,6 +65,10 @@ let package = Package(
                 .process("Resources/Fonts"),
                 .copy("Resources/agents"),
                 .copy("Resources/terminal.json"),
+                // Agent skills installed into ~/.claude/skills and ~/.codex/skills
+                // by SessionSkillInstaller, kept as real markdown files. Folder copy
+                // so the skill-folder layout survives into the bundle.
+                .copy("Resources/skills"),
                 // Devicon language/tool logos (one SVG per file type), loaded by name
                 // for the file tree; see LangIconCatalog / LangIconView. Kept as a
                 // folder copy (not `.process`) so the lookup subdirectory survives.
@@ -85,6 +89,10 @@ let package = Package(
                 .product(name: "TermioShared", package: "Shared"),
             ],
             path: "Tests/termioTests",
+            // The Markdown feature sheet is both the end-to-end fixture
+            // `MarkdownFeatureSheetTests` renders and the document to open in the
+            // reader when judging the result by eye.
+            resources: [.copy("Fixtures")],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
             ]

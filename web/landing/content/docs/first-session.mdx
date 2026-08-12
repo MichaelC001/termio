@@ -19,29 +19,31 @@ Codex, Gemini, or any other CLI you have installed. Termio opens it in a real
 terminal at the project root. You type into it exactly as you would in any
 terminal; the agent's TUI renders natively.
 
-The sidebar shows the session's live status — **working**, **idle**,
-**attention**, or **done**. The [sidebar guide](/docs/sidebar) explains each
-state; the one to watch for is **attention**, which means the agent is blocked on
-a prompt or a permission and needs you back.
+The sidebar shows the session's live status — **working**, **idle**, **done**, or
+**needs you**. [Concepts](/docs/concepts#status) explains all four; the one to
+watch for is **needs you**, which means the agent is blocked on a prompt or a
+permission and can't continue without you.
 
 <Callout type="tip">
-  Kick off a long run in one session, switch to another, and let the sidebar's
-  **attention** state tell you the moment the first agent needs you back.
+  Kick off a long run in one session, switch to another, and let the sidebar tell
+  you the moment the first agent needs you back.
 </Callout>
 
 ## Split the window
 
 Most real work wants more than one pane. Split the current pane to the right with
-`⌘D` or downward with `⌘⇧D`, then drop another session into the new pane — an
+`⌘D` or downward with `⇧⌘D`, then drop another session into the new pane — an
 agent in one, your dev server in another, a shell in a third. Panes tile as a
 tree, so you can nest splits into any layout.
 
-To rearrange a layout, hold `⌘⌥⇧` and drag any pane. A highlight previews where
-it will land: drop on another pane's left, right, top, or bottom half to place it
-on that side, or on the center to swap the two panes.
+To rearrange a layout, hover a pane's header and drag the grab handle that
+appears. A highlight previews where the pane will land: drop on another pane's
+left, right, top, or bottom half to place it on that side, or on the center to
+swap the two panes.
 
-Move focus between panes with `⌘⌥` + an arrow key, temporarily zoom the focused
-pane to fill the window with `⌘⇧↩`, and close it with `⌘W`. Every shortcut is
+Move focus between panes with `⌥⌘` + an arrow key, and temporarily zoom the
+focused pane to fill the window with `⇧⌘↩`. `⌘W` **ungroups** the focused pane —
+the session keeps running on its own rather than ending. Every shortcut is
 rebindable — see [Keyboard shortcuts](/docs/keyboard).
 
 ## A note on session lifetime
