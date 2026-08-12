@@ -75,7 +75,7 @@ struct MobileSettingsTab: View {
                         set: { tunnel.setProvider($0) }
                     )) {
                         ForEach(TunnelManager.Provider.allCases) { provider in
-                            Text(provider == .off ? localized("Off — LAN only") : provider.label).tag(provider)
+                            Text(Self.pickerLabel(provider)).tag(provider)
                         }
                     }
                     // The custom-relay editor: shown only when Custom is picked,
@@ -126,6 +126,19 @@ struct MobileSettingsTab: View {
             let custom = CustomTunnel.current
             customCommand = custom.command
             customURLPattern = custom.urlPattern
+        }
+    }
+
+    /// A provider's name as the picker shows it. `Spec.label` is the tool's own
+    /// name, so it reaches the screen untranslated — right for the three brands
+    /// (Tunelo, Cloudflare, ngrok are proper nouns everywhere), wrong for the
+    /// two entries that are ordinary words. Those go through the catalog, which
+    /// already carries "Custom" for the theme picker.
+    private static func pickerLabel(_ provider: TunnelManager.Provider) -> String {
+        switch provider {
+        case .off: return localized("Off — LAN only")
+        case .custom: return localized("Custom")
+        case .tunelo, .cloudflared, .ngrok: return provider.label
         }
     }
 

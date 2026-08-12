@@ -18,6 +18,8 @@ on:
       - "Package.swift"
       - "Package.resolved"
       - ".swiftlint.yml"
+      - "scripts/check-strings.sh"
+      - "scripts/compile-strings.sh"
       - ".github/workflows/macos.yml"
   pull_request:
     paths:
@@ -27,6 +29,8 @@ on:
       - "Package.swift"
       - "Package.resolved"
       - ".swiftlint.yml"
+      - "scripts/check-strings.sh"
+      - "scripts/compile-strings.sh"
       - ".github/workflows/macos.yml"
 
 concurrency:
@@ -55,6 +59,12 @@ jobs:
         run: |
           which swiftlint || brew install swiftlint
           swiftlint lint --reporter github-actions-logging
+
+      # A `localized("…")` key the catalog doesn't carry compiles and runs — it
+      # just resolves to English — so only a check catches it. Runs before the
+      # build: it's seconds, and it fails for a reason no compiler error names.
+      - name: Check strings
+        run: ./scripts/check-strings.sh
 
       - name: Build
         run: swift build
