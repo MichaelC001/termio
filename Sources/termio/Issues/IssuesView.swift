@@ -205,7 +205,7 @@ struct IssuesView: View {
         case .connecting(let userCode):
             zeroState(
                 title: localized("Enter Code on GitHub"),
-                message: localized("Type this code at github.com/login/device to approve termio. Waiting for approval…")
+                message: localized("Type this code at github.com/login/device to approve Termio. Waiting for approval…")
             ) {
                 Text(userCode)
                     .font(.system(size: 22, weight: .semibold, design: .monospaced))
@@ -265,7 +265,7 @@ struct IssuesView: View {
                 // authorized termio. Switch account, or grant org access.
                 zeroState(
                     title: localized("Couldn’t Load"),
-                    message: localized("Reconnect to sign in with a different account, or grant termio access to the organization that owns this repository.")
+                    message: localized("Reconnect to sign in with a different account, or grant Termio access to the organization that owns this repository.")
                 ) {
                     Button(localized("Reconnect")) { Task { await model.reconnect() } }
                         .buttonStyle(.borderedProminent)
@@ -583,6 +583,13 @@ private struct DetailTaskKey: Hashable {
     let model: ObjectIdentifier
 }
 
+/// What a diagram render depends on: the diagrams in the open item and the colors to draw
+/// them in. Anything else about the item can change without re-drawing.
+private struct DiagramTaskKey: Hashable {
+    let sources: [String]
+    let theme: MermaidRenderer.Theme
+}
+
 struct IssueDetailView: View {
     let item: IssueSummary
     @ObservedObject var model: IssuesPanelModel
@@ -597,6 +604,8 @@ struct IssueDetailView: View {
 
     private enum Tab: Hashable { case conversation, files }
     @State private var tab: Tab = .conversation
+    /// Mermaid diagrams found in the body or comments, once drawn — see `conversationBody`.
+    @State private var diagrams: [String: String] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -697,11 +706,16 @@ struct IssueDetailView: View {
     @ViewBuilder
     private var conversationBody: some View {
         if let detail = model.detail {
+            let theme = TraceTheme.resolve(settings: settings, colorScheme: colorScheme)
+            let document = IssueDetailHTML.page(detail, theme: theme)
+            let sources = MermaidRenderer.sources(in: document)
+            let mermaidTheme = MermaidRenderer.Theme(theme)
+            // GitHub draws mermaid in issue and PR bodies, so the pane does too — drawn
+            // off to the side and swapped in, like the reader and the trace.
+            let drawn = diagrams.merging(
+                MermaidRenderer.shared.cachedDiagrams(for: sources, theme: mermaidTheme)) { _, new in new }
             IssueWebView(
-                html: IssueDetailHTML.page(
-                    detail,
-                    theme: TraceTheme.resolve(settings: settings, colorScheme: colorScheme)
-                ),
+                html: MermaidRenderer.applying(drawn, to: document),
                 background: settings.terminalBackgroundColor,
                 // Selected conversation text goes over as the pasted snippet; a
                 // selection-less click hands the agent the item's GitHub URL — the
@@ -720,6 +734,10 @@ struct IssueDetailView: View {
             // collapses the detail to a sliver — and the empty area paints the window background
             // (reads as a black window, most visibly across a minimize/restore relayout).
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .task(id: DiagramTaskKey(sources: sources, theme: mermaidTheme)) {
+                guard !sources.isEmpty else { return }
+                diagrams = await MermaidRenderer.shared.diagrams(for: sources, theme: mermaidTheme)
+            }
         } else if let error = model.detailError {
             ContentUnavailableView(localized("Couldn’t Load"), huge: .github, description: Text(error))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -863,7 +881,11 @@ private enum IssueDetailHTML {
 
     private static func css(_ theme: TraceTheme) -> String {
         """
-        :root { color-scheme: \(theme.isDark ? "dark" : "light"); }
+        \(MarkdownSkin.highlightTheme(dark: theme.isDark))
+        \(MarkdownSkin.css(scope: ""))
+        :root { color-scheme: \(theme.isDark ? "dark" : "light");
+        \(MarkdownSkin.alertVariables(dark: theme.isDark))
+        }
         body { margin: 0; padding: 14px 16px 24px; background: \(theme.background);
                color: \(theme.foreground); font: 13px/1.55 -apple-system, sans-serif;
                word-wrap: break-word; }
@@ -899,6 +921,12 @@ private enum IssueDetailHTML {
         li.task { list-style: none; margin-left: -18px; }
         .task-box { vertical-align: -3px; margin-right: 4px; color: \(theme.secondary); }
         .task-box.checked { color: \(theme.accent); }
+        .alert { padding: 1px 0 1px 10px; border-left: 3px solid var(--alert-color); }
+        .alert-title { margin: 0 0 4px; color: var(--alert-color); font-size: 10.5px;
+                       font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+        .footnotes { margin-top: 12px; padding-top: 8px;
+                     border-top: 1px solid rgba(128,128,128,.3); font-size: 12px;
+                     color: \(theme.secondary); }
         """
     }
 

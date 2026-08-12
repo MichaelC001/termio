@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
+import { DocsThemeScript } from "@/components/docs/theme-script";
 
 const siteDescription =
   "Termio is the Terminal-first Agentic Development Environment — a native Mac app for your AI coding agents: Claude Code, Codex, OpenCode, Pi Agent and more. Run them side by side, each in a real terminal, switch between them instantly, and nothing ever leaves your machine.";
@@ -60,7 +61,26 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark h-full antialiased">
+    // suppressHydrationWarning covers exactly one thing: the docs' theme script
+    // (components/docs/theme-script.tsx) writes `data-docs-theme` onto <html>
+    // before React hydrates, so the server markup and the live DOM legitimately
+    // differ by that attribute. It suppresses only this element's own attributes,
+    // not anything nested, so real mismatches below still report.
+    <html
+      lang="en"
+      className="dark h-full antialiased"
+      // globals.css sets scroll-behavior: smooth; Next wants it declared so it can
+      // suppress the animation during route transitions.
+      data-scroll-behavior="smooth"
+      suppressHydrationWarning
+    >
+      {/* An explicit <head> so the theme script has a defined position: React
+          refuses to place a synchronous <script> loose in the document, and this
+          one has to run before the body is parsed. Metadata still flows in here
+          from the Metadata API. */}
+      <head>
+        <DocsThemeScript />
+      </head>
       <body className="min-h-full flex flex-col bg-background text-foreground">
         {children}
         <Analytics />

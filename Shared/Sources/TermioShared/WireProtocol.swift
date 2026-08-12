@@ -143,6 +143,13 @@ public enum CompanionControl: Codable, Sendable, Equatable {
 
     case error(message: String)
 
+    /// A message this build has no case for — a newer peer's vocabulary. The
+    /// receiver ignores it, but it arrives as a value rather than as `nil` so
+    /// the drop can be logged: "the phone asked for something this Mac is too
+    /// old to do" is the failure mode `wire` exists to explain, and it is
+    /// invisible if an unknown tag decodes to nothing.
+    case unsupported(type: String)
+
     public func encoded() -> String {
         // Small, hand-stable JSON so both ends agree without a schema tool.
         switch self {
@@ -247,6 +254,13 @@ public enum CompanionControl: Codable, Sendable, Equatable {
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\"", with: "\\\"")
             return #"{"t":"error","message":"\#(escaped)"}"#
+        case .unsupported(let type):
+            // The tag is carried under its own envelope rather than re-emitted
+            // as itself. Echoing the raw tag would turn a message this build
+            // could not read into one a peer *can*: forwarding an unsupported
+            // `startTerminal` would spawn a terminal. What was not understood on
+            // the way in must not become a command on the way out.
+            return Self.json(["t": "unsupported", "of": type])
         }
     }
 
@@ -404,8 +418,13 @@ public enum CompanionControl: Codable, Sendable, Equatable {
         case "error":
             guard let message = obj["message"] as? String else { return nil }
             return .error(message: message)
+        case "unsupported":
+            // Only reachable from this build's own `encoded()`; a peer never
+            // originates it. Named so the envelope round-trips instead of
+            // decaying into a second layer of "unsupported".
+            return .unsupported(type: obj["of"] as? String ?? "")
         default:
-            return nil
+            return .unsupported(type: type)
         }
     }
 
@@ -578,6 +597,38 @@ public struct RosterSession: Codable, Sendable, Equatable {
 }
 
 /// One project and its sessions.
+/// Decodes an array element by element, dropping the ones that fail.
+///
+/// `decodeIfPresent` only tolerates a *missing* key: a key that is present but
+/// whose contents don't match throws, and the throw travels all the way up. On
+/// the roster that turns one unreadable session into an empty tree — the phone
+/// shows nothing at all rather than one row less. A peer is only as forward-
+/// compatible as its least tolerant array.
+///
+/// A failed `decode` leaves the container's cursor where it was, so the slot has
+/// to be consumed by decoding something that always succeeds; without that the
+/// loop never reaches `isAtEnd`.
+private struct SkippedWireElement: Decodable {}
+
+private func decodeLossyArray<Element: Decodable, Key: CodingKey>(
+    _ container: KeyedDecodingContainer<Key>,
+    _ key: Key
+) -> [Element] {
+    typealias Skipped = SkippedWireElement
+    guard var unkeyed = try? container.nestedUnkeyedContainer(forKey: key) else { return [] }
+    var elements: [Element] = []
+    while !unkeyed.isAtEnd {
+        if let element = try? unkeyed.decode(Element.self) {
+            elements.append(element)
+        } else if (try? unkeyed.decode(Skipped.self)) == nil {
+            // Nothing consumed the slot, so the cursor can't advance — stop
+            // rather than spin.
+            break
+        }
+    }
+    return elements
+}
+
 public struct RosterProject: Codable, Sendable, Equatable {
     public let id: String
     public let name: String
@@ -601,6 +652,18 @@ public struct RosterProject: Codable, Sendable, Equatable {
         self.branch = branch
         self.kind = kind
         self.sessions = sessions
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, path, branch, kind, sessions }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        path = try c.decode(String.self, forKey: .path)
+        branch = try c.decodeIfPresent(String.self, forKey: .branch)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind)
+        sessions = decodeLossyArray(c, CodingKeys.sessions)
     }
 }
 
@@ -651,8 +714,8 @@ public struct CompanionRoster: Codable, Sendable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         t = try c.decode(String.self, forKey: .t)
         wire = try c.decodeIfPresent(Int.self, forKey: .wire) ?? Wire.legacy
-        projects = try c.decodeIfPresent([RosterProject].self, forKey: .projects) ?? []
-        agents = try c.decodeIfPresent([RosterAgent].self, forKey: .agents) ?? []
+        projects = decodeLossyArray(c, CodingKeys.projects)
+        agents = decodeLossyArray(c, CodingKeys.agents)
     }
 
     public func encodedJSON() -> String {

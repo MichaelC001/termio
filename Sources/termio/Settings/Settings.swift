@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import GhosttyTheme
 
 /// Terminal cursor shape. Raw values are deliberately the exact Ghostty config
 /// tokens, so persistence, the settings picker, and the `TermioStore` mapping all
@@ -113,6 +114,14 @@ final class AppSettings: ObservableObject {
     }
 
     // MARK: Appearance
+
+    /// Extra `font-family` entries from the user's Ghostty config (everything after the primary
+    /// face) — passed to the terminal as a fallback chain, so glyphs the chosen font lacks (CJK
+    /// above all) resolve the same way they do in Ghostty itself. Empty without a Ghostty config.
+    let ghosttyFontFallbacks: [String]
+    /// True when a Ghostty config contributed defaults this launch — surfaces one hint line in
+    /// Appearance so inherited values aren't a mystery.
+    let inheritsGhosttyDefaults: Bool
 
     /// Terminal font family. Defaults to "SF Mono" (the Apple system monospace,
     /// as used by Xcode/Terminal). Empty means "let libghostty pick its default
@@ -381,6 +390,50 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(notificationSoundEnabled, forKey: Key.notificationSound) }
     }
 
+    /// Resolves a Ghostty theme name against the bundled catalog, tolerating the naming drift
+    /// between Ghostty's theme list and the catalog's iTerm2-Color-Schemes names
+    /// ("catppuccin-latte" vs "Catppuccin Latte", "Tokyo Night" vs "tokyonight"): exact match
+    /// first, then a case/separator-insensitive one. (termio's custom user themes are
+    /// deliberately not consulted — a Ghostty config can only mean Ghostty's own theme names.)
+    private static func resolveGhosttyTheme(_ name: String) -> GhosttyThemeDefinition? {
+        if let exact = GhosttyThemeCatalog.theme(named: name) { return exact }
+        let normalized = normalizeThemeName(name)
+        return GhosttyThemeCatalog.allThemes.first { normalizeThemeName($0.name) == normalized }
+    }
+
+    private static func normalizeThemeName(_ name: String) -> String {
+        name.lowercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    /// The Ghostty config's contribution to the registration defaults — the middle layer of
+    /// termio setting > Ghostty config > built-in default. Only names the bundled catalog
+    /// resolves inherit; Ghostty also accepts custom theme files termio has no way to render.
+    private static func ghosttyRegistrationOverrides(from ghostty: GhosttyUserConfig) -> [String: Any] {
+        var overrides: [String: Any] = [:]
+        if let family = ghostty.fontFamilies.first { overrides[Key.fontFamily] = family }
+        if let size = ghostty.fontSize { overrides[Key.fontSize] = size }
+        switch ghostty.themeSetting {
+        case .bare(let name):
+            // Ghostty applies a bare `theme = X` in both appearances, but termio wraps the
+            // terminal in light/dark *chrome* — a dark theme inherited into the light slot
+            // makes a half-dark window (light sidebar, dark canvas). A bare theme lands only
+            // in the appearance it belongs to; the other slot keeps termio's own canvas.
+            if let definition = resolveGhosttyTheme(name) {
+                overrides[definition.isDark ? Key.darkThemeName : Key.lightThemeName] = definition.name
+            }
+        case .split(let light, let dark):
+            if let light, let definition = resolveGhosttyTheme(light) {
+                overrides[Key.lightThemeName] = definition.name
+            }
+            if let dark, let definition = resolveGhosttyTheme(dark) {
+                overrides[Key.darkThemeName] = definition.name
+            }
+        case nil:
+            break
+        }
+        return overrides
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
 
@@ -406,7 +459,7 @@ final class AppSettings: ObservableObject {
             defaults.set(hidden, forKey: Key.disabledAgents)
         }
 
-        defaults.register(defaults: [
+        var registered: [String: Any] = [
             Key.fontFamily: "SF Mono",
             Key.fontSize: 13.0,
             Key.fontThicken: false,
@@ -435,7 +488,21 @@ final class AppSettings: ObservableObject {
             // by default.
             Key.notifyTaskCompletion: true,
             Key.notificationSound: false,
-        ])
+        ]
+
+        // Ghostty inheritance: a user's own Ghostty config upgrades the *defaults* only —
+        // anything set in termio lives in the persistent domain and still wins, and without a
+        // Ghostty install the built-ins above stand. Resolution order is therefore
+        // termio setting > Ghostty config > built-in default, courtesy of UserDefaults'
+        // registration-domain layering. Read once per launch.
+        let ghostty = GhosttyUserConfig.load()
+        inheritsGhosttyDefaults = !ghostty.isEmpty
+        ghosttyFontFallbacks = Array(ghostty.fontFamilies.dropFirst())
+        registered.merge(Self.ghosttyRegistrationOverrides(from: ghostty)) { _, ghosttyValue in
+            ghosttyValue
+        }
+
+        defaults.register(defaults: registered)
 
         fontFamily = defaults.string(forKey: Key.fontFamily) ?? ""
         fontSize = defaults.double(forKey: Key.fontSize)

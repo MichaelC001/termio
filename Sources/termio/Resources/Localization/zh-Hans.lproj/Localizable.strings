@@ -58,8 +58,8 @@
 	<string>%lld 周</string>
 	<key>1 result</key>
 	<string>1 个结果</string>
-	<key>A different `%@` already exists at %@. Remove it first — termio won't overwrite a file it didn't create.</key>
-	<string>另一个 `%@` 已存在于 %@。请先移除，termio 不会覆盖并非自己创建的文件。</string>
+	<key>A different `%@` already exists at %@. Remove it first — Termio won't overwrite a file it didn't create.</key>
+	<string>另一个 `%@` 已存在于 %@。请先移除，Termio 不会覆盖并非自己创建的文件。</string>
 	<key>Activity</key>
 	<string>活动</string>
 	<key>Add</key>
@@ -82,6 +82,8 @@
 	<string>Agent</string>
 	<key>Agent presets, live status, and control</key>
 	<string>Agent 预设、实时状态与控制</string>
+	<key>Agent skill</key>
+	<string>Agent 技能</string>
 	<key>Agents</key>
 	<string>Agent</string>
 	<key>Agents won't show as working.</key>
@@ -110,8 +112,8 @@
 	<string>允许访问钥匙串…</string>
 	<key>Allow Usage Access</key>
 	<string>允许访问用量</string>
-	<key>An older install points at %@. Update it to this version of termio.</key>
-	<string>旧的安装指向 %@。请将其更新到此版本的 termio。</string>
+	<key>An older install points at %@. Update it to this version of Termio.</key>
+	<string>旧的安装指向 %@。请将其更新到此版本的 Termio。</string>
 	<key>Anyone</key>
 	<string>任何人</string>
 	<key>App language</key>
@@ -120,16 +122,14 @@
 	<string>外观</string>
 	<key>Appends a Host block to ~/.ssh/config, so the alias works in plain `ssh %@` too.</key>
 	<string>将 Host 块追加到 ~/.ssh/config，该别名也可直接用于 `ssh %@`。</string>
-	<key>Applies to the project and session list. Need not be monospaced.</key>
-	<string>应用于项目和会话列表，无需等宽字体。</string>
 	<key>Assigned to Me</key>
 	<string>指派给我</string>
 	<key>Assignee</key>
 	<string>指派人</string>
 	<key>Auth failed</key>
 	<string>认证失败</string>
-	<key>Available when termio runs from the built app bundle.</key>
-	<string>仅当 termio 从构建的应用包运行时可用。</string>
+	<key>Available when Termio runs from the built app bundle.</key>
+	<string>仅当 Termio 从构建的应用包运行时可用。</string>
 	<key>Bar</key>
 	<string>竖线</string>
 	<key>Binary File</key>
@@ -142,10 +142,12 @@
 	<string>方块</string>
 	<key>Blur: %lld</key>
 	<string>模糊：%lld</string>
-	<key>Both optional. The flag powers the agent's “Skip permission prompts” switch; leave it empty if the CLI has none.</key>
-	<string>两项均为可选。该标志用于 Agent 的“跳过权限确认”开关；若 CLI 没有此标志请留空。</string>
+	<key>Both optional. The flag powers the agent's “Skip permission prompts” switch; leave it empty if the CLI has none. The directory receives termio's session-control skill (as `&lt;dir&gt;/termio`); leave it empty to skip installing one.</key>
+	<string>两项均为可选。该标志用于 Agent 的“跳过权限确认”开关；若 CLI 没有此标志请留空。该目录用于接收 Termio 的会话控制技能（安装为 `&lt;dir&gt;/termio`）；留空则不安装。</string>
 	<key>Branch</key>
 	<string>分支</string>
+	<key>Bring All to Front</key>
+	<string>前置全部窗口</string>
 	<key>Can't Open as Text</key>
 	<string>无法以文本打开</string>
 	<key>Cancel</key>
@@ -164,8 +166,8 @@
 	<string>检查更新…</string>
 	<key>Choose a different name.</key>
 	<string>请选取其他名称。</string>
-	<key>Choose a project folder to open in termio.</key>
-	<string>选取要在 termio 中打开的项目文件夹。</string>
+	<key>Choose a project folder to open in Termio.</key>
+	<string>选取要在 Termio 中打开的项目文件夹。</string>
 	<key>Choose how projects are ordered</key>
 	<string>选取项目的排序方式</string>
 	<key>Choose…</key>
@@ -266,6 +268,8 @@
 	<string>无法更新 .gitignore</string>
 	<key>Couldn’t link `%@` into %@.</key>
 	<string>无法将 `%@` 链接到 %@。</string>
+	<key>Couldn’t remove %@.</key>
+	<string>无法移除 %@。</string>
 	<key>Couldn’t update %@.</key>
 	<string>无法更新 %@。</string>
 	<key>Create</key>
@@ -300,8 +304,6 @@
 	<string>从这台 Mac 上删除该自定义 Agent 的 manifest。</string>
 	<key>Delete…</key>
 	<string>删除…</string>
-	<key>Density</key>
-	<string>密度</string>
 	<key>Detached at %@</key>
 	<string>已分离于 %@</string>
 	<key>Discard %lld Files…</key>
@@ -334,8 +336,8 @@
 	<string>编辑…</string>
 	<key>Enable</key>
 	<string>启用</string>
-	<key>Enable Claude Code or Codex in the Agents tab to see their usage here.</key>
-	<string>在 Agents 标签页中启用 Claude Code 或 Codex，即可在此查看其用量。</string>
+	<key>Enable Claude Code, Codex, Kimi, or Grok in the Agents tab to see their usage here.</key>
+	<string>在 Agents 标签页中启用 Claude Code、Codex、Kimi 或 Grok，即可在此查看其用量。</string>
 	<key>Enter Code on GitHub</key>
 	<string>在 GitHub 上输入代码</string>
 	<key>Enter a host from your ~/.ssh/config, or a user@host to connect to.</key>
@@ -364,8 +366,6 @@
 	<string>聚焦右侧窗格</string>
 	<key>Focus Pane Up</key>
 	<string>聚焦上方窗格</string>
-	<key>Font</key>
-	<string>字体</string>
 	<key>Font name</key>
 	<string>字体名称</string>
 	<key>General</key>
@@ -414,12 +414,8 @@
 	<string>检查器</string>
 	<key>Inspector Pane</key>
 	<string>检查器窗格</string>
-	<key>Install</key>
-	<string>安装</string>
 	<key>Install %@</key>
 	<string>安装 %@</string>
-	<key>Install `%@` so you (and agents) can run `%@ sessions …` from any shell. Links to /usr/local/bin.</key>
-	<string>安装 `%@` 后，你（和 Agent）可在任意 shell 中运行 `%@ sessions …`。将链接到 /usr/local/bin。</string>
 	<key>Installed.</key>
 	<string>已安装。</string>
 	<key>Installing %@…</key>
@@ -460,14 +456,18 @@
 	<string>启动</string>
 	<key>Let your agents coordinate?</key>
 	<string>让你的 Agent 相互协作？</string>
-	<key>Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command.</key>
-	<string>允许 Agent 通过 `termio sessions` 命令查看并驱动本项目中的其他会话。</string>
+	<key>Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command. Installs the termio skill into each agent's skills folder.</key>
+	<string>允许 Agent 通过 `termio sessions` 命令查看并驱动本项目中的其他会话。会将 termio 技能安装到各 Agent 的技能文件夹中。</string>
 	<key>Light</key>
 	<string>浅色</string>
 	<key>Line height applies to the file editor and diffs; the terminal keeps the font's own.</key>
 	<string>行高应用于文件编辑器和差异对比；终端保持字体自身的行高。</string>
+	<key>Line height applies to the file editor and diffs; the terminal keeps the font's own. Font and theme values you haven't set here follow your Ghostty config.</key>
+	<string>行高应用于文件编辑器和差异对比；终端保持字体自身的行高。此处未设置的字体与主题项将沿用你的 Ghostty 配置。</string>
 	<key>Line height: %@×</key>
 	<string>行高：%@×</string>
+	<key>Links `%@` into /usr/local/bin so you (and agents) can run `%@ sessions …` from any shell.</key>
+	<string>将 `%@` 链接到 /usr/local/bin，让你（和 Agent）可在任意 shell 中运行 `%@ sessions …`。</string>
 	<key>Live agent status</key>
 	<string>Agent 实时状态</string>
 	<key>Live agent status is off</key>
@@ -480,6 +480,8 @@
 	<string>全字匹配</string>
 	<key>Merged</key>
 	<string>已合并</string>
+	<key>Minimize</key>
+	<string>最小化</string>
 	<key>Mobile</key>
 	<string>移动设备</string>
 	<key>Mobile Access</key>
@@ -522,6 +524,8 @@
 	<string>新建 SSH 连接…</string>
 	<key>New Terminal</key>
 	<string>新建终端</string>
+	<key>New Terminal at Home</key>
+	<string>在个人文件夹新建终端</string>
 	<key>New Worktree</key>
 	<string>新建 Worktree</string>
 	<key>New Worktree…</key>
@@ -592,16 +596,12 @@
 	<string>以后再说</string>
 	<key>Not pushed to upstream</key>
 	<string>尚未推送到上游</string>
-	<key>Note reinstalled</key>
-	<string>说明已重新安装</string>
 	<key>Nothing to install.</key>
 	<string>没有可安装的内容。</string>
 	<key>Notifications</key>
 	<string>通知</string>
-	<key>Notifications and the termio command-line tool</key>
-	<string>通知与 termio 命令行工具</string>
-	<key>Notifications for termio are turned off in System Settings.</key>
-	<string>termio 的通知已在“系统设置”中关闭。</string>
+	<key>Notifications for Termio are turned off in System Settings.</key>
+	<string>Termio 的通知已在“系统设置”中关闭。</string>
 	<key>OK</key>
 	<string>好</string>
 	<key>Off — LAN only</key>
@@ -634,8 +634,6 @@
 	<string>在编辑器中打开</string>
 	<key>Open on GitHub</key>
 	<string>在 GitHub 上打开</string>
-	<key>Orchestration</key>
-	<string>编排</string>
 	<key>Padding: %lld pt</key>
 	<string>边距：%lld 点</string>
 	<key>Pair your iPhone and remote access</key>
@@ -650,8 +648,8 @@
 	<string>在左侧选择一个文件以查看其更改。</string>
 	<key>Pin</key>
 	<string>固定</string>
-	<key>Pin termio to a light or dark look, or follow the system. The light and dark terminal themes below apply to the matching appearance.</key>
-	<string>将 termio 固定为浅色或深色外观，或跟随系统。下方的浅色与深色终端主题会应用到对应的外观。</string>
+	<key>Pin Termio to a light or dark look, or follow the system. The light and dark terminal themes below apply to the matching appearance.</key>
+	<string>将 Termio 固定为浅色或深色外观，或跟随系统。下方的浅色与深色终端主题会应用到对应的外观。</string>
 	<key>Pin to Top</key>
 	<string>固定到顶部</string>
 	<key>Pinned</key>
@@ -666,8 +664,8 @@
 	<string>热门</string>
 	<key>Port</key>
 	<string>端口</string>
-	<key>Posts a notification when an agent finishes or needs you while termio is in the background.</key>
-	<string>当 termio 在后台时，Agent 完成任务或需要你时发送通知。</string>
+	<key>Posts a notification when an agent finishes or needs you while Termio is in the background.</key>
+	<string>当 Termio 在后台时，Agent 完成任务或需要你时发送通知。</string>
 	<key>Press Shortcut…</key>
 	<string>按下快捷键…</string>
 	<key>Preview</key>
@@ -684,24 +682,24 @@
 	<string>公钥</string>
 	<key>Pull Requests</key>
 	<string>PR</string>
-	<key>Push the current branch to the repository's remote first, then try again. (The remote also needs to be a forge termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)</key>
-	<string>请先将当前分支推送到仓库的远程，然后重试。（远程还需是 termio 能识别的代码托管平台：GitHub、GitLab、Bitbucket 或 Gitea。）</string>
+	<key>Push the current branch to the repository's remote first, then try again. (The remote also needs to be a forge Termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)</key>
+	<string>请先将当前分支推送到仓库的远程，然后重试。（远程还需是 Termio 能识别的代码托管平台：GitHub、GitLab、Bitbucket 或 Gitea。）</string>
 	<key>Quit Termio</key>
 	<string>退出 Termio</string>
 	<key>Range</key>
 	<string>范围</string>
 	<key>Reachable</key>
 	<string>可连接</string>
-	<key>Reads ~/.ssh/config directly — termio keeps no separate host list.</key>
-	<string>直接读取 ~/.ssh/config——termio 不保留单独的主机列表。</string>
+	<key>Reads ~/.ssh/config directly — Termio keeps no separate host list.</key>
+	<string>直接读取 ~/.ssh/config——Termio 不保留单独的主机列表。</string>
 	<key>Recent</key>
 	<string>最近</string>
 	<key>Recent Activity</key>
 	<string>最近活动</string>
 	<key>Reconnect</key>
 	<string>重新连接</string>
-	<key>Reconnect to sign in with a different account, or grant termio access to the organization that owns this repository.</key>
-	<string>重新连接以使用其他账户登录，或授予 termio 访问拥有该仓库的组织的权限。</string>
+	<key>Reconnect to sign in with a different account, or grant Termio access to the organization that owns this repository.</key>
+	<string>重新连接以使用其他账户登录，或授予 Termio 访问拥有该仓库的组织的权限。</string>
 	<key>Record Shortcut</key>
 	<string>录制快捷键</string>
 	<key>Refresh</key>
@@ -710,12 +708,12 @@
 	<string>重新安装</string>
 	<key>Reinstall hooks</key>
 	<string>重新安装 hooks</string>
-	<key>Reinstall note</key>
-	<string>重新安装说明</string>
+	<key>Reinstall skill</key>
+	<string>重新安装技能</string>
 	<key>Relaunch Now</key>
 	<string>立即重新启动</string>
-	<key>Relaunch termio to switch language?</key>
-	<string>重新启动 termio 以切换语言？</string>
+	<key>Relaunch Termio to switch language?</key>
+	<string>重新启动 Termio 以切换语言？</string>
 	<key>Reload</key>
 	<string>重新载入</string>
 	<key>Remove</key>
@@ -726,6 +724,8 @@
 	<string>移除 Worktree</string>
 	<key>Remove from List</key>
 	<string>从列表中移除</string>
+	<key>Removed from PATH.</key>
+	<string>已从 PATH 中移除。</string>
 	<key>Removes this custom agent and its configuration file. Existing sessions keep running.</key>
 	<string>移除此自定义 Agent 及其配置文件。现有会话会继续运行。</string>
 	<key>Rename</key>
@@ -812,12 +812,14 @@
 	<string>显示项目文件</string>
 	<key>Shows the Issues pane in the inspector for projects whose remote is on GitHub.</key>
 	<string>为远程仓库位于 GitHub 的项目在检查器中显示 Issues 窗格。</string>
-	<key>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs termio's hooks into each agent's config.</key>
-	<string>显示 Agent 正在工作还是在等待你：侧栏的转圈指示和菜单栏的脉冲。会将 termio 的 hooks 安装到各 Agent 的配置中。</string>
-	<key>Sidebar font</key>
-	<string>侧栏字体</string>
+	<key>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio's hooks into each agent's config.</key>
+	<string>显示 Agent 正在工作还是在等待你：侧栏的转圈指示和菜单栏的脉冲。会将 Termio 的 hooks 安装到各 Agent 的配置中。</string>
+	<key>Sidebar</key>
+	<string>侧栏</string>
 	<key>Size: %lld pt</key>
 	<string>大小：%lld 磅</string>
+	<key>Skill reinstalled</key>
+	<string>技能已重新安装</string>
 	<key>Skip permission prompts</key>
 	<string>跳过权限确认</string>
 	<key>Skip-permissions flag</key>
@@ -860,8 +862,8 @@
 	<string>系统等宽字体</string>
 	<key>Takes %@ out of the new-session menu. Its settings are kept.</key>
 	<string>将 %@ 从新建会话菜单中移除，其设置会保留。</string>
-	<key>Takes effect after termio relaunches.</key>
-	<string>重新启动 termio 后生效。</string>
+	<key>Takes effect after Termio relaunches.</key>
+	<string>重新启动 Termio 后生效。</string>
 	<key>Tallied from %@'s own local session logs across every terminal and editor on this Mac — your actual usage, regardless of how the plan bills.%@</key>
 	<string>根据 %@ 在这台 Mac 上所有终端和编辑器的本地会话日志统计——即你的实际用量，与套餐计费方式无关。%@</string>
 	<key>Task completion</key>
@@ -870,10 +872,22 @@
 	<string>终端</string>
 	<key>Terminal default</key>
 	<string>终端默认</string>
-	<key>Terminal font, theme, cursor, and window</key>
-	<string>终端字体、主题、光标与窗口</string>
+	<key>Terminal font</key>
+	<string>终端字体</string>
 	<key>Terminals</key>
 	<string>终端</string>
+	<key>Termio can show %@'s token usage and plan limits by reading its local session logs and its `auth.json` sign-in. Nothing is read until you allow it.</key>
+	<string>Termio 可通过读取 %@ 的本地会话日志及其 `auth.json` 登录信息，显示其 token 用量和套餐限额。在你允许之前不会读取任何内容。</string>
+	<key>Termio can show %@'s token usage and plan limits by reading its local session logs and its `credentials/kimi-code.json` sign-in. Nothing is read until you allow it.</key>
+	<string>Termio 可通过读取 %@ 的本地会话日志及其 `credentials/kimi-code.json` 登录信息，显示其 token 用量和套餐限额。在你允许之前不会读取任何内容。</string>
+	<key>Termio can show %@'s token usage and plan limits by reading its local session logs and its sign-in from your login Keychain. Nothing is read until you allow it; macOS will ask once about the Keychain.</key>
+	<string>Termio 可通过读取 %@ 的本地会话日志及登录钥匙串中的登录信息，显示其 token 用量和套餐限额。在你允许之前不会读取任何内容；macOS 会就钥匙串询问一次。</string>
+	<key>Termio could not append to the repository’s .gitignore. Check its permissions and try again.</key>
+	<string>Termio 无法将内容追加到该仓库的 .gitignore。请检查其权限后重试。</string>
+	<key>Termio is open source — star the repo, report bugs, and request features.</key>
+	<string>Termio 是开源软件：欢迎给仓库加星标、报告 bug 和提出功能请求。</string>
+	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio's own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”</key>
+	<string>Termio 会随 macOS 外观变化在两者间切换；将槽位留在默认值即可使用 Termio 自带的画布。将 Ghostty 格式的主题文件放入主题文件夹即可添加自己的主题，它们会显示在“自定义”下。</string>
 	<key>Test</key>
 	<string>测试</string>
 	<key>Test Connection</key>
@@ -882,20 +896,24 @@
 	<string>新建聊天（⌘N）启动的 Agent。“上次使用”跟随你最近一次聊天所用的 Agent。</string>
 	<key>The agents in the list are offered when starting a new session, in that order — drag to reorder, select one to configure it.</key>
 	<string>新建会话时按此顺序提供列表中的 Agent。拖动可重新排序，选中可进行配置。</string>
-	<key>The app's own sidebar font and density</key>
-	<string>应用自身侧栏的字体与密度</string>
 	<key>The command is run in a login shell, so anything on your PATH works.</key>
 	<string>命令在登录 shell 中运行，PATH 中的任何命令都可用。</string>
 	<key>The folder was removed, but git couldn't prune its stale worktree metadata.</key>
 	<string>文件夹已移除，但 git 无法清理其残留的 worktree 元数据。</string>
 	<key>The ignore rule could not be added.</key>
 	<string>无法添加忽略规则。</string>
+	<key>The project and session list. Kept separate from the terminal font, and need not be monospaced.</key>
+	<string>项目与会话列表。与终端字体分开设置，无需等宽字体。</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server's authorized_keys — private keys are never read.</key>
 	<string>~/.ssh 中的公钥。可拷贝一个粘贴到服务器的 authorized_keys——私钥永远不会被读取。</string>
+	<key>The termio command-line tool, agent skill, and notifications</key>
+	<string>termio 命令行工具、Agent 技能与通知</string>
 	<key>The working tree is clean.</key>
 	<string>工作树中没有任何更改。</string>
 	<key>Theme</key>
 	<string>主题</string>
+	<key>Theme, fonts, cursor, and window</key>
+	<string>主题、字体、光标与窗口</string>
 	<key>Themes</key>
 	<string>主题</string>
 	<key>Thicken glyphs</key>
@@ -936,8 +954,8 @@
 	<string>隧道</string>
 	<key>Turn off to disconnect your iPhone; pairing is kept.</key>
 	<string>关闭后 iPhone 将断开连接；配对会保留。</string>
-	<key>Type this code at github.com/login/device to approve termio. Waiting for approval…</key>
-	<string>在 github.com/login/device 输入此代码以授权 termio。正在等待批准…</string>
+	<key>Type this code at github.com/login/device to approve Termio. Waiting for approval…</key>
+	<string>在 github.com/login/device 输入此代码以授权 Termio。正在等待批准…</string>
 	<key>Underline</key>
 	<string>下划线</string>
 	<key>Ungroup</key>
@@ -988,6 +1006,8 @@
 	<string>来自 ~/.ssh/config 的 Host 条目，与 `ssh` 解析的别名一致。右键点按主机即可连接。</string>
 	<key>Your ~/.ssh/config hosts, one click away</key>
 	<string>一键连接 ~/.ssh/config 中的主机</string>
+	<key>Zoom</key>
+	<string>缩放</string>
 	<key>Zoom Split</key>
 	<string>缩放拆分</string>
 	<key>`%@` is on your PATH. Run `%@ sessions …` to drive sibling sessions, or `%@ .` to open a folder.</key>
@@ -1000,8 +1020,6 @@
 	<string>当前</string>
 	<key>e.g. JetBrains Mono</key>
 	<string>例如 JetBrains Mono</string>
-	<key>files</key>
-	<string>个文件</string>
 	<key>git couldn't check “%@” for changes, so it was not removed.</key>
 	<string>git 无法检查“%@”是否有更改，因此未将其移除。</string>
 	<key>git couldn't create a worktree for “%@”. Is it a git repository with at least one commit?</key>
@@ -1010,8 +1028,8 @@
 	<string>git 无法移除“%@”。</string>
 	<key>issue.state.open</key>
 	<string>开放</string>
-	<key>macOS hasn't been asked to allow termio's notifications yet.</key>
-	<string>macOS 尚未请求允许 termio 发送通知。</string>
+	<key>macOS hasn't been asked to allow Termio's notifications yet.</key>
+	<string>macOS 尚未请求允许 Termio 发送通知。</string>
 	<key>nothing</key>
 	<string>无</string>
 	<key>optional</key>
@@ -1020,22 +1038,12 @@
 	<string>可选 — ~/.ssh/id_ed25519</string>
 	<key>ssh unavailable</key>
 	<string>ssh 不可用</string>
-	<key>termio can show %@'s token usage and plan limits by reading its local session logs and its `auth.json` sign-in. Nothing is read until you allow it.</key>
-	<string>termio 可通过读取 %@ 的本地会话日志及其 `auth.json` 登录信息，显示其 token 用量和套餐限额。在你允许之前不会读取任何内容。</string>
-	<key>termio can show %@'s token usage and plan limits by reading its local session logs and its sign-in from your login Keychain. Nothing is read until you allow it; macOS will ask once about the Keychain.</key>
-	<string>termio 可通过读取 %@ 的本地会话日志及登录钥匙串中的登录信息，显示其 token 用量和套餐限额。在你允许之前不会读取任何内容；macOS 会就钥匙串询问一次。</string>
 	<key>termio can teach the agents you run (Claude Code, Codex, …) a `termio sessions` command so they can see, drive, and read each other's sessions in a project.
 
 Enabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks. You can turn it off anytime in Settings ▸ Agents.</key>
 	<string>termio 可以教你运行的 Agent（Claude Code、Codex 等）使用 `termio sessions` 命令，让它们在项目中查看、驱动并读取彼此的会话。
 
 启用后会在你的 ~/.claude/CLAUDE.md 中添加一段简短说明并安装状态 hooks。你可以随时在“设置 ▸ Agents”中将其关闭。</string>
-	<key>termio could not append to the repository’s .gitignore. Check its permissions and try again.</key>
-	<string>termio 无法将内容追加到该仓库的 .gitignore。请检查其权限后重试。</string>
-	<key>termio is open source — star the repo, report bugs, and request features.</key>
-	<string>termio 是开源软件：欢迎给仓库加星标、报告 bug 和提出功能请求。</string>
-	<key>termio switches between these as macOS changes appearance; leave a slot on the default for termio's own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”</key>
-	<string>termio 会随 macOS 外观变化在两者间切换；将槽位留在默认值即可使用 termio 自带的画布。将 Ghostty 格式的主题文件放入主题文件夹即可添加自己的主题，它们会显示在“自定义”下。</string>
 	<key>· resets %@</key>
 	<string>· 重置于 %@</string>
 	<key>“%@” already exists.</key>

@@ -156,7 +156,7 @@ no build, no review, effective immediately.
 - Review notes lead with the Blink/Termius framing: commands run on the user's
   **own Mac**, no third-party server, no account (so no demo credentials — the
   QR pairing replaces them), and a demo video of pairing + live use is linked
-  because the reviewer has no Mac running termio.
+  because the reviewer has no Mac running Termio.
 - Builds expire after **90 days**; audiences that rely on the public link need
   at least one build per 90-day window to keep it alive.
 - External-tester ceiling is 10,000; the public link draws from that pool.

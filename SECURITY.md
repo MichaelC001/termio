@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes target the latest released version of termio and the `main`
+Security fixes target the latest released version of Termio and the `main`
 branch. Older releases may not receive a backport, so please confirm an issue
 against the latest release when practical.
 
@@ -38,12 +38,12 @@ period before publishing details.
 
 ## Scope
 
-Reports are in scope when they affect the termio macOS app, iOS companion,
+Reports are in scope when they affect the Termio macOS app, iOS companion,
 shared packages, landing site, release/update mechanism, or first-party
-infrastructure used to distribute termio.
+infrastructure used to distribute Termio.
 
 Reports about an upstream dependency should normally go to that dependency's
-maintainer unless termio uses it in a way that creates a termio-specific
+maintainer unless Termio uses it in a way that creates a termio-specific
 vulnerability. Social engineering, physical attacks, and availability-only
 traffic floods are out of scope. Automated scanner output without a
 demonstrated security impact is not sufficient on its own.

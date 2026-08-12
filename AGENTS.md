@@ -117,6 +117,13 @@ Companion:
 - The Mac serves the iOS app over a WebSocket; the wire protocol is in
   `Shared/Sources/TermioShared/WireProtocol.swift`. The mirror is a live
   surface, not a screenshot feed.
+- The Usage tab reads each agent through a `UsageProvider`
+  (`Sources/termio/Companion/Usage/`) — one file per agent, holding its
+  credential read, its plan-limit endpoint, and its session-log scanner.
+  `UsageMonitor` knows only the list, so supporting another agent is a new
+  provider file plus a line in `UsageMonitor.providers`, not an edit threaded
+  through the fetch and scan paths. Only agents whose CLI leaves a usable
+  credential on disk qualify; termio never runs a login flow.
 
 ## Where to work
 
@@ -124,7 +131,8 @@ Companion:
 - `Sources/termio/TermioStore` — session tree, persistence, split groups,
   agent status.
 - `Sources/termio/Agents` — agent manifests, session control, hook contract.
-- `Sources/termio/Companion` — companion server, tunnel, usage monitor.
+- `Sources/termio/Companion` — companion server, tunnel, per-agent usage
+  providers.
 - `Shared/` — anything both platforms must agree on. Changing the wire protocol
   means changing both ends.
 - `web/landing` — marketing copy and site. See `docs/ARCHITECTURE.md`.
@@ -221,6 +229,23 @@ Dependencies and vendored code:
 - The index table in `docs/README.md` is generated from that front matter. Do
   not edit it by hand — use the `doc` skill, which writes the front matter on
   create and regenerates the index.
+
+The user-facing docs site is `web/landing/content/docs`, and three things there
+are derived rather than written:
+
+- **The shortcut tables** come from `KeyCommandCatalog`. Change a binding in
+  Swift, then `pnpm keybindings:sync` in `web/landing`. Never restate a shortcut
+  by hand — the page renders `<Keybindings category="…" />` from the generated
+  JSON.
+- **The translations** (`<page>.<locale>.mdx`) are made from the English page and
+  record which revision they came from. After editing an English page, retranslate
+  it and re-run `pnpm docs:stamp`; anchors that other pages link to carry an
+  explicit English id (`## 状态 [#status]`) so a link works in every language.
+  Locale wording follows `content/docs/.i18n/glossary.<locale>.json`, which tracks
+  the app's own localized UI strings.
+- **The changelog** (`src/data/changelog.ts`) must cover the newest release tag.
+
+`pnpm docs:check` enforces all three, and the `Docs` workflow runs it.
 
 ## Releases
 

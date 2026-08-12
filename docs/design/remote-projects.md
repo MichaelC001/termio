@@ -13,20 +13,20 @@ related:
 
 # Design: Remote Projects
 
-> Open a remote SSH/VPS host in termio the same way you open a local folder — a real terminal session running an agent (Claude Code, Codex, …) on the remote box, hosted in a native Mac window. Ship the terminal-only slice first; treat remote file-tree / git / agent-status as a deferred phase.
+> Open a remote SSH/VPS host in Termio the same way you open a local folder — a real terminal session running an agent (Claude Code, Codex, …) on the remote box, hosted in a native Mac window. Ship the terminal-only slice first; treat remote file-tree / git / agent-status as a deferred phase.
 
 > **Superseded as the target architecture by [session-daemon-architecture.md](session-daemon-architecture.md).** Under the session-daemon model, remote is not a feature but a *transport* (`ssh host termiod --attach <id>`), and the local/remote feature asymmetry this doc works around simply doesn't exist. Keep this doc as the **interim** plan only if we want remote VPS *before* `termiod` lands; otherwise Phase 2 of the daemon architecture is the real answer.
 
 ## 0. Conclusion first
 
-- **A remote project is not a new networking stack.** termio already launches every session by handing an `argv` to a local `PTYProcess`. The Mac's own `ssh` binary is the transport, and the remote PTY is allocated by `ssh -t`. A remote project is therefore **one branch at the launch seam**, not a rewrite.
+- **A remote project is not a new networking stack.** Termio already launches every session by handing an `argv` to a local `PTYProcess`. The Mac's own `ssh` binary is the transport, and the remote PTY is allocated by `ssh -t`. A remote project is therefore **one branch at the launch seam**, not a rewrite.
 - **Everything downstream of the PTY is already agnostic.** The terminal surface, output sinks, resize, composer, and reconnect logic only see bytes. They do not care whether the bytes came from a local shell or an `ssh` process.
 - **Three subsystems assume local disk** and are the real cost: the file tree (`FileManager`), the git pane (`git -C <localpath>`), and Claude's hook-based agent-status (fires on the remote box, writes remote files). These are **disabled for remote projects in v1**, not reimplemented.
-- **Recommendation: ship v1 (terminal-only remote project).** It is the 90% win — a persistent remote Claude Code you can open, name, and reattach from a native Mac window — and it adds almost no surface area (one enum field + one `if` at the launch site). This keeps termio's "small surface area = elegance" principle intact and directly answers the herdr/VPS use-case without becoming herdr.
+- **Recommendation: ship v1 (terminal-only remote project).** It is the 90% win — a persistent remote Claude Code you can open, name, and reattach from a native Mac window — and it adds almost no surface area (one enum field + one `if` at the launch site). This keeps Termio's "small surface area = elegance" principle intact and directly answers the herdr/VPS use-case without becoming herdr.
 
 ## 1. Motivation
 
-Users want to run Claude Code (and other agents) on a remote VPS — for always-on compute, a fixed IP, or to keep long jobs alive after the laptop closes — while driving it from termio's native Mac UI. Today termio only spawns **local** shells. The competitor framing is [herdr](https://herdr.dev/): a Rust TUI whose headline is `herdr --remote ssh://user@host` — the server half runs on the box, the local terminal is a thin client. termio can offer the equivalent without a server component by treating a remote host as just another Project whose sessions happen to be `ssh` processes.
+Users want to run Claude Code (and other agents) on a remote VPS — for always-on compute, a fixed IP, or to keep long jobs alive after the laptop closes — while driving it from Termio's native Mac UI. Today Termio only spawns **local** shells. The competitor framing is [herdr](https://herdr.dev/): a Rust TUI whose headline is `herdr --remote ssh://user@host` — the server half runs on the box, the local terminal is a thin client. Termio can offer the equivalent without a server component by treating a remote host as just another Project whose sessions happen to be `ssh` processes.
 
 Related prior work: [remote-access-relay-strategy.md](remote-access-relay-strategy.md) covers the *inverse* direction (phone → Mac reach-back). Remote Projects is Mac → VPS and is orthogonal to it.
 
@@ -78,7 +78,7 @@ struct RemoteConnection: Codable, Hashable {
 }
 ```
 
-Design note: **do not build an SSH credential manager.** Lean entirely on `~/.ssh/config` and the user's existing agent/keys. termio only stores a Host alias + a remote path. This keeps the feature small and avoids re-solving key management (which the deferred iOS SSH manager, [termio-ios-ssh], already shows is a large surface).
+Design note: **do not build an SSH credential manager.** Lean entirely on `~/.ssh/config` and the user's existing agent/keys. Termio only stores a Host alias + a remote path. This keeps the feature small and avoids re-solving key management (which the deferred iOS SSH manager, [termio-ios-ssh], already shows is a large surface).
 
 Persistence is free — `Project` is `Codable` and already saved to `state.json`. Remote projects restore across restarts; the live ssh session restarts fresh on relaunch, exactly like local shells today.
 
@@ -102,9 +102,9 @@ A bare `ssh -tt host -- claude` **dies when the ssh connection drops**. To match
 sh -lc 'cd <remotePath> && exec tmux new -A -s termio-<sessionShortID> "claude …"'
 ```
 
-`tmux new -A -s <name>` attaches if the named session exists, else creates it — so a reconnect from termio re-attaches the still-running agent. This is opt-in via a per-project **"Keep running when disconnected"** toggle (default on for remote). If `tmux`/`zellij` is absent on the host, fall back to a plain `exec` and note the limitation in the sheet.
+`tmux new -A -s <name>` attaches if the named session exists, else creates it — so a reconnect from Termio re-attaches the still-running agent. This is opt-in via a per-project **"Keep running when disconnected"** toggle (default on for remote). If `tmux`/`zellij` is absent on the host, fall back to a plain `exec` and note the limitation in the sheet.
 
-This also recovers a form of **agent status**: on reattach termio can shell out `ssh host tmux capture-pane` or reuse the same output heuristics used locally. Full hook-based status is a v2 concern — for v1, remote agent-status degrades gracefully to "unknown / output-based," not a hook feed.
+This also recovers a form of **agent status**: on reattach Termio can shell out `ssh host tmux capture-pane` or reuse the same output heuristics used locally. Full hook-based status is a v2 concern — for v1, remote agent-status degrades gracefully to "unknown / output-based," not a hook feed.
 
 ## 7. Phase 2 (only if demanded) — first-class remote projects
 
@@ -120,7 +120,7 @@ Each is a separate, sizeable chunk. None should block v1.
 
 - **Latency / rendering** — interactive TUIs (Claude Code) over ssh are fine on low RTT; high-latency links feel sluggish. The warm-up tick pump ([termio-opencode-blank]) still applies to the local PTY, so opentui-style blocking queries should behave.
 - **Host key prompts** — first connect may prompt for host-key acceptance; the ssh process will emit it into the terminal. Acceptable (it's a real terminal), but the connect sheet should mention "you may be asked to confirm the host key."
-- **`tmux` naming collisions** — key the tmux session name on the termio session UUID to avoid two termio sessions fighting over one remote pane.
+- **`tmux` naming collisions** — key the tmux session name on the Termio session UUID to avoid two termio sessions fighting over one remote pane.
 - **Sandbox** — the Seatbelt sandbox ([termio-sandbox]) is a *host* concern and does not apply to remote sessions; disable the sandbox toggle for remote projects.
 - **Which agents** — v1 targets Claude Code + a plain shell. Codex/OpenCode resume relies on discovering IDs from local stores; for remote, resume flags are passed optimistically and discovery is skipped.
 

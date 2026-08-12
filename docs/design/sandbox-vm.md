@@ -19,9 +19,9 @@ related:
 
 ## 1. 目标与动机
 
-termio 跑的是真实 PTY（`.exec`），agent 在用户真机上有完全访问权。沙箱的目的：把 agent 能搞坏的范围（文件系统、网络、装的软件）关进一台一次性的 Linux VM，逃出来也只碰到一次性盒子，而不是用户的真机。
+Termio 跑的是真实 PTY（`.exec`），agent 在用户真机上有完全访问权。沙箱的目的：把 agent 能搞坏的范围（文件系统、网络、装的软件）关进一台一次性的 Linux VM，逃出来也只碰到一次性盒子，而不是用户的真机。
 
-关键约束 —— **用户零安装**。不要求用户去装 Docker / Apple 的 `container` CLI / 任何特权 daemon。因此 termio 自己当 runtime：通过 Apple 开源的 **`apple/containerization`** Swift 框架直接起 VM。
+关键约束 —— **用户零安装**。不要求用户去装 Docker / Apple 的 `container` CLI / 任何特权 daemon。因此 Termio 自己当 runtime：通过 Apple 开源的 **`apple/containerization`** Swift 框架直接起 VM。
 
 ## 2. 核心设计决策
 
@@ -33,7 +33,7 @@ termio 跑的是真实 PTY（`.exec`），agent 在用户真机上有完全访�
 
 ### 2.2 一个 project = 一个 container（不是 per-session）
 
-**这是和 Apple sandboxy 范式的关键分歧。** sandboxy 是"每个会话一个 VM"；termio 要的是**每个项目一个容器，项目下所有会话 `exec` 进同一个容器共享它**。
+**这是和 Apple sandboxy 范式的关键分歧。** sandboxy 是"每个会话一个 VM"；Termio 要的是**每个项目一个容器，项目下所有会话 `exec` 进同一个容器共享它**。
 
 为什么 per-project：
 
@@ -100,7 +100,7 @@ termio 跑的是真实 PTY（`.exec`），agent 在用户真机上有完全访�
 ## 6. 硬约束（环境）
 
 - 只支持 **Apple Silicon + macOS 26 (Tahoe)**；非 26 / 非 arm64 时 `isAvailable()` 为假，会话静默回退到宿主。
-- **macOS 26 vmnet bug**：app 在 `~/Documents` 或 `~/Desktop` 下 `VmnetNetwork()` 失败（status 1001）。termio repo 在 `~/Documents/GitHub/termio`——**编译在原地没事，运行必须在 Documents 之外**（开发期跑 /Applications 里的副本）。
+- **macOS 26 vmnet bug**：app 在 `~/Documents` 或 `~/Desktop` 下 `VmnetNetwork()` 失败（status 1001）。Termio repo 在 `~/Documents/GitHub/termio`——**编译在原地没事，运行必须在 Documents 之外**（开发期跑 /Applications 里的副本）。
 - 首次开 VM 项目要联网下内核 + 基础镜像 + 装 agent（一次，之后缓存）。VM 够不到宿主 `localhost`，只能连 `0.0.0.0` 上的服务。
 
 ## 7. 里程碑

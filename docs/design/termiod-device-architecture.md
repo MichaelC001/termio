@@ -31,13 +31,13 @@ protocol; nothing here guesses at one.
 2. **A device's identity is its `termiod` `host_id`**, not an SSH alias. SSH is
    one *route* to a device, not the device itself.
 3. **Raw PTY bytes are teed to clients; the host parses in parallel, never in
-   between.** This is termio's existing anti-100× invariant, and primary
+   between.** This is Termio's existing anti-100× invariant, and primary
    sources confirm Superlogical converged on the identical design
    (**Announced**: *"we tee them off to all the clients, and we send them raw
    like SSH"*; *"the teeing happens ahead of the server"*). §3 corrects an
    earlier revision of this document that had it backwards.
 4. **The server never decides presentation.** It describes what is on the
-   screen; the client's libghostty decides how it looks. This is termio's own,
+   screen; the client's libghostty decides how it looks. This is Termio's own,
    learned the expensive way (§4).
 5. **Four planes, one connection, one recovery rule.** Terminal, resource
    subscription, request, device transfer — all resumable by cursor.
@@ -49,7 +49,7 @@ flag, per-session remote host, and every menu verb with "Remote" in its name.
 
 ## 1. Why client/server, even locally
 
-termio today has two ways to run a session: `PTYProcess` in-process, or the
+Termio today has two ways to run a session: `PTYProcess` in-process, or the
 daemon when `TERMIO_TERMIOD=1`. Two paths means every feature is written twice
 and the second one rots. The bugs found while testing this branch were all
 symptoms: a local terminal silently became remote because of an environment
@@ -94,7 +94,7 @@ This matters concretely: one VPS commonly appears in `~/.ssh/config` as
 devices with three session lists. Keyed by `host_id` they are one machine with
 three roads, and switching networks does not fork your state.
 
-`~/.ssh/config` remains the single source of SSH hosts — termio keeps no host
+`~/.ssh/config` remains the single source of SSH hosts — Termio keeps no host
 database, per §H #8 (never embed SSH). The parser already handles wildcards,
 negation, `Include`, and `%h` (`Sources/termio/Settings/SSHConfig.swift`).
 
@@ -134,7 +134,7 @@ change.** The invariant, restated with the extra precision his answer supplies:
 
 **Why the host still keeps authoritative state.** Both designs parse
 server-side, because attach needs it. Ours additionally wants it for peek
-without attach (`what is on that agent's screen right now?` — today termio's
+without attach (`what is on that agent's screen right now?` — today Termio's
 CLI scrapes screens for this), and for catch-up. So §C.6's "sidecar consulted
 only to build snapshots" understates its role — but the *hot path* framing was
 right all along.
@@ -170,7 +170,7 @@ names — and §C.10's `gap: true` *is* the tombstone.
 
 ---
 
-## 4. The presentation boundary (termio's own rule)
+## 4. The presentation boundary (Termio's own rule)
 
 > **The host describes state. It never decides how that state looks.**
 
@@ -245,7 +245,7 @@ an in-process PTY dies *with* the app, which is at least a shared fate.
 All rows **Announced** unless marked; sources are the architecture video, the
 reply threads, and superlogical.com.
 
-| | Superlogical | termio |
+| | Superlogical | Termio |
 | --- | --- | --- |
 | Sessions server-side, client/server even locally | yes — *"for local … its still IPC"* | same |
 | Raw PTY bytes teed to clients | yes — *"raw like SSH"* | same |
@@ -301,7 +301,7 @@ Each step is independently shippable and mostly removes code.
 3. **Daemon lifecycle on macOS.** launchd agent, restart-on-crash, tombstones.
    **Done** — `termiod service install|uninstall|status` writes a
    `sh.termio.termiod` launchd user agent (`RunAtLoad` + `KeepAlive`); never
-   installed automatically, since it makes the daemon outlive every termio
+   installed automatically, since it makes the daemon outlive every Termio
    process. Tombstones (`termiod/src/tombstone.rs`) ride the `list` reply and
    record `exited` / `killed` / `daemon_lost` with the session's identity,
    status, and timestamps. The crash case is inferred rather than supervised: a
@@ -335,7 +335,7 @@ model exists, each would grow its own local/remote fork.
    across routes or simply reconnects. Baseline measured: SSH cold 216–292 ms,
    warm with ControlMaster 26–33 ms.
 3. **Global device vs cross-device roster.** A single "current device" is
-   clean, but termio's value is seeing every agent at once. Current position:
+   clean, but Termio's value is seeing every agent at once. Current position:
    the device scopes *new work and the panels*; the session list stays
    cross-device with a device column. Unproven in use.
 4. **Clipboard semantics.** Push on copy (eager, leaks everything you copy to

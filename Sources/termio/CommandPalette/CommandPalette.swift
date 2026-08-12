@@ -315,7 +315,7 @@ struct CommandPaletteView: View {
         }
         actions.append(.init(id: "new-terminal", title: localized("New Terminal"),
                              icon: .plusSquare, shortcut: keys.display(for: .newTerminal)) {
-            $0.addScratchTerminal()
+            $0.addTerminalHere()
         })
         // The single "New Chat" verb (default agent, always the scratch Chats
         // funnel), carrying its ⌘N shortcut — the palette twin of File ▸ New Chat.

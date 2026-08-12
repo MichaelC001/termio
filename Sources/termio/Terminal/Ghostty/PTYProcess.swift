@@ -897,6 +897,26 @@ final class PTYProcess: @unchecked Sendable {
         return arguments.isEmpty ? nil : arguments
     }
 
+    /// Whether the child is still running — the session has a live process to
+    /// lose. False once the pid is reaped.
+    var isAlive: Bool {
+        lock.lock()
+        let exited = childExited
+        lock.unlock()
+        return !exited && pid > 0
+    }
+
+    /// Whether something other than the child shell itself holds the tty's
+    /// foreground group, i.e. a command is actually running in the pane rather
+    /// than a shell idling at its prompt. This is the signal iTerm2 keys its
+    /// prompt-on-close off; a bare prompt is its own foreground group and reads
+    /// as free to close.
+    var hasForegroundJob: Bool {
+        guard isAlive else { return false }
+        let foreground = tcgetpgrp(masterFD)
+        return foreground > 0 && foreground != pid
+    }
+
     /// SIGKILLs the child's process group if it hasn't been reaped yet.
     /// Idempotent; safe after the pid is reaped (the `childExited` check keeps
     /// the kill off a recycled pid). The app-quit path calls this directly

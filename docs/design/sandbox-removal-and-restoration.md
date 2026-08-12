@@ -12,7 +12,7 @@ related:
 
 # Sandbox removal & restoration (Apple Seatbelt subsystem)
 
-This records termio's own per-project Seatbelt sandbox **before it was removed**, so a
+This records Termio's own per-project Seatbelt sandbox **before it was removed**, so a
 future engineer can rebuild it (or, preferably, bring it back in a lighter shape — see
 [§6](#6-if-we-bring-it-back-do-it-lighter)). The subsystem is being deleted, not
 deprecated in place, so this doc is the map; git is the backup.
@@ -20,11 +20,11 @@ deprecated in place, so this doc is the map; git is the backup.
 ## Why it's being removed
 
 1. **Every serious agent now ships its own sandbox.** Claude Code, Codex, and Grok all
-   confine themselves; termio wrapping a second sandbox around them is redundant and, on
+   confine themselves; Termio wrapping a second sandbox around them is redundant and, on
    macOS, actively conflicting (you can't nest Seatbelt — hence the whole "stand-down"
    mechanism below existed only to work around a problem we created).
 2. **`sandbox-exec` is deprecated by Apple.** The `SeatbeltProfile` compiler targets a CLI
-   Apple has marked deprecated; betting termio's security story on it is a dead end.
+   Apple has marked deprecated; betting Termio's security story on it is a dead end.
 3. **It was only half-built.** There was a working profile compiler and launch wrapper, but
    the "Security panel" was a single sheet (`SecuritySheet`) with no threat model UI, no
    presets, and no per-agent policy — not a finished security surface.
@@ -40,7 +40,7 @@ The deeper reason it isn't being rebuilt right now is a product call, not a code
 - **The problem is already solved one layer down.** The threat this guarded against — a
   rogue or prompt-injected agent running `rm -rf`, exfiltrating `~/.ssh`/the Keychain, or
   piping `curl | sh` — is now handled by the agents themselves. Claude Code, Codex, and Grok
-  each ship their own confinement. termio spending effort here buys **~zero marginal safety**
+  each ship their own confinement. Termio spending effort here buys **~zero marginal safety**
   over what the user already gets by default; it mostly duplicates work the vendors do better
   and keep current.
 - **It's a moving target we'd be chasing, not owning.** `sandbox-exec` is deprecated, the
@@ -48,7 +48,7 @@ The deeper reason it isn't being rebuilt right now is a product call, not a code
   three different dialects), and Apple's replacement story (`sandbox_init`, containers) is
   unsettled. Building on this now means signing up to re-verify a security boundary against
   a shifting substrate — the worst kind of maintenance to carry on an indie, free tool.
-- **It fights termio's whole reason to exist.** termio is a deliberately small, focused,
+- **It fights Termio's whole reason to exist.** Termio is a deliberately small, focused,
   native terminal for agents (see [[ambition]]) — its edge is taste and a tiny surface area,
   not being a security product. A per-project SBPL compiler, a threat-model UI, presets, and
   per-agent policy is a *large, permanent* surface that pulls the project toward something it
@@ -59,9 +59,9 @@ The deeper reason it isn't being rebuilt right now is a product call, not a code
   doc plus git bring it back in an afternoon, and the recommended shape ([§6](#6-if-we-bring-it-back-do-it-lighter))
   is a few lines of launch-prefix glue rather than a security subsystem to re-own.
 
-In short: **not "sandboxing is unimportant", but "termio owning the sandbox is the wrong
+In short: **not "sandboxing is unimportant", but "Termio owning the sandbox is the wrong
 place to spend a small team's attention right now."** The right posture today is to lean on
-each agent's own sandbox and keep termio's surface small.
+each agent's own sandbox and keep Termio's surface small.
 
 Restoration path: **git**. The pre-removal commit (below) contains the complete, working
 implementation. Bringing it back = `git revert` / `git cherry-pick` of the removal commit,
@@ -222,9 +222,9 @@ isolated worktree was the sandbox's writable workspace, exactly where the sessio
 
 **Why it existed:** macOS forbids a Seatbelt sandbox inside a Seatbelt sandbox — a nested
 sandbox fails to initialize. Modern agents (Claude Code, Codex, Grok) start their *own*
-Seatbelt sandbox by default. If termio wrapped such an agent in its profile and the agent
+Seatbelt sandbox by default. If Termio wrapped such an agent in its profile and the agent
 then tried to sandbox itself, the agent would fail to launch. So each agent had to be told,
-via its own CLI flags, to **stand down its internal sandbox** — leaving termio's profile as
+via its own CLI flags, to **stand down its internal sandbox** — leaving Termio's profile as
 the single enforcement layer. This was a **correctness requirement, not an optimization.**
 
 The flag string lived on `AgentDefinition.sandboxStandDownArguments: String?` and was
@@ -246,10 +246,10 @@ string (parsed by `UserAgentManifest`).
 > ⚠️ **Interaction with permission-bypass flags.** These stand-down flags are distinct from
 > `permissionBypassFlag` (the "YOLO" switch, e.g. `--dangerously-skip-permissions`). Note
 > that Codex's stand-down (`--sandbox danger-full-access`) and Grok's (`--sandbox off`)
-> *also* weaken the agent's own confinement — which was acceptable *only because* termio's
-> profile was enforcing around them. **After removal, with no termio profile, we must NOT
+> *also* weaken the agent's own confinement — which was acceptable *only because* Termio's
+> profile was enforcing around them. **After removal, with no Termio profile, we must NOT
 > keep injecting these stand-down flags** — doing so would leave the agent both un-sandboxed
-> by termio *and* told to disable its own sandbox = worst case. The removal drops the field
+> by Termio *and* told to disable its own sandbox = worst case. The removal drops the field
 > entirely, so nothing injects them. (We also deliberately do NOT auto-inject
 > `permissionBypassFlag` as a side effect of this change.)
 
@@ -350,11 +350,11 @@ even if the removal is reverted.
 ## 6. If we bring it back, do it lighter
 
 Do **not** resurrect the SBPL compiler as termio-owned code. `sandbox-exec` is deprecated and
-owning a security-policy compiler over-couples termio to a subsystem the agents now own
+owning a security-policy compiler over-couples Termio to a subsystem the agents now own
 themselves. Instead:
 
 **Expose a launch-PREFIX seam.** Let the user prepend their *own* confinement command to a
-session's launch via config — termio just concatenates it, owns none of the policy:
+session's launch via config — Termio just concatenates it, owns none of the policy:
 
 ```jsonc
 // per-project or per-agent config (illustrative — NOT built)
@@ -362,9 +362,9 @@ session's launch via config — termio just concatenates it, owns none of the po
 // or a container:  "launchPrefix": "container run --rm -v $PWD:/workspace ..."
 ```
 
-termio would prepend `launchPrefix` to the resolved command inside the existing `launchArgv`
+Termio would prepend `launchPrefix` to the resolved command inside the existing `launchArgv`
 path and otherwise stay out of the way. This gives power users full reach (Seatbelt,
-`sandbox-exec`, containers, `bwrap`, whatever) with **zero** security code in termio, no SBPL
+`sandbox-exec`, containers, `bwrap`, whatever) with **zero** security code in Termio, no SBPL
 compiler to maintain, and no `sandboxStandDownArguments` coupling on `AgentDefinition` (if a
 user's prefix needs the agent to stand down, they add that flag to their own agent command).
 

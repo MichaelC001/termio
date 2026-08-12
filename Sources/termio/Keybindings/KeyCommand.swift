@@ -6,6 +6,7 @@ import Foundation
 enum KeyCommandID: String, CaseIterable, Identifiable {
     // File
     case newTerminal = "file.new-terminal"
+    case newTerminalAtHome = "file.new-terminal-at-home"
     case newChat = "file.new-chat"
     case openProject = "file.open-project"
     // Navigation
@@ -65,6 +66,11 @@ enum KeyCommandCatalog {
         // File
         .init(id: .newTerminal, category: localized("File"), title: localized("New Terminal"),
               defaultShortcut: .init(modifiers: [.command], key: .char("t"))),
+        // Unbound, the way Split Left and Split Up are: a shell at `~` is the rare
+        // direction, and the key it would take — ⌘⇧T — is "reopen closed tab" muscle
+        // memory everywhere else on the Mac.
+        .init(id: .newTerminalAtHome, category: localized("File"), title: localized("New Terminal at Home"),
+              defaultShortcut: nil),
         .init(id: .newChat, category: localized("File"), title: localized("New Chat"),
               defaultShortcut: .init(modifiers: [.command], key: .char("n"))),
         .init(id: .openProject, category: localized("File"), title: localized("Open Project…"),

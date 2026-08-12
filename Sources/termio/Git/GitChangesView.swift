@@ -339,7 +339,7 @@ struct GitChangesView: View {
             let succeeded = await GitService.appendToGitignore([pattern], in: repoRoot)
             if !succeeded {
                 gitignoreErrorMessage =
-                    localized("termio could not append to the repository’s .gitignore. Check its permissions and try again.")
+                    localized("Termio could not append to the repository’s .gitignore. Check its permissions and try again.")
             }
             await model.load()
         }
@@ -360,7 +360,7 @@ struct GitChangesView: View {
             let succeeded = await GitService.appendToGitignore(patterns, in: repoRoot)
             if !succeeded {
                 gitignoreErrorMessage =
-                    localized("termio could not append to the repository’s .gitignore. Check its permissions and try again.")
+                    localized("Termio could not append to the repository’s .gitignore. Check its permissions and try again.")
             }
             await model.load()
         }

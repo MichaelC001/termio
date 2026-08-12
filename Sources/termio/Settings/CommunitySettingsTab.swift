@@ -16,7 +16,7 @@ struct CommunitySettingsTab: View {
                 CommunityLinkRow(
                     icon: .github,
                     title: localized("GitHub"),
-                    subtext: localized("termio is open source — star the repo, report bugs, and request features."),
+                    subtext: localized("Termio is open source — star the repo, report bugs, and request features."),
                     buttonTitle: localized("Open"),
                     url: "https://github.com/termio-sh/termio"
                 )

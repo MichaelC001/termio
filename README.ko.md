@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<img alt="termio" src="web/landing/public/logo.png" width="88" />
+<img alt="Termio" src="web/landing/public/logo.png" width="88" />
 
 ### 터미널 퍼스트 에이전트 개발 환경
 
@@ -14,8 +14,9 @@
 
 <br />
 
-Claude Code, Codex를 비롯한 어떤 CLI 에이전트든 네이티브 Mac 앱에서 나란히 실행해보세요 —<br />
-모든 세션이 사이드바에 실시간으로 뜨고, 누가 여러분을 기다리는지 메뉴바 점이 알려줘요.
+Claude Code, Codex를 비롯한 어떤 CLI 에이전트든 진짜 Mac 터미널에서 나란히 실행해보세요 —<br />
+Swift와 libghostty, Electron은 없습니다. 누가 여러분을 기다리는지 메뉴바 점이 알려주고,<br />
+자리를 비운 사이에는 iPhone이 지켜봅니다.
 
 <br />
 
@@ -23,16 +24,30 @@ Claude Code, Codex를 비롯한 어떤 CLI 에이전트든 네이티브 Mac 앱�
 
 <br />
 
-<img alt="다크 모드의 termio: 프로젝트 사이드바 옆에서 실행 중인 Claude Code 세션" src="web/landing/public/screenshots/hero1.png" width="100%" />
+<img alt="다크 모드의 Termio: 프로젝트 사이드바 옆에서 실행 중인 Claude Code 세션" src="web/landing/public/screenshots/hero1.png" width="100%" />
 
 </div>
 
-## 에이전트가 일하는 걸 지켜보려고 만들었어요
+## 설치하기
+
+**[macOS용 Termio 다운로드](https://downloads.termio.sh/termio.dmg)** —
+무료이고 계정도 필요 없어요. macOS 14 이상에서 동작해요.
+[Homebrew](https://brew.sh)로도 설치할 수 있어요:
+
+```sh
+brew install --cask termio-sh/tap/termio
+```
+
+**iPhone에서는** [TestFlight](https://testflight.apple.com/join/1Arf1UKR)에서
+컴패니언 베타를 받은 뒤, Mac 앱의 Settings ▸ Mobile에 뜨는 QR 코드를
+스캔해서 페어링하면 돼요.
+
+## 에이전트로 개발하는 시대를 위해 만들었어요
 
 IDE는 사람이 직접 코드를 타이핑하던 시절에 맞춰 만들어졌어요. 에이전트가
 대부분의 코드를 쓰는 시대에는 개발 환경의 역할도 달라져요. 에이전트가
 일하는 곳이자, 여러분이 지시하고, 검토하고, 막힌 곳을 풀어주는 곳이어야
-하죠. termio가 바로 그 환경이에요. 에이전트가 이미 살고 있는 터미널을
+하죠. Termio가 바로 그 환경이에요. 에이전트가 이미 살고 있는 터미널을
 중심에 두고, 새로운 작업 방식에 맞춰 만들었어요 — 여러 에이전트가 동시에
 달리고, 대부분은 알아서 잘 굴러가는데, 하나쯤은 막혀 있는 그런 상황이요.
 (더 긴 이야기는 [*From IDE to ADE*](docs/essays/from-ide-to-ade.md)에서
@@ -44,7 +59,7 @@ IDE는 사람이 직접 코드를 타이핑하던 시절에 맞춰 만들어졌�
 - **프로젝트 → 세션.** 사이드바가 실제 일하는 방식을 그대로 반영해요.
   프로젝트마다 자기 터미널과 에이전트를 품고, 병렬 작업용 git 워크트리가
   그 아래에 중첩돼요.
-- **설정 없이 되는 상태 표시.** termio가 에이전트마다 고유의 훅을 알아서
+- **설정 없이 되는 상태 표시.** Termio가 에이전트마다 고유의 훅을 알아서
   연결하고, 에이전트가 원래 내보내는 신호를 읽어요. 작업 중인지, 대기
   중인지, *needs you*인지 세션마다 점으로 보여주고, 메뉴바 트레이는 평소엔
   잠잠하다가 에이전트가 일할 때 은은하게 깜빡이고, 여러분의 답을 기다리며
@@ -79,7 +94,7 @@ PTY예요.
 
 세션 점이 작업 중 / 대기 중 / needs-you 상태를 보여주고, 이걸 한데 모은
 메뉴바 트레이는 어떤 앱을 쓰고 있든 흘끗 확인할 수 있어요. 트레이에서
-세션을 고르면 termio가 그 세션을 앞으로 가져와요.
+세션을 고르면 Termio가 그 세션을 앞으로 가져와요.
 
 </td>
 <td width="50%">
@@ -158,13 +173,13 @@ Look으로 열리고, 에이전트가 출력한 경로는 ⌘-클릭하면 미�
 
 Claude Code, Codex, Gemini CLI, Grok, Cursor Agent, Copilot, Amp, OpenCode,
 Pi, Kimi — 그 밖의 어떤 CLI 에이전트든 쓸 수 있어요. 세션이 그냥 진짜
-터미널이니까요. 내장 지원되는 에이전트는 termio가 각각의 훅이나 플러그인을
+터미널이니까요. 내장 지원되는 에이전트는 Termio가 각각의 훅이나 플러그인을
 자동으로 설치해서, 처음 실행하는 순간부터 상태 감지가 동작해요.
 
 ## 터미널에서 조종하기
 
-termio는 `termio` CLI를 함께 제공해서 세션을 스크립트로 다룰 수 있어요 —
-에이전트 스스로도요. termio 안에서 돌고 있는 에이전트가 형제 세션을 띄우고,
+Termio는 `termio` CLI를 함께 제공해서 세션을 스크립트로 다룰 수 있어요 —
+에이전트 스스로도요. Termio 안에서 돌고 있는 에이전트가 형제 세션을 띄우고,
 작업을 넘기고, 답을 읽어올 수 있어요:
 
 ```sh
@@ -185,33 +200,39 @@ termio sessions watch                      # 상태 변화를 실시간으로 �
 <table>
 <tr>
 <td width="33%">
-  <img src="web/landing/public/screenshots/iphone-claude.webp" alt="iPhone에 실시간으로 미러링된 Claude Code 세션" width="100%" />
+  <img src="web/landing/public/screenshots/phone-mirror.webp" alt="iPhone에 실시간으로 미러링된 Claude Code 세션" width="100%" />
 </td>
 <td width="33%">
-  <img src="web/landing/public/screenshots/iphone-keys.webp" alt="키보드 위의 esc, tab, ctrl, 화살표 키가 있는 키 바" width="100%" />
+  <img src="web/landing/public/screenshots/phone-keys.webp" alt="키보드 위의 esc, tab, ctrl, 화살표 키가 있는 키 바" width="100%" />
 </td>
 <td width="33%">
-  <img src="web/landing/public/screenshots/iphone-voice.webp" alt="길게 눌러 말하기로 프롬프트에 받아쓰는 음성 입력" width="100%" />
+  <img src="web/landing/public/screenshots/phone-projects.webp" alt="프로젝트와 체크아웃된 브랜치를 나열하는 홈 화면" width="100%" />
 </td>
 </tr>
 </table>
 
-## 설치하기
+## 로드맵
 
-**[macOS용 termio 다운로드](https://downloads.termio.sh/termio.dmg)** —
-무료이고 계정도 필요 없어요. macOS 14 이상에서 동작해요.
+- **Linux 원격 서버** — VPS나 개발 머신 등 내 Linux 머신에서 세션을 돌리고,
+  Mac 앱에서 관리할 수 있어요.
+- **Mux 서버** — 세션이 연결이 아니라 머신에 살아 있는 영속 세션 호스트예요.
+  노트북을 덮어도 에이전트는 계속 일하고, 다시 붙으면 화면이 그대로 돌아와요.
+- **이슈 트리아지** — GitHub, GitLab, Linear 이슈를 앱 안에서 보고 바로
+  에이전트에게 맡겨요.
+- **모바일 TUI → GUI** — 라이브 미러 위에 에이전트 세션을 GUI로 보여주는
+  옵션이에요.
+- **Windows 지원** — 네이티브 Windows 앱이에요. 같은 철학, 같은 터미널 코어로,
+  Electron 포팅이 아니에요.
+- **웹 지원** — 어느 브라우저에서든 세션에 붙을 수 있어요. 터미널은 링크로
+  공유할 수 있고요.
 
-[Homebrew](https://brew.sh)로도 설치할 수 있어요:
-
-```sh
-brew install --cask termio-sh/tap/termio
-```
-
-**iPhone에서는** [TestFlight](https://testflight.apple.com/join/1Arf1UKR)에서
-컴패니언 베타를 받은 뒤, Mac 앱의 Settings ▸ Mobile에 뜨는 QR 코드를
-스캔해서 페어링하면 돼요.
+진행 상황은 [GitHub Issues](https://github.com/termio-sh/termio/issues)에서 지켜보거나 의견을 남겨 주세요.
 
 ## 커뮤니티
+
+**Termio는 오래 함께할 메인테이너를 찾고 있어요.** Termio를 즐겨 쓰고 있고 위
+로드맵의 한 영역 — Linux 원격 서버, 웹 클라이언트, Windows, iOS 컴패니언 앱 —
+을 맡아 보고 싶다면, Discord에서 인사하거나 이슈를 하나 집어 보세요.
 
 - **[Discord](https://discord.gg/H9DKVwsE5f)** — 개발자, 다른 사용자들과 이야기 나눠요
 - **[GitHub Issues](https://github.com/termio-sh/termio/issues)** — 버그 제보와 기능 요청은 여기로요
@@ -224,4 +245,4 @@ brew install --cask termio-sh/tap/termio
 
 ## 라이선스
 
-termio는 [MIT](LICENSE) 라이선스예요.
+Termio는 [MIT](LICENSE) 라이선스예요.

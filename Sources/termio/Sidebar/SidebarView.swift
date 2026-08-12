@@ -956,7 +956,7 @@ private struct SessionRow: View {
             .separator,
             .action(session.pinned ? localized("Unpin") : localized("Pin")) { store.toggleSessionPinned(session.id) },
             .separator,
-            .action(localized("Close Session")) { store.closeSession(session.id) },
+            .action(localized("Close Session")) { store.requestCloseSession(session.id) },
         ])
         return items
     }
@@ -1035,7 +1035,7 @@ private struct SessionRow: View {
                     help: localized("Close session"),
                     chrome: chrome
                 ) {
-                    store.closeSession(session.id)
+                    store.requestCloseSession(session.id)
                 }
                 .opacity(isHovering ? 1 : 0)
                 .allowsHitTesting(isHovering)

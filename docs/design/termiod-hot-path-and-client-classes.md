@@ -155,7 +155,7 @@ tee — a nuance worth exactly zero engineering hours until a user asks.
 `termiod/src/tombstone.rs` already owns that word: *what a session was when it
 died, and why* — a durability record, written to disk, read by the next daemon,
 shown in the UI. Superlogical's tombstone (**Announced**) is an overflow marker
-meaning "resync, your baseline is gone", which in termio is spelled `gap`.
+meaning "resync, your baseline is gone", which in Termio is spelled `gap`.
 **Two different words for two different things is correct; unifying the
 vocabulary here would collide a shipped concept with a wire signal.**
 

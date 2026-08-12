@@ -106,7 +106,7 @@ struct LanguageRow: View {
             SettingsLabel(
                 .huge(.textFont),
                 title: localized("App language"),
-                subtext: localized("Takes effect after termio relaunches.")
+                subtext: localized("Takes effect after Termio relaunches.")
             )
         }
         .onChange(of: selection) { _, newValue in
@@ -116,7 +116,7 @@ struct LanguageRow: View {
                 confirmingRelaunch = true
             }
         }
-        .alert(localized("Relaunch termio to switch language?"),
+        .alert(localized("Relaunch Termio to switch language?"),
                isPresented: $confirmingRelaunch) {
             Button(localized("Later"), role: .cancel) {}
                 .keyboardShortcut(.defaultAction)

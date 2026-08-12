@@ -26,7 +26,7 @@ updated: 2026-06-28
 | Claude Code | `~/.claude/projects/<dashified-cwd>/<sessionId>.jsonl` | 目录名 = cwd 把 `/` 换 `-` |
 | 普通终端 | 无 transcript | 退化为 scrollback 文本，或禁用按钮 |
 
-**termio 的结构性优势**：每个 session 有唯一 `cwd`（每会话 worktree，见
+**Termio 的结构性优势**：每个 session 有唯一 `cwd`（每会话 worktree，见
 `Session.worktreePath` `Models.swift:204`）。所以「这个 pane ↔ 哪个 transcript 文件」
 是确定可解的——这就是你问的 *"check the session id"*：用 `cwd` 反查 transcript，
 再在该 cwd 下取**最新**的 rollout / `.jsonl`。已实地验证（2026-06-27）：
@@ -56,7 +56,7 @@ updated: 2026-06-28
 - 默认 `share: "manual"`（opt-in），文档只有一句「公开，别分享敏感信息」的**advisory**
   警告，无自动脱敏。
 
-**结论**：opencode 的「隐私」只是一个短而弱的 slug，**没有密码**。termio 要做的是
+**结论**：opencode 的「隐私」只是一个短而弱的 slug，**没有密码**。Termio 要做的是
 **取它实时同步的优点 + 把 slug 改成不可枚举 + 补上你要的密码层**。
 
 来源：`packages/opencode/src/share/share-next.ts`、`packages/enterprise/src/core/share.ts`、
@@ -64,7 +64,7 @@ updated: 2026-06-28
 
 ---
 
-## 三、termio 的安全模型（最终决策）
+## 三、Termio 的安全模型（最终决策）
 
 opencode 的**超集**，三层清晰分开：
 
@@ -85,10 +85,10 @@ opencode 的**超集**，三层清晰分开：
 
 ---
 
-## 四、实时同步：termio 用「tail JSONL」而非「订阅内部事件」
+## 四、实时同步：Termio 用「tail JSONL」而非「订阅内部事件」
 
-opencode 能订阅自己进程的内部事件；termio 是**外部**观察 Codex/Claude 进程，拿不到
-它们的事件总线。但 termio 有它们的 transcript 文件——所以 termio 的实时同步 = **tail
+opencode 能订阅自己进程的内部事件；Termio 是**外部**观察 Codex/Claude 进程，拿不到
+它们的事件总线。但 Termio 有它们的 transcript 文件——所以 Termio 的实时同步 = **tail
 那个 JSONL 文件**（正是 `docs/competitive-analysis/07-vibe-island.md` 提到的 `claude-watch`
 「无 hook 直接 tail JSONL」路子）。
 
@@ -242,7 +242,7 @@ transcript path」副选项。
 
 ### 本地文件落在哪
 
-`~/.termio/shares/<slug>.md`（termio 自管目录，不污染用户 repo）。watcher 把解析出的 part
+`~/.termio/shares/<slug>.md`（Termio 自管目录，不污染用户 repo）。watcher 把解析出的 part
 增量重写进这个文件；unshare / 退出后文件保留，下次可复用或清理。
 
 ### Share link…（远端）仍是两条链接
