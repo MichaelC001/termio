@@ -149,6 +149,33 @@ That last point is the sharpest contrast in this doc. termio confirms on ⌘Q fo
 exactly the reason Zed doesn't: quitting termio kills live processes that no
 autosave can bring back.
 
+### Ghostty — the same confirmation policy, a different probe
+
+Ghostty's `confirm-close-surface` defaults to `true`, documented as: confirm before
+closing a surface, *"even if shell integration says a process isn't running"* only
+when set to `always`. So its default is already "ask only when something is
+running" — the same policy as termio's Close Session, reached independently.
+
+The difference is the liveness probe. Ghostty asks the **shell** (OSC 133 command
+marks, via shell integration); termio asks the **kernel** (`tcgetpgrp` on the PTY
+master) plus the session's declared agent. Ghostty's signal is the more general
+one, but it depends on shell integration being installed and emitting marks;
+termio's works regardless of the user's shell config, at the cost of needing the
+agent carve-out described above.
+
+Its close dialog also defaults focus to **Cancel**, so Return cancels. termio's
+does the same, after a first cut where Escape landed on the destructive button.
+Two independent implementations converging on that is the strongest signal in this
+doc that it's the right default.
+
+Worth watching: Ghostty users are actively pushing back on the dialog —
+[#9669](https://github.com/ghostty-org/ghostty/discussions/9669) asks for a
+`force_close_surface` action to bypass it,
+[#7357](https://github.com/ghostty-org/ghostty/discussions/7357) asks how to
+remove it entirely. That is the failure mode this design avoids by keeping the
+prompt off ⌘W: a confirmation that fires constantly becomes something users
+engineer their way around.
+
 ### Raycast — the command layer, not the window layer
 
 Raycast isn't a window app in this sense, and it's closed-source, so it belongs
@@ -164,6 +191,35 @@ a rebind can't be swallowed by the terminal. The lesson taken from Raycast is
 restraint — a command earns a default key by being pressed constantly, not by
 existing. Split Left and Split Up ship unbound for this reason, as does Close
 Session.
+
+## Resolution: one action that branches, not a context tree
+
+Every tool above resolves a key **declaratively by context**. Zed's rule is
+explicit:
+
+> Bindings that match on lower nodes in the context tree win. […] If there are
+> multiple bindings that match at the same level in the tree, then the binding
+> defined later takes precedence.
+
+VS Code says the same thing with `when` clauses. termio does not: `KeyCommandCatalog`
+is a flat table, and ⌘W resolves itself *imperatively*, inside one action — is the
+key window an auxiliary one, is there a split, otherwise close the window.
+
+At two branches that is the simpler design, and it stays honest because there is
+exactly one place to read. It is deliberate, not an oversight. But it has a known
+cost, and one visible symptom today: with a diff or editor detail open in the
+inspector, ⌘W ungroups a pane instead of closing the detail. Zed would close it —
+its `Workspace` context binds ⌘W to `CloseActiveDock`.
+
+That symptom is **not** fixed by adding another branch. Zed's dock binding matches
+only when focus is *in* the dock; termio has no focus notion for the inspector, so
+"close the detail whenever one is open" would break the common case — a diff open
+beside a terminal you are typing in. Doing it correctly needs a focus/context
+notion, which is the refactor, not a patch.
+
+**The trigger to build contexts:** when a third state needs its own answer for the
+same key, or when a binding's correctness depends on which region has focus. Until
+then, branch and keep it in one function.
 
 ## Rejected
 
@@ -191,3 +247,5 @@ Tracked in [#204](https://github.com/termio-sh/termio/issues/204):
 - ⌃⌘ arrows to resize the divider and ⌃⌘= to equalize. Blocked on defining which
   divider moves when the focused pane touches several ancestors; the binding is
   easy, the rule isn't.
+- A focus/context notion for key resolution, and with it ⌘W closing a focused
+  inspector detail. See *Resolution* above for the trigger.
