@@ -3,8 +3,8 @@ import SwiftUI
 
 /// Reads and writes user agent manifests (`~/.termio[-dev]/config/agents/<id>.json`)
 /// on behalf of the Settings form. The form covers the everyday fields (name,
-/// command, icon symbol, bypass flag); a hand-written manifest's other keys
-/// (status, hooks, resume, …) are preserved verbatim on rewrite.
+/// command, icon symbol, bypass flag, skills directory); a hand-written manifest's
+/// other keys (status, hooks, resume, …) are preserved verbatim on rewrite.
 enum UserAgentStore {
     struct Draft {
         var name = ""
@@ -12,6 +12,9 @@ enum UserAgentStore {
         /// SF Symbol name; empty means the default terminal glyph.
         var symbol = ""
         var permissionBypassFlag = ""
+        /// The agent's user-level skills directory (`~/.config/my-agent/skills`),
+        /// where termio installs the session-control skill; empty declares none.
+        var skillsDir = ""
 
         init() {}
 
@@ -21,6 +24,7 @@ enum UserAgentStore {
             command = definition.command ?? ""
             if case .symbol(let name) = definition.icon { symbol = name }
             permissionBypassFlag = definition.permissionBypassFlag ?? ""
+            skillsDir = definition.skillDir ?? ""
         }
 
         var isValid: Bool {
@@ -57,6 +61,13 @@ enum UserAgentStore {
             // Clearing the field removes a symbol icon (back to the default glyph),
             // but never touches a hand-authored path/vector/asset icon.
             object["icon"] = nil
+        }
+
+        let skillsDir = draft.skillsDir.trimmingCharacters(in: .whitespaces)
+        if skillsDir.isEmpty {
+            object["skills"] = nil
+        } else {
+            object["skills"] = ["dir": skillsDir]
         }
 
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -154,8 +165,15 @@ struct CustomAgentEditorSheet: View {
                             .fontDesign(.monospaced)
                             .labelsHidden()
                     }
+                    LabeledContent("Skills directory") {
+                        TextField("", text: $draft.skillsDir, prompt: Text("~/.config/my-agent/skills"))
+                            .textFieldStyle(.plain)
+                            .multilineTextAlignment(.trailing)
+                            .fontDesign(.monospaced)
+                            .labelsHidden()
+                    }
                 } footer: {
-                    Text("Both optional. The flag powers the agent's “Skip permission prompts” switch; leave it empty if the CLI has none.")
+                    Text("Both optional. The flag powers the agent's “Skip permission prompts” switch; leave it empty if the CLI has none. The directory receives termio's session-control skill (as `<dir>/termio`); leave it empty to skip installing one.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -180,7 +198,7 @@ struct CustomAgentEditorSheet: View {
             }
             .padding(12)
         }
-        .frame(width: 440, height: 380)
+        .frame(width: 440, height: 430)
     }
 
     /// The badge the agent will actually get: the typed symbol when the system
