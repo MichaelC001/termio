@@ -2,6 +2,7 @@ import Combine
 import Foundation
 import GhosttyTerminal
 import GhosttyTheme
+import TermioShared
 
 /// Resolves an agent's on-disk conversation entries from the declarative store
 /// descriptor its manifest supplies (`ResumeSpec.Store`) — one probe for every agent,
@@ -962,7 +963,7 @@ extension TermioStore {
                     }
                     self.applyTitleActivity(activity, for: id)
                 }
-                let cleaned = self.sanitizedLiveTitle(title)
+                let cleaned = LiveTerminalTitle.sanitized(title)
                 guard self.isMeaningfulLiveTitle(cleaned, for: session),
                       self.runtimes[id]?.liveTitle != cleaned else { return }
                 self.setLiveTitle(cleaned, for: id)
@@ -997,18 +998,6 @@ extension TermioStore {
               projects[location.project].sessions[location.session]
                   .lastWorkingDirectory != cwd else { return }
         projects[location.project].sessions[location.session].lastWorkingDirectory = cwd
-    }
-
-    /// Strips a leading decorative glyph from a live title before it is shown.
-    /// Claude Code prefixes its terminal title with a `✳` status star (and cycles
-    /// it through spinner frames); since the sidebar row already draws the agent
-    /// icon, that prefix would render as a duplicate icon. Drop any leading run of
-    /// non-alphanumeric characters (the star, bullets, emoji) and the whitespace
-    /// after it, leaving just the human-readable text.
-    private func sanitizedLiveTitle(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let stripped = trimmed.drop { !$0.isLetter && !$0.isNumber }
-        return String(stripped).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Whether a live terminal title is worth showing as the session's label, as
