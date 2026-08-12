@@ -3,8 +3,8 @@ import SwiftUI
 
 /// Reads and writes user agent manifests (`~/.termio[-dev]/config/agents/<id>.json`)
 /// on behalf of the Settings form. The form covers the everyday fields (name,
-/// command, icon symbol, bypass flag); a hand-written manifest's other keys
-/// (status, hooks, resume, …) are preserved verbatim on rewrite.
+/// command, icon symbol, bypass flag, skills directory); a hand-written manifest's
+/// other keys (status, hooks, resume, …) are preserved verbatim on rewrite.
 enum UserAgentStore {
     struct Draft {
         var name = ""
@@ -12,6 +12,9 @@ enum UserAgentStore {
         /// SF Symbol name; empty means the default terminal glyph.
         var symbol = ""
         var permissionBypassFlag = ""
+        /// The agent's user-level skills directory (`~/.config/my-agent/skills`),
+        /// where termio installs the session-control skill; empty declares none.
+        var skillsDir = ""
 
         init() {}
 
@@ -21,6 +24,7 @@ enum UserAgentStore {
             command = definition.command ?? ""
             if case .symbol(let name) = definition.icon { symbol = name }
             permissionBypassFlag = definition.permissionBypassFlag ?? ""
+            skillsDir = definition.skillDir ?? ""
         }
 
         var isValid: Bool {
@@ -57,6 +61,13 @@ enum UserAgentStore {
             // Clearing the field removes a symbol icon (back to the default glyph),
             // but never touches a hand-authored path/vector/asset icon.
             object["icon"] = nil
+        }
+
+        let skillsDir = draft.skillsDir.trimmingCharacters(in: .whitespaces)
+        if skillsDir.isEmpty {
+            object["skills"] = nil
+        } else {
+            object["skills"] = ["dir": skillsDir]
         }
 
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -119,8 +130,8 @@ struct CustomAgentEditorSheet: View {
         VStack(spacing: 0) {
             Form {
                 Section {
-                    TextField("Name", text: $draft.name, prompt: Text("My Agent"))
-                    LabeledContent("Command") {
+                    TextField(localized("Name"), text: $draft.name, prompt: Text(localized("My Agent")))
+                    LabeledContent(localized("Command")) {
                         TextField(
                             "", text: $draft.command,
                             prompt: Text("my-agent --flag"))
@@ -130,32 +141,39 @@ struct CustomAgentEditorSheet: View {
                         .labelsHidden()
                     }
                 } header: {
-                    SectionHeaderLabel(title: existing == nil ? "New Agent" : "Edit Agent")
+                    SectionHeaderLabel(title: existing == nil ? localized("New Agent") : localized("Edit Agent"))
                 } footer: {
-                    Text("The command is run in a login shell, so anything on your PATH works.")
+                    Text(localized("The command is run in a login shell, so anything on your PATH works."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
                 Section {
-                    LabeledContent("Icon") {
+                    LabeledContent(localized("Icon")) {
                         HStack(spacing: 8) {
-                            TextField("", text: $draft.symbol, prompt: Text("SF Symbol name"))
+                            TextField("", text: $draft.symbol, prompt: Text(localized("SF Symbol name")))
                                 .textFieldStyle(.plain)
                                 .multilineTextAlignment(.trailing)
                                 .labelsHidden()
                             IconBadge(iconPreview)
                         }
                     }
-                    LabeledContent("Skip-permissions flag") {
+                    LabeledContent(localized("Skip-permissions flag")) {
                         TextField("", text: $draft.permissionBypassFlag, prompt: Text("--yolo"))
                             .textFieldStyle(.plain)
                             .multilineTextAlignment(.trailing)
                             .fontDesign(.monospaced)
                             .labelsHidden()
                     }
+                    LabeledContent("Skills directory") {
+                        TextField("", text: $draft.skillsDir, prompt: Text("~/.config/my-agent/skills"))
+                            .textFieldStyle(.plain)
+                            .multilineTextAlignment(.trailing)
+                            .fontDesign(.monospaced)
+                            .labelsHidden()
+                    }
                 } footer: {
-                    Text("Both optional. The flag powers the agent’s “Skip permission prompts” switch; leave it empty if the CLI has none.")
+                    Text(localized("Both optional. The flag powers the agent’s “Skip permission prompts” switch; leave it empty if the CLI has none. The directory receives termio’s session-control skill (as `<dir>/termio`); leave it empty to skip installing one."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -172,15 +190,15 @@ struct CustomAgentEditorSheet: View {
             Divider()
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button(localized("Cancel")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button(existing == nil ? "Add" : "Save") { save() }
+                Button(existing == nil ? localized("Add") : localized("Save")) { save() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!draft.isValid)
             }
             .padding(12)
         }
-        .frame(width: 440, height: 380)
+        .frame(width: 440, height: 430)
     }
 
     /// The badge the agent will actually get: the typed symbol when the system

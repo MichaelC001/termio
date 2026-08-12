@@ -96,14 +96,14 @@ struct IssuesView: View {
     private var refreshButton: some View {
         // VS Code codicon refresh — the two-arrow ring reads more refined than the Hugeicons
         // single-arrow one, and matches the File Explorer header's four codicon actions.
-        TreeHeaderButton(codicon: .refresh, help: "Refresh") {
+        TreeHeaderButton(codicon: .refresh, help: localized("Refresh")) {
             Task { await model.loadList(force: true) }
         }
     }
 
     private var kindSwitch: some View {
         CapsuleSwitch(
-            segments: [("Issues", IssueKind.issue), ("Pull Requests", .pullRequest)],
+            segments: [(localized("Issues"), IssueKind.issue), (localized("Pull Requests"), .pullRequest)],
             selection: Binding(get: { model.query.kind }, set: { model.query.kind = $0 })
         )
     }
@@ -114,30 +114,30 @@ struct IssuesView: View {
             // things you can filter by, not a flat pile of toggles. State and
             // assignee are single-select (inline Picker = radio); labels stay
             // multi-select with GitHub's AND semantics.
-            Menu("State") {
-                Picker("State", selection: Binding(
+            Menu(localized("State")) {
+                Picker(localized("State"), selection: Binding(
                     get: { model.query.openOnly },
                     set: { model.query.openOnly = $0 }
                 )) {
-                    Text("Open").tag(true)
-                    Text("All").tag(false)
+                    Text(localized("issue.state.open")).tag(true)
+                    Text(localized("All")).tag(false)
                 }
                 .pickerStyle(.inline)
             }
-            Menu("Assignee") {
-                Picker("Assignee", selection: Binding(
+            Menu(localized("Assignee")) {
+                Picker(localized("Assignee"), selection: Binding(
                     get: { model.query.assignedToMe },
                     set: { model.query.assignedToMe = $0 }
                 )) {
-                    Text("Anyone").tag(false)
-                    Text("Assigned to Me").tag(true)
+                    Text(localized("Anyone")).tag(false)
+                    Text(localized("Assigned to Me")).tag(true)
                 }
                 .pickerStyle(.inline)
             }
             // The repo's full label set, checkmarked from the current query —
             // only when the repo actually has labels to offer.
             if !model.availableLabels.isEmpty {
-                Menu("Labels") {
+                Menu(localized("Labels")) {
                     ForEach(model.availableLabels, id: \.name) { label in
                         Toggle(label.name, isOn: Binding(
                             get: { model.query.labels.contains(label.name) },
@@ -179,7 +179,7 @@ struct IssuesView: View {
             .allowsHitTesting(false)
         }
         .onHover { filterHovering = $0 }
-        .help("Filter")
+        .help(localized("Filter"))
     }
 
     /// Any axis narrowing the list away from its default (all open items, anyone,
@@ -195,17 +195,17 @@ struct IssuesView: View {
         switch model.phase {
         case .disconnected:
             zeroState(
-                title: "GitHub Issues",
-                message: "Connect your GitHub account to read this project’s issues and pull requests here."
+                title: localized("GitHub Issues"),
+                message: localized("Connect your GitHub account to read this project’s issues and pull requests here.")
             ) {
-                Button("Connect GitHub") { Task { await model.connect() } }
+                Button(localized("Connect GitHub")) { Task { await model.connect() } }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.regular)
             }
         case .connecting(let userCode):
             zeroState(
-                title: "Enter Code on GitHub",
-                message: "Type this code at github.com/login/device to approve termio. Waiting for approval…"
+                title: localized("Enter Code on GitHub"),
+                message: localized("Type this code at github.com/login/device to approve Termio. Waiting for approval…")
             ) {
                 Text(userCode)
                     .font(.system(size: 22, weight: .semibold, design: .monospaced))
@@ -214,10 +214,10 @@ struct IssuesView: View {
             }
         case .unbound:
             zeroState(
-                title: "No GitHub Repository",
-                message: "This project’s origin remote doesn’t point at github.com, so there is no issue tracker to show."
+                title: localized("No GitHub Repository"),
+                message: localized("This project’s origin remote doesn’t point at github.com, so there is no issue tracker to show.")
             ) {
-                Button("Disconnect GitHub") { model.disconnect() }
+                Button(localized("Disconnect GitHub")) { model.disconnect() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
             }
@@ -264,30 +264,30 @@ struct IssuesView: View {
                 // A valid token with no rights to *this* repo (403) — usually an org that hasn't
                 // authorized termio. Switch account, or grant org access.
                 zeroState(
-                    title: "Couldn’t load",
-                    message: "Reconnect to sign in with a different account, or grant termio access to the organization that owns this repository."
+                    title: localized("Couldn’t load"),
+                    message: localized("Reconnect to sign in with a different account, or grant Termio access to the organization that owns this repository.")
                 ) {
-                    Button("Reconnect") { Task { await model.reconnect() } }
+                    Button(localized("Reconnect")) { Task { await model.reconnect() } }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.regular)
-                    Button("Grant Org Access…") { model.openConnectionSettings() }
+                    Button(localized("Grant Org Access…")) { model.openConnectionSettings() }
                         .buttonStyle(.link)
                         .controlSize(.small)
                 }
             case .retry, .none:
                 // Rate limit, 404, 5xx, network, decode — reconnecting won't help; just retry.
                 zeroState(
-                    title: "Couldn’t load",
-                    message: "Something went wrong loading this repository. Try again in a moment."
+                    title: localized("Couldn’t load"),
+                    message: localized("Something went wrong loading this repository. Try again in a moment.")
                 ) {
-                    Button("Try Again") { Task { await model.loadList(force: true) } }
+                    Button(localized("Try Again")) { Task { await model.loadList(force: true) } }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.regular)
                 }
             }
         } else if model.items.isEmpty {
             ContentUnavailableView(
-                model.query.kind == .issue ? "No Issues" : "No Pull Requests",
+                model.query.kind == .issue ? localized("No Issues") : localized("No Pull Requests"),
                 huge: .checkCircle,
                 description: Text(emptyMessage)
             )
@@ -335,8 +335,14 @@ struct IssuesView: View {
     }
 
     private var emptyMessage: String {
-        let noun = model.query.kind == .issue ? "issues" : "pull requests"
-        return model.query.openOnly ? "No open \(noun) right now." : "No \(noun) found."
+        if model.query.kind == .issue {
+            return model.query.openOnly
+                ? localized("No open issues right now.")
+                : localized("No issues found.")
+        }
+        return model.query.openOnly
+            ? localized("No open pull requests right now.")
+            : localized("No pull requests found.")
     }
 }
 
@@ -521,12 +527,12 @@ private struct IssueRowContextMenu: NSViewRepresentable {
             let menu = NSMenu()
             // The agent verb leads, like the file tree's rows.
             if canAddToChat?() == true {
-                let add = menuItem("Add to Chat", #selector(addToChatAction))
+                let add = menuItem(localized("Add to Chat"), #selector(addToChatAction))
                 menu.addItem(add)
                 menu.addItem(.separator())
             }
-            menu.addItem(menuItem("Copy Link", #selector(copyLink)))
-            menu.addItem(menuItem("Open in Browser", #selector(openInBrowser)))
+            menu.addItem(menuItem(localized("Copy Link"), #selector(copyLink)))
+            menu.addItem(menuItem(localized("Open in Browser"), #selector(openInBrowser)))
             menu.popUp(positioning: nil, at: recognizer.location(in: hostView), in: hostView)
         }
 
@@ -577,6 +583,13 @@ private struct DetailTaskKey: Hashable {
     let model: ObjectIdentifier
 }
 
+/// What a diagram render depends on: the diagrams in the open item and the colors to draw
+/// them in. Anything else about the item can change without re-drawing.
+private struct DiagramTaskKey: Hashable {
+    let sources: [String]
+    let theme: MermaidRenderer.Theme
+}
+
 struct IssueDetailView: View {
     let item: IssueSummary
     @ObservedObject var model: IssuesPanelModel
@@ -591,6 +604,8 @@ struct IssueDetailView: View {
 
     private enum Tab: Hashable { case conversation, files }
     @State private var tab: Tab = .conversation
+    /// Mermaid diagrams found in the body or comments, once drawn — see `conversationBody`.
+    @State private var diagrams: [String: String] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -654,7 +669,7 @@ struct IssueDetailView: View {
                 .truncationMode(.tail)
             Spacer(minLength: 6)
             if let url = item.url {
-                TreeHeaderButton(huge: .squareArrowUpRight, help: "Open on GitHub") {
+                TreeHeaderButton(huge: .squareArrowUpRight, help: localized("Open on GitHub")) {
                     NSWorkspace.shared.open(url)
                 }
             }
@@ -674,7 +689,7 @@ struct IssueDetailView: View {
     private var prTabBar: some View {
         HStack(spacing: 0) {
             CapsuleSwitch(
-                segments: [("Conversation", Tab.conversation), ("Files", .files)],
+                segments: [(localized("Conversation"), Tab.conversation), (localized("Files"), .files)],
                 selection: $tab
             )
             Spacer(minLength: 0)
@@ -691,11 +706,16 @@ struct IssueDetailView: View {
     @ViewBuilder
     private var conversationBody: some View {
         if let detail = model.detail {
+            let theme = TraceTheme.resolve(settings: settings, colorScheme: colorScheme)
+            let document = IssueDetailHTML.page(detail, theme: theme)
+            let sources = MermaidRenderer.sources(in: document)
+            let mermaidTheme = MermaidRenderer.Theme(theme)
+            // GitHub draws mermaid in issue and PR bodies, so the pane does too — drawn
+            // off to the side and swapped in, like the reader and the trace.
+            let drawn = diagrams.merging(
+                MermaidRenderer.shared.cachedDiagrams(for: sources, theme: mermaidTheme)) { _, new in new }
             IssueWebView(
-                html: IssueDetailHTML.page(
-                    detail,
-                    theme: TraceTheme.resolve(settings: settings, colorScheme: colorScheme)
-                ),
+                html: MermaidRenderer.applying(drawn, to: document),
                 background: settings.terminalBackgroundColor,
                 // Selected conversation text goes over as the pasted snippet; a
                 // selection-less click hands the agent the item's GitHub URL — the
@@ -714,8 +734,12 @@ struct IssueDetailView: View {
             // collapses the detail to a sliver — and the empty area paints the window background
             // (reads as a black window, most visibly across a minimize/restore relayout).
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .task(id: DiagramTaskKey(sources: sources, theme: mermaidTheme)) {
+                guard !sources.isEmpty else { return }
+                diagrams = await MermaidRenderer.shared.diagrams(for: sources, theme: mermaidTheme)
+            }
         } else if let error = model.detailError {
-            ContentUnavailableView("Couldn’t load", huge: .github, description: Text(error))
+            ContentUnavailableView(localized("Couldn’t load"), huge: .github, description: Text(error))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ProgressView()
@@ -741,8 +765,8 @@ struct IssueDetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ContentUnavailableView(
-                "No Files", huge: .fileDoc,
-                description: Text("This pull request changes no files.")
+                localized("No Files"), huge: .fileDoc,
+                description: Text(localized("This pull request changes no files."))
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -807,7 +831,7 @@ private enum IssueDetailHTML {
             "<span class=\"label\" style=\"border-color:#\($0.colorHex.isEmpty ? "888888" : $0.colorHex)\">\(escape($0.name))</span>"
         }.joined()
         let body = detail.bodyMarkdown.isEmpty
-            ? "<p class=\"empty\">No description provided.</p>"
+            ? "<p class=\"empty\">\(localized("No description provided."))</p>"
             : MarkdownHTML.html(detail.bodyMarkdown, documentMode: true)
         let comments = detail.comments.map { comment in
             """
@@ -822,7 +846,7 @@ private enum IssueDetailHTML {
         <style>\(css(theme))</style></head><body>
         <header>
         <h1>\(escape(s.title))</h1>
-        <div class="meta">\(escape(s.identifier)) · <span class="state">\(s.state.label)</span> · \(avatar(detail.authorAvatarURL))\(escape(s.author)) opened \(relative(detail.createdAt))</div>
+        <div class="meta">\(escape(s.identifier)) · <span class="state">\(s.state.label)</span> · \(avatar(detail.authorAvatarURL))\(localized("\(escape(s.author)) opened \(relative(detail.createdAt))"))</div>
         \(labels.isEmpty ? "" : "<div class=\"labels\">\(labels)</div>")
         </header>
         <article class="body">\(body)</article>
@@ -857,7 +881,11 @@ private enum IssueDetailHTML {
 
     private static func css(_ theme: TraceTheme) -> String {
         """
-        :root { color-scheme: \(theme.isDark ? "dark" : "light"); }
+        \(MarkdownSkin.highlightTheme(dark: theme.isDark))
+        \(MarkdownSkin.css(scope: ""))
+        :root { color-scheme: \(theme.isDark ? "dark" : "light");
+        \(MarkdownSkin.alertVariables(dark: theme.isDark))
+        }
         body { margin: 0; padding: 14px 16px 24px; background: \(theme.background);
                color: \(theme.foreground); font: 13px/1.55 -apple-system, sans-serif;
                word-wrap: break-word; }
@@ -893,6 +921,12 @@ private enum IssueDetailHTML {
         li.task { list-style: none; margin-left: -18px; }
         .task-box { vertical-align: -3px; margin-right: 4px; color: \(theme.secondary); }
         .task-box.checked { color: \(theme.accent); }
+        .alert { padding: 1px 0 1px 10px; border-left: 3px solid var(--alert-color); }
+        .alert-title { margin: 0 0 4px; color: var(--alert-color); font-size: 10.5px;
+                       font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+        .footnotes { margin-top: 12px; padding-top: 8px;
+                     border-top: 1px solid rgba(128,128,128,.3); font-size: 12px;
+                     color: \(theme.secondary); }
         """
     }
 
@@ -987,16 +1021,16 @@ private final class IssueDetailWKWebView: WKWebView {
     func contextMenu(for click: WebContextMenuBridge.Click) -> NSMenu {
         let menu = NSMenu()
         if !click.selection.isEmpty {
-            menu.addPlainItem("Copy", target: self, action: #selector(copyText(_:)),
+            menu.addPlainItem(localized("Copy"), target: self, action: #selector(copyText(_:)),
                               representedObject: click.selection)
         }
         if let link = click.link {
-            menu.addPlainItem("Copy Link", target: self, action: #selector(copyText(_:)),
+            menu.addPlainItem(localized("Copy Link"), target: self, action: #selector(copyText(_:)),
                               representedObject: link.absoluteString)
         }
         if canAddToChat?() == true {
             if !menu.items.isEmpty { menu.addItem(.separator()) }
-            menu.addPlainItem("Add to Chat", target: self, action: #selector(addToChatAction(_:)),
+            menu.addPlainItem(localized("Add to Chat"), target: self, action: #selector(addToChatAction(_:)),
                               representedObject: click.selection)
         }
         return menu
@@ -1087,10 +1121,10 @@ private extension Date {
     var issueRowAge: String {
         let seconds = max(0, -timeIntervalSinceNow)
         switch seconds {
-        case ..<3600: return "\(max(1, Int(seconds / 60)))m"
-        case ..<86_400: return "\(Int(seconds / 3600))h"
-        case ..<(86_400 * 28): return "\(Int(seconds / 86_400))d"
-        default: return "\(Int(seconds / (86_400 * 7)))w"
+        case ..<3600: return localized("\(max(1, Int(seconds / 60)))m")
+        case ..<86_400: return localized("\(Int(seconds / 3600))h")
+        case ..<(86_400 * 28): return localized("\(Int(seconds / 86_400))d")
+        default: return localized("\(Int(seconds / (86_400 * 7)))w")
         }
     }
 }

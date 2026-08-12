@@ -204,7 +204,16 @@ struct InspectorDetailContent: View {
             } else {
                 FileEditorView(url: url, settings: settings,
                                readOnly: store.openFileReadOnly,
-                               jumpLine: store.openFileLine, onClose: close)
+                               jumpLine: store.openFileLine,
+                               addToChat: { selection in
+                                   if let selection {
+                                       _ = store.addSnippetToSelectedSessionPrompt(selection)
+                                   } else {
+                                       _ = store.addPathToSelectedSessionPrompt(url)
+                                   }
+                               },
+                               canAddToChat: { store.selectedSessionRunsAgent },
+                               onClose: close)
                     .id(url)
             }
         } else if let request = store.openTrace {

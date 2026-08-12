@@ -31,9 +31,9 @@ termio://[<endpoint>]/session/<uuid>[?k=<token>]
 
 | Form | Meaning |
 | --- | --- |
-| `termio://session/<uuid>` | Session on **this** Mac's termio (the reserved authority `session` marks the local shorthand). |
+| `termio://session/<uuid>` | Session on **this** Mac's Termio (the reserved authority `session` marks the local shorthand). |
 | `termio://<host>[:<port>]/session/<uuid>` | Session hosted at a termiod endpoint. Opening it attaches remotely — same principle as the remote-terminal refactor: the session's home is an endpoint, not "this Mac". |
-| `https://<endpoint>/session/<uuid>#k=<token>` | The **share** artifact (slice 3). Humans share https, never a custom scheme — previewable, clickable without termio installed; the endpoint page hands off to `termio://` when the app is present. The capability rides in the *fragment*: browsers never transmit `#…`, so the token stays out of relay/tunnel logs (sshx's zero-knowledge link pattern). |
+| `https://<endpoint>/session/<uuid>#k=<token>` | The **share** artifact (slice 3). Humans share https, never a custom scheme — previewable, clickable without Termio installed; the endpoint page hands off to `termio://` when the app is present. The capability rides in the *fragment*: browsers never transmit `#…`, so the token stays out of relay/tunnel logs (sshx's zero-knowledge link pattern). |
 
 - Generated links carry the **full lowercase UUID** (a shared link must stay
   unambiguous forever). Resolvers additionally accept an 8+ char id prefix.
@@ -85,7 +85,7 @@ Clicking a link (`application(_:open:)`):
 - **Custom schemes are never the shared artifact.** Warp shares
   `https://app.warp.dev/session/<id>` and keeps `warp://` for local actions;
   VS Code shares `vscode.dev/tunnel/<machine>/<path>` and keeps `vscode://`
-  for handoff; Zoom shares https and hands off to `zoommtg://`. termio
+  for handoff; Zoom shares https and hands off to `zoommtg://`. Termio
   follows: `termio://` is the local/agent/scripting hop, https is the share.
 - **Session id lives in the path** everywhere modern: sshx `/s/<id>`, tmate
   `/t/<token>`, Warp `/session/<id>`, vscode.dev `/tunnel/<machine>`.

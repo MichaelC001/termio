@@ -39,6 +39,10 @@ final class RosterStore {
     var onStartError: ((String) -> Void)?
 
     private var client: CompanionClient?
+    /// True when the current connection came from the paired-Mac list (not a
+    /// `-roster-url` dev launch arg) — only then may a roster's identity be
+    /// adopted into that list.
+    private var connectionIsPersisted = false
     /// The project+agent of an in-flight `start`, so the `.started` reply
     /// knows what to open. `agent` is nil for a bare New Chat — the Mac picks
     /// one and echoes it back in `.started`.
@@ -83,7 +87,7 @@ final class RosterStore {
 
     func start() {
         connectIfConfigured()
-        // The Connectivity settings page edits the pairing; the socket's
+        // The Devices settings page edits the pairing; the socket's
         // owner follows it.
         pairingObserver = NotificationCenter.default.addObserver(
             forName: CompanionLink.pairingDidChange, object: nil, queue: .main
@@ -93,6 +97,12 @@ final class RosterStore {
                 if let url = CompanionLink.savedURL {
                     self.client?.stop()
                     self.client = nil
+                    // Switching Macs must not leave the old Mac's projects on
+                    // screen while the new socket dials.
+                    self.projects = []
+                    self.enabledAgents = []
+                    self.sshHosts = []
+                    NotificationCenter.default.post(name: Self.didChange, object: nil)
                     self.connect(to: url)
                 } else {
                     self.disconnect()
@@ -186,13 +196,17 @@ final class RosterStore {
                 return ProcessInfo.processInfo.arguments.indices.contains(next)
                     ? ProcessInfo.processInfo.arguments[next] : nil
             }
-        let saved = CompanionLink.savedURL?.absoluteString
-        guard let urlString = arg ?? saved, let url = URL(string: urlString) else { return }
+        if let arg, let url = URL(string: arg) {
+            connect(to: url, persisted: false)
+            return
+        }
+        guard let url = CompanionLink.savedURL else { return }
         connect(to: url)
     }
 
-    /// Open (or replace) the app's single Mac link: one socket, whole roster.
-    private func connect(to url: URL) {
+    /// Open (or replace) the link to the active Mac: one socket, whole roster.
+    private func connect(to url: URL, persisted: Bool = true) {
+        connectionIsPersisted = persisted
         companionURL = url
         CompanionLink.state = .connecting
         let client = CompanionClient(url: url)
@@ -209,6 +223,11 @@ final class RosterStore {
         }
         client.onRoster = { [weak self] roster in
             guard let self else { return }
+            // The roster names its Mac; key the pairing list by that identity
+            // (first roster after a fresh pairing, or a rename on the Mac).
+            if connectionIsPersisted, let macID = roster.macID {
+                CompanionLink.adoptIdentity(macID: macID, name: roster.macName)
+            }
             enabledAgents = roster.agents
             let agentsByID = Dictionary(
                 roster.agents.map { ($0.id, $0) },
@@ -237,6 +256,17 @@ final class RosterStore {
             guard let self, pendingStart != nil else { return }
             pendingStart = nil
             onStartError?(reason)
+        }
+        client.onConnectionFailure = { [weak self] reason in
+            guard let self else { return }
+            // A refusal closes the socket immediately; stop the reconnect loop
+            // so its next optimistic open cannot erase the reason from the UI.
+            self.client?.stop()
+            projects = []
+            enabledAgents = []
+            sshHosts = []
+            CompanionLink.state = .failed(reason)
+            NotificationCenter.default.post(name: Self.didChange, object: nil)
         }
         client.start()
         self.client = client

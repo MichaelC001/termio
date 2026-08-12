@@ -41,9 +41,9 @@ struct MobileSettingsTab: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Mobile Access", isOn: $mobile.isEnabled)
+                Toggle(localized("Mobile Access"), isOn: $mobile.isEnabled)
             } footer: {
-                footnote("Turn off to disconnect your iPhone; pairing is kept.")
+                footnote(localized("Turn off to disconnect your iPhone; pairing is kept."))
             }
 
             // Everything below only means anything while we're serving, so the
@@ -56,7 +56,7 @@ struct MobileSettingsTab: View {
                 // there's no "the QR above…" indirection to hold in your head.
                 Section {
                     if hosts.isEmpty, !tunnelRunning {
-                        footnote("No network address found. Join a network, then reopen this tab.")
+                        footnote(localized("No network address found. Join a network, then reopen this tab."))
                     } else {
                         // QR + its URL are one unit ("scan this, or copy the same
                         // thing") — kept in a single row so no divider splits them.
@@ -65,16 +65,16 @@ struct MobileSettingsTab: View {
 
                     // One precise control: where the companion is reachable —
                     // LAN only, or fronted by a named tunnel.
-                    Picker("Tunnel", selection: Binding(
+                    Picker(localized("Tunnel"), selection: Binding(
                         get: { tunnel.provider },
                         set: { tunnel.setProvider($0) }
                     )) {
                         ForEach(TunnelManager.Provider.allCases) { provider in
-                            Text(provider == .off ? "Off — LAN only" : provider.label).tag(provider)
+                            Text(provider == .off ? localized("Off — LAN only") : provider.label).tag(provider)
                         }
                     }
                     if !onTunnel, hosts.count > 1 {
-                        Picker("Address", selection: $selectedHost) {
+                        Picker(localized("Address"), selection: $selectedHost) {
                             ForEach(hosts, id: \.self) { host in
                                 Text(host).tag(host)
                             }
@@ -82,31 +82,31 @@ struct MobileSettingsTab: View {
                     }
                     if onTunnel { statusRow }
                 } header: {
-                    SectionHeaderLabel(title: "Connect iPhone")
+                    SectionHeaderLabel(title: localized("Connect iPhone"))
                 } footer: {
                     footnote(onTunnel
-                        ? "On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network."
-                        : "On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.")
+                        ? localized("On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network.")
+                        : localized("On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN."))
                 }
 
                 Section {
                     // A rare, destructive maintenance action: it rests as a plain
                     // button and lets the confirmation dialog carry the red.
-                    Button("Rotate Pairing Token…") { confirmRotate = true }
+                    Button(localized("Rotate Pairing Token…")) { confirmRotate = true }
                         .confirmationDialog(
-                            "Rotate the pairing token?",
+                            localized("Rotate the pairing token?"),
                             isPresented: $confirmRotate,
                             titleVisibility: .visible
                         ) {
-                            Button("Rotate Token", role: .destructive) {
+                            Button(localized("Rotate Token"), role: .destructive) {
                                 token = PairingToken.regenerate()
                             }
-                            Button("Cancel", role: .cancel) {}
+                            Button(localized("Cancel"), role: .cancel) {}
                         } message: {
-                            Text("Every paired iPhone is signed out and must re-scan the new QR to reconnect.")
+                            Text(localized("Every paired iPhone is signed out and must re-scan the new QR to reconnect."))
                         }
                 } footer: {
-                    footnote("Issues a new token and revokes every paired iPhone.")
+                    footnote(localized("Issues a new token and revokes every paired iPhone."))
                 }
             }
         }
@@ -125,25 +125,25 @@ struct MobileSettingsTab: View {
     @ViewBuilder
     private var statusRow: some View {
         HStack {
-            Text("Status")
+            Text(localized("Status"))
             Spacer()
             switch tunnel.status {
             case .off:
-                Text("Starting…")
+                Text(localized("Starting…"))
                     .foregroundStyle(.secondary)
             case .installing:
                 ProgressView().controlSize(.small)
-                Text("Installing \(tunnel.provider.binaryName)…")
+                Text(localized("Installing \(tunnel.provider.binaryName)…"))
                     .foregroundStyle(.secondary)
             case .starting:
                 ProgressView().controlSize(.small)
-                Text("Starting tunnel…")
+                Text(localized("Starting tunnel…"))
                     .foregroundStyle(.secondary)
             case .running:
                 Image(systemName: "circle.fill")
                     .font(.system(size: 9))
                     .foregroundStyle(.green)
-                Text("Connected")
+                Text(localized("Connected"))
                     .foregroundStyle(.secondary)
             case .failed(let message):
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -194,7 +194,7 @@ struct MobileSettingsTab: View {
                 copied = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
             } label: {
-                Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                Label(copied ? localized("Copied") : localized("Copy"), systemImage: copied ? "checkmark" : "doc.on.doc")
             }
             .buttonStyle(.borderless)
             .fixedSize()

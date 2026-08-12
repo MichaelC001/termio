@@ -25,11 +25,11 @@ struct InstallOutcome {
     /// one line no matter how many agents are in the catalog.
     static func list(_ names: [String], unit: String) -> String {
         switch names.count {
-        case 0: return "nothing"
+        case 0: return localized("nothing")
         case 1: return names[0]
-        case 2: return "\(names[0]) and \(names[1])"
-        case 3: return "\(names[0]), \(names[1]) and \(names[2])"
-        default: return "\(names.count) \(unit)"
+        case 2: return localized("\(names[0]) and \(names[1])")
+        case 3: return localized("\(names[0]), \(names[1]) and \(names[2])")
+        default: return localized("\(names.count) \(unit)")
         }
     }
 }

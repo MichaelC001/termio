@@ -120,19 +120,19 @@ struct GitChangesView: View {
         .onChange(of: store.openFileURL) { _, url in
             if url == nil, store.openDiff == nil, selection.count == 1 { selection.removeAll() }
         }
-        .alert("Discard Changes?", isPresented: discardAlertPresented, presenting: pendingDiscard) { changes in
-            Button("Discard Changes", role: .destructive) { performDiscard(changes) }
-            Button("Cancel", role: .cancel) { pendingDiscard = nil }
+        .alert(localized("Discard Changes?"), isPresented: discardAlertPresented, presenting: pendingDiscard) { changes in
+            Button(localized("Discard Changes"), role: .destructive) { performDiscard(changes) }
+            Button(localized("Cancel"), role: .cancel) { pendingDiscard = nil }
         } message: { changes in
             Text(discardMessage(changes))
         }
         .alert(
-            "Couldn’t update .gitignore",
+            localized("Couldn’t update .gitignore"),
             isPresented: gitignoreErrorPresented
         ) {
-            Button("OK") { gitignoreErrorMessage = nil }
+            Button(localized("OK")) { gitignoreErrorMessage = nil }
         } message: {
-            Text(gitignoreErrorMessage ?? "The ignore rule couldn’t be added.")
+            Text(gitignoreErrorMessage ?? localized("The ignore rule couldn’t be added."))
         }
     }
 
@@ -153,8 +153,8 @@ struct GitChangesView: View {
 
     private var modeSwitch: some View {
         HStack(spacing: 0) {
-            segment("Changes", .changes)
-            segment("History", .history)
+            segment(localized("Changes"), .changes)
+            segment(localized("History"), .history)
         }
         // The selection pill rides behind the active segment and slides across on switch.
         .background { selectionPill }
@@ -214,7 +214,9 @@ struct GitChangesView: View {
         if !model.changes.isEmpty {
             let additions = model.changes.reduce(0) { $0 + $1.additions }
             let deletions = model.changes.reduce(0) { $0 + $1.deletions }
-            Text("\(model.changes.count) \(model.changes.count == 1 ? "file" : "files")")
+            Text(model.changes.count == 1
+                ? localized("\(model.changes.count) file")
+                : localized("\(model.changes.count) files"))
                 .foregroundStyle(.secondary)
             if additions > 0 { Text("+\(additions)").foregroundStyle(.green) }
             if deletions > 0 { Text("−\(deletions)").foregroundStyle(.red) }
@@ -234,9 +236,9 @@ struct GitChangesView: View {
             // view — otherwise the enclosing `VStack` shrinks to content height and the host
             // centers the whole pane instead of pinning the header to the top.
             ContentUnavailableView(
-                "No Changes",
+                localized("No Changes"),
                 huge: .checkCircle,
-                description: Text("The working tree is clean.")
+                description: Text(localized("The working tree is clean."))
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -286,43 +288,43 @@ struct GitChangesView: View {
         let targets = targets(for: change)
         let fileExtension = (change.path as NSString).pathExtension.lowercased()
         if targets.count == 1 {
-            Button("Open in Editor") { openInEditor(change) }
-            Button("Reveal in Finder") { revealInFinder(change) }
+            Button(localized("Open in Editor")) { openInEditor(change) }
+            Button(localized("Reveal in Finder")) { revealInFinder(change) }
             Divider()
-            Button("Copy Path") { copyPath(change) }
-            Button("Copy Relative Path") { copyToPasteboard(change.path) }
-            Button("Copy Diff") { copyDiff(targets) }
+            Button(localized("Copy Path")) { copyPath(change) }
+            Button(localized("Copy Relative Path")) { copyToPasteboard(change.path) }
+            Button(localized("Copy Diff")) { copyDiff(targets) }
             // GitHub Desktop's two ignore actions, verbatim — the by-extension form is
             // what clears a build-products flood one file type at a time.
             if change.isUntracked {
                 Divider()
-                Button("Ignore File (Add to .gitignore)") { addToGitignore(paths: [change.path]) }
+                Button(localized("Ignore File (Add to .gitignore)")) { addToGitignore(paths: [change.path]) }
                 if !fileExtension.isEmpty {
-                    Button("Ignore All .\(fileExtension) Files (Add to .gitignore)") {
+                    Button(localized("Ignore All .\(fileExtension) Files (Add to .gitignore)")) {
                         addRawPatternToGitignore("*." + fileExtension)
                     }
                 }
             }
             Divider()
-            Button("Discard Changes…", role: .destructive) { pendingDiscard = targets }
+            Button(localized("Discard Changes…"), role: .destructive) { pendingDiscard = targets }
         } else {
-            Button("Copy Paths") {
+            Button(localized("Copy Paths")) {
                 copyToPasteboard(targets.map { fileURL(for: $0).path }.joined(separator: "\n"))
             }
-            Button("Copy Relative Paths") {
+            Button(localized("Copy Relative Paths")) {
                 copyToPasteboard(targets.map(\.path).joined(separator: "\n"))
             }
-            Button("Copy Diff") { copyDiff(targets) }
+            Button(localized("Copy Diff")) { copyDiff(targets) }
             // GitHub Desktop acts on the whole selection here too.
             let untracked = targets.filter(\.isUntracked)
             if !untracked.isEmpty {
                 Divider()
-                Button("Ignore \(untracked.count) Selected Files (Add to .gitignore)") {
+                Button(localized("Ignore \(untracked.count) Selected Files (Add to .gitignore)")) {
                     addToGitignore(paths: untracked.map(\.path))
                 }
             }
             Divider()
-            Button("Discard \(targets.count) Files…", role: .destructive) { pendingDiscard = targets }
+            Button(localized("Discard \(targets.count) Files…"), role: .destructive) { pendingDiscard = targets }
         }
     }
 
@@ -337,7 +339,7 @@ struct GitChangesView: View {
             let succeeded = await GitService.appendToGitignore([pattern], in: repoRoot)
             if !succeeded {
                 gitignoreErrorMessage =
-                    "termio could not append to the repository’s .gitignore. Check its permissions and try again."
+                    localized("Termio could not append to the repository’s .gitignore. Check its permissions and try again.")
             }
             await model.load()
         }
@@ -349,7 +351,7 @@ struct GitChangesView: View {
         let encoded = paths.map { GitService.gitignorePattern(for: $0) }
         guard encoded.allSatisfy({ $0 != nil }) else {
             gitignoreErrorMessage =
-                "Git ignore patterns cannot represent a filename containing a line break."
+                localized("Git ignore patterns cannot represent a filename containing a line break.")
             return
         }
         let patterns = encoded.compactMap { $0 }
@@ -358,7 +360,7 @@ struct GitChangesView: View {
             let succeeded = await GitService.appendToGitignore(patterns, in: repoRoot)
             if !succeeded {
                 gitignoreErrorMessage =
-                    "termio could not append to the repository’s .gitignore. Check its permissions and try again."
+                    localized("Termio could not append to the repository’s .gitignore. Check its permissions and try again.")
             }
             await model.load()
         }
@@ -428,11 +430,11 @@ struct GitChangesView: View {
     /// names before collapsing to a count (GitHub Desktop's cap).
     private func discardMessage(_ changes: [GitChange]) -> String {
         if changes.count == 1, let only = changes.first {
-            return "All changes to “\(only.name)” will be lost. This cannot be undone."
+            return localized("All changes to “\(only.name)” will be lost. This cannot be undone.")
         }
         let listed = changes.prefix(10).map(\.name).joined(separator: "\n")
-        let more = changes.count > 10 ? "\n…and \(changes.count - 10) more" : ""
-        return "All changes to these \(changes.count) files will be lost. This cannot be undone.\n\n\(listed)\(more)"
+        let more = changes.count > 10 ? localized("\n…and \(changes.count - 10) more") : ""
+        return localized("All changes to these \(changes.count) files will be lost. This cannot be undone.\n\n\(listed)\(more)")
     }
 
     private var discardAlertPresented: Binding<Bool> {
@@ -500,11 +502,11 @@ private struct GitChangeRow: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("Discard Changes…")
+                .help(localized("Discard Changes…"))
             } else {
                 HStack(spacing: 5) {
                     if change.isBinary {
-                        Text("binary").foregroundStyle(.secondary)
+                        Text(localized("binary")).foregroundStyle(.secondary)
                     } else {
                         if change.additions > 0 { Text("+\(change.additions)").foregroundStyle(.green) }
                         if change.deletions > 0 { Text("−\(change.deletions)").foregroundStyle(.red) }
@@ -513,7 +515,7 @@ private struct GitChangeRow: View {
                         Circle()
                             .fill(.green)
                             .frame(width: 5, height: 5)
-                            .help("Staged — the next git commit takes this file")
+                            .help(localized("Staged — the next git commit takes this file"))
                     }
                 }
                 .font(.system(size: 10.5, weight: .medium, design: .monospaced))

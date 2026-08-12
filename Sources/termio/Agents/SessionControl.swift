@@ -506,152 +506,140 @@ private extension SessionWatchEvent {
     }
 }
 
-/// Tells a coding agent that the `termio sessions` CLI exists and is scoped to its
-/// own project, by writing a small marker-wrapped block into the user-level
-/// instruction files agents read on startup (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`).
+/// Tells a coding agent that the `termio sessions` CLI exists by installing an
+/// Agent Skill — a `SKILL.md` in each agent's user-level skills directory, as
+/// declared by that agent's manifest `skills.dir` (`~/.claude/skills`,
+/// `~/.config/opencode/skills`, …) — instead of editing the agent's always-loaded
+/// instruction file. The agent sees only the skill's one-line description up front
+/// and pulls the full guidance in when a task actually involves driving sibling
+/// sessions, so every unrelated session stays clean.
 ///
-/// Deliberately writes to the *user-level* files, not a project's own `CLAUDE.md`
-/// / `AGENTS.md`: those belong to the user's repository and editing them would
-/// dirty their git tree. Conservative like `AgentStatusHooks` — it only ever
-/// touches text between its own markers, leaving everything else untouched, and
-/// removes exactly that block on uninstall.
+/// Earlier versions injected a marker-wrapped block into `~/.claude/CLAUDE.md`
+/// and `~/.codex/AGENTS.md`; every sync still strips that block wherever it
+/// remains, so an upgrade never leaves the guidance installed twice.
+///
+/// The target set is catalog-driven (`AgentCatalog`), so a user-dropped custom
+/// agent that declares `skills.dir` in its manifest gets the skill installed too,
+/// with no code change — the same data path `AgentStatusHooks` uses for hooks.
 enum SessionSkillInstaller {
     private static let beginMarker = "<!-- termio:sessions BEGIN -->"
     private static let endMarker = "<!-- termio:sessions END -->"
 
-    private static var targets: [URL] {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return [
+    private static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
+
+    /// The skill file an agent's declared skills directory will carry, per agent in
+    /// the catalog. Installation follows `AgentCatalog.all` so a user override's
+    /// `skills` declaration wins; duplicate directories (an override of a bundled
+    /// id) install once. Only agents whose CLI is actually installed get the skill,
+    /// so a machine without, say, Cursor never grows a `~/.cursor/skills` directory
+    /// it cannot use — `sync` re-checks on every launch, so an agent installed later
+    /// is picked up automatically. The `installed` predicate is injectable for
+    /// tests; the default resolves the agent's command like a session launch would.
+    static func skillTargets(
+        installed: (AgentDefinition) -> Bool = { agent in
+            guard let command = agent.command else { return true }
+            return AgentAvailability.isCommandInstalled(command)
+        }
+    ) -> [(name: String, url: URL)] {
+        let catalog = AgentCatalog.shared
+        var seen = Set<String>()
+        return catalog.all.compactMap { agent in
+            guard let directory = agent.skillDir, installed(agent) else { return nil }
+            let url = skillFileURL(directory: directory)
+            guard seen.insert(url.path).inserted else { return nil }
+            return (agent.displayName, url)
+        }
+    }
+
+    /// Every skills directory termio has ever installed into — bundled declarations
+    /// plus the live catalog — so uninstalling also sweeps a shipped dir that a user
+    /// override removed or redirected. Mirrors `AgentStatusHooks.allKnownInstallers`.
+    static var allKnownSkillTargets: [(name: String, url: URL)] {
+        let catalog = AgentCatalog.shared
+        var seen = Set<String>()
+        return (catalog.bundled + catalog.all).compactMap { agent in
+            guard let directory = agent.skillDir else { return nil }
+            let url = skillFileURL(directory: directory)
+            guard seen.insert(url.path).inserted else { return nil }
+            return (agent.displayName, url)
+        }
+    }
+
+    /// Where an agent's declared skills directory carries termio's skill
+    /// (`<dir>/termio/SKILL.md`), with `~` expanded. The pure path logic, so tests
+    /// can pin it without touching the real home directory.
+    static func skillFileURL(directory: String) -> URL {
+        URL(fileURLWithPath: (directory as NSString).expandingTildeInPath)
+            .appendingPathComponent("termio/SKILL.md")
+    }
+
+    /// The instruction files earlier versions wrote the guidance into.
+    private static var legacyTargets: [URL] {
+        [
             home.appendingPathComponent(".claude/CLAUDE.md"),
             home.appendingPathComponent(".codex/AGENTS.md"),
         ]
     }
 
-    /// The injected guidance — a compact "skill" teaching the agent the `termio
-    /// sessions` CLI: the commands, and the key idea that a sibling's *response* is
-    /// read from its own transcript (the address `send` returns), not by scraping the
-    /// terminal. Scoped to the current project automatically.
-    private static var block: String {
-        """
-        \(beginMarker)
-        ## Driving sibling sessions (termio)
-
-        You are running inside termio alongside other agent sessions in this same
-        project. Coordinate with them through the `termio sessions` CLI. Every command
-        is scoped to this project automatically; add `--json` for machine-readable
-        output. Sessions are addressed by the link `list` prints:
-        `termio://session/<uuid>` (a bare id or unique id-prefix works too).
-
-        - `termio sessions list` — siblings in this project, with status (working /
-          idle / needs-you / done)
-        - `termio sessions watch` — block and stream one line per sibling status
-          change (`done` / `needs-you` by default) until you interrupt it — the push
-          alternative to polling `list`. `--state working,idle,done,needs-you` widens
-          it, and `--state stalled` adds the runaway signal: a sibling still
-          `working` that has made no repo or transcript progress for 20+ minutes
-          (long builds streaming output don't trip it). A stalled event says why in
-          `evidence`, fires once, and re-arms when progress resumes. It opens with
-          one snapshot line per sibling's current status
-          (`"snapshot":true` in `--json`; `--no-snapshot` skips), and in `--json`
-          writes `{"heartbeat":true}` after 30s of silence so a dead stream is
-          detectable. Exits 0 on your Ctrl-C, 2 if termio itself went away.
-        - `termio sessions spawn "<prompt>"` — start a NEW agent session on the
-          prompt (`--agent codex` picks the agent; default: your own kind). Replies
-          immediately with the new session's link — use it for every follow-up;
-          the prompt itself is typed in once the agent finishes booting.
-        - `termio sessions run "<command>"` — start a NEW plain terminal session
-          typing that shell command (a dev server, a test run) into a visible pane —
-          no LLM. Use it instead of your own background shell when the user should
-          be able to see and take over the process.
-        - `termio sessions send <link> "<text>"` — type text into that existing
-          sibling and submit it with a real Return keypress. Send a prompt to drive
-          it, or a menu choice (`"1"`, `"yes"`) to answer a permission prompt.
-        - `termio sessions read <link> [--lines N]` — the session's current
-          screen. The result channel for `run` sessions (a plain command has no
-          transcript; its screen is the result) — for agent replies keep using the
-          transcript, not the screen.
-        - `--wait [--timeout <ms>]` on `send`, `spawn`, or `run` — block until that turn
-          settles and reply with the final `status`, the `transcript` path, and the
-          `cursor`..`cursor_end` line range holding the response — one call instead
-          of send-then-poll. A sibling that stops to ask you something short-circuits
-          the wait: the reply is `status:"needs-you"` with the on-screen question in
-          `prompt` — answer it with another `send`. Exit codes: 0 settled, 1 error
-          (`prompt_stalled` = the input showed no effect within 5s; `session_closed`
-          / `agent_gone` = the target vanished mid-wait), 3 timed out (session still
-          running — re-arm or read its transcript).
-        - `termio sessions close <link> …` — close session tabs;
-          `termio sessions focus <link>` — bring one to the front in the app
-
-        ### Targeting discipline
-
-        - Copy links verbatim from `list` or a `send` reply; never guess or
-          construct one.
-        - One request, one target. Never send the same prompt to several siblings,
-          and never run multiple `send` commands in parallel — delegate to ONE
-          session.
-        - Unsure which sibling the user means? Ask them, or start a fresh session
-          with `spawn` — don't broadcast.
-
-        ### Reading a sibling's response
-
-        Don't scrape the terminal. `spawn`/`send` returns the sibling's **transcript**
-        — the agent's own structured Q&A log (Claude Code: a JSONL file) — plus a
-        **cursor** (its line count at send time). To read the reply:
-
-        1. `spawn`/`send` and note `transcript` + `cursor` from the output. (A just-
-           started session has no transcript yet; it appears in `list --json` once the
-           agent reports it — read that file from the start.)
-        2. Poll `termio sessions list` until that session's status is `done` (or
-           `needs-you` if it's blocked waiting on input — then `send` its answer).
-        3. Read the transcript file from line `cursor` onward; the `assistant` entries
-           after it are the reply. (Each line is a JSON object with a `type`/`role`.)
-
-        Workflow: send → wait for `done` via `list` → read the transcript tail. Prefer
-        this over assuming a sibling is finished — or collapse steps 1–2 into one call
-        with `send --wait`, whose reply carries the final status and the exact
-        `cursor`..`cursor_end` range to read. Supervising several at once? Block on
-        `termio sessions watch` instead of polling — it prints the link the moment any
-        sibling turns `done` or `needs-you`, so you act on the transition, not a spin
-        loop; its `--json` `needs-you` events carry the question in `prompt`, and `done`
-        events carry `transcript` + `cursor_end`, so you can act straight from the event.
-        \(endMarker)
-        """
+    /// The skill content, shipped as a real markdown file in the app's resource
+    /// bundle (`Resources/skills/termio/SKILL.md`) rather than a string in
+    /// code, and installed verbatim. `nil` only when the resource bundle is missing
+    /// or unreadable — sync reports that as a per-target failure instead of
+    /// installing an empty skill. Mirrored at the repo-root `skills/termio/`
+    /// (installable from GitHub via `npx skills add` / `gh skill`) and at
+    /// https://termio.sh/skill.md (`web/landing/public/skill.md`); a test keeps
+    /// all copies identical.
+    static var skill: String? {
+        Bundle.termioResources
+            .url(forResource: "SKILL", withExtension: "md", subdirectory: "skills/termio")
+            .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
     }
 
-    /// Returns which instruction files ended up carrying the note, so the Settings
-    /// row can confirm the install; the uninstall path reports nothing, since no UI
-    /// asks about it.
+    /// Returns which skills directories ended up carrying the skill, so the
+    /// Settings row can confirm the install; the uninstall path reports nothing,
+    /// since no UI asks about it. Every sync also strips the legacy instruction-
+    /// file block, so re-enabling after an upgrade migrates in place.
     @discardableResult
     static func sync(enabled: Bool) -> InstallOutcome {
         var outcome = InstallOutcome()
-        for url in targets {
-            if enabled {
-                outcome.record(displayPath(of: url), installed: install(into: url))
-            } else {
-                uninstall(from: url)
+        for url in legacyTargets { removeLegacyBlock(from: url) }
+        if enabled {
+            guard let skill else {
+                FileHandle.standardError.write(
+                    Data("termio: session skill resource missing from the app bundle\n".utf8))
+                for (name, _) in skillTargets() { outcome.record(name, installed: false) }
+                return outcome
             }
+            for (name, url) in skillTargets() {
+                outcome.record(name, installed: write(skill, to: url))
+            }
+        } else {
+            for (_, url) in allKnownSkillTargets { removeSkill(at: url) }
         }
         return outcome
     }
 
-    /// The target's path with the home directory abbreviated (`~/.claude/CLAUDE.md`)
-    /// — how the docs and the files themselves refer to it.
-    private static func displayPath(of url: URL) -> String {
-        (url.path as NSString).abbreviatingWithTildeInPath
+    /// Removes the installed skill folder wholesale — termio owns the folder, so
+    /// there is no user content inside it to preserve.
+    private static func removeSkill(at url: URL) {
+        let folder = url.deletingLastPathComponent()
+        guard FileManager.default.fileExists(atPath: folder.path) else { return }
+        try? FileManager.default.removeItem(at: folder)
     }
 
-    private static func install(into url: URL) -> Bool {
-        let stripped = strippedExisting(at: url)
-        let separator = stripped.isEmpty ? "" : "\n\n"
-        return write(stripped + separator + block + "\n", to: url)
-    }
-
-    private static func uninstall(from url: URL) {
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        let stripped = strippedExisting(at: url)
-        // If removing our block leaves nothing, the file held only our note (we
-        // created it), so delete it rather than leaving an empty file behind. A
-        // file with the user's own content is rewritten preserving it.
+    /// Strips the marker-wrapped block earlier versions injected into the
+    /// user-level instruction file, leaving the user's own text untouched. A file
+    /// left empty by the strip held only our note (we created it), so it is
+    /// deleted rather than kept as an empty file. Files without the markers are
+    /// never rewritten.
+    private static func removeLegacyBlock(from url: URL) {
+        guard let contents = try? String(contentsOf: url, encoding: .utf8),
+              let begin = contents.range(of: beginMarker),
+              let end = contents.range(of: endMarker, range: begin.upperBound..<contents.endIndex)
+        else { return }
+        var result = contents
+        result.removeSubrange(begin.lowerBound..<end.upperBound)
+        let stripped = result.trimmingCharacters(in: .newlines)
         if stripped.isEmpty {
             try? FileManager.default.removeItem(at: url)
         } else {
@@ -659,26 +647,13 @@ enum SessionSkillInstaller {
         }
     }
 
-    /// The file's current contents with any existing termio block (and the
-    /// whitespace around it) removed, so install/uninstall never touch the user's
-    /// own text. Returns "" when the file is absent or unreadable.
-    private static func strippedExisting(at url: URL) -> String {
-        guard let contents = try? String(contentsOf: url, encoding: .utf8) else { return "" }
-        guard let begin = contents.range(of: beginMarker),
-              let end = contents.range(of: endMarker, range: begin.upperBound..<contents.endIndex)
-        else { return contents.trimmingCharacters(in: .newlines) }
-        var result = contents
-        result.removeSubrange(begin.lowerBound..<end.upperBound)
-        return result.trimmingCharacters(in: .newlines)
-    }
-
     /// Returns whether the file now holds `contents` — true both for a fresh write
     /// and for the skipped identical one, false only when the write threw.
     @discardableResult
     private static func write(_ contents: String, to url: URL) -> Bool {
         let data = Data(contents.utf8)
-        // Don't rewrite an unchanged note on every launch: avoids churning a
-        // user-owned instruction file and the race of clobbering a concurrent edit.
+        // Don't rewrite an unchanged file on every launch: avoids churning it
+        // and the race of clobbering a concurrent edit.
         if (try? Data(contentsOf: url)) == data { return true }
         do {
             try FileManager.default.createDirectory(
@@ -796,8 +771,39 @@ enum CommandLineTool {
         if case .conflict = audit() { return .conflict }
         let target = installURL.path
         if linkWithoutPrivileges(from: supportCopyURL.path, to: target) { return audit() }
-        linkWithAdminPrompt(from: supportCopyURL.path, to: target)
+        let directory = (target as NSString).deletingLastPathComponent
+        runWithAdminPrompt(
+            "mkdir -p \(shellQuote(directory)) && ln -sf \(shellQuote(supportCopyURL.path)) \(shellQuote(target))",
+            label: "install")
         return audit()
+    }
+
+    /// Removes our PATH symlink and returns the fresh audit. Only ever deletes a
+    /// link the audit attributes to termio (installed or stale); a conflicting
+    /// file someone else created is left alone.
+    @discardableResult
+    static func uninstall() -> Status {
+        let current = audit()
+        switch current {
+        case .installed, .stale:
+            let target = installURL.path
+            if removeWithoutPrivileges(at: target) { return audit() }
+            runWithAdminPrompt("rm \(shellQuote(target))", label: "uninstall")
+            return audit()
+        case .notInstalled, .conflict, .unavailable:
+            return current
+        }
+    }
+
+    private static func removeWithoutPrivileges(at target: String) -> Bool {
+        let directory = (target as NSString).deletingLastPathComponent
+        guard FileManager.default.isWritableFile(atPath: directory) else { return false }
+        do {
+            try FileManager.default.removeItem(atPath: target)
+            return true
+        } catch {
+            return false
+        }
     }
 
     private static func linkWithoutPrivileges(from source: String, to target: String) -> Bool {
@@ -815,18 +821,16 @@ enum CommandLineTool {
         }
     }
 
-    /// One authorization prompt does `mkdir -p` + `ln -sf` as admin, for the case
-    /// where `/usr/local/bin` is root-owned. The user can cancel, in which case the
-    /// follow-up audit simply reports it still isn't installed.
-    private static func linkWithAdminPrompt(from source: String, to target: String) {
-        let directory = (target as NSString).deletingLastPathComponent
-        let command = "mkdir -p \(shellQuote(directory)) && ln -sf \(shellQuote(source)) \(shellQuote(target))"
+    /// One authorization prompt runs the command as admin, for the case where
+    /// `/usr/local/bin` is root-owned. The user can cancel, in which case the
+    /// follow-up audit simply reports the state unchanged.
+    private static func runWithAdminPrompt(_ command: String, label: String) {
         let script = "do shell script \"\(command)\" with administrator privileges"
         var error: NSDictionary?
         NSAppleScript(source: script)?.executeAndReturnError(&error)
         if let error {
             FileHandle.standardError.write(
-                Data("termio: command-line tool install declined or failed: \(error)\n".utf8))
+                Data("termio: command-line tool \(label) declined or failed: \(error)\n".utf8))
         }
     }
 

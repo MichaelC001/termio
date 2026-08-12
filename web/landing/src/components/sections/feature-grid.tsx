@@ -49,7 +49,7 @@ export function FeatureGrid() {
       {/* Light top padding — the showcase above already ends with pb-32/40. */}
       <div className="mx-auto w-full max-w-6xl px-5 pb-32 pt-8 sm:px-8 sm:pb-40 sm:pt-10">
         <Reveal className="flex flex-col items-center text-center">
-          <SectionLabel accent="pink">What&apos;s inside</SectionLabel>
+          <SectionLabel accent="muted">What&apos;s inside</SectionLabel>
           <h2 className="mt-4 text-balance text-3xl font-medium leading-[1.1] tracking-tight text-foreground sm:text-[44px]">
             Built for watching agents work
           </h2>

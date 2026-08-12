@@ -145,12 +145,14 @@ enum GitService {
 
     /// The changed files of a single commit. `--name-status` gives the status letter and
     /// path; `--numstat` gives the counts — merged by path. `--format=` drops the commit
-    /// header so only the file lines remain. The first-parent diff (`<sha>^!`) is used so
-    /// a merge shows a sensible file set; the root commit falls back to the empty tree.
+    /// header so only the file lines remain. `--first-parent` makes a merge diff against
+    /// its first parent (the branch that was merged into) — without it `git show` emits a
+    /// combined diff, which is empty for a clean merge, so every PR merge in the history
+    /// read as "No file changes". The root commit diffs against the empty tree as before.
     private static func loadCommitChanges(_ sha: String, _ repoRoot: String) -> [GitChange] {
         var order: [String] = []
         var status: [String: GitFileStatus] = [:]
-        if let out = run(["show", "--name-status", "--format=", "-M", sha], in: repoRoot) {
+        if let out = run(["show", "--name-status", "--format=", "-M", "--first-parent", sha], in: repoRoot) {
             for line in out.split(separator: "\n") {
                 let parts = line.split(separator: "\t")
                 guard let code = parts.first?.first, parts.count >= 2 else { continue }
@@ -160,7 +162,7 @@ enum GitService {
             }
         }
         var counts: [String: (Int, Int)] = [:]
-        if let out = run(["show", "--numstat", "--format=", sha], in: repoRoot) {
+        if let out = run(["show", "--numstat", "--format=", "--first-parent", sha], in: repoRoot) {
             for line in out.split(separator: "\n") {
                 let parts = line.split(separator: "\t", maxSplits: 2)
                 guard parts.count == 3 else { continue }
@@ -416,9 +418,10 @@ enum GitService {
                        in: repoRoot, ignoreStatus: true) ?? ""
         }
         // History file row: the file's change within one commit. `--format=` strips the
-        // commit header so the parser sees only the unified diff.
+        // commit header so the parser sees only the unified diff; `--first-parent` keeps
+        // a merge commit's file diff non-empty, matching the file list above.
         if let commit {
-            return run(["show", "--format=", "-M"] + contextArguments + [commit, "--", change.path],
+            return run(["show", "--format=", "-M", "--first-parent"] + contextArguments + [commit, "--", change.path],
                        in: repoRoot, ignoreStatus: true) ?? ""
         }
         if change.isUntracked {

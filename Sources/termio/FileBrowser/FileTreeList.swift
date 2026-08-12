@@ -245,7 +245,7 @@ private struct SymbolicLinkTooltip: ViewModifier {
 
     func body(content: Content) -> some View {
         if let target {
-            content.help("Alias → \(target)")
+            content.help(localized("Alias → \(target)"))
         } else {
             content
         }
@@ -350,28 +350,28 @@ private struct RowContextMenu: NSViewRepresentable {
             // prompt as a shell-quoted path — the same token a drag onto the terminal
             // inserts. Gated live at open time; a plain shell has no chat to add to.
             if actions?.canAddToChat() == true {
-                let add = menuItem("Add to Chat", #selector(addToChat))
+                let add = menuItem(localized("Add to Chat"), #selector(addToChat))
                 menu.addItem(add)
                 menu.addItem(.separator())
             }
             if isDirectory {
-                menu.addItem(menuItem("New File", #selector(newFile)))
-                menu.addItem(menuItem("New Folder", #selector(newFolder)))
+                menu.addItem(menuItem(localized("New File"), #selector(newFile)))
+                menu.addItem(menuItem(localized("New Folder"), #selector(newFolder)))
                 menu.addItem(.separator())
             }
             // The Finder's own verb for an alias, and directly above Reveal in Finder so
             // the pair reads as "the original" versus "this link". Absent on a row that
             // isn't a link, and on one whose target is gone.
             if symbolicLinkTarget != nil {
-                menu.addItem(menuItem("Show Original", #selector(showOriginal)))
+                menu.addItem(menuItem(localized("Show Original"), #selector(showOriginal)))
             }
-            menu.addItem(menuItem("Reveal in Finder", #selector(revealInFinder)))
+            menu.addItem(menuItem(localized("Reveal in Finder"), #selector(revealInFinder)))
             menu.addItem(.separator())
-            menu.addItem(menuItem("Copy Path", #selector(copyPath)))
-            menu.addItem(menuItem("Copy Relative Path", #selector(copyRelativePath)))
+            menu.addItem(menuItem(localized("Copy Path"), #selector(copyPath)))
+            menu.addItem(menuItem(localized("Copy Relative Path"), #selector(copyRelativePath)))
             menu.addItem(.separator())
-            menu.addItem(menuItem("Rename…", #selector(rename)))
-            menu.addItem(menuItem("Delete", #selector(deleteItem)))
+            menu.addItem(menuItem(localized("Rename…"), #selector(rename)))
+            menu.addItem(menuItem(localized("Delete"), #selector(deleteItem)))
             menu.popUp(positioning: nil, at: recognizer.location(in: hostView), in: hostView)
         }
 
@@ -497,8 +497,8 @@ private struct EmptyAreaContextMenu: NSViewRepresentable {
             // Only the empty area — a click on a real row is handled by its own menu.
             guard table.row(at: point) == -1 else { return }
             let menu = NSMenu()
-            menu.addItem(menuItem("New File", #selector(newFile)))
-            menu.addItem(menuItem("New Folder", #selector(newFolder)))
+            menu.addItem(menuItem(localized("New File"), #selector(newFile)))
+            menu.addItem(menuItem(localized("New Folder"), #selector(newFolder)))
             menu.popUp(positioning: nil, at: point, in: table)
         }
 

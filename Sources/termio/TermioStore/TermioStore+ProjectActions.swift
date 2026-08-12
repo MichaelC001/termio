@@ -9,6 +9,7 @@ extension TermioStore {
         to projectID: Project.ID,
         agent: AgentPreset = .terminal,
         worktreePath: String? = nil,
+        spawnDirectory: String? = nil,
         takeFocus: Bool = true
     ) -> Session.ID? {
         guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return nil }
@@ -19,6 +20,7 @@ extension TermioStore {
             : agent.displayName
         var session = Session(title: title, agent: agent)
         session.worktreePath = worktreePath
+        session.spawnDirectory = spawnDirectory
         projects[index].sessions.append(session)
         if takeFocus {
             selectedSessionID = session.id
@@ -61,6 +63,10 @@ extension TermioStore {
             ?? projects[p].sessions.count - 1
         let insertAt = movedIndex < targetIndex ? newTarget + 1 : newTarget
         projects[p].sessions.insert(row, at: insertAt)
+        // A drop that lands between a group's rows would split its bracket in two;
+        // rows only join or leave a group through "Group with" / "Ungroup", so the
+        // run closes back up around the dropped row (see `gatherSplitRuns`).
+        gatherSplitRuns()
     }
 
     /// The sidebar bucket a session sits in: `nil` for the primary checkout (a `nil`
@@ -95,7 +101,7 @@ extension TermioStore {
         do {
             try FileManager.default.createDirectory(at: worktreeRoot, withIntermediateDirectories: true)
         } catch {
-            presentWorktreeFailure(message: "Couldn’t create the worktrees folder: \(error.localizedDescription)")
+            presentWorktreeFailure(message: localized("Couldn’t create the worktrees folder: \(error.localizedDescription)"))
             return
         }
         // Create the worktree on a fresh branch named after it, not detached. A
@@ -107,7 +113,7 @@ extension TermioStore {
         // the branch needs its own guard, since a branch can exist with no worktree.
         let branchName = uniqueBranchName(base: dirName, in: project.path)
         guard runGit(["worktree", "add", "-b", branchName, worktreePath, "HEAD"], in: project.path) != nil else {
-            presentWorktreeFailure(message: "git couldn’t create a worktree for “\(project.name)”. Is it a git repository with at least one commit?")
+            presentWorktreeFailure(message: localized("git couldn’t create a worktree for “\(project.name)”. Is it a git repository with at least one commit?"))
             return
         }
 
@@ -140,15 +146,15 @@ extension TermioStore {
 
         guard let status = runGit(["status", "--porcelain"], in: worktree.path) else {
             presentWorktreeFailure(
-                title: "Couldn’t inspect worktree",
-                message: "git couldn’t check “\((worktree.path as NSString).lastPathComponent)” for changes, so it was not removed."
+                title: localized("Couldn’t inspect worktree"),
+                message: localized("git couldn’t check “\((worktree.path as NSString).lastPathComponent)” for changes, so it was not removed.")
             )
             return
         }
         guard status.isEmpty else {
             presentWorktreeFailure(
-                title: "Worktree has changes",
-                message: "Commit or discard the changes in “\((worktree.path as NSString).lastPathComponent)” before removing it."
+                title: localized("Worktree has changes"),
+                message: localized("Commit or discard the changes in “\((worktree.path as NSString).lastPathComponent)” before removing it.")
             )
             return
         }
@@ -159,8 +165,8 @@ extension TermioStore {
         let branch = runGit(["rev-parse", "--abbrev-ref", "HEAD"], in: worktree.path)
         guard runGit(["worktree", "remove", worktree.path], in: projects[projectIndex].path) != nil else {
             presentWorktreeFailure(
-                title: "Couldn’t remove worktree",
-                message: "git couldn’t remove “\((worktree.path as NSString).lastPathComponent)”."
+                title: localized("Couldn’t remove worktree"),
+                message: localized("git couldn’t remove “\((worktree.path as NSString).lastPathComponent)”.")
             )
             return
         }
@@ -181,8 +187,8 @@ extension TermioStore {
         }
         if !pruneSucceeded {
             presentWorktreeFailure(
-                title: "Worktree removed",
-                message: "The folder was removed, but git couldn’t prune its stale worktree metadata."
+                title: localized("Worktree removed"),
+                message: localized("The folder was removed, but git couldn’t prune its stale worktree metadata.")
             )
         }
     }
@@ -223,10 +229,10 @@ extension TermioStore {
     /// or emptied. Mirrors the file-browser rename prompt so both feel the same.
     private func promptForWorktreeName(defaultName: String) -> String? {
         let alert = NSAlert()
-        alert.messageText = "New Worktree"
-        alert.informativeText = "Name the worktree. A new branch of this name is created from HEAD and nested under this project."
-        alert.addButton(withTitle: "Create")
-        alert.addButton(withTitle: "Cancel")
+        alert.messageText = localized("New Worktree")
+        alert.informativeText = localized("Name the worktree. A new branch of this name is created from HEAD and nested under this project.")
+        alert.addButton(withTitle: localized("Create"))
+        alert.addButton(withTitle: localized("Cancel"))
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.stringValue = defaultName
         alert.accessoryView = field
@@ -263,7 +269,7 @@ extension TermioStore {
     /// Reports a worktree lifecycle failure instead of leaving an operation's
     /// partial or refused outcome silent.
     private func presentWorktreeFailure(
-        title: String = "Couldn’t create worktree session",
+        title: String = localized("Couldn’t create worktree session"),
         message: String
     ) {
         let alert = NSAlert()
@@ -281,6 +287,38 @@ extension TermioStore {
     /// project's own header buttons do). The section persists like any project, so
     /// it reappears on relaunch (the shells themselves restart fresh).
     func addScratchTerminal() { addScratchSession(agent: .terminal) }
+
+    /// Opens a terminal where the user already is — New Terminal (⌘T). The shell
+    /// starts in the focused session's working directory and the row lands beside it:
+    /// in the same project and worktree bucket for a real project, in the Terminals
+    /// section for a loose shell or a scratch chat (a shell has no business in the
+    /// Chats funnel).
+    ///
+    /// The directory is the cwd the session reported over OSC 7. A shell without
+    /// integration never reports one, and an SSH terminal reports a path that exists
+    /// only on the remote host, so anything that isn't a local directory falls through
+    /// to the session's own anchor — and to `$HOME` with nothing focused, which is
+    /// what New Terminal at Home does on purpose.
+    func addTerminalHere() {
+        guard let id = selectedSessionID,
+              let project = project(for: id),
+              let session = session(id) else {
+            addScratchTerminal()
+            return
+        }
+        let reported = Self.existingDirectory(
+            workingDirectory(for: id) ?? session.lastWorkingDirectory)
+        let directory = reported
+            ?? session.spawnDirectory
+            ?? session.worktreePath
+            ?? project.path
+        guard project.kind == .folder else {
+            addScratchSession(agent: .terminal, spawnDirectory: directory)
+            return
+        }
+        addSession(to: project.id, agent: .terminal,
+                   worktreePath: session.worktreePath, spawnDirectory: directory)
+    }
 
     /// The agent a bare **New Chat** launches, resolved in priority order:
     /// 1. the agent the user pinned in Settings ▸ Agents (`defaultChatAgentID`),
@@ -323,7 +361,11 @@ extension TermioStore {
     /// `.terminals` funnel for shells, the `.chats` funnel for agents — so a second
     /// click just grows another row there and selects it, rather than piling up
     /// duplicate sections.
-    func addScratchSession(agent: AgentPreset = .terminal) {
+    ///
+    /// `spawnDirectory` overrides where a scratch *terminal* starts, so ⌘T from a
+    /// loose shell opens its sibling at the same cwd. Agents ignore it: being confined
+    /// to the scoped workspace is the point.
+    func addScratchSession(agent: AgentPreset = .terminal, spawnDirectory: String? = nil) {
         // Both funnels are matched by kind, not path: the `.terminals` container's
         // `path` is just the `$HOME` spawn fallback, and the single `.chats` container
         // gathers every agent (Claude, Codex, …) that spawns in the scratch workspace.
@@ -332,12 +374,14 @@ extension TermioStore {
         // action relaunches whatever you actually use (see `defaultChatAgent`).
         if agent != .terminal { settings.lastChatAgentID = agent.rawValue }
         let containerKind: ProjectKind = agent == .terminal ? .terminals : .chats
+        let seededDirectory = agent == .terminal ? spawnDirectory : nil
         if let existing = projects.first(where: { $0.kind == containerKind }) {
-            addSession(to: existing.id, agent: agent)
+            addSession(to: existing.id, agent: agent, spawnDirectory: seededDirectory)
             return
         }
         let title = agent == .terminal ? "Terminal 1" : agent.displayName
-        let session = Session(title: title, agent: agent)
+        var session = Session(title: title, agent: agent)
+        session.spawnDirectory = seededDirectory
         let project = Project(
             name: agent == .terminal ? "Terminals" : "Chats",
             path: path,
@@ -380,10 +424,10 @@ extension TermioStore {
     /// isn't in the config still works. Empty entry or Cancel does nothing.
     func presentSSHConnectPanel() {
         let alert = NSAlert()
-        alert.messageText = "New SSH Connection"
-        alert.informativeText = "Enter a host from your ~/.ssh/config, or a user@host to connect to."
-        alert.addButton(withTitle: "Connect")
-        alert.addButton(withTitle: "Cancel")
+        alert.messageText = localized("New SSH Connection")
+        alert.informativeText = localized("Enter a host from your ~/.ssh/config, or a user@host to connect to.")
+        alert.addButton(withTitle: localized("Connect"))
+        alert.addButton(withTitle: localized("Cancel"))
 
         let combo = NSComboBox(frame: NSRect(x: 0, y: 0, width: 260, height: 26))
         combo.completes = true
@@ -498,8 +542,8 @@ extension TermioStore {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.prompt = "Open"
-        panel.message = "Choose a project folder to open in termio."
+        panel.prompt = localized("Open")
+        panel.message = localized("Choose a project folder to open in Termio.")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         addProject(at: url)
     }
@@ -571,9 +615,9 @@ extension TermioStore {
         let session = projects[projectIndex].sessions[sessionIndex]
 
         let alert = NSAlert()
-        alert.messageText = "Rename Session"
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
+        alert.messageText = localized("Rename Session")
+        alert.addButton(withTitle: localized("Rename"))
+        alert.addButton(withTitle: localized("Cancel"))
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.stringValue = displayTitle(for: session)
         alert.accessoryView = field
@@ -583,6 +627,42 @@ extension TermioStore {
         let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         projects[projectIndex].sessions[sessionIndex].title = name
+    }
+
+    /// The user-facing "Close Session": the same teardown as `closeSession`, but it
+    /// asks first in the one case that loses something with no other record — a plain
+    /// shell with a command running in front of it. Only the interactive entry points
+    /// (the sidebar row, the terminal's context menu) route through here — a session
+    /// whose process already exited, the `termio sessions close` CLI, and the phone's
+    /// stop button all closed deliberately and call `closeSession` directly.
+    func requestCloseSession(_ id: Session.ID) {
+        guard let session = session(id) else { return }
+        guard let reason = closeConfirmationReason(for: session) else {
+            closeSession(id)
+            return
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Close “\(displayTitle(for: session))”?"
+        alert.informativeText = reason
+        // Cancel first so it owns both Return and Escape; the destructive button
+        // takes a deliberate click (see the quit confirmation in `App.swift`).
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Close Session")
+        alert.buttons.last?.hasDestructiveAction = true
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        closeSession(id)
+    }
+
+    /// Why closing this session needs confirming, or `nil` when it doesn't. The only
+    /// case left is a plain shell with a command in front of it: that command exists
+    /// nowhere else, so closing loses it outright. Agent sessions never ask — their
+    /// PTY is alive for the whole life of the session, so confirming on a live PTY
+    /// taxed *every* close to protect a conversation the agent can resume anyway.
+    private func closeConfirmationReason(for session: Session) -> String? {
+        guard session.agent.isShell else { return nil }
+        guard let pty = ptyProcesses[session.id], pty.hasForegroundJob else { return nil }
+        return "A command is still running in this session. Closing it stops the command."
     }
 
     /// Closes a session: drops its cached surface (which tears down the PTY) and

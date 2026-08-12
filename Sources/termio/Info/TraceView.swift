@@ -148,8 +148,17 @@ struct TraceView: View {
         do {
             // The Mac overlay draws its own native header (see `header`), so the HTML
             // document omits its `<header>`; the phone (companion) keeps the default.
-            html = try SessionTraceRenderer.html(jsonlPath: request.jsonlPath, title: request.title,
-                                                 theme: theme, includeHeader: false)
+            let document = try SessionTraceRenderer.html(
+                jsonlPath: request.jsonlPath, title: request.title, theme: theme,
+                includeHeader: false)
+            // An agent that drew a diagram gets it drawn: the fences are swapped for SVG
+            // before the page is handed to the web view, so nothing runs mermaid here.
+            let sources = MermaidRenderer.sources(in: document)
+            let drawn = sources.isEmpty
+                ? [:]
+                : await MermaidRenderer.shared.diagrams(
+                    for: sources, theme: MermaidRenderer.Theme(theme))
+            html = MermaidRenderer.applying(drawn, to: document)
             loadError = nil
         } catch {
             loadError = error.localizedDescription

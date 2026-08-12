@@ -48,7 +48,26 @@ Decide `X.Y.Z` (semver, no `v` when talking, `v` in the tag):
 `git rev-list --count HEAD`, and Sparkle treats a lower `CFBundleVersion` as
 older, which breaks auto-update. Never reuse or lower a version.
 
-## 3. Tag and push
+## 3. Write the changelog entry
+
+The site's changelog is `web/landing/src/data/changelog.ts`, newest entry first.
+Add the entry for the version you are about to tag **before** tagging — the
+`Docs` workflow fails once a tag exists without one, and a changelog that trails
+the releases makes the site read as abandoned.
+
+```sh
+gh release view "v$PREVIOUS" --json body -q .body     # what shipped since
+```
+
+Write it in the file's voice: a `title` naming what the release is remembered
+for, then short user-facing `new` / `improved` / `fixed` lines — what changed,
+not how. Skip a release whose only changes were docs, deps, or the landing page.
+
+```sh
+cd web/landing && pnpm docs:check     # must pass before you tag
+```
+
+## 4. Tag and push
 
 ```sh
 V=0.14.0                       # the version you settled on
@@ -59,17 +78,17 @@ git push origin "v$V"
 That push is what triggers the release. Nothing else in the repo needs editing —
 the tag *is* the version.
 
-## 4. Watch the Release workflow
+## 5. Watch the Release workflow
 
 ```sh
-gh run watch --repo jiweiyuan/termio \
-  "$(gh run list --repo jiweiyuan/termio -w Release -L1 --json databaseId -q '.[0].databaseId')"
+gh run watch --repo termio-sh/termio \
+  "$(gh run list --repo termio-sh/termio -w Release -L1 --json databaseId -q '.[0].databaseId')"
 ```
 
 Report green/red to the user. If it fails, diagnose from the run log; the
 troubleshooting table is in `docs/runbook/macos-release-runbook.md`.
 
-## 5. Verify (when green)
+## 6. Verify (when green)
 
 ```sh
 V=0.14.0

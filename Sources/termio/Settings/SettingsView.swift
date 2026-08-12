@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The preferences window, opened from the app menu (⌘,). The groups mirror the
-/// settings model: terminal appearance, the app's own interface chrome, terminal
-/// behaviour, the agent presets, usage, and mobile pairing. Controls bind straight
+/// settings model: appearance, terminal behaviour, the agent presets, usage, and
+/// mobile pairing. Controls bind straight
 /// to `AppSettings`, which persists on change, so there is no separate save step.
 ///
 /// The layout follows macOS System Settings: a left sidebar of groups and a detail
@@ -73,13 +73,13 @@ struct SettingsView: View {
         switch selection {
         case .general: GeneralSettingsTab(settings: settings)
         case .appearance: AppearanceSettingsTab(settings: settings)
-        case .interface: InterfaceSettingsTab(settings: settings)
         case .terminal: TerminalSettingsTab(settings: settings)
         case .ssh: SSHSettingsTab(settings: settings, onConnect: onSSHConnect)
         case .keyboard: KeybindingsSettingsTab()
         case .agents: AgentSettingsTab(settings: settings)
         case .usage: UsageSettingsTab(settings: settings, usage: usage)
         case .mobile: MobileSettingsTab()
+        case .community: CommunitySettingsTab()
         }
     }
 }

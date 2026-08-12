@@ -61,18 +61,18 @@ struct AgentSettingsTab: View {
         VStack(spacing: 0) {
             List(selection: $selection) {
                 Label {
-                    Text("General")
+                    Text(localized("General"))
                 } icon: {
                     IconBadge(.symbol("gearshape"))
                 }
                 .tag(Pane.general)
 
-                Section("Agents") {
+                Section(localized("Agents")) {
                     ForEach(listedAgents) { preset in
                         AgentListRow(settings: settings, preset: preset)
                             .tag(Pane.agent(preset.id))
                             .contextMenu {
-                                Button("Remove from List") { remove(preset) }
+                                Button(localized("Remove from List")) { remove(preset) }
                             }
                     }
                     .onMove(perform: moveListed)
@@ -89,9 +89,9 @@ struct AgentSettingsTab: View {
                     Button(preset.displayName) { add(preset) }
                 }
                 if !addableAgents.isEmpty { Divider() }
-                Button("Custom Agent…") { editorTarget = EditorTarget(existing: nil) }
+                Button(localized("Custom Agent…")) { editorTarget = EditorTarget(existing: nil) }
             } label: {
-                Label("Add Agent", systemImage: "plus")
+                Label(localized("Add Agent"), systemImage: "plus")
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
@@ -137,9 +137,9 @@ struct AgentSettingsTab: View {
             Section {
                 DefaultChatAgentRow(settings: settings)
             } header: {
-                SectionHeaderLabel(title: "New chat")
+                SectionHeaderLabel(title: localized("New chat"))
             } footer: {
-                Text("The agents in the list are offered when starting a new session, in that order — drag to reorder, select one to configure it.")
+                Text(localized("The agents in the list are offered when starting a new session, in that order — drag to reorder, select one to configure it."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -224,7 +224,7 @@ private struct AgentListRow: View {
                 Image(systemName: "exclamationmark.circle")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
-                    .help("\(preset.displayName) isn’t on your PATH")
+                    .help(localized("\(preset.displayName) isn’t on your PATH"))
             }
             Toggle("", isOn: Binding(
                 get: { settings.isAgentEnabled(preset) },
@@ -270,20 +270,20 @@ private struct AgentDetailPane: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(preset.displayName)
                             .font(.title3.weight(.semibold))
-                        Text(settings.command(for: preset) ?? "Login shell")
+                        Text(settings.command(for: preset) ?? localized("Login shell"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     if let onEdit {
                         Spacer(minLength: 8)
-                        Button("Edit…") { onEdit() }
+                        Button(localized("Edit…")) { onEdit() }
                     }
                 }
                 .padding(.vertical, 2)
             }
 
             Section {
-                LabeledContent("Command") {
+                LabeledContent(localized("Command")) {
                     TextField(
                         "",
                         text: Binding(
@@ -298,11 +298,11 @@ private struct AgentDetailPane: View {
                 }
                 if available == false, let url = preset.installURL {
                     Link(destination: url) {
-                        Label("Install \(preset.displayName)", systemImage: "arrow.down.circle")
+                        Label(localized("Install \(preset.displayName)"), systemImage: "arrow.down.circle")
                     }
                 }
             } header: {
-                SectionHeaderLabel(title: "Launch")
+                SectionHeaderLabel(title: localized("Launch"))
             }
 
             if let flag = preset.permissionBypassFlag {
@@ -312,13 +312,13 @@ private struct AgentDetailPane: View {
                         set: { settings.setBypassPermissions(preset, enabled: $0) }
                     )) {
                         SettingsLabel(
-                            title: "Skip permission prompts",
-                            subtext: "Runs with `\(flag)`. The agent won’t ask before editing files or running commands."
+                            title: localized("Skip permission prompts"),
+                            subtext: localized("Runs with `\(flag)`. The agent won’t ask before editing files or running commands.")
                         )
                     }
                     .toggleStyle(.switch)
                 } header: {
-                    SectionHeaderLabel(title: "Permissions")
+                    SectionHeaderLabel(title: localized("Permissions"))
                 }
             }
 
@@ -327,30 +327,30 @@ private struct AgentDetailPane: View {
                 // into the "Add Agent" menu with its overrides intact, so no
                 // confirmation either.
                 LabeledContent {
-                    Button("Remove") { onRemove() }
+                    Button(localized("Remove")) { onRemove() }
                 } label: {
                     SettingsLabel(
-                        title: "Remove from List",
-                        subtext: "Takes \(preset.displayName) out of the new-session menu. Its settings are kept."
+                        title: localized("Remove from List"),
+                        subtext: localized("Takes \(preset.displayName) out of the new-session menu. Its settings are kept.")
                     )
                 }
                 if let onDelete {
                     // Red and confirmed, unlike Remove: this one erases the
                     // manifest file the agent is made of.
                     LabeledContent {
-                        Button("Delete…", role: .destructive) { confirmingDelete = true }
+                        Button(localized("Delete…"), role: .destructive) { confirmingDelete = true }
                             .confirmationDialog(
-                                "Delete \(preset.displayName)?",
+                                localized("Delete \(preset.displayName)?"),
                                 isPresented: $confirmingDelete
                             ) {
-                                Button("Delete", role: .destructive) { onDelete() }
+                                Button(localized("Delete"), role: .destructive) { onDelete() }
                             } message: {
-                                Text("Removes this custom agent and its configuration file. Existing sessions keep running.")
+                                Text(localized("Removes this custom agent and its configuration file. Existing sessions keep running."))
                             }
                     } label: {
                         SettingsLabel(
-                            title: "Delete Agent",
-                            subtext: "Deletes the custom agent’s manifest from this Mac."
+                            title: localized("Delete Agent"),
+                            subtext: localized("Deletes the custom agent’s manifest from this Mac.")
                         )
                     }
                 }
@@ -389,13 +389,13 @@ private struct DefaultChatAgentRow: View {
 
     var body: some View {
         Picker(selection: selection) {
-            Text("Last used").tag(lastUsedTag)
+            Text(localized("Last used")).tag(lastUsedTag)
             ForEach(chatAgents) { Text($0.displayName).tag($0.id) }
         } label: {
             SettingsLabel(
                 .huge(.bubbleChatAdd),
-                title: "Default agent",
-                subtext: "The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with."
+                title: localized("Default agent"),
+                subtext: localized("The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.")
             )
         }
     }

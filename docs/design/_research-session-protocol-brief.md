@@ -15,13 +15,13 @@ related:
 > `docs/design/termiod-session-protocol.md` (new design doc) unless the agent
 > is told otherwise.
 
-You are a senior systems architect. Think deeply and write a **sharp design note** for termio’s durable session host protocol. Do **not** implement code unless a tiny example clarifies a wire shape. Prefer clear decisions, tradeoffs, and a staged roadmap over vague vision.
+You are a senior systems architect. Think deeply and write a **sharp design note** for Termio’s durable session host protocol. Do **not** implement code unless a tiny example clarifies a wire shape. Prefer clear decisions, tradeoffs, and a staged roadmap over vague vision.
 
 ---
 
-## 1. Company / product context (termio)
+## 1. Company / product context (Termio)
 
-**termio** is a native macOS (and iOS) multi-agent terminal ADE: run many agent/shell sessions (Claude Code, Codex, etc.), status tray, worktrees, `termio sessions` CLI. Today PTYs largely live **inside the Mac app**, so sessions die when the GUI dies; remote is second-class (`ssh -tt` hacks / tmux wraps).
+**Termio** is a native macOS (and iOS) multi-agent terminal ADE: run many agent/shell sessions (Claude Code, Codex, etc.), status tray, worktrees, `termio sessions` CLI. Today PTYs largely live **inside the Mac app**, so sessions die when the GUI dies; remote is second-class (`ssh -tt` hacks / tmux wraps).
 
 **Goal:** introduce **`termiod`** — a long-lived **session host** on each machine (Mac and Linux VPS). Viewers (Mac app, iOS, CLI) only **attach/detach**. Detach ≠ kill.
 
@@ -37,7 +37,7 @@ You are a senior systems architect. Think deeply and write a **sharp design note
 - `docs/design/termiod-session-mux.md`
 - `docs/design/session-daemon-architecture.md`
 - POC crate: `termiod/` (branch `termiod/rust-poc`, draft PR #177)
-- Epic: https://github.com/jiweiyuan/termio/issues/164
+- Epic: https://github.com/termio-sh/termio/issues/164
 - Children: #170 (local host), #171 (SSH deploy), #172 (remote open)
 
 **POC already shipped (draft):**
@@ -89,11 +89,11 @@ Label every Superlogical claim you use as:
 
 Do **not** invent Superlogical’s wire protocol, RPC schema, or QUIC/SSH internals. They have not published a protocol spec.
 
-### 2.3 Overlap vs termio (session layer)
+### 2.3 Overlap vs Termio (session layer)
 
 **Real overlap:** durable sessions, daemon ≠ viewer, Mac+iOS, remote reconnect, multi-client, libghostty fidelity, agents-in-terminals, software-driven control, native scrollback UX.
 
-**termio differentiation (keep sharp):**
+**Termio differentiation (keep sharp):**
 
 - Agent workstream as first-class object (`working` / `idle` / `needs-you` / approvals)
 - Opinionated worktrees / ADE workflow
@@ -104,7 +104,7 @@ Do **not** invent Superlogical’s wire protocol, RPC schema, or QUIC/SSH intern
 **Architectural fork we already chose vs Superlogical’s announced SSH stance:**
 
 - Superlogical: mux “owns SSH” (details unknown).
-- termio: **system OpenSSH / user Tailscale as transport** to a **user-run `termiod`**; keys stay in ssh-agent. Smaller security scope; may lag on seamless reconnect UX.
+- Termio: **system OpenSSH / user Tailscale as transport** to a **user-run `termiod`**; keys stay in ssh-agent. Smaller security scope; may lag on seamless reconnect UX.
 
 ---
 
@@ -115,9 +115,9 @@ Do **not** invent Superlogical’s wire protocol, RPC schema, or QUIC/SSH intern
 | **neurosnap/zmx** (https://zmx.sh) | Session persist only; daemon + unix socket; VT as **sidecar** for reattach snapshot, not MITM on hot path; SSH first-class as *workflow*, not nested WM; no panes in the daemon |
 | **shpool** | Session pool + restore inspiration |
 | **abduco / dtach** | Minimal attach/detach |
-| **tmux / zellij** | Durable sessions but nested terminal / feature lag — Superlogical and termio both want to escape this as the *foundation* |
+| **tmux / zellij** | Durable sessions but nested terminal / feature lag — Superlogical and Termio both want to escape this as the *foundation* |
 | **wezterm mux-server** | Multi-client mux patterns |
-| **Companion / termio WireProtocol** | Existing iOS path: control text + raw PTY; promote carefully, don’t freeze raw-PTY forever |
+| **Companion / Termio WireProtocol** | Existing iOS path: control text + raw PTY; promote carefully, don’t freeze raw-PTY forever |
 
 ---
 
@@ -177,7 +177,7 @@ Propose concrete criteria, e.g.:
 - What is frozen in v0 vs deliberately unstable
 - Test strategy (codec + state machine golden tests)
 
-**Powerful** (enough for termio ADE — not Superlogical’s entire vision)
+**Powerful** (enough for Termio ADE — not Superlogical’s entire vision)
 
 - Durable multi-attach
 - Clean reconnect (snapshot)
@@ -224,7 +224,7 @@ Argue **SSH vs QUIC** explicitly: complementarity, not either/or religion.
 
 ### E. Comparison matrix
 
-termio protocol vs: Superlogical (announced only), tmux, zmx, herdr-style remote, current termio Companion wire.
+Termio protocol vs: Superlogical (announced only), tmux, zmx, herdr-style remote, current Termio Companion wire.
 
 ### F. Risks & open decisions
 
@@ -244,7 +244,7 @@ A short “beautiful ideas we will not do” list (e.g. gRPC for PTY hot path, p
 
 - Prefer **decisive** recommendations with tradeoffs over “it depends” without a default.
 - Cite Superlogical claims with **Announced / Inferred / Unknown**.
-- Keep termio’s wedge: agent-native + local-first + direct; do not redesign termio into Superlogical.
+- Keep Termio’s wedge: agent-native + local-first + direct; do not redesign Termio into Superlogical.
 - Write so an engineer can implement protocol v0.1 / v1 from your note without reading this brief again.
 - If you need a wire example, show 1–2 attach sequences end-to-end (local + remote-SSH + future-QUIC) with the **same** messages.
 
@@ -253,7 +253,7 @@ A short “beautiful ideas we will not do” list (e.g. gRPC for PTY hot path, p
 ## 9. Start here
 
 1. Open https://www.superlogical.com/ and Mitchell’s post; extract only load-bearing architectural claims.
-2. Read termio design docs / `termiod` POC behavior in this workspace.
+2. Read Termio design docs / `termiod` POC behavior in this workspace.
 3. Write the design note to **`docs/design/termiod-session-protocol.md`** with YAML front matter:
    ```yaml
    ---
