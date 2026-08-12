@@ -539,8 +539,9 @@ private struct EmptyAreaContextMenu: NSViewRepresentable {
 /// primary-click recognizers in its own mouse tracking). Mounted *inside a row* (like
 /// `OutlineViewFixups`), so the outline view is a real ancestor on its
 /// superview chain — a `.background` on the List sits in a sibling subtree and can't
-/// reach it.
-private struct OutlineViewCapture: NSViewRepresentable {
+/// reach it. Shared with the remote tree (`RemoteFileRow`), which needs the same
+/// capture for the same click-to-expand gesture.
+struct OutlineViewCapture: NSViewRepresentable {
     let onFound: (NSOutlineView?) -> Void
 
     func makeNSView(context: Context) -> NSView {

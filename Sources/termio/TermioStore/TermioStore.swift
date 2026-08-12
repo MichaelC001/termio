@@ -145,6 +145,13 @@ final class TermioStore: ObservableObject {
     /// Opening a file dismisses any open diff — the two overlays are mutually exclusive.
     @Published var openFileURL: URL? {
         didSet {
+            if oldValue != openFileURL {
+                filePresentationGeneration &+= 1
+                if remotePreviewLease?.fileURL != openFileURL {
+                    remotePreviewLease = nil
+                    openFileDisplayName = nil
+                }
+            }
             if openFileURL != nil { openDiff = nil; openTrace = nil; openIssueDetail = nil; noteDetailOpened() }
             // Closing always returns to the editable default; a read-only open re-asserts the flag
             // immediately before setting the URL (see `openTerminalLink`). The jump line clears too,
@@ -152,6 +159,7 @@ final class TermioStore: ObservableObject {
             else {
                 openFileReadOnly = false
                 openFileLine = nil
+                openFileAllowsActiveWebContent = true
             }
             refreshDetailPresentation()
         }
@@ -165,6 +173,19 @@ final class TermioStore: ObservableObject {
     /// was opened by cmd-clicking a link in the terminal — a peek at the source, not an invitation to
     /// edit it by mistake. The inspector's own file opens stay editable (`openFileInEditor`).
     @Published var openFileReadOnly = false
+
+    /// False for files staged from an SSH host. HTML/SVG must then open as
+    /// read-only source rather than executing in the local web preview.
+    @Published var openFileAllowsActiveWebContent = true
+
+    /// A monotonically increasing guard for asynchronous remote downloads. Any
+    /// local open/close/replacement invalidates a pending remote presentation.
+    private(set) var filePresentationGeneration: UInt64 = 0
+
+    /// Retaining the lease retains the staged file. Replacing or closing the
+    /// overlay releases it and deletes only its private directory.
+    private var remotePreviewLease: RemotePreviewLease?
+    private(set) var openFileDisplayName: String?
 
     /// The changed file currently shown in the diff overlay, or `nil` when none is. The git
     /// counterpart of `openFileURL`: clicking a row in the Changes pane sets it, and the terminal
@@ -368,13 +389,15 @@ final class TermioStore: ObservableObject {
     @Published var gitChangeCount = 0
 
     /// The directory the inspector panes root at: the selected session's worktree if it
-    /// has one, otherwise its project folder. `nil` when nothing is selected.
+    /// has one, otherwise its project folder. `nil` when nothing is selected or the
+    /// selected session is SSH — its filesystem is remote, not this Mac's.
     /// A loose terminal roots at its *live* cwd instead (falling back to the cwd
     /// persisted from the last run, then `$HOME`) — the session owns its path, so
     /// the tree, search, and changes panes all follow a `cd`. Real projects keep
     /// their stable root; the anchor is the point of a project.
     var inspectorProjectPath: String? {
         guard let id = selectedSessionID, let project = project(for: id) else { return nil }
+        guard session(id)?.sshHost == nil else { return nil }
         if project.kind == .terminals {
             return workingDirectory(for: id)
                 ?? session(id)?.lastWorkingDirectory
@@ -1335,7 +1358,11 @@ final class TermioStore: ObservableObject {
     /// these two methods (rather than assigning `openFileURL` directly) keeps the read-only flag and
     /// the URL in step.
     func openFileInEditor(_ url: URL, at line: Int? = nil) {
+        filePresentationGeneration &+= 1
+        remotePreviewLease = nil
+        openFileDisplayName = nil
         openFileReadOnly = false
+        openFileAllowsActiveWebContent = true
         openFileLine = line
         openFileURL = url
     }
@@ -1366,15 +1393,40 @@ final class TermioStore: ObservableObject {
         presentFilePreview(url.standardizedFileURL)
     }
 
-    /// Covers the terminal with a read-only preview of `url`, but only if it points at an existing
-    /// regular file — a missing path or a directory is silently dropped rather than opening an empty
-    /// overlay.
+    /// Covers the terminal with a read-only preview of a local `url`, but only
+    /// if it points at an existing regular file.
     private func presentFilePreview(_ url: URL) {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
               !isDirectory.boolValue else { return }
+        filePresentationGeneration &+= 1
+        remotePreviewLease = nil
+        openFileDisplayName = nil
         openFileReadOnly = true
+        openFileAllowsActiveWebContent = true
         openFileURL = url
+    }
+
+    /// Adopts a staged remote file only if no newer presentation won while its
+    /// bytes were downloading. The lease owns cleanup and the remote display
+    /// name stays separate from the randomized local leaf.
+    @discardableResult
+    func presentRemoteFilePreview(
+        _ lease: RemotePreviewLease,
+        expectedGeneration: UInt64
+    ) -> Bool {
+        guard expectedGeneration == filePresentationGeneration,
+              FileManager.default.fileExists(atPath: lease.fileURL.path)
+        else { return false }
+
+        filePresentationGeneration &+= 1
+        remotePreviewLease = lease
+        openFileDisplayName = lease.displayName
+        openFileReadOnly = true
+        openFileAllowsActiveWebContent = false
+        openFileLine = nil
+        openFileURL = lease.fileURL
+        return true
     }
 
     /// The working directory of the selected session (its worktree, else the project root), used as

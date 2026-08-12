@@ -516,8 +516,17 @@ extension TermioStore {
     /// that `launchArgv` wraps it in. `ssh` with a tty on stdin (the PTY) and no
     /// remote command allocates a remote pty on its own, so the user lands at the
     /// remote shell — no `-t` needed.
+    ///
+    /// The session doubles as an OpenSSH ControlMaster (see `SSHMux`): the user
+    /// authenticates once here, and the inspector's remote file tree rides the
+    /// same connection through the control socket — no second handshake.
     static func sshCommand(host: String) -> String {
-        "ssh \(shellQuoted(host))"
+        if let options = SSHMux.masterShellOptions {
+            return "ssh \(options) -- \(shellQuoted(host))"
+        }
+        // A failure to create the optional mux directory must not break the
+        // terminal itself. The remote browser will show its unavailable state.
+        return "ssh -- \(shellQuoted(host))"
     }
 
     /// POSIX single-quote escaping: wraps `value` in `'…'`, splicing any embedded

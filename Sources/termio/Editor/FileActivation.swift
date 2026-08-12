@@ -10,6 +10,12 @@ enum FileActivation {
         previewExtensions.contains(url.pathExtension.lowercased())
     }
 
+    /// Formats whose preview path executes a web document rather than decoding
+    /// inert media. Remote copies are rendered as read-only source instead.
+    static func isActiveWebContent(_ url: URL) -> Bool {
+        ["html", "htm", "svg"].contains(url.pathExtension.lowercased())
+    }
+
     /// Previewable files whose git diff isn't useful: image rasters, SVG art, and PDFs are
     /// binary or opaque, so the Changes pane opens the file itself rather than a "binary files
     /// differ" / empty diff. HTML keeps its (meaningful) text diff.

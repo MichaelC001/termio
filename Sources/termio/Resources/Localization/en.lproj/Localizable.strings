@@ -16,6 +16,8 @@
 	<string>%@ is a light theme in the %@ slot.</string>
 	<key>%@ isn’t a UTF-8 text file.</key>
 	<string>%@ isn’t a UTF-8 text file.</string>
+	<key>%@ isn’t available for SSH sessions yet.</key>
+	<string>%@ isn’t available for SSH sessions yet.</string>
 	<key>%@ isn’t on your PATH</key>
 	<string>%@ isn’t on your PATH</string>
 	<key>%@ opened %@</key>
@@ -148,8 +150,12 @@
 	<string>Bring All to Front</string>
 	<key>Cancel</key>
 	<string>Cancel</string>
+	<key>Can’t browse %@</key>
+	<string>Can’t browse %@</string>
 	<key>Can’t open as text</key>
 	<string>Can’t open as text</string>
+	<key>Can’t preview</key>
+	<string>Can’t preview</string>
 	<key>Change Theme…</key>
 	<string>Change Theme…</string>
 	<key>Changes</key>
@@ -598,6 +604,8 @@
 	<string>Not Now</string>
 	<key>Not a valid regular expression</key>
 	<string>Not a valid regular expression</string>
+	<key>Not connected</key>
+	<string>Not connected</string>
 	<key>Not pushed to upstream</key>
 	<string>Not pushed to upstream</string>
 	<key>Nothing to install.</key>
@@ -722,6 +730,8 @@
 	<string>Relaunch Termio to switch language?</string>
 	<key>Reload</key>
 	<string>Reload</string>
+	<key>Remote session</key>
+	<string>Remote session</string>
 	<key>Remove</key>
 	<string>Remove</string>
 	<key>Remove Project</key>
@@ -782,6 +792,8 @@
 	<string>Scrollback history and text selection</string>
 	<key>Scrollback: %lld MB</key>
 	<string>Scrollback: %lld MB</string>
+	<key>Search</key>
+	<string>Search</string>
 	<key>Search Files</key>
 	<string>Search Files</string>
 	<key>Search Project</key>
@@ -898,6 +910,8 @@
 	<string>Test</string>
 	<key>Test Connection</key>
 	<string>Test Connection</string>
+	<key>The SSH connection is closed. Reconnect in the terminal, then refresh.</key>
+	<string>The SSH connection is closed. Reconnect in the terminal, then refresh.</string>
 	<key>The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.</key>
 	<string>The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.</string>
 	<key>The coding agents offered when you start a session</key>
@@ -928,6 +942,8 @@
 	<string>This diff is too large to show here — open the file on GitHub.</string>
 	<key>This file is binary — open it on GitHub to view.</key>
 	<string>This file is binary — open it on GitHub to view.</string>
+	<key>This host sent a name the file tree can’t show.</key>
+	<string>This host sent a name the file tree can’t show.</string>
 	<key>This month</key>
 	<string>This month</string>
 	<key>This project’s origin remote doesn’t point at github.com, so there is no issue tracker to show.</key>
@@ -1056,6 +1072,8 @@ Enabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks
 	<string>“%@” already exists.</string>
 	<key>“%@” is already in your config.</key>
 	<string>“%@” is already in your config.</string>
+	<key>“%@” isn’t a supported image.</key>
+	<string>“%@” isn’t a supported image.</string>
 	<key>“%@” isn’t installed — showing the system default.</key>
 	<string>“%@” isn’t installed — showing the system default.</string>
 </dict>

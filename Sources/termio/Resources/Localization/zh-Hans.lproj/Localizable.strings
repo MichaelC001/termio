@@ -16,6 +16,8 @@
 	<string>“%@”是浅色主题，与“%@”插槽不匹配。</string>
 	<key>%@ isn’t a UTF-8 text file.</key>
 	<string>%@ 不是 UTF-8 文本文件。</string>
+	<key>%@ isn’t available for SSH sessions yet.</key>
+	<string>%@ 暂不支持 SSH 会话。</string>
 	<key>%@ isn’t on your PATH</key>
 	<string>%@ 不在 PATH 中</string>
 	<key>%@ opened %@</key>
@@ -148,8 +150,12 @@
 	<string>前置全部窗口</string>
 	<key>Cancel</key>
 	<string>取消</string>
+	<key>Can’t browse %@</key>
+	<string>无法浏览 %@</string>
 	<key>Can’t open as text</key>
 	<string>无法以文本打开</string>
+	<key>Can’t preview</key>
+	<string>无法预览</string>
 	<key>Change Theme…</key>
 	<string>更改主题…</string>
 	<key>Changes</key>
@@ -598,6 +604,8 @@
 	<string>以后再说</string>
 	<key>Not a valid regular expression</key>
 	<string>不是有效的正则表达式</string>
+	<key>Not connected</key>
+	<string>未连接</string>
 	<key>Not pushed to upstream</key>
 	<string>尚未推送到上游</string>
 	<key>Nothing to install.</key>
@@ -722,6 +730,8 @@
 	<string>重新启动 Termio 以切换语言？</string>
 	<key>Reload</key>
 	<string>重新载入</string>
+	<key>Remote session</key>
+	<string>远程会话</string>
 	<key>Remove</key>
 	<string>移除</string>
 	<key>Remove Project</key>
@@ -782,6 +792,8 @@
 	<string>回滚历史与文本选择</string>
 	<key>Scrollback: %lld MB</key>
 	<string>回滚：%lld MB</string>
+	<key>Search</key>
+	<string>搜索</string>
 	<key>Search Files</key>
 	<string>搜索文件</string>
 	<key>Search Project</key>
@@ -898,6 +910,8 @@
 	<string>测试</string>
 	<key>Test Connection</key>
 	<string>测试连接</string>
+	<key>The SSH connection is closed. Reconnect in the terminal, then refresh.</key>
+	<string>SSH 连接已关闭。请在终端中重新连接，然后刷新。</string>
 	<key>The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.</key>
 	<string>新建聊天（⌘N）启动的 Agent。“上次使用”跟随你最近一次聊天所用的 Agent。</string>
 	<key>The coding agents offered when you start a session</key>
@@ -928,6 +942,8 @@
 	<string>此差异太大，无法在此显示，请在 GitHub 上打开该文件。</string>
 	<key>This file is binary — open it on GitHub to view.</key>
 	<string>此文件为二进制文件，请在 GitHub 上打开查看。</string>
+	<key>This host sent a name the file tree can’t show.</key>
+	<string>该主机返回了文件树无法显示的名称。</string>
 	<key>This month</key>
 	<string>本月</string>
 	<key>This project’s origin remote doesn’t point at github.com, so there is no issue tracker to show.</key>
@@ -1056,6 +1072,8 @@ Enabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks
 	<string>“%@”已存在。</string>
 	<key>“%@” is already in your config.</key>
 	<string>“%@”已存在于你的配置中。</string>
+	<key>“%@” isn’t a supported image.</key>
+	<string>“%@”不是受支持的图片。</string>
 	<key>“%@” isn’t installed — showing the system default.</key>
 	<string>“%@”未安装，正在显示系统默认字体。</string>
 </dict>
