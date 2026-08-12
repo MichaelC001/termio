@@ -17,6 +17,25 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.35.0",
+    date: "2026-08-12",
+    title: "Runs on Intel Macs",
+    changes: {
+      new: [
+        "Universal binary: Termio runs on Intel Macs as well as Apple silicon, from the same download.",
+        "Usage: Kimi Code and Grok plan limits and token usage sit next to Claude Code and Codex, after a per-agent Allow.",
+      ],
+      improved: [
+        "New Terminal (⌘T) opens in the focused session's working directory, beside that session. File ▸ New Terminal at Home still starts at your home directory.",
+      ],
+      fixed: [
+        "⌘W no longer quits Termio — closing the window leaves every session and agent alive, and the Dock icon brings it back. Quitting, or closing a session that is still running something, now asks first.",
+        "A split group's sidebar bracket covers the same rows as the panes on screen.",
+        "The reveal arrows in a diff's collapsed bands point the way the reveal walks.",
+      ],
+    },
+  },
+  {
     version: "0.34.0",
     date: "2026-08-10",
     title: "Markdown that renders like GitHub",
