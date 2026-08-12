@@ -82,7 +82,7 @@ final class ProjectDetailViewController: UIViewController {
         let back = UIButton(type: .system)
         back.applyGlassSymbol("chevron.backward")
         back.tintColor = .label
-        back.accessibilityLabel = "Back"
+        back.accessibilityLabel = localized("Back")
         back.accessibilityIdentifier = "project.back"
         back.addAction(UIAction { [weak self] _ in
             self?.navigationController?.popViewController(animated: true)
@@ -165,7 +165,7 @@ final class ProjectDetailViewController: UIViewController {
     private func configureAddButton() {
         addButton.applyGlassIcon(.add, boxSize: 24)
         addButton.tintColor = .label
-        addButton.accessibilityLabel = "New session in \(project.name)"
+        addButton.accessibilityLabel = localized("New session in \(project.name)")
         addButton.showsMenuAsPrimaryAction = true
         addButton.menu = UIMenu(children: [
             UIDeferredMenuElement.uncached { [weak self] completion in
@@ -227,10 +227,10 @@ final class ProjectDetailViewController: UIViewController {
         guard !emptyState.isHidden else { return }
         emptyState.configure(
             icon: .inbox,
-            title: "No sessions",
+            title: localized("No sessions"),
             message: addButton.isHidden
-                ? "Start a session on your Mac and it'll show up here."
-                : "Tap ＋ to start an agent in this project.",
+                ? localized("Start a session on your Mac and it'll show up here.")
+                : localized("Tap ＋ to start an agent in this project."),
             actionTitle: nil,
             busy: false
         )
@@ -273,7 +273,7 @@ extension ProjectDetailViewController: UITableViewDataSource, UITableViewDelegat
         guard store.companionURL != nil,
               let sessionID = project.sessions[indexPath.row].rosterID
         else { return nil }
-        let close = UIContextualAction(style: .destructive, title: "Close") { [weak self] _, _, done in
+        let close = UIContextualAction(style: .destructive, title: localized("Close")) { [weak self] _, _, done in
             self?.store.stopSession(sessionID)
             done(true)
         }
@@ -293,7 +293,7 @@ extension ProjectDetailViewController: UITableViewDataSource, UITableViewDelegat
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             UIMenu(title: title, children: [
                 UIAction(
-                    title: "Close Session",
+                    title: localized("Close Session"),
                     image: UIImage(systemName: "xmark.circle"),
                     attributes: .destructive
                 ) { _ in

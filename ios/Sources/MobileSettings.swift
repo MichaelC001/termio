@@ -26,9 +26,9 @@ final class MobileSettings {
 
         var label: String {
             switch self {
-            case .system: "System"
-            case .light: "Light"
-            case .dark: "Dark"
+            case .system: localized("System")
+            case .light: localized("Light")
+            case .dark: localized("Dark")
             }
         }
     }

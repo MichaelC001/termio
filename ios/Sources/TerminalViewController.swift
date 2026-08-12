@@ -250,7 +250,7 @@ final class TerminalViewController: UIViewController {
         statusLabel.textColor = .secondaryLabel
         statusLabel.text = switch backend {
         case .demoShell: "\(session.agent.name) · \(session.time)"
-        case .companion: "Connecting…"
+        case .companion: localized("Connecting…")
         }
         contextLabel.isHidden = contextLabel.text?.isEmpty ?? true
         switch backend {
@@ -325,12 +325,12 @@ final class TerminalViewController: UIViewController {
         var items: [UIMenuElement] = []
         if case .companion = backend {
             items.append(UIAction(
-                title: "View Trace", image: UIImage(systemName: "list.bullet.rectangle")
+                title: localized("View Trace"), image: UIImage(systemName: "list.bullet.rectangle")
             ) { [weak self] _ in self?.showTrace() })
         }
         if let path = session.projectPath, !path.isEmpty {
             items.append(UIAction(
-                title: "Copy Path", image: UIImage(systemName: "doc.on.doc")
+                title: localized("Copy Path"), image: UIImage(systemName: "doc.on.doc")
             ) { _ in UIPasteboard.general.string = path })
         }
         return UIMenu(children: items)
@@ -635,7 +635,7 @@ final class TerminalViewController: UIViewController {
                 self.uploadTotal = 0
                 self.uploadDone = 0
                 self.terminalView.keyBar.setAttachBusy(false)
-                self.presentAlert("Upload failed", message)
+                self.presentAlert(localized("Upload failed"), message)
             }
             client.start()
             uploadClient = client
@@ -669,18 +669,18 @@ final class TerminalViewController: UIViewController {
     private func reportSkipped(oversized: [String], unreadable: [String] = []) {
         var lines: [String] = []
         if !oversized.isEmpty {
-            lines.append("Over the 8 MB cap: \(oversized.joined(separator: ", "))")
+            lines.append(localized("Over the 8 MB cap: \(oversized.joined(separator: ", "))"))
         }
         if !unreadable.isEmpty {
-            lines.append("Couldn't read: \(unreadable.joined(separator: ", "))")
+            lines.append(localized("Couldn't read: \(unreadable.joined(separator: ", "))"))
         }
         guard !lines.isEmpty else { return }
-        presentAlert("Some files were skipped", lines.joined(separator: "\n"))
+        presentAlert(localized("Some files were skipped"), lines.joined(separator: "\n"))
     }
 
     private func presentAlert(_ title: String, _ message: String) {
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        alert.addAction(UIAlertAction(title: localized("OK"), style: .default))
         present(alert, animated: true)
     }
 
@@ -751,9 +751,9 @@ final class TerminalViewController: UIViewController {
         contextLabel.isHidden = true
         switch state {
         case .connecting:
-            statusLabel.text = "Connecting…"
+            statusLabel.text = localized("Connecting…")
         case .reconnecting:
-            statusLabel.text = "Reconnecting…"
+            statusLabel.text = localized("Reconnecting…")
         case .connected:
             statusLabel.isHidden = true
             contextLabel.isHidden = contextLabel.text?.isEmpty ?? true
@@ -773,14 +773,14 @@ final class TerminalViewController: UIViewController {
                 companion?.reassertGrid()
             }
         case .failed(let reason):
-            statusLabel.text = "Connection failed"
-            let alert = UIAlertController(title: "Companion connection failed", message: reason, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
+            statusLabel.text = localized("Connection failed")
+            let alert = UIAlertController(title: localized("Companion connection failed"), message: reason, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: localized("OK"), style: .default) { [weak self] _ in
                 self?.close()
             })
             present(alert, animated: true)
         case .closed:
-            statusLabel.text = "Disconnected"
+            statusLabel.text = localized("Disconnected")
             companionSession?.finish(exitCode: 0, runtimeMilliseconds: 0)
         }
     }
@@ -1184,7 +1184,7 @@ extension TerminalViewController: UIEditMenuInteractionDelegate {
     ) -> UIMenu? {
         guard UIPasteboard.general.hasStrings else { return nil }
         return UIMenu(options: .displayInline, children: [
-            UIAction(title: "Paste") { [weak self] _ in
+            UIAction(title: localized("Paste")) { [weak self] _ in
                 self?.terminalView.paste(nil)
             },
         ])

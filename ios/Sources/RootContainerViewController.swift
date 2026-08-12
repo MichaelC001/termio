@@ -58,23 +58,24 @@ final class RootContainerViewController: UIViewController {
     /// libghostty surfaces stay installed in the window exactly as before.
     private lazy var homeTabs: UITabBarController = {
         let controller = UITabBarController()
-        let destinations: [(UIViewController, String, HugeIcon)] = [
-            (projectsNav, "Projects", .folder),
-            (chatsNav, "Chats", .bubbleChat),
-            (terminalsNav, "Terminals", .terminal),
-            (settingsNav, "Settings", .settings),
+        // The identifier carries its own English key rather than the title, so
+        // the UI tests keep addressing `home.tab.projects` in every language.
+        let destinations: [(nav: UIViewController, key: String, title: String, icon: HugeIcon)] = [
+            (projectsNav, "projects", localized("Projects"), .folder),
+            (chatsNav, "chats", localized("Chats"), .bubbleChat),
+            (terminalsNav, "terminals", localized("Terminals"), .terminal),
+            (settingsNav, "settings", localized("Settings"), .settings),
         ]
         for (index, destination) in destinations.enumerated() {
-            let (viewController, title, icon) = destination
             let item = UITabBarItem(
-                title: title,
-                image: icon.strokeImage(boxSize: 24, strokeWeight: 1.7),
+                title: destination.title,
+                image: destination.icon.strokeImage(boxSize: 24, strokeWeight: 1.7),
                 tag: index
             )
-            item.accessibilityIdentifier = "home.tab.\(title.lowercased())"
-            viewController.tabBarItem = item
+            item.accessibilityIdentifier = "home.tab.\(destination.key)"
+            destination.nav.tabBarItem = item
         }
-        controller.setViewControllers(destinations.map(\.0), animated: false)
+        controller.setViewControllers(destinations.map(\.nav), animated: false)
         controller.tabBar.tintColor = .label
         controller.tabBar.unselectedItemTintColor = .secondaryLabel
         return controller
@@ -133,9 +134,9 @@ final class RootContainerViewController: UIViewController {
         }
         store.onStartError = { [weak self] reason in
             let alert = UIAlertController(
-                title: "Couldn't start session", message: reason, preferredStyle: .alert
+                title: localized("Couldn't start session"), message: reason, preferredStyle: .alert
             )
-            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            alert.addAction(UIAlertAction(title: localized("OK"), style: .default))
             self?.present(alert, animated: true)
         }
         store.start()
