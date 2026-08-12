@@ -3,8 +3,8 @@ title: 键盘快捷键
 description: Termio 附带的每一个快捷键，直接读自应用自己的命令目录——以及如何在「设置 ▸ 键盘」里重新绑定它们。
 x-i18n:
   source_path: keyboard.mdx
-  source_hash: 9513fcf2eba36cd483687fd31a54925012d1385a4d6cfffc1327f70dc58a3095
-  generated_at: 2026-08-10
+  source_hash: 9207d93ff044e0241aa8b2d7c8bf5c1225815fea02e1c94781e9607e86a5250d
+  generated_at: 2026-08-12
 ---
 
 Termio 是为键盘操作而造的。下面的表格由应用的命令目录生成，因此列出的正是这个版本实际
@@ -13,6 +13,10 @@ Termio 是为键盘操作而造的。下面的表格由应用的命令目录生�
 ## 会话与项目
 
 <Keybindings category="File" unboundLabel="未绑定" />
+
+「New Terminal」会在你已经在的地方打开 shell——当前会话的工作目录——并把新会话放在它旁边，
+留在同一个项目里。「New Terminal at Home」则始终从 `~` 开始；它出厂不带按键，如果你常用
+它，就去[自定义](#customizing)里绑一个。
 
 循环切换遵循侧栏的视觉顺序，所以 `⇧⌘]` 会移到你看到的下一个会话，而不是按创建顺序。
 

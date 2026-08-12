@@ -803,10 +803,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.presentOpenProjectPanel()
     }
 
-    /// The toolbar's `+` button — opens a fresh scratch terminal at the user's home
-    /// directory (like a new iTerm2 window), grouped under a home-rooted section in the
-    /// sidebar. Reached via the responder chain (the toolbar item targets `nil`), like
-    /// the other app actions.
+    /// File ▸ New Terminal (⌘T) — a shell in the focused session's directory, beside
+    /// that session (see `addTerminalHere`). Reached via the responder chain (the menu
+    /// item targets `nil`), like the other app actions.
+    @objc func newTerminalHere(_ sender: Any?) {
+        store.addTerminalHere()
+    }
+
+    /// New Terminal at Home — the same verb in the File menu and the sidebar's `+`,
+    /// always starting at `~` the way a new iTerm2 window does.
     @objc func newScratchTerminal(_ sender: Any?) {
         store.addScratchTerminal()
     }
@@ -1635,9 +1640,15 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     /// as a project. "New Chat" opens the user's agent roster and "New SSH Connection"
     /// the config's hosts as submenus (the same ones the File menu carries — see
     /// `makeNewChatItem` / `makeNewSSHItem`).
+    ///
+    /// Every entry here is context-free: nothing reads the selection, so the terminal
+    /// entry is the `$HOME` one. The `+` lives in the sidebar's toolbar, where "here"
+    /// has no referent — the directory-following New Terminal is ⌘T, pressed with the
+    /// terminal in front of you.
     func makeNewSessionMenu() -> NSMenu {
         let menu = NSMenu()
-        let terminal = NSMenuItem(title: "New Terminal", action: #selector(newTerminal(_:)), keyEquivalent: "")
+        let terminal = NSMenuItem(title: "New Terminal at Home",
+                                  action: #selector(newTerminal(_:)), keyEquivalent: "")
         terminal.target = self
         menu.addItem(terminal)
         menu.addItem(makeNewChatItem())
@@ -1948,8 +1959,15 @@ private func buildMainMenu() -> NSMenu {
     // never Cmd, so it can't shadow a key a terminal app wants.
     fileMenu.addItem(
         withTitle: "New Terminal",
-        action: #selector(AppDelegate.newScratchTerminal(_:)),
+        action: #selector(AppDelegate.newTerminalHere(_:)),
         command: .newTerminal
+    )
+    // The always-`$HOME` terminal, kept as its own verb now that ⌘T follows the
+    // focused session's directory.
+    fileMenu.addItem(
+        withTitle: "New Terminal at Home",
+        action: #selector(AppDelegate.newScratchTerminal(_:)),
+        command: .newTerminalAtHome
     )
     // New Chat ▸ one row per enabled agent (the user's roster, filled on open by the
     // AppDelegate — see `makeNewChatItem`). ⌘N (rebindable in Settings ▸ Keyboard)
