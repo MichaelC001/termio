@@ -142,8 +142,9 @@ literal someone types or the system reads: the `termio` CLI and its subcommands,
 `sh.termio.app`, `~/.termio`, `TERMIO_SESSION`, termio.sh, and the skill's own
 `name: termio`. Never `TermIO`.
 
-The landing site and the `termio` skill follow this. The README, `docs/`, and the
-UI strings are still mostly lowercase in prose — backlog, not a second standard.
+The landing site, the README, the UI strings, and the `termio` skill follow this.
+The design docs under `docs/` still use lowercase in prose — backlog, not a
+second standard.
 
 ### Never describe termio as paid
 
