@@ -824,7 +824,7 @@ private struct CapsuleSwitch<Value: Hashable>: View {
 /// `documentMode`, so raw HTML (bot comments, `<picture>`/`<img>`/tables) renders
 /// through the GitHub-mirroring `HTMLSanitizer` whitelist the way GitHub itself
 /// does, colored from the live `TraceTheme`.
-private enum IssueDetailHTML {
+enum IssueDetailHTML {
     static func page(_ detail: IssueDetail, theme: TraceTheme) -> String {
         let s = detail.summary
         let labels = s.labels.map {
@@ -851,12 +851,49 @@ private enum IssueDetailHTML {
         </header>
         <article class="body">\(body)</article>
         \(comments)
+        <script>\(attachmentFallbackScript)</script>
         </body></html>
         """
-        return routeImages(page)
+        return routeImages(embedAttachments(page))
     }
 
-    /// Point every `<img>`/`<source>` at the token-authenticating loader so a private
+    /// GitHub uploads a video as a bare attachment URL on its own line and turns it into a
+    /// player when it renders; the markdown only ever carries the link, so the pane makes the
+    /// same substitution. Images never take this shape — the composer writes them as `<img>`
+    /// or `![…]()` — so a paragraph that is nothing but an attachment link is a video.
+    static func embedAttachments(_ html: String) -> String {
+        let link = #/<p><a href="([^"]+)">[^<]*</a></p>/#
+        return html.replacing(link) { match in
+            let url = String(match.1)
+            guard isAttachment(url) else { return String(match.0) }
+            return "<video class=\"attachment\" controls preload=\"metadata\" src=\"\(url)\"></video>"
+        }
+    }
+
+    /// An uploaded attachment: today's `github.com/user-attachments/assets/<uuid>` (typeless
+    /// in the URL) and the older `*.githubusercontent.com` files, which name their format.
+    private static func isAttachment(_ url: String) -> Bool {
+        guard let parsed = URL(string: url), let host = parsed.host else { return false }
+        let path = parsed.path.lowercased()
+        if host == "github.com" { return path.hasPrefix("/user-attachments/assets/") }
+        guard host.hasSuffix("githubusercontent.com") else { return false }
+        return [".mp4", ".mov", ".webm", ".m4v"].contains { path.hasSuffix($0) }
+    }
+
+    /// The attachment URL carries no type, so a bare link that turns out to be an image
+    /// would render as a dead player. Media that fails to load is one, so swap in the
+    /// image rather than leaving the black box.
+    private static let attachmentFallbackScript = """
+    for (const video of document.querySelectorAll("video.attachment")) {
+      video.addEventListener("error", () => {
+        const image = document.createElement("img");
+        image.src = video.src;
+        video.replaceWith(image);
+      });
+    }
+    """
+
+    /// Point every `<img>`/`<video>`/`<source>` at the token-authenticating loader so a private
     /// repo's attachments resolve — the raw `<img src>` GitHub embeds targets
     /// `github.com/user-attachments/…`, which 404s anonymously and only returns bytes
     /// with the connect token attached (see `GitHubAssetSchemeHandler`). Only `src`/
@@ -913,7 +950,11 @@ private enum IssueDetailHTML {
         pre code { background: none; padding: 0; }
         blockquote { border-left: 3px solid \(theme.secondary); margin-left: 0;
                      padding-left: 10px; color: \(theme.secondary); }
-        img { max-width: 100%; }
+        /* `height: auto` is what keeps a screenshot in proportion: GitHub writes the
+           upload's pixel size onto the image tag, so a width clamped to the pane
+           against a height still set to 1080 stretches the picture vertically. */
+        img, video { max-width: 100%; height: auto; }
+        video.attachment { display: block; border-radius: 6px; }
         table { border-collapse: collapse; }
         td, th { border: 1px solid rgba(128,128,128,.3); padding: 3px 8px; }
         h1, h2, h3, h4 { font-size: 13.5px; margin: 12px 0 6px; }
@@ -975,6 +1016,7 @@ private struct IssueWebView: NSViewRepresentable {
         (view as? IssueDetailWKWebView)?.canAddToChat = canAddToChat
         if context.coordinator.lastHTML != html {
             context.coordinator.lastHTML = html
+            context.coordinator.assetHandler.forgetMedia()
             view.loadHTMLString(html, baseURL: nil)
         }
     }
@@ -1061,6 +1103,12 @@ final class GitHubAssetSchemeHandler: NSObject, WKURLSchemeHandler {
     static let scheme = "x-termio-ghasset"
 
     private var live = Set<ObjectIdentifier>()
+    /// The one asset a media element is currently reading, held whole. WebKit walks a video
+    /// in dozens of tiny byte ranges — the container's header, then its index at the far end,
+    /// then playback — and answering each with its own trip to GitHub rate-limits the pane
+    /// before the first frame appears. Only a ranged request fills this: an image is fetched
+    /// once and never seeks, so it never displaces the video being watched.
+    private var media: (key: String, mimeType: String?, data: Data)?
     private let lock = NSLock()
 
     func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
@@ -1081,6 +1129,15 @@ final class GitHubAssetSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
 
+        let seeking = task.request.value(forHTTPHeaderField: "Range") != nil
+        if seeking {
+            lock.lock(); let held = media?.key == raw ? media : nil; lock.unlock()
+            if let held {
+                settle { Self.respond(to: $0, url: url, mimeType: held.mimeType, body: held.data) }
+                return
+            }
+        }
+
         var request = URLRequest(url: url)
         if let host = url.host,
            host == "github.com" || host.hasSuffix(".githubusercontent.com"),
@@ -1094,16 +1151,16 @@ final class GitHubAssetSchemeHandler: NSObject, WKURLSchemeHandler {
         Task { @MainActor in
             do {
                 let (data, response) = try await URLSession.shared.data(for: request)
-                settle {
-                    // Frame the payload under the request's own custom-scheme URL so
-                    // WebKit doesn't reject a response that arrived over https.
-                    let framed = URLResponse(
-                        url: $0.request.url ?? url, mimeType: response.mimeType,
-                        expectedContentLength: data.count, textEncodingName: nil)
-                    $0.didReceive(framed)
-                    $0.didReceive(data)
-                    $0.didFinish()
+                // GitHub answers a refused asset with an HTML page, which would otherwise be
+                // held as the video and re-served for every seek that follows.
+                if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                    settle { $0.didFailWithError(URLError(.badServerResponse)) }
+                    return
                 }
+                if seeking {
+                    self.lock.withLock { self.media = (key: raw, mimeType: response.mimeType, data: data) }
+                }
+                settle { Self.respond(to: $0, url: url, mimeType: response.mimeType, body: data) }
             } catch {
                 settle { $0.didFailWithError(error) }
             }
@@ -1112,6 +1169,54 @@ final class GitHubAssetSchemeHandler: NSObject, WKURLSchemeHandler {
 
     func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {
         lock.lock(); live.remove(ObjectIdentifier(task)); lock.unlock()
+    }
+
+    /// Drops the held asset — the page that was playing it is gone, and it is the largest
+    /// thing this handler keeps.
+    func forgetMedia() {
+        lock.lock(); media = nil; lock.unlock()
+    }
+
+    /// Answers under the custom-scheme URL — WebKit rejects a response that claims to have
+    /// arrived over https — serving the slice the task asked for. The `206` and its
+    /// `Content-Range` are what tell a `<video>` element it may seek; a plain `URLResponse`
+    /// carries neither status nor headers, and a range request answered with the whole file
+    /// reads as a broken stream.
+    private static func respond(to task: any WKURLSchemeTask, url: URL,
+                                mimeType: String?, body: Data) {
+        let target = task.request.url ?? url
+        let requested = byteRange(task.request.value(forHTTPHeaderField: "Range"), count: body.count)
+        let slice = requested.map { body.subdata(in: $0) } ?? body
+        var headers = [
+            "Content-Type": mimeType ?? "application/octet-stream",
+            "Content-Length": String(slice.count),
+            "Accept-Ranges": "bytes",
+        ]
+        if let requested {
+            headers["Content-Range"] =
+                "bytes \(requested.lowerBound)-\(requested.upperBound - 1)/\(body.count)"
+        }
+        let response = HTTPURLResponse(
+            url: target, statusCode: requested == nil ? 200 : 206,
+            httpVersion: "HTTP/1.1", headerFields: headers)
+            ?? URLResponse(url: target, mimeType: mimeType,
+                           expectedContentLength: slice.count, textEncodingName: nil)
+        task.didReceive(response)
+        task.didReceive(slice)
+        task.didFinish()
+    }
+
+    /// `bytes=first-last` with an open end, the only form WebKit's media loader sends.
+    /// Anything else (a suffix range, a multi-range list) answers as the whole asset, which
+    /// is a legal reply to any range request.
+    static func byteRange(_ header: String?, count: Int) -> Range<Int>? {
+        guard count > 0, let header, header.hasPrefix("bytes=") else { return nil }
+        let bounds = header.dropFirst("bytes=".count)
+            .split(separator: "-", omittingEmptySubsequences: false)
+        guard bounds.count == 2, let first = Int(bounds[0]), first < count else { return nil }
+        let last = Int(bounds[1]).map { min($0, count - 1) } ?? count - 1
+        guard last >= first else { return nil }
+        return first..<(last + 1)
     }
 }
 

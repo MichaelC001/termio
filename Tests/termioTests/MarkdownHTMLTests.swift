@@ -25,6 +25,13 @@ final class HTMLSanitizerTests: XCTestCase {
         )
     }
 
+    func testVideoKeepsItsPlayerAttributesButNeverAutoplays() {
+        XCTAssertEqual(
+            HTMLSanitizer.sanitize(#"<video src="a.mp4" controls muted autoplay poster="p.png">"#),
+            #"<video src="a.mp4" controls muted poster="p.png">"#
+        )
+    }
+
     func testJavascriptURLsDropped() {
         XCTAssertEqual(HTMLSanitizer.sanitize(#"<a href="javascript:alert(1)">x</a>"#), "<a>x</a>")
         XCTAssertEqual(HTMLSanitizer.sanitize(#"<img src="data:text/html,x">"#), "<img>")

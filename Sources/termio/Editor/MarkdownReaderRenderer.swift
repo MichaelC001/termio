@@ -293,7 +293,10 @@ enum MarkdownReaderRenderer {
     .reader pre code { background: none; padding: 0; font-size: 13.5px; line-height: 1.6; }
     /* The hljs theme ships its own background, padding and base color for `.hljs`; the
        block's look belongs to this stylesheet, so only the token colors survive. */
-    .reader img { max-width: 100%; margin: 0.6em 0; border-radius: 6px; }
+    /* `height: auto` against the pixel height GitHub writes onto a pasted `<img>`; a
+       clamped width with that height still set stretches the picture vertically. */
+    .reader img, .reader video { max-width: 100%; height: auto; margin: 0.6em 0;
+      border-radius: 6px; }
     /* `<kbd>` is on the raw-HTML whitelist and READMEs use it for shortcuts; without a
        key cap it reads as ordinary text. */
     .reader kbd { font: 0.78em var(--font-mono); background: var(--soft);
