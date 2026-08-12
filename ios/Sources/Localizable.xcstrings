@@ -321,12 +321,12 @@
         }
       }
     },
-    "Connectivity": {
+    "Devices": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "连接"
+            "value": "设备"
           }
         }
       }
@@ -601,12 +601,12 @@
         }
       }
     },
-    "Mac": {
+    "My Devices": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mac"
+            "value": "我的设备"
           }
         }
       }
@@ -941,12 +941,12 @@
         }
       }
     },
-    "Pair once with the address Termio on your Mac is serving — every project and session rides this one link.": {
+    "One device is connected at a time — tap another to switch to it. Switching closes the terminals open on this phone; the sessions keep running on the Mac.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "使用 Mac 上 Termio 提供的地址配对一次即可，所有项目和会话都走这一条连接。"
+            "value": "同一时间只连接一台设备，点按另一台即可切换。切换会关闭这台 iPhone 上打开的终端，会话仍在 Mac 上继续运行。"
           }
         }
       }
@@ -1637,6 +1637,76 @@
           "stringUnit": {
             "state": "translated",
             "value": "•••• 已设置"
+          }
+        }
+      }
+    },
+    "Add a Device": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加设备"
+          }
+        }
+      }
+    },
+    "Forget": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "忽略"
+          }
+        }
+      }
+    },
+    "Forget %@?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要忽略“%@”吗？"
+          }
+        }
+      }
+    },
+    "Not Connected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未连接"
+          }
+        }
+      }
+    },
+    "Scan the QR code in Settings ▸ Mobile on the Mac you want to pair. Re-scanning a paired Mac updates its address.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在想要配对的 Mac 上打开“设置 ▸ 移动设备”并扫描其二维码。对已配对的 Mac 重新扫描会更新其地址。"
+          }
+        }
+      }
+    },
+    "This Mac": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台 Mac"
+          }
+        }
+      }
+    },
+    "You'll need to scan its QR code again to reconnect.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新连接时需要再次扫描它的二维码。"
           }
         }
       }

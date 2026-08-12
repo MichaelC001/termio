@@ -96,10 +96,14 @@ final class RootContainerViewController: UIViewController {
     private weak var activeScreen: UIViewController?
 
     private var themeObserver: NSObjectProtocol?
+    private var pairingObserver: NSObjectProtocol?
 
     deinit {
         if let themeObserver {
             NotificationCenter.default.removeObserver(themeObserver)
+        }
+        if let pairingObserver {
+            NotificationCenter.default.removeObserver(pairingObserver)
         }
     }
 
@@ -140,6 +144,26 @@ final class RootContainerViewController: UIViewController {
             self?.present(alert, animated: true)
         }
         store.start()
+
+        // Switching (or forgetting) a Mac orphans every terminal screen: each
+        // one's socket and session ids belong to the previous link. Drop them
+        // all; the new roster repopulates the lists.
+        pairingObserver = NotificationCenter.default.addObserver(
+            forName: CompanionLink.pairingDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.dropTerminalsForPairingChange() }
+        }
+    }
+
+    private func dropTerminalsForPairingChange() {
+        let parked = recentTerminals.values
+        recentTerminals.removeAll()
+        recentKeys.removeAll()
+        for screen in parked where screen !== activeScreen {
+            evict(screen)
+        }
+        // No longer in the cache, so goHome tears the active one down too.
+        if activeScreen != nil { goHome() }
     }
 
     /// Under memory pressure, shed every parked terminal except the one on

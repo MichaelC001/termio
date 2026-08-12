@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import Security
+import SystemConfiguration
 import TermioShared
 
 /// The shared secret a phone must present before the companion server serves
@@ -34,6 +35,34 @@ enum PairingToken {
             .replacingOccurrences(of: "=", with: "")
         UserDefaults.standard.set(token, forKey: defaultsKey)
         return token
+    }
+}
+
+/// This Mac's identity on the phone's paired-Mac list: a UUID minted once and
+/// kept for the install's lifetime, plus the user-facing computer name. The
+/// phone keys its pairings by the UUID, so re-scanning a QR after a tunnel
+/// restart updates the existing entry instead of duplicating it — the URL is
+/// the one thing about a Mac that doesn't hold still.
+enum MacIdentity {
+    static let defaultsKey = "companion.macID"
+
+    static var id: String {
+        if let existing = UserDefaults.standard.string(forKey: defaultsKey), !existing.isEmpty {
+            return existing
+        }
+        let minted = UUID().uuidString
+        UserDefaults.standard.set(minted, forKey: defaultsKey)
+        return minted
+    }
+
+    /// The computer name from Sharing settings ("Jiwei's MacBook Pro"),
+    /// falling back to the DNS hostname stripped of its ".local" suffix.
+    static var displayName: String {
+        if let name = SCDynamicStoreCopyComputerName(nil, nil) as String?, !name.isEmpty {
+            return name
+        }
+        let host = ProcessInfo.processInfo.hostName
+        return host.hasSuffix(".local") ? String(host.dropLast(".local".count)) : host
     }
 }
 
@@ -1217,7 +1246,10 @@ extension TermioStore {
                     tintHex: $0.tintHex,
                     icon: $0.iconRef)
             }
-        return CompanionRoster(projects: projects, agents: agents)
+        return CompanionRoster(
+            projects: projects, agents: agents,
+            macID: MacIdentity.id, macName: MacIdentity.displayName
+        )
     }
 
     private static func wireAgent(_ agent: AgentPreset) -> String {
