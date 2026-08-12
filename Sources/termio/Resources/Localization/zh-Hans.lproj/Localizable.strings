@@ -80,8 +80,6 @@
 	<string>地址</string>
 	<key>Agent</key>
 	<string>Agent</string>
-	<key>Agent presets, live status, and control</key>
-	<string>Agent 预设、实时状态与控制</string>
 	<key>Agent skill</key>
 	<string>Agent 技能</string>
 	<key>Agents</key>
@@ -144,8 +142,6 @@
 	<string>方块</string>
 	<key>Blur: %lld</key>
 	<string>模糊：%lld</string>
-	<key>Both optional. The flag powers the agent’s “Skip permission prompts” switch; leave it empty if the CLI has none. The directory receives termio’s session-control skill (as `&lt;dir&gt;/termio`); leave it empty to skip installing one.</key>
-	<string>两项均为可选。该标志用于 Agent 的“跳过权限确认”开关；若 CLI 没有此标志请留空。该目录用于接收 Termio 的会话控制技能（安装为 `&lt;dir&gt;/termio`）；留空则不安装。</string>
 	<key>Branch</key>
 	<string>分支</string>
 	<key>Bring All to Front</key>
@@ -326,10 +322,12 @@
 	<string>完成</string>
 	<key>Draft</key>
 	<string>草稿</string>
+	<key>Drag the list to change the order agents appear in.</key>
+	<string>拖动列表可以调整 Agent 出现的顺序。</string>
 	<key>Edit</key>
 	<string>编辑</string>
-	<key>Edit Agent</key>
-	<string>编辑 Agent</string>
+	<key>Edit Manifest</key>
+	<string>编辑清单</string>
 	<key>Edit in Config</key>
 	<string>在配置中编辑</string>
 	<key>Edit source</key>
@@ -832,8 +830,6 @@
 	<string>技能已重新安装</string>
 	<key>Skip permission prompts</key>
 	<string>跳过权限确认</string>
-	<key>Skip-permissions flag</key>
-	<string>跳过权限标志</string>
 	<key>Something else already owns %@.</key>
 	<string>%@ 已被其他程序占用。</string>
 	<key>Something went wrong loading this repository. Try again in a moment.</key>
@@ -904,10 +900,8 @@
 	<string>测试连接</string>
 	<key>The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.</key>
 	<string>新建聊天（⌘N）启动的 Agent。“上次使用”跟随你最近一次聊天所用的 Agent。</string>
-	<key>The agents in the list are offered when starting a new session, in that order — drag to reorder, select one to configure it.</key>
-	<string>新建会话时按此顺序提供列表中的 Agent。拖动可重新排序，选中可进行配置。</string>
-	<key>The command is run in a login shell, so anything on your PATH works.</key>
-	<string>命令在登录 shell 中运行，PATH 中的任何命令都可用。</string>
+	<key>The coding agents offered when you start a session</key>
+	<string>新建会话时可以选用的编程 Agent</string>
 	<key>The folder was removed, but git couldn’t prune its stale worktree metadata.</key>
 	<string>文件夹已移除，但 git 无法清理其残留的 worktree 元数据。</string>
 	<key>The ignore rule couldn’t be added.</key>

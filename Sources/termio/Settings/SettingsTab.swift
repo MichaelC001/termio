@@ -59,7 +59,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .terminal: return localized("Scrollback history and text selection")
         case .ssh: return localized("Your ~/.ssh/config hosts, one click away")
         case .keyboard: return localized("Keyboard shortcuts for every command")
-        case .agents: return localized("Agent presets, live status, and control")
+        case .agents: return localized("The coding agents offered when you start a session")
         case .usage: return localized("Token usage for your connected agents")
         case .mobile: return localized("Pair your iPhone and remote access")
         case .community: return localized("Discord, GitHub, and the WeChat group")

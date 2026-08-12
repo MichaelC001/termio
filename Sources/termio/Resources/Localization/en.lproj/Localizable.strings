@@ -80,8 +80,6 @@
 	<string>Address</string>
 	<key>Agent</key>
 	<string>Agent</string>
-	<key>Agent presets, live status, and control</key>
-	<string>Agent presets, live status, and control</string>
 	<key>Agent skill</key>
 	<string>Agent skill</string>
 	<key>Agents</key>
@@ -144,8 +142,6 @@
 	<string>Block</string>
 	<key>Blur: %lld</key>
 	<string>Blur: %lld</string>
-	<key>Both optional. The flag powers the agent’s “Skip permission prompts” switch; leave it empty if the CLI has none. The directory receives termio’s session-control skill (as `&lt;dir&gt;/termio`); leave it empty to skip installing one.</key>
-	<string>Both optional. The flag powers the agent’s “Skip permission prompts” switch; leave it empty if the CLI has none. The directory receives termio’s session-control skill (as `&lt;dir&gt;/termio`); leave it empty to skip installing one.</string>
 	<key>Branch</key>
 	<string>Branch</string>
 	<key>Bring All to Front</key>
@@ -326,10 +322,12 @@
 	<string>Done</string>
 	<key>Draft</key>
 	<string>Draft</string>
+	<key>Drag the list to change the order agents appear in.</key>
+	<string>Drag the list to change the order agents appear in.</string>
 	<key>Edit</key>
 	<string>Edit</string>
-	<key>Edit Agent</key>
-	<string>Edit Agent</string>
+	<key>Edit Manifest</key>
+	<string>Edit Manifest</string>
 	<key>Edit in Config</key>
 	<string>Edit in Config</string>
 	<key>Edit source</key>
@@ -832,8 +830,6 @@
 	<string>Skill reinstalled</string>
 	<key>Skip permission prompts</key>
 	<string>Skip permission prompts</string>
-	<key>Skip-permissions flag</key>
-	<string>Skip-permissions flag</string>
 	<key>Something else already owns %@.</key>
 	<string>Something else already owns %@.</string>
 	<key>Something went wrong loading this repository. Try again in a moment.</key>
@@ -904,10 +900,8 @@
 	<string>Test Connection</string>
 	<key>The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.</key>
 	<string>The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.</string>
-	<key>The agents in the list are offered when starting a new session, in that order — drag to reorder, select one to configure it.</key>
-	<string>The agents in the list are offered when starting a new session, in that order — drag to reorder, select one to configure it.</string>
-	<key>The command is run in a login shell, so anything on your PATH works.</key>
-	<string>The command is run in a login shell, so anything on your PATH works.</string>
+	<key>The coding agents offered when you start a session</key>
+	<string>The coding agents offered when you start a session</string>
 	<key>The folder was removed, but git couldn’t prune its stale worktree metadata.</key>
 	<string>The folder was removed, but git couldn’t prune its stale worktree metadata.</string>
 	<key>The ignore rule couldn’t be added.</key>

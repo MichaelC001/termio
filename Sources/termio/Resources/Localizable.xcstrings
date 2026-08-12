@@ -3111,16 +3111,6 @@
         }
       }
     },
-    "The agents in the list are offered when starting a new session, in that order — drag to reorder, select one to configure it.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "新建会话时按此顺序提供列表中的 Agent。拖动可重新排序，选中可进行配置。"
-          }
-        }
-      }
-    },
     "%@ isn’t on your PATH": {
       "localizations": {
         "zh-Hans": {
@@ -3341,26 +3331,6 @@
         }
       }
     },
-    "Edit Agent": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "编辑 Agent"
-          }
-        }
-      }
-    },
-    "The command is run in a login shell, so anything on your PATH works.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "命令在登录 shell 中运行，PATH 中的任何命令都可用。"
-          }
-        }
-      }
-    },
     "Icon": {
       "localizations": {
         "zh-Hans": {
@@ -3377,26 +3347,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "SF Symbol 名称"
-          }
-        }
-      }
-    },
-    "Skip-permissions flag": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "跳过权限标志"
-          }
-        }
-      }
-    },
-    "Both optional. The flag powers the agent’s “Skip permission prompts” switch; leave it empty if the CLI has none. The directory receives termio’s session-control skill (as `<dir>/termio`); leave it empty to skip installing one.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "两项均为可选。该标志用于 Agent 的“跳过权限确认”开关；若 CLI 没有此标志请留空。该目录用于接收 Termio 的会话控制技能（安装为 `<dir>/termio`）；留空则不安装。"
           }
         }
       }
@@ -3617,16 +3567,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "所有命令的快捷键"
-          }
-        }
-      }
-    },
-    "Agent presets, live status, and control": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Agent 预设、实时状态与控制"
           }
         }
       }
@@ -5263,6 +5203,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "字体"
+          }
+        }
+      }
+    },
+    "The coding agents offered when you start a session": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建会话时可以选用的编程 Agent"
+          }
+        }
+      }
+    },
+    "Drag the list to change the order agents appear in.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拖动列表可以调整 Agent 出现的顺序。"
+          }
+        }
+      }
+    },
+    "Edit Manifest": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑清单"
           }
         }
       }
