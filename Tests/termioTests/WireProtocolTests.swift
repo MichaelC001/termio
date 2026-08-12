@@ -1,3 +1,4 @@
+@testable import termio
 import TermioShared
 import XCTest
 
@@ -152,5 +153,26 @@ final class WireProtocolTests: XCTestCase {
 
         XCTAssertNotEqual(CompanionControl.decode(unsupported.encoded()), .startTerminal)
         XCTAssertEqual(CompanionControl.decode(unsupported.encoded()), unsupported)
+    }
+
+    /// The tag reaches a `.public` log field and a paired phone picks it, so a
+    /// newline in it would forge a log line and a long one would bury its
+    /// neighbours.
+    func testLoggableTagCannotForgeALogLine() {
+        let forged = CompanionServer.loggableTag("secret-value\nmisleading log text")
+
+        XCTAssertFalse(forged.contains("\n"))
+        XCTAssertFalse(forged.contains(" "))
+        XCTAssertEqual(forged, "secret-value?misleading?log?text")
+    }
+
+    func testLoggableTagIsBounded() {
+        XCTAssertEqual(CompanionServer.loggableTag(String(repeating: "a", count: 500)).count, 40)
+    }
+
+    func testLoggableTagKeepsRealTagsReadable() {
+        XCTAssertEqual(CompanionServer.loggableTag("startTerminal"), "startTerminal")
+        XCTAssertEqual(CompanionServer.loggableTag("read-file_v2.1"), "read-file_v2.1")
+        XCTAssertEqual(CompanionServer.loggableTag(""), "(empty)")
     }
 }
