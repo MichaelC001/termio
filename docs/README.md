@@ -78,6 +78,7 @@ from the real front matter).
 | draft | design | [分享 Agent 会话（带密码的实时分享链接）](design/session-share.md) |
 | draft | design | [调研：下一批 AgentAdapter 的落盘格式（OpenCode / Pi / Amp / Cursor / Kimi）](design/agent-transcript-survey.md) |
 | draft | design | ["Markdown preview — Apple-grade reading typography"](design/markdown-preview-reading-typography.md) |
+| draft | design | [Agent Plugins](design/agent-plugins.md) |
 | draft | design | [Browser Control over CDP](design/browser-cdp.md) |
 | draft | design | [Device Architecture — one server per device, every UI a client](design/termiod-device-architecture.md) |
 | draft | design | [Hot path, attach join point, and client classes](design/termiod-hot-path-and-client-classes.md) |
