@@ -133,7 +133,7 @@ struct TraceView: View {
     @ViewBuilder private var content: some View {
         Group {
             if let html {
-                TraceWebView(html: html, background: settings.terminalBackgroundColor)
+                TraceWebView(html: html)
             } else if let loadError {
                 ContentUnavailableView("Couldn’t build the trace", huge: .bot, description: Text(loadError))
             } else {
@@ -171,7 +171,6 @@ struct TraceView: View {
 /// during load, avoiding a white flash before the themed page paints.
 private struct TraceWebView: NSViewRepresentable {
     let html: String
-    let background: NSColor
 
     func makeNSView(context: Context) -> WKWebView {
         // PreviewWebView: right-click stripped to Copy — the rendered trace is

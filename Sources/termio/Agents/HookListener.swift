@@ -311,28 +311,17 @@ enum AgentStatusHooks {
         }
         // Stamp the build version as a trailing shell comment (ignored at runtime): the
         // command string changes each release, so the idempotent `write()` re-installs the
-        // hook on the first launch after an upgrade, and `installedVersion` can read it back.
+        // hook on the first launch after an upgrade.
         command += " \(hookVersionComment)"
         return command
     }
 
-    /// Marker + version stamped into every installed hook (`# termio-hooks v0.21.0`);
-    /// the marker is the anchor `installedVersion` scans for.
+    /// Marker + version stamped into every installed hook (`# termio-hooks v0.21.0`).
     static let hookVersionMarker = "# termio-hooks v"
     static var appVersion: String {
         (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0"
     }
     static var hookVersionComment: String { "\(hookVersionMarker)\(appVersion)" }
-
-    /// The termio-hooks version stamped in a host hooks file, or `nil` if none is present —
-    /// so a caller can tell current from stale from not-installed.
-    static func installedVersion(inFileAt url: URL) -> String? {
-        guard let text = try? String(contentsOf: url, encoding: .utf8),
-              let range = text.range(of: hookVersionMarker) else { return nil }
-        let tail = text[range.upperBound...]
-        let version = tail.prefix { !$0.isWhitespace && $0 != "\"" && $0 != "\\" }
-        return version.isEmpty ? nil : String(version)
-    }
 
     /// Absolute path to this channel's stable `termio`/`termio-dev` CLI copy under
     /// Application Support (see `CommandLineTool.supportCopyURL`), stamped into each
@@ -391,7 +380,6 @@ private struct JSONHookFile: AgentStatusInstaller {
     /// tool events (the shape it expects) and `nil` everywhere else — Codex treats
     /// a missing matcher as "match every occurrence".
     let events: [AgentHookEvent]
-    let label: String
     /// Whether this agent's hooks pass a JSON payload on stdin we can mine for the
     /// session's `transcript_path`. Only enabled for agents verified to always
     /// supply stdin (Claude Code, Codex), so the capturing `cat` can't block.
@@ -426,7 +414,6 @@ private struct JSONHookFile: AgentStatusInstaller {
         return JSONHookFile(
             url: url,
             events: spec.events,
-            label: id,
             capturesTranscript: spec.capturesTranscript,
             conversationField: spec.conversation,
             toolField: spec.tool,

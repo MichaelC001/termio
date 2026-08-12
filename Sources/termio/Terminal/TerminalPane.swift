@@ -153,7 +153,6 @@ struct TerminalPane: View {
                 // ungrouped session has no split geometry and fills the pane.
                 let rect = zoomed && isSelected ? bounds : (paneFrames[id] ?? bounds)
                 ManagedTerminalSurface(
-                    id: id,
                     context: store.surface(for: item.session, in: item.project),
                     isSelected: isSelected,
                     isVisible: isVisible,
@@ -389,7 +388,6 @@ private enum TerminalFocusReason {
 /// focus is handled from AppKit by TerminalFocusDriver, never by waiting for this value
 /// to transition through nil.
 private struct ManagedTerminalSurface: View {
-    let id: Session.ID
     let context: TerminalViewState
     let isSelected: Bool
     let isVisible: Bool

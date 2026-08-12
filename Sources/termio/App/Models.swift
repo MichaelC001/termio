@@ -120,7 +120,6 @@ enum AgentIcon: Hashable {
 /// with iOS); these aliases keep the app's unqualified references compiling.
 typealias HugeIcon = TermioShared.HugeIcon
 typealias HugeIconView = TermioShared.HugeIconView
-typealias HugeIconShape = TermioShared.HugeIconShape
 
 /// GitHub's Octicons for issue/PR state, shared with iOS from `TermioShared`.
 typealias StateOcticon = TermioShared.StateOcticon

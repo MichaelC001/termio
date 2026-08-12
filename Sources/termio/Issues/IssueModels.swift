@@ -93,8 +93,6 @@ struct IssueLabel: Hashable, Sendable {
 struct IssueContainer: Hashable, Sendable {
     let provider: IssueProviderID
     let id: String
-
-    var displayName: String { id }
 }
 
 /// The list request: which kind, and the light filters the top bar offers.
@@ -116,7 +114,6 @@ struct IssueSummary: Identifiable, Hashable, Sendable {
     let state: IssueItemState
     let labels: [IssueLabel]
     let author: String
-    let commentCount: Int
     let updatedAt: Date
     let url: URL?
 
@@ -139,14 +136,6 @@ struct IssueDetail: Equatable, Sendable {
     let authorAvatarURL: URL?
     let createdAt: Date
     let comments: [IssueComment]
-}
-
-/// The branch facts Checkout needs from a pull request — which head ref to fetch,
-/// and whether it lives in a fork (a fork's branch is only reachable through the
-/// `refs/pull/N/head` ref).
-struct PullRequestGitInfo: Equatable, Sendable {
-    let headRef: String
-    let crossRepository: Bool
 }
 
 /// One PR file with its unified-diff `patch` straight from the GitHub API — the Files

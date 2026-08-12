@@ -45,12 +45,6 @@ struct TreeHeaderButton: View {
         self.action = action
     }
 
-    init(symbol: String, help: String, action: @escaping () -> Void) {
-        self.source = .symbol(symbol)
-        self.help = help
-        self.action = action
-    }
-
     init(huge: HugeIcon, help: String, action: @escaping () -> Void) {
         self.source = .huge(huge)
         self.help = help

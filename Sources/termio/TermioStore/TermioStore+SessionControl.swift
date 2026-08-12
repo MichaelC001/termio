@@ -236,7 +236,7 @@ extension TermioStore {
         switch resolveTarget(token, in: project) {
         case .found(let session):
             let state = surface(for: session, in: project)
-            return await deliver(payload, to: session, state: state, request: request, in: project)
+            return await deliver(payload, to: session, state: state, request: request)
         case .notFound:
             return controlError(request, "not_found", targetNotFoundMessage(request.target))
         case .ambiguous:
@@ -355,7 +355,7 @@ extension TermioStore {
     /// turn settles and reports the outcome plus the transcript range it landed in.
     private func deliver(
         _ payload: String, to session: Session, state: TerminalViewState,
-        request: ControlRequest, in project: Project
+        request: ControlRequest
     ) async -> Data {
         guard await performDelivery(payload, to: session, state: state) else {
             return controlError(request, "not_live",

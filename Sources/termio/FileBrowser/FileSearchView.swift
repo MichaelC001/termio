@@ -13,7 +13,6 @@ struct FileSearchView: View {
 
     /// The project (or worktree) root the search runs under.
     let rootURL: URL
-    let font: Font
     /// Leaves the pane (back to the Files tab) — Esc in an empty field.
     let onDismiss: () -> Void
     /// Opens a hit in the editor at its 1-based line.

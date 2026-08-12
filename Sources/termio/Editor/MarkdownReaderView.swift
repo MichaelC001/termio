@@ -43,7 +43,6 @@ struct MarkdownReaderView: View {
             html: MermaidRenderer.applying(drawn, to: document),
             baseURL: fileURL.deletingLastPathComponent(),
             fileURL: fileURL,
-            background: settings.terminalBackgroundColor,
             addToChat: addToChat,
             canAddToChat: canAddToChat
         )
@@ -69,7 +68,6 @@ private struct MarkdownReaderWebView: NSViewRepresentable {
     let html: String
     let baseURL: URL
     let fileURL: URL
-    let background: NSColor
     var addToChat: ((String?) -> Void)?
     var canAddToChat: (() -> Bool)?
 

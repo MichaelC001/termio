@@ -52,7 +52,7 @@ struct GitHubIssueProvider: IssueProvider {
         let raw: [RawIssue] = try await get(components.url!)
         return raw
             .filter { ($0.pullRequest != nil) == (query.kind == .pullRequest) }
-            .map { $0.summary(in: container) }
+            .map { $0.summary() }
     }
 
     func detail(_ number: Int, in container: IssueContainer) async throws -> IssueDetail {
@@ -61,7 +61,7 @@ struct GitHubIssueProvider: IssueProvider {
         async let rawComments: [RawComment] = get(URL(string: "\(base)/comments?per_page=100")!)
         let (issue, comments) = try await (rawIssue, rawComments)
         return IssueDetail(
-            summary: issue.summary(in: container),
+            summary: issue.summary(),
             bodyMarkdown: issue.body ?? "",
             authorAvatarURL: issue.user?.avatarUrl,
             createdAt: issue.createdAt,
@@ -91,27 +91,6 @@ struct GitHubIssueProvider: IssueProvider {
     }
 
     // MARK: Pull-request extras (GitHub-specific, outside the tracker protocol)
-
-    /// The PR's branch facts, from `/pulls/{n}` — the fields the `/issues` view of
-    /// a PR doesn't carry.
-    func pullRequestGitInfo(_ number: Int, in container: IssueContainer) async throws -> PullRequestGitInfo {
-        struct RawPR: Decodable {
-            struct Side: Decodable {
-                struct Repo: Decodable { let fullName: String }
-                let ref: String
-                let repo: Repo?
-            }
-            let head: Side
-            let base: Side
-        }
-        let raw: RawPR = try await get(
-            URL(string: "https://api.github.com/repos/\(container.id)/pulls/\(number)")!)
-        return PullRequestGitInfo(
-            headRef: raw.head.ref,
-            // A deleted fork leaves `head.repo` null — only the pull ref remains.
-            crossRepository: raw.head.repo?.fullName != raw.base.repo?.fullName
-        )
-    }
 
     /// The PR's changed files as `GitChange` rows (the git pane's own model) *with the
     /// diff inline*: the `/pulls/{n}/files` response already carries each file's unified
@@ -215,14 +194,13 @@ private struct RawIssue: Decodable {
     let body: String?
     let labels: [RawLabel]
     let user: RawUser?
-    let comments: Int?
     let createdAt: Date
     let updatedAt: Date
     let htmlUrl: URL?
     let draft: Bool?
     let pullRequest: RawPullRequest?
 
-    func summary(in container: IssueContainer) -> IssueSummary {
+    func summary() -> IssueSummary {
         let kind: IssueKind = pullRequest == nil ? .issue : .pullRequest
         let itemState: IssueItemState
         if state == "open" {
@@ -238,7 +216,6 @@ private struct RawIssue: Decodable {
             state: itemState,
             labels: labels.map { IssueLabel(name: $0.name, colorHex: $0.color ?? "") },
             author: user?.login ?? "ghost",
-            commentCount: comments ?? 0,
             updatedAt: updatedAt,
             url: htmlUrl
         )
