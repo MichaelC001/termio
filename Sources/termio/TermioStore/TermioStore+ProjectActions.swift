@@ -630,7 +630,8 @@ extension TermioStore {
     }
 
     /// The user-facing "Close Session": the same teardown as `closeSession`, but it
-    /// asks first when there is live work to lose. Only the interactive entry points
+    /// asks first in the one case that loses something with no other record — a plain
+    /// shell with a command running in front of it. Only the interactive entry points
     /// (the sidebar row, the terminal's context menu) route through here — a session
     /// whose process already exited, the `termio sessions close` CLI, and the phone's
     /// stop button all closed deliberately and call `closeSession` directly.
@@ -653,19 +654,14 @@ extension TermioStore {
         closeSession(id)
     }
 
-    /// Why closing this session needs confirming, or `nil` when it doesn't. Keyed on
-    /// what the session would actually *lose*, not on its attention status: a `done`
-    /// or `idle` agent still holds a whole conversation, and looking at a session is
-    /// enough to settle it back to `idle`, so status is the wrong safety signal. A
-    /// plain shell is the one free case — closing one parked at its prompt costs
-    /// nothing, which is the carve-out iTerm2 makes too.
+    /// Why closing this session needs confirming, or `nil` when it doesn't. The only
+    /// case left is a plain shell with a command in front of it: that command exists
+    /// nowhere else, so closing loses it outright. Agent sessions never ask — their
+    /// PTY is alive for the whole life of the session, so confirming on a live PTY
+    /// taxed *every* close to protect a conversation the agent can resume anyway.
     private func closeConfirmationReason(for session: Session) -> String? {
-        guard let pty = ptyProcesses[session.id], pty.isAlive else { return nil }
-        guard session.agent.isShell else {
-            return "\(session.agent.displayName) is running in this session. "
-                + "Closing it ends the conversation and stops the process."
-        }
-        guard pty.hasForegroundJob else { return nil }
+        guard session.agent.isShell else { return nil }
+        guard let pty = ptyProcesses[session.id], pty.hasForegroundJob else { return nil }
         return "A command is still running in this session. Closing it stops the command."
     }
 
