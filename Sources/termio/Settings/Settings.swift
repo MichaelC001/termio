@@ -71,7 +71,31 @@ enum ProjectSortOrder: String, CaseIterable, Identifiable {
 /// to already-open terminals.
 @MainActor
 final class AppSettings: ObservableObject {
+    /// State and consent live here: the recent-project list, the last agent a
+    /// chat used, whether the session-control prompt has been answered, and the
+    /// Usage tab's per-agent authorizations. None of it is a preference a user
+    /// would hand-edit or carry to another machine.
     private let defaults: UserDefaults
+    /// Preferences live here, in `settings.json`. See `SettingsStore` for why the
+    /// file holds only what the user actually chose.
+    private let store: SettingsStore
+
+    /// The keys `settings.json` owns — everything in `Key` except the state and
+    /// consent above, plus `themeName`, which exists only to migrate pre-split
+    /// installs into the light/dark pair.
+    private static let fileManagedKeys: Set<String> = [
+        Key.fontFamily, Key.fontSize, Key.fontThicken, Key.codeLineHeight,
+        Key.appearanceMode, Key.lightThemeName, Key.darkThemeName,
+        Key.cursorStyle, Key.cursorBlink, Key.windowPadding,
+        Key.backgroundOpacity, Key.backgroundBlur,
+        Key.scrollbackMegabytes, Key.copyOnSelect,
+        Key.interfaceFontFamily, Key.interfaceFontSize, Key.interfaceRowPadding,
+        Key.agentCommands, Key.bypassPermissionAgents, Key.disabledAgents,
+        Key.addedAgents, Key.agentOrder, Key.agentHooksEnabled,
+        Key.sessionControlEnabled, Key.githubIntegrationEnabled,
+        Key.notifyTaskCompletion, Key.notificationSound,
+        Key.projectSortOrder, Key.defaultChatAgent,
+    ]
 
     private enum Key {
         static let fontFamily = "appearance.fontFamily"
@@ -127,36 +151,36 @@ final class AppSettings: ObservableObject {
     /// as used by Xcode/Terminal). Empty means "let libghostty pick its default
     /// monospace", so we never force a face the user doesn't have installed.
     @Published var fontFamily: String {
-        didSet { defaults.set(fontFamily, forKey: Key.fontFamily) }
+        didSet { store.set(fontFamily, forKey: Key.fontFamily) }
     }
 
     @Published var fontSize: Double {
-        didSet { defaults.set(fontSize, forKey: Key.fontSize) }
+        didSet { store.set(fontSize, forKey: Key.fontSize) }
     }
 
     /// Synthesizes a heavier weight by drawing glyphs slightly thicker — a small
     /// readability win on long agent transcripts.
     @Published var fontThicken: Bool {
-        didSet { defaults.set(fontThicken, forKey: Key.fontThicken) }
+        didSet { store.set(fontThicken, forKey: Key.fontThicken) }
     }
 
     /// Line height for the file editor and diffs, as a multiple of the font size
     /// (VS Code's model). The terminal grid is ghostty's own and is unaffected.
     @Published var codeLineHeight: Double {
-        didSet { defaults.set(codeLineHeight, forKey: Key.codeLineHeight) }
+        didSet { store.set(codeLineHeight, forKey: Key.codeLineHeight) }
     }
 
     /// Whether termio follows the system appearance or pins itself to light or
     /// dark. `App` applies this as an `NSAppearance`; the terminal's light/dark
     /// theme pair then follows the resulting effective appearance.
     @Published var appearanceMode: AppearanceMode {
-        didSet { defaults.set(appearanceMode.rawValue, forKey: Key.appearanceMode) }
+        didSet { store.set(appearanceMode.rawValue, forKey: Key.appearanceMode) }
     }
 
     /// How the sidebar orders projects (pinned always first; see `ProjectSortOrder`).
     /// Driven by the sort menu in the sidebar's toolbar.
     @Published var projectSortOrder: ProjectSortOrder {
-        didSet { defaults.set(projectSortOrder.rawValue, forKey: Key.projectSortOrder) }
+        didSet { store.set(projectSortOrder.rawValue, forKey: Key.projectSortOrder) }
     }
 
     /// Folders the user has opened, most-recent first, so the welcome page's
@@ -184,7 +208,7 @@ final class AppSettings: ObservableObject {
     /// it so ⌘N always starts that one. Resolved by `TermioStore.defaultChatAgent`,
     /// which also falls back gracefully when the pinned agent is later disabled.
     @Published var defaultChatAgentID: String? {
-        didSet { defaults.set(defaultChatAgentID, forKey: Key.defaultChatAgent) }
+        didSet { store.set(defaultChatAgentID, forKey: Key.defaultChatAgent) }
     }
 
     /// The most a project can be opened is capped so the Recent column stays a
@@ -208,42 +232,42 @@ final class AppSettings: ObservableObject {
     /// and `darkThemeName` automatically as the system appearance changes. Resolved
     /// against `GhosttyThemeCatalog` in `TermioStore`.
     @Published var lightThemeName: String {
-        didSet { defaults.set(lightThemeName, forKey: Key.lightThemeName) }
+        didSet { store.set(lightThemeName, forKey: Key.lightThemeName) }
     }
 
     /// Name of the Ghostty bundled theme used while macOS is in dark mode, or empty
     /// for termio's default dark canvas. Counterpart to `lightThemeName`.
     @Published var darkThemeName: String {
-        didSet { defaults.set(darkThemeName, forKey: Key.darkThemeName) }
+        didSet { store.set(darkThemeName, forKey: Key.darkThemeName) }
     }
 
     /// Cursor shape. The app-side `CursorStyle` keeps this type free of
     /// terminal-core types while staying type-safe end to end; it persists as its
     /// raw token and `TermioStore` maps it to libghostty.
     @Published var cursorStyle: CursorStyle {
-        didSet { defaults.set(cursorStyle.rawValue, forKey: Key.cursorStyle) }
+        didSet { store.set(cursorStyle.rawValue, forKey: Key.cursorStyle) }
     }
 
     @Published var cursorBlink: Bool {
-        didSet { defaults.set(cursorBlink, forKey: Key.cursorBlink) }
+        didSet { store.set(cursorBlink, forKey: Key.cursorBlink) }
     }
 
     /// Inset (points) between the terminal grid and the window edge, applied on
     /// both axes. Comfort spacing so agent output doesn't run into the chrome.
     @Published var windowPadding: Int {
-        didSet { defaults.set(windowPadding, forKey: Key.windowPadding) }
+        didSet { store.set(windowPadding, forKey: Key.windowPadding) }
     }
 
     /// Terminal background alpha (0.2–1.0). Below 1.0 the window goes non-opaque
     /// so the desktop shows through; 1.0 keeps the normal solid look.
     @Published var backgroundOpacity: Double {
-        didSet { defaults.set(backgroundOpacity, forKey: Key.backgroundOpacity) }
+        didSet { store.set(backgroundOpacity, forKey: Key.backgroundOpacity) }
     }
 
     /// Blur radius applied behind a translucent background (0 = off). Only visible
     /// when `backgroundOpacity` is below 1.0.
     @Published var backgroundBlur: Int {
-        didSet { defaults.set(backgroundBlur, forKey: Key.backgroundBlur) }
+        didSet { store.set(backgroundBlur, forKey: Key.backgroundBlur) }
     }
 
     // MARK: Terminal
@@ -251,12 +275,12 @@ final class AppSettings: ObservableObject {
     /// Scrollback buffer size in megabytes. Agents emit a lot of output, so the
     /// default history is generous; capped to keep memory bounded.
     @Published var scrollbackMegabytes: Int {
-        didSet { defaults.set(scrollbackMegabytes, forKey: Key.scrollbackMegabytes) }
+        didSet { store.set(scrollbackMegabytes, forKey: Key.scrollbackMegabytes) }
     }
 
     /// When on, selecting text copies it straight to the system clipboard.
     @Published var copyOnSelect: Bool {
-        didSet { defaults.set(copyOnSelect, forKey: Key.copyOnSelect) }
+        didSet { store.set(copyOnSelect, forKey: Key.copyOnSelect) }
     }
 
     // MARK: Interface
@@ -265,17 +289,17 @@ final class AppSettings: ObservableObject {
     /// means the system UI font. Unlike the terminal font this need not be
     /// monospaced.
     @Published var interfaceFontFamily: String {
-        didSet { defaults.set(interfaceFontFamily, forKey: Key.interfaceFontFamily) }
+        didSet { store.set(interfaceFontFamily, forKey: Key.interfaceFontFamily) }
     }
 
     @Published var interfaceFontSize: Double {
-        didSet { defaults.set(interfaceFontSize, forKey: Key.interfaceFontSize) }
+        didSet { store.set(interfaceFontSize, forKey: Key.interfaceFontSize) }
     }
 
     /// Vertical padding (points) on each sidebar row — the VSCode-style density
     /// control, from compact to roomy.
     @Published var interfaceRowPadding: Double {
-        didSet { defaults.set(interfaceRowPadding, forKey: Key.interfaceRowPadding) }
+        didSet { store.set(interfaceRowPadding, forKey: Key.interfaceRowPadding) }
     }
 
     // MARK: Agents
@@ -284,7 +308,7 @@ final class AppSettings: ObservableObject {
     /// the user run, say, `claude --dangerously-skip-permissions` instead of the
     /// built-in default. An empty/whitespace value is treated as "no override".
     @Published var agentCommandOverrides: [String: String] {
-        didSet { defaults.set(agentCommandOverrides, forKey: Key.agentCommands) }
+        didSet { store.set(agentCommandOverrides, forKey: Key.agentCommands) }
     }
 
     /// Agents whose permission/approval prompts should be bypassed, by `rawValue`.
@@ -292,13 +316,13 @@ final class AppSettings: ObservableObject {
     /// resolved command (see `command(for:)`). Opt-in and stored as the on-set so
     /// the default (nothing stored) means every agent keeps its prompts.
     @Published var bypassPermissionAgents: Set<String> {
-        didSet { defaults.set(Array(bypassPermissionAgents), forKey: Key.bypassPermissionAgents) }
+        didSet { store.set(Array(bypassPermissionAgents), forKey: Key.bypassPermissionAgents) }
     }
 
     /// Agent presets hidden from the sidebar quick-add row, by `rawValue`. Stored
     /// as the disabled set so the default (nothing stored) means "all enabled".
     @Published var disabledAgents: Set<String> {
-        didSet { defaults.set(Array(disabledAgents), forKey: Key.disabledAgents) }
+        didSet { store.set(Array(disabledAgents), forKey: Key.disabledAgents) }
     }
 
     /// Agents pinned to the Agents settings list even while switched off, by
@@ -307,7 +331,7 @@ final class AppSettings: ObservableObject {
     /// flips in here, so switching one off leaves its row in place — only
     /// `removeAgent` drops a row back into the menu.
     @Published var addedAgents: Set<String> {
-        didSet { defaults.set(Array(addedAgents), forKey: Key.addedAgents) }
+        didSet { store.set(Array(addedAgents), forKey: Key.addedAgents) }
     }
 
     /// The user's own agent arrangement, as an ordered list of `rawValue`s — the
@@ -318,7 +342,7 @@ final class AppSettings: ObservableObject {
     /// after ranked ones; Terminal is always pinned first regardless (see
     /// `orderedAgents`).
     @Published var agentOrder: [String] {
-        didSet { defaults.set(agentOrder, forKey: Key.agentOrder) }
+        didSet { store.set(agentOrder, forKey: Key.agentOrder) }
     }
 
     /// When on, termio installs Claude Code hooks (into `~/.claude/settings.json`)
@@ -328,7 +352,7 @@ final class AppSettings: ObservableObject {
     /// off removes termio's entries again. The `TermioStore` watches this and
     /// installs/uninstalls to match.
     @Published var agentHooksEnabled: Bool {
-        didSet { defaults.set(agentHooksEnabled, forKey: Key.agentHooksEnabled) }
+        didSet { store.set(agentHooksEnabled, forKey: Key.agentHooksEnabled) }
     }
 
     /// When on, termio runs a local control socket the `termio sessions` CLI talks
@@ -338,7 +362,7 @@ final class AppSettings: ObservableObject {
     /// user-level agent instruction files; turning it off removes that note. The
     /// `TermioStore` watches this and installs/uninstalls to match.
     @Published var sessionControlEnabled: Bool {
-        didSet { defaults.set(sessionControlEnabled, forKey: Key.sessionControlEnabled) }
+        didSet { store.set(sessionControlEnabled, forKey: Key.sessionControlEnabled) }
     }
 
     /// Whether the one-time "let your agents coordinate?" prompt has been shown, so
@@ -353,7 +377,7 @@ final class AppSettings: ObservableObject {
     /// pane additionally only appears for projects whose origin remote points at
     /// github.com, so this switch is for opting out of GitHub entirely.
     @Published var githubIntegrationEnabled: Bool {
-        didSet { defaults.set(githubIntegrationEnabled, forKey: Key.githubIntegrationEnabled) }
+        didSet { store.set(githubIntegrationEnabled, forKey: Key.githubIntegrationEnabled) }
     }
 
     /// Agents whose usage data the user has allowed termio to read, by `rawValue`.
@@ -382,12 +406,12 @@ final class AppSettings: ObservableObject {
     /// what triggers the standard macOS permission prompt (see
     /// `TaskNotificationCenter`).
     @Published var notifyOnTaskCompletion: Bool {
-        didSet { defaults.set(notifyOnTaskCompletion, forKey: Key.notifyTaskCompletion) }
+        didSet { store.set(notifyOnTaskCompletion, forKey: Key.notifyTaskCompletion) }
     }
 
     /// Whether those notifications also play the system alert sound.
     @Published var notificationSoundEnabled: Bool {
-        didSet { defaults.set(notificationSoundEnabled, forKey: Key.notificationSound) }
+        didSet { store.set(notificationSoundEnabled, forKey: Key.notificationSound) }
     }
 
     /// Resolves a Ghostty theme name against the bundled catalog, tolerating the naming drift
@@ -434,8 +458,9 @@ final class AppSettings: ObservableObject {
         return overrides
     }
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, settingsStore: SettingsStore? = nil) {
         self.defaults = defaults
+        self.store = settingsStore ?? SettingsStore(defaults: defaults)
 
         // One-time migration: older installs persisted a single `themeName` that
         // applied to both appearances. Seed the new split keys from it before the
@@ -447,6 +472,12 @@ final class AppSettings: ObservableObject {
             defaults.set(legacyTheme, forKey: Key.lightThemeName)
             defaults.set(legacyTheme, forKey: Key.darkThemeName)
         }
+
+        // Carry an existing install's own choices into `settings.json` before
+        // anything below writes a shipped default into the same domain. The
+        // persistent domain is exactly what the user picked, so a fresh install
+        // has nothing to carry and gets no file until it changes something.
+        self.store.migrateIfNeeded(managing: Self.fileManagedKeys)
 
         // First-run default: ship focused. Only Claude Code and Codex (plus the plain
         // Terminal) are enabled out of the box; the long tail of agents is hidden from
@@ -504,40 +535,40 @@ final class AppSettings: ObservableObject {
 
         defaults.register(defaults: registered)
 
-        fontFamily = defaults.string(forKey: Key.fontFamily) ?? ""
-        fontSize = defaults.double(forKey: Key.fontSize)
-        fontThicken = defaults.bool(forKey: Key.fontThicken)
-        codeLineHeight = defaults.double(forKey: Key.codeLineHeight)
-        appearanceMode = defaults.string(forKey: Key.appearanceMode).flatMap(AppearanceMode.init) ?? .system
-        lightThemeName = defaults.string(forKey: Key.lightThemeName) ?? ""
-        darkThemeName = defaults.string(forKey: Key.darkThemeName) ?? ""
-        cursorStyle = defaults.string(forKey: Key.cursorStyle).flatMap(CursorStyle.init) ?? .block
-        cursorBlink = defaults.bool(forKey: Key.cursorBlink)
-        windowPadding = defaults.integer(forKey: Key.windowPadding)
-        backgroundOpacity = defaults.double(forKey: Key.backgroundOpacity)
-        backgroundBlur = defaults.integer(forKey: Key.backgroundBlur)
-        scrollbackMegabytes = defaults.integer(forKey: Key.scrollbackMegabytes)
-        copyOnSelect = defaults.bool(forKey: Key.copyOnSelect)
-        interfaceFontFamily = defaults.string(forKey: Key.interfaceFontFamily) ?? ""
-        interfaceFontSize = defaults.double(forKey: Key.interfaceFontSize)
-        interfaceRowPadding = defaults.double(forKey: Key.interfaceRowPadding)
-        agentCommandOverrides = defaults.dictionary(forKey: Key.agentCommands) as? [String: String] ?? [:]
-        bypassPermissionAgents = Set(defaults.stringArray(forKey: Key.bypassPermissionAgents) ?? [])
-        disabledAgents = Set(defaults.stringArray(forKey: Key.disabledAgents) ?? [])
-        addedAgents = Set(defaults.stringArray(forKey: Key.addedAgents) ?? [])
-        agentOrder = defaults.stringArray(forKey: Key.agentOrder) ?? []
-        agentHooksEnabled = defaults.bool(forKey: Key.agentHooksEnabled)
-        sessionControlEnabled = defaults.bool(forKey: Key.sessionControlEnabled)
-        githubIntegrationEnabled = defaults.bool(forKey: Key.githubIntegrationEnabled)
+        fontFamily = store.string(Key.fontFamily) ?? ""
+        fontSize = store.double(Key.fontSize)
+        fontThicken = store.bool(Key.fontThicken)
+        codeLineHeight = store.double(Key.codeLineHeight)
+        appearanceMode = store.string(Key.appearanceMode).flatMap(AppearanceMode.init) ?? .system
+        lightThemeName = store.string(Key.lightThemeName) ?? ""
+        darkThemeName = store.string(Key.darkThemeName) ?? ""
+        cursorStyle = store.string(Key.cursorStyle).flatMap(CursorStyle.init) ?? .block
+        cursorBlink = store.bool(Key.cursorBlink)
+        windowPadding = store.integer(Key.windowPadding)
+        backgroundOpacity = store.double(Key.backgroundOpacity)
+        backgroundBlur = store.integer(Key.backgroundBlur)
+        scrollbackMegabytes = store.integer(Key.scrollbackMegabytes)
+        copyOnSelect = store.bool(Key.copyOnSelect)
+        interfaceFontFamily = store.string(Key.interfaceFontFamily) ?? ""
+        interfaceFontSize = store.double(Key.interfaceFontSize)
+        interfaceRowPadding = store.double(Key.interfaceRowPadding)
+        agentCommandOverrides = store.stringDictionary(Key.agentCommands) ?? [:]
+        bypassPermissionAgents = Set(store.stringArray(Key.bypassPermissionAgents) ?? [])
+        disabledAgents = Set(store.stringArray(Key.disabledAgents) ?? [])
+        addedAgents = Set(store.stringArray(Key.addedAgents) ?? [])
+        agentOrder = store.stringArray(Key.agentOrder) ?? []
+        agentHooksEnabled = store.bool(Key.agentHooksEnabled)
+        sessionControlEnabled = store.bool(Key.sessionControlEnabled)
+        githubIntegrationEnabled = store.bool(Key.githubIntegrationEnabled)
         usageAuthorizedAgents = Set(defaults.stringArray(forKey: Key.usageAuthorizedAgents) ?? [])
         claudeKeychainDeclined = defaults.bool(forKey: Key.claudeKeychainDeclined)
-        notifyOnTaskCompletion = defaults.bool(forKey: Key.notifyTaskCompletion)
-        notificationSoundEnabled = defaults.bool(forKey: Key.notificationSound)
-        projectSortOrder = defaults.string(forKey: Key.projectSortOrder).flatMap(ProjectSortOrder.init) ?? .name
+        notifyOnTaskCompletion = store.bool(Key.notifyTaskCompletion)
+        notificationSoundEnabled = store.bool(Key.notificationSound)
+        projectSortOrder = store.string(Key.projectSortOrder).flatMap(ProjectSortOrder.init) ?? .name
         recentProjects = defaults.data(forKey: Key.recentProjects)
             .flatMap { try? JSONDecoder().decode([RecentProject].self, from: $0) } ?? []
         lastChatAgentID = defaults.string(forKey: Key.lastChatAgent)
-        defaultChatAgentID = defaults.string(forKey: Key.defaultChatAgent)
+        defaultChatAgentID = store.string(Key.defaultChatAgent)
     }
 
     /// Effective command for an agent: the user's override if it's non-empty,
