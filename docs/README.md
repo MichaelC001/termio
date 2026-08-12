@@ -34,7 +34,6 @@ from the real front matter).
 <!-- BEGIN docs-index -->
 | status | type | title |
 | --- | --- | --- |
-|  |  | [](talks/shaogefenhao-20260725/shaogefenhao-ai-product-termio.md) |
 | active | backlog | [Backlog](backlog/backlog.md) |
 | active | bug | [iOS libghostty "non-functional" panel + surface-teardown crash — fix journey](bug/ios-ghostty-renderer-panic-and-teardown-uaf.md) |
 | active | design | ["Issue tracker 集成：inspector Issues tab（GitHub / Linear，per-project provider）"](design/issue-tracker-integration.md) |
