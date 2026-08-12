@@ -208,6 +208,7 @@ struct GitDiffView: View {
                 document: document,
                 styled: styledLines,
                 font: settings.resolvedTerminalFont(),
+                thickenGlyphs: settings.fontThicken,
                 backgroundColor: settings.terminalBackgroundColor,
                 numberColor: settings.gutterInk(for: colorScheme),
                 onExpand: { anchor, direction in
