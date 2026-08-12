@@ -41,9 +41,14 @@ const faqs: { question: string; answer: string }[] = [
       "Yes. Termio is local-only: no telemetry, no cloud sync, and no account is needed to start. Your repositories, agent output and sessions never leave your machine.",
   },
   {
+    question: "Is Termio available in my language?",
+    answer:
+      "Termio and the iPhone companion ship in English and Simplified Chinese. The app follows your macOS language; Settings → General pins one if you'd rather choose.",
+  },
+  {
     question: "What are the requirements?",
     answer:
-      "macOS 14 or later, Apple Silicon. Termio is a native app built for Apple Silicon Macs. You bring your own agent CLIs and their API keys.",
+      "macOS 14 or later, on Apple silicon or Intel — Termio ships as a universal binary, so the same download runs natively on both. You bring your own agent CLIs and their API keys.",
   },
 ];
 

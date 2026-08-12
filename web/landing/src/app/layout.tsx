@@ -22,6 +22,7 @@ export const metadata: Metadata = {
     "Codex",
     "git worktree",
     "Apple Silicon",
+    "Intel Mac",
   ],
   applicationName: "Termio",
   alternates: {
