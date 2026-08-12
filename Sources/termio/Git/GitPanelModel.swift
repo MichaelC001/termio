@@ -55,13 +55,15 @@ final class GitPanelModel: ObservableObject {
     /// named like a build product must not go deaf to every event. A repo that
     /// actually tracks one of these still stays honest — any event outside the list,
     /// and app re-activation, reload from git, the source of truth.
-    private static let ignoredEventComponents: Set<String> = [
+    private nonisolated static let ignoredEventComponents: Set<String> = [
         ".build", "node_modules", "DerivedData", ".venv", ".gradle", ".turbo", ".next",
     ]
 
     /// Whether an event path sits under a build-product directory *inside* one of the
     /// watched roots. The roots' own ancestry is deliberately not inspected.
-    private static func isBuildProductEvent(_ path: String, underAny roots: [String]) -> Bool {
+    /// `nonisolated` because the FSEvents handler calls it on the watcher's own queue —
+    /// it is pure string work over its arguments and touches no actor state.
+    private nonisolated static func isBuildProductEvent(_ path: String, underAny roots: [String]) -> Bool {
         for root in roots where path == root || path.hasPrefix(root + "/") {
             return path.dropFirst(root.count).split(separator: "/")
                 .contains { ignoredEventComponents.contains(String($0)) }
@@ -155,13 +157,15 @@ final class GitPanelModel: ObservableObject {
         let (tree, gitDirs) = await GitService.watchPaths(for: repoRoot)
         guard watcher == nil, !gitDirs.isEmpty else { return }
         // The primary checkout's `.git` sits inside the tree and needs no second watch.
-        var paths = [tree]
-        paths += gitDirs.filter { !$0.hasPrefix(tree + "/") }
+        // Immutable, because the handler below runs off the main actor and captures it.
+        let paths = [tree] + gitDirs.filter { !$0.hasPrefix(tree + "/") }
         watcher = FolderEventStream(
             paths: paths, latency: 0.4,
             queue: DispatchQueue(label: "sh.termio.gitpane.fsevents", qos: .utility)
         ) { [weak self] eventPaths, _ in
-            // Build-product churn can't change the pane; don't let it spawn git.
+            // Runs on the FSEvents queue: everything up to the hop below must stay
+            // off the main actor. Build-product churn can't change the pane; don't
+            // let it spawn git.
             let relevant = eventPaths.filter { path in
                 !Self.isBuildProductEvent(path, underAny: paths)
             }
