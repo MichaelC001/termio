@@ -59,7 +59,7 @@ final class ChatListViewController: UIViewController {
 
     private func configureTopBar() -> UIView {
         let pageTitle = UILabel()
-        pageTitle.text = "Chats"
+        pageTitle.text = localized("Chats")
         pageTitle.font = .systemFont(ofSize: 34, weight: .bold)
         pageTitle.textColor = .label
 
@@ -102,7 +102,7 @@ final class ChatListViewController: UIViewController {
     private func configureNewChatButton() {
         newChatButton.applyGlassIcon(.add, boxSize: 24)
         newChatButton.tintColor = .label
-        newChatButton.accessibilityLabel = "New Chat"
+        newChatButton.accessibilityLabel = localized("New Chat")
         newChatButton.showsMenuAsPrimaryAction = true
         newChatButton.menu = UIMenu(children: [
             UIDeferredMenuElement.uncached { [weak self] completion in
@@ -168,8 +168,8 @@ final class ChatListViewController: UIViewController {
         guard !emptyState.isHidden else { return }
         emptyState.configure(
             icon: .bubbleChat,
-            title: "No chats yet",
-            message: "Chats are agent sessions that aren't tied to a project. Start one with ＋, or on your Mac.",
+            title: localized("No chats yet"),
+            message: localized("Chats are agent sessions that aren't tied to a project. Start one with ＋, or on your Mac."),
             actionTitle: nil,
             busy: false
         )
@@ -214,7 +214,7 @@ extension ChatListViewController: UITableViewDataSource, UITableViewDelegate {
         guard store.companionURL != nil,
               let sessionID = chats[indexPath.row].rosterID
         else { return nil }
-        let close = UIContextualAction(style: .destructive, title: "Close") { [weak self] _, _, done in
+        let close = UIContextualAction(style: .destructive, title: localized("Close")) { [weak self] _, _, done in
             self?.store.stopSession(sessionID)
             done(true)
         }

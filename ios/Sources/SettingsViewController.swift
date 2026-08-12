@@ -18,10 +18,10 @@ final class SettingsViewController: UITableViewController {
 
         var title: String {
             switch self {
-            case .devices: "Devices"
-            case .appearance: "Appearance"
-            case .terminalKeyboard: "Terminal Keyboard"
-            case .voice: "Voice"
+            case .devices: localized("Devices")
+            case .appearance: localized("Appearance")
+            case .terminalKeyboard: localized("Terminal Keyboard")
+            case .voice: localized("Voice")
             }
         }
 
@@ -79,7 +79,7 @@ final class SettingsViewController: UITableViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Settings"
+        title = localized("Settings")
         // Tint the backdrop behind the inset cards to the terminal theme, so
         // Settings matches every other page when the theme changes (the cards
         // stay standard grouped-cells for legibility).
@@ -90,7 +90,7 @@ final class SettingsViewController: UITableViewController {
             // Telegram's sheet close: a 44pt glass circle with a ~17pt cross.
             let close = UIButton(type: .system)
             close.applyGlassSymbol("xmark", pointSize: 17)
-            close.accessibilityLabel = "Close"
+            close.accessibilityLabel = localized("Close")
             close.addAction(UIAction { [weak self] _ in
                 self?.dismiss(animated: true)
             }, for: .touchUpInside)
@@ -124,10 +124,10 @@ final class SettingsViewController: UITableViewController {
     /// Devices page's active-Mac row so the two always read the same.
     static func linkStatus(textStyle: UIFont.TextStyle = .body) -> NSAttributedString {
         let (color, text): (UIColor, String) = switch CompanionLink.state {
-        case .unpaired: (.tertiaryLabel, "Not Paired")
-        case .connecting: (.systemOrange, "Reconnecting…")
-        case .connected: (.systemGreen, "Connected")
-        case .failed: (.systemRed, "Connection Failed")
+        case .unpaired: (.tertiaryLabel, localized("Not Paired"))
+        case .connecting: (.systemOrange, localized("Reconnecting…"))
+        case .connected: (.systemGreen, localized("Connected"))
+        case .failed: (.systemRed, localized("Connection Failed"))
         }
         // The dot is a drawn image in an NSTextAttachment, not a glyph:
         // mixed-size text runs never sit still (a ● run smaller than the text
@@ -162,7 +162,7 @@ final class SettingsViewController: UITableViewController {
     }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        section == Section.about.rawValue ? "About" : nil
+        section == Section.about.rawValue ? localized("About") : nil
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -180,15 +180,15 @@ final class SettingsViewController: UITableViewController {
         default:
             switch AboutRow(rawValue: indexPath.row) {
             case .version:
-                cell.textLabel?.text = "Version"
+                cell.textLabel?.text = localized("Version")
                 cell.selectionStyle = .none
                 cell.detailTextLabel?.text =
                     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
             case .website:
-                cell.textLabel?.text = "Website"
+                cell.textLabel?.text = localized("Website")
                 cell.detailTextLabel?.text = "termio.sh"
             case .privacy, nil:
-                cell.textLabel?.text = "Privacy Policy"
+                cell.textLabel?.text = localized("Privacy Policy")
             }
         }
         return cell
@@ -239,7 +239,7 @@ final class AppearanceSettingsViewController: UITableViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Appearance"
+        title = localized("Appearance")
         themeObserver = installThemeBackdrop()
     }
 
@@ -258,7 +258,7 @@ final class AppearanceSettingsViewController: UITableViewController {
     }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        "Terminal"
+        localized("Terminal")
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -266,7 +266,7 @@ final class AppearanceSettingsViewController: UITableViewController {
         let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
         switch Row(rawValue: indexPath.row) {
         case .appearance:
-            cell.textLabel?.text = "Appearance"
+            cell.textLabel?.text = localized("Appearance")
             cell.selectionStyle = .none
             let modes = MobileSettings.AppearanceMode.allCases
             let control = UISegmentedControl(items: modes.map(\.label))
@@ -278,15 +278,15 @@ final class AppearanceSettingsViewController: UITableViewController {
             control.sizeToFit()
             cell.accessoryView = control
         case .lightTheme:
-            cell.textLabel?.text = "Light Theme"
+            cell.textLabel?.text = localized("Light Theme")
             cell.detailTextLabel?.text = settings.lightThemeName
             cell.accessoryType = .disclosureIndicator
         case .darkTheme:
-            cell.textLabel?.text = "Dark Theme"
+            cell.textLabel?.text = localized("Dark Theme")
             cell.detailTextLabel?.text = settings.darkThemeName
             cell.accessoryType = .disclosureIndicator
         case .fontSize, nil:
-            cell.textLabel?.text = "Font Size"
+            cell.textLabel?.text = localized("Font Size")
             cell.detailTextLabel?.text = Self.pointsLabel(settings.fontSize)
             cell.selectionStyle = .none
             let stepper = UIStepper()
@@ -317,7 +317,7 @@ final class AppearanceSettingsViewController: UITableViewController {
     }
 
     private static func pointsLabel(_ size: Double) -> String {
-        "\(Int(size)) pt"
+        localized("\(Int(size)) pt")
     }
 }
 
@@ -347,7 +347,7 @@ final class TerminalKeyboardSettingsViewController: UITableViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Terminal Keyboard"
+        title = localized("Terminal Keyboard")
         themeObserver = installThemeBackdrop()
     }
 
@@ -360,13 +360,11 @@ final class TerminalKeyboardSettingsViewController: UITableViewController {
     }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        "Control Keys"
+        localized("Control Keys")
     }
 
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        "Keys on the control bar above the system keyboard. "
-            + "Esc and the arrows are always there; "
-            + "hold esc for esc-esc (Claude Code's rewind menu)."
+        localized("Keys on the control bar above the system keyboard. Esc and the arrows are always there; hold esc for esc-esc (Claude Code's rewind menu).")
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -429,7 +427,7 @@ final class VoiceSettingsViewController: UITableViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Voice"
+        title = localized("Voice")
         themeObserver = installThemeBackdrop()
     }
 
@@ -447,7 +445,7 @@ final class VoiceSettingsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         switch Section(rawValue: section) {
-        case .provider: "Transcription"
+        case .provider: localized("Transcription")
         // The key belongs to the chosen provider — name it so the two read together.
         case .key: provider.displayName
         default: nil
@@ -457,13 +455,12 @@ final class VoiceSettingsViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         switch Section(rawValue: section) {
         case .voice, nil:
-            "Hold the mic key on the terminal keyboard to dictate a prompt — "
-                + "release to send it, slide up to cancel."
+            localized("Hold the mic key on the terminal keyboard to dictate a prompt — release to send it, slide up to cancel.")
         case .provider:
-            "Which service transcribes your voice. Each keeps its own key."
+            localized("Which service transcribes your voice. Each keeps its own key.")
         case .key:
             provider.keyFooter
-                + " Your key stays in this device's Keychain and is used only for transcription."
+                + localized(" Your key stays in this device's Keychain and is used only for transcription.")
         }
     }
 
@@ -471,7 +468,7 @@ final class VoiceSettingsViewController: UITableViewController {
         switch Section(rawValue: indexPath.section) {
         case .voice, nil:
             let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
-            cell.textLabel?.text = "Voice Input"
+            cell.textLabel?.text = localized("Voice Input")
             cell.selectionStyle = .none
             let toggle = UISwitch()
             toggle.isOn = settings.pushToTalkEnabled
@@ -483,7 +480,7 @@ final class VoiceSettingsViewController: UITableViewController {
             return cell
         case .provider:
             let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
-            cell.textLabel?.text = "Provider"
+            cell.textLabel?.text = localized("Provider")
             cell.selectionStyle = .none
             let providers = TranscriptionProvider.allCases
             let control = UISegmentedControl(items: providers.map(\.displayName))
@@ -502,12 +499,12 @@ final class VoiceSettingsViewController: UITableViewController {
             let isSet = VoiceDictation.hasAPIKey(for: provider)
             switch KeyRow(rawValue: indexPath.row) {
             case .apiKey, nil:
-                cell.textLabel?.text = "API Key"
-                cell.detailTextLabel?.text = isSet ? "•••• Set" : "Not Set"
+                cell.textLabel?.text = localized("API Key")
+                cell.detailTextLabel?.text = isSet ? localized("•••• Set") : localized("Not Set")
                 cell.detailTextLabel?.textColor = isSet ? .systemGreen : .secondaryLabel
                 cell.accessoryType = .disclosureIndicator
             case .remove:
-                cell.textLabel?.text = "Remove Key"
+                cell.textLabel?.text = localized("Remove Key")
                 cell.textLabel?.textColor = .systemRed
             }
             return cell
@@ -529,8 +526,8 @@ final class VoiceSettingsViewController: UITableViewController {
     private func presentKeyEditor() {
         let provider = self.provider
         let alert = UIAlertController(
-            title: "\(provider.displayName) API Key",
-            message: "Paste your key. It's stored in this device's Keychain.",
+            title: localized("\(provider.displayName) API Key"),
+            message: localized("Paste your key. It's stored in this device's Keychain."),
             preferredStyle: .alert
         )
         alert.addTextField { field in
@@ -540,11 +537,11 @@ final class VoiceSettingsViewController: UITableViewController {
             field.autocorrectionType = .no
             field.text = VoiceDictation.apiKey(for: provider)
         }
-        alert.addAction(UIAlertAction(title: "Save", style: .default) { [weak self, weak alert] _ in
+        alert.addAction(UIAlertAction(title: localized("Save"), style: .default) { [weak self, weak alert] _ in
             VoiceDictation.setAPIKey(alert?.textFields?.first?.text, for: provider)
             self?.tableView.reloadData()
         })
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: localized("Cancel"), style: .cancel))
         present(alert, animated: true)
     }
 }
@@ -594,7 +591,7 @@ final class DevicesSettingsViewController: UITableViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Devices"
+        title = localized("Devices")
         themeObserver = installThemeBackdrop()
         stateObserver = NotificationCenter.default.addObserver(
             forName: CompanionLink.stateDidChange, object: nil, queue: .main
@@ -630,17 +627,17 @@ final class DevicesSettingsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         switch sections[section] {
-        case .macs: "My Devices"
-        case .add: "Add a Device"
+        case .macs: localized("My Devices")
+        case .add: localized("Add a Device")
         }
     }
 
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         switch sections[section] {
         case .macs:
-            "One device is connected at a time — tap another to switch to it. Switching closes the terminals open on this phone; the sessions keep running on the Mac."
+            localized("One device is connected at a time — tap another to switch to it. Switching closes the terminals open on this phone; the sessions keep running on the Mac.")
         case .add:
-            "Scan the QR code in Settings ▸ Mobile on the Mac you want to pair. Re-scanning a paired Mac updates its address."
+            localized("Scan the QR code in Settings ▸ Mobile on the Mac you want to pair. Re-scanning a paired Mac updates its address.")
         }
     }
 
@@ -669,7 +666,7 @@ final class DevicesSettingsViewController: UITableViewController {
             if isActive {
                 cell.detailTextLabel?.attributedText = SettingsViewController.linkStatus()
             } else {
-                cell.detailTextLabel?.text = "Not Connected"
+                cell.detailTextLabel?.text = localized("Not Connected")
             }
             cell.accessoryType = .detailButton
             // A checkmark is a picture: VoiceOver reads the name and the state
@@ -682,10 +679,10 @@ final class DevicesSettingsViewController: UITableViewController {
             cell.imageView?.tintColor = .label
             switch AddRow(rawValue: indexPath.row) {
             case .scan, nil:
-                cell.textLabel?.text = "Scan QR Code"
+                cell.textLabel?.text = localized("Scan QR Code")
                 cell.imageView?.image = HugeIcon.qrCode.strokeImage(boxSize: 22)
             case .manual:
-                cell.textLabel?.text = "Enter Address Manually"
+                cell.textLabel?.text = localized("Enter Address Manually")
                 cell.imageView?.image = HugeIcon.keyboard.strokeImage(boxSize: 22)
             }
             return cell
@@ -720,8 +717,8 @@ final class DevicesSettingsViewController: UITableViewController {
 
     private func presentEnterAddress() {
         let alert = UIAlertController(
-            title: "Connect to Mac",
-            message: "The address Termio on your Mac is serving.",
+            title: localized("Connect to Mac"),
+            message: localized("The address Termio on your Mac is serving."),
             preferredStyle: .alert
         )
         alert.addTextField { field in
@@ -730,11 +727,11 @@ final class DevicesSettingsViewController: UITableViewController {
             field.autocorrectionType = .no
             field.keyboardType = .URL
         }
-        alert.addAction(UIAlertAction(title: "Connect", style: .default) { [weak alert] _ in
+        alert.addAction(UIAlertAction(title: localized("Connect"), style: .default) { [weak alert] _ in
             guard let raw = alert?.textFields?.first?.text else { return }
             CompanionLink.pair(rawAddress: raw)
         })
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: localized("Cancel"), style: .cancel))
         present(alert, animated: true)
     }
 
@@ -824,7 +821,7 @@ final class MacDetailViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         guard indexPath.section == 0 else {
             let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
-            cell.textLabel?.text = "Forget This Mac"
+            cell.textLabel?.text = localized("Forget This Mac")
             cell.textLabel?.textColor = .systemRed
             return cell
         }
@@ -832,14 +829,14 @@ final class MacDetailViewController: UITableViewController {
         cell.selectionStyle = .none
         switch Row(rawValue: indexPath.row) {
         case .status, nil:
-            cell.textLabel?.text = "Status"
+            cell.textLabel?.text = localized("Status")
             if macID == CompanionLink.activeMac?.id {
                 cell.detailTextLabel?.attributedText = SettingsViewController.linkStatus()
             } else {
-                cell.detailTextLabel?.text = "Not Connected"
+                cell.detailTextLabel?.text = localized("Not Connected")
             }
         case .address:
-            cell.textLabel?.text = "Address"
+            cell.textLabel?.text = localized("Address")
             // Host + port only: the scheme is noise and the pairing token
             // riding the query is a secret.
             cell.detailTextLabel?.text = mac?.displayAddress
@@ -857,16 +854,17 @@ final class MacDetailViewController: UITableViewController {
     /// Forgetting drops the address and the pairing token, so it costs a new
     /// QR scan to undo — worth a confirmation, the way Wi-Fi confirms.
     private func confirmForget() {
+        let name = mac?.name ?? localized("This Mac")
         let alert = UIAlertController(
-            title: "Forget \(mac?.name ?? "This Mac")?",
-            message: "You'll need to scan its QR code again to reconnect.",
+            title: localized("Forget \(name)?"),
+            message: localized("You'll need to scan its QR code again to reconnect."),
             preferredStyle: .alert
         )
-        alert.addAction(UIAlertAction(title: "Forget", style: .destructive) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: localized("Forget"), style: .destructive) { [weak self] _ in
             guard let self else { return }
             CompanionLink.forget(macID)
         })
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: localized("Cancel"), style: .cancel))
         present(alert, animated: true)
     }
 }
@@ -947,7 +945,7 @@ final class ThemePickerViewController: UITableViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = slot == .light ? "Light Theme" : "Dark Theme"
+        title = slot == .light ? localized("Light Theme") : localized("Dark Theme")
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "theme")
 
         let search = UISearchController(searchResultsController: nil)
@@ -977,7 +975,7 @@ final class ThemePickerViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         if isSearching { return nil }
-        return section == 0 ? "Popular" : "All Themes"
+        return section == 0 ? localized("Popular") : localized("All Themes")
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
