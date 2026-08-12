@@ -17,6 +17,29 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.36.0",
+    date: "2026-08-12",
+    title: "Speaks Simplified Chinese",
+    changes: {
+      new: [
+        "Simplified Chinese: the Mac app and the iPhone companion are fully translated. Termio follows your macOS language, and Settings ▸ General pins one if you'd rather choose.",
+        "More than one Mac: pair every Mac you work on from the phone and switch between them — the laptop at home, the devbox at the office — from a rail on the Projects screen or the Devices settings page.",
+        "Custom relay: point remote access at a relay you host yourself instead of the built-in tunnel.",
+        "Session control reaches every agent that supports skills, Amp, Antigravity, Hermes and Kimi included. Agents whose CLI isn't installed are skipped rather than half-configured.",
+      ],
+      improved: [
+        "Agents: adding an agent and building a custom one are one flow now, instead of two controls that did nearly the same thing.",
+      ],
+      fixed: [
+        "A file dropped on a split lands in the pane under the pointer, not the focused one.",
+        "A pane's empty state scales to the pane instead of overflowing a small one.",
+        "A hidden split group keeps its own pane sizes instead of adopting the visible group's.",
+        "Closing an agent session only asks when that session is still running something.",
+        "The iPhone holds a session's title steady while an agent rewrites it.",
+      ],
+    },
+  },
+  {
     version: "0.35.0",
     date: "2026-08-12",
     title: "Runs on Intel Macs",
