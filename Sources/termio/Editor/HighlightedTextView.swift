@@ -303,22 +303,16 @@ struct HighlightedTextView: NSViewRepresentable {
         private var appliedFocusedIndex: Int = -1
         /// Block-based notification tokens, removed on teardown — without this every opened file
         /// left two registrations behind for the lifetime of the process.
-        private var observers: [NSObjectProtocol] = []
+        private let observers = NotificationObserverBag()
 
         init(text: Binding<String>) {
             self.text = text
         }
 
-        deinit {
-            for observer in observers {
-                NotificationCenter.default.removeObserver(observer)
-            }
-        }
-
         /// Redraw the gutter whenever the text view's frame changes — new lines grow it, a window
         /// resize re-wraps it; both shift where each line sits.
         func observeFrame(of textView: NSTextView) {
-            observers.append(NotificationCenter.default.addObserver(
+            observers.add(NotificationCenter.default.addObserver(
                 forName: NSView.frameDidChangeNotification, object: textView, queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated { self?.ruler?.needsDisplay = true }
@@ -328,7 +322,7 @@ struct HighlightedTextView: NSViewRepresentable {
         /// Fully redraw the gutter on every scroll tick — AppKit's copy-on-scroll otherwise leaves
         /// stale, smeared numbers (and numbers stranded in the titlebar strip) behind.
         func observeScroll(of scrollView: NSScrollView) {
-            observers.append(NotificationCenter.default.addObserver(
+            observers.add(NotificationCenter.default.addObserver(
                 forName: NSView.boundsDidChangeNotification, object: scrollView.contentView, queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated { self?.ruler?.needsDisplay = true }
@@ -383,6 +377,29 @@ struct HighlightedTextView: NSViewRepresentable {
             let callback = onMatchesChanged
             DispatchQueue.main.async { callback?(count) }
         }
+    }
+}
+
+/// Block-based notification tokens whose last-resort teardown lives in the bag's own deinit: the
+/// owning views' deinits are nonisolated in Swift 6 and cannot touch main-actor state, but dropping
+/// an owner drops its bag, which still removes every registration.
+///
+/// @unchecked: the tokens are only ever added or removed on the main actor, and the deinit reads
+/// them once nothing can reach the bag any more.
+private final class NotificationObserverBag: @unchecked Sendable {
+    private var tokens: [NSObjectProtocol] = []
+
+    func add(_ token: NSObjectProtocol) {
+        tokens.append(token)
+    }
+
+    func removeAll() {
+        for token in tokens { NotificationCenter.default.removeObserver(token) }
+        tokens = []
+    }
+
+    deinit {
+        for token in tokens { NotificationCenter.default.removeObserver(token) }
     }
 }
 
@@ -587,11 +604,10 @@ private final class SavingTextView: NSTextView {
     /// on every key-status change of whichever window the view lands in.
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        for observer in windowKeyObservers { NotificationCenter.default.removeObserver(observer) }
-        windowKeyObservers = []
+        windowKeyObservers.removeAll()
         guard let window else { return }
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
-            windowKeyObservers.append(NotificationCenter.default.addObserver(
+            windowKeyObservers.add(NotificationCenter.default.addObserver(
                 forName: name, object: window, queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated { self?.updateInsertionIndicator() }
@@ -599,11 +615,7 @@ private final class SavingTextView: NSTextView {
         }
     }
 
-    private var windowKeyObservers: [NSObjectProtocol] = []
-
-    deinit {
-        for observer in windowKeyObservers { NotificationCenter.default.removeObserver(observer) }
-    }
+    private let windowKeyObservers = NotificationObserverBag()
 
     /// The one decision point for the caret: every input that can change its visibility or rect
     /// (selection, focus, editability, resize, window key status) funnels through here.

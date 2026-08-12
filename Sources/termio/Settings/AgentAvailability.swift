@@ -19,7 +19,9 @@ enum AgentAvailability {
     /// synchronous installer check so both agree on one answer. The detached task
     /// populates it when it finishes; the sync check reads it without blocking.
     private static let pathLock = NSLock()
-    private static var pathCache: [String]?
+    // Guarded by `pathLock` on every access; the lock is the synchronization the
+    // compiler cannot see.
+    nonisolated(unsafe) private static var pathCache: [String]?
 
     private static func pathDirectories() -> [String] {
         pathLock.withLock {
