@@ -9,6 +9,7 @@ extension TermioStore {
         to projectID: Project.ID,
         agent: AgentPreset = .terminal,
         worktreePath: String? = nil,
+        spawnDirectory: String? = nil,
         takeFocus: Bool = true
     ) -> Session.ID? {
         guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return nil }
@@ -19,6 +20,7 @@ extension TermioStore {
             : agent.displayName
         var session = Session(title: title, agent: agent)
         session.worktreePath = worktreePath
+        session.spawnDirectory = spawnDirectory
         projects[index].sessions.append(session)
         if takeFocus {
             selectedSessionID = session.id
@@ -61,6 +63,10 @@ extension TermioStore {
             ?? projects[p].sessions.count - 1
         let insertAt = movedIndex < targetIndex ? newTarget + 1 : newTarget
         projects[p].sessions.insert(row, at: insertAt)
+        // A drop that lands between a group's rows would split its bracket in two;
+        // rows only join or leave a group through "Group with" / "Ungroup", so the
+        // run closes back up around the dropped row (see `gatherSplitRuns`).
+        gatherSplitRuns()
     }
 
     /// The sidebar bucket a session sits in: `nil` for the primary checkout (a `nil`
@@ -282,6 +288,38 @@ extension TermioStore {
     /// it reappears on relaunch (the shells themselves restart fresh).
     func addScratchTerminal() { addScratchSession(agent: .terminal) }
 
+    /// Opens a terminal where the user already is — New Terminal (⌘T). The shell
+    /// starts in the focused session's working directory and the row lands beside it:
+    /// in the same project and worktree bucket for a real project, in the Terminals
+    /// section for a loose shell or a scratch chat (a shell has no business in the
+    /// Chats funnel).
+    ///
+    /// The directory is the cwd the session reported over OSC 7. A shell without
+    /// integration never reports one, and an SSH terminal reports a path that exists
+    /// only on the remote host, so anything that isn't a local directory falls through
+    /// to the session's own anchor — and to `$HOME` with nothing focused, which is
+    /// what New Terminal at Home does on purpose.
+    func addTerminalHere() {
+        guard let id = selectedSessionID,
+              let project = project(for: id),
+              let session = session(id) else {
+            addScratchTerminal()
+            return
+        }
+        let reported = Self.existingDirectory(
+            workingDirectory(for: id) ?? session.lastWorkingDirectory)
+        let directory = reported
+            ?? session.spawnDirectory
+            ?? session.worktreePath
+            ?? project.path
+        guard project.kind == .folder else {
+            addScratchSession(agent: .terminal, spawnDirectory: directory)
+            return
+        }
+        addSession(to: project.id, agent: .terminal,
+                   worktreePath: session.worktreePath, spawnDirectory: directory)
+    }
+
     /// The agent a bare **New Chat** launches, resolved in priority order:
     /// 1. the agent the user pinned in Settings ▸ Agents (`defaultChatAgentID`),
     /// 2. else "Last used" — the last agent a chat was started with,
@@ -323,7 +361,11 @@ extension TermioStore {
     /// `.terminals` funnel for shells, the `.chats` funnel for agents — so a second
     /// click just grows another row there and selects it, rather than piling up
     /// duplicate sections.
-    func addScratchSession(agent: AgentPreset = .terminal) {
+    ///
+    /// `spawnDirectory` overrides where a scratch *terminal* starts, so ⌘T from a
+    /// loose shell opens its sibling at the same cwd. Agents ignore it: being confined
+    /// to the scoped workspace is the point.
+    func addScratchSession(agent: AgentPreset = .terminal, spawnDirectory: String? = nil) {
         // Both funnels are matched by kind, not path: the `.terminals` container's
         // `path` is just the `$HOME` spawn fallback, and the single `.chats` container
         // gathers every agent (Claude, Codex, …) that spawns in the scratch workspace.
@@ -332,12 +374,14 @@ extension TermioStore {
         // action relaunches whatever you actually use (see `defaultChatAgent`).
         if agent != .terminal { settings.lastChatAgentID = agent.rawValue }
         let containerKind: ProjectKind = agent == .terminal ? .terminals : .chats
+        let seededDirectory = agent == .terminal ? spawnDirectory : nil
         if let existing = projects.first(where: { $0.kind == containerKind }) {
-            addSession(to: existing.id, agent: agent)
+            addSession(to: existing.id, agent: agent, spawnDirectory: seededDirectory)
             return
         }
         let title = agent == .terminal ? "Terminal 1" : agent.displayName
-        let session = Session(title: title, agent: agent)
+        var session = Session(title: title, agent: agent)
+        session.spawnDirectory = seededDirectory
         let project = Project(
             name: agent == .terminal ? "Terminals" : "Chats",
             path: path,
@@ -583,6 +627,42 @@ extension TermioStore {
         let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         projects[projectIndex].sessions[sessionIndex].title = name
+    }
+
+    /// The user-facing "Close Session": the same teardown as `closeSession`, but it
+    /// asks first in the one case that loses something with no other record — a plain
+    /// shell with a command running in front of it. Only the interactive entry points
+    /// (the sidebar row, the terminal's context menu) route through here — a session
+    /// whose process already exited, the `termio sessions close` CLI, and the phone's
+    /// stop button all closed deliberately and call `closeSession` directly.
+    func requestCloseSession(_ id: Session.ID) {
+        guard let session = session(id) else { return }
+        guard let reason = closeConfirmationReason(for: session) else {
+            closeSession(id)
+            return
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Close “\(displayTitle(for: session))”?"
+        alert.informativeText = reason
+        // Cancel first so it owns both Return and Escape; the destructive button
+        // takes a deliberate click (see the quit confirmation in `App.swift`).
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Close Session")
+        alert.buttons.last?.hasDestructiveAction = true
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        closeSession(id)
+    }
+
+    /// Why closing this session needs confirming, or `nil` when it doesn't. The only
+    /// case left is a plain shell with a command in front of it: that command exists
+    /// nowhere else, so closing loses it outright. Agent sessions never ask — their
+    /// PTY is alive for the whole life of the session, so confirming on a live PTY
+    /// taxed *every* close to protect a conversation the agent can resume anyway.
+    private func closeConfirmationReason(for session: Session) -> String? {
+        guard session.agent.isShell else { return nil }
+        guard let pty = ptyProcesses[session.id], pty.hasForegroundJob else { return nil }
+        return "A command is still running in this session. Closing it stops the command."
     }
 
     /// Closes a session: drops its cached surface (which tears down the PTY) and

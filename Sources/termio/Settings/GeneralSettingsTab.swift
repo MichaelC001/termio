@@ -29,7 +29,7 @@ struct GeneralSettingsTab: View {
                 if settings.sessionControlEnabled {
                     InstallButtonRow(title: "Reinstall skill") {
                         .summarizing(SessionSkillInstaller.sync(enabled: true),
-                                     headline: "Skill reinstalled", unit: "files")
+                                     headline: "Skill reinstalled", unit: "agents")
                     }
                 }
             } header: {

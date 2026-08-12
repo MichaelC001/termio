@@ -43,7 +43,7 @@ const faqs: { question: string; answer: string }[] = [
   {
     question: "What are the requirements?",
     answer:
-      "macOS, Apple Silicon. Termio is a native app built for Apple Silicon Macs. You bring your own agent CLIs and their API keys.",
+      "macOS 14 or later, Apple Silicon. Termio is a native app built for Apple Silicon Macs. You bring your own agent CLIs and their API keys.",
   },
 ];
 

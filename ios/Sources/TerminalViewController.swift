@@ -258,10 +258,17 @@ final class TerminalViewController: UIViewController {
         case .demoShell: break
         }
 
+        // Each line spans the whole width between the two buttons and centers its
+        // text inside it. Sizing the labels to their text instead makes every
+        // title change a layout pass that re-centers the stack, so a title the
+        // agent rewrites as it works visibly jitters left and right.
         let titles = UIStackView(arrangedSubviews: [contextLabel, titleLabel, statusLabel])
         titles.axis = .vertical
-        titles.alignment = .center
+        titles.alignment = .fill
         titles.spacing = 0
+        for label in [contextLabel, titleLabel, statusLabel] {
+            label.textAlignment = .center
+        }
 
         headerBar.axis = .horizontal
         headerBar.alignment = .center
@@ -1126,10 +1133,15 @@ extension TerminalViewController: UIImagePickerControllerDelegate, UINavigationC
 extension TerminalViewController: TerminalSurfaceTitleDelegate, TerminalSurfaceCloseDelegate {
     func terminalDidChangeTitle(_ title: String) {
         // The agent's OSC title rides the byte stream (Claude Code updates it
-        // as it works), so the bar tracks what the session is doing live.
-        let trimmed = title.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
-        DispatchQueue.main.async { [weak self] in self?.titleLabel.text = trimmed }
+        // as it works), so the bar tracks what the session is doing live —
+        // sanitized and deduplicated, the same guards the Mac sidebar applies
+        // to this signal.
+        let cleaned = LiveTerminalTitle.sanitized(title)
+        guard !cleaned.isEmpty else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.titleLabel.text != cleaned else { return }
+            self.titleLabel.text = cleaned
+        }
     }
 
     func terminalDidClose(processAlive _: Bool) {

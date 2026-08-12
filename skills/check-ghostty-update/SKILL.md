@@ -31,7 +31,7 @@ names a `storage.X.Y.Z` binary → that storage release's **title** carries the 
 (format `... · ghostty v1.3.1-<N>-g<sha>`).
 
 ```bash
-REPO=/Users/yuanjiwei/Documents/GitHub/termio
+REPO=$(git rev-parse --show-toplevel)
 FORK=jiweiyuan/libghostty-swift
 GHOSTTY=ghostty-org/ghostty
 

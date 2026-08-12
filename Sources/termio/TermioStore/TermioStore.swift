@@ -1020,6 +1020,10 @@ final class TermioStore: ObservableObject {
         store.splitGroups = savedGroups.filter { group in
             group.leafIDs.count >= 2 && group.leafIDs.allSatisfy { store.session($0) != nil }
         }
+        // State files written before the runs were kept adjacent can hold a group
+        // whose rows a since-ungrouped session still sits between; heal it on load
+        // rather than waiting for the next group edit.
+        store.gatherSplitRuns()
         return store
     }
 
@@ -1255,6 +1259,15 @@ final class TermioStore: ObservableObject {
         if all.contains(.working) { return .working }
         if all.contains(.done) { return .done }
         return .idle
+    }
+
+    /// The sessions a quit would cut short: an agent mid-turn, or one already
+    /// blocked on the user. A finished (`.done`) session has nothing left to lose,
+    /// so it doesn't count — the quit confirmation names these and only these.
+    var busySessionTitles: [String] {
+        projects.flatMap(\.sessions)
+            .filter { [.working, .needsAttention].contains(status(for: $0.id)) }
+            .map { displayTitle(for: $0) }
     }
 
     func session(_ id: Session.ID) -> Session? {

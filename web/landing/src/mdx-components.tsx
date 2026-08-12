@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ComponentProps, ReactNode } from "react";
 import type { MDXComponents } from "mdx/types";
+import { Keybindings } from "@/components/docs/keybindings";
 import { cn } from "@/lib/utils";
 
 // Typed callouts — a quiet note by default, with tip/warning accents. Modeled on
@@ -41,7 +42,7 @@ function Callout({
   return (
     <div
       className={cn(
-        "my-6 rounded-lg border border-border border-l-2 bg-secondary/50 px-5 py-4",
+        "my-6 rounded-xl border border-border border-l-2 bg-secondary/40 px-4 py-3.5",
         style.edge,
         className,
       )}
@@ -92,8 +93,11 @@ function Card({
       )}
     </>
   );
+  // Unfilled until you point at it: the card is a link, and a permanent tinted
+  // panel per card turns a "Next steps" grid into four competing blocks. Base UI
+  // treats its own affordances the same way — the surface arrives on hover.
   const cls =
-    "group block rounded-2xl border border-border bg-secondary/30 p-4 no-underline transition-colors hover:border-foreground/20 hover:bg-secondary/60";
+    "group block rounded-xl border border-border p-4 no-underline transition-colors hover:border-foreground/20 hover:bg-secondary/50";
   return isInternal ? (
     <Link href={href} className={cls}>
       {content}
@@ -116,7 +120,7 @@ function DocsLink({ href = "", ...props }: ComponentProps<"a">) {
 }
 
 // The component map handed to every compiled MDX page. Typography is carried by
-// the `.prose-docs` wrapper (globals.css); here we swap in behavior — smart
+// fumadocs-ui's `DocsBody`; here we swap in behavior — smart
 // links — and register the custom components authors can use in MDX.
 export function getMDXComponents(extra?: MDXComponents): MDXComponents {
   return {
@@ -124,6 +128,7 @@ export function getMDXComponents(extra?: MDXComponents): MDXComponents {
     Callout,
     Cards,
     Card,
+    Keybindings,
     ...extra,
   };
 }
