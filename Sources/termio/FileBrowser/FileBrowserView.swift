@@ -273,9 +273,9 @@ struct FileBrowserView: View {
     /// The empty state the Files and Search panes share when no session is selected.
     private var noProject: some View {
         ContentUnavailableView(
-            "No Project",
+            localized("No Project"),
             huge: .folder,
-            description: Text("Select a session to browse its files.")
+            description: Text(localized("Select a session to browse its files."))
         )
     }
 
@@ -292,16 +292,16 @@ struct FileBrowserView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 8)
-            TreeHeaderButton(codicon: .newFile, help: "New File") {
+            TreeHeaderButton(codicon: .newFile, help: localized("New File")) {
                 createFile(in: root.url)
             }
-            TreeHeaderButton(codicon: .newFolder, help: "New Folder") {
+            TreeHeaderButton(codicon: .newFolder, help: localized("New Folder")) {
                 createFolder(in: root.url)
             }
-            TreeHeaderButton(codicon: .refresh, help: "Refresh") {
+            TreeHeaderButton(codicon: .refresh, help: localized("Refresh")) {
                 refresh()
             }
-            TreeHeaderButton(codicon: .collapseAll, help: "Collapse All") {
+            TreeHeaderButton(codicon: .collapseAll, help: localized("Collapse All")) {
                 treeGeneration += 1
             }
         }
@@ -492,7 +492,7 @@ struct FileBrowserView: View {
     /// Prompts for a name, creates an empty file in `directory`, then selects and
     /// opens it — VS Code's "New File". A name clash gets a numbered suffix.
     private func createFile(in directory: URL) {
-        guard let name = promptForName(title: "New File", defaultName: "untitled.txt") else { return }
+        guard let name = promptForName(title: localized("New File"), defaultName: "untitled.txt") else { return }
         let target = uniqueDestination(for: name, in: directory, manager: .default)
         guard FileManager.default.createFile(atPath: target.path, contents: nil) else {
             Log.files.error("failed to create file at \(target.path, privacy: .public)")
@@ -505,7 +505,7 @@ struct FileBrowserView: View {
 
     /// Prompts for a name and creates a folder in `directory`, then selects it.
     private func createFolder(in directory: URL) {
-        guard let name = promptForName(title: "New Folder", defaultName: "untitled folder") else { return }
+        guard let name = promptForName(title: localized("New Folder"), defaultName: "untitled folder") else { return }
         let target = uniqueDestination(for: name, in: directory, manager: .default)
         do {
             try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
@@ -521,14 +521,14 @@ struct FileBrowserView: View {
     /// selection moves to the new URL and it is re-activated, so the editor follows
     /// the rename instead of holding (and auto-saving back) the old path.
     private func rename(_ url: URL) {
-        guard let name = promptForName(title: "Rename “\(url.lastPathComponent)”", defaultName: url.lastPathComponent, buttonTitle: "Rename"),
+        guard let name = promptForName(title: localized("Rename “\(url.lastPathComponent)”"), defaultName: url.lastPathComponent, buttonTitle: localized("Rename")),
               name != url.lastPathComponent
         else { return }
         let target = url.deletingLastPathComponent().appendingPathComponent(name)
         guard !FileManager.default.fileExists(atPath: target.path) else {
             let alert = NSAlert()
-            alert.messageText = "“\(name)” already exists."
-            alert.informativeText = "Choose a different name."
+            alert.messageText = localized("“\(name)” already exists.")
+            alert.informativeText = localized("Choose a different name.")
             alert.runModal()
             return
         }
@@ -549,10 +549,10 @@ struct FileBrowserView: View {
     /// it from the selection, and refreshes.
     private func delete(_ url: URL) {
         let alert = NSAlert()
-        alert.messageText = "Move “\(url.lastPathComponent)” to the Trash?"
-        alert.informativeText = "You can restore it from the Trash."
-        alert.addButton(withTitle: "Move to Trash")
-        alert.addButton(withTitle: "Cancel")
+        alert.messageText = localized("Move “\(url.lastPathComponent)” to the Trash?")
+        alert.informativeText = localized("You can restore it from the Trash.")
+        alert.addButton(withTitle: localized("Move to Trash"))
+        alert.addButton(withTitle: localized("Cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
             try FileManager.default.trashItem(at: url, resultingItemURL: nil)
@@ -565,11 +565,11 @@ struct FileBrowserView: View {
 
     /// A modal name prompt — one text field in an `NSAlert`, pre-filled with
     /// `defaultName`. Returns the trimmed entry, or `nil` if cancelled or emptied.
-    private func promptForName(title: String, defaultName: String, buttonTitle: String = "Create") -> String? {
+    private func promptForName(title: String, defaultName: String, buttonTitle: String = localized("Create")) -> String? {
         let alert = NSAlert()
         alert.messageText = title
         alert.addButton(withTitle: buttonTitle)
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: localized("Cancel"))
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
         field.stringValue = defaultName
         alert.accessoryView = field

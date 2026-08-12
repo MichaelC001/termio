@@ -30,6 +30,12 @@ extension Notification.Name {
 /// prompt. That resize-on-every-switch was the visible flicker. Keeping each
 /// surface mounted and only toggling visibility means the view is never
 /// reparented or resized, so the shell never repaints and switching is instant.
+///
+/// A split group has to obey the same rule, so a pane's frame comes from its
+/// *own* group's layout (`SplitNode.paneFrames`), computed for every group
+/// rather than only the selected one. A group that is off screen therefore keeps
+/// the frames it had, and only a genuine geometry change — window resize,
+/// inspector toggle, ratio drag, group/ungroup, zoom — ever resizes a surface.
 struct TerminalPane: View {
     /// The pane area's named coordinate space — the fixed frame the split
     /// dividers' drags are measured in (see the ZStack's `coordinateSpace`).
@@ -155,22 +161,28 @@ struct TerminalPane: View {
     /// occupies the right column.
     @ViewBuilder
     private func terminalGroup(bounds: CGRect, layout: SplitNode.PaneLayout?, zoomed: Bool) -> some View {
+        // Geometry for *every* group, not just the one on screen. Visibility is
+        // decided separately, below: hiding a group must not move or resize its
+        // panes, because a frame change is a SIGWINCH the shell answers by
+        // repainting — the flash on the way back in (issue #245).
+        let paneFrames = SplitNode.paneFrames(of: store.splitGroups, in: bounds)
+        let visibleIDs = Set(store.visiblePaneIDs)
         ZStack {
             if mounted.isEmpty {
                 WelcomeView()
             }
             ForEach(mounted, id: \.session.id) { item in
                 let id = item.session.id
-                let paneFrame = zoomed
-                    ? (id == store.selectedSessionID ? bounds : nil)
-                    : layout?.frames[id]
-                let isVisible = paneFrame != nil
-                    || (layout == nil && store.selectedSessionID == id)
-                let rect = paneFrame ?? bounds
+                let isSelected = store.selectedSessionID == id
+                let isVisible = zoomed ? isSelected : visibleIDs.contains(id)
+                // Zoom is a real geometry change, so the zoomed pane does take the
+                // full bounds; its hidden siblings keep their laid-out frames. An
+                // ungrouped session has no split geometry and fills the pane.
+                let rect = zoomed && isSelected ? bounds : (paneFrames[id] ?? bounds)
                 ManagedTerminalSurface(
                     id: id,
                     context: store.surface(for: item.session, in: item.project),
-                    isSelected: store.selectedSessionID == id,
+                    isSelected: isSelected,
                     isVisible: isVisible,
                     onFocused: { selectFocusedSurface(id) },
                     requestFocus: { reason in

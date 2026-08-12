@@ -1,8 +1,8 @@
 // Brand vectors shared by the macOS sidebar and the iOS session list, so both
 // platforms render the same marks from the same SVG data: agent logos (filled
 // vendor marks), Hugeicons stroke glyphs, and the SVG path parser under them.
-// Ported from the desktop app's BrandIcons.swift; the desktop still carries
-// its own copy until it migrates onto this package.
+// Ported from the desktop app's BrandIcons.swift; the desktop's AppKit
+// wrappers now draw through this parser too.
 
 import Foundation
 import SwiftUI
@@ -670,12 +670,12 @@ private func scaledVectorPath(_ glyph: CGPath, viewBox: CGFloat, in rect: CGRect
 /// brand marks — moveto/lineto/horizontal/vertical, cubic and quadratic
 /// curves (with smooth variants), elliptical arcs, and close. SVG and Core
 /// Graphics coordinate spaces both run y-downward, so no axis flip.
-private struct SVGPath {
+public struct SVGPath {
     let pathData: String
 
-    init(_ pathData: String) { self.pathData = pathData }
+    public init(_ pathData: String) { self.pathData = pathData }
 
-    var cgPath: CGPath {
+    public var cgPath: CGPath {
         let path = CGMutablePath()
         var scanner = Scanner(pathData)
 

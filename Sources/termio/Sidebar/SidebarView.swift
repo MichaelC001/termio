@@ -175,7 +175,7 @@ struct SidebarView: View {
             // deliberately elevated (mirroring the iOS "Needs You" strip at the home top).
             if hasPinned {
                 SidebarSectionHeader(
-                    title: "Pinned",
+                    title: localized("Pinned"),
                     chrome: chrome,
                     isCollapsed: pinnedCollapsed,
                     isFirstSection: true,
@@ -200,15 +200,15 @@ struct SidebarView: View {
             // noise (a new loose terminal reappears the section, via the + / File menu).
             ForEach(terminals.filter { !$0.sessions.isEmpty }) { term in
                 SidebarSectionHeader(
-                    title: "Terminals",
+                    title: localized("Terminals"),
                     chrome: chrome,
                     isCollapsed: collapsedProjects.contains(term.id),
                     isFirstSection: !hasPinned,
                     toggleCollapsed: { toggleCollapsed(term.id) },
                     menuItems: [
-                        .action("New Terminal") { store.addSession(to: term.id, agent: .terminal) },
+                        .action(localized("New Terminal")) { store.addSession(to: term.id, agent: .terminal) },
                         .separator,
-                        .action("Close All Terminals") { store.removeProject(term.id) },
+                        .action(localized("Close All Terminals")) { store.removeProject(term.id) },
                     ]
                 )
                 if !collapsedProjects.contains(term.id) {
@@ -227,15 +227,15 @@ struct SidebarView: View {
             // mirroring the Terminals header's "New Terminal". Hidden while empty.
             ForEach(chats.filter { !$0.sessions.isEmpty }) { chat in
                 SidebarSectionHeader(
-                    title: "Chats",
+                    title: localized("Chats"),
                     chrome: chrome,
                     isCollapsed: collapsedProjects.contains(chat.id),
                     isFirstSection: !hasPinned && !hasTerminals,
                     toggleCollapsed: { toggleCollapsed(chat.id) },
                     menuItems: [
-                        .action("New Chat") { store.addDefaultChat() },
+                        .action(localized("New Chat")) { store.addDefaultChat() },
                         .separator,
-                        .action("Close All Chats") { store.removeProject(chat.id) },
+                        .action(localized("Close All Chats")) { store.removeProject(chat.id) },
                     ]
                 )
                 if !collapsedProjects.contains(chat.id) {
@@ -250,7 +250,7 @@ struct SidebarView: View {
             // section treatment as Terminals and Pinned, one tier above the folder rows.
             if !others.isEmpty {
                 SidebarSectionHeader(
-                    title: "Projects",
+                    title: localized("Projects"),
                     chrome: chrome,
                     isCollapsed: projectsCollapsed,
                     isFirstSection: !hasPinned && !hasTerminals && !hasChats,
@@ -499,7 +499,7 @@ private struct ProjectHeader: View {
               store.isDetachedHead(forFolder: worktree.path),
               let commit = store.branch(forFolder: worktree.path)
         else { return targetPath }
-        return "Detached at \(commit)"
+        return localized("Detached at \(commit)")
     }
 
     /// Every folder container — project or worktree — swaps closed/open folders as its
@@ -536,27 +536,27 @@ private struct ProjectHeader: View {
     private var menuItems: [SidebarMenuItem] {
         if isTerminalsHeader {
             return [
-                .action("New Terminal") { store.addSession(to: project.id, agent: .terminal) },
+                .action(localized("New Terminal")) { store.addSession(to: project.id, agent: .terminal) },
                 .separator,
-                .action("Close All Terminals") { store.removeProject(project.id) },
+                .action(localized("Close All Terminals")) { store.removeProject(project.id) },
             ]
         }
         var items: [SidebarMenuItem] = [
-            .action("New Terminal") { addSession(.terminal) },
-            .submenu("New Agent Session", enabledAgentPresets(settings)
+            .action(localized("New Terminal")) { addSession(.terminal) },
+            .submenu(localized("New Agent Session"), enabledAgentPresets(settings)
                 .filter { $0 != .terminal }
                 .map { preset in .agent(preset) { addSession(preset) } }),
         ]
         if let worktree {
             items.append(.separator)
-            items.append(.action(worktree.pinned ? "Unpin" : "Pin") {
+            items.append(.action(worktree.pinned ? localized("Unpin") : localized("Pin")) {
                 store.toggleWorktreePinned(worktree.id)
             })
-            items.append(.action("Reveal in Finder") {
+            items.append(.action(localized("Reveal in Finder")) {
                 NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: worktree.path)
             })
             items.append(.separator)
-            items.append(.action("Remove Worktree") {
+            items.append(.action(localized("Remove Worktree")) {
                 store.removeWorktree(worktree.id, from: project.id)
             })
             return items
@@ -565,17 +565,17 @@ private struct ProjectHeader: View {
         // container's own quick-add controls fill it with sessions on demand.
         // Only for git repositories (a worktree needs one; "—" marks a non-repo folder).
         if project.branch != "—" {
-            items.append(.action("New Worktree") { store.addWorktree(from: project.id) })
+            items.append(.action(localized("New Worktree")) { store.addWorktree(from: project.id) })
         }
         items.append(.separator)
-        items.append(.action(project.pinned ? "Unpin" : "Pin to Top") {
+        items.append(.action(project.pinned ? localized("Unpin") : localized("Pin to Top")) {
             store.togglePinned(project.id)
         })
-        items.append(.action("Reveal in Finder") {
+        items.append(.action(localized("Reveal in Finder")) {
             NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: project.path)
         })
         items.append(.separator)
-        items.append(.action("Remove Project") { store.removeProject(project.id) })
+        items.append(.action(localized("Remove Project")) { store.removeProject(project.id) })
         return items
     }
 
@@ -627,7 +627,7 @@ private struct ProjectHeader: View {
             // hover it falls under the quick-add cluster (masked out with the label tail).
             if worktree != nil {
                 HugeIconView(icon: .gitBranch, size: 10, color: .secondary)
-                    .help("Git worktree")
+                    .help(localized("Git worktree"))
             }
         }
         // On hover the trailing icons would otherwise sit on top of a long project
@@ -857,7 +857,7 @@ private struct AgentQuickAddButton: View {
         .buttonStyle(.borderless)
         .onHover { isHovering = $0 }
         .animation(.easeInOut(duration: 0.1), value: isHovering)
-        .help("New \(preset.displayName) session")
+        .help(localized("New \(preset.displayName) session"))
     }
 }
 
@@ -934,8 +934,8 @@ private struct SessionRow: View {
     /// there is a sibling to combine it with (独立 → 联合).
     private var menuItems: [SidebarMenuItem] {
         var items: [SidebarMenuItem] = [
-            .action("Rename…") { store.renameSession(session.id) },
-            .action("Copy Session Link") {
+            .action(localized("Rename…")) { store.renameSession(session.id) },
+            .action(localized("Copy Session Link")) {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(store.sessionLink(for: session), forType: .string)
             },
@@ -943,10 +943,10 @@ private struct SessionRow: View {
         let targets = store.groupableTargets(for: session.id)
         if store.isInSplitGroup(session.id) || !targets.isEmpty { items.append(.separator) }
         if store.isInSplitGroup(session.id) {
-            items.append(.action("Ungroup") { store.detachFromSplit(session.id) })
+            items.append(.action(localized("Ungroup")) { store.detachFromSplit(session.id) })
         }
         if !targets.isEmpty {
-            items.append(.submenu("Group with", targets.map { target in
+            items.append(.submenu(localized("Group with"), targets.map { target in
                 .action(store.displayTitle(for: target)) {
                     store.groupSession(session.id, with: target.id)
                 }
@@ -954,9 +954,9 @@ private struct SessionRow: View {
         }
         items.append(contentsOf: [
             .separator,
-            .action(session.pinned ? "Unpin" : "Pin") { store.toggleSessionPinned(session.id) },
+            .action(session.pinned ? localized("Unpin") : localized("Pin")) { store.toggleSessionPinned(session.id) },
             .separator,
-            .action("Close Session") { store.closeSession(session.id) },
+            .action(localized("Close Session")) { store.requestCloseSession(session.id) },
         ])
         return items
     }
@@ -1032,10 +1032,10 @@ private struct SessionRow: View {
             ZStack(alignment: .trailing) {
                 SessionRowActionButton(
                     systemImage: "xmark.circle.fill",
-                    help: "Close session",
+                    help: localized("Close session"),
                     chrome: chrome
                 ) {
-                    store.closeSession(session.id)
+                    store.requestCloseSession(session.id)
                 }
                 .opacity(isHovering ? 1 : 0)
                 .allowsHitTesting(isHovering)
@@ -1261,14 +1261,14 @@ private struct AgentHooksOffBanner: View {
             Image(systemName: "dot.radiowaves.left.and.right")
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Live agent status is off")
+                Text(localized("Live agent status is off"))
                     .font(.callout.weight(.medium))
-                Text("Agents won't show as working.")
+                Text(localized("Agents won't show as working."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 4)
-            Button("Enable", action: enable)
+            Button(localized("Enable"), action: enable)
                 .buttonStyle(.borderless)
                 .font(.callout.weight(.medium))
         }

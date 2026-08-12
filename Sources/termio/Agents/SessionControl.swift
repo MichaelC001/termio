@@ -507,26 +507,70 @@ private extension SessionWatchEvent {
 }
 
 /// Tells a coding agent that the `termio sessions` CLI exists by installing an
-/// Agent Skill — a `SKILL.md` in each agent's user-level skills directory
-/// (`~/.claude/skills`, `~/.codex/skills`) — instead of editing the agent's
-/// always-loaded instruction file. The agent sees only the skill's one-line
-/// description up front and pulls the full guidance in when a task actually
-/// involves driving sibling sessions, so every unrelated session stays clean.
+/// Agent Skill — a `SKILL.md` in each agent's user-level skills directory, as
+/// declared by that agent's manifest `skills.dir` (`~/.claude/skills`,
+/// `~/.config/opencode/skills`, …) — instead of editing the agent's always-loaded
+/// instruction file. The agent sees only the skill's one-line description up front
+/// and pulls the full guidance in when a task actually involves driving sibling
+/// sessions, so every unrelated session stays clean.
 ///
 /// Earlier versions injected a marker-wrapped block into `~/.claude/CLAUDE.md`
 /// and `~/.codex/AGENTS.md`; every sync still strips that block wherever it
 /// remains, so an upgrade never leaves the guidance installed twice.
+///
+/// The target set is catalog-driven (`AgentCatalog`), so a user-dropped custom
+/// agent that declares `skills.dir` in its manifest gets the skill installed too,
+/// with no code change — the same data path `AgentStatusHooks` uses for hooks.
 enum SessionSkillInstaller {
     private static let beginMarker = "<!-- termio:sessions BEGIN -->"
     private static let endMarker = "<!-- termio:sessions END -->"
 
     private static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
 
-    private static var skillTargets: [URL] {
-        [
-            home.appendingPathComponent(".claude/skills/termio/SKILL.md"),
-            home.appendingPathComponent(".codex/skills/termio/SKILL.md"),
-        ]
+    /// The skill file an agent's declared skills directory will carry, per agent in
+    /// the catalog. Installation follows `AgentCatalog.all` so a user override's
+    /// `skills` declaration wins; duplicate directories (an override of a bundled
+    /// id) install once. Only agents whose CLI is actually installed get the skill,
+    /// so a machine without, say, Cursor never grows a `~/.cursor/skills` directory
+    /// it cannot use — `sync` re-checks on every launch, so an agent installed later
+    /// is picked up automatically. The `installed` predicate is injectable for
+    /// tests; the default resolves the agent's command like a session launch would.
+    static func skillTargets(
+        installed: (AgentDefinition) -> Bool = { agent in
+            guard let command = agent.command else { return true }
+            return AgentAvailability.isCommandInstalled(command)
+        }
+    ) -> [(name: String, url: URL)] {
+        let catalog = AgentCatalog.shared
+        var seen = Set<String>()
+        return catalog.all.compactMap { agent in
+            guard let directory = agent.skillDir, installed(agent) else { return nil }
+            let url = skillFileURL(directory: directory)
+            guard seen.insert(url.path).inserted else { return nil }
+            return (agent.displayName, url)
+        }
+    }
+
+    /// Every skills directory termio has ever installed into — bundled declarations
+    /// plus the live catalog — so uninstalling also sweeps a shipped dir that a user
+    /// override removed or redirected. Mirrors `AgentStatusHooks.allKnownInstallers`.
+    static var allKnownSkillTargets: [(name: String, url: URL)] {
+        let catalog = AgentCatalog.shared
+        var seen = Set<String>()
+        return (catalog.bundled + catalog.all).compactMap { agent in
+            guard let directory = agent.skillDir else { return nil }
+            let url = skillFileURL(directory: directory)
+            guard seen.insert(url.path).inserted else { return nil }
+            return (agent.displayName, url)
+        }
+    }
+
+    /// Where an agent's declared skills directory carries termio's skill
+    /// (`<dir>/termio/SKILL.md`), with `~` expanded. The pure path logic, so tests
+    /// can pin it without touching the real home directory.
+    static func skillFileURL(directory: String) -> URL {
+        URL(fileURLWithPath: (directory as NSString).expandingTildeInPath)
+            .appendingPathComponent("termio/SKILL.md")
     }
 
     /// The instruction files earlier versions wrote the guidance into.
@@ -563,22 +607,16 @@ enum SessionSkillInstaller {
             guard let skill else {
                 FileHandle.standardError.write(
                     Data("termio: session skill resource missing from the app bundle\n".utf8))
-                for url in skillTargets { outcome.record(displayPath(of: url), installed: false) }
+                for (name, _) in skillTargets() { outcome.record(name, installed: false) }
                 return outcome
             }
-            for url in skillTargets {
-                outcome.record(displayPath(of: url), installed: write(skill, to: url))
+            for (name, url) in skillTargets() {
+                outcome.record(name, installed: write(skill, to: url))
             }
         } else {
-            for url in skillTargets { removeSkill(at: url) }
+            for (_, url) in allKnownSkillTargets { removeSkill(at: url) }
         }
         return outcome
-    }
-
-    /// The target's path with the home directory abbreviated (`~/.claude/CLAUDE.md`)
-    /// — how the docs and the files themselves refer to it.
-    private static func displayPath(of url: URL) -> String {
-        (url.path as NSString).abbreviatingWithTildeInPath
     }
 
     /// Removes the installed skill folder wholesale — termio owns the folder, so

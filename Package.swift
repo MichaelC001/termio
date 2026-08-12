@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "termio",
+    defaultLocalization: "en",
     platforms: [.macOS(.v14)],
     dependencies: [
         // libghostty (Ghostty's terminal core), via our jiweiyuan/libghostty-swift
@@ -13,7 +14,7 @@ let package = Package(
         // live resize" suspicion that briefly rolled this back to Lakr233 was a
         // misdiagnosis — the real bug was termio's own PTY spawn shape (see
         // docs/bug/terminal-resize-no-reflow-HANDOFF.md §0).
-        .package(url: "https://github.com/jiweiyuan/libghostty-swift", from: "1.0.15"),
+        .package(url: "https://github.com/jiweiyuan/libghostty-swift", from: "1.0.16"),
         // Sparkle powers in-app auto-update (the "Check for Updates…" menu item and
         // background update checks). It reads the appcast published with each GitHub
         // release; the matching EdDSA public key is embedded in packaging/Info.plist.
@@ -49,7 +50,14 @@ let package = Package(
             path: "Sources/termio",
             // The vendored Highlightr copy ships its own README; it's documentation, not
             // a build input, so exclude it rather than let SwiftPM flag it as unhandled.
-            exclude: ["Editor/Highlightr/README.md"],
+            exclude: [
+                "Editor/Highlightr/README.md",
+                // The String Catalog is the *editing* source for UI strings, not a
+                // shippable resource: `swift build` can't compile .xcstrings
+                // (swiftlang/swift-package-manager#6993), so scripts/compile-strings.sh
+                // compiles it into Resources/Localization, which ships instead.
+                "Resources/Localizable.xcstrings",
+            ],
             resources: [
                 // Process app assets into the resource-bundle root so existing
                 // name-based lookups stay stable. Agent manifests are copied as a
@@ -65,6 +73,16 @@ let package = Package(
                 .process("Resources/Fonts"),
                 .copy("Resources/agents"),
                 .copy("Resources/terminal.json"),
+                // UI strings: per-language .lproj folders generated from the String
+                // Catalog by scripts/compile-strings.sh. Every lookup must pass
+                // `Bundle.termioResources` explicitly — `String(localized:)`'s
+                // default of `Bundle.main` holds no strings in a packaged .app.
+                // Each .lproj is a verbatim `.copy`, one entry per language:
+                // `.process` lowercases the folder to `zh-hans.lproj`, and
+                // CFBundle's language matching is case-sensitive about the script
+                // subtag, so a processed zh-Hans silently resolves to English.
+                .copy("Resources/Localization/en.lproj"),
+                .copy("Resources/Localization/zh-Hans.lproj"),
                 // Agent skills installed into ~/.claude/skills and ~/.codex/skills
                 // by SessionSkillInstaller, kept as real markdown files. Folder copy
                 // so the skill-folder layout survives into the bundle.

@@ -22,15 +22,15 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .general: return "General"
-        case .appearance: return "Appearance"
-        case .terminal: return "Terminal"
-        case .ssh: return "SSH"
-        case .keyboard: return "Keyboard"
-        case .agents: return "Agents"
-        case .usage: return "Usage"
-        case .mobile: return "Mobile"
-        case .community: return "Community"
+        case .general: return localized("General")
+        case .appearance: return localized("Appearance")
+        case .terminal: return localized("Terminal")
+        case .ssh: return localized("SSH")
+        case .keyboard: return localized("Keyboard")
+        case .agents: return localized("Agents")
+        case .usage: return localized("Usage")
+        case .mobile: return localized("Mobile")
+        case .community: return localized("Community")
         }
     }
 
@@ -54,15 +54,15 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     /// matching macOS System Settings' navigation subtitle.
     var subtitle: String {
         switch self {
-        case .general: return "The termio command-line tool, agent skill, and notifications"
-        case .appearance: return "Theme, fonts, cursor, and window"
-        case .terminal: return "Scrollback history and text selection"
-        case .ssh: return "Your ~/.ssh/config hosts, one click away"
-        case .keyboard: return "Keyboard shortcuts for every command"
-        case .agents: return "Agent presets, live status, and control"
-        case .usage: return "Token usage for your connected agents"
-        case .mobile: return "Pair your iPhone and remote access"
-        case .community: return "Discord, GitHub, and the WeChat group"
+        case .general: return localized("The termio command-line tool, agent skill, and notifications")
+        case .appearance: return localized("Theme, fonts, cursor, and window")
+        case .terminal: return localized("Scrollback history and text selection")
+        case .ssh: return localized("Your ~/.ssh/config hosts, one click away")
+        case .keyboard: return localized("Keyboard shortcuts for every command")
+        case .agents: return localized("Agent presets, live status, and control")
+        case .usage: return localized("Token usage for your connected agents")
+        case .mobile: return localized("Pair your iPhone and remote access")
+        case .community: return localized("Discord, GitHub, and the WeChat group")
         }
     }
 }

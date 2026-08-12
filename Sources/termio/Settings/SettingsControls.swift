@@ -131,10 +131,10 @@ struct InstallFeedback: Equatable {
     ) -> InstallFeedback {
         let installed = InstallOutcome.list(outcome.succeeded, unit: unit)
         let missed = InstallOutcome.list(outcome.failed, unit: unit)
-        if outcome.isEmpty { return .failure("Nothing to install.") }
-        if outcome.failed.isEmpty { return .success("\(headline) — \(installed).") }
-        if outcome.succeeded.isEmpty { return .failure("Couldn’t update \(missed).") }
-        return .failure("\(headline) — \(installed). Couldn’t update \(missed).")
+        if outcome.isEmpty { return .failure(localized("Nothing to install.")) }
+        if outcome.failed.isEmpty { return .success(localized("\(headline) — \(installed).")) }
+        if outcome.succeeded.isEmpty { return .failure(localized("Couldn’t update \(missed).")) }
+        return .failure(localized("\(headline) — \(installed). Couldn’t update \(missed)."))
     }
 }
 
@@ -382,10 +382,10 @@ struct FontFamilyField: View {
                     Text(name).tag(name)
                 }
                 Divider()
-                Text("Custom…").tag(Self.customTag)
+                Text(localized("Custom…")).tag(Self.customTag)
             }
             if showingCustomField {
-                TextField("Font name", text: $family, prompt: Text("e.g. JetBrains Mono"))
+                TextField(localized("Font name"), text: $family, prompt: Text(localized("e.g. JetBrains Mono")))
                     .textFieldStyle(.roundedBorder)
                     .focused($customFieldFocused)
                     .padding(.top, 4)
@@ -397,7 +397,7 @@ struct FontFamilyField: View {
                 .truncationMode(.tail)
                 .foregroundStyle(preview.isFallback ? .tertiary : .secondary)
             if preview.isFallback {
-                Text("“\(family)” isn’t installed — showing the system default.")
+                Text(localized("“\(family)” isn’t installed — showing the system default."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

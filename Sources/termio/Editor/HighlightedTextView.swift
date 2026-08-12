@@ -469,22 +469,22 @@ private final class SavingTextView: NSTextView {
         guard showsCloseMenuItem else { return super.menu(for: event) }
         let menu = NSMenu()
         if isEditable {
-            menu.addItem(withTitle: "Cut", action: #selector(cutSelection), keyEquivalent: "")
+            menu.addItem(withTitle: localized("Cut"), action: #selector(cutSelection), keyEquivalent: "")
         }
-        menu.addItem(withTitle: "Copy", action: #selector(copySelection), keyEquivalent: "")
+        menu.addItem(withTitle: localized("Copy"), action: #selector(copySelection), keyEquivalent: "")
         if isEditable {
-            menu.addItem(withTitle: "Paste", action: #selector(pasteClipboard), keyEquivalent: "")
+            menu.addItem(withTitle: localized("Paste"), action: #selector(pasteClipboard), keyEquivalent: "")
         }
         menu.addItem(.separator())
         if canAddToChat?() == true {
             // One name everywhere (Cursor's): with a selection the selected text goes
             // over as a pasted snippet, without one the document's path — the context
             // says which, the label stays put.
-            let add = NSMenuItem(title: "Add to Chat", action: #selector(addToChatAction), keyEquivalent: "")
+            let add = NSMenuItem(title: localized("Add to Chat"), action: #selector(addToChatAction), keyEquivalent: "")
             add.target = self
             menu.addItem(add)
         }
-        let close = NSMenuItem(title: "Close", action: #selector(closeEditorOverlay), keyEquivalent: "")
+        let close = NSMenuItem(title: localized("Close"), action: #selector(closeEditorOverlay), keyEquivalent: "")
         close.target = self
         menu.addItem(close)
         return menu

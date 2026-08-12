@@ -111,9 +111,9 @@ struct CommandPaletteView: View {
 
     private var placeholder: String {
         switch mode {
-        case .openQuickly: return "Jump to session, project, or file…"
-        case .commands: return "Run a command…"
-        case .themes: return "Search themes…"
+        case .openQuickly: return localized("Jump to session, project, or file…")
+        case .commands: return localized("Run a command…")
+        case .themes: return localized("Search themes…")
         }
     }
 
@@ -142,7 +142,7 @@ struct CommandPaletteView: View {
                     // a lone "Sessions" banner over everything is noise.
                     let sectioned = Set(items.map(\.section)).count > 1
                     if items.isEmpty {
-                        Text("No matches")
+                        Text(localized("No matches"))
                             .foregroundStyle(.secondary)
                             .padding(.vertical, 20)
                     }
@@ -245,30 +245,30 @@ struct CommandPaletteView: View {
         var actions: [PaletteAction] = []
         let keys = KeybindingStore.shared
         if store.selectedSessionID != nil {
-            actions.append(.init(id: "split-right", title: "Split Right",
+            actions.append(.init(id: "split-right", title: localized("Split Right"),
                                  icon: .layoutColumns, shortcut: keys.display(for: .splitRight)) {
                 $0.splitSelectedPane(.horizontal)
             })
-            actions.append(.init(id: "split-left", title: "Split Left",
+            actions.append(.init(id: "split-left", title: localized("Split Left"),
                                  icon: .layoutColumns, shortcut: keys.display(for: .splitLeft)) {
                 $0.splitSelectedPane(.horizontal, slot: .first)
             })
-            actions.append(.init(id: "split-down", title: "Split Down",
+            actions.append(.init(id: "split-down", title: localized("Split Down"),
                                  icon: .layoutRows, shortcut: keys.display(for: .splitDown)) {
                 $0.splitSelectedPane(.vertical)
             })
-            actions.append(.init(id: "split-up", title: "Split Up",
+            actions.append(.init(id: "split-up", title: localized("Split Up"),
                                  icon: .layoutRows, shortcut: keys.display(for: .splitUp)) {
                 $0.splitSelectedPane(.vertical, slot: .first)
             })
         }
         if store.splitRoot != nil {
-            actions.append(.init(id: "zoom-split", title: "Zoom Split",
+            actions.append(.init(id: "zoom-split", title: localized("Zoom Split"),
                                  icon: .expand,
                                  shortcut: keys.display(for: .splitZoom)) {
                 $0.toggleSelectedPaneZoom()
             })
-            actions.append(.init(id: "ungroup", title: "Ungroup",
+            actions.append(.init(id: "ungroup", title: localized("Ungroup"),
                                  icon: .square, shortcut: keys.display(for: .ungroup)) {
                 $0.ungroupSelectedPane()
             })
@@ -302,25 +302,25 @@ struct CommandPaletteView: View {
         // lives in a real git project — the menu bar's own enablement rule.
         if let sid = store.selectedSessionID, let project = store.project(for: sid),
            project.kind == .folder, project.branch != "—" {
-            actions.append(.init(id: "new-worktree", title: "New Worktree…",
+            actions.append(.init(id: "new-worktree", title: localized("New Worktree…"),
                                  icon: .gitBranch,
                                  shortcut: keys.display(for: .newWorktree)) { _ in
                 NSApp.sendAction(#selector(AppDelegate.newWorktree(_:)), to: nil, from: nil)
             })
-            actions.append(.init(id: "new-pull-request", title: "New Pull Request",
+            actions.append(.init(id: "new-pull-request", title: localized("New Pull Request"),
                                  icon: .gitPullRequest,
                                  shortcut: keys.display(for: .newPullRequest)) { _ in
                 NSApp.sendAction(#selector(AppDelegate.newPullRequest(_:)), to: nil, from: nil)
             })
         }
-        actions.append(.init(id: "new-terminal", title: "New Terminal",
+        actions.append(.init(id: "new-terminal", title: localized("New Terminal"),
                              icon: .plusSquare, shortcut: keys.display(for: .newTerminal)) {
-            $0.addScratchTerminal()
+            $0.addTerminalHere()
         })
         // The single "New Chat" verb (default agent, always the scratch Chats
         // funnel), carrying its ⌘N shortcut — the palette twin of File ▸ New Chat.
         if store.defaultChatAgent() != nil {
-            actions.append(.init(id: "new-chat", title: "New Chat",
+            actions.append(.init(id: "new-chat", title: localized("New Chat"),
                                  icon: .bubbleChatAdd, shortcut: keys.display(for: .newChat)) {
                 $0.addDefaultChat()
             })
@@ -330,7 +330,7 @@ struct CommandPaletteView: View {
         // page's behaviour).
         for agent in enabledAgentPresets(store.settings) where agent != .terminal {
             actions.append(.init(id: "new-session-\(agent.id)",
-                                 title: "New \(agent.displayName) Session",
+                                 title: localized("New \(agent.displayName) Session"),
                                  icon: nil, agent: agent, shortcut: nil) { store in
                 if let sid = store.selectedSessionID, let project = store.project(for: sid) {
                     store.addSession(to: project.id, agent: agent)
@@ -339,22 +339,22 @@ struct CommandPaletteView: View {
                 }
             })
         }
-        actions.append(.init(id: "new-ssh", title: "New SSH Connection…",
+        actions.append(.init(id: "new-ssh", title: localized("New SSH Connection…"),
                              icon: .network, shortcut: nil) {
             $0.presentSSHConnectPanel()
         })
-        actions.append(.init(id: "open-project", title: "Open Project…",
+        actions.append(.init(id: "open-project", title: localized("Open Project…"),
                              icon: .folder, shortcut: keys.display(for: .openProject)) {
             $0.presentOpenProjectPanel()
         })
         // One shared "Aa" glyph for the font-size trio: Hugeicons has no
         // larger/smaller/reset variants, so the titles carry the distinction.
         for (id, title, command, selector) in [
-            ("font-increase", "Increase Font Size",
+            ("font-increase", localized("Increase Font Size"),
              KeyCommandID.increaseFontSize, #selector(AppDelegate.increaseFontSize(_:))),
-            ("font-decrease", "Decrease Font Size",
+            ("font-decrease", localized("Decrease Font Size"),
              .decreaseFontSize, #selector(AppDelegate.decreaseFontSize(_:))),
-            ("font-reset", "Reset Font Size",
+            ("font-reset", localized("Reset Font Size"),
              .resetFontSize, #selector(AppDelegate.resetFontSize(_:))),
         ] {
             actions.append(.init(id: id, title: title, icon: .textFont,
@@ -362,22 +362,22 @@ struct CommandPaletteView: View {
                 NSApp.sendAction(selector, to: nil, from: nil)
             })
         }
-        actions.append(.init(id: "toggle-sidebar", title: "Toggle Sidebar",
+        actions.append(.init(id: "toggle-sidebar", title: localized("Toggle Sidebar"),
                              icon: .sidebarLeft, shortcut: nil) { _ in
             NSApp.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil)
         })
-        actions.append(.init(id: "toggle-files", title: "Toggle Project Files",
+        actions.append(.init(id: "toggle-files", title: localized("Toggle Project Files"),
                              icon: .sidebarRight, shortcut: keys.display(for: .toggleProjectFiles)) { _ in
             NSApp.sendAction(#selector(AppDelegate.toggleFilesInspector(_:)), to: nil, from: nil)
         })
-        actions.append(.init(id: "change-theme", title: "Change Theme…",
+        actions.append(.init(id: "change-theme", title: localized("Change Theme…"),
                              icon: nil, symbol: "paintpalette", shortcut: nil,
                              switchesMode: .themes) { _ in })
-        actions.append(.init(id: "settings", title: "Settings…",
+        actions.append(.init(id: "settings", title: localized("Settings…"),
                              icon: .settings, shortcut: "⌘,") { _ in
             NSApp.sendAction(#selector(AppDelegate.showSettings(_:)), to: nil, from: nil)
         })
-        actions.append(.init(id: "check-updates", title: "Check for Updates…",
+        actions.append(.init(id: "check-updates", title: localized("Check for Updates…"),
                              icon: .refresh, shortcut: nil) { _ in
             NSApp.sendAction(#selector(AppDelegate.checkForUpdates(_:)), to: nil, from: nil)
         })
@@ -432,7 +432,7 @@ struct CommandPaletteView: View {
         // Return-to-default sits atop the main group; popular first, then the
         // alphabetical remainder with popular removed so nothing repeats. The
         // label names the slot being edited so "default" isn't ambiguous.
-        items.append(themeItem(name: "", title: dark ? "Default Dark Theme" : "Default Light Theme"))
+        items.append(themeItem(name: "", title: dark ? localized("Default Dark Theme") : localized("Default Light Theme")))
         items += popular.map { themeItem(name: $0) }
         let popularSet = Set(popular)
         items += bundled.filter { !popularSet.contains($0) }.map { themeItem(name: $0) }
@@ -623,14 +623,14 @@ private enum PaletteSection: Int, Hashable {
 
     var title: String? {
         switch self {
-        case .sessions: return "Sessions"
-        case .recentProjects: return "Recent"
-        case .files: return "Files"
+        case .sessions: return localized("Sessions")
+        case .recentProjects: return localized("Recent")
+        case .files: return localized("Files")
         case .commands: return nil
-        case .customThemes: return "Custom"
+        case .customThemes: return localized("Custom")
         // No header when custom themes are absent (the common case) — a lone
         // "Themes" banner over the whole list is noise (see `sectioned`).
-        case .themes: return "Themes"
+        case .themes: return localized("Themes")
         }
     }
 }
@@ -739,7 +739,7 @@ private struct PaletteRow: View {
     @ViewBuilder
     private var trailing: some View {
         if case .session(let session) = item.kind, store.selectedSessionID == session.id {
-            Text("current")
+            Text(localized("current"))
                 .font(.system(size: 10))
                 .foregroundStyle(isHighlighted ? Color.white.opacity(0.8) : Color.secondary)
         } else if let shortcut = item.shortcut {

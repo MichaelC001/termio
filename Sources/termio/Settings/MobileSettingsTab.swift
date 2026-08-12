@@ -46,9 +46,9 @@ struct MobileSettingsTab: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Mobile Access", isOn: $mobile.isEnabled)
+                Toggle(localized("Mobile Access"), isOn: $mobile.isEnabled)
             } footer: {
-                footnote("Turn off to disconnect your iPhone; pairing is kept.")
+                footnote(localized("Turn off to disconnect your iPhone; pairing is kept."))
             }
 
             // Everything below only means anything while we're serving, so the
@@ -61,7 +61,7 @@ struct MobileSettingsTab: View {
                 // there's no "the QR above…" indirection to hold in your head.
                 Section {
                     if hosts.isEmpty, !tunnelRunning {
-                        footnote("No network address found. Join a network, then reopen this tab.")
+                        footnote(localized("No network address found. Join a network, then reopen this tab."))
                     } else {
                         // QR + its URL are one unit ("scan this, or copy the same
                         // thing") — kept in a single row so no divider splits them.
@@ -70,19 +70,19 @@ struct MobileSettingsTab: View {
 
                     // One precise control: where the companion is reachable —
                     // LAN only, or fronted by a named tunnel.
-                    Picker("Tunnel", selection: Binding(
+                    Picker(localized("Tunnel"), selection: Binding(
                         get: { tunnel.provider },
                         set: { tunnel.setProvider($0) }
                     )) {
                         ForEach(TunnelManager.Provider.allCases) { provider in
-                            Text(provider == .off ? "Off — LAN only" : provider.label).tag(provider)
+                            Text(provider == .off ? localized("Off — LAN only") : provider.label).tag(provider)
                         }
                     }
                     // The custom-relay editor: shown only when Custom is picked,
                     // so the common third-party path stays uncluttered.
                     if tunnel.provider == .custom { customTunnelEditor }
                     if !onTunnel, hosts.count > 1 {
-                        Picker("Address", selection: $selectedHost) {
+                        Picker(localized("Address"), selection: $selectedHost) {
                             ForEach(hosts, id: \.self) { host in
                                 Text(host).tag(host)
                             }
@@ -90,7 +90,7 @@ struct MobileSettingsTab: View {
                     }
                     if onTunnel { statusRow }
                 } header: {
-                    SectionHeaderLabel(title: "Connect iPhone")
+                    SectionHeaderLabel(title: localized("Connect iPhone"))
                 } footer: {
                     // Say plainly whose server the phone's traffic crosses, so
                     // the "can I self-host the relay?" question is answered in
@@ -102,21 +102,21 @@ struct MobileSettingsTab: View {
                 Section {
                     // A rare, destructive maintenance action: it rests as a plain
                     // button and lets the confirmation dialog carry the red.
-                    Button("Rotate Pairing Token…") { confirmRotate = true }
+                    Button(localized("Rotate Pairing Token…")) { confirmRotate = true }
                         .confirmationDialog(
-                            "Rotate the pairing token?",
+                            localized("Rotate the pairing token?"),
                             isPresented: $confirmRotate,
                             titleVisibility: .visible
                         ) {
-                            Button("Rotate Token", role: .destructive) {
+                            Button(localized("Rotate Token"), role: .destructive) {
                                 token = PairingToken.regenerate()
                             }
-                            Button("Cancel", role: .cancel) {}
+                            Button(localized("Cancel"), role: .cancel) {}
                         } message: {
-                            Text("Every paired iPhone is signed out and must re-scan the new QR to reconnect.")
+                            Text(localized("Every paired iPhone is signed out and must re-scan the new QR to reconnect."))
                         }
                 } footer: {
-                    footnote("Issues a new token and revokes every paired iPhone.")
+                    footnote(localized("Issues a new token and revokes every paired iPhone."))
                 }
             }
         }
@@ -134,12 +134,12 @@ struct MobileSettingsTab: View {
     /// LAN-only. Answers the "is the relay self-hostable?" question in the app.
     private var tunnelFootnote: String {
         if tunnel.provider == .custom {
-            return "On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path."
+            return localized("On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.")
         }
         if onTunnel {
-            return "On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead."
+            return localized("On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.")
         }
-        return "On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN."
+        return localized("On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.")
     }
 
     /// Command + URL-pattern editor for a self-hosted relay. A run-any-command
@@ -150,23 +150,25 @@ struct MobileSettingsTab: View {
     /// never becomes the live spec.
     @ViewBuilder
     private var customTunnelEditor: some View {
-        TextField("Command", text: $customCommand, prompt: Text("cloudflared tunnel run --url http://127.0.0.1:{port} my-tunnel"))
+        // The prompts stay untranslated: they are literal command lines and a
+        // literal regex, not prose.
+        TextField(localized("Command"), text: $customCommand, prompt: Text(verbatim: "cloudflared tunnel run --url http://127.0.0.1:{port} my-tunnel"))
             .font(.system(.callout, design: .monospaced))
             .onSubmit(commitCustomTunnel)
-        TextField("URL Pattern", text: $customURLPattern, prompt: Text(#"https://[a-z0-9-]+\.example\.com"#))
+        TextField(localized("URL Pattern"), text: $customURLPattern, prompt: Text(verbatim: #"https://[a-z0-9-]+\.example\.com"#))
             .font(.system(.callout, design: .monospaced))
             .onSubmit(commitCustomTunnel)
         HStack {
             if !customURLPattern.isEmpty, !patternCompiles {
-                Label("Not a valid regular expression", systemImage: "exclamationmark.triangle.fill")
+                Label(localized("Not a valid regular expression"), systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
                     .foregroundStyle(.orange)
             }
             Spacer()
-            Button("Apply", action: commitCustomTunnel)
+            Button(localized("Apply"), action: commitCustomTunnel)
                 .disabled(!customTunnelChanged)
         }
-        footnote("Runs on this Mac with your privileges when Custom is selected — no shell, arguments split on spaces. Use {port} for the companion port; the URL pattern is a regex matching the public https URL your relay prints.")
+        footnote(localized("Runs on this Mac with your privileges when Custom is selected — no shell, arguments split on spaces. Use {port} for the companion port; the URL pattern is a regex matching the public https URL your relay prints."))
     }
 
     /// Whether the draft URL pattern is a compilable regex.
@@ -203,25 +205,25 @@ struct MobileSettingsTab: View {
     @ViewBuilder
     private var statusRow: some View {
         HStack {
-            Text("Status")
+            Text(localized("Status"))
             Spacer()
             switch tunnel.status {
             case .off:
-                Text("Starting…")
+                Text(localized("Starting…"))
                     .foregroundStyle(.secondary)
             case .installing:
                 ProgressView().controlSize(.small)
-                Text("Installing \(tunnel.provider.binaryName)…")
+                Text(localized("Installing \(tunnel.provider.binaryName)…"))
                     .foregroundStyle(.secondary)
             case .starting:
                 ProgressView().controlSize(.small)
-                Text("Starting tunnel…")
+                Text(localized("Starting tunnel…"))
                     .foregroundStyle(.secondary)
             case .running:
                 Image(systemName: "circle.fill")
                     .font(.system(size: 9))
                     .foregroundStyle(.green)
-                Text("Connected")
+                Text(localized("Connected"))
                     .foregroundStyle(.secondary)
             case .failed(let message):
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -272,7 +274,7 @@ struct MobileSettingsTab: View {
                 copied = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
             } label: {
-                Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                Label(copied ? localized("Copied") : localized("Copy"), systemImage: copied ? "checkmark" : "doc.on.doc")
             }
             .buttonStyle(.borderless)
             .fixedSize()

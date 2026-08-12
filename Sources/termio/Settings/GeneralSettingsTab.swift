@@ -13,75 +13,80 @@ struct GeneralSettingsTab: View {
     var body: some View {
         Form {
             Section {
+                LanguageRow()
+            } header: {
+                SectionHeaderLabel(title: localized("Language"))
+            }
+            Section {
                 CommandLineToolRow()
             } header: {
-                SectionHeaderLabel(title: "Command line")
+                SectionHeaderLabel(title: localized("Command line"))
             }
             Section {
                 Toggle(isOn: $settings.sessionControlEnabled) {
                     SettingsLabel(
                         .huge(.gitBranch),
-                        title: "Session control",
-                        subtext: "Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command. Installs the termio skill into each agent's skills folder."
+                        title: localized("Session control"),
+                        subtext: localized("Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command. Installs the termio skill into each agent's skills folder.")
                     )
                 }
                 .toggleStyle(.switch)
                 if settings.sessionControlEnabled {
-                    InstallButtonRow(title: "Reinstall skill") {
+                    InstallButtonRow(title: localized("Reinstall skill")) {
                         .summarizing(SessionSkillInstaller.sync(enabled: true),
-                                     headline: "Skill reinstalled", unit: "files")
+                                     headline: localized("Skill reinstalled"), unit: localized("agents"))
                     }
                 }
             } header: {
-                SectionHeaderLabel(title: "Agent skill")
+                SectionHeaderLabel(title: localized("Agent skill"))
             }
             Section {
                 Toggle(isOn: $settings.agentHooksEnabled) {
                     SettingsLabel(
                         .huge(.wireless),
-                        title: "Live agent status",
-                        subtext: "Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio's hooks into each agent's config."
+                        title: localized("Live agent status"),
+                        subtext: localized("Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio's hooks into each agent's config.")
                     )
                 }
                 .toggleStyle(.switch)
                 if settings.agentHooksEnabled {
                     // For re-applying after the user (or another tool) has edited
                     // ~/.claude/settings.json; install is idempotent.
-                    InstallButtonRow(title: "Reinstall hooks") {
+                    InstallButtonRow(title: localized("Reinstall hooks")) {
                         .summarizing(AgentStatusHooks.sync(enabled: true),
-                                     headline: "Hooks reinstalled", unit: "agents")
+                                     headline: localized("Hooks reinstalled"), unit: localized("agents"))
                     }
                 }
             } header: {
-                SectionHeaderLabel(title: "Status")
+                SectionHeaderLabel(title: localized("Status"))
             }
             Section {
                 Toggle(isOn: $settings.notifyOnTaskCompletion) {
                     SettingsLabel(
                         .huge(.checkCircle),
-                        title: "Task completion",
-                        subtext: "Posts a notification when an agent finishes or needs you while Termio is in the background."
+                        title: localized("Task completion"),
+                        subtext: localized("Posts a notification when an agent finishes or needs you while Termio is in the background.")
                     )
                 }
                 .toggleStyle(.switch)
                 if settings.notifyOnTaskCompletion {
-                    Toggle("Play sound", isOn: $settings.notificationSoundEnabled)
+                    Toggle(localized("Play sound"), isOn: $settings.notificationSoundEnabled)
                     NotificationPermissionRow()
                 }
             } header: {
-                SectionHeaderLabel(title: "Notifications")
+                SectionHeaderLabel(title: localized("Notifications"))
             }
             Section {
                 Toggle(isOn: $settings.githubIntegrationEnabled) {
                     SettingsLabel(
                         .huge(.github),
-                        title: "GitHub",
-                        subtext: "Shows the Issues pane in the inspector for projects whose remote is on GitHub."
+                        title: localized("GitHub"),
+                        subtext: localized("Shows the Issues pane in the inspector for projects whose remote is on GitHub.")
                     )
                 }
                 .toggleStyle(.switch)
             } header: {
-                SectionHeaderLabel(title: "Integrations")
+                SectionHeaderLabel(title: localized("Integrations"))
             }
         }
         .formStyle(.grouped)
@@ -103,11 +108,11 @@ private struct NotificationPermissionRow: View {
             switch status {
             case .notDetermined:
                 HStack(spacing: 10) {
-                    Text("macOS hasn't been asked to allow Termio's notifications yet.")
+                    Text(localized("macOS hasn't been asked to allow Termio's notifications yet."))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("Request Permission") {
+                    Button(localized("Request Permission")) {
                         Task {
                             _ = await TaskNotificationCenter.requestPermission()
                             status = await TaskNotificationCenter.authorizationStatus()
@@ -116,11 +121,11 @@ private struct NotificationPermissionRow: View {
                 }
             case .denied:
                 HStack(spacing: 10) {
-                    Text("Notifications for Termio are turned off in System Settings.")
+                    Text(localized("Notifications for Termio are turned off in System Settings."))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("Open System Settings") {
+                    Button(localized("Open System Settings")) {
                         let id = Bundle.main.bundleIdentifier ?? ""
                         if let url = URL(string:
                             "x-apple.systempreferences:com.apple.preference.notifications?id=\(id)") {
@@ -153,7 +158,7 @@ private struct CommandLineToolRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Toggle(isOn: Binding(get: { isOn }, set: { setEnabled($0) })) {
-                SettingsLabel(.huge(.terminal), title: "Command-line tool", subtext: description)
+                SettingsLabel(.huge(.terminal), title: localized("Command-line tool"), subtext: description)
             }
             .toggleStyle(.switch)
             .disabled(!isSwitchable)
@@ -195,8 +200,8 @@ private struct CommandLineToolRow: View {
             } else {
                 status = CommandLineTool.uninstall()
                 state.show(isOn
-                    ? .failure("Couldn’t remove \(CommandLineTool.installURL.path).")
-                    : .success("Removed from PATH."))
+                    ? .failure(localized("Couldn’t remove \(CommandLineTool.installURL.path)."))
+                    : .success(localized("Removed from PATH.")))
             }
         }
     }
@@ -213,14 +218,14 @@ private struct CommandLineToolRow: View {
         status = result
         switch result {
         case .installed:
-            return .success(wasStale ? "Updated." : "Installed.")
+            return .success(wasStale ? localized("Updated.") : localized("Installed."))
         case .conflict:
-            return .failure("Something else already owns \(CommandLineTool.installURL.path).")
+            return .failure(localized("Something else already owns \(CommandLineTool.installURL.path)."))
         case .unavailable:
-            return .failure("No bundled tool to install from.")
+            return .failure(localized("No bundled tool to install from."))
         case .notInstalled, .stale:
             let directory = CommandLineTool.installURL.deletingLastPathComponent().path
-            return .failure("Couldn’t link `\(CommandLineTool.toolName)` into \(directory).")
+            return .failure(localized("Couldn’t link `\(CommandLineTool.toolName)` into \(directory)."))
         }
     }
 
@@ -228,20 +233,20 @@ private struct CommandLineToolRow: View {
         let tool = CommandLineTool.toolName
         switch status {
         case .installed:
-            return "`\(tool)` is on your PATH. Run `\(tool) sessions …` to drive sibling sessions, or `\(tool) .` to open a folder."
+            return localized("`\(tool)` is on your PATH. Run `\(tool) sessions …` to drive sibling sessions, or `\(tool) .` to open a folder.")
         case .stale(let path):
-            return "An older install points at \(path). Update it to this version of Termio."
+            return localized("An older install points at \(path). Update it to this version of Termio.")
         case .notInstalled:
-            return "Links `\(tool)` into /usr/local/bin so you (and agents) can run `\(tool) sessions …` from any shell."
+            return localized("Links `\(tool)` into /usr/local/bin so you (and agents) can run `\(tool) sessions …` from any shell.")
         case .conflict:
-            return "A different `\(tool)` already exists at \(CommandLineTool.installURL.path). Remove it first — Termio won't overwrite a file it didn't create."
+            return localized("A different `\(tool)` already exists at \(CommandLineTool.installURL.path). Remove it first — Termio won't overwrite a file it didn't create.")
         case .unavailable:
-            return "Available when Termio runs from the built app bundle."
+            return localized("Available when Termio runs from the built app bundle.")
         }
     }
 
     private var buttonTitle: String {
-        if case .stale = status { return "Update" }
-        return "Reinstall"
+        if case .stale = status { return localized("Update") }
+        return localized("Reinstall")
     }
 }

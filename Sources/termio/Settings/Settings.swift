@@ -14,9 +14,9 @@ enum CursorStyle: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .block: return "Block"
-        case .bar: return "Bar"
-        case .underline: return "Underline"
+        case .block: return localized("Block")
+        case .bar: return localized("Bar")
+        case .underline: return localized("Underline")
         }
     }
 }
@@ -33,9 +33,9 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .system: return "System"
-        case .light: return "Light"
-        case .dark: return "Dark"
+        case .system: return localized("System")
+        case .light: return localized("Light")
+        case .dark: return localized("Dark")
         }
     }
 }
@@ -54,8 +54,8 @@ enum ProjectSortOrder: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .recentActivity: return "Recent Activity"
-        case .name: return "Name"
+        case .recentActivity: return localized("Recent Activity")
+        case .name: return localized("Name")
         }
     }
 }

@@ -22,9 +22,9 @@ struct FileFindBar: View {
             // structure without a second material, so the bar stays one sheet of glass.
             Divider().frame(height: 16).opacity(0.6)
             countLabel
-            iconButton("chevron.up", disabled: totalMatches == 0, tooltip: "Previous Match", action: onPrevious)
-            iconButton("chevron.down", disabled: totalMatches == 0, tooltip: "Next Match", action: onNext)
-            iconButton("xmark", disabled: false, tooltip: "Close (Esc)", action: onClose)
+            iconButton("chevron.up", disabled: totalMatches == 0, tooltip: localized("Previous Match"), action: onPrevious)
+            iconButton("chevron.down", disabled: totalMatches == 0, tooltip: localized("Next Match"), action: onNext)
+            iconButton("xmark", disabled: false, tooltip: localized("Close (Esc)"), action: onClose)
         }
         .padding(.leading, 12)
         .padding(.trailing, 8)
@@ -54,19 +54,19 @@ struct FileFindBar: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            TextField("Find", text: $query)
+            TextField(localized("Find"), text: $query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
                 .focused($focused)
                 .onSubmit(onSubmit)
                 .frame(minWidth: 140, maxWidth: 260)
-            optionToggle(label: .symbol("textformat"), active: options.caseSensitive, tooltip: "Match Case") {
+            optionToggle(label: .symbol("textformat"), active: options.caseSensitive, tooltip: localized("Match Case")) {
                 options.caseSensitive.toggle()
             }
-            optionToggle(label: .text("ab", underline: true), active: options.wholeWord, tooltip: "Match Whole Word") {
+            optionToggle(label: .text("ab", underline: true), active: options.wholeWord, tooltip: localized("Match Whole Word")) {
                 options.wholeWord.toggle()
             }
-            optionToggle(label: .text(".*", underline: false), active: options.regex, tooltip: "Use Regular Expression") {
+            optionToggle(label: .text(".*", underline: false), active: options.regex, tooltip: localized("Use Regular Expression")) {
                 options.regex.toggle()
             }
         }
@@ -114,11 +114,11 @@ struct FileFindBar: View {
         if query.isEmpty {
             EmptyView()
         } else if totalMatches == 0 {
-            Text("No results")
+            Text(localized("No results"))
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
         } else {
-            Text("\(currentMatch) of \(totalMatches)")
+            Text(localized("\(currentMatch) of \(totalMatches)"))
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
