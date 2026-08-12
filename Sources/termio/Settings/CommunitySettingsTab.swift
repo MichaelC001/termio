@@ -8,28 +8,28 @@ struct CommunitySettingsTab: View {
             Section {
                 CommunityLinkRow(
                     icon: .bubbleChat,
-                    title: "Discord",
-                    subtext: "Chat with the developer and other users.",
-                    buttonTitle: "Join",
+                    title: localized("Discord"),
+                    subtext: localized("Chat with the developer and other users."),
+                    buttonTitle: localized("Join"),
                     url: "https://discord.gg/H9DKVwsE5f"
                 )
                 CommunityLinkRow(
                     icon: .github,
-                    title: "GitHub",
-                    subtext: "Termio is open source — star the repo, report bugs, and request features.",
-                    buttonTitle: "Open",
+                    title: localized("GitHub"),
+                    subtext: localized("Termio is open source — star the repo, report bugs, and request features."),
+                    buttonTitle: localized("Open"),
                     url: "https://github.com/termio-sh/termio"
                 )
             } header: {
-                SectionHeaderLabel(title: "Channels")
+                SectionHeaderLabel(title: localized("Channels"))
             }
             if let qrImage = Self.wechatQR {
                 Section {
                     VStack(alignment: .leading, spacing: 12) {
                         SettingsLabel(
                             .huge(.bubbleChatAdd),
-                            title: "WeChat group",
-                            subtext: "Scan the QR code with WeChat to join the Chinese community group."
+                            title: localized("WeChat group"),
+                            subtext: localized("Scan the QR code with WeChat to join the Chinese community group.")
                         )
                         Image(nsImage: qrImage)
                             .resizable()
@@ -41,7 +41,7 @@ struct CommunitySettingsTab: View {
                     }
                     .padding(.vertical, 4)
                 } header: {
-                    SectionHeaderLabel(title: "WeChat")
+                    SectionHeaderLabel(title: localized("WeChat"))
                 }
             }
         }

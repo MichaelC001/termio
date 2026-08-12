@@ -106,7 +106,7 @@ final class PreviewWebView: WKWebView {
     private func contextMenu(for click: WebContextMenuBridge.Click) -> NSMenu {
         let menu = NSMenu()
         guard !click.selection.isEmpty else { return menu }
-        menu.addPlainItem("Copy", target: self, action: #selector(copySelection(_:)),
+        menu.addPlainItem(localized("Copy"), target: self, action: #selector(copySelection(_:)),
                           representedObject: click.selection)
         return menu
     }

@@ -121,9 +121,9 @@ struct PRFilesSplitView: View {
             .id(change.path)
         } else {
             ContentUnavailableView(
-                "No File Selected",
+                localized("No File Selected"),
                 huge: .fileDoc,
-                description: Text("Pick a file on the left to see its changes.")
+                description: Text(localized("Pick a file on the left to see its changes."))
             )
         }
     }
@@ -237,11 +237,11 @@ private struct PRFileDiffBody: View {
             )
         } else {
             ContentUnavailableView(
-                change.isBinary ? "Binary File" : "No Diff",
+                change.isBinary ? localized("Binary File") : localized("No Diff"),
                 huge: .fileDoc,
                 description: Text(change.isBinary
-                    ? "This file is binary — open it on GitHub to view."
-                    : "This diff is too large to show here — open the file on GitHub.")
+                    ? localized("This file is binary — open it on GitHub to view.")
+                    : localized("This diff is too large to show here — open the file on GitHub."))
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -433,8 +433,8 @@ private struct FileDiffCard: View {
                 .frame(maxWidth: .infinity).frame(height: 44)
         } else {
             Text(change.isBinary
-                 ? "Binary file — open it on GitHub to view."
-                 : "This diff is too large to show here — open the file on GitHub.")
+                 ? localized("Binary file — open it on GitHub to view.")
+                 : localized("This diff is too large to show here — open the file on GitHub."))
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)

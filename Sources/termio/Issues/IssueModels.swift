@@ -59,10 +59,12 @@ enum IssueItemState: Hashable, Sendable {
 
     var label: String {
         switch self {
-        case .open: return "Open"
-        case .closed: return "Closed"
-        case .merged: return "Merged"
-        case .draft: return "Draft"
+        // Explicit key: the English word "Open" is already the verb key (打开),
+        // and the state reads 开放 — the catalog disambiguates by key, not context.
+        case .open: return localized("issue.state.open")
+        case .closed: return localized("Closed")
+        case .merged: return localized("Merged")
+        case .draft: return localized("Draft")
         }
     }
 }

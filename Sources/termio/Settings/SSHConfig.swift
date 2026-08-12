@@ -363,7 +363,7 @@ enum SSHConfigFile {
                 do {
                     try process.run()
                 } catch {
-                    continuation.resume(returning: .unreachable("ssh unavailable"))
+                    continuation.resume(returning: .unreachable(localized("ssh unavailable")))
                     return
                 }
                 // Drain before wait: a full stderr pipe would deadlock a process
@@ -386,18 +386,18 @@ enum SSHConfigFile {
         let lower = stderr.lowercased()
         let lastLine = stderr
             .split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-            .last(where: { !$0.isEmpty }) ?? "Connection failed"
+            .last(where: { !$0.isEmpty }) ?? localized("Connection failed")
         if lower.contains("permission denied")
             || lower.contains("too many authentication failures")
             || lower.contains("no supported authentication methods") {
             return .authFailed(lastLine)
         }
         if lower.contains("could not resolve") || lower.contains("name or service not known") {
-            return .unreachable("Host not found")
+            return .unreachable(localized("Host not found"))
         }
-        if lower.contains("connection refused") { return .unreachable("Connection refused") }
-        if lower.contains("no route to host") { return .unreachable("No route to host") }
-        if lower.contains("timed out") { return .unreachable("Timed out") }
+        if lower.contains("connection refused") { return .unreachable(localized("Connection refused")) }
+        if lower.contains("no route to host") { return .unreachable(localized("No route to host")) }
+        if lower.contains("timed out") { return .unreachable(localized("Timed out")) }
         return .unreachable(lastLine)
     }
 }

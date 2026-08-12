@@ -352,18 +352,18 @@ final class DiffTextView: NSTextView {
         menu.allowsContextMenuPlugIns = false
         // Not `copy:`: macOS 26 decorates the standard editing selectors with a system symbol
         // that `image = nil` cannot clear, and the rest of this menu is plain text.
-        menu.addItem(withTitle: "Copy", action: #selector(copySelection), keyEquivalent: "")
+        menu.addItem(withTitle: localized("Copy"), action: #selector(copySelection), keyEquivalent: "")
         if canAddToChat?() == true {
             menu.addItem(.separator())
             // One name everywhere (Cursor's): a selection goes over as the pasted
             // snippet, none means the diffed file's path — context says which.
-            let add = NSMenuItem(title: "Add to Chat", action: #selector(addToChatAction), keyEquivalent: "")
+            let add = NSMenuItem(title: localized("Add to Chat"), action: #selector(addToChatAction), keyEquivalent: "")
             add.target = self
             menu.addItem(add)
         }
         if onClose != nil {
             menu.addItem(.separator())
-            let close = NSMenuItem(title: "Close", action: #selector(closeFromMenu), keyEquivalent: "")
+            let close = NSMenuItem(title: localized("Close"), action: #selector(closeFromMenu), keyEquivalent: "")
             close.target = self
             menu.addItem(close)
         }

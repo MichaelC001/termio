@@ -94,32 +94,32 @@ final class TerminalContextMenu: NSObject {
         // This is also the path that always works — a TUI with mouse reporting
         // (Claude Code) swallows cmd+click, but never the right-click.
         if clickedLinkURL != nil {
-            menu.addItem(storeItem("Open Link", action: #selector(openLink), symbol: "safari"))
+            menu.addItem(storeItem(localized("Open Link"), action: #selector(openLink), symbol: "safari"))
             menu.addItem(.separator())
         }
         // Copy/Paste target the surface's own responder actions: copy is a
         // no-op without a selection, and paste routes through ghostty's
         // `paste_from_clipboard` binding so bracketed paste is preserved.
-        menu.addItem(surfaceItem("Copy", action: "copy:", symbol: "doc.on.doc"))
-        menu.addItem(surfaceItem("Paste", action: "paste:", symbol: "doc.on.clipboard"))
+        menu.addItem(surfaceItem(localized("Copy"), action: "copy:", symbol: "doc.on.doc"))
+        menu.addItem(surfaceItem(localized("Paste"), action: "paste:", symbol: "doc.on.clipboard"))
         // The session's deep link (`termio://session/<uuid>`) — the canonical
         // address every `termio sessions` command takes and the form that stays
         // self-describing when pasted into an agent prompt, so wiring one agent
         // to drive another is a right-click instead of a `list` round-trip.
         if clickedSessionID != nil {
-            menu.addItem(storeItem("Copy Session Link", action: #selector(copyLink), symbol: "link"))
+            menu.addItem(storeItem(localized("Copy Session Link"), action: #selector(copyLink), symbol: "link"))
         }
         menu.addItem(.separator())
         // Ghostty's own split glyphs and order (Right, Left, Down, Up): the filled
         // half of the rectangle is where the new pane lands, which reads at a
         // glance in a way "rectangle.split.2x1" never did once there were four.
-        menu.addItem(storeItem("Split Right", action: #selector(splitRight),
+        menu.addItem(storeItem(localized("Split Right"), action: #selector(splitRight),
                                symbol: "rectangle.righthalf.inset.filled"))
-        menu.addItem(storeItem("Split Left", action: #selector(splitLeft),
+        menu.addItem(storeItem(localized("Split Left"), action: #selector(splitLeft),
                                symbol: "rectangle.leadinghalf.inset.filled"))
-        menu.addItem(storeItem("Split Down", action: #selector(splitDown),
+        menu.addItem(storeItem(localized("Split Down"), action: #selector(splitDown),
                                symbol: "rectangle.bottomhalf.inset.filled"))
-        menu.addItem(storeItem("Split Up", action: #selector(splitUp),
+        menu.addItem(storeItem(localized("Split Up"), action: #selector(splitUp),
                                symbol: "rectangle.tophalf.inset.filled"))
         // "Ungroup" is the layout half: the pane leaves the split group but its
         // session stays alive in the sidebar — the same action the sidebar row
@@ -129,11 +129,11 @@ final class TerminalContextMenu: NSObject {
         // prunes its pane on the way out, so the layout needs no separate
         // cleanup.
         if store?.splitRoot != nil {
-            menu.addItem(storeItem("Ungroup", action: #selector(ungroup),
+            menu.addItem(storeItem(localized("Ungroup"), action: #selector(ungroup),
                                    symbol: "rectangle.split.2x1.slash"))
         }
         if clickedSessionID != nil {
-            menu.addItem(storeItem("Close Session", action: #selector(closeSession), symbol: "xmark"))
+            menu.addItem(storeItem(localized("Close Session"), action: #selector(closeSession), symbol: "xmark"))
         }
         return menu
     }

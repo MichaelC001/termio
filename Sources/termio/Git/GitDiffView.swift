@@ -150,7 +150,7 @@ struct GitDiffView: View {
             Spacer(minLength: 8)
             // "n of m" (Mail's message-walk wording) whenever there is a set to walk.
             if request.siblings.count > 1, let index = walkIndex {
-                Text("\(index + 1) of \(request.siblings.count)")
+                Text(localized("\(index + 1) of \(request.siblings.count)"))
                     .font(.system(size: 10.5, weight: .medium).monospacedDigit())
                     .foregroundStyle(.secondary)
                     .fixedSize()
@@ -255,9 +255,9 @@ struct GitDiffView: View {
             }
         } else {
             ContentUnavailableView(
-                "No Diff",
+                localized("No Diff"),
                 huge: .fileDoc,
-                description: Text("No textual changes to show.")
+                description: Text(localized("No textual changes to show."))
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }

@@ -67,7 +67,7 @@ struct FileSearchView: View {
                     text: $query,
                     isFocused: $fieldFocused,
                     focusRequest: focusRequest,
-                    placeholder: "Search Project",
+                    placeholder: localized("Search Project"),
                     onSubmit: {
                         if let first = matches.first { onOpen(first.url, first.line) }
                     },
@@ -88,7 +88,7 @@ struct FileSearchView: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
-                    .help("Clear")
+                    .help(localized("Clear"))
                 }
             }
             .padding(.horizontal, 9)
@@ -104,7 +104,7 @@ struct FileSearchView: View {
                         ProgressView()
                             .controlSize(.mini)
                     }
-                    Text(isSearching ? "Searching…" : summary(fileCount: groups.count))
+                    Text(isSearching ? localized("Searching…") : summary(fileCount: groups.count))
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 0)
@@ -204,10 +204,10 @@ struct FileSearchView: View {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 18))
                         .foregroundStyle(.quaternary)
-                    Text("No Matches")
+                    Text(localized("No Matches"))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
-                    Text("Try another search term.")
+                    Text(localized("Try another search term."))
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }
@@ -217,7 +217,7 @@ struct FileSearchView: View {
 
     private func summary(fileCount: Int) -> String {
         let capped = matches.count >= Self.matchLimit
-        return "\(matches.count)\(capped ? "+" : "") matches in \(fileCount) files"
+        return localized("\(matches.count)\(capped ? "+" : "") matches in \(fileCount) files")
     }
 
     private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
@@ -433,7 +433,7 @@ private struct FileHeaderRow: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(isExpanded ? "Collapse Results" : "Expand Results")
+            .help(isExpanded ? localized("Collapse Results") : localized("Expand Results"))
 
             HStack(spacing: 5) {
                 FileIconView(url: url, size: 15, symbolSize: 13)
