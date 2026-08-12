@@ -99,8 +99,17 @@ final class TunnelManager: ObservableObject {
         /// A `pkill -f` substring that matches *our* tunnel for this provider and
         /// nothing else. Always port-scoped (the argv carries the companion port),
         /// so a user's unrelated tunnel on another port is spared.
+        ///
+        /// A custom relay is deliberately excluded: its argv is a user-typed
+        /// string carrying no such guarantee. A one-token command yields the
+        /// pattern `"ssh "`, and `pkill -f` matches that as a *substring* of
+        /// every ssh on the machine — SIGKILLing the user's own sessions, and
+        /// doing it on every restart for as long as the command sits in
+        /// settings, whichever provider is actually selected. Custom orphans
+        /// are reaped by recorded pid instead; see `reapStrayCustomTunnel`.
         var reapPattern: String? {
-            spec.map { "\($0.binaryName) \($0.arguments.joined(separator: " "))" }
+            guard self != .custom else { return nil }
+            return spec.map { "\($0.binaryName) \($0.arguments.joined(separator: " "))" }
         }
     }
 
@@ -213,6 +222,7 @@ final class TunnelManager: ObservableObject {
         // app ever fronts the companion port, so killing every tunnel on it right
         // before we spawn ours is safe and converges to exactly one.
         Self.reapStrayTunnels()
+        Self.reapStrayCustomTunnel()
         let target = provider
         status = .starting
         Task {
@@ -282,6 +292,11 @@ final class TunnelManager: ObservableObject {
         do {
             try process.run()
             Log.tunnel.info("spawned \(provider.binaryName, privacy: .public) (pid \(process.processIdentifier, privacy: .public))")
+            // A custom relay has no argv signature to match on later, so the
+            // pid is the only handle a *future* run has on this child.
+            if provider == .custom {
+                Self.rememberCustomTunnel(pid: process.processIdentifier, binary: binary.path)
+            }
         } catch {
             status = .failed("couldn't launch \(provider.binaryName): \(error.localizedDescription)")
             return
@@ -318,6 +333,8 @@ final class TunnelManager: ObservableObject {
         process.terminationHandler = nil
         (process.standardOutput as? Pipe)?.fileHandleForReading.readabilityHandler = nil
         process.terminate()
+        // We reached this child ourselves, so no later run needs to hunt it.
+        Self.forgetCustomTunnel()
         self.process = nil
         status = .off
     }
@@ -336,6 +353,62 @@ final class TunnelManager: ObservableObject {
             try? pkill.run()
             pkill.waitUntilExit()
         }
+    }
+
+    // Read from the `nonisolated` reaper, so they can't inherit the type's
+    // main-actor isolation.
+    nonisolated private static let customPIDKey = "companion.customTunnel.pid"
+    nonisolated private static let customBinaryKey = "companion.customTunnel.pidBinary"
+
+    /// Remember the custom relay's child so a later run can reap it. The bundled
+    /// providers are matched by a tool-specific, port-scoped argv; a user-typed
+    /// command has no such shape, so the pid we actually spawned is the only
+    /// identity narrow enough to kill safely.
+    nonisolated private static func rememberCustomTunnel(pid: Int32, binary: String) {
+        UserDefaults.standard.set(Int(pid), forKey: customPIDKey)
+        UserDefaults.standard.set(binary, forKey: customBinaryKey)
+    }
+
+    nonisolated private static func forgetCustomTunnel() {
+        UserDefaults.standard.removeObject(forKey: customPIDKey)
+        UserDefaults.standard.removeObject(forKey: customBinaryKey)
+    }
+
+    /// Kill a custom relay a crashed run left behind, matched by the pid we
+    /// recorded at spawn. Pids are recycled, so the executable path is checked
+    /// first: an unrelated process that inherited the number is left alone, and
+    /// the record is dropped either way so a stale pid can't be retried forever.
+    nonisolated private static func reapStrayCustomTunnel() {
+        let pid = UserDefaults.standard.integer(forKey: customPIDKey)
+        guard pid > 0, let binary = UserDefaults.standard.string(forKey: customBinaryKey) else { return }
+        defer { forgetCustomTunnel() }
+        guard runningCommand(pid: Int32(pid))?.hasPrefix(binary) == true else {
+            Log.tunnel.info("custom relay pid \(pid, privacy: .public) is gone or recycled — not reaping")
+            return
+        }
+        Log.tunnel.notice("reaping stray custom relay (pid \(pid, privacy: .public))")
+        kill(pid_t(pid), SIGKILL)
+    }
+
+    /// The full command line of a live pid, or `nil` when it isn't running.
+    nonisolated private static func runningCommand(pid: Int32) -> String? {
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-p", String(pid), "-o", "command="]
+        let pipe = Pipe()
+        ps.standardOutput = pipe
+        ps.standardError = FileHandle.nullDevice
+        do {
+            try ps.run()
+        } catch {
+            Log.tunnel.error("couldn't inspect pid \(pid, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        ps.waitUntilExit()
+        let command = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return command.isEmpty ? nil : command
     }
 
     // MARK: - Binary discovery & install
