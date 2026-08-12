@@ -122,6 +122,8 @@
 	<string>Appearance</string>
 	<key>Appends a Host block to ~/.ssh/config, so the alias works in plain `ssh %@` too.</key>
 	<string>Appends a Host block to ~/.ssh/config, so the alias works in plain `ssh %@` too.</string>
+	<key>Apply</key>
+	<string>Apply</string>
 	<key>Assigned to Me</key>
 	<string>Assigned to Me</string>
 	<key>Assignee</key>
@@ -366,6 +368,8 @@
 	<string>Focus Pane Right</string>
 	<key>Focus Pane Up</key>
 	<string>Focus Pane Up</string>
+	<key>Font</key>
+	<string>Font</string>
 	<key>Font name</key>
 	<string>Font name</string>
 	<key>General</key>
@@ -594,6 +598,8 @@
 	<string>No themes match “%@”</string>
 	<key>Not Now</key>
 	<string>Not Now</string>
+	<key>Not a valid regular expression</key>
+	<string>Not a valid regular expression</string>
 	<key>Not pushed to upstream</key>
 	<string>Not pushed to upstream</string>
 	<key>Nothing to install.</key>
@@ -608,8 +614,12 @@
 	<string>Off — LAN only</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.</key>
 	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.</string>
+	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</key>
+	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network.</key>
 	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network.</string>
+	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.</key>
+	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.</string>
 	<key>Opacity</key>
 	<string>Opacity</string>
 	<key>Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity.</key>
@@ -758,6 +768,8 @@
 	<string>Run a command…</string>
 	<key>Running terminal sessions will end. You can relaunch later instead.</key>
 	<string>Running terminal sessions will end. You can relaunch later instead.</string>
+	<key>Runs on this Mac with your privileges when Custom is selected — no shell, arguments split on spaces. Use {port} for the companion port; the URL pattern is a regex matching the public https URL your relay prints.</key>
+	<string>Runs on this Mac with your privileges when Custom is selected — no shell, arguments split on spaces. Use {port} for the companion port; the URL pattern is a regex matching the public https URL your relay prints.</string>
 	<key>Runs with `%@`. The agent won't ask before editing files or running commands.</key>
 	<string>Runs with `%@`. The agent won't ask before editing files or running commands.</string>
 	<key>SF Symbol name</key>
@@ -956,6 +968,8 @@
 	<string>Turn off to disconnect your iPhone; pairing is kept.</string>
 	<key>Type this code at github.com/login/device to approve Termio. Waiting for approval…</key>
 	<string>Type this code at github.com/login/device to approve Termio. Waiting for approval…</string>
+	<key>URL Pattern</key>
+	<string>URL Pattern</string>
 	<key>Underline</key>
 	<string>Underline</string>
 	<key>Ungroup</key>
