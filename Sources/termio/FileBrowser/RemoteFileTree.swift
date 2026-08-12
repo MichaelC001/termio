@@ -173,6 +173,14 @@ final class RemoteFileBrowserModel: ObservableObject {
 
     func node(at path: String) -> RemoteFileNode? { nodesByPath[path] }
 
+    /// Ends the SFTP conversation when the pane goes away. The channel reopens on
+    /// the next listing, so this costs nothing but an idle helper process. Losing
+    /// the model without this still tears the channel down — the transport closes
+    /// its subprocess when the last reference goes — but not until deallocation.
+    func disconnect() {
+        Task { [provider] in await provider.disconnect() }
+    }
+
     /// Re-roots the tree from the live host. Existing rows stay up while the
     /// listing is in flight (no flash to a spinner on an app-focus reconcile);
     /// only the never-loaded state shows `connecting`.
@@ -262,7 +270,9 @@ final class RemoteFileBrowserModel: ObservableObject {
         case SSHProviderError.timedOut:
             return "The remote operation timed out."
         case SSHProviderError.unsupportedListing:
-            return "This host's directory listing format isn't supported."
+            return "This host sent a name the file tree can't show."
+        case SSHProviderError.protocolError:
+            return "This host's SFTP service answered in a way termio can't read."
         case SSHProviderError.listingTooLarge:
             return "This directory has too many entries to browse safely."
         case SSHProviderError.notRegularFile:
@@ -300,7 +310,10 @@ struct RemoteFileTreeView: View {
             content
         }
         .onAppear { model.refresh() }
-        .onDisappear { cancelPreviewRequest() }
+        .onDisappear {
+            cancelPreviewRequest()
+            model.disconnect()
+        }
         // The refresh model (no remote watching): reload when the app comes back
         // to the front — the same reconcile trigger as the git pane — but only
         // while the pane is actually visible.

@@ -82,12 +82,20 @@ enum SSHMux {
 
     /// Pane-side helper options: reuse the session socket, never own a
     /// connection, and never raise an authentication prompt.
+    ///
+    /// `RemoteCommand` and `RequestTTY` are pinned because a host that sets
+    /// either in `~/.ssh/config` would otherwise break the helper channel —
+    /// `RemoteCommand` makes `ssh -s` refuse to start, and a forced tty puts
+    /// terminal processing in front of a binary protocol. Nothing else about the
+    /// user's configuration is overridden.
     static var clientOptions: [String]? {
         guard let controlPathTemplate else { return nil }
         return [
             "-o", "ControlPath=\(controlPathTemplate)",
             "-o", "ControlMaster=no",
             "-o", "BatchMode=yes",
+            "-o", "RemoteCommand=none",
+            "-o", "RequestTTY=no",
         ]
     }
 
@@ -113,214 +121,132 @@ enum SSHProviderError: Error, Equatable {
     case notRegularFile
     case tooLarge
     case timedOut
+    case protocolError(String)
+    /// The server's `SSH_FX_EOF`. An expected end to a read or a listing loop,
+    /// carried as an error only because that is the shape a reply has.
+    case endOfFile
 }
 
 /// Browses an SSH host over the terminal session's existing ControlMaster.
 ///
-/// Directory records are emitted as `kind\0basename\0` by a remote `find` +
-/// POSIX-shell loop. NUL framing is deliberate: Unix names may contain newlines,
-/// so a line-oriented `ls` parser can be spoofed by a crafted symlink target.
+/// The transport is OpenSSH's own SFTP subsystem, spoken over `ssh -s <host>
+/// sftp` on the shared control socket: typed replies, no remote shell, and no
+/// quoting — a filename that contains a newline, a quote, or a leading dash is
+/// just a length-prefixed byte run. `~/.ssh/config` is honoured because the
+/// resolution is done by the `ssh` binary the user already authenticated with.
+///
+/// One channel is kept open for the pane's lifetime, so expanding a folder costs
+/// a round trip rather than a process launch.
 actor SSHFileSystemProvider: FileSystemProvider {
     let host: String
 
-    static let listingByteLimit = 8 * 1_048_576
-    private var probedHome: String?
+    /// Entries per directory. A tree can't render more than this usefully, and a
+    /// pathological directory shouldn't be able to grow the pane without bound.
+    static let directoryEntryLimit = 50_000
+    private static let connectTimeout: TimeInterval = 15
+    private static let requestTimeout: TimeInterval = 30
+    private static let checkTimeout: TimeInterval = 3
+
+    private var channel: SFTPChannel?
+    /// Folders expand concurrently, so several operations can find no channel at
+    /// once. They share one launch rather than racing to start their own helper.
+    private var connecting: Task<SFTPChannel, Error>?
 
     init(host: String) {
         self.host = host
     }
 
     func root() async throws -> String {
-        try await probeHome()
+        try await perform { try await $0.resolveRoot() }
     }
 
     func list(_ path: String) async throws -> [FileEntry] {
-        do {
-            let output = try await run(
-                Self.listingCommand(for: path),
-                captureLimit: Self.listingByteLimit,
-                timeout: 30)
-            return try Self.parseListing(output).sortedForTree()
-        } catch SSHProviderError.tooLarge {
-            throw SSHProviderError.listingTooLarge
-        }
+        try await perform { try await $0.entries(at: path, limit: Self.directoryEntryLimit) }
     }
 
     func read(_ path: String, limit: Int) async throws -> Data {
         guard limit >= 0, limit < Int.max else { throw SSHProviderError.tooLarge }
-        return try await run(
-            Self.readCommand(for: path, limit: limit),
-            captureLimit: limit,
-            timeout: 15,
-            notRegularExitStatus: 65)
+        return try await perform { try await $0.fileContents(at: path, limit: limit) }
+    }
+
+    /// Ends the conversation. The pane calls this when it goes away; the terminal
+    /// session's own connection is untouched.
+    func disconnect() {
+        connecting?.cancel()
+        connecting = nil
+        channel?.close()
+        channel = nil
     }
 
     // MARK: Connection
 
-    private func run(
-        _ remoteCommand: String,
-        captureLimit: Int? = nil,
-        timeout: TimeInterval,
-        notRegularExitStatus: Int32? = nil
-    ) async throws -> Data {
+    /// Runs one operation, reconnecting once if the channel we had was already
+    /// dead. ControlPersist expiry and a reconnected terminal both present as a
+    /// closed channel, and neither should surface as an error the user has to
+    /// dismiss — but a *fresh* channel failing is real, and is reported.
+    private func perform<T: Sendable>(
+        _ body: (SFTPChannel) async throws -> T
+    ) async throws -> T {
+        if let existing = channel, existing.isOpen {
+            do {
+                return try await body(existing)
+            } catch SSHProviderError.disconnected {
+                existing.close()
+                channel = nil
+            }
+        } else if let stale = channel {
+            stale.close()
+            channel = nil
+        }
+
+        try Task.checkCancellation()
+        let opened = try await openChannel()
+        return try await body(opened)
+    }
+
+    /// One launch at a time. A second caller arriving mid-connect awaits the same
+    /// task instead of starting a second helper.
+    private func openChannel() async throws -> SFTPChannel {
+        if let connecting {
+            let shared = try await connecting.value
+            if shared.isOpen { return shared }
+        }
+        let task = Task { try await connect() }
+        connecting = task
+        defer { connecting = nil }
+        let opened = try await task.value
+        channel = opened
+        return opened
+    }
+
+    /// `-O check` before launching is what keeps this from ever dialling: with a
+    /// dead master, `ssh` would fall back to opening its own connection, which is
+    /// exactly the second handshake the design forbids.
+    private func connect() async throws -> SFTPChannel {
         guard let clientOptions = SSHMux.clientOptions else {
             throw SSHProviderError.muxUnavailable
         }
-
         let check = await SSHProcessRunner.run(
             Self.checkArgv(host: host, clientOptions: clientOptions),
-            timeout: 3)
+            timeout: Self.checkTimeout)
         if check.wasCancelled { throw CancellationError() }
         guard !check.timedOut, check.status == 0 else {
             throw SSHProviderError.disconnected
         }
-
-        let result = await SSHProcessRunner.run(
-            Self.commandArgv(
-                host: host, remoteCommand: remoteCommand, clientOptions: clientOptions),
-            captureLimit: captureLimit,
-            timeout: timeout)
-        if result.wasCancelled { throw CancellationError() }
-        if result.timedOut { throw SSHProviderError.timedOut }
-        if result.outputLimitExceeded { throw SSHProviderError.tooLarge }
-        if let notRegularExitStatus, result.status == notRegularExitStatus {
-            throw SSHProviderError.notRegularFile
-        }
-        guard result.status == 0 else {
-            throw SSHProviderError.commandFailed(
-                result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-        return result.stdout
-    }
-
-    /// Resolve `$HOME` once. NUL-delimited markers keep shell startup chatter
-    /// from being mistaken for either the marker or the path.
-    private func probeHome() async throws -> String {
-        if let probedHome { return probedHome }
-        let output = try await run(
-            "printf '\\0TERMIO_HOME\\0%s\\0' \"$HOME\"",
-            timeout: 10)
-        let home = try Self.parseHome(output)
-        probedHome = home
-        return home
-    }
-
-    // MARK: Listing protocol
-
-    private static let listScript = """
-    for entry do
-        if [ -L "$entry" ]; then
-            kind=l
-        elif [ -d "$entry" ]; then
-            kind=d
-        elif [ -f "$entry" ]; then
-            kind=f
-        else
-            kind=o
-        fi
-        name=${entry##*/}
-        printf '%s\\0%s\\0' "$kind" "$name"
-    done
-    """
-
-    /// Internal for the local protocol integration test.
-    static func listingCommand(for path: String) -> String {
-        "find -H \(quoted(path)) -mindepth 1 -maxdepth 1 "
-            + "-exec sh -c \(quoted(listScript)) sh {} +"
-    }
-
-    /// Re-check the file type immediately before opening it, then cap the
-    /// remote producer as well as the local pipe. The process timeout remains
-    /// the final guard against a file being swapped after the check.
-    static func readCommand(for path: String, limit: Int) -> String {
-        let byteCount = limit + 1
-        return """
-        path=\(quoted(path))
-        if [ ! -f "$path" ] || [ -L "$path" ]; then
-            printf '%s\n' 'termio: not a regular file' >&2
-            exit 65
-        fi
-        dd if="$path" bs=\(byteCount) count=1 2>/dev/null
-        """
+        return try await SFTPChannel.connect(
+            argv: Self.sftpArgv(host: host, clientOptions: clientOptions),
+            requestTimeout: Self.requestTimeout,
+            connectTimeout: Self.connectTimeout)
     }
 
     static func checkArgv(host: String, clientOptions: [String]) -> [String] {
         ["/usr/bin/ssh"] + clientOptions + ["-O", "check", "--", host]
     }
 
-    static func commandArgv(
-        host: String,
-        remoteCommand: String,
-        clientOptions: [String]
-    ) -> [String] {
-        ["/usr/bin/ssh"] + clientOptions + ["-T", "--", host, remoteCommand]
-    }
-
-    /// Internal for regression tests: malformed/traversing records fail closed.
-    static func parseListing(_ data: Data) throws -> [FileEntry] {
-        let fields = try nulFields(in: data)
-        guard fields.count.isMultiple(of: 2) else {
-            throw SSHProviderError.unsupportedListing
-        }
-
-        var entries: [FileEntry] = []
-        entries.reserveCapacity(fields.count / 2)
-        for index in stride(from: 0, to: fields.count, by: 2) {
-            guard fields[index].count == 1,
-                  let code = fields[index].first,
-                  let name = String(data: fields[index + 1], encoding: .utf8),
-                  isSafeEntryName(name)
-            else {
-                throw SSHProviderError.unsupportedListing
-            }
-
-            let kind: FileEntry.Kind
-            switch code {
-            case 102: kind = .file // f
-            case 100: kind = .directory // d
-            case 108: kind = .symlink // l
-            case 111: kind = .other // o
-            default: throw SSHProviderError.unsupportedListing
-            }
-            entries.append(FileEntry(name: name, kind: kind))
-        }
-        return entries
-    }
-
-    static func parseHome(_ data: Data) throws -> String {
-        let fields = try nulFields(in: data)
-        let marker = Data("TERMIO_HOME".utf8)
-        guard let markerIndex = fields.lastIndex(of: marker),
-              fields.indices.contains(markerIndex + 1),
-              let home = String(data: fields[markerIndex + 1], encoding: .utf8),
-              home.hasPrefix("/"),
-              !home.contains("\0")
-        else {
-            throw SSHProviderError.commandFailed("The remote home directory could not be resolved.")
-        }
-        return home
-    }
-
-    private static func nulFields(in data: Data) throws -> [Data] {
-        var fields: [Data] = []
-        var fieldStart = data.startIndex
-        for index in data.indices where data[index] == 0 {
-            fields.append(data[fieldStart..<index])
-            fieldStart = data.index(after: index)
-        }
-        guard fieldStart == data.endIndex else {
-            throw SSHProviderError.unsupportedListing
-        }
-        return fields
-    }
-
-    private static func isSafeEntryName(_ name: String) -> Bool {
-        !name.isEmpty && name != "." && name != ".."
-            && !name.contains("/") && !name.contains("\0")
-    }
-
-    private static func quoted(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    /// `-s … sftp` requests the subsystem rather than running a command, so no
+    /// remote shell is involved and no startup file can print into the stream.
+    static func sftpArgv(host: String, clientOptions: [String]) -> [String] {
+        ["/usr/bin/ssh"] + clientOptions + ["-s", "--", host, "sftp"]
     }
 }
 
@@ -593,7 +519,10 @@ private final class SSHProcessExecution: @unchecked Sendable {
     }
 }
 
-private final class PipeCapture: @unchecked Sendable {
+/// A bounded drain of one pipe. Shared with `SFTPTransport`, which needs the same
+/// guarantee: a subprocess must never be able to block on a full pipe we stopped
+/// reading, and must never be able to grow our memory without limit.
+final class PipeCapture: @unchecked Sendable {
     private let lock = NSLock()
     private var captured = Data()
     private var exceeded = false

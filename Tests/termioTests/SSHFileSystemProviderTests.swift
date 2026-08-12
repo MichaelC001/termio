@@ -3,91 +3,354 @@ import Foundation
 import XCTest
 @testable import termio
 
-final class SSHListingProtocolTests: XCTestCase {
-    func testParsesNULTerminatedNamesIncludingNewlines() throws {
-        let data = records([
-            ("d", "folder"),
-            ("f", "line\nbreak.txt"),
-            ("l", "broken-link"),
-            ("o", "named-pipe"),
-        ])
+/// The SFTP client, exercised against OpenSSH's own `sftp-server`.
+///
+/// The subsystem binary speaks the protocol on stdin/stdout — that is how `sshd`
+/// invokes it — so running it directly tests the real client against the real
+/// server with no network, no SSH, and nothing mocked. What `ssh -s <host> sftp`
+/// adds on a live host is transport, not protocol.
+final class SFTPProtocolTests: XCTestCase {
+    private static let serverPath = "/usr/libexec/sftp-server"
 
-        let entries = try SSHFileSystemProvider.parseListing(data)
+    private var directory: URL!
 
-        XCTAssertEqual(entries.map(\.name), [
-            "folder", "line\nbreak.txt", "broken-link", "named-pipe",
-        ])
-        XCTAssertEqual(entries.map(\.kind), [
-            .directory, .file, .symlink, .other,
-        ])
-        XCTAssertTrue(entries[0].isDirectory)
-        XCTAssertTrue(entries[1].isPreviewable)
-        XCTAssertFalse(entries[2].isPreviewable)
-        XCTAssertFalse(entries[3].isPreviewable)
+    override func setUpWithError() throws {
+        try XCTSkipUnless(
+            FileManager.default.isExecutableFile(atPath: Self.serverPath),
+            "no local sftp-server to test against")
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("termio-sftp-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
     }
 
-    func testRejectsTraversalAndMalformedRecords() {
-        XCTAssertThrowsError(
-            try SSHFileSystemProvider.parseListing(records([("f", "../../tmp/owned")])))
-        XCTAssertThrowsError(
-            try SSHFileSystemProvider.parseListing(records([("f", "..")])))
-
-        var unterminated = Data("f\0name".utf8)
-        XCTAssertThrowsError(try SSHFileSystemProvider.parseListing(unterminated))
-        unterminated.append(0)
-        unterminated.append(contentsOf: Data("extra\0".utf8))
-        XCTAssertThrowsError(try SSHFileSystemProvider.parseListing(unterminated))
-        XCTAssertThrowsError(
-            try SSHFileSystemProvider.parseListing(Data([102, 0, 0xff, 0])))
+    override func tearDownWithError() throws {
+        if let directory { try? FileManager.default.removeItem(at: directory) }
     }
 
-    func testHomeMarkerIgnoresShellStartupChatter() throws {
-        let data = Data("banner from rc\n\0TERMIO_HOME\0/home/test user\0".utf8)
-        XCTAssertEqual(try SSHFileSystemProvider.parseHome(data), "/home/test user")
+    private func connect() async throws -> SFTPChannel {
+        try await SFTPChannel.connect(
+            argv: [Self.serverPath], requestTimeout: 10, connectTimeout: 10)
     }
 
-    func testListingCommandDoesNotInterpretSymlinkTargetAsRecords() async throws {
-        let manager = FileManager.default
-        let directory = manager.temporaryDirectory
-            .appendingPathComponent("termio-ssh-list-\(UUID().uuidString)", isDirectory: true)
-        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? manager.removeItem(at: directory) }
+    /// The names a shell protocol has to escape and a `find`/`ls` parser can be
+    /// spoofed by. Over SFTP they are length-prefixed bytes, so they need no
+    /// handling at all — which is the point of the test.
+    func testListsHostileNamesAndClassifiesEveryKind() async throws {
+        let channel = try await connect()
+        defer { channel.close() }
 
         let regularNames = [
-            "line\nbreak.txt",
-            "quote's file",
-            "tab\tfile",
-            "-leading-option",
+            "line\nbreak.txt", "quote's file", "tab\tfile", "-leading-option",
+            "space and 空格.md",
         ]
         for name in regularNames {
-            XCTAssertTrue(manager.createFile(
+            XCTAssertTrue(FileManager.default.createFile(
                 atPath: directory.appendingPathComponent(name).path,
                 contents: Data("hello".utf8)))
         }
-        let target = directory.appendingPathComponent("target").path
-        XCTAssertTrue(manager.createFile(atPath: target, contents: Data("target".utf8)))
-        try manager.createSymbolicLink(
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("folder"), withIntermediateDirectories: false)
+        try FileManager.default.createSymbolicLink(
             atPath: directory.appendingPathComponent("safe-link").path,
-            withDestinationPath: target)
-        let fifo = directory.appendingPathComponent("named-pipe").path
-        XCTAssertEqual(mkfifo(fifo, 0o600), 0)
+            withDestinationPath: directory.appendingPathComponent("line\nbreak.txt").path)
+        XCTAssertEqual(mkfifo(directory.appendingPathComponent("named-pipe").path, 0o600), 0)
 
-        let result = await SSHProcessRunner.run([
-            "/bin/sh", "-c", SSHFileSystemProvider.listingCommand(for: directory.path),
-        ], timeout: 5)
-        XCTAssertEqual(result.status, 0, result.stderr)
+        let entries = try await channel.entries(at: directory.path, limit: 1000)
+        let kinds = Dictionary(
+            uniqueKeysWithValues: entries.map { ($0.name, $0.kind) })
 
-        let entries = try SSHFileSystemProvider.parseListing(result.stdout)
         XCTAssertEqual(
             Set(entries.map(\.name)),
-            Set(regularNames + ["target", "safe-link", "named-pipe"]))
-        for name in regularNames + ["target"] {
-            XCTAssertEqual(entries.first(where: { $0.name == name })?.kind, .file)
+            Set(regularNames + ["folder", "safe-link", "named-pipe"]))
+        for name in regularNames {
+            XCTAssertEqual(kinds[name], .file, name)
         }
-        XCTAssertEqual(entries.first(where: { $0.name == "safe-link" })?.kind, .symlink)
-        XCTAssertEqual(entries.first(where: { $0.name == "named-pipe" })?.kind, .other)
+        XCTAssertEqual(kinds["folder"], .directory)
+        // lstat semantics: a link to a regular file is still a link, and the tree
+        // never chases it.
+        XCTAssertEqual(kinds["safe-link"], .symlink)
+        XCTAssertEqual(kinds["named-pipe"], .other)
+        XCTAssertFalse(entries.contains { $0.name == "." || $0.name == ".." })
+        // Folders first, then the Finder's name order — the shared tree contract.
+        XCTAssertEqual(entries.first?.name, "folder")
     }
 
+    func testListingCarriesSizeAndModificationTime() async throws {
+        let channel = try await connect()
+        defer { channel.close() }
+
+        let file = directory.appendingPathComponent("sized.bin")
+        try Data(repeating: 7, count: 4242).write(to: file)
+
+        let listing = try await channel.entries(at: directory.path, limit: 1000)
+        let entry = try XCTUnwrap(listing.first)
+        XCTAssertEqual(entry.size, 4242)
+        let modified = try XCTUnwrap(entry.modified)
+        XCTAssertLessThan(abs(modified.timeIntervalSinceNow), 60)
+    }
+
+    func testListingDropsVCSMetadataAndAppliesTreeOrder() async throws {
+        let channel = try await connect()
+        defer { channel.close() }
+
+        for name in [".git", ".DS_Store", ".hidden-but-shown", "visible.txt"] {
+            XCTAssertTrue(FileManager.default.createFile(
+                atPath: directory.appendingPathComponent(name).path, contents: Data()))
+        }
+
+        let entries = try await channel.entries(at: directory.path, limit: 1000)
+        XCTAssertEqual(entries.map(\.name), [".hidden-but-shown", "visible.txt"])
+    }
+
+    func testEntryLimitFailsClosed() async throws {
+        let channel = try await connect()
+        defer { channel.close() }
+
+        for index in 0..<40 {
+            XCTAssertTrue(FileManager.default.createFile(
+                atPath: directory.appendingPathComponent("entry-\(index)").path,
+                contents: Data()))
+        }
+
+        do {
+            _ = try await channel.entries(at: directory.path, limit: 5)
+            XCTFail("expected the entry cap to reject an oversized listing")
+        } catch SSHProviderError.listingTooLarge {
+            // expected
+        }
+    }
+
+    func testMissingDirectoryReportsTheServersReason() async throws {
+        let channel = try await connect()
+        defer { channel.close() }
+
+        do {
+            _ = try await channel.entries(
+                at: directory.appendingPathComponent("absent").path, limit: 1000)
+            XCTFail("expected a failure for a missing directory")
+        } catch SSHProviderError.commandFailed(let detail) {
+            XCTAssertFalse(detail.isEmpty)
+        }
+    }
+
+    /// A read spans many chunks and several pipelined rounds, so this covers the
+    /// offset arithmetic that assembles them.
+    func testReadsExactBytesAcrossChunkBoundaries() async throws {
+        let channel = try await connect()
+        defer { channel.close() }
+
+        let contents = Data((0..<(SFTP.readChunkBytes * 3 + 17)).map {
+            UInt8(truncatingIfNeeded: $0 &* 31)
+        })
+        let file = directory.appendingPathComponent("large.bin")
+        try contents.write(to: file)
+
+        let read = try await channel.fileContents(at: file.path, limit: contents.count)
+        XCTAssertEqual(read, contents)
+    }
+
+    func testReadStopsAtEndOfFileBelowTheLimit() async throws {
+        let channel = try await connect()
+        defer { channel.close() }
+
+        let file = directory.appendingPathComponent("small.txt")
+        try Data("just a little".utf8).write(to: file)
+
+        let read = try await channel.fileContents(at: file.path, limit: 1_048_576)
+        XCTAssertEqual(String(decoding: read, as: UTF8.self), "just a little")
+    }
+
+    /// The size is known from the open handle, so an oversized file is refused
+    /// before a byte moves.
+    func testOversizedFileIsRefusedBeforeTransfer() async throws {
+        let channel = try await connect()
+        defer { channel.close() }
+
+        let file = directory.appendingPathComponent("oversized.bin")
+        try Data(repeating: 98, count: 129).write(to: file)
+
+        do {
+            _ = try await channel.fileContents(at: file.path, limit: 128)
+            XCTFail("expected the preview cap to reject an oversized file")
+        } catch SSHProviderError.tooLarge {
+            // expected
+        }
+    }
+
+    func testRefusesSymlinksFIFOsAndDirectories() async throws {
+        let channel = try await connect()
+        defer { channel.close() }
+
+        let target = directory.appendingPathComponent("target.txt")
+        try Data("target".utf8).write(to: target)
+        let link = directory.appendingPathComponent("link.txt")
+        try FileManager.default.createSymbolicLink(
+            atPath: link.path, withDestinationPath: target.path)
+        let fifo = directory.appendingPathComponent("pipe")
+        XCTAssertEqual(mkfifo(fifo.path, 0o600), 0)
+
+        for path in [link.path, fifo.path, directory.path] {
+            do {
+                _ = try await channel.fileContents(at: path, limit: 1024)
+                XCTFail("expected \(path) to be refused")
+            } catch SSHProviderError.notRegularFile {
+                // expected
+            }
+        }
+        // The link's target is still readable when asked for directly, so the
+        // refusal is about not chasing links, not about the file being unreadable.
+        let readThroughTarget = try await channel.fileContents(at: target.path, limit: 1024)
+        XCTAssertEqual(readThroughTarget, Data("target".utf8))
+    }
+
+    func testResolvesAStartDirectory() async throws {
+        let channel = try await connect()
+        defer { channel.close() }
+
+        let root = try await channel.resolveRoot()
+        XCTAssertTrue(root.hasPrefix("/"), root)
+    }
+
+    /// Requests are matched by id, so many can be in flight on one channel. If the
+    /// dispatcher ever mismatched a reply, the contents would cross over.
+    func testConcurrentRequestsOnOneChannelDoNotCross() async throws {
+        let channel = try await connect()
+        defer { channel.close() }
+
+        for index in 0..<16 {
+            try Data("contents-\(index)".utf8).write(
+                to: directory.appendingPathComponent("file-\(index).txt"))
+        }
+
+        let results = try await withThrowingTaskGroup(of: (Int, Data).self) { group in
+            for index in 0..<16 {
+                group.addTask {
+                    (index, try await channel.fileContents(
+                        at: self.directory.appendingPathComponent("file-\(index).txt").path,
+                        limit: 1024))
+                }
+            }
+            var collected: [Int: Data] = [:]
+            for try await (index, data) in group { collected[index] = data }
+            return collected
+        }
+
+        for index in 0..<16 {
+            XCTAssertEqual(
+                String(decoding: try XCTUnwrap(results[index]), as: UTF8.self),
+                "contents-\(index)")
+        }
+    }
+
+    func testClosedChannelReportsDisconnected() async throws {
+        let channel = try await connect()
+        channel.close()
+        XCTAssertFalse(channel.isOpen)
+
+        do {
+            _ = try await channel.entries(at: directory.path, limit: 10)
+            XCTFail("expected a closed channel to refuse work")
+        } catch SSHProviderError.disconnected {
+            // expected
+        }
+    }
+
+    func testLaunchFailureIsReportedNotTrapped() async {
+        do {
+            _ = try await SFTPChannel.connect(
+                argv: ["/nonexistent/sftp-server"], requestTimeout: 2, connectTimeout: 2)
+            XCTFail("expected a launch failure")
+        } catch {
+            XCTAssertTrue(
+                error is SSHProviderError, String(describing: error))
+        }
+    }
+}
+
+/// Wire-format decoding, checked against bytes rather than a server: the cases a
+/// real server won't produce but a hostile or desynchronised one might.
+final class SFTPWireFormatTests: XCTestCase {
+    func testDecodesAttributeFlagCombinations() throws {
+        var payload = Data()
+        SFTP.append(UInt32(0x0000_0001 | 0x0000_0002 | 0x0000_0004 | 0x0000_0008), to: &payload)
+        SFTP.append(UInt64(4096), to: &payload)
+        SFTP.append(UInt32(501), to: &payload) // uid
+        SFTP.append(UInt32(20), to: &payload) // gid
+        SFTP.append(UInt32(0o100_644), to: &payload)
+        SFTP.append(UInt32(1_700_000_000), to: &payload) // atime
+        SFTP.append(UInt32(1_700_000_500), to: &payload) // mtime
+
+        var reader = SFTPReader(payload)
+        let attributes = try reader.readAttributes()
+
+        XCTAssertEqual(attributes.size, 4096)
+        XCTAssertEqual(attributes.kind, .file)
+        XCTAssertEqual(attributes.modified, Date(timeIntervalSince1970: 1_700_000_500))
+        XCTAssertTrue(reader.isAtEnd, "attribute parsing left the cursor misaligned")
+    }
+
+    func testKindFailsClosedWhenPermissionsAreAbsent() throws {
+        var payload = Data()
+        SFTP.append(UInt32(0x0000_0001), to: &payload)
+        SFTP.append(UInt64(10), to: &payload)
+
+        var reader = SFTPReader(payload)
+        let attributes = try reader.readAttributes()
+
+        XCTAssertEqual(attributes.kind, .other)
+        XCTAssertFalse(attributes.isRegularFile)
+    }
+
+    func testExtendedAttributesAreSkippedWithoutLosingAlignment() throws {
+        var payload = Data()
+        SFTP.append(UInt32(0x0000_0004 | 0x8000_0000), to: &payload)
+        SFTP.append(UInt32(0o040_755), to: &payload)
+        SFTP.append(UInt32(2), to: &payload)
+        SFTP.append(string: "vendor@example.com", to: &payload)
+        SFTP.append(string: "value", to: &payload)
+        SFTP.append(string: "another@example.com", to: &payload)
+        SFTP.append(string: "value", to: &payload)
+        SFTP.append(UInt32(0xDEAD_BEEF), to: &payload) // a field that must survive
+
+        var reader = SFTPReader(payload)
+        XCTAssertEqual(try reader.readAttributes().kind, .directory)
+        XCTAssertEqual(try reader.readUInt32(), 0xDEAD_BEEF)
+    }
+
+    func testTruncatedFieldsThrowRatherThanTrap() {
+        var short = Data()
+        SFTP.append(UInt32(64), to: &short) // claims 64 bytes, supplies none
+        var reader = SFTPReader(short)
+        XCTAssertThrowsError(try reader.readBytes())
+
+        var stub = SFTPReader(Data([0x01, 0x02]))
+        XCTAssertThrowsError(try stub.readUInt32())
+    }
+
+    func testNameRecordsRejectTraversalAndSeparators() {
+        XCTAssertFalse(SFTPChannel.isSafeEntryName(".."))
+        XCTAssertFalse(SFTPChannel.isSafeEntryName("."))
+        XCTAssertFalse(SFTPChannel.isSafeEntryName("../../etc/passwd"))
+        XCTAssertFalse(SFTPChannel.isSafeEntryName("nested/name"))
+        XCTAssertFalse(SFTPChannel.isSafeEntryName("nul\0byte"))
+        XCTAssertFalse(SFTPChannel.isSafeEntryName(""))
+        XCTAssertTrue(SFTPChannel.isSafeEntryName("line\nbreak.txt"))
+        XCTAssertTrue(SFTPChannel.isSafeEntryName("-leading-dash"))
+    }
+
+    func testNameParsingRejectsAMismatchedPacketType() {
+        let packet = SFTPPacket(type: SFTP.PacketType.status, payload: Data())
+        XCTAssertThrowsError(try SFTPChannel.parseNames(packet))
+    }
+
+    func testFramingPrefixesLengthAndType() {
+        let frame = SFTP.frame(type: SFTP.PacketType.initialize, payload: Data([0, 0, 0, 3]))
+        XCTAssertEqual(Array(frame), [0, 0, 0, 5, 1, 0, 0, 0, 3])
+    }
+}
+
+final class SSHClientOptionsTests: XCTestCase {
     @MainActor
     func testSSHArgvTerminatesOptionsBeforeDestination() {
         let options = ["-o", "BatchMode=yes"]
@@ -95,10 +358,19 @@ final class SSHListingProtocolTests: XCTestCase {
             SSHFileSystemProvider.checkArgv(host: "-host", clientOptions: options),
             ["/usr/bin/ssh", "-o", "BatchMode=yes", "-O", "check", "--", "-host"])
         XCTAssertEqual(
-            SSHFileSystemProvider.commandArgv(
-                host: "-host", remoteCommand: "printf ok", clientOptions: options),
-            ["/usr/bin/ssh", "-o", "BatchMode=yes", "-T", "--", "-host", "printf ok"])
+            SSHFileSystemProvider.sftpArgv(host: "-host", clientOptions: options),
+            ["/usr/bin/ssh", "-o", "BatchMode=yes", "-s", "--", "-host", "sftp"])
         XCTAssertTrue(TermioStore.sshCommand(host: "-host").contains(" -- '-host'"))
+    }
+
+    /// A host whose `~/.ssh/config` forces a remote command or a tty would break
+    /// the subsystem channel; the helper pins both off, and nothing else.
+    func testHelperOptionsNeutraliseConfigDirectivesThatBreakSubsystems() throws {
+        let options = try XCTUnwrap(SSHMux.clientOptions)
+        XCTAssertTrue(options.contains("RemoteCommand=none"))
+        XCTAssertTrue(options.contains("RequestTTY=no"))
+        XCTAssertTrue(options.contains("ControlMaster=no"))
+        XCTAssertTrue(options.contains("BatchMode=yes"))
     }
 
     func testControlPathBudgetHandlesLongHomesAndActualTemplate() throws {
@@ -109,7 +381,9 @@ final class SSHListingProtocolTests: XCTestCase {
             of: "%C", with: String(repeating: "a", count: SSHMux.controlHashBytes))
         XCTAssertLessThanOrEqual(expanded.utf8.count, SSHMux.maximumSocketPathBytes)
     }
+}
 
+final class RemotePreviewStagingTests: XCTestCase {
     @MainActor
     func testPreviewLeasesArePrivateIndependentAndCleanUp() throws {
         XCTAssertTrue(RemotePreviewStorage.isSafeComponent("hello world.swift"))
@@ -179,53 +453,6 @@ final class SSHListingProtocolTests: XCTestCase {
         store.openFileURL = nil
         XCTAssertFalse(FileManager.default.fileExists(atPath: acceptedURL.path))
     }
-
-    func testReadCommandCapsBytesAndRejectsFIFO() async throws {
-        let manager = FileManager.default
-        let directory = manager.temporaryDirectory
-            .appendingPathComponent("termio-ssh-read-\(UUID().uuidString)", isDirectory: true)
-        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? manager.removeItem(at: directory) }
-
-        let exact = directory.appendingPathComponent("exact").path
-        XCTAssertTrue(manager.createFile(atPath: exact, contents: Data(repeating: 97, count: 128)))
-        let exactResult = await runReadCommand(path: exact, limit: 128)
-        XCTAssertEqual(exactResult.status, 0, exactResult.stderr)
-        XCTAssertEqual(exactResult.stdout.count, 128)
-        XCTAssertFalse(exactResult.outputLimitExceeded)
-
-        let oversized = directory.appendingPathComponent("oversized").path
-        XCTAssertTrue(manager.createFile(
-            atPath: oversized, contents: Data(repeating: 98, count: 129)))
-        let oversizedResult = await runReadCommand(path: oversized, limit: 128)
-        XCTAssertTrue(oversizedResult.outputLimitExceeded)
-        XCTAssertEqual(oversizedResult.stdout.count, 128)
-
-        let fifo = directory.appendingPathComponent("pipe").path
-        XCTAssertEqual(mkfifo(fifo, 0o600), 0)
-        let started = Date()
-        let fifoResult = await runReadCommand(path: fifo, limit: 128)
-        XCTAssertEqual(fifoResult.status, 65)
-        XCTAssertLessThan(Date().timeIntervalSince(started), 1)
-    }
-
-    private func records(_ values: [(String, String)]) -> Data {
-        var data = Data()
-        for (kind, name) in values {
-            data.append(contentsOf: kind.utf8)
-            data.append(0)
-            data.append(contentsOf: name.utf8)
-            data.append(0)
-        }
-        return data
-    }
-
-    private func runReadCommand(path: String, limit: Int) async -> SSHProcessResult {
-        await SSHProcessRunner.run(
-            ["/bin/sh", "-c", SSHFileSystemProvider.readCommand(for: path, limit: limit)],
-            captureLimit: limit,
-            timeout: 2)
-    }
 }
 
 final class SSHProcessRunnerTests: XCTestCase {
@@ -286,16 +513,5 @@ final class SSHProcessRunnerTests: XCTestCase {
             usleep(10_000)
         }
         XCTAssertTrue(childIsGone, "cancellation left a subprocess running")
-    }
-
-    func testListingCaptureLimitTerminatesUnboundedProducer() async {
-        let result = await SSHProcessRunner.run(
-            ["/usr/bin/yes", "listing"],
-            captureLimit: SSHFileSystemProvider.listingByteLimit,
-            timeout: 5)
-
-        XCTAssertTrue(result.outputLimitExceeded)
-        XCTAssertEqual(result.stdout.count, SSHFileSystemProvider.listingByteLimit)
-        XCTAssertFalse(result.timedOut)
     }
 }
