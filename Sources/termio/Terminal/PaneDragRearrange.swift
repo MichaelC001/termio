@@ -256,8 +256,8 @@ final class PaneDragRearrange {
     private typealias PaneHit = (id: Session.ID, point: CGPoint, size: CGSize)
 
     /// Resolved by geometry rather than `hitTest` for the same reason as
-    /// `TerminalContextMenu`: invisible siblings stay mounted at full pane size,
-    /// so AppKit's topmost hit may be a hidden view. Visible panes tile without
+    /// `TerminalContextMenu`: invisible siblings stay mounted and laid out, so
+    /// AppKit's topmost hit may be a hidden view. Visible panes tile without
     /// overlapping, so "contains the point and is visible" is unambiguous.
     private func paneGeometry(at point: NSPoint, in contentView: NSView,
                               window: NSWindow) -> PaneHit? {

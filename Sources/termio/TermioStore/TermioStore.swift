@@ -111,9 +111,10 @@ final class TermioStore: ObservableObject {
     /// Activation *requests* for sessions that are neither selected nor in the
     /// visible group: a background spawn's fresh pane, a `send` target never
     /// shown. `TerminalPane` folds these into its own `activated` list — the
-    /// actual mounted set — so the pane mounts invisibly at full size, which is
-    /// what attaches the libghostty surface: the queued prompt can then be
-    /// delivered without yanking the user's selection over to the new pane.
+    /// actual mounted set — so the pane mounts invisibly at the size its layout
+    /// gives it, which is what attaches the libghostty surface: the queued
+    /// prompt can then be delivered without yanking the user's selection over
+    /// to the new pane.
     /// Transient and not persisted — on relaunch the pane mounts the normal way.
     @Published private(set) var backgroundActivationIDs: [Session.ID] = []
 
