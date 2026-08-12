@@ -12,8 +12,9 @@
 
 <br />
 
-Run Claude Code, Codex, and any CLI agent side by side in a native Mac app —<br />
-every session live in the sidebar, and a menu-bar dot that tells you who needs you.
+Run Claude Code, Codex, and any CLI agent side by side in a real Mac terminal —<br />
+Swift and libghostty, no Electron. A menu-bar dot tells you which one needs you,<br />
+and your iPhone tells you when you're away from the desk.
 
 <br />
 
@@ -38,7 +39,7 @@ brew install --cask termio-sh/tap/termio
 [TestFlight](https://testflight.apple.com/join/1Arf1UKR), then pair it by
 scanning the QR code in the Mac app's Settings ▸ Mobile.
 
-## Built for watching agents work
+## Built for agentic coding and engineering
 
 The IDE was built around a person typing code. When agents write most of the
 code, the environment's job changes: it's where agents work and where you

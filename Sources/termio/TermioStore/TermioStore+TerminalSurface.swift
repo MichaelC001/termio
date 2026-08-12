@@ -111,6 +111,15 @@ enum PiSession {
 }
 
 extension TermioStore {
+    /// `path` when it still names a real directory, else `nil`. A recorded cwd outlives
+    /// the folder it points at, and a shell spawned in a deleted directory lands at `/`.
+    static func existingDirectory(_ path: String?) -> String? {
+        guard let path else { return nil }
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+        return exists && isDirectory.boolValue ? path : nil
+    }
+
     /// Returns the cached terminal surface for a session, creating and starting
     /// it on first access. The surface launches `session.command` (or the login
     /// shell) in the project's working directory via the real PTY (`.exec`).
@@ -124,15 +133,17 @@ extension TermioStore {
         // A loose terminal instead respawns at the cwd it last reported over OSC 7
         // (its path is the session's own mutable property, not the container's) —
         // so a relaunch drops the user back where they `cd`'d, not at `$HOME`.
-        // A directory deleted since then falls back to the container's `$HOME`.
-        let restoredCwd: String? = project.kind == .terminals
-            ? session.lastWorkingDirectory.flatMap { path in
-                var isDirectory: ObjCBool = false
-                let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
-                return exists && isDirectory.boolValue ? path : nil
-            }
+        // Ahead of the worktree/project anchor sits the directory the session was
+        // opened in (⌘T): where the user asked *this* shell to start, even when the
+        // session belongs to a project rooted elsewhere. Each rung must still exist —
+        // a stale path falls through rather than dropping the shell at `/`.
+        let restoredCwd = project.kind == .terminals
+            ? Self.existingDirectory(session.lastWorkingDirectory)
             : nil
-        let workspacePath = session.worktreePath ?? restoredCwd ?? project.path
+        let workspacePath = restoredCwd
+            ?? Self.existingDirectory(session.spawnDirectory)
+            ?? session.worktreePath
+            ?? project.path
 
         // Resolve the launch command *with* any resume arguments, so a session that was
         // running when the app last quit picks its conversation back up instead of

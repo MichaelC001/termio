@@ -7,7 +7,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "postinstall": "fumadocs-mdx"
+    "postinstall": "fumadocs-mdx",
+    "keybindings:sync": "node scripts/sync-keybindings.mjs",
+    "docs:stamp": "node scripts/docs-check.mjs --stamp",
+    "docs:check": "node scripts/sync-keybindings.mjs --check && node scripts/docs-check.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
@@ -20,8 +23,9 @@
     "embla-carousel-autoplay": "^8.6.0",
     "embla-carousel-react": "^8.6.0",
     "embla-carousel-wheel-gestures": "^8.1.0",
-    "fumadocs-core": "^16.14.1",
+    "fumadocs-core": "^16.14.3",
     "fumadocs-mdx": "^15.2.2",
+    "fumadocs-ui": "16.14.3",
     "lucide-react": "^1.29.0",
     "next": "16.3.0",
     "react": "19.2.8",
