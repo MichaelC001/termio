@@ -97,6 +97,18 @@ struct GitChangesView: View {
         .onChange(of: model.changes.count) { _, count in changeCount = count }
         .onChange(of: selection) { _, selected in
             if selected.count == 1, let change = model.changes.first(where: { $0.path == selected.first }) {
+                // A selection that merely mirrors the working-tree diff already on screen is the
+                // echo of the `store.openDiff` mirror below — a session switch restoring a saved
+                // diff lands here — not a click. Re-opening it would count as a fresh open and
+                // un-collapse an inspector the user closed (issue #272). Closing the overlay
+                // releases the selection, so clicking the same row still reopens it. The saved
+                // request carries the sibling list it was captured with, so hand the pane's
+                // current one over — that keeps the ← / → walk honest without re-opening.
+                let showing = store.openDiff
+                guard showing?.commit != nil || showing?.change.path != change.path else {
+                    store.refreshOpenDiffSiblings(model.changes)
+                    return
+                }
                 open(change)
             } else if selected.count > 1, store.openDiff != nil {
                 // A multi-selection has no single diff to show — drop the overlay.
