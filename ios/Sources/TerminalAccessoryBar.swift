@@ -18,52 +18,52 @@ enum TerminalKeyCatalog {
     static let all: [TerminalControlKey] = [
         TerminalControlKey(
             id: "tab", title: "tab",
-            detail: "Autocomplete, accept a suggestion",
+            detail: localized("Autocomplete, accept a suggestion"),
             payload: Data([0x09])
         ),
         TerminalControlKey(
             id: "shiftTab", title: "⇧⇥",
-            detail: "Cycle permission modes — default, accept edits, plan",
+            detail: localized("Cycle permission modes — default, accept edits, plan"),
             payload: Data("\u{1B}[Z".utf8)
         ),
         TerminalControlKey(
             id: "ctrlO", title: "^O",
-            detail: "Toggle the transcript viewer (what the agent did)",
+            detail: localized("Toggle the transcript viewer (what the agent did)"),
             payload: Data([0x0F])
         ),
         TerminalControlKey(
             id: "ctrlC", title: "^C",
-            detail: "Interrupt — pressed twice while idle it exits the agent",
+            detail: localized("Interrupt — pressed twice while idle it exits the agent"),
             payload: Data([0x03])
         ),
         TerminalControlKey(
             id: "ctrlL", title: "^L",
-            detail: "Redraw a glitched screen",
+            detail: localized("Redraw a glitched screen"),
             payload: Data([0x0C])
         ),
         TerminalControlKey(
             id: "ctrlB", title: "^B",
-            detail: "Move the running task to the background",
+            detail: localized("Move the running task to the background"),
             payload: Data([0x02])
         ),
         TerminalControlKey(
             id: "ctrlT", title: "^T",
-            detail: "Toggle the task checklist",
+            detail: localized("Toggle the task checklist"),
             payload: Data([0x14])
         ),
         TerminalControlKey(
             id: "ctrlR", title: "^R",
-            detail: "Search prompt history",
+            detail: localized("Search prompt history"),
             payload: Data([0x12])
         ),
         TerminalControlKey(
             id: "ctrlZ", title: "^Z",
-            detail: "Suspend the foreground process",
+            detail: localized("Suspend the foreground process"),
             payload: Data([0x1A])
         ),
         TerminalControlKey(
             id: "ctrlD", title: "^D",
-            detail: "End of file — exits a shell or REPL",
+            detail: localized("End of file — exits a shell or REPL"),
             payload: Data([0x04])
         ),
     ]
@@ -329,7 +329,7 @@ final class TerminalAccessoryBar: UIInputView {
         )
         config.cornerStyle = .medium
         attachButton.configuration = config
-        attachButton.accessibilityLabel = "Attach"
+        attachButton.accessibilityLabel = localized("Attach")
         attachButton.tintColor = .label
         // Invisible until the owner reports an upload backend, but never
         // removed — the grid must not reflow around it.
@@ -404,10 +404,10 @@ final class TerminalAccessoryBar: UIInputView {
         // so each source is one neutral chip with a thin outline glyph — the
         // Hugeicons look, done natively in SF Symbols (see makeMenuRow).
         let rows = UIStackView(arrangedSubviews: [
-            makeMenuRow(title: "Camera", icon: .camera) { [weak self] in self?.onAttach?(.camera) },
-            makeMenuRow(title: "Photos", icon: .image) { [weak self] in self?.onAttach?(.photos) },
-            makeMenuRow(title: "Voice", icon: .voice) { [weak self] in self?.startVoiceRecording() },
-            makeMenuRow(title: "Files", icon: .folder) { [weak self] in self?.onAttach?(.files) },
+            makeMenuRow(title: localized("Camera"), icon: .camera) { [weak self] in self?.onAttach?(.camera) },
+            makeMenuRow(title: localized("Photos"), icon: .image) { [weak self] in self?.onAttach?(.photos) },
+            makeMenuRow(title: localized("Voice"), icon: .voice) { [weak self] in self?.startVoiceRecording() },
+            makeMenuRow(title: localized("Files"), icon: .folder) { [weak self] in self?.onAttach?(.files) },
         ])
         rows.axis = .vertical
         rows.translatesAutoresizingMaskIntoConstraints = false
@@ -665,7 +665,7 @@ final class TerminalAccessoryBar: UIInputView {
             self?.haptic.impactOccurred()
             self?.onScrollEdge?(edge)
         }
-        button.accessibilityLabel = edge == .top ? "Scroll to top" : "Scroll to bottom"
+        button.accessibilityLabel = edge == .top ? localized("Scroll to top") : localized("Scroll to bottom")
         button.heightAnchor.constraint(equalToConstant: Self.keyHeight).isActive = true
         return button
     }

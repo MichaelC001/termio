@@ -16,8 +16,8 @@ final class OpenAIRealtimeTranscriber: NSObject {
         var errorDescription: String? {
             switch self {
             case .connection(let message), .api(let message): message
-            case .empty: "OpenAI returned an empty transcript"
-            case .timedOut: "OpenAI Realtime transcription timed out"
+            case .empty: localized("OpenAI returned an empty transcript")
+            case .timedOut: localized("OpenAI Realtime transcription timed out")
             }
         }
     }
@@ -159,7 +159,7 @@ final class OpenAIRealtimeTranscriber: NSObject {
         guard let data = try? JSONSerialization.data(withJSONObject: event),
               let text = String(data: data, encoding: .utf8)
         else {
-            record(.connection("Couldn't encode an OpenAI Realtime event"))
+            record(.connection(localized("Couldn't encode an OpenAI Realtime event")))
             return
         }
         task.send(.string(text)) { [weak self] error in
@@ -204,7 +204,7 @@ final class OpenAIRealtimeTranscriber: NSObject {
             finish(transcript.isEmpty ? .failure(.empty) : .success(transcript))
         case "error":
             let error = json["error"] as? [String: Any]
-            let message = error?["message"] as? String ?? "OpenAI Realtime failed"
+            let message = error?["message"] as? String ?? localized("OpenAI Realtime failed")
             record(.api(message))
         default:
             break
@@ -265,7 +265,7 @@ extension OpenAIRealtimeTranscriber: URLSessionWebSocketDelegate {
         stateQueue.async { [weak self] in
             guard let self, !finished, task === self.task else { return }
             let detail = reason.flatMap { String(data: $0, encoding: .utf8) }
-                ?? "OpenAI Realtime connection closed"
+                ?? localized("OpenAI Realtime connection closed")
             record(.connection(detail))
         }
     }

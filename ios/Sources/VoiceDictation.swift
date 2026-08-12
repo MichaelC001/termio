@@ -20,15 +20,15 @@ enum TranscriptionProvider: String, CaseIterable {
     var keyPlaceholder: String {
         switch self {
         case .openAI: "sk-..."
-        case .elevenLabs: "Your ElevenLabs API key"
+        case .elevenLabs: localized("Your ElevenLabs API key")
         }
     }
 
     /// The Key section's footer — which model does the transcribing.
     var keyFooter: String {
         switch self {
-        case .openAI: "OpenAI Realtime, with file and on-device fallback."
-        case .elevenLabs: "Transcribed with ElevenLabs Scribe."
+        case .openAI: localized("OpenAI Realtime, with file and on-device fallback.")
+        case .elevenLabs: localized("Transcribed with ElevenLabs Scribe.")
         }
     }
 
@@ -74,12 +74,12 @@ final class VoiceDictation: NSObject {
         /// A short line fit for the recording pill's error state.
         var hudMessage: String {
             switch self {
-            case .missingKey: "Add an API key in Settings ▸ Voice"
-            case .microphonePermissionDenied: "Allow microphone access in Settings"
-            case .recordingFailed: "Couldn't start recording"
-            case .empty: "Didn't catch that — try again"
-            case .localUnavailable: "On-device transcription isn't available"
-            case .network: "Network error — check your connection"
+            case .missingKey: localized("Add an API key in Settings ▸ Voice")
+            case .microphonePermissionDenied: localized("Allow microphone access in Settings")
+            case .recordingFailed: localized("Couldn't start recording")
+            case .empty: localized("Didn't catch that — try again")
+            case .localUnavailable: localized("On-device transcription isn't available")
+            case .network: localized("Network error — check your connection")
             case .api(_, let message): message
             }
         }
@@ -403,13 +403,13 @@ final class VoiceDictation: NSObject {
                 return
             }
             guard let http = response as? HTTPURLResponse, let data else {
-                result = .failure(.network("No response"))
+                result = .failure(.network(localized("No response")))
                 return
             }
             guard (200..<300).contains(http.statusCode) else {
                 result = .failure(.api(
                     status: http.statusCode,
-                    message: provider.errorMessage(from: data) ?? "Transcription failed"
+                    message: provider.errorMessage(from: data) ?? localized("Transcription failed")
                 ))
                 return
             }
@@ -618,12 +618,12 @@ final class VoiceRecordingBar: UIView {
         cancelConfig.background.backgroundColor = .tertiarySystemFill
         cancelButton.configuration = cancelConfig
         cancelButton.clipsToBounds = true
-        cancelButton.accessibilityLabel = "Cancel recording"
+        cancelButton.accessibilityLabel = localized("Cancel recording")
         cancelButton.addAction(UIAction { [weak self] _ in self?.onCancel?() }, for: .touchUpInside)
 
         stopButton.backgroundColor = .tertiarySystemFill
         stopButton.clipsToBounds = true
-        stopButton.accessibilityLabel = "Stop and transcribe"
+        stopButton.accessibilityLabel = localized("Stop and transcribe")
         stopButton.addAction(UIAction { [weak self] _ in self?.onStop?() }, for: .touchUpInside)
         stopGlyph.backgroundColor = .label
         stopGlyph.layer.cornerRadius = 3.5
@@ -753,7 +753,7 @@ final class VoiceRecordingBar: UIView {
     func showTranscribing() {
         stopTimer()
         recordingControls.forEach { $0.isHidden = true }
-        statusLabel.text = "Transcribing…"
+        statusLabel.text = localized("Transcribing…")
         statusLabel.textColor = .secondaryLabel
         statusStack.isHidden = false
         spinner.startAnimating()

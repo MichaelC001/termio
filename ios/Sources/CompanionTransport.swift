@@ -228,7 +228,7 @@ final class CompanionTransport: NSObject {
                     if let roster = CompanionRoster.decode(text) {
                         if roster.wire < Wire.minimumServer {
                             task.cancel(with: .policyViolation, reason: nil)
-                            finish(.failed("Update Termio on your Mac to connect this phone."))
+                            finish(.failed(localized("Update Termio on your Mac to connect this phone.")))
                         } else {
                             gridLock.lock()
                             authAccepted = true

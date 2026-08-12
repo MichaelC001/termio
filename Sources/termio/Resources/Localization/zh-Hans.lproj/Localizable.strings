@@ -122,6 +122,8 @@
 	<string>外观</string>
 	<key>Appends a Host block to ~/.ssh/config, so the alias works in plain `ssh %@` too.</key>
 	<string>将 Host 块追加到 ~/.ssh/config，该别名也可直接用于 `ssh %@`。</string>
+	<key>Apply</key>
+	<string>应用</string>
 	<key>Assigned to Me</key>
 	<string>指派给我</string>
 	<key>Assignee</key>
@@ -366,6 +368,8 @@
 	<string>聚焦右侧窗格</string>
 	<key>Focus Pane Up</key>
 	<string>聚焦上方窗格</string>
+	<key>Font</key>
+	<string>字体</string>
 	<key>Font name</key>
 	<string>字体名称</string>
 	<key>General</key>
@@ -594,6 +598,8 @@
 	<string>没有与“%@”匹配的主题</string>
 	<key>Not Now</key>
 	<string>以后再说</string>
+	<key>Not a valid regular expression</key>
+	<string>不是有效的正则表达式</string>
 	<key>Not pushed to upstream</key>
 	<string>尚未推送到上游</string>
 	<key>Nothing to install.</key>
@@ -608,8 +614,10 @@
 	<string>关闭 — 仅局域网</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.</key>
 	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。两台设备须处于同一局域网。</string>
-	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network.</key>
-	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。隧道地址可在任意网络使用。</string>
+	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</key>
+	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。隧道地址可在任意网络使用，并终结于服务商的服务器。若要改用自己的中继，请选择“自定义”。</string>
+	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.</key>
+	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。流量经由你自己运行的中继，路径中没有第三方。</string>
 	<key>Opacity</key>
 	<string>不透明度</string>
 	<key>Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity.</key>
@@ -758,6 +766,8 @@
 	<string>运行命令…</string>
 	<key>Running terminal sessions will end. You can relaunch later instead.</key>
 	<string>正在运行的终端会话将会结束。你也可以稍后再重新启动。</string>
+	<key>Runs on this Mac with your privileges when Custom is selected — no shell, arguments split on spaces. Use {port} for the companion port; the URL pattern is a regex matching the public https URL your relay prints.</key>
+	<string>选择“自定义”后，该命令会以你的权限在这台 Mac 上运行——不经过 shell，参数按空格拆分。用 {port} 表示配套端口；URL 模式是用于匹配中继输出的公开 https URL 的正则表达式。</string>
 	<key>Runs with `%@`. The agent won’t ask before editing files or running commands.</key>
 	<string>以 `%@` 运行。Agent 在编辑文件或运行命令前将不再询问。</string>
 	<key>SF Symbol name</key>
@@ -956,6 +966,8 @@
 	<string>关闭后 iPhone 将断开连接；配对会保留。</string>
 	<key>Type this code at github.com/login/device to approve Termio. Waiting for approval…</key>
 	<string>在 github.com/login/device 输入此代码以授权 Termio。正在等待批准…</string>
+	<key>URL Pattern</key>
+	<string>URL 模式</string>
 	<key>Underline</key>
 	<string>下划线</string>
 	<key>Ungroup</key>

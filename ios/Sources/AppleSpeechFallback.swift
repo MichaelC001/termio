@@ -12,9 +12,9 @@ enum AppleSpeechFallback {
 
         var errorDescription: String? {
             switch self {
-            case .unavailable: "On-device transcription isn't available"
-            case .unsupportedLocale: "The current language isn't supported on device"
-            case .empty: "On-device transcription returned no text"
+            case .unavailable: localized("On-device transcription isn't available")
+            case .unsupportedLocale: localized("The current language isn't supported on device")
+            case .empty: localized("On-device transcription returned no text")
             }
         }
     }
