@@ -1286,28 +1286,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// where the last pane's ⌘W closes its container. That close is just a
     /// close: the app and every session keep running (issue #242).
     @objc func ungroupPane(_ sender: Any?) {
-        // Menu actions hang off the app delegate, not a window, so this has to
-        // resolve its own target: without the key-window check, ⌘W pressed in
-        // Settings reaches past it and ungroups a pane in the terminal behind.
-        // No key window at all (the main window is closed) means there is
-        // nothing on screen to close, so ⌘W does nothing rather than mutating
-        // an invisible layout.
-        guard let keyWindow = NSApp.keyWindow else { return }
-        guard keyWindow === window else {
-            keyWindow.performClose(sender)
-            return
-        }
-        if store.splitRoot != nil {
-            store.ungroupSelectedPane()
-        } else {
-            window?.performClose(sender)
-        }
+        performClose(sender, ungroupingSplit: store.splitRoot != nil)
     }
 
     /// File ▸ Close Window (⌘⇧W) — closes the frontmost window regardless of
     /// splits, so it dismisses Settings when Settings is what's in front.
     @objc func closeMainWindow(_ sender: Any?) {
-        (NSApp.keyWindow ?? window)?.performClose(sender)
+        performClose(sender, ungroupingSplit: false)
+    }
+
+    /// Shared body of the two close keys. Menu actions hang off the app delegate
+    /// rather than a window, so the target is resolved here (see `CloseCommand`):
+    /// without it, ⌘W pressed in Settings reaches past it and ungroups a pane in
+    /// the terminal behind.
+    private func performClose(_ sender: Any?, ungroupingSplit: Bool) {
+        let frontmost = CloseCommand.frontmost(mainWindow: window, palettePanel: palettePanel)
+        switch CloseCommand.action(for: frontmost, ungroupingSplit: ungroupingSplit) {
+        case .nothing:
+            break
+        case .dismissPalette:
+            // The store flag owns the palette's presentation; the observer tears
+            // the panel down (see `presentCommandPalette`).
+            store.paletteMode = nil
+        case .closeKeyWindow:
+            NSApp.keyWindow?.performClose(sender)
+        case .ungroupPane:
+            store.ungroupSelectedPane()
+        case .closeMainWindow:
+            window?.performClose(sender)
+        }
     }
 
     /// View ▸ Zoom Split (⌘⇧↩) — maximise the focused pane, or restore the split.

@@ -55,7 +55,7 @@ every agent died with no confirmation. Two users reported it the same day.
 
 | Key | Action | Kind |
 | --- | --- | --- |
-| ⌘W | Ungroup the focused pane; with no split, close the window; in an auxiliary window, close that window | presentation |
+| ⌘W | Ungroup the focused pane; with no split, close the window; in an auxiliary window, close that window; with the palette up, dismiss it | presentation |
 | ⌘⇧W | Close the frontmost window | presentation |
 | ⌘M | Minimize the frontmost window | presentation |
 | ⌘D / ⌘⇧D | Split right / down | presentation |
@@ -205,9 +205,20 @@ VS Code says the same thing with `when` clauses. termio does not: `KeyCommandCat
 is a flat table, and ⌘W resolves itself *imperatively*, inside one action — is the
 key window an auxiliary one, is there a split, otherwise close the window.
 
-At two branches that is the simpler design, and it stays honest because there is
-exactly one place to read. It is deliberate, not an oversight. But it has a known
-cost, and one visible symptom today: with a diff or editor detail open in the
+At this size that is the simpler design, and it stays honest because there is
+exactly one place to read. It is deliberate, not an oversight — but it only earns
+that defence if the decision is *isolated and tested*, because this is the binding
+that regresses silently: the window still closes, just the wrong one. cmux guards
+the same key with a CI lint. termio's equivalent is `CloseCommand.action`, a pure
+function over "what is in front" × "is there a split", with `CloseCommandTests`
+pinning every combination.
+
+Keeping the decision pure also made a case visible that the imperative version had
+wrong: the ⌘⇧P palette is a **borderless** panel, and `performClose` on a window
+with no close button only beeps. Routing it to the store flag that owns the
+palette's presentation turns a dead key into a dismiss.
+
+The known cost shows up one layer in: with a diff or editor detail open in the
 inspector, ⌘W ungroups a pane instead of closing the detail. Zed would close it —
 its `Workspace` context binds ⌘W to `CloseActiveDock`.
 
