@@ -138,7 +138,7 @@ struct SessionInfoView: View {
                     InfoRow(huge: .folder, title: localized("Reveal in Finder")) { revealInFinder(transcriptPath) }
                 }
             } else {
-                Text(localized("Waiting for the agent's first status report."))
+                Text(localized("Waiting for the agent’s first status report."))
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)

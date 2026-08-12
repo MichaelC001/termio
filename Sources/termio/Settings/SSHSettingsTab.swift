@@ -126,7 +126,7 @@ struct SSHSettingsTab: View {
         } header: {
             SectionHeaderLabel(title: localized("Public keys"))
         } footer: {
-            Text(localized("The public keys in ~/.ssh. Copy one to paste into a server's authorized_keys — private keys are never read."))
+            Text(localized("The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -373,7 +373,7 @@ struct AddSSHHostSheet: View {
             )
             finish(trimmedAlias)
         } catch {
-            writeError = localized("Couldn't write ~/.ssh/config: \(error.localizedDescription)")
+            writeError = localized("Couldn’t write ~/.ssh/config: \(error.localizedDescription)")
         }
     }
 

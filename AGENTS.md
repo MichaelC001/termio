@@ -161,6 +161,7 @@ Companion:
   - Build & run: `macos-rebuild-dev`, `ios-rebuild-dev`, `app-screenshot-debug`
   - Release: `bump-version`, `check-ghostty-update`, `asc` (App Store Connect)
   - Repo hygiene: `conventional-commit`, `doc`, `issue-creator`
+  - Writing: `review-copy` (scores copy against `VOICE.md`)
   - Web/landing: `og-generation`
   - Research: `dia-source-analysis`
 - Vendored design/UI skills (emilkowalski pack, keep upstream names):
@@ -194,6 +195,11 @@ Dependencies and vendored code:
   against a packaged `.app`.
 
 ## Writing style
+
+`VOICE.md` at the repo root is the full guide — read it before writing anything
+a user reads (UI strings, landing copy, docs, release notes, issues, PR bodies).
+The `review-copy` skill scores copy against it. The rules below are the ones you
+must not get wrong even if you never open it.
 
 - Direct, concrete language. No AI attribution anywhere — not in commits, PR
   descriptions, issues, docs, or release notes.

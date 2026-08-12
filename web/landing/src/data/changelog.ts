@@ -97,6 +97,17 @@ export const changelog: ChangelogEntry[] = [
     },
   },
   {
+    version: "0.30.0",
+    date: "2026-08-07",
+    title: "A smoother pane drag",
+    changes: {
+      improved: [
+        "Pane drag: the grab handle now appears only along a pane’s top edge, brightens under the pointer, and shows a preview of the pane you’re dragging.",
+        "Flip Layout is gone. Drag a pane onto a neighbour’s edge instead.",
+      ],
+    },
+  },
+  {
     version: "0.29.0",
     date: "2026-08-07",
     title: "Your phone shows the real diff",

@@ -131,7 +131,7 @@
         }
       }
     },
-    "Couldn't open a pull request page": {
+    "Couldn’t open a pull request page": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -141,7 +141,7 @@
         }
       }
     },
-    "Push the current branch to the repository's remote first, then try again. (The remote also needs to be a forge Termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)": {
+    "Push the current branch to the repository’s remote first, then try again. (The remote also needs to be a forge Termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -921,7 +921,7 @@
         }
       }
     },
-    "Agents won't show as working.": {
+    "Agents won’t show as working.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -931,7 +931,7 @@
         }
       }
     },
-    "Couldn't create the worktrees folder: %@": {
+    "Couldn’t create the worktrees folder: %@": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -941,7 +941,7 @@
         }
       }
     },
-    "git couldn't create a worktree for “%@”. Is it a git repository with at least one commit?": {
+    "git couldn’t create a worktree for “%@”. Is it a git repository with at least one commit?": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -951,7 +951,7 @@
         }
       }
     },
-    "Couldn't inspect worktree": {
+    "Couldn’t inspect worktree": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -961,7 +961,7 @@
         }
       }
     },
-    "git couldn't check “%@” for changes, so it was not removed.": {
+    "git couldn’t check “%@” for changes, so it was not removed.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -991,7 +991,7 @@
         }
       }
     },
-    "Couldn't remove worktree": {
+    "Couldn’t remove worktree": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -1001,7 +1001,7 @@
         }
       }
     },
-    "git couldn't remove “%@”.": {
+    "git couldn’t remove “%@”.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -1021,7 +1021,7 @@
         }
       }
     },
-    "The folder was removed, but git couldn't prune its stale worktree metadata.": {
+    "The folder was removed, but git couldn’t prune its stale worktree metadata.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -1061,7 +1061,7 @@
         }
       }
     },
-    "Couldn't create worktree session": {
+    "Couldn’t create worktree session": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -1381,7 +1381,7 @@
         }
       }
     },
-    "Can't Open as Text": {
+    "Can’t open as text": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -1391,7 +1391,7 @@
         }
       }
     },
-    "%@ isn't a UTF-8 text file.": {
+    "%@ isn’t a UTF-8 text file.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -1841,7 +1841,7 @@
         }
       }
     },
-    "Couldn’t Update .gitignore": {
+    "Couldn’t update .gitignore": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -1861,7 +1861,7 @@
         }
       }
     },
-    "The ignore rule could not be added.": {
+    "The ignore rule couldn’t be added.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -2371,7 +2371,7 @@
         }
       }
     },
-    "Couldn’t Load": {
+    "Couldn’t load": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -2681,7 +2681,7 @@
         }
       }
     },
-    "Waiting for the agent's first status report.": {
+    "Waiting for the agent’s first status report.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -2751,7 +2751,7 @@
         }
       }
     },
-    "Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio's hooks into each agent's config.": {
+    "Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio’s hooks into each agent’s config.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -2881,7 +2881,7 @@
         }
       }
     },
-    "macOS hasn't been asked to allow Termio's notifications yet.": {
+    "macOS hasn’t been asked to allow Termio’s notifications yet.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -3011,7 +3011,7 @@
         }
       }
     },
-    "A different `%@` already exists at %@. Remove it first — Termio won't overwrite a file it didn't create.": {
+    "A different `%@` already exists at %@. Remove it first — Termio won’t overwrite a file it didn’t create.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -3191,7 +3191,7 @@
         }
       }
     },
-    "Runs with `%@`. The agent won't ask before editing files or running commands.": {
+    "Runs with `%@`. The agent won’t ask before editing files or running commands.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -3271,7 +3271,7 @@
         }
       }
     },
-    "Deletes the custom agent's manifest from this Mac.": {
+    "Deletes the custom agent’s manifest from this Mac.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -3391,7 +3391,7 @@
         }
       }
     },
-    "Both optional. The flag powers the agent's “Skip permission prompts” switch; leave it empty if the CLI has none. The directory receives termio's session-control skill (as `<dir>/termio`); leave it empty to skip installing one.": {
+    "Both optional. The flag powers the agent’s “Skip permission prompts” switch; leave it empty if the CLI has none. The directory receives termio’s session-control skill (as `<dir>/termio`); leave it empty to skip installing one.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -3861,7 +3861,7 @@
         }
       }
     },
-    "Termio switches between these as macOS changes appearance; leave a slot on the default for Termio's own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”": {
+    "Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -3921,7 +3921,7 @@
         }
       }
     },
-    "Line height applies to the file editor and diffs; the terminal keeps the font's own.": {
+    "Line height applies to the file editor and diffs; the terminal keeps the font’s own.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -4061,7 +4061,7 @@
         }
       }
     },
-    "Shortcuts must include ⌘ so they can't shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel.": {
+    "Shortcuts must include ⌘ so they can’t shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -4351,7 +4351,7 @@
         }
       }
     },
-    "The public keys in ~/.ssh. Copy one to paste into a server's authorized_keys — private keys are never read.": {
+    "The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -4571,7 +4571,7 @@
         }
       }
     },
-    "Couldn't write ~/.ssh/config: %@": {
+    "Couldn’t write ~/.ssh/config: %@": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -5157,7 +5157,7 @@
         }
       }
     },
-    "Line height applies to the file editor and diffs; the terminal keeps the font's own. Font and theme values you haven't set here follow your Ghostty config.": {
+    "Line height applies to the file editor and diffs; the terminal keeps the font’s own. Font and theme values you haven’t set here follow your Ghostty config.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {

@@ -101,7 +101,7 @@ extension TermioStore {
         do {
             try FileManager.default.createDirectory(at: worktreeRoot, withIntermediateDirectories: true)
         } catch {
-            presentWorktreeFailure(message: localized("Couldn't create the worktrees folder: \(error.localizedDescription)"))
+            presentWorktreeFailure(message: localized("Couldn’t create the worktrees folder: \(error.localizedDescription)"))
             return
         }
         // Create the worktree on a fresh branch named after it, not detached. A
@@ -113,7 +113,7 @@ extension TermioStore {
         // the branch needs its own guard, since a branch can exist with no worktree.
         let branchName = uniqueBranchName(base: dirName, in: project.path)
         guard runGit(["worktree", "add", "-b", branchName, worktreePath, "HEAD"], in: project.path) != nil else {
-            presentWorktreeFailure(message: localized("git couldn't create a worktree for “\(project.name)”. Is it a git repository with at least one commit?"))
+            presentWorktreeFailure(message: localized("git couldn’t create a worktree for “\(project.name)”. Is it a git repository with at least one commit?"))
             return
         }
 
@@ -146,8 +146,8 @@ extension TermioStore {
 
         guard let status = runGit(["status", "--porcelain"], in: worktree.path) else {
             presentWorktreeFailure(
-                title: localized("Couldn't inspect worktree"),
-                message: localized("git couldn't check “\((worktree.path as NSString).lastPathComponent)” for changes, so it was not removed.")
+                title: localized("Couldn’t inspect worktree"),
+                message: localized("git couldn’t check “\((worktree.path as NSString).lastPathComponent)” for changes, so it was not removed.")
             )
             return
         }
@@ -165,8 +165,8 @@ extension TermioStore {
         let branch = runGit(["rev-parse", "--abbrev-ref", "HEAD"], in: worktree.path)
         guard runGit(["worktree", "remove", worktree.path], in: projects[projectIndex].path) != nil else {
             presentWorktreeFailure(
-                title: localized("Couldn't remove worktree"),
-                message: localized("git couldn't remove “\((worktree.path as NSString).lastPathComponent)”.")
+                title: localized("Couldn’t remove worktree"),
+                message: localized("git couldn’t remove “\((worktree.path as NSString).lastPathComponent)”.")
             )
             return
         }
@@ -188,7 +188,7 @@ extension TermioStore {
         if !pruneSucceeded {
             presentWorktreeFailure(
                 title: localized("Worktree removed"),
-                message: localized("The folder was removed, but git couldn't prune its stale worktree metadata.")
+                message: localized("The folder was removed, but git couldn’t prune its stale worktree metadata.")
             )
         }
     }
@@ -269,7 +269,7 @@ extension TermioStore {
     /// Reports a worktree lifecycle failure instead of leaving an operation's
     /// partial or refused outcome silent.
     private func presentWorktreeFailure(
-        title: String = localized("Couldn't create worktree session"),
+        title: String = localized("Couldn’t create worktree session"),
         message: String
     ) {
         let alert = NSAlert()
@@ -758,7 +758,7 @@ extension TermioStore {
 
     /// Runs `git -C <directory> <arguments…>` synchronously, returning trimmed
     /// stdout on success or `nil` on a launch failure or non-zero exit. Callers
-    /// treat `nil` as "couldn't do it" and fall back rather than trapping.
+    /// treat `nil` as "couldn’t do it" and fall back rather than trapping.
     @discardableResult
     private func runGit(_ arguments: [String], in directory: String) -> String? {
         Self.gitOutput(arguments, in: directory)

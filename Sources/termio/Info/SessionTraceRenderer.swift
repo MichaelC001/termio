@@ -15,7 +15,7 @@ enum SessionTraceRenderer {
 
         var errorDescription: String? {
             switch self {
-            case .unreadable(let path): return "Could not read the transcript at \(path)."
+            case .unreadable(let path): return "Couldn’t read the transcript at \(path)."
             }
         }
     }

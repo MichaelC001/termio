@@ -14,7 +14,7 @@
 	<string>“%@”是深色主题，与“%@”插槽不匹配。</string>
 	<key>%@ is a light theme in the %@ slot.</key>
 	<string>“%@”是浅色主题，与“%@”插槽不匹配。</string>
-	<key>%@ isn't a UTF-8 text file.</key>
+	<key>%@ isn’t a UTF-8 text file.</key>
 	<string>%@ 不是 UTF-8 文本文件。</string>
 	<key>%@ isn’t on your PATH</key>
 	<string>%@ 不在 PATH 中</string>
@@ -58,7 +58,7 @@
 	<string>%lld 周</string>
 	<key>1 result</key>
 	<string>1 个结果</string>
-	<key>A different `%@` already exists at %@. Remove it first — Termio won't overwrite a file it didn't create.</key>
+	<key>A different `%@` already exists at %@. Remove it first — Termio won’t overwrite a file it didn’t create.</key>
 	<string>另一个 `%@` 已存在于 %@。请先移除，Termio 不会覆盖并非自己创建的文件。</string>
 	<key>Activity</key>
 	<string>活动</string>
@@ -86,7 +86,7 @@
 	<string>Agent 技能</string>
 	<key>Agents</key>
 	<string>Agent</string>
-	<key>Agents won't show as working.</key>
+	<key>Agents won’t show as working.</key>
 	<string>Agent 将不会显示为工作中。</string>
 	<key>Alias</key>
 	<string>别名</string>
@@ -142,16 +142,16 @@
 	<string>方块</string>
 	<key>Blur: %lld</key>
 	<string>模糊：%lld</string>
-	<key>Both optional. The flag powers the agent's “Skip permission prompts” switch; leave it empty if the CLI has none. The directory receives termio's session-control skill (as `&lt;dir&gt;/termio`); leave it empty to skip installing one.</key>
+	<key>Both optional. The flag powers the agent’s “Skip permission prompts” switch; leave it empty if the CLI has none. The directory receives termio’s session-control skill (as `&lt;dir&gt;/termio`); leave it empty to skip installing one.</key>
 	<string>两项均为可选。该标志用于 Agent 的“跳过权限确认”开关；若 CLI 没有此标志请留空。该目录用于接收 Termio 的会话控制技能（安装为 `&lt;dir&gt;/termio`）；留空则不安装。</string>
 	<key>Branch</key>
 	<string>分支</string>
 	<key>Bring All to Front</key>
 	<string>前置全部窗口</string>
-	<key>Can't Open as Text</key>
-	<string>无法以文本打开</string>
 	<key>Cancel</key>
 	<string>取消</string>
+	<key>Can’t open as text</key>
+	<string>无法以文本打开</string>
 	<key>Change Theme…</key>
 	<string>更改主题…</string>
 	<key>Changes</key>
@@ -250,28 +250,28 @@
 	<string>选中即拷贝</string>
 	<key>Copy ssh Command</key>
 	<string>拷贝 ssh 命令</string>
-	<key>Couldn't create the worktrees folder: %@</key>
+	<key>Couldn’t create the worktrees folder: %@</key>
 	<string>无法创建 worktrees 文件夹：%@</string>
-	<key>Couldn't create worktree session</key>
+	<key>Couldn’t create worktree session</key>
 	<string>无法创建 worktree 会话</string>
-	<key>Couldn't inspect worktree</key>
+	<key>Couldn’t inspect worktree</key>
 	<string>无法检查 worktree</string>
-	<key>Couldn't open a pull request page</key>
-	<string>无法打开 Pull Request 页面</string>
-	<key>Couldn't remove worktree</key>
-	<string>无法移除 worktree</string>
-	<key>Couldn't write ~/.ssh/config: %@</key>
-	<string>无法写入 ~/.ssh/config：%@</string>
-	<key>Couldn’t Load</key>
-	<string>无法载入</string>
-	<key>Couldn’t Update .gitignore</key>
-	<string>无法更新 .gitignore</string>
 	<key>Couldn’t link `%@` into %@.</key>
 	<string>无法将 `%@` 链接到 %@。</string>
+	<key>Couldn’t load</key>
+	<string>无法载入</string>
+	<key>Couldn’t open a pull request page</key>
+	<string>无法打开 Pull Request 页面</string>
 	<key>Couldn’t remove %@.</key>
 	<string>无法移除 %@。</string>
+	<key>Couldn’t remove worktree</key>
+	<string>无法移除 worktree</string>
 	<key>Couldn’t update %@.</key>
 	<string>无法更新 %@。</string>
+	<key>Couldn’t update .gitignore</key>
+	<string>无法更新 .gitignore</string>
+	<key>Couldn’t write ~/.ssh/config: %@</key>
+	<string>无法写入 ~/.ssh/config：%@</string>
 	<key>Create</key>
 	<string>创建</string>
 	<key>Cursor</key>
@@ -300,7 +300,7 @@
 	<string>删除“%@”？</string>
 	<key>Delete Agent</key>
 	<string>删除 Agent</string>
-	<key>Deletes the custom agent's manifest from this Mac.</key>
+	<key>Deletes the custom agent’s manifest from this Mac.</key>
 	<string>从这台 Mac 上删除该自定义 Agent 的 manifest。</string>
 	<key>Delete…</key>
 	<string>删除…</string>
@@ -460,9 +460,9 @@
 	<string>允许 Agent 通过 `termio sessions` 命令查看并驱动本项目中的其他会话。会将 termio 技能安装到各 Agent 的技能文件夹中。</string>
 	<key>Light</key>
 	<string>浅色</string>
-	<key>Line height applies to the file editor and diffs; the terminal keeps the font's own.</key>
+	<key>Line height applies to the file editor and diffs; the terminal keeps the font’s own.</key>
 	<string>行高应用于文件编辑器和差异对比；终端保持字体自身的行高。</string>
-	<key>Line height applies to the file editor and diffs; the terminal keeps the font's own. Font and theme values you haven't set here follow your Ghostty config.</key>
+	<key>Line height applies to the file editor and diffs; the terminal keeps the font’s own. Font and theme values you haven’t set here follow your Ghostty config.</key>
 	<string>行高应用于文件编辑器和差异对比；终端保持字体自身的行高。此处未设置的字体与主题项将沿用你的 Ghostty 配置。</string>
 	<key>Line height: %@×</key>
 	<string>行高：%@×</string>
@@ -682,7 +682,7 @@
 	<string>公钥</string>
 	<key>Pull Requests</key>
 	<string>PR</string>
-	<key>Push the current branch to the repository's remote first, then try again. (The remote also needs to be a forge Termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)</key>
+	<key>Push the current branch to the repository’s remote first, then try again. (The remote also needs to be a forge Termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)</key>
 	<string>请先将当前分支推送到仓库的远程，然后重试。（远程还需是 Termio 能识别的代码托管平台：GitHub、GitLab、Bitbucket 或 Gitea。）</string>
 	<key>Quit Termio</key>
 	<string>退出 Termio</string>
@@ -758,7 +758,7 @@
 	<string>运行命令…</string>
 	<key>Running terminal sessions will end. You can relaunch later instead.</key>
 	<string>正在运行的终端会话将会结束。你也可以稍后再重新启动。</string>
-	<key>Runs with `%@`. The agent won't ask before editing files or running commands.</key>
+	<key>Runs with `%@`. The agent won’t ask before editing files or running commands.</key>
 	<string>以 `%@` 运行。Agent 在编辑文件或运行命令前将不再询问。</string>
 	<key>SF Symbol name</key>
 	<string>SF Symbol 名称</string>
@@ -804,7 +804,7 @@
 	<string>设置</string>
 	<key>Settings…</key>
 	<string>设置…</string>
-	<key>Shortcuts must include ⌘ so they can't shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel.</key>
+	<key>Shortcuts must include ⌘ so they can’t shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel.</key>
 	<string>快捷键必须包含 ⌘，以免遮蔽 Agent 或 shell 所需的按键。录制时按 ⌫ 可移除快捷键，按 esc 取消。</string>
 	<key>Show Original</key>
 	<string>显示原身</string>
@@ -812,7 +812,7 @@
 	<string>显示项目文件</string>
 	<key>Shows the Issues pane in the inspector for projects whose remote is on GitHub.</key>
 	<string>为远程仓库位于 GitHub 的项目在检查器中显示 Issues 窗格。</string>
-	<key>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio's hooks into each agent's config.</key>
+	<key>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio’s hooks into each agent’s config.</key>
 	<string>显示 Agent 正在工作还是在等待你：侧栏的转圈指示和菜单栏的脉冲。会将 Termio 的 hooks 安装到各 Agent 的配置中。</string>
 	<key>Sidebar</key>
 	<string>侧栏</string>
@@ -886,7 +886,7 @@
 	<string>Termio 无法将内容追加到该仓库的 .gitignore。请检查其权限后重试。</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio 是开源软件：欢迎给仓库加星标、报告 bug 和提出功能请求。</string>
-	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio's own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”</key>
+	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”</key>
 	<string>Termio 会随 macOS 外观变化在两者间切换；将槽位留在默认值即可使用 Termio 自带的画布。将 Ghostty 格式的主题文件放入主题文件夹即可添加自己的主题，它们会显示在“自定义”下。</string>
 	<key>Test</key>
 	<string>测试</string>
@@ -898,13 +898,13 @@
 	<string>新建会话时按此顺序提供列表中的 Agent。拖动可重新排序，选中可进行配置。</string>
 	<key>The command is run in a login shell, so anything on your PATH works.</key>
 	<string>命令在登录 shell 中运行，PATH 中的任何命令都可用。</string>
-	<key>The folder was removed, but git couldn't prune its stale worktree metadata.</key>
+	<key>The folder was removed, but git couldn’t prune its stale worktree metadata.</key>
 	<string>文件夹已移除，但 git 无法清理其残留的 worktree 元数据。</string>
-	<key>The ignore rule could not be added.</key>
+	<key>The ignore rule couldn’t be added.</key>
 	<string>无法添加忽略规则。</string>
 	<key>The project and session list. Kept separate from the terminal font, and need not be monospaced.</key>
 	<string>项目与会话列表。与终端字体分开设置，无需等宽字体。</string>
-	<key>The public keys in ~/.ssh. Copy one to paste into a server's authorized_keys — private keys are never read.</key>
+	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>
 	<string>~/.ssh 中的公钥。可拷贝一个粘贴到服务器的 authorized_keys——私钥永远不会被读取。</string>
 	<key>The termio command-line tool, agent skill, and notifications</key>
 	<string>termio 命令行工具、Agent 技能与通知</string>
@@ -982,7 +982,7 @@
 	<string>查看轨迹</string>
 	<key>View on %@</key>
 	<string>在 %@ 上查看</string>
-	<key>Waiting for the agent's first status report.</key>
+	<key>Waiting for the agent’s first status report.</key>
 	<string>正在等待 Agent 的首次状态报告。</string>
 	<key>WeChat</key>
 	<string>微信</string>
@@ -1020,15 +1020,15 @@
 	<string>当前</string>
 	<key>e.g. JetBrains Mono</key>
 	<string>例如 JetBrains Mono</string>
-	<key>git couldn't check “%@” for changes, so it was not removed.</key>
+	<key>git couldn’t check “%@” for changes, so it was not removed.</key>
 	<string>git 无法检查“%@”是否有更改，因此未将其移除。</string>
-	<key>git couldn't create a worktree for “%@”. Is it a git repository with at least one commit?</key>
+	<key>git couldn’t create a worktree for “%@”. Is it a git repository with at least one commit?</key>
 	<string>git 无法为“%@”创建 worktree。请确认它是包含至少一个提交的 git 仓库。</string>
-	<key>git couldn't remove “%@”.</key>
+	<key>git couldn’t remove “%@”.</key>
 	<string>git 无法移除“%@”。</string>
 	<key>issue.state.open</key>
 	<string>开放</string>
-	<key>macOS hasn't been asked to allow Termio's notifications yet.</key>
+	<key>macOS hasn’t been asked to allow Termio’s notifications yet.</key>
 	<string>macOS 尚未请求允许 Termio 发送通知。</string>
 	<key>nothing</key>
 	<string>无</string>

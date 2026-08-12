@@ -1399,8 +1399,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 NSWorkspace.shared.open(url)
             } else {
                 let alert = NSAlert()
-                alert.messageText = localized("Couldn't open a pull request page")
-                alert.informativeText = localized("Push the current branch to the repository's remote first, then try again. (The remote also needs to be a forge Termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)")
+                alert.messageText = localized("Couldn’t open a pull request page")
+                alert.informativeText = localized("Push the current branch to the repository’s remote first, then try again. (The remote also needs to be a forge Termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)")
                 alert.alertStyle = .warning
                 alert.runModal()
             }

@@ -313,7 +313,7 @@ private struct AgentDetailPane: View {
                     )) {
                         SettingsLabel(
                             title: localized("Skip permission prompts"),
-                            subtext: localized("Runs with `\(flag)`. The agent won't ask before editing files or running commands.")
+                            subtext: localized("Runs with `\(flag)`. The agent won’t ask before editing files or running commands.")
                         )
                     }
                     .toggleStyle(.switch)
@@ -350,7 +350,7 @@ private struct AgentDetailPane: View {
                     } label: {
                         SettingsLabel(
                             title: localized("Delete Agent"),
-                            subtext: localized("Deletes the custom agent's manifest from this Mac.")
+                            subtext: localized("Deletes the custom agent’s manifest from this Mac.")
                         )
                     }
                 }
