@@ -63,6 +63,10 @@ extension TermioStore {
             ?? projects[p].sessions.count - 1
         let insertAt = movedIndex < targetIndex ? newTarget + 1 : newTarget
         projects[p].sessions.insert(row, at: insertAt)
+        // A drop that lands between a group's rows would split its bracket in two;
+        // rows only join or leave a group through "Group with" / "Ungroup", so the
+        // run closes back up around the dropped row (see `gatherSplitRuns`).
+        gatherSplitRuns()
     }
 
     /// The sidebar bucket a session sits in: `nil` for the primary checkout (a `nil`

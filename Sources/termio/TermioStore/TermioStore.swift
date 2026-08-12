@@ -1019,6 +1019,10 @@ final class TermioStore: ObservableObject {
         store.splitGroups = savedGroups.filter { group in
             group.leafIDs.count >= 2 && group.leafIDs.allSatisfy { store.session($0) != nil }
         }
+        // State files written before the runs were kept adjacent can hold a group
+        // whose rows a since-ungrouped session still sits between; heal it on load
+        // rather than waiting for the next group edit.
+        store.gatherSplitRuns()
         return store
     }
 
