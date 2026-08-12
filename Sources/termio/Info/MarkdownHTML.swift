@@ -800,16 +800,18 @@ enum HTMLSanitizer {
         "thead", "tbody", "tfoot", "tr", "td", "th", "caption", "blockquote", "dl", "dt",
         "dd", "kbd", "q", "samp", "var", "hr", "s", "summary", "details", "figure",
         "figcaption", "abbr", "cite", "dfn", "mark", "small", "span", "time", "wbr",
-        "picture", "source",
+        "picture", "source", "video",
     ]
 
     /// The useful subset of GitHub's `:all` attribute list plus its per-element ones.
     /// `style`, `class`, `id`, and event handlers are intentionally absent — GitHub
-    /// strips those too.
+    /// strips those too. `autoplay` is absent by choice: a conversation that starts
+    /// playing the moment it opens is hostile in a pane the user only glanced at.
     private static let allowedAttributes: Set<String> = [
         "href", "src", "srcset", "media", "alt", "title", "align", "valign", "width",
         "height", "border", "colspan", "rowspan", "open", "dir", "lang", "start", "type",
         "checked", "disabled", "datetime", "cite", "cellpadding", "cellspacing",
+        "controls", "poster", "muted", "loop", "playsinline", "preload",
     ]
 
     /// `http`/`https`/`mailto`/relative, GitHub's protocol whitelist for href/src.
