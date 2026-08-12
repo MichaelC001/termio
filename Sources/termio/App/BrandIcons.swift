@@ -193,21 +193,43 @@ struct BrandLogoShape: Shape {
     }
 }
 
-extension ContentUnavailableView
-where Label == SwiftUI.Label<Text, HugeIconView>, Description == Text?, Actions == EmptyView {
-    /// The `ContentUnavailableView(_:systemImage:description:)` shorthand for a
-    /// Hugeicons glyph, so empty states share the app's icon language. The glyph is
-    /// drawn at the same optical size the system styles an SF Symbol to there.
-    init(_ title: String, huge icon: HugeIcon, description: Text? = nil) {
-        self.init {
-            SwiftUI.Label {
-                Text(title)
-            } icon: {
-                HugeIconView(icon: icon, size: 38, color: .secondary)
+/// The empty state every pane shows when it has nothing to list.
+///
+/// `ContentUnavailableView` is proportioned for a full window: a `.title2` headline
+/// over a stroke glyph, with the stack spacing to match. In a 240pt inspector that
+/// headline is wider than most of the pane's own rows, so the pane reads as an error
+/// page rather than as a quiet state. This is the same composition — glyph, title,
+/// one sentence — sized to the pane it sits in, and grouped tightly enough that the
+/// three parts read as one object.
+struct PaneEmptyState: View {
+    let title: String
+    let icon: HugeIcon
+    let message: String?
+
+    init(_ title: String, icon: HugeIcon, message: String? = nil) {
+        self.title = title
+        self.icon = icon
+        self.message = message
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HugeIconView(icon: icon, size: 26, color: .secondary)
+                .opacity(0.5)
+                .padding(.bottom, 9)
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+            if let message {
+                Text(message)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
             }
-        } description: {
-            description
         }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: 240)
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

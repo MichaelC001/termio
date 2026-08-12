@@ -80,15 +80,11 @@ struct SessionInfoView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         } else {
-            ContentUnavailableView {
-                Label {
-                    Text(localized("No Session"))
-                } icon: {
-                    HugeIconView(icon: .infoCircle, size: 38, color: .secondary)
-                }
-            } description: {
-                Text(localized("Select a session to see its info."))
-            }
+            PaneEmptyState(
+                localized("No Session"),
+                icon: .infoCircle,
+                message: localized("Select a session to see its info.")
+            )
         }
     }
 

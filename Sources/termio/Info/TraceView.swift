@@ -135,7 +135,7 @@ struct TraceView: View {
             if let html {
                 TraceWebView(html: html)
             } else if let loadError {
-                ContentUnavailableView("Couldn’t build the trace", huge: .bot, description: Text(loadError))
+                PaneEmptyState("Couldn’t build the trace", icon: .bot, message: loadError)
             } else {
                 ProgressView()
             }

@@ -235,10 +235,10 @@ struct GitChangesView: View {
             // Fill the pane (like the loading state) rather than sizing to the compact empty
             // view — otherwise the enclosing `VStack` shrinks to content height and the host
             // centers the whole pane instead of pinning the header to the top.
-            ContentUnavailableView(
+            PaneEmptyState(
                 localized("No Changes"),
-                huge: .checkCircle,
-                description: Text(localized("The working tree is clean."))
+                icon: .checkCircle,
+                message: localized("The working tree is clean.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
