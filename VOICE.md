@@ -136,13 +136,15 @@ Decided. A synonym is a bug, not a style choice.
 | agent | assistant, bot, AI |
 | needs you | blocked, waiting for input (as a status label) |
 
-`termio` is lowercase, including at the start of a sentence — what the README,
-the docs, and the UI strings do. Never `TermIO`.
+**Termio** in prose, `termio` on the command line. The brand is capitalized
+wherever it names the product in a sentence. It stays lowercase wherever it is a
+literal someone types or the system reads: the `termio` CLI and its subcommands,
+`sh.termio.app`, `~/.termio`, `TERMIO_SESSION`, termio.sh, and the skill's own
+`name: termio`. Never `TermIO`.
 
-**Open:** the landing site is split, roughly 79 `Termio` to 49 `termio`. Either
-it converges on lowercase like the rest of the repo, or the marketing surface
-gets a stated exception. Until that is decided, don't "fix" landing strings
-either way as a drive-by.
+The landing site, the README, the UI strings, and the `termio` skill follow this.
+The design docs under `docs/` still use lowercase in prose — backlog, not a
+second standard.
 
 ### Never describe termio as paid
 
@@ -328,7 +330,7 @@ sentence, a label, or a commit message is always wrong.
 - [ ] **Next action** — do empty states and errors tell the user what to do?
 - [ ] **Rhythm** — do the sentences vary in length, or all run the same?
 - [ ] **Vocabulary** — Group with / Ungroup / Close Session / session / project
-      / agent, lowercase `termio`?
+      / agent, `Termio` in prose and `termio` in commands?
 - [ ] **Case** — sentence case for sentences, Title Case for feature names?
 - [ ] **Apostrophes** — curly, and `Couldn't` over `Could not`?
 - [ ] **Never paid** — no upgrade, unlock, pro, trial, or tier?

@@ -1,15 +1,15 @@
 ---
 name: termio
-description: See and drive the sibling agent sessions running alongside you in this termio project via the `termio sessions` CLI — list and watch their status, spawn new agent or plain-terminal sessions, send a prompt or an answer into a session, and read an agent's reply from its transcript. Use when delegating work to another session, checking on or supervising what other sessions are doing, or starting a command the user should see in its own visible pane. Do not use merely because a task could run in parallel. Requires running inside termio (TERMIO_SESSION set).
+description: See and drive the sibling agent sessions running alongside you in this Termio project via the `termio sessions` CLI — list and watch their status, spawn new agent or plain-terminal sessions, send a prompt or an answer into a session, and read an agent's reply from its transcript. Use when delegating work to another session, checking on or supervising what other sessions are doing, or starting a command the user should see in its own visible pane. Do not use merely because a task could run in parallel. Requires running inside Termio (TERMIO_SESSION set).
 ---
 
-# Driving sibling sessions (termio)
+# Driving sibling sessions (Termio)
 
 If `TERMIO_SESSION` is not set in your environment, you are not running inside
-a termio-managed session — say so and stop instead of trying to drive sessions
+a Termio-managed session — say so and stop instead of trying to drive sessions
 you cannot see.
 
-You are running inside termio alongside other agent sessions in this same
+You are running inside Termio alongside other agent sessions in this same
 project. Coordinate with them through the `termio sessions` CLI. Every command
 is scoped to this project automatically; add `--json` for machine-readable
 output. The installed CLI is the authority on syntax: where this text and
@@ -29,7 +29,7 @@ id-prefix works too).
   one snapshot line per sibling's current status
   (`"snapshot":true` in `--json`; `--no-snapshot` skips), and in `--json`
   writes `{"heartbeat":true}` after 30s of silence so a dead stream is
-  detectable. Exits 0 on your Ctrl-C, 2 if termio itself went away.
+  detectable. Exits 0 on your Ctrl-C, 2 if Termio itself went away.
 - `termio sessions spawn "<prompt>"` — start a NEW agent session on the
   prompt (`--agent codex` picks the agent; default: your own kind). Replies
   immediately with the new session's link — use it for every follow-up;
