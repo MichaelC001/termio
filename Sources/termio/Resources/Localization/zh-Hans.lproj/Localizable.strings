@@ -942,6 +942,8 @@
 	<string>此差异太大，无法在此显示，请在 GitHub 上打开该文件。</string>
 	<key>This file is binary — open it on GitHub to view.</key>
 	<string>此文件为二进制文件，请在 GitHub 上打开查看。</string>
+	<key>This host sent a name the file tree can’t show.</key>
+	<string>该主机返回了文件树无法显示的名称。</string>
 	<key>This month</key>
 	<string>本月</string>
 	<key>This project’s origin remote doesn’t point at github.com, so there is no issue tracker to show.</key>

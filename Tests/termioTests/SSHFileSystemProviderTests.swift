@@ -468,16 +468,6 @@ final class SSHProcessRunnerTests: XCTestCase {
         XCTAssertFalse(result.timedOut)
     }
 
-    func testCaptureLimitTerminatesProducer() async {
-        let result = await SSHProcessRunner.run(
-            ["/usr/bin/head", "-c", "4096", "/dev/zero"],
-            captureLimit: 128,
-            timeout: 5)
-
-        XCTAssertTrue(result.outputLimitExceeded)
-        XCTAssertLessThanOrEqual(result.stdout.count, 128)
-    }
-
     func testTimeoutTerminatesProcess() async {
         let started = Date()
         let result = await SSHProcessRunner.run(

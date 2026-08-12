@@ -873,3 +873,4 @@ private struct SplitDividerHandle: View {
             .position(x: spec.frame.midX, y: spec.frame.midY)
     }
 }
+

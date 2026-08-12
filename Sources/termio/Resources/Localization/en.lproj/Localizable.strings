@@ -942,6 +942,8 @@
 	<string>This diff is too large to show here — open the file on GitHub.</string>
 	<key>This file is binary — open it on GitHub to view.</key>
 	<string>This file is binary — open it on GitHub to view.</string>
+	<key>This host sent a name the file tree can’t show.</key>
+	<string>This host sent a name the file tree can’t show.</string>
 	<key>This month</key>
 	<string>This month</string>
 	<key>This project’s origin remote doesn’t point at github.com, so there is no issue tracker to show.</key>

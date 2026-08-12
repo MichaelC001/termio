@@ -5324,6 +5324,16 @@
           }
         }
       }
+    },
+    "This host sent a name the file tree can’t show.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该主机返回了文件树无法显示的名称。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -116,7 +116,8 @@ enum SSHProviderError: Error, Equatable {
     case disconnected
     case muxUnavailable
     case commandFailed(String)
-    case unsupportedListing
+    /// A name the tree refuses to build a path from.
+    case unsafeName
     case listingTooLarge
     case notRegularFile
     case tooLarge
@@ -137,7 +138,7 @@ enum SSHProviderError: Error, Equatable {
 ///
 /// One channel is kept open for the pane's lifetime, so expanding a folder costs
 /// a round trip rather than a process launch.
-actor SSHFileSystemProvider: FileSystemProvider {
+actor SSHFileSystemProvider {
     let host: String
 
     /// Entries per directory. A tree can't render more than this usefully, and a
@@ -258,20 +259,24 @@ struct SSHProcessResult: Sendable {
     let stderr: String
     let timedOut: Bool
     let wasCancelled: Bool
-    let outputLimitExceeded: Bool
 }
 
-/// `Process` is callback-based and does not inherit Swift task cancellation.
-/// This bridge drains both pipes concurrently, bounds captured output, and owns
-/// timeout/cancellation termination so no hidden SSH helper can live forever.
+/// Runs `ssh -O check`, the one thing the pane needs a whole subprocess for.
+///
+/// `Process` is callback-based and does not inherit Swift task cancellation, so
+/// this bridge drains both pipes concurrently, bounds what it keeps, and owns
+/// timeout and cancellation termination — no hidden `ssh` can outlive the call
+/// that started it.
 enum SSHProcessRunner {
     static let stderrCaptureLimit = 65_536
+    /// `-O check` answers in one line; anything past this is a host that has lost
+    /// the plot, and reading it forever would be the only way to be hurt by it.
+    static let stdoutCaptureLimit = 65_536
     fileprivate static let terminationGrace: TimeInterval = 0.25
     private static let readerDrainGrace: TimeInterval = 0.5
 
     static func run(
         _ argv: [String],
-        captureLimit: Int? = nil,
         timeout: TimeInterval = 30
     ) async -> SSHProcessResult {
         let execution = SSHProcessExecution()
@@ -279,10 +284,7 @@ enum SSHProcessRunner {
             await withCheckedContinuation { continuation in
                 DispatchQueue.global(qos: .userInitiated).async {
                     continuation.resume(returning: runSync(
-                        argv,
-                        captureLimit: captureLimit,
-                        timeout: timeout,
-                        execution: execution))
+                        argv, timeout: timeout, execution: execution))
                 }
             }
         }, onCancel: {
@@ -292,28 +294,24 @@ enum SSHProcessRunner {
 
     private static func runSync(
         _ argv: [String],
-        captureLimit: Int?,
         timeout: TimeInterval,
         execution: SSHProcessExecution
     ) -> SSHProcessResult {
         guard let executable = argv.first else {
             return SSHProcessResult(
                 status: 127, stdout: Data(), stderr: "missing executable",
-                timedOut: false, wasCancelled: execution.isCancelled,
-                outputLimitExceeded: false)
+                timedOut: false, wasCancelled: execution.isCancelled,)
         }
         if execution.isCancelled {
             return SSHProcessResult(
                 status: SIGTERM, stdout: Data(), stderr: "",
-                timedOut: false, wasCancelled: true,
-                outputLimitExceeded: false)
+                timedOut: false, wasCancelled: true,)
         }
 
         guard !argv.contains(where: { $0.contains("\0") }) else {
             return SSHProcessResult(
                 status: 127, stdout: Data(), stderr: "invalid NUL in process argument",
-                timedOut: false, wasCancelled: execution.isCancelled,
-                outputLimitExceeded: false)
+                timedOut: false, wasCancelled: execution.isCancelled,)
         }
 
         var stdoutFDs = [Int32](repeating: -1, count: 2)
@@ -324,8 +322,7 @@ enum SSHProcessRunner {
             }
             return SSHProcessResult(
                 status: 127, stdout: Data(), stderr: "could not create process pipes",
-                timedOut: false, wasCancelled: execution.isCancelled,
-                outputLimitExceeded: false)
+                timedOut: false, wasCancelled: execution.isCancelled,)
         }
 
         var actions: posix_spawn_file_actions_t?
@@ -363,8 +360,7 @@ enum SSHProcessRunner {
                 stdout: Data(),
                 stderr: String(cString: strerror(spawnStatus)),
                 timedOut: false,
-                wasCancelled: execution.isCancelled,
-                outputLimitExceeded: false)
+                wasCancelled: execution.isCancelled,)
         }
         execution.register(processID)
 
@@ -378,10 +374,7 @@ enum SSHProcessRunner {
         let stderrCapture = PipeCapture()
         readers.enter()
         DispatchQueue.global(qos: .userInitiated).async {
-            stdoutCapture.drain(
-                stdoutHandle,
-                limit: captureLimit,
-                onLimitExceeded: { execution.terminate(after: terminationGrace) })
+            stdoutCapture.drain(stdoutHandle, limit: stdoutCaptureLimit)
             readers.leave()
         }
         readers.enter()
@@ -428,8 +421,7 @@ enum SSHProcessRunner {
             stdout: stdoutCapture.data,
             stderr: String(decoding: stderrCapture.data, as: UTF8.self),
             timedOut: timedOut,
-            wasCancelled: execution.isCancelled,
-            outputLimitExceeded: stdoutCapture.limitExceeded)
+            wasCancelled: execution.isCancelled,)
     }
 
     private static func withCStringArray<Result>(
@@ -525,31 +517,14 @@ private final class SSHProcessExecution: @unchecked Sendable {
 final class PipeCapture: @unchecked Sendable {
     private let lock = NSLock()
     private var captured = Data()
-    private var exceeded = false
 
     var data: Data { lock.withLock { captured } }
-    var limitExceeded: Bool { lock.withLock { exceeded } }
 
-    func drain(
-        _ handle: FileHandle,
-        limit: Int?,
-        onLimitExceeded: (() -> Void)? = nil
-    ) {
-        var totalBytes = 0
+    func drain(_ handle: FileHandle, limit: Int) {
         while let chunk = try? handle.read(upToCount: 65_536), !chunk.isEmpty {
-            totalBytes += chunk.count
-            if let limit {
-                let firstExcess = lock.withLock {
-                    if captured.count < limit {
-                        captured.append(chunk.prefix(limit - captured.count))
-                    }
-                    guard totalBytes > limit, !exceeded else { return false }
-                    exceeded = true
-                    return true
-                }
-                if firstExcess { onLimitExceeded?() }
-            } else {
-                lock.withLock { captured.append(chunk) }
+            lock.withLock {
+                guard captured.count < limit else { return }
+                captured.append(chunk.prefix(limit - captured.count))
             }
         }
     }

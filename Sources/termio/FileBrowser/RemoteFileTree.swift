@@ -32,7 +32,7 @@ enum RemotePreviewStorage {
     private static var liveDirectories: Set<URL> = []
 
     static func stage(_ data: Data, named name: String) throws -> RemotePreviewLease {
-        guard isSafeComponent(name) else { throw SSHProviderError.unsupportedListing }
+        guard isSafeComponent(name) else { throw SSHProviderError.unsafeName }
 
         let parent = FileManager.default.temporaryDirectory
         var template = Array(
@@ -53,12 +53,12 @@ enum RemotePreviewStorage {
         let localName = ext.isEmpty ? "preview" : "preview.\(ext)"
         guard isSafeComponent(localName) else {
             try? FileManager.default.removeItem(at: directory)
-            throw SSHProviderError.unsupportedListing
+            throw SSHProviderError.unsafeName
         }
         let url = directory.appendingPathComponent(localName, isDirectory: false).standardizedFileURL
         guard url.deletingLastPathComponent() == directory.standardizedFileURL else {
             try? FileManager.default.removeItem(at: directory)
-            throw SSHProviderError.unsupportedListing
+            throw SSHProviderError.unsafeName
         }
         do {
             try data.write(to: url, options: .atomic)
@@ -269,8 +269,8 @@ final class RemoteFileBrowserModel: ObservableObject {
             return "The SSH sharing socket could not be created."
         case SSHProviderError.timedOut:
             return "The remote operation timed out."
-        case SSHProviderError.unsupportedListing:
-            return "This host sent a name the file tree can't show."
+        case SSHProviderError.unsafeName:
+            return localized("This host sent a name the file tree can’t show.")
         case SSHProviderError.protocolError:
             return "This host's SFTP service answered in a way termio can't read."
         case SSHProviderError.listingTooLarge:
