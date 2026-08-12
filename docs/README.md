@@ -41,6 +41,7 @@ from the real front matter).
 | active | design | [iOS libghostty "non-functional" panel + teardown UAF — root-cause findings](design/ios-ghostty-renderer-panic-investigation-findings.md) |
 | active | design | [iOS terminal input & attachments](design/ios-terminal-input.md) |
 | active | design | [iOS TestFlight runbook — build, upload, and drive ASC from the API](runbook/ios-testflight-runbook.md) |
+| active | design | [Keyboard and command design](design/keyboard-command-design.md) |
 | active | design | [macOS release runbook — cut, notarize, publish termio.dmg](runbook/macos-release-runbook.md) |
 | active | design | [Research brief — termiod Session Protocol (for design agent)](design/_research-session-protocol-brief.md) |
 | active | design | [Sessions CLI v2 — reliability & command design](design/sessions-cli-v2.md) |

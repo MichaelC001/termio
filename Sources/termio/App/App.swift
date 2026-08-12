@@ -160,6 +160,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             defer: false
         )
         window.title = "Termio"
+        // Closing the window no longer quits (see `applicationShouldTerminate-
+        // AfterLastWindowClosed`), so the window object has to survive its own close:
+        // the terminal surfaces live in its view tree, and a Dock reopen re-shows this
+        // very window rather than rebuilding one. The default `true` would also
+        // over-release it out from under the strong reference held here.
+        window.isReleasedWhenClosed = false
         // Mouse-moved events are off by default; the pane grab handle reveals on
         // hover, so it needs them (see `PaneDragRearrange`).
         window.acceptsMouseMovedEvents = true
@@ -403,13 +409,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    /// termio is single-window, so terminating with the last window would make ⌘W a
+    /// quit — and quitting kills every session's agent (see `applicationWillTerminate`).
+    /// The app stays running with its sessions alive; the Dock icon brings the window
+    /// back (see `applicationShouldHandleReopen`). Only ⌘Q ends sessions.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
+    }
+
+    /// Dock click (or `open -b sh.termio.app`) with the window closed. The window
+    /// survived its close, so it is re-shown rather than rebuilt — the sessions kept
+    /// running in its view tree the whole time.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows { showMainWindow() }
+        return true
+    }
+
+    /// Brings the main window back and repaints the terminal it reveals: a surface that
+    /// spent time off-screen stops ticking and comes back unpainted until the next
+    /// keystroke (the same rescue `windowDidDeminiaturize` applies).
+    private func showMainWindow() {
+        guard let window else { return }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        window.contentView?.layoutSubtreeIfNeeded()
+        store.repaintSelectedSurface()
+    }
+
+    /// Quitting is now the only path that kills sessions, so a quit that would cut
+    /// short an agent mid-turn — or one already waiting on an answer — asks first.
+    /// An all-idle app quits without a word.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let busy = store.busySessionTitles
+        guard !busy.isEmpty else { return .terminateNow }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = busy.count == 1
+            ? "“\(busy[0])” is still running."
+            : "\(busy.count) sessions are still running."
+        alert.informativeText =
+            "Quitting stops every session's agent and shell. "
+            + "Closing the window leaves them running."
+        // Cancel goes first so it takes both the default (Return) and, being titled
+        // Cancel, the Escape key: no stray keypress on this sheet can end a running
+        // agent. Quitting is deliberate — a click, or ⌘Q a second time.
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Quit")
+        if let quitButton = alert.buttons.last {
+            quitButton.hasDestructiveAction = true
+            quitButton.keyEquivalent = "q"
+            quitButton.keyEquivalentModifierMask = .command
+        }
+        return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
     }
 
     /// Closing the app closes its sessions' processes. Without this there is
     /// no teardown path at all on quit — the PTYs die with the process and
     /// agent children that ignore the resulting SIGHUP live on as orphans.
+    /// Only a real quit reaches here; closing the window does not.
     func applicationWillTerminate(_ notification: Notification) {
         // Delivered banners would outlive the sessions they point at.
         TaskNotificationCenter.shared.withdrawAll()
@@ -1230,18 +1288,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// The session itself stays alive in the sidebar (killing it remains the
     /// explicit "Close Session"). With no split on screen there is no pane to
     /// peel off, so ⌘W falls through to closing the window, matching iTerm2
-    /// where the last pane's ⌘W closes its container.
+    /// where the last pane's ⌘W closes its container. That close is just a
+    /// close: the app and every session keep running (issue #242).
     @objc func ungroupPane(_ sender: Any?) {
-        if store.splitRoot != nil {
-            store.ungroupSelectedPane()
-        } else {
-            window?.performClose(sender)
-        }
+        performClose(sender, ungroupingSplit: store.splitRoot != nil)
     }
 
-    /// File ▸ Close Window (⌘⇧W) — closes the whole window regardless of splits.
+    /// File ▸ Close Window (⌘⇧W) — closes the frontmost window regardless of
+    /// splits, so it dismisses Settings when Settings is what's in front.
     @objc func closeMainWindow(_ sender: Any?) {
-        window?.performClose(sender)
+        performClose(sender, ungroupingSplit: false)
+    }
+
+    /// Shared body of the two close keys. Menu actions hang off the app delegate
+    /// rather than a window, so the target is resolved here (see `CloseCommand`):
+    /// without it, ⌘W pressed in Settings reaches past it and ungroups a pane in
+    /// the terminal behind.
+    private func performClose(_ sender: Any?, ungroupingSplit: Bool) {
+        let frontmost = CloseCommand.frontmost(mainWindow: window, palettePanel: palettePanel)
+        switch CloseCommand.action(for: frontmost, ungroupingSplit: ungroupingSplit) {
+        case .nothing:
+            break
+        case .dismissPalette:
+            // The store flag owns the palette's presentation; the observer tears
+            // the panel down (see `presentCommandPalette`).
+            store.paletteMode = nil
+        case .closeKeyWindow:
+            NSApp.keyWindow?.performClose(sender)
+        case .ungroupPane:
+            store.ungroupSelectedPane()
+        case .closeMainWindow:
+            window?.performClose(sender)
+        }
     }
 
     /// View ▸ Zoom Split (⌘⇧↩) — maximise the focused pane, or restore the split.
@@ -2145,6 +2223,32 @@ private func buildMainMenu() -> NSMenu {
     let sessionMenu = NSMenu(title: "Session")
     sessionMenu.delegate = NSApp.delegate as? AppDelegate
     sessionItem.submenu = sessionMenu
+
+    // Window menu — the standard one every Mac app has and termio didn't, which is
+    // why ⌘M did nothing. These actions travel the responder chain to whichever
+    // window is key (Settings included), so they need no delegate plumbing.
+    // Handing the menu to `NSApp.windowsMenu` lets AppKit keep its window list in it.
+    let windowItem = NSMenuItem()
+    mainMenu.addItem(windowItem)
+    let windowMenu = NSMenu(title: "Window")
+    windowMenu.addItem(
+        withTitle: "Minimize",
+        action: #selector(NSWindow.performMiniaturize(_:)),
+        keyEquivalent: "m"
+    )
+    windowMenu.addItem(
+        withTitle: "Zoom",
+        action: #selector(NSWindow.performZoom(_:)),
+        keyEquivalent: ""
+    )
+    windowMenu.addItem(.separator())
+    windowMenu.addItem(
+        withTitle: "Bring All to Front",
+        action: #selector(NSApplication.arrangeInFront(_:)),
+        keyEquivalent: ""
+    )
+    windowItem.submenu = windowMenu
+    NSApp.windowsMenu = windowMenu
 
     return mainMenu
 }

@@ -1260,6 +1260,15 @@ final class TermioStore: ObservableObject {
         return .idle
     }
 
+    /// The sessions a quit would cut short: an agent mid-turn, or one already
+    /// blocked on the user. A finished (`.done`) session has nothing left to lose,
+    /// so it doesn't count — the quit confirmation names these and only these.
+    var busySessionTitles: [String] {
+        projects.flatMap(\.sessions)
+            .filter { [.working, .needsAttention].contains(status(for: $0.id)) }
+            .map { displayTitle(for: $0) }
+    }
+
     func session(_ id: Session.ID) -> Session? {
         for project in projects {
             if let session = project.sessions.first(where: { $0.id == id }) {
