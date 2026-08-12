@@ -61,12 +61,24 @@ struct AgentDefinition: Identifiable {
     /// script, no socket), so it corrects a missed or late hook the instant the
     /// title flips. See `TermioStore.applyTitleActivity` for the arbitration.
     let titleRules: AgentStatusRules?
+    /// Whether this agent reports its busy/idle state as ConEmu-style `OSC 9;4`
+    /// progress in the PTY byte stream (Grok natively; Claude Code once
+    /// `terminalProgressBarEnabled` is set). When true, termio scans the raw stream
+    /// for it and drives status the same way the title does — a correction channel
+    /// that coexists with hooks, never a competing authority. See `OSCProgressScanner`
+    /// and `TermioStore.applyProgressActivity`. Off for agents (and the plain shell)
+    /// that don't, so an unrelated tool's progress bar can't move an agent's dot.
+    let emitsProgressStatus: Bool
     /// A manifest's declarative hook integration: the destination owned by the agent,
     /// a closed installer/dialect, and its event→state mapping.
     /// When present it is installed by `AgentStatusHooks` and becomes the session's
     /// status authority — so `statusRules` is left `nil` and screen-scrape is skipped,
     /// keeping one source of truth per pane. See `AgentHookSpec`.
     let hookSpec: AgentHookSpec?
+    /// The agent's user-level skills directory as declared in the manifest
+    /// (`~/.claude/skills`), or `nil` when the agent has no skills ecosystem.
+    /// `SessionSkillInstaller` installs the termio skill into `<dir>/termio/`.
+    let skillDir: String?
 
     /// All fields after `wireName` are optional so the built-in roster and the
     /// fallback don't each have to spell them out.
@@ -76,7 +88,8 @@ struct AgentDefinition: Identifiable {
         resumeSpec: ResumeSpec, icon: AgentIcon,
         iconRef: TermioShared.IconRef, tint: Color, tintHex: String?, installURL: URL?, wireName: String,
         statusRules: AgentStatusRules? = nil, titleRules: AgentStatusRules? = nil,
-        hookSpec: AgentHookSpec? = nil
+        emitsProgressStatus: Bool = false,
+        hookSpec: AgentHookSpec? = nil, skillDir: String? = nil
     ) {
         self.id = id
         self.order = order
@@ -92,7 +105,9 @@ struct AgentDefinition: Identifiable {
         self.wireName = wireName
         self.statusRules = statusRules
         self.titleRules = titleRules
+        self.emitsProgressStatus = emitsProgressStatus
         self.hookSpec = hookSpec
+        self.skillDir = skillDir
     }
 
     /// The default `order` for a manifest that declares none — high, so unspecified
@@ -313,6 +328,8 @@ extension AgentDefinition {
     static var claudeCode: AgentDefinition { AgentCatalog.shared.definition(for: "claudeCode") }
     static var codex: AgentDefinition { AgentCatalog.shared.definition(for: "codex") }
     static var opencode: AgentDefinition { AgentCatalog.shared.definition(for: "opencode") }
+    static var kimi: AgentDefinition { AgentCatalog.shared.definition(for: "kimi") }
+    static var grok: AgentDefinition { AgentCatalog.shared.definition(for: "grok") }
 
     /// Resolves a free-text agent name from the CLI (`termio sessions send --agent claude`)
     /// to a definition, accepting the id, the display name, and common aliases.
@@ -461,7 +478,9 @@ struct AgentHookSpec: Hashable {
 /// one after Settings writes or deletes a user manifest.
 final class AgentCatalog {
     private static let sharedLock = NSLock()
-    private static var _shared = AgentCatalog()
+    // Guarded by `sharedLock` on every access; the lock is the synchronization
+    // the compiler cannot see.
+    nonisolated(unsafe) private static var _shared = AgentCatalog()
 
     static var shared: AgentCatalog {
         sharedLock.withLock { _shared }
@@ -854,7 +873,21 @@ struct AgentManifest: Decodable {
     /// correction channel, not a competing authority), so it is not gated the way
     /// `status` is.
     var titleStatus: StatusSpec?
+    /// Opt-in to reading this agent's ConEmu-style `OSC 9;4` progress out of the PTY
+    /// byte stream as a busy/idle signal (`OSCProgressScanner`). Off by default so a
+    /// plain shell's `wget`/`npm` progress bar can never move an agent's status dot.
+    var progressStatus: Bool?
     var hooks: HookSpec?
+    /// Where the agent loads user-level Agent Skills from, so termio can install
+    /// the session-control skill there. Optional: agents with no skills ecosystem
+    /// (or one termio hasn't confirmed) simply omit it and get no skill install.
+    var skills: SkillsSpec?
+
+    /// The manifest's `skills` — one directory, declared the way hooks declare
+    /// theirs. `~` is expanded at install time.
+    struct SkillsSpec: Decodable {
+        var dir: String?
+    }
 
     struct IconSpec: Decodable {
         var vector: String?
@@ -1026,6 +1059,14 @@ struct AgentManifest: Decodable {
         }
     }
 
+    private func resolvedSkillDir() throws -> String? {
+        guard let skills else { return nil }
+        guard let dir = skills.dir?.trimmingCharacters(in: .whitespaces), !dir.isEmpty else {
+            throw ManifestError.invalid("\(id): skills require 'dir'")
+        }
+        return dir
+    }
+
     private func resolvedHookSpec() throws -> AgentHookSpec? {
         guard let hooks else { return nil }
         let typeName = hooks.type?.lowercased() ?? "json"
@@ -1192,6 +1233,7 @@ struct AgentManifest: Decodable {
             resolvedTintHex = nil
         }
         let hookSpec = try resolvedHookSpec()
+        let skillDir = try resolvedSkillDir()
         let statusRules = hookSpec == nil
             ? AgentStatusRules.from(working: status?.working, attention: status?.attention, label: id)
             : nil
@@ -1208,7 +1250,8 @@ struct AgentManifest: Decodable {
             resumeSpec: resumeSpec, icon: resolvedIcon, iconRef: resolvedIconRef,
             tint: resolvedTint, tintHex: resolvedTintHex,
             installURL: (install ?? installURL).flatMap(URL.init(string:)), wireName: wire ?? id,
-            statusRules: statusRules, titleRules: titleRules, hookSpec: hookSpec)
+            statusRules: statusRules, titleRules: titleRules,
+            emitsProgressStatus: progressStatus ?? false, hookSpec: hookSpec, skillDir: skillDir)
     }
 
     private static func bundledAsset(named name: String, in bundle: Bundle) -> URL? {

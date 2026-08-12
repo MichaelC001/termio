@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import GhosttyTerminal
 import Sparkle
 import SwiftUI
 import TermioShared
@@ -91,12 +92,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // Keeps the native window title (path) and subtitle (git branch) in step with the
     // selected session — NetNewsWire's approach, no custom title-bar views.
     private var titleObserver: AnyCancellable?
-    // Shows/hides the toolbar's overlay-close button as a file editor / diff / preview opens and
-    // closes (see `setCloseOverlayVisible`).
+    // Reveals the inspector and manages the maximize host as a detail opens/closes (see the
+    // `store.objectWillChange` sink in `applicationDidFinishLaunching`).
     private var overlayObserver: AnyCancellable?
-    // Whether the close button is currently in the toolbar, so the observer only mutates the
-    // toolbar on an actual open↔closed transition rather than on every store change.
-    private var closeOverlayShown = false
+    // Previous detail-presented state, so the observer fires reveal only on the open transition
+    // rather than on every store change.
+    private var detailWasPresented = false
+    // Previous maximize state, so the observer re-binds the tracking separator on the restore
+    // transition (tearing down the full-window host relayouts the inspector) and not every tick.
+    private var detailWasMaximized = false
+    // The full-window host that shows the active inspector detail blown up to cover everything
+    // while `store.inspectorMaximized`; nil when the detail is docked in the inspector.
+    private var maximizedDetailHost: NSHostingView<AnyView>?
+    // Coalesces the per-frame `windowDidResize` stream into a single settle so the inspector's
+    // max thickness (and the tracking-separator re-bind it forces) is recomputed once the drag
+    // stops, not on every intermediate frame.
+    private var inspectorResizeSettle: DispatchWorkItem?
     // The floating panel shared by ⌘⇧O Open Quickly and ⌘⇧P Command Palette.
     // Presented as a child window (Xcode Open-Quickly style) because the
     // terminal surfaces are NSViews that draw above any SwiftUI overlay in the
@@ -109,8 +120,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // The ghostty-style right-click menu over the terminal surfaces (Copy/Paste + splits);
     // owns the rightMouseDown monitor for the app's lifetime.
     private var terminalContextMenu: TerminalContextMenu?
+    // The pane drag-to-rearrange gesture (issue #183); owns its
+    // mouse monitors for the app's lifetime.
+    private var paneDragRearrange: PaneDragRearrange?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Dev-only: `TERMIO_TERMINAL_DEBUG=1` turns on the GhosttyTerminal
+        // wrapper's own lifecycle + metrics diagnostics, printed to stdout.
+        if AppChannel.isDev,
+           ProcessInfo.processInfo.environment["TERMIO_TERMINAL_DEBUG"] != nil {
+            TerminalDebugLog.isEnabled = true
+            TerminalDebugLog.categories = [.lifecycle, .metrics]
+        }
+        // Dev-only: focus-independent window snapshot for automated UI debugging
+        // (see DebugWindowSnapshot).
+        if AppChannel.isDev { DebugWindowSnapshot.installTrigger() }
         // Sweep up session processes a previous instance stranded (crash,
         // force-quit, dev rebuild's kill -9) before this run adds its own.
         PTYProcess.reapStrayOrphans()
@@ -121,8 +145,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // whole main menu whenever a user rebinds a shortcut in Settings.
         keybindingsObserver = NotificationCenter.default.addObserver(
             forName: .termioKeybindingsChanged, object: nil, queue: .main
-        ) { _ in
-            MainActor.assumeIsolated { NSApp.mainMenu = buildMainMenu() }
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                NSApp.mainMenu = buildMainMenu()
+                // Open surfaces carry the old unbind set, so a shortcut moved onto
+                // a ghostty-bound key would be swallowed until relaunch.
+                self?.store.applyAppearanceToOpenSurfaces()
+            }
         }
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
@@ -131,6 +160,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             defer: false
         )
         window.title = "Termio"
+        // Closing the window no longer quits (see `applicationShouldTerminate-
+        // AfterLastWindowClosed`), so the window object has to survive its own close:
+        // the terminal surfaces live in its view tree, and a Dock reopen re-shows this
+        // very window rather than rebuilding one. The default `true` would also
+        // over-release it out from under the strong reference held here.
+        window.isReleasedWhenClosed = false
+        // Mouse-moved events are off by default; the pane grab handle reveals on
+        // hover, so it needs them (see `PaneDragRearrange`).
+        window.acceptsMouseMovedEvents = true
         // Floor the window size so it can't be dragged down to an unusable sliver: the
         // sidebar alone wants ~220pt, leaving room for a workable terminal beside it.
         window.contentMinSize = NSSize(width: 640, height: 420)
@@ -166,13 +204,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
         applyWindowTransparency()
         applyChromeAppearance()
+        updateInspectorMaxThickness()
         installToolbar()
         // Empty the sidebar's toolbar region (sort + new-terminal) whenever the navigator collapses
         // and restore it when it reopens — the sidebar's own buttons ride with the sidebar, the way
         // Finder/Xcode drop theirs. KVO catches every collapse path (toolbar toggle, View menu,
         // divider drag). No `.initial`: the launch-time sync below runs after the autosave restore.
         sidebarCollapseObserver = sidebarSplitItem?.observe(\.isCollapsed, options: [.new]) { [weak self] item, _ in
-            MainActor.assumeIsolated { self?.setNavigatorItemsVisible(!item.isCollapsed) }
+            let collapsed = item.isCollapsed
+            MainActor.assumeIsolated { self?.setNavigatorItemsVisible(!collapsed) }
         }
         // Mirror the inspector's live collapse state onto the store, so panes it hosts
         // can idle while hidden (a collapsed item keeps its view hierarchy alive — the
@@ -212,15 +252,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 MainActor.assumeIsolated { self?.updateWindowTitle() }
             }
 
-        // Surface the overlay-close button in the toolbar while a file editor, diff, or preview
-        // covers the terminal. `objectWillChange` fires before the value lands, so read the settled
-        // state on the next runloop tick (the title observer's pattern).
+        // A detail (file editor, diff, trace, PR/issue) opens in the right inspector, beside the
+        // terminal. Its own window controls (hide list / maximize / close) live *in* the detail's
+        // header now (see `InspectorDetailChromeButtons`), not the toolbar — so this observer only
+        // reveals the inspector on open and mounts/tears down the full-window maximize host.
+        // `objectWillChange` fires before the value lands, so read the settled state next runloop.
         overlayObserver = store.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.setCloseOverlayVisible(self.store.openFileURL != nil || self.store.openDiff != nil || self.store.openTrace != nil)
+                    let presented = self.store.isDetailPresented
+                    let opened = presented && !self.detailWasPresented
+                    self.detailWasPresented = presented
+                    let maximized = self.store.inspectorMaximized && presented
+                    let restored = self.detailWasMaximized && !maximized
+                    self.detailWasMaximized = maximized
+                    // Opening a detail reveals the inspector and gives it a comfortable reading width
+                    // the first time — only on the open transition, so a later store change can't yank
+                    // an inspector the user has since resized.
+                    if opened { self.revealInspectorForDetail() }
+                    // Blow the detail up into a full-window host when maximized; tear it down otherwise.
+                    self.setDetailMaximized(maximized)
+                    // The pane switch (Files/Search/Changes/Issues/Info) re-aims the inspector's list
+                    // column, which the full-window detail now covers — so while maximized the tabs
+                    // would act on something off-screen. Pull them from the toolbar for the duration
+                    // and restore them on the way back down (the inspector is still open behind the host).
+                    self.syncInspectorTabsVisibility()
+                    // Revealing the inspector (open) or tearing down the maximize host (restore) both
+                    // relayout around divider 1, which can leave the tracking separator inert (the
+                    // centered-tabs / missing-divider glitch). Re-bind once layout settles.
+                    if opened || restored {
+                        DispatchQueue.main.async { [weak self] in self?.reassertInspectorSeparator() }
+                    }
                 }
             }
 
@@ -250,6 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
 
         terminalContextMenu = TerminalContextMenu(store: store)
+        paneDragRearrange = PaneDragRearrange(store: store)
 
         menuBar = MenuBarController(store: store) { [weak self] id in
             // The tray's "come look at this" — same verb as a notification click
@@ -272,6 +337,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             },
             stopSession: { [weak store] sessionID in
                 store?.companionStopSession(sessionID: sessionID) ?? false
+            },
+            startScratchTerminal: { [weak store] in
+                store?.companionStartScratchTerminal()
+            },
+            startSSHSession: { [weak store] host in
+                store?.companionStartSSHSession(host: host)
             },
             traceProvider: { [weak store] sessionID in
                 store?.companionTrace(for: sessionID)
@@ -321,17 +392,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             guard let self else { return }
             let alert = NSAlert()
-            alert.messageText = "Let your agents coordinate?"
-            alert.informativeText = """
+            alert.messageText = localized("Let your agents coordinate?")
+            alert.informativeText = localized("""
                 termio can teach the agents you run (Claude Code, Codex, …) a `termio \
                 sessions` command so they can see, drive, and read each other's sessions \
                 in a project.
 
                 Enabling adds a short note to your ~/.claude/CLAUDE.md and installs \
                 status hooks. You can turn it off anytime in Settings ▸ Agents.
-                """
-            alert.addButton(withTitle: "Enable")
-            alert.addButton(withTitle: "Not Now")
+                """)
+            alert.addButton(withTitle: localized("Enable"))
+            alert.addButton(withTitle: localized("Not Now"))
             settings.sessionControlPrompted = true
             if alert.runModal() == .alertFirstButtonReturn {
                 settings.sessionControlEnabled = true
@@ -339,13 +410,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    /// termio is single-window, so terminating with the last window would make ⌘W a
+    /// quit — and quitting kills every session's agent (see `applicationWillTerminate`).
+    /// The app stays running with its sessions alive; the Dock icon brings the window
+    /// back (see `applicationShouldHandleReopen`). Only ⌘Q ends sessions.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
+    }
+
+    /// Dock click (or `open -b sh.termio.app`) with the window closed. The window
+    /// survived its close, so it is re-shown rather than rebuilt — the sessions kept
+    /// running in its view tree the whole time.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows { showMainWindow() }
+        return true
+    }
+
+    /// Brings the main window back and repaints the terminal it reveals: a surface that
+    /// spent time off-screen stops ticking and comes back unpainted until the next
+    /// keystroke (the same rescue `windowDidDeminiaturize` applies).
+    private func showMainWindow() {
+        guard let window else { return }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        window.contentView?.layoutSubtreeIfNeeded()
+        store.repaintSelectedSurface()
+    }
+
+    /// Quitting is now the only path that kills sessions, so a quit that would cut
+    /// short an agent mid-turn — or one already waiting on an answer — asks first.
+    /// An all-idle app quits without a word.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let busy = store.busySessionTitles
+        guard !busy.isEmpty else { return .terminateNow }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = busy.count == 1
+            ? "“\(busy[0])” is still running."
+            : "\(busy.count) sessions are still running."
+        alert.informativeText =
+            "Quitting stops every session's agent and shell. "
+            + "Closing the window leaves them running."
+        // Cancel goes first so it takes both the default (Return) and, being titled
+        // Cancel, the Escape key: no stray keypress on this sheet can end a running
+        // agent. Quitting is deliberate — a click, or ⌘Q a second time.
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Quit")
+        if let quitButton = alert.buttons.last {
+            quitButton.hasDestructiveAction = true
+            quitButton.keyEquivalent = "q"
+            quitButton.keyEquivalentModifierMask = .command
+        }
+        return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
     }
 
     /// Closing the app closes its sessions' processes. Without this there is
     /// no teardown path at all on quit — the PTYs die with the process and
     /// agent children that ignore the resulting SIGHUP live on as orphans.
+    /// Only a real quit reaches here; closing the window does not.
     func applicationWillTerminate(_ notification: Notification) {
         // Delivered banners would outlive the sessions they point at.
         TaskNotificationCenter.shared.withdrawAll()
@@ -415,7 +538,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // sidebar. It starts collapsed — the tree is summoned via the toolbar toggle.
         let inspector = FileBrowserHostingController(store: store, settings: settings)
         let inspectorItem = NSSplitViewItem(viewController: inspector)
-        inspectorItem.minimumThickness = 220
+        inspectorItem.minimumThickness = 260
+        // Max width tracks the window: the inspector can grow to the golden ratio of the
+        // content width (`updateInspectorMaxThickness`), never below the 420pt floor. A fixed
+        // cap felt cramped on wide windows when reading a diff or a wide file in the inspector.
         inspectorItem.maximumThickness = 420
         inspectorItem.canCollapse = true
         inspectorItem.isCollapsed = true
@@ -455,12 +581,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return path
     }
 
-    /// Entry point for the `termio` CLI: macOS delivers the folder passed to
-    /// `open -b sh.termio.app <dir>` here. Because termio is single-instance, an
+    /// Entry point for the `termio` CLI and for session deep links: macOS
+    /// delivers both the folder passed to `open -b sh.termio.app <dir>` and any
+    /// clicked `termio://` link here. Because termio is single-instance, an
     /// already-running app receives this in place, so the project opens in the
     /// existing window rather than spawning a second one.
     func application(_ application: NSApplication, open urls: [URL]) {
-        openProjects(at: urls)
+        for url in urls where url.scheme == AppChannel.urlScheme {
+            store.openSessionLink(url)
+        }
+        let directories = urls.filter { $0.scheme != AppChannel.urlScheme }
+        if !directories.isEmpty { openProjects(at: directories) }
     }
 
     /// Adds each directory as a project in the one shared store and brings the
@@ -554,6 +685,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowDidExitFullScreen(_ notification: Notification) {
         applyChromeAppearance()
         applyWindowTransparency()
+        updateInspectorMaxThickness()
+    }
+
+    /// View ▸ Toggle Full Screen (⌃⌘F).
+    ///
+    /// macOS moved its own full-screen shortcut to globe-F in Monterey and pins
+    /// that onto the Enter/Exit Full Screen item AppKit inserts — so ⌃⌘F, what a
+    /// decade of Mac apps taught and what ghostty binds, reaches nothing. This is
+    /// ghostty's own answer, verbatim: an item AppKit will not take over, which
+    /// means neither the reserved titles nor `NSWindow.toggleFullScreen(_:)`
+    /// (ghostty ships "Toggle Full Screen" on `toggleGhosttyFullScreen:`).
+    /// Ghostty's binding on the same key is unbound inside the surface (see
+    /// `applyAppearance`), or the terminal would swallow it first.
+    @objc func toggleFullScreenCommand(_ sender: Any?) {
+        (window ?? Self.mainWindow)?.toggleFullScreen(nil)
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        // `windowDidResize` fires every frame of a live drag. Re-setting `maximumThickness` (and the
+        // separator re-bind it triggers) on each frame both wastes layout and repeatedly disturbs the
+        // tracking separator mid-drag. Coalesce to a single update once the drag settles.
+        inspectorResizeSettle?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.updateInspectorMaxThickness() }
+        }
+        inspectorResizeSettle = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        // Restoring from the Dock can bring the window back under its content minimum, and leaves a
+        // tickless terminal surface (and a mid-load WKWebView in the Issues pane) unpainted — the
+        // "minimize while a GitHub issue loads → tiny + black" report. Clamp a shrunken frame back
+        // up (setFrame ignores contentMinSize), force a relayout, and nudge the surface to repaint.
+        guard let window else { return }
+        let minFrameHeight = window.frameRect(forContentRect:
+            NSRect(origin: .zero, size: window.contentMinSize)).height
+        if window.frame.height < minFrameHeight {
+            var frame = window.frame
+            frame.origin.y -= (minFrameHeight - frame.height)   // grow from the top, keep it fixed
+            frame.size.height = minFrameHeight
+            window.setFrame(frame, display: true)
+        }
+        window.contentView?.layoutSubtreeIfNeeded()
+        store.repaintSelectedSurface()
+    }
+
+    /// Lets the right inspector grow with the window: its max width is the golden ratio (0.618)
+    /// of the current content width, floored at 420pt so it never shrinks below the old fixed cap
+    /// on narrow windows. A static `maximumThickness` capped the inspector at 420pt regardless of
+    /// window size, which felt small when the inspector held a diff or a wide file on a large display.
+    private func updateInspectorMaxThickness() {
+        guard let item = filesInspectorItem, let window else { return }
+        let contentWidth = window.contentLayoutRect.width
+        let newMax = max(420, (contentWidth * 0.618).rounded(.down))
+        guard item.maximumThickness != newMax else { return }
+        item.maximumThickness = newMax
+        // Changing the max can pull divider 1 in (when the inspector was pinned at the old cap),
+        // which leaves `.inspectorTrackingSeparator` inert — so the tab switch drifts to center. Only
+        // an issue while the inspector is open; the reassert no-ops otherwise. Deferred so it runs
+        // against the settled geometry.
+        DispatchQueue.main.async { [weak self] in self?.reassertInspectorSeparator() }
     }
 
     /// Applies the user's appearance mode. `.system` leaves every surface tracking
@@ -621,7 +814,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 backing: .buffered,
                 defer: false
             )
-            window.title = "Settings"
+            window.title = localized("Settings")
             // System Settings–style chrome: a unified toolbar carries the sidebar
             // separator and the detail pane's title/subtitle. The window is
             // resizable so short panes don't force a fixed slab of empty space.
@@ -671,10 +864,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.presentOpenProjectPanel()
     }
 
-    /// The toolbar's `+` button — opens a fresh scratch terminal at the user's home
-    /// directory (like a new iTerm2 window), grouped under a home-rooted section in the
-    /// sidebar. Reached via the responder chain (the toolbar item targets `nil`), like
-    /// the other app actions.
+    /// File ▸ New Terminal (⌘T) — a shell in the focused session's directory, beside
+    /// that session (see `addTerminalHere`). Reached via the responder chain (the menu
+    /// item targets `nil`), like the other app actions.
+    @objc func newTerminalHere(_ sender: Any?) {
+        store.addTerminalHere()
+    }
+
+    /// New Terminal at Home — the same verb in the File menu and the sidebar's `+`,
+    /// always starting at `~` the way a new iTerm2 window does.
     @objc func newScratchTerminal(_ sender: Any?) {
         store.addScratchTerminal()
     }
@@ -725,6 +923,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let willOpen = item.isCollapsed
         item.animator().isCollapsed = !willOpen
         setInspectorSwitchVisible(willOpen)
+        // On expand the switch + separator are inserted while the divider is still mid-slide, so the
+        // separator binds against unsettled geometry and can land inert (tabs drift to center). Re-bind
+        // once the collapse animation finishes. Nothing to align on collapse (the switch is gone).
+        if willOpen {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.reassertInspectorSeparator()
+            }
+        }
     }
 
     /// Matches the toolbar's pane switch to the inspector's *actual* collapse state — called once at
@@ -733,6 +939,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func syncInspectorSwitch() {
         guard let item = filesInspectorItem else { return }
         setInspectorSwitchVisible(!item.isCollapsed)
+    }
+
+    /// Drives the pane switch's visibility from its two masters at once: the inspector must be open
+    /// *and* not maximized. A maximized detail covers the list column the switch re-aims, so the tabs
+    /// would act on something off-screen — pull them while maximized, restore them on the way back
+    /// down. Idempotent (`setInspectorSwitchVisible` no-ops when already in the target state), so the
+    /// overlay observer can call it on every store change.
+    func syncInspectorTabsVisibility() {
+        guard let item = filesInspectorItem else { return }
+        let maximized = store.inspectorMaximized && store.isDetailPresented
+        setInspectorSwitchVisible(!item.isCollapsed && !maximized)
     }
 
     /// Inserts or removes the inspector pane switch as the panel opens/closes, so it is shown only
@@ -772,6 +989,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                toolbar.items[toggle - 1].itemIdentifier == .flexibleSpace {
                 toolbar.removeItem(at: toggle - 1)
             }
+        }
+    }
+
+    /// Removes and re-inserts the inspector's tracking separator so it re-binds to divider 1 against
+    /// the *current, settled* geometry. `NSTrackingSeparatorToolbarItem` is flaky under termio's
+    /// translucent, `titlebarAppearsTransparent` titlebar — mutating the toolbar or moving the divider
+    /// (as opening a detail does) can leave it inert, so it stops splitting the toolbar into
+    /// terminal/inspector regions and the tab switcher drifts to center with no divider line. A fresh
+    /// item built when geometry is stable re-binds cleanly — the same cure as a manual inspector
+    /// toggle, which is why toggling fixed the glitch. Deferred by the caller to a settled runloop.
+    private func reassertInspectorSeparator() {
+        guard let toolbar = window?.toolbar else { return }
+        func index(of id: NSToolbarItem.Identifier) -> Int? {
+            toolbar.items.firstIndex { $0.itemIdentifier == id }
+        }
+        // Only meaningful while the switch is present (inspector open); nothing to align otherwise.
+        guard index(of: .inspectorTabs) != nil else { return }
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        defer { NSAnimationContext.endGrouping() }
+        if let sep = index(of: .inspectorTrackingSeparator) { toolbar.removeItem(at: sep) }
+        // Re-find the tabs (index shifted after the removal) and slot the separator just before them.
+        if let tabs = index(of: .inspectorTabs) {
+            toolbar.insertItem(withItemIdentifier: .inspectorTrackingSeparator, at: tabs)
         }
     }
 
@@ -821,41 +1062,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    /// The toolbar's overlay-close button — dismisses whichever content overlay (file editor, diff,
-    /// or preview) covers the terminal. Routed through a notification so `TerminalPane` runs the
-    /// same teardown (clear the store, return focus to the terminal) the overlays' own Esc / close
-    /// buttons use, keeping the two close paths identical. Reached via the responder chain (the
-    /// toolbar item targets `nil`), like the other app actions.
-    @objc func closeContentOverlay(_ sender: Any?) {
-        NotificationCenter.default.post(name: .termioCloseContentOverlay, object: nil)
+    /// ⌘F: broadcast so any on-screen file editor opens its find bar.
+    @objc func showEditorFindBar(_ sender: Any?) {
+        NotificationCenter.default.post(name: .termioShowFindBar, object: nil)
     }
 
-    /// Inserts or removes the overlay-close button as a file editor / diff / preview opens and
-    /// closes, so it is shown only while there is an overlay to close. It rides the terminal
-    /// column's trailing edge: anchored just before the inspector switch's tracking separator when
-    /// the inspector is open (hugging the terminal|inspector divider, directly above the overlay's
-    /// own close edge), else before the inspector toggle at the window's trailing edge. The flexible
-    /// space already ahead of the toggle pushes the button right against that anchor. The button is
-    /// built bordered, so it inherits the same Liquid Glass treatment and size as the navigator and
-    /// inspector toggles for free.
-    private func setCloseOverlayVisible(_ visible: Bool) {
-        guard let toolbar = window?.toolbar, visible != closeOverlayShown else { return }
-        closeOverlayShown = visible
-        func index(of id: NSToolbarItem.Identifier) -> Int? {
-            toolbar.items.firstIndex { $0.itemIdentifier == id }
+    /// Reveals the inspector for a freshly opened detail: un-collapses it if hidden, and otherwise
+    /// leaves its width alone. It comes back at whatever the split last had (the user's own width,
+    /// restored from the autosave), and the responsive `InspectorRoot` — two-column when there's
+    /// room, detail-only when narrow, draggable seam either way — takes it from there.
+    ///
+    /// It used to *grow* the inspector to ~half the window on every open. That shrank the terminal
+    /// unbidden and, because the growth was a mid-layout `minimumThickness` bump, left the terminal a
+    /// blank strip where the surface hadn't reflowed. Respect the user's width; let layout be
+    /// responsive instead of forcing it.
+    private func revealInspectorForDetail() {
+        guard let item = filesInspectorItem else { return }
+        // Un-collapse *synchronously* (not via `animator()`) so the split geometry — and the divider
+        // the tracking separator binds to — is settled before the toolbar switch is (re)inserted.
+        if item.isCollapsed {
+            item.isCollapsed = false
+            setInspectorSwitchVisible(true)
         }
-        // Mutate with animation off, matching the inspector switch: the button simply presents for
-        // the overlay's fade rather than running NSToolbar's own pop on an independent clock.
-        NSAnimationContext.beginGrouping()
-        NSAnimationContext.current.duration = 0
-        defer { NSAnimationContext.endGrouping() }
-        if visible {
-            guard index(of: .closeOverlay) == nil,
-                  let anchor = index(of: .inspectorTrackingSeparator) ?? index(of: .toggleInspector)
-            else { return }
-            toolbar.insertItem(withItemIdentifier: .closeOverlay, at: anchor)
-        } else if let i = index(of: .closeOverlay) {
-            toolbar.removeItem(at: i)
+    }
+
+    /// Mounts (or removes) the full-window host that shows the active inspector detail blown up to
+    /// cover the content area (the terminal + inspector region, *not* the project sidebar) — an
+    /// in-window maximize, *not* native macOS fullscreen: the window stays put in its Space, the
+    /// menu bar stays visible. The sidebar stays reachable, and toggling it slides the maximized
+    /// detail with it (see the leading constraint below).
+    /// `InspectorDetailContent` is the same view the inspector docks; while it is up the inspector
+    /// hides its own copy (see `InspectorRoot`), so the detail renders once. The toolbar stays above
+    /// it, so its maximize button restores and Esc still closes.
+    private func setDetailMaximized(_ on: Bool) {
+        guard let container = splitViewController?.view else { return }
+        if on {
+            guard maximizedDetailHost == nil else { return }
+            let host = NSHostingView(rootView: AnyView(
+                InspectorDetailContent()
+                    .environmentObject(store)
+                    .environmentObject(settings)
+            ))
+            // No SwiftUI-derived sizing constraints: the host is pinned to the content area
+            // below, and the default `.standardBounds` options let auto layout satisfy the
+            // root view's ideal size by resizing the *window* — the just-closed detail is an
+            // EmptyView (ideal height 0) for the one runloop before this host is torn down,
+            // which crushed the whole window to a ~90pt strip.
+            host.sizingOptions = []
+            host.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(host, positioned: .above, relativeTo: nil)
+            // Pin the leading edge to the *content* area (the terminal/inspector region), not the
+            // whole window — so the maximized detail sits beside the project sidebar rather than
+            // swallowing it. Item 1 is the terminal (0 is the sidebar, 2 the inspector); its leading
+            // tracks the split, so toggling the sidebar slides the maximized detail with it (it
+            // extends left when the sidebar collapses).
+            let items = splitViewController?.splitViewItems ?? []
+            let contentLeading = items.count > 1
+                ? items[1].viewController.view.leadingAnchor
+                : container.leadingAnchor
+            NSLayoutConstraint.activate([
+                host.leadingAnchor.constraint(equalTo: contentLeading),
+                host.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                host.topAnchor.constraint(equalTo: container.topAnchor),
+                host.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            ])
+            maximizedDetailHost = host
+        } else {
+            maximizedDetailHost?.removeFromSuperview()
+            maximizedDetailHost = nil
+            // Removing the host re-exposes the terminal, but a tickless surface won't repaint
+            // itself — nudge it so a switch out of a maximized detail can't leave a blank.
+            store.repaintSelectedSurface()
         }
     }
 
@@ -995,27 +1272,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.splitSelectedPane(.horizontal)
     }
 
+    /// View ▸ Split Left — side-by-side, with the new terminal on the leading side.
+    @objc func splitPaneLeft(_ sender: Any?) {
+        store.splitSelectedPane(.horizontal, slot: .first)
+    }
+
     /// View ▸ Split Down (⌘⇧D) — splits the focused pane stacked.
     @objc func splitPaneDown(_ sender: Any?) {
         store.splitSelectedPane(.vertical)
+    }
+
+    /// View ▸ Split Up — stacked, with the new terminal above.
+    @objc func splitPaneUp(_ sender: Any?) {
+        store.splitSelectedPane(.vertical, slot: .first)
     }
 
     /// View ▸ Ungroup (⌘W) — collapses the focused pane out of the layout.
     /// The session itself stays alive in the sidebar (killing it remains the
     /// explicit "Close Session"). With no split on screen there is no pane to
     /// peel off, so ⌘W falls through to closing the window, matching iTerm2
-    /// where the last pane's ⌘W closes its container.
+    /// where the last pane's ⌘W closes its container. That close is just a
+    /// close: the app and every session keep running (issue #242).
     @objc func ungroupPane(_ sender: Any?) {
-        if store.splitRoot != nil {
-            store.ungroupSelectedPane()
-        } else {
-            window?.performClose(sender)
-        }
+        performClose(sender, ungroupingSplit: store.splitRoot != nil)
     }
 
-    /// File ▸ Close Window (⌘⇧W) — closes the whole window regardless of splits.
+    /// File ▸ Close Window (⌘⇧W) — closes the frontmost window regardless of
+    /// splits, so it dismisses Settings when Settings is what's in front.
     @objc func closeMainWindow(_ sender: Any?) {
-        window?.performClose(sender)
+        performClose(sender, ungroupingSplit: false)
+    }
+
+    /// Shared body of the two close keys. Menu actions hang off the app delegate
+    /// rather than a window, so the target is resolved here (see `CloseCommand`):
+    /// without it, ⌘W pressed in Settings reaches past it and ungroups a pane in
+    /// the terminal behind.
+    private func performClose(_ sender: Any?, ungroupingSplit: Bool) {
+        let frontmost = CloseCommand.frontmost(mainWindow: window, palettePanel: palettePanel)
+        switch CloseCommand.action(for: frontmost, ungroupingSplit: ungroupingSplit) {
+        case .nothing:
+            break
+        case .dismissPalette:
+            // The store flag owns the palette's presentation; the observer tears
+            // the panel down (see `presentCommandPalette`).
+            store.paletteMode = nil
+        case .closeKeyWindow:
+            NSApp.keyWindow?.performClose(sender)
+        case .ungroupPane:
+            store.ungroupSelectedPane()
+        case .closeMainWindow:
+            window?.performClose(sender)
+        }
     }
 
     /// View ▸ Zoom Split (⌘⇧↩) — maximise the focused pane, or restore the split.
@@ -1042,6 +1349,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func focusPaneRight(_ sender: Any?) { store.focusPane(.right) }
     @objc func focusPaneUp(_ sender: Any?) { store.focusPane(.up) }
     @objc func focusPaneDown(_ sender: Any?) { store.focusPane(.down) }
+
+    // Session ▸ Next/Previous — cycles the sidebar selection in its visual
+    // order, wrapping at the ends (see `selectAdjacentSession`).
+    @objc func nextSession(_ sender: Any?) { store.selectAdjacentSession(1) }
+    @objc func previousSession(_ sender: Any?) { store.selectAdjacentSession(-1) }
+
+    /// The Session menu rows currently marked working, so the comet timer can
+    /// advance them while the menu is open (see `menuWillOpen`). Rebuilt on
+    /// every `fillSessionMenu`.
+    private var sessionMenuWorkingItems: [NSMenuItem] = []
+    private var sessionMenuCometTimer: Timer?
+    private var sessionMenuCometPhase: Double = 0
+
+    /// A row of the Session menu's jump list (see `fillSessionMenu`).
+    @objc func revealSessionFromMenu(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let id = UUID(uuidString: raw) else { return }
+        store.revealSession(id)
+    }
+
+    /// The selected session's project when it's a real git folder — the target
+    /// of the Branch menu's verbs, GitHub Desktop's "current repository". The
+    /// loose Terminals/Chats funnels and non-repo folders ("—" branch) don't
+    /// qualify, so the Branch menu dims for them.
+    private var currentBranchProject: Project? {
+        guard let id = store.selectedSessionID,
+              let project = store.project(for: id),
+              project.kind == .folder, project.branch != "—" else { return nil }
+        return project
+    }
+
+    /// File ▸ New Worktree… — the sidebar context menu's verb promoted to the
+    /// menu bar (and a shortcut), so the agent-per-worktree loop doesn't need a
+    /// right-click. Acts on the selected session's project.
+    @objc func newWorktree(_ sender: Any?) {
+        guard let project = currentBranchProject else { return }
+        store.addWorktree(from: project.id)
+    }
+
+    /// File ▸ New Pull Request — GitHub Desktop's browser hand-off, verbatim:
+    /// opens the forge's compare page for the current branch (the session's
+    /// worktree branch when it lives in one). termio never authors the PR —
+    /// committing and pushing stay in the terminal — so an unpushed branch gets
+    /// an explainer, not a push.
+    @objc func newPullRequest(_ sender: Any?) {
+        guard let project = currentBranchProject,
+              let sessionID = store.selectedSessionID else { return }
+        let dir = store.session(sessionID)?.worktreePath ?? project.path
+        Task { @MainActor in
+            if let url = await GitService.newPullRequestPage(in: dir) {
+                NSWorkspace.shared.open(url)
+            } else {
+                let alert = NSAlert()
+                alert.messageText = localized("Couldn’t open a pull request page")
+                alert.informativeText = localized("Push the current branch to the repository’s remote first, then try again. (The remote also needs to be a forge Termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)")
+                alert.alertStyle = .warning
+                alert.runModal()
+            }
+        }
+    }
 }
 
 /// The "New Chat ▸" parent item shared by the File menu and the toolbar `+`
@@ -1051,8 +1418,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 /// plumbing.
 @MainActor
 private func makeNewChatItem() -> NSMenuItem {
-    let item = NSMenuItem(title: "New Chat", action: nil, keyEquivalent: "")
-    let submenu = NSMenu(title: "New Chat")
+    let item = NSMenuItem(title: localized("New Chat"), action: nil, keyEquivalent: "")
+    let submenu = NSMenu(title: localized("New Chat"))
     submenu.delegate = NSApp.delegate as? AppDelegate
     item.submenu = submenu
     return item
@@ -1063,23 +1430,127 @@ private func makeNewChatItem() -> NSMenuItem {
 /// every open, so a config edit shows up without any change-notification plumbing.
 @MainActor
 private func makeNewSSHItem() -> NSMenuItem {
-    let item = NSMenuItem(title: "New SSH Connection", action: nil, keyEquivalent: "")
-    let submenu = NSMenu(title: "New SSH Connection")
+    let item = NSMenuItem(title: localized("New SSH Connection"), action: nil, keyEquivalent: "")
+    let submenu = NSMenu(title: localized("New SSH Connection"))
     submenu.delegate = NSApp.delegate as? AppDelegate
     item.submenu = submenu
     return item
 }
 
 extension AppDelegate: NSMenuDelegate {
-    /// Fills the lazily-populated submenus this delegate serves, told apart by
-    /// title: New Chat and New SSH Connection.
+    /// Fills the lazily-populated menus this delegate serves, told apart by
+    /// title: the Session menu, New Chat, and New SSH Connection.
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        if menu.title == "New SSH Connection" {
+        switch menu.title {
+        case localized("Session"):
+            fillSessionMenu(menu)
+        case localized("New SSH Connection"):
             fillNewSSHMenu(menu)
-        } else {
+        default:
             fillNewChatMenu(menu)
         }
+    }
+
+    /// Fills the Session menu: the cycling and close verbs, then a live jump
+    /// list — one submenu per project holding its session rows, mirroring the
+    /// sidebar's hierarchy (the user's choice over Chrome's flat tab list).
+    /// Rows keep the tray roster's vocabulary (brand mark or working comet,
+    /// trailing green/amber dot, checkmark on the selected session); since a
+    /// submenu hides its dots until hovered, each project row rolls up its most
+    /// urgent resting cue (amber outranks green) and wears the checkmark for a
+    /// selection it contains. Rebuilt on every open so the list, the dots, and
+    /// the rebindable shortcuts are always current. Flattened order matches
+    /// `selectAdjacentSession`'s cycling exactly.
+    private func fillSessionMenu(_ menu: NSMenu) {
+        sessionMenuWorkingItems.removeAll()
+        menu.addItem(
+            withTitle: localized("Next Session"),
+            action: #selector(nextSession(_:)),
+            command: .nextSession
+        )
+        menu.addItem(
+            withTitle: localized("Previous Session"),
+            action: #selector(previousSession(_:)),
+            command: .previousSession
+        )
+
+        let groups = store.sidebarSessionGroups
+        var previousKind: ProjectKind?
+        for (project, sessions) in groups {
+            // The loose Terminals/Chats funnels and the real projects are
+            // different sections, as in the sidebar — a divider at each kind
+            // change keeps them read apart (and the first one separates the
+            // whole list from the verbs above).
+            if project.kind != previousKind { menu.addItem(.separator()) }
+            previousKind = project.kind
+            let projectItem = NSMenuItem(title: project.name, action: nil, keyEquivalent: "")
+            let submenu = NSMenu(title: project.name)
+            for session in sessions {
+                let status = store.status(for: session.id)
+                let title = store.displayTitle(for: session)
+                let item = NSMenuItem(
+                    title: title,
+                    action: #selector(revealSessionFromMenu(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = session.id.uuidString
+                // A working row swaps the brand mark for the sidebar's comet;
+                // the timer started in `menuWillOpen` spins it while the menu
+                // is open, exactly as the tray's roster does.
+                if status == .working {
+                    item.image = sessionCometImage(phase: sessionMenuCometPhase)
+                    sessionMenuWorkingItems.append(item)
+                } else {
+                    item.image = agentMenuImage(for: session.agent)
+                }
+                item.attributedTitle = sessionMenuRowTitle(title, status: status)
+                if session.id == store.selectedSessionID { item.state = .on }
+                submenu.addItem(item)
+            }
+            projectItem.submenu = submenu
+            let statuses = sessions.map { store.status(for: $0.id) }
+            let rollup: SessionStatus = statuses.contains(.needsAttention) ? .needsAttention
+                : statuses.contains(.done) ? .done
+                : .idle
+            projectItem.attributedTitle = sessionMenuRowTitle(project.name, status: rollup)
+            if sessions.contains(where: { $0.id == store.selectedSessionID }) {
+                projectItem.state = .on
+            }
+            menu.addItem(projectItem)
+        }
+    }
+
+    /// While a menu is open its modal event-tracking loop stops SwiftUI's
+    /// `TimelineView` clock, so the Session menu spins its working comets the
+    /// way the tray does: a timer registered for the tracking run-loop mode
+    /// advances one shared frame across every working row (submenu rows
+    /// included — their items are live while the parent menu tracks). Started
+    /// unconditionally: `menuWillOpen` can precede the `menuNeedsUpdate` fill,
+    /// so the working rows may not exist yet when the menu opens.
+    func menuWillOpen(_ menu: NSMenu) {
+        guard menu.title == localized("Session") else { return }
+        sessionMenuCometTimer?.invalidate()
+        let interval = 1.0 / 15.0
+        let period = 1.1  // matches the sidebar's WorkingIndicator
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !self.sessionMenuWorkingItems.isEmpty else { return }
+                self.sessionMenuCometPhase += interval / period
+                if self.sessionMenuCometPhase >= 1 { self.sessionMenuCometPhase -= 1 }
+                let frame = sessionCometImage(phase: self.sessionMenuCometPhase)
+                for item in self.sessionMenuWorkingItems { item.image = frame }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .eventTracking)
+        sessionMenuCometTimer = timer
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        guard menu.title == localized("Session") else { return }
+        sessionMenuCometTimer?.invalidate()
+        sessionMenuCometTimer = nil
     }
 
     /// Fills a New Chat submenu with one row per enabled agent — the user's own
@@ -1090,7 +1561,7 @@ extension AppDelegate: NSMenuDelegate {
     private func fillNewChatMenu(_ menu: NSMenu) {
         let agents = enabledAgentPresets(settings).filter { $0 != .terminal }
         guard !agents.isEmpty else {
-            menu.addItem(withTitle: "No Agents Enabled", action: nil, keyEquivalent: "")
+            menu.addItem(withTitle: localized("No Agents Enabled"), action: nil, keyEquivalent: "")
             return
         }
         let defaultID = store.defaultChatAgent()?.id
@@ -1125,11 +1596,28 @@ extension AppDelegate: NSMenuDelegate {
         }
         if !hosts.isEmpty { menu.addItem(.separator()) }
         let add = menu.addItem(
-            withTitle: "Add Host…",
+            withTitle: localized("Add Host…"),
             action: #selector(addSSHHost(_:)),
             keyEquivalent: ""
         )
         add.target = self
+    }
+}
+
+extension AppDelegate: NSMenuItemValidation {
+    /// Auto-enablement for menu items targeting the delegate: the Session
+    /// cycling verbs need sessions to cycle, and the branch verbs a selected
+    /// session inside a real git project. Every other action stays enabled,
+    /// matching the pre-validation behavior.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(nextSession(_:)), #selector(previousSession(_:)):
+            return !store.sidebarSessionGroups.isEmpty
+        case #selector(newWorktree(_:)), #selector(newPullRequest(_:)):
+            return currentBranchProject != nil
+        default:
+            return true
+        }
     }
 }
 
@@ -1152,18 +1640,22 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     private weak var splitViewController: NSSplitViewController?
     private weak var branchPickerHostingView: NSView?
     private var branchPickerWidthConstraint: NSLayoutConstraint?
-    private var terminalPaneFrameObserver: NSObjectProtocol?
+
+    /// Holds the pane-frame observation token. Its removal lives in this bag's
+    /// own deinit: the delegate's deinit is nonisolated in Swift 6 and cannot
+    /// read main-actor state, but dropping the delegate drops the bag, which
+    /// still unhooks the observer.
+    private final class FrameObserverBag: @unchecked Sendable {
+        var token: NSObjectProtocol?
+        deinit { if let token { NotificationCenter.default.removeObserver(token) } }
+    }
+
+    private let frameObserver = FrameObserverBag()
 
     init(store: TermioStore, settings: AppSettings, splitViewController: NSSplitViewController?) {
         self.store = store
         self.settings = settings
         self.splitViewController = splitViewController
-    }
-
-    deinit {
-        if let terminalPaneFrameObserver {
-            NotificationCenter.default.removeObserver(terminalPaneFrameObserver)
-        }
     }
 
     /// Lets the title use the room its toolbar section actually has, up to a generous ceiling.
@@ -1187,10 +1679,10 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     private func observeTerminalPaneWidth() {
         guard let terminalView = terminalPaneView else { return }
         terminalView.postsFrameChangedNotifications = true
-        if let terminalPaneFrameObserver {
-            NotificationCenter.default.removeObserver(terminalPaneFrameObserver)
+        if let token = frameObserver.token {
+            NotificationCenter.default.removeObserver(token)
         }
-        terminalPaneFrameObserver = NotificationCenter.default.addObserver(
+        frameObserver.token = NotificationCenter.default.addObserver(
             forName: NSView.frameDidChangeNotification,
             object: terminalView,
             queue: .main
@@ -1231,14 +1723,20 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     /// as a project. "New Chat" opens the user's agent roster and "New SSH Connection"
     /// the config's hosts as submenus (the same ones the File menu carries — see
     /// `makeNewChatItem` / `makeNewSSHItem`).
+    ///
+    /// Every entry here is context-free: nothing reads the selection, so the terminal
+    /// entry is the `$HOME` one. The `+` lives in the sidebar's toolbar, where "here"
+    /// has no referent — the directory-following New Terminal is ⌘T, pressed with the
+    /// terminal in front of you.
     func makeNewSessionMenu() -> NSMenu {
         let menu = NSMenu()
-        let terminal = NSMenuItem(title: "New Terminal", action: #selector(newTerminal(_:)), keyEquivalent: "")
+        let terminal = NSMenuItem(title: localized("New Terminal at Home"),
+                                  action: #selector(newTerminal(_:)), keyEquivalent: "")
         terminal.target = self
         menu.addItem(terminal)
         menu.addItem(makeNewChatItem())
         menu.addItem(makeNewSSHItem())
-        let folder = NSMenuItem(title: "Open Project…", action: #selector(openFolder(_:)), keyEquivalent: "")
+        let folder = NSMenuItem(title: localized("Open Project…"), action: #selector(openFolder(_:)), keyEquivalent: "")
         folder.target = self
         menu.addItem(folder)
         return menu
@@ -1251,11 +1749,12 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     /// inspector section is too narrow to hold the glass cluster — the panes stay switchable
     /// while the cluster itself is hidden.
     func makeInspectorTabsMenuItem() -> NSMenuItem {
-        let menuItem = NSMenuItem(title: "Inspector Pane", action: nil, keyEquivalent: "")
-        let menu = NSMenu(title: "Inspector Pane")
+        let menuItem = NSMenuItem(title: localized("Inspector Pane"), action: nil, keyEquivalent: "")
+        let menu = NSMenu(title: localized("Inspector Pane"))
         menu.delegate = self
         let panes: [(tab: InspectorTab, title: String)] = [
-            (.files, "Project Files"), (.search, "Search Files"), (.changes, "Changes"), (.info, "Info"),
+            (.files, localized("Project Files")), (.search, localized("Search Files")),
+            (.changes, localized("Changes")), (.info, localized("Info")),
         ]
         for pane in panes {
             let item = NSMenuItem(title: pane.title, action: #selector(setInspectorTab(_:)), keyEquivalent: "")
@@ -1309,7 +1808,7 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        defaultIdentifiers + [.sortProjects, .newTerminal, .inspectorTrackingSeparator, .inspectorTabs, .closeOverlay]
+        defaultIdentifiers + [.sortProjects, .newTerminal, .inspectorTrackingSeparator, .inspectorTabs]
     }
 
     func toolbar(
@@ -1320,8 +1819,8 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
         switch itemIdentifier {
         case .toggleNavigator:
             let item = NSToolbarItem(itemIdentifier: .toggleNavigator)
-            item.label = "Navigator"
-            item.toolTip = "Hide or show the navigator"
+            item.label = localized("Navigator")
+            item.toolTip = localized("Hide or show the navigator")
             item.image = NSImage(systemSymbolName: "sidebar.leading", accessibilityDescription: "Navigator")
             item.isBordered = true
             // `NSSplitViewController.toggleSidebar(_:)` collapses the first (sidebar) item with
@@ -1335,8 +1834,8 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             // toolbar region. Native `NSMenuToolbarItem` so it carries the standard
             // menu chevron and free Liquid Glass bordered look, matching the toggles.
             let item = NSMenuToolbarItem(itemIdentifier: .sortProjects)
-            item.label = "Sort"
-            item.toolTip = "Choose how projects are ordered"
+            item.label = localized("Sort")
+            item.toolTip = localized("Choose how projects are ordered")
             item.image = NSImage(systemSymbolName: "line.3.horizontal.decrease", accessibilityDescription: "Sort projects")
             item.isBordered = true
             item.showsIndicator = true
@@ -1353,8 +1852,8 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             // NSToolbar `»` overflow. Finder's sidebar `+` shows no chevron either — a `+` reads
             // as "add" on its own, unlike the sort item, whose glyph does keep its indicator.
             let item = NSMenuToolbarItem(itemIdentifier: .newTerminal)
-            item.label = "New"
-            item.toolTip = "New terminal or project"
+            item.label = localized("New")
+            item.toolTip = localized("New terminal or project")
             item.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New")
             item.isBordered = true
             item.showsIndicator = false
@@ -1368,8 +1867,8 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             // native control loses its track and reads as detached, selection-less glyphs, so we draw
             // our own track + sliding pill.
             let item = NSToolbarItem(itemIdentifier: .inspectorTabs)
-            item.label = "Inspector"
-            item.toolTip = "Switch between project files, search, changes, and info"
+            item.label = localized("Inspector")
+            item.toolTip = localized("Switch between project files, search, changes, and info")
             let host = NSHostingView(rootView: InspectorTabsToolbar()
                 .environmentObject(store)
                 .environmentObject(store.settings))
@@ -1395,22 +1894,11 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             // Native bordered button, built exactly like the navigator toggle so the two are the
             // same size; the trailing-sidebar glyph mirrors the leading one.
             let item = NSToolbarItem(itemIdentifier: .toggleInspector)
-            item.label = "Inspector"
-            item.toolTip = "Hide or show the inspector"
+            item.label = localized("Inspector")
+            item.toolTip = localized("Hide or show the inspector")
             item.image = NSImage(systemSymbolName: "sidebar.trailing", accessibilityDescription: "Inspector")
             item.isBordered = true
             item.action = #selector(AppDelegate.toggleFilesInspector(_:))
-            return item
-        case .closeOverlay:
-            // Native bordered button (free Liquid Glass on macOS 26, same size as the toggles),
-            // shown only while a file editor / diff / preview covers the terminal — inserted and
-            // removed by `setCloseOverlayVisible`, so it is never in the default set.
-            let item = NSToolbarItem(itemIdentifier: .closeOverlay)
-            item.label = "Close"
-            item.toolTip = "Close (Esc)"
-            item.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")
-            item.isBordered = true
-            item.action = #selector(AppDelegate.closeContentOverlay(_:))
             return item
         case .branchPicker:
             let item = NSToolbarItem(itemIdentifier: .branchPicker)
@@ -1448,7 +1936,6 @@ private extension NSToolbarItem.Identifier {
     static let toggleInspector = NSToolbarItem.Identifier("TermioToggleInspector")
     static let inspectorTrackingSeparator = NSToolbarItem.Identifier("TermioInspectorTrackingSeparator")
     static let branchPicker = NSToolbarItem.Identifier("TermioBranchPicker")
-    static let closeOverlay = NSToolbarItem.Identifier("TermioCloseOverlay")
 }
 
 /// The custom title item: the selected session's folder name over its live git branch, drawn as
@@ -1530,19 +2017,19 @@ private func buildMainMenu() -> NSMenu {
     mainMenu.addItem(appItem)
     let appMenu = NSMenu()
     appMenu.addItem(
-        withTitle: "Check for Updates…",
+        withTitle: localized("Check for Updates…"),
         action: #selector(AppDelegate.checkForUpdates(_:)),
         keyEquivalent: ""
     )
     appMenu.addItem(.separator())
     appMenu.addItem(
-        withTitle: "Settings…",
+        withTitle: localized("Settings…"),
         action: #selector(AppDelegate.showSettings(_:)),
         keyEquivalent: ","
     )
     appMenu.addItem(.separator())
     appMenu.addItem(
-        withTitle: "Quit Termio",
+        withTitle: localized("Quit Termio"),
         action: #selector(NSApplication.terminate(_:)),
         keyEquivalent: "q"
     )
@@ -1550,14 +2037,21 @@ private func buildMainMenu() -> NSMenu {
 
     let fileItem = NSMenuItem()
     mainMenu.addItem(fileItem)
-    let fileMenu = NSMenu(title: "File")
+    let fileMenu = NSMenu(title: localized("File"))
     // Keeps the `+` new-terminal action reachable when the navigator is collapsed and its toolbar
     // button is hidden (see `setNavigatorItemsVisible`). ⌘T is safe: TUI programs drive off Ctrl,
     // never Cmd, so it can't shadow a key a terminal app wants.
     fileMenu.addItem(
-        withTitle: "New Terminal",
-        action: #selector(AppDelegate.newScratchTerminal(_:)),
+        withTitle: localized("New Terminal"),
+        action: #selector(AppDelegate.newTerminalHere(_:)),
         command: .newTerminal
+    )
+    // The always-`$HOME` terminal, kept as its own verb now that ⌘T follows the
+    // focused session's directory.
+    fileMenu.addItem(
+        withTitle: "New Terminal at Home",
+        action: #selector(AppDelegate.newScratchTerminal(_:)),
+        command: .newTerminalAtHome
     )
     // New Chat ▸ one row per enabled agent (the user's roster, filled on open by the
     // AppDelegate — see `makeNewChatItem`). ⌘N (rebindable in Settings ▸ Keyboard)
@@ -1569,14 +2063,31 @@ private func buildMainMenu() -> NSMenu {
     fileMenu.addItem(makeNewSSHItem())
     fileMenu.addItem(.separator())
     fileMenu.addItem(
-        withTitle: "Open Project…",
+        withTitle: localized("Open Project…"),
         action: #selector(AppDelegate.openProject(_:)),
         command: .openProject
     )
     fileMenu.addItem(.separator())
+    // The two branch verbs that fit termio's read-only git surface, with
+    // GitHub Desktop's Branch-menu bindings: creating a worktree (termio's
+    // branch-creation verb, the sidebar context menu's action promoted) and
+    // the New Pull Request browser hand-off. Both act on the selected
+    // session's project and dim without one (see `validateMenuItem`) — too few
+    // to carry a top-level Branch menu, so they live with the project verbs.
+    fileMenu.addItem(
+        withTitle: localized("New Worktree…"),
+        action: #selector(AppDelegate.newWorktree(_:)),
+        command: .newWorktree
+    )
+    fileMenu.addItem(
+        withTitle: localized("New Pull Request"),
+        action: #selector(AppDelegate.newPullRequest(_:)),
+        command: .newPullRequest
+    )
+    fileMenu.addItem(.separator())
     // ⌘⇧W closes the whole window (⌘W is Ungroup, terminal-style — see View menu).
     fileMenu.addItem(
-        withTitle: "Close Window",
+        withTitle: localized("Close Window"),
         action: #selector(AppDelegate.closeMainWindow(_:)),
         command: .closeWindow
     )
@@ -1585,15 +2096,23 @@ private func buildMainMenu() -> NSMenu {
     // Standard Edit menu so copy/paste/select-all responder actions work.
     let editItem = NSMenuItem()
     mainMenu.addItem(editItem)
-    let editMenu = NSMenu(title: "Edit")
-    editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-    editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-    editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+    let editMenu = NSMenu(title: localized("Edit"))
+    editMenu.addItem(withTitle: localized("Cut"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+    editMenu.addItem(withTitle: localized("Copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+    editMenu.addItem(withTitle: localized("Paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+    editMenu.addItem(withTitle: localized("Select All"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+    editMenu.addItem(.separator())
+    // ⌘F opens the current file's in-editor find bar. Broadcast via notification so the
+    // shortcut works regardless of first-responder — the terminal receives no find behaviour.
+    let findItem = NSMenuItem(title: localized("Find…"),
+                              action: #selector(AppDelegate.showEditorFindBar(_:)),
+                              keyEquivalent: "f")
+    editMenu.addItem(findItem)
     editItem.submenu = editMenu
 
     let viewItem = NSMenuItem()
     mainMenu.addItem(viewItem)
-    let viewMenu = NSMenu(title: "View")
+    let viewMenu = NSMenu(title: localized("View"))
     // otty/Xcode's split: ⌘⇧O Open Quickly jumps to things (sessions), ⌘⇧P
     // Command Palette runs verbs (actions). ⌘⇧P is the VS Code convention; not
     // ⌘K: ghostty binds super+k to clear_screen and performs it inside the
@@ -1601,12 +2120,12 @@ private func buildMainMenu() -> NSMenu {
     // additionally unbound in the surface config (see `applyAppearance`) so
     // they can't be swallowed either.
     viewMenu.addItem(
-        withTitle: "Open Quickly…",
+        withTitle: localized("Open Quickly…"),
         action: #selector(AppDelegate.toggleOpenQuickly(_:)),
         command: .openQuickly
     )
     viewMenu.addItem(
-        withTitle: "Command Palette…",
+        withTitle: localized("Command Palette…"),
         action: #selector(AppDelegate.toggleCommandPalette(_:)),
         command: .commandPalette
     )
@@ -1614,18 +2133,28 @@ private func buildMainMenu() -> NSMenu {
     // iTerm2's split shortcuts: ⌘D right, ⌘⇧D down. The new pane opens a plain
     // terminal in the focused session's project (see `splitSelectedPane`).
     viewMenu.addItem(
-        withTitle: "Split Right",
+        withTitle: localized("Split Right"),
         action: #selector(AppDelegate.splitPaneRight(_:)),
         command: .splitRight
     )
     viewMenu.addItem(
-        withTitle: "Split Down",
+        withTitle: localized("Split Left"),
+        action: #selector(AppDelegate.splitPaneLeft(_:)),
+        command: .splitLeft
+    )
+    viewMenu.addItem(
+        withTitle: localized("Split Down"),
         action: #selector(AppDelegate.splitPaneDown(_:)),
         command: .splitDown
     )
+    viewMenu.addItem(
+        withTitle: localized("Split Up"),
+        action: #selector(AppDelegate.splitPaneUp(_:)),
+        command: .splitUp
+    )
     // ⌘⇧↩ maximises the focused pane (tmux/iTerm2 zoom), toggling back to the split.
     viewMenu.addItem(
-        withTitle: "Zoom Split",
+        withTitle: localized("Zoom Split"),
         action: #selector(AppDelegate.toggleSplitZoom(_:)),
         command: .splitZoom
     )
@@ -1633,7 +2162,7 @@ private func buildMainMenu() -> NSMenu {
     // in the sidebar; the last pane's ⌘W falls through to the window. The
     // whole window is ⌘⇧W (File ▸ Close Window).
     viewMenu.addItem(
-        withTitle: "Ungroup",
+        withTitle: localized("Ungroup"),
         action: #selector(AppDelegate.ungroupPane(_:)),
         command: .ungroup
     )
@@ -1654,7 +2183,7 @@ private func buildMainMenu() -> NSMenu {
     viewMenu.addItem(.separator())
     // Mirrors Xcode's inspector shortcut (⌥⌘0) for the trailing file-tree panel.
     viewMenu.addItem(
-        withTitle: "Show Project Files",
+        withTitle: localized("Show Project Files"),
         action: #selector(AppDelegate.toggleFilesInspector(_:)),
         command: .toggleProjectFiles
     )
@@ -1663,21 +2192,69 @@ private func buildMainMenu() -> NSMenu {
     // the persisted Appearance font size (ghostty's own binds are unbound in the
     // surface — see `applyAppearance`) so it survives relaunch and all panes match.
     viewMenu.addItem(
-        withTitle: "Increase Font Size",
+        withTitle: localized("Increase Font Size"),
         action: #selector(AppDelegate.increaseFontSize(_:)),
         command: .increaseFontSize
     )
     viewMenu.addItem(
-        withTitle: "Decrease Font Size",
+        withTitle: localized("Decrease Font Size"),
         action: #selector(AppDelegate.decreaseFontSize(_:)),
         command: .decreaseFontSize
     )
     viewMenu.addItem(
-        withTitle: "Reset Font Size",
+        withTitle: localized("Reset Font Size"),
         action: #selector(AppDelegate.resetFontSize(_:)),
         command: .resetFontSize
     )
+    viewMenu.addItem(.separator())
+    // "Toggle Full Screen", not "Enter/Exit Full Screen": AppKit manages an item
+    // carrying either reserved title (or `NSWindow.toggleFullScreen(_:)`) and
+    // rewrites its key equivalent to the system shortcut. See
+    // `toggleFullScreenCommand`.
+    let fullScreenItem = viewMenu.addItem(
+        withTitle: localized("Toggle Full Screen"),
+        action: #selector(AppDelegate.toggleFullScreenCommand(_:)),
+        keyEquivalent: "f"
+    )
+    fullScreenItem.keyEquivalentModifierMask = [.control, .command]
     viewItem.submenu = viewMenu
+
+    // Session menu — Chrome's Tab menu for termio's own navigation unit: the
+    // cycling verbs up top, then a live jump list of every open session grouped
+    // by project. Filled on open by the AppDelegate (see `fillSessionMenu`);
+    // an empty delegate-filled menu still resolves ⌘⇧]/⌘⇧[, because AppKit
+    // runs `menuNeedsUpdate` during its key-equivalent sweep too.
+    let sessionItem = NSMenuItem()
+    mainMenu.addItem(sessionItem)
+    let sessionMenu = NSMenu(title: localized("Session"))
+    sessionMenu.delegate = NSApp.delegate as? AppDelegate
+    sessionItem.submenu = sessionMenu
+
+    // Window menu — the standard one every Mac app has and termio didn't, which is
+    // why ⌘M did nothing. These actions travel the responder chain to whichever
+    // window is key (Settings included), so they need no delegate plumbing.
+    // Handing the menu to `NSApp.windowsMenu` lets AppKit keep its window list in it.
+    let windowItem = NSMenuItem()
+    mainMenu.addItem(windowItem)
+    let windowMenu = NSMenu(title: localized("Window"))
+    windowMenu.addItem(
+        withTitle: localized("Minimize"),
+        action: #selector(NSWindow.performMiniaturize(_:)),
+        keyEquivalent: "m"
+    )
+    windowMenu.addItem(
+        withTitle: localized("Zoom"),
+        action: #selector(NSWindow.performZoom(_:)),
+        keyEquivalent: ""
+    )
+    windowMenu.addItem(.separator())
+    windowMenu.addItem(
+        withTitle: localized("Bring All to Front"),
+        action: #selector(NSApplication.arrangeInFront(_:)),
+        keyEquivalent: ""
+    )
+    windowItem.submenu = windowMenu
+    NSApp.windowsMenu = windowMenu
 
     return mainMenu
 }

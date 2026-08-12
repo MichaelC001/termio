@@ -82,11 +82,21 @@ public struct WorkingIndicator: View {
     private let spacing: CGFloat = 3.6
     private let period: Double = 1.1
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     public var body: some View {
         if let phase {
             grid(phase: phase)
+        } else if reduceMotion {
+            // Reduce Motion: hold one frame — the mark still reads as "working"
+            // from its shape, and the timeline (and its per-tick cost) is gone.
+            grid(phase: 0)
         } else {
-            TimelineView(.animation) { context in
+            // 30Hz, not every display frame: at 13pt with a 1.1s period the
+            // comet is visually identical at 30Hz, and an uncapped timeline
+            // ran this body at 120Hz per working row on ProMotion — enough to
+            // saturate the main thread once a few sessions worked at once.
+            TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
                 let p = context.date.timeIntervalSinceReferenceDate
                     .truncatingRemainder(dividingBy: period) / period
                 grid(phase: p)
@@ -112,9 +122,14 @@ public struct WorkingIndicator: View {
     }
 
     private func dot(opacity: Double, scale: Double) -> some View {
+        // scaleEffect, not a phase-dependent frame: a .frame change is a
+        // layout invalidation, which cascaded through the hosting view into
+        // a full AppKit constraint pass on every animation tick. scaleEffect
+        // stays in the render pass and keeps the swell layout-free.
         Circle()
             .fill(tint)
-            .frame(width: dotSize * scale, height: dotSize * scale)
+            .frame(width: dotSize, height: dotSize)
+            .scaleEffect(scale)
             .opacity(opacity)
     }
 

@@ -17,7 +17,7 @@ const features = [
   {
     title: "Command palette",
     blurb:
-      "Jump to any session, project, or action from one search box.",
+      "Jump to any session, project, or action from one search box — themes too, previewed live as you browse, Enter to keep or Esc to revert.",
     src: "/feature/pallette.png",
     alt: "The Termio command palette over a terminal session",
     width: 1120,
@@ -35,7 +35,7 @@ const features = [
   {
     title: "Native appearance",
     blurb:
-      "Light, dark, and a glass look that follows the system — a real Mac app, down to the chrome.",
+      "Light, dark, and a glass look that follows the system, with hundreds of built-in terminal themes or your own. A real Mac app, down to the chrome.",
     src: "/feature/appearance.png",
     alt: "Termio's appearance settings with light, dark, and glass modes",
     width: 1160,
@@ -49,7 +49,7 @@ export function FeatureGrid() {
       {/* Light top padding — the showcase above already ends with pb-32/40. */}
       <div className="mx-auto w-full max-w-6xl px-5 pb-32 pt-8 sm:px-8 sm:pb-40 sm:pt-10">
         <Reveal className="flex flex-col items-center text-center">
-          <SectionLabel accent="pink">What&apos;s inside</SectionLabel>
+          <SectionLabel accent="muted">What&apos;s inside</SectionLabel>
           <h2 className="mt-4 text-balance text-3xl font-medium leading-[1.1] tracking-tight text-foreground sm:text-[44px]">
             Built for watching agents work
           </h2>

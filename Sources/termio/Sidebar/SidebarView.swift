@@ -86,7 +86,7 @@ private struct SidebarSectionHeader: View {
                 SidebarRowContextMenu(items: menuItems) { isMenuOpen = $0 }
             }
         }
-        .background(OutlineSelectionStyleStripper())
+        .background(OutlineViewFixups())
         .listRowBackground(
             SidebarRowHighlight(isSelected: false, isHovering: isMenuOpen, chrome: chrome)
                 .animation(.easeInOut(duration: 0.12), value: isMenuOpen)
@@ -159,6 +159,13 @@ struct SidebarView: View {
         let hasTerminals = terminals.contains { !$0.sessions.isEmpty }
         let hasChats = chats.contains { !$0.sessions.isEmpty }
         return List {
+            // Nudge when agents are running but the status hooks are off — without them
+            // the sidebar spinner stays dark. One tap enables (and reinstalls) them.
+            if !settings.agentHooksEnabled && store.isRunningAnyAgent {
+                AgentHooksOffBanner { settings.agentHooksEnabled = true }
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
             // The top "Pinned" working set, under its own section header: pinned projects
             // as full blocks, then pinned worktrees as mini-blocks (header + their
             // sessions), then pinned sessions as shortcut rows — each nested entry tagged
@@ -168,7 +175,7 @@ struct SidebarView: View {
             // deliberately elevated (mirroring the iOS "Needs You" strip at the home top).
             if hasPinned {
                 SidebarSectionHeader(
-                    title: "Pinned",
+                    title: localized("Pinned"),
                     chrome: chrome,
                     isCollapsed: pinnedCollapsed,
                     isFirstSection: true,
@@ -193,15 +200,15 @@ struct SidebarView: View {
             // noise (a new loose terminal reappears the section, via the + / File menu).
             ForEach(terminals.filter { !$0.sessions.isEmpty }) { term in
                 SidebarSectionHeader(
-                    title: "Terminals",
+                    title: localized("Terminals"),
                     chrome: chrome,
                     isCollapsed: collapsedProjects.contains(term.id),
                     isFirstSection: !hasPinned,
                     toggleCollapsed: { toggleCollapsed(term.id) },
                     menuItems: [
-                        .action("New Terminal") { store.addSession(to: term.id, agent: .terminal) },
+                        .action(localized("New Terminal")) { store.addSession(to: term.id, agent: .terminal) },
                         .separator,
-                        .action("Close All Terminals") { store.removeProject(term.id) },
+                        .action(localized("Close All Terminals")) { store.removeProject(term.id) },
                     ]
                 )
                 if !collapsedProjects.contains(term.id) {
@@ -220,15 +227,15 @@ struct SidebarView: View {
             // mirroring the Terminals header's "New Terminal". Hidden while empty.
             ForEach(chats.filter { !$0.sessions.isEmpty }) { chat in
                 SidebarSectionHeader(
-                    title: "Chats",
+                    title: localized("Chats"),
                     chrome: chrome,
                     isCollapsed: collapsedProjects.contains(chat.id),
                     isFirstSection: !hasPinned && !hasTerminals,
                     toggleCollapsed: { toggleCollapsed(chat.id) },
                     menuItems: [
-                        .action("New Chat") { store.addDefaultChat() },
+                        .action(localized("New Chat")) { store.addDefaultChat() },
                         .separator,
-                        .action("Close All Chats") { store.removeProject(chat.id) },
+                        .action(localized("Close All Chats")) { store.removeProject(chat.id) },
                     ]
                 )
                 if !collapsedProjects.contains(chat.id) {
@@ -243,7 +250,7 @@ struct SidebarView: View {
             // section treatment as Terminals and Pinned, one tier above the folder rows.
             if !others.isEmpty {
                 SidebarSectionHeader(
-                    title: "Projects",
+                    title: localized("Projects"),
                     chrome: chrome,
                     isCollapsed: projectsCollapsed,
                     isFirstSection: !hasPinned && !hasTerminals && !hasChats,
@@ -492,7 +499,7 @@ private struct ProjectHeader: View {
               store.isDetachedHead(forFolder: worktree.path),
               let commit = store.branch(forFolder: worktree.path)
         else { return targetPath }
-        return "Detached at \(commit)"
+        return localized("Detached at \(commit)")
     }
 
     /// Every folder container — project or worktree — swaps closed/open folders as its
@@ -529,27 +536,27 @@ private struct ProjectHeader: View {
     private var menuItems: [SidebarMenuItem] {
         if isTerminalsHeader {
             return [
-                .action("New Terminal") { store.addSession(to: project.id, agent: .terminal) },
+                .action(localized("New Terminal")) { store.addSession(to: project.id, agent: .terminal) },
                 .separator,
-                .action("Close All Terminals") { store.removeProject(project.id) },
+                .action(localized("Close All Terminals")) { store.removeProject(project.id) },
             ]
         }
         var items: [SidebarMenuItem] = [
-            .action("New Terminal") { addSession(.terminal) },
-            .submenu("New Agent Session", enabledAgentPresets(settings)
+            .action(localized("New Terminal")) { addSession(.terminal) },
+            .submenu(localized("New Agent Session"), enabledAgentPresets(settings)
                 .filter { $0 != .terminal }
                 .map { preset in .agent(preset) { addSession(preset) } }),
         ]
         if let worktree {
             items.append(.separator)
-            items.append(.action(worktree.pinned ? "Unpin" : "Pin") {
+            items.append(.action(worktree.pinned ? localized("Unpin") : localized("Pin")) {
                 store.toggleWorktreePinned(worktree.id)
             })
-            items.append(.action("Reveal in Finder") {
+            items.append(.action(localized("Reveal in Finder")) {
                 NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: worktree.path)
             })
             items.append(.separator)
-            items.append(.action("Remove Worktree") {
+            items.append(.action(localized("Remove Worktree")) {
                 store.removeWorktree(worktree.id, from: project.id)
             })
             return items
@@ -558,17 +565,17 @@ private struct ProjectHeader: View {
         // container's own quick-add controls fill it with sessions on demand.
         // Only for git repositories (a worktree needs one; "—" marks a non-repo folder).
         if project.branch != "—" {
-            items.append(.action("New Worktree") { store.addWorktree(from: project.id) })
+            items.append(.action(localized("New Worktree")) { store.addWorktree(from: project.id) })
         }
         items.append(.separator)
-        items.append(.action(project.pinned ? "Unpin" : "Pin to Top") {
+        items.append(.action(project.pinned ? localized("Unpin") : localized("Pin to Top")) {
             store.togglePinned(project.id)
         })
-        items.append(.action("Reveal in Finder") {
+        items.append(.action(localized("Reveal in Finder")) {
             NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: project.path)
         })
         items.append(.separator)
-        items.append(.action("Remove Project") { store.removeProject(project.id) })
+        items.append(.action(localized("Remove Project")) { store.removeProject(project.id) })
         return items
     }
 
@@ -620,7 +627,7 @@ private struct ProjectHeader: View {
             // hover it falls under the quick-add cluster (masked out with the label tail).
             if worktree != nil {
                 HugeIconView(icon: .gitBranch, size: 10, color: .secondary)
-                    .help("Git worktree")
+                    .help(localized("Git worktree"))
             }
         }
         // On hover the trailing icons would otherwise sit on top of a long project
@@ -674,7 +681,7 @@ private struct ProjectHeader: View {
         // Strip the source list's native blue accent (the ring/fill AppKit paints on a
         // right-clicked or selected row) at the NSOutlineView layer, so our own
         // highlights are the only selection cue — same treatment the file tree uses.
-        .background(OutlineSelectionStyleStripper())
+        .background(OutlineViewFixups())
         .listRowBackground(
             SidebarRowHighlight(isSelected: false, isHovering: isMenuOpen, chrome: chrome)
                 .animation(.easeInOut(duration: 0.12), value: isMenuOpen)
@@ -850,7 +857,7 @@ private struct AgentQuickAddButton: View {
         .buttonStyle(.borderless)
         .onHover { isHovering = $0 }
         .animation(.easeInOut(duration: 0.1), value: isHovering)
-        .help("New \(preset.displayName) session")
+        .help(localized("New \(preset.displayName) session"))
     }
 }
 
@@ -919,10 +926,6 @@ private struct SessionRow: View {
     /// in-flight session could legally land here (`store.canReorder`).
     @State private var isDropTarget = false
 
-    /// Namespace prefix for the drag payload, so the row's drop accepts only a
-    /// session drag (a session id) and never arbitrary dropped text.
-    private static let dragPrefix = "termio-session:"
-
     private var isSelected: Bool { store.selectedSessionID == session.id }
 
     /// The row's right-click menu. Rename/Pin/Close Session are always present; the two
@@ -931,15 +934,19 @@ private struct SessionRow: View {
     /// there is a sibling to combine it with (独立 → 联合).
     private var menuItems: [SidebarMenuItem] {
         var items: [SidebarMenuItem] = [
-            .action("Rename…") { store.renameSession(session.id) }
+            .action(localized("Rename…")) { store.renameSession(session.id) },
+            .action(localized("Copy Session Link")) {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(store.sessionLink(for: session), forType: .string)
+            },
         ]
         let targets = store.groupableTargets(for: session.id)
         if store.isInSplitGroup(session.id) || !targets.isEmpty { items.append(.separator) }
         if store.isInSplitGroup(session.id) {
-            items.append(.action("Ungroup") { store.detachFromSplit(session.id) })
+            items.append(.action(localized("Ungroup")) { store.detachFromSplit(session.id) })
         }
         if !targets.isEmpty {
-            items.append(.submenu("Group with", targets.map { target in
+            items.append(.submenu(localized("Group with"), targets.map { target in
                 .action(store.displayTitle(for: target)) {
                     store.groupSession(session.id, with: target.id)
                 }
@@ -947,9 +954,9 @@ private struct SessionRow: View {
         }
         items.append(contentsOf: [
             .separator,
-            .action(session.pinned ? "Unpin" : "Pin") { store.toggleSessionPinned(session.id) },
+            .action(session.pinned ? localized("Unpin") : localized("Pin")) { store.toggleSessionPinned(session.id) },
             .separator,
-            .action("Close Session") { store.closeSession(session.id) },
+            .action(localized("Close Session")) { store.requestCloseSession(session.id) },
         ])
         return items
     }
@@ -987,6 +994,12 @@ private struct SessionRow: View {
                 }
             }
             .frame(width: 16)
+            // The resting "your turn" status now rides the leading mark itself — a green ring when
+            // the agent just finished, orange when it's blocked on you — so all of a row's status
+            // (spinner = working, ring = your turn, nothing = idle) reads from one place on the left
+            // instead of being split with a trailing dot. An overlay, so the ring never shifts the
+            // row's layout, and it sits *around* the brand glyph so the vendor color stays intact.
+            .overlay { StatusRing(status: store.status(for: session.id)) }
             .help(store.statusDescription(for: session.id))
             Text(store.displayTitle(for: session))
                 .font(settings.interfaceFont)
@@ -1004,32 +1017,29 @@ private struct SessionRow: View {
                     .truncationMode(.middle)
                     .layoutPriority(-1)
             }
+            // Nothing trails the title in the flow: the resting status dot and the
+            // hover close button both live in the trailing overlay below (zero
+            // layout width), so the title always spans the full row and truncates
+            // only at the true trailing edge. The spacer just left-aligns the title.
             Spacer(minLength: 4)
-            // At rest a status dot trails the title only when the session needs the
-            // user (working is shown by the leading spinner instead), so the title
-            // keeps nearly the whole row width. The hover actions live in the overlay
-            // below and reserve no flow width of their own.
-            StatusDot(status: store.status(for: session.id))
-                .frame(width: 16)
-                .opacity(isHovering ? 0 : 1)
-                .help(store.statusDescription(for: session.id))
         }
-        // VSCode-style trailing actions: hovering paints them over the trailing edge
-        // (where the status dot was), reserving no resting width. Creating a worktree
-        // is a folder-level action now (the project header's "New worktree" button),
-        // so a session row carries only its close button.
+        // VSCode-style trailing edge, reserving zero flow width: the close button appears here on
+        // hover only. Status no longer trails the title — it moved to the leading mark's ring (above)
+        // — so at rest the trailing edge is empty and the title spans the full row. Reordering is a
+        // drag of the whole row (no separate handle), and creating a worktree is a folder-level
+        // action (the project header's "New worktree" button), so the cluster carries only the close.
         .overlay(alignment: .trailing) {
-            // Just the close button now — reordering is a drag of the whole row (no
-            // separate handle), so the trailing hover cluster carries only the close.
-            SessionRowActionButton(
-                systemImage: "xmark.circle.fill",
-                help: "Close session",
-                chrome: chrome
-            ) {
-                store.closeSession(session.id)
+            ZStack(alignment: .trailing) {
+                SessionRowActionButton(
+                    systemImage: "xmark.circle.fill",
+                    help: localized("Close session"),
+                    chrome: chrome
+                ) {
+                    store.requestCloseSession(session.id)
+                }
+                .opacity(isHovering ? 1 : 0)
+                .allowsHitTesting(isHovering)
             }
-            .opacity(isHovering ? 1 : 0)
-            .allowsHitTesting(isHovering)
         }
         .padding(.vertical, settings.interfaceRowPadding)
         // Indent the session content under its project header (or its worktree
@@ -1058,7 +1068,12 @@ private struct SessionRow: View {
         // *simultaneous* tap (below) — an exclusive `.onTapGesture` kills the drag.
         .onDrag {
             store.draggingSessionID = session.id
-            return NSItemProvider(object: (Self.dragPrefix + session.id.uuidString) as NSString)
+            // The payload is the session's canonical deep link, not a private
+            // token: a drag carries plain text, so any text target — a terminal,
+            // an editor, a text field — will accept it. Shipping the link means a
+            // stray drop pastes something that works (`termio://session/<uuid>`,
+            // what `termio sessions` takes) instead of leaking an internal id.
+            return NSItemProvider(object: store.sessionLink(for: session) as NSString)
         } preview: {
             // The drag preview is just the row's identity (icon + title), so the
             // floating chip never carries the hover-only close button. `.fixedSize`
@@ -1081,15 +1096,15 @@ private struct SessionRow: View {
                     .fill(.regularMaterial)
             )
         }
-        // Reorder on drop: the prefix filter rejects non-session text, a self-drop is
-        // ignored, and a cross-bucket drop is a no-op in the store.
+        // Reorder on drop: only a payload that parses as a session link counts, so
+        // arbitrary dropped text is still rejected — a self-drop is ignored, and a
+        // cross-bucket drop is a no-op in the store.
         .dropDestination(for: String.self) { payloads, _ in
             store.draggingSessionID = nil
             // Clear the drop lift the instant we commit so it can't linger on this row
             // (or ghost onto its new neighbour) as the list settles the move.
             isDropTarget = false
-            guard let payload = payloads.first(where: { $0.hasPrefix(Self.dragPrefix) }),
-                  let moved = UUID(uuidString: String(payload.dropFirst(Self.dragPrefix.count))),
+            guard let moved = payloads.lazy.compactMap(TermioStore.sessionID(fromLink:)).first,
                   moved != session.id
             else { return false }
             store.reorderSession(moved, relativeTo: session.id)
@@ -1109,9 +1124,13 @@ private struct SessionRow: View {
         // click-to-select doesn't commit for seconds (the drag machinery swallows
         // the mouseDown), which shipped as v0.19.0's dead sidebar clicks.
         .simultaneousGesture(TapGesture().onEnded {
-            // Tapping a session always returns to its terminal — close the file
-            // editor even when this row is already selected (no change to react to).
-            store.openFileURL = nil
+            // Re-tapping the row you're already on returns to its terminal, closing its
+            // open file editor. Tapping a *different* session must NOT clear here: the
+            // selection didSet captures the outgoing session's inspector layout first
+            // (issue #160), so clearing pre-capture would drop its open file.
+            if store.selectedSessionID == session.id {
+                store.openFileURL = nil
+            }
             store.selectedSessionID = session.id
             // Re-tapping the row you're already on still clears a resting
             // done/attention dot (the selection didSet only reacts to a change).
@@ -1198,16 +1217,18 @@ struct SidebarRowHighlight: View {
 
 /// A small coloured dot mirroring the menu-bar pulse: hidden when idle, amber
 /// when the session wants attention, blue while working.
-private struct StatusDot: View {
+/// The resting "your turn" status, drawn as a ring *around* the leading brand mark: green when the
+/// agent just finished, orange when it's blocked on you. Working is the leading spinner and idle is
+/// nothing, so only those two states light the ring. Sized well past the 16pt icon column so it
+/// reads as a clear halo at a glance — the sidebar's most-scanned signal — while staying an overlay
+/// that never shifts the row.
+private struct StatusRing: View {
     let status: SessionStatus
 
     var body: some View {
         Circle()
-            .fill(color)
-            .frame(width: 7, height: 7)
-            // Working is shown by the leading spinner and idle shows nothing, so
-            // only the two resting "your turn" states trail the title as a dot:
-            // green when the agent just finished, orange when it's blocked on you.
+            .stroke(color, lineWidth: 2)
+            .frame(width: 21, height: 21)
             .opacity(status == .done || status == .needsAttention ? 1 : 0)
     }
 
@@ -1228,4 +1249,35 @@ extension Color {
     static let sidebarWorkingInk = Color(nsColor: NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .white : .black
     })
+}
+
+/// Sidebar nudge shown when agents run with the status hooks disabled. Low-alarm by
+/// design — a neutral card, not an accent banner. "Enable" turns the hooks back on.
+private struct AgentHooksOffBanner: View {
+    let enable: () -> Void
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "dot.radiowaves.left.and.right")
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(localized("Live agent status is off"))
+                    .font(.callout.weight(.medium))
+                Text(localized("Agents won’t show as working."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 4)
+            Button(localized("Enable"), action: enable)
+                .buttonStyle(.borderless)
+                .font(.callout.weight(.medium))
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(0.06))
+        )
+        .padding(.vertical, 4)
+    }
 }

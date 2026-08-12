@@ -15,20 +15,24 @@ enum SessionTraceRenderer {
 
         var errorDescription: String? {
             switch self {
-            case .unreadable(let path): return "Could not read the transcript at \(path)."
+            case .unreadable(let path): return "Couldn’t read the transcript at \(path)."
             }
         }
     }
 
     /// Reads the JSONL at `jsonlPath` and returns a full HTML document string, themed
     /// with `theme`. The caller hands the string to a `WKWebView`.
-    static func html(jsonlPath: String, title: String, theme: TraceTheme) throws -> String {
+    /// `includeHeader` draws the document's own sticky `<header>` with the title. The Mac
+    /// overlay sets it false and draws a native SwiftUI header instead; the phone leaves it
+    /// on, since its web view is the only place the session title appears.
+    static func html(jsonlPath: String, title: String, theme: TraceTheme,
+                     includeHeader: Bool = true) throws -> String {
         // A conversation rotation (Claude Code's `/clear`) advances the transcript
         // pointer before the agent writes the new file — it appears on the first
         // message. Until then an absent file means "new conversation", not an error.
         guard FileManager.default.fileExists(atPath: jsonlPath) else {
             return placeholder(message: "New conversation — no messages yet.",
-                               theme: theme, title: title)
+                               theme: theme, title: title, includeHeader: includeHeader)
         }
         guard let data = FileManager.default.contents(atPath: jsonlPath),
               let text = String(data: data, encoding: .utf8) else {
@@ -55,15 +59,16 @@ enum SessionTraceRenderer {
         let stats = isCodex ? analyzeCodex(rows) : isGrok ? analyzeGrok(rows, meta: grokMeta) : analyze(rows)
         let renderEntry = isCodex ? renderCodexEntry : isGrok ? renderGrokEntry : renderEntry
         let body = rows.map(renderEntry).filter { !$0.isEmpty }.joined(separator: "\n")
-        return document(title: title, stats: stats, body: body, theme: theme)
+        return document(title: title, stats: stats, body: body, theme: theme, includeHeader: includeHeader)
     }
 
     /// A themed one-line page for when there is nothing to render yet — used by
     /// the companion server so a trace request always returns a valid document
     /// (never a fatal `.error` on the PTY-bridge socket).
-    static func placeholder(message: String, theme: TraceTheme, title: String = "Trace") -> String {
+    static func placeholder(message: String, theme: TraceTheme, title: String = "Trace",
+                            includeHeader: Bool = true) -> String {
         let body = "<div class=\"turn\"><div class=\"text\">\(escaped(message))</div></div>"
-        return document(title: title, stats: Stats(), body: body, theme: theme)
+        return document(title: title, stats: Stats(), body: body, theme: theme, includeHeader: includeHeader)
     }
 
     // MARK: Stats
@@ -89,16 +94,12 @@ enum SessionTraceRenderer {
     }
 
     /// Both Claude and Codex stamp their timestamps with fractional seconds
-    /// (`…:01.327Z`), which the default `ISO8601DateFormatter` won't parse — so try the
-    /// fractional format first and fall back to the plain one.
-    private static let isoFractional: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-    private static let iso = ISO8601DateFormatter()
+    /// (`…:01.327Z`), which the default ISO 8601 style won't parse — so try the
+    /// fractional style first and fall back to the plain one.
+    private static let isoFractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+    private static let iso = Date.ISO8601FormatStyle()
     private static func date(from string: String) -> Date? {
-        isoFractional.date(from: string) ?? iso.date(from: string)
+        (try? isoFractional.parse(string)) ?? (try? iso.parse(string))
     }
 
     private static func analyze(_ rows: [[String: Any]]) -> Stats {
@@ -408,13 +409,12 @@ enum SessionTraceRenderer {
         var conversational: [String] = []
         var cards: [String] = []
 
-        let markdown = role == "assistant"
         if let s = message["content"] as? String {
-            conversational.append(textBlock(s, markdown: markdown))
+            conversational.append(textBlock(s))
         } else if let blocks = message["content"] as? [[String: Any]] {
             for b in blocks {
                 switch b["type"] as? String {
-                case "text": conversational.append(textBlock(b["text"] as? String ?? "", markdown: markdown))
+                case "text": conversational.append(textBlock(b["text"] as? String ?? ""))
                 case "thinking":
                     let t = b["thinking"] as? String ?? ""
                     if !t.isEmpty {
@@ -422,7 +422,7 @@ enum SessionTraceRenderer {
                     }
                 case "tool_use": cards.append(toolUseCard(b))
                 case "tool_result": cards.append(toolResultCard(b))
-                case "image": cards.append("<div class=\"image\">🖼 image</div>")
+                case "image": cards.append(imageCard(b))
                 default: break
                 }
             }
@@ -512,7 +512,7 @@ enum SessionTraceRenderer {
     }
 
     private static func codexTurn(_ message: Any?, role: String, label: String) -> String {
-        let body = textBlock(message as? String ?? "", markdown: role == "assistant")
+        let body = textBlock(message as? String ?? "")
         return body.isEmpty ? "" : turnCard(role: role, label: label, body: body)
     }
 
@@ -520,14 +520,14 @@ enum SessionTraceRenderer {
         let name = payload["name"] as? String ?? "tool"
         let args = codexArguments(payload["arguments"])
         let pre = args.isEmpty ? "" : "<pre>\(escaped(args))</pre>"
-        return "<details class=\"tool-use\"><summary>▶ \(escaped(name))</summary>\(pre)</details>"
+        return "<details class=\"tool-use\"><summary>\(escaped(name))</summary>\(pre)</details>"
     }
 
     private static func codexToolResultCard(_ payload: [String: Any]) -> String {
         let out = (payload["output"] as? String) ?? ""
         guard !out.isEmpty else { return "" }
         let failed = codexOutputFailed(out)
-        return "<details class=\"tool-result\(failed ? " error" : "")\"><summary>\(failed ? "⚠ result" : "◀ result")</summary><pre>\(escaped(out))</pre></details>"
+        return "<details class=\"tool-result\(failed ? " error" : "")\"><summary>result\(failed ? "<span class=\"fail\">failed</span>" : "")</summary><pre>\(escaped(out))</pre></details>"
     }
 
     /// Codex encodes a function call's arguments as a JSON *string*; pretty-print it
@@ -556,14 +556,14 @@ enum SessionTraceRenderer {
         let name = b["name"] as? String ?? "tool"
         let input = prettyJSON(b["input"])
         let pre = input.isEmpty ? "" : "<pre>\(escaped(input))</pre>"
-        return "<details class=\"tool-use\"><summary>▶ \(escaped(name))</summary>\(pre)</details>"
+        return "<details class=\"tool-use\"><summary>\(escaped(name))</summary>\(pre)</details>"
     }
 
     private static func toolResultCard(_ b: [String: Any]) -> String {
         let out = toolResultText(b["content"])
         guard !out.isEmpty else { return "" }
         let isError = (b["is_error"] as? Bool) ?? false
-        return "<details class=\"tool-result\(isError ? " error" : "")\"><summary>\(isError ? "⚠ result" : "◀ result")</summary><pre>\(escaped(out))</pre></details>"
+        return "<details class=\"tool-result\(isError ? " error" : "")\"><summary>result\(isError ? "<span class=\"fail\">failed</span>" : "")</summary><pre>\(escaped(out))</pre></details>"
     }
 
     /// Grok entry renderer: dispatches on the top-level `type` field and shapes
@@ -643,7 +643,7 @@ enum SessionTraceRenderer {
         var parts: [String] = []
         // Text content — a plain string, not a block array.
         if let text = entry["content"] as? String, !text.isEmpty {
-            parts.append(textBlock(text, markdown: true))
+            parts.append(textBlock(text))
         }
         // Tool calls from the `tool_calls` array.
         if let toolCalls = entry["tool_calls"] as? [[String: Any]] {
@@ -652,7 +652,7 @@ enum SessionTraceRenderer {
                 let args = tc["arguments"] as? String ?? ""
                 let prettyArgs = codexArguments(args) // reuses Codex arg-prettifier (JSON string → pretty)
                 let pre = prettyArgs.isEmpty ? "" : "<pre>\(escaped(prettyArgs))</pre>"
-                parts.append("<details class=\"tool-use\"><summary>▶ \(escaped(name))</summary>\(pre)</details>")
+                parts.append("<details class=\"tool-use\"><summary>\(escaped(name))</summary>\(pre)</details>")
             }
         }
         return parts.isEmpty ? "" : turnCard(role: "assistant", label: "Agent", body: parts.joined(separator: "\n"))
@@ -664,7 +664,7 @@ enum SessionTraceRenderer {
         // Grok's ToolResultItem has no `is_error` flag; failed tools typically
         // prefix the content with `Error:` (mirrors what the model sees).
         let failed = grokToolResultFailed(out)
-        return "<details class=\"tool-result\(failed ? " error" : "")\"><summary>\(failed ? "⚠ result" : "◀ result")</summary><pre>\(escaped(out))</pre></details>"
+        return "<details class=\"tool-result\(failed ? " error" : "")\"><summary>result\(failed ? "<span class=\"fail\">failed</span>" : "")</summary><pre>\(escaped(out))</pre></details>"
     }
 
     /// Heuristic for Grok tool failures — content often begins with `Error:`.
@@ -688,15 +688,79 @@ enum SessionTraceRenderer {
 
     // MARK: Helpers
 
-    /// Agent text renders as markdown (headings, fences, tables…); user text stays
-    /// plain pre-wrap, since prompts often contain pasted output that markdown
-    /// markers would mangle.
-    private static func textBlock(_ s: String, markdown: Bool = false) -> String {
+    /// A turn's conversational text. Both user and agent turns render as markdown
+    /// (headings, fences, tables, inline code) — a skill/command invocation or a pasted
+    /// doc in a user turn is authored markdown and reads as raw source otherwise. Any
+    /// `[Image: source: …]` file markers are spliced out and inlined as `<img>` *around*
+    /// the markdown: those aren't markdown image syntax, and markdown mode deliberately
+    /// blocks raw `<img>`, so they can't go through the renderer.
+    ///
+    /// The tradeoff of markdown-for-user: pasted diffs / lines starting with `#` `-` `*`
+    /// render as headings/lists rather than literally. The escape hatch is a code fence,
+    /// same as anywhere else.
+    private static func textBlock(_ s: String) -> String {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return "" }
-        return markdown
-            ? "<div class=\"text md\">\(MarkdownHTML.html(s))</div>"
-            : "<div class=\"text\">\(escaped(s))</div>"
+        guard let regex = imageRefRegex else { return markdownDiv(s) }
+        let ns = s as NSString
+        let matches = regex.matches(in: s, range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return markdownDiv(s) }
+
+        // Interleave markdown-rendered text segments with inlined image markers.
+        var out = ""
+        var cursor = 0
+        for m in matches {
+            out += markdownDiv(ns.substring(with: NSRange(location: cursor, length: m.range.location - cursor)))
+            let path = ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespaces)
+            if let uri = imageDataURI(path: path) {
+                out += "<img class=\"shot\" src=\"\(uri)\" alt=\"attached image\">"
+            } else {
+                out += markdownDiv(ns.substring(with: m.range))
+            }
+            cursor = m.range.location + m.range.length
+        }
+        out += markdownDiv(ns.substring(from: cursor))
+        return out
+    }
+
+    /// Wraps a text segment in a markdown-rendered block, or "" if it's blank.
+    private static func markdownDiv(_ s: String) -> String {
+        s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "" : "<div class=\"text md\">\(MarkdownHTML.html(s))</div>"
+    }
+
+    // MARK: Images
+
+    private static let inlineImageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp"]
+    /// Cap the bytes we inline so a stray huge capture can't bloat the document.
+    private static let maxInlineImageBytes = 12 * 1024 * 1024
+
+    /// A content `image` block. Claude embeds the bytes as base64, so inline it as a
+    /// self-contained data URI — the only image source that loads under
+    /// `loadHTMLString(baseURL: nil)`, which can't reach `file://` or the network.
+    private static func imageCard(_ b: [String: Any]) -> String {
+        guard let source = b["source"] as? [String: Any],
+              (source["type"] as? String) == "base64",
+              let media = source["media_type"] as? String,
+              let data = source["data"] as? String, !data.isEmpty
+        else { return "<div class=\"image\">🖼 image</div>" }
+        return "<img class=\"shot\" src=\"data:\(escaped(media));base64,\(data)\" alt=\"attached image\">"
+    }
+
+    private static let imageRefRegex: NSRegularExpression? =
+        try? NSRegularExpression(pattern: #"\[Image:\s*source:\s*([^\]]+?)\]"#)
+
+    /// Reads an on-disk image and returns it as a base64 `data:` URI, or nil if it's
+    /// not a web-renderable image, is missing, or is over `maxInlineImageBytes`.
+    private static func imageDataURI(path: String) -> String? {
+        let expanded = (path as NSString).expandingTildeInPath
+        let ext = (expanded as NSString).pathExtension.lowercased()
+        guard inlineImageExtensions.contains(ext) else { return nil }
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: expanded),
+              let size = (attrs[.size] as? NSNumber)?.intValue, size <= maxInlineImageBytes,
+              let data = FileManager.default.contents(atPath: expanded) else { return nil }
+        let media = ext == "jpg" ? "jpeg" : ext
+        return "data:image/\(media);base64,\(data.base64EncodedString())"
     }
 
     private static func toolResultText(_ content: Any?) -> String {
@@ -755,17 +819,17 @@ enum SessionTraceRenderer {
 
     // MARK: Document
 
-    private static func document(title: String, stats: Stats, body: String, theme: TraceTheme) -> String {
-        """
+    private static func document(title: String, stats: Stats, body: String, theme: TraceTheme,
+                                 includeHeader: Bool = true) -> String {
+        let headerHTML = includeHeader ? "<header>\n  <h1>\(escaped(title))</h1>\n</header>" : ""
+        return """
         <!doctype html>
         <html><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>\(escaped(title)) — termio trace</title>
-        <style>\(themeVariables(theme))\n\(css)</style></head>
+        <style>\(themeVariables(theme))\n\(MarkdownSkin.highlightTheme(dark: theme.isDark))\n\(MarkdownSkin.css(scope: ".text.md "))\n\(css)</style></head>
         <body>
-        <header>
-          <h1>\(escaped(title))</h1>
-        </header>
+        \(headerHTML)
         <main>
         \(dashboard(stats))
         <section class="trace">\(body)</section>
@@ -787,6 +851,7 @@ enum SessionTraceRenderer {
           --accent: \(t.accent);
           --line: \(t.isDark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.10)");
           --soft: \(t.isDark ? "rgba(255,255,255,0.045)" : "rgba(0,0,0,0.035)");
+        \(MarkdownSkin.alertVariables(dark: t.isDark))
         }
         """
     }
@@ -818,7 +883,7 @@ enum SessionTraceRenderer {
     .tool-row { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
     .tool-label { flex: 0 0 34%; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
     .tool-bar { flex: 1; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
-    .tool-bar > span { display: block; height: 100%; background: var(--accent); }
+    .tool-bar > span { display: block; height: 100%; background: color-mix(in srgb, var(--fg) 32%, transparent); }
     .tool-count { flex: 0 0 auto; color: var(--muted); font-size: 12px; min-width: 24px; text-align: right; }
     .meta { padding: 4px 0 10px; }
     .meta-row { display: flex; gap: 10px; padding: 2px 0; font-size: 12px; }
@@ -827,9 +892,10 @@ enum SessionTraceRenderer {
     .sysnote { white-space: pre-wrap; color: var(--muted); font-size: 12px; margin: 6px 0;
       border-left: 2px solid var(--line); padding-left: 10px; }
     .trace { }
-    .turn { margin: 16px 0; padding: 12px 14px; border-radius: 10px; }
-    .turn.user { background: var(--soft); }
-    .turn.assistant { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+    /* Both turns sit on the same neutral surface; the uppercase role label is the
+       only thing that distinguishes them — no accent edge, no colored wash. */
+    .turn { margin: 16px 0; padding: 12px 15px; border-radius: 12px;
+      background: var(--soft); border: 1px solid var(--line); }
     .role { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
       color: var(--muted); margin-bottom: 8px; font-weight: 600; }
     .text { white-space: pre-wrap; word-wrap: break-word; }
@@ -847,6 +913,17 @@ enum SessionTraceRenderer {
       background: var(--soft); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
     .text.md pre { background: var(--soft); border: 1px solid var(--line); border-radius: 8px; margin: 10px 0; }
     .text.md pre code { background: none; border: none; padding: 0; }
+    /* The hljs theme's own background/padding/base color lose to the trace's block style;
+       only its token colors are wanted. */
+    /* Alerts, math and footnotes: the same constructs the reader renders, at the trace's
+       tighter rhythm. Colors come from the shared --alert-* variables. */
+    .text.md .alert { margin: 10px 0; padding: 2px 0 2px 12px; border-left: 3px solid var(--alert-color); }
+    .text.md .alert-title { margin: 0 0 4px; color: var(--alert-color); font-size: 11px;
+      font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+    .text.md .alert > *:last-child { margin-bottom: 0; }
+    .text.md .math-display { margin: 10px 0; }
+    .text.md .footnotes { margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--line);
+      font-size: 12.5px; color: var(--muted); }
     .text.md ul, .text.md ol { margin: 8px 0; padding-left: 22px; }
     .text.md li { margin: 3px 0; }
     /* Task-list items (MarkdownHTML emits the Hugeicons box): box instead of bullet. */
@@ -866,17 +943,34 @@ enum SessionTraceRenderer {
     details.thinking > summary::-webkit-details-marker { display: none; }
     details.thinking > div { white-space: pre-wrap; color: var(--muted); font-style: italic;
       border-left: 2px solid var(--line); padding-left: 12px; margin-top: 6px; }
-    .tool-use, .tool-result { margin: 8px 0; border-radius: 8px; border: 1px solid var(--line); overflow: hidden; }
-    .tool-use > summary, .tool-result > summary { cursor: pointer; font-family: ui-monospace, "SF Mono", Menlo, monospace;
-      font-size: 12px; padding: 8px 12px; background: var(--soft); list-style: none; }
-    .tool-use > summary { color: var(--accent); }
+    .tool-use, .tool-result { margin: 6px 0; border-radius: 9px; border: 1px solid var(--line);
+      overflow: hidden; background: var(--soft); }
+    .tool-use > summary, .tool-result > summary { cursor: pointer; user-select: none;
+      display: flex; align-items: center; gap: 8px;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; letter-spacing: -0.01em;
+      padding: 7px 12px; list-style: none; transition: background 0.14s ease; }
+    .tool-use > summary:hover, .tool-result > summary:hover {
+      background: color-mix(in srgb, var(--fg) 5%, transparent); }
+    /* A single chevron that rotates open — replaces the old ▶ / ◀ ascii arrows. */
+    .tool-use > summary::before, .tool-result > summary::before { content: "";
+      flex: 0 0 auto; width: 5px; height: 5px; margin-right: 1px;
+      border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+      transform: rotate(-45deg); transition: transform 0.18s ease; opacity: 0.55; }
+    .tool-use[open] > summary::before, .tool-result[open] > summary::before { transform: rotate(45deg); }
+    .tool-use > summary { color: var(--fg); font-weight: 550; }
     .tool-result > summary { color: var(--muted); }
     .tool-use > summary::-webkit-details-marker, .tool-result > summary::-webkit-details-marker { display: none; }
+    /* Failed tool result: a small neutral-red pill, no emoji. */
+    .tool-result .fail { margin-left: auto; font-size: 10px; font-weight: 600; letter-spacing: 0.02em;
+      text-transform: uppercase; padding: 1px 7px; border-radius: 999px;
+      color: #e5484d; background: color-mix(in srgb, #e5484d 12%, transparent); }
     pre { margin: 0; padding: 12px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word;
       font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; opacity: 0.92; }
-    .tool-result.error { border-color: color-mix(in srgb, red 45%, var(--line)); }
-    .tool-result.error > summary { color: #ff9a9a; }
+    .tool-result.error { border-color: color-mix(in srgb, #e5484d 32%, var(--line)); }
     .image { color: var(--muted); font-size: 12px; margin: 8px 0; }
+    .shot { display: block; max-width: 360px; width: 100%; height: auto; margin: 10px 0;
+      border-radius: 10px; border: 1px solid var(--line); }
+    .text.md .shot { max-width: 100%; }
     .summary { font-size: 12px; color: var(--fg); background: var(--soft);
       padding: 6px 12px; border-radius: 999px; display: inline-block; margin: 8px 0; }
     """

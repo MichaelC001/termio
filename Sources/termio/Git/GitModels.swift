@@ -1,3 +1,4 @@
+import TermioShared
 import Foundation
 import SwiftUI
 
@@ -6,7 +7,7 @@ import SwiftUI
 /// Which inspector pane the trailing column is showing — the file tree, the file
 /// search, the git changes list, the issue tracker, or the session Info pane.
 /// Drives the segmented switch at the top of `FileBrowserView`.
-enum InspectorTab: Hashable, Sendable {
+enum InspectorTab: String, Hashable, Sendable, Codable {
     case files, search, changes, issues, info
 }
 
@@ -131,19 +132,7 @@ struct GitDiffRequest: Hashable, Sendable {
     var name: String { change.name }
 }
 
-/// One rendered line of a unified diff: an added/removed/context line (with its old
-/// and/or new line number), or a hunk header (`@@ … @@`). The file-header lines of
-/// the raw diff are dropped during parsing — the overlay shows the filename itself.
-struct DiffRow: Identifiable, Sendable {
-    enum Kind: Sendable { case addition, deletion, context, hunk }
-    let id: Int
-    let kind: Kind
-    let text: String
-    let oldLine: Int?
-    let newLine: Int?
-    /// The changed span within a paired deletion/addition line, in `Character`
-    /// offsets — rendered with a stronger background so a one-word edit in a long
-    /// line reads at a glance. `nil` when the line has no counterpart or the two
-    /// sides share too little for a span to mean anything.
-    var emphasis: Range<Int>? = nil
-}
+/// One rendered line of a unified diff. The parse, the fold, and the intraline word diff
+/// all live in `TermioShared` so the Mac and the phone read a diff the same way; this is
+/// the desktop's name for the shared type.
+typealias DiffRow = DiffLine

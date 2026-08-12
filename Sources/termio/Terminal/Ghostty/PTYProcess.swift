@@ -897,6 +897,26 @@ final class PTYProcess: @unchecked Sendable {
         return arguments.isEmpty ? nil : arguments
     }
 
+    /// Whether the child is still running — the session has a live process to
+    /// lose. False once the pid is reaped.
+    var isAlive: Bool {
+        lock.lock()
+        let exited = childExited
+        lock.unlock()
+        return !exited && pid > 0
+    }
+
+    /// Whether something other than the child shell itself holds the tty's
+    /// foreground group, i.e. a command is actually running in the pane rather
+    /// than a shell idling at its prompt. This is the signal iTerm2 keys its
+    /// prompt-on-close off; a bare prompt is its own foreground group and reads
+    /// as free to close.
+    var hasForegroundJob: Bool {
+        guard isAlive else { return false }
+        let foreground = tcgetpgrp(masterFD)
+        return foreground > 0 && foreground != pid
+    }
+
     /// SIGKILLs the child's process group if it hasn't been reaped yet.
     /// Idempotent; safe after the pid is reaped (the `childExited` check keeps
     /// the kill off a recycled pid). The app-quit path calls this directly
@@ -926,8 +946,9 @@ final class PTYProcess: @unchecked Sendable {
             let ps = Process()
             ps.executableURL = URL(fileURLWithPath: "/bin/ps")
             // -E appends each process's environment to the command column
-            // (own-user processes only, which is exactly the scope wanted).
-            ps.arguments = ["-axEww", "-o", "pid=,ppid=,command="]
+            // (own-user processes only, which is exactly the scope wanted);
+            // `tty` gates out daemons — see the guard below.
+            ps.arguments = ["-axEww", "-o", "pid=,ppid=,tty=,command="]
             let out = Pipe()
             ps.standardOutput = out
             do { try ps.run() } catch {
@@ -941,9 +962,16 @@ final class PTYProcess: @unchecked Sendable {
                 guard line.contains("TERMIO_SESSION="),
                       line.contains("TERM_PROGRAM=termio") else { continue }
                 let fields = line.split(separator: " ", omittingEmptySubsequences: true)
-                guard fields.count >= 2,
+                // fields: pid, ppid, tty, command… — `ppid == 1` alone can't
+                // tell a stranded agent from a tool that daemonized off the
+                // pane (a tmux/screen server, or termio itself): both
+                // re-parent to launchd carrying the stamps. The tell is the
+                // tty — a stray still holds its dead PTY (`ttysNNN`), which is
+                // why it leaks; a daemon shed it (`??`).
+                guard fields.count >= 3,
                       let pid = pid_t(fields[0]), let ppid = pid_t(fields[1]),
-                      ppid == 1, pid != getpid()
+                      ppid == 1, pid != getpid(),
+                      fields[2] != "??"
                 else { continue }
                 Log.pty.info("reaping stray session process pid=\(pid, privacy: .public)")
                 // The group first (the leader's tree), then the pid itself —

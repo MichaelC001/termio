@@ -28,8 +28,8 @@ first-class agent — see [Custom agents](/docs/custom-agents).
 
 ## Reading status at a glance
 
-Every session row carries a live status dot — **working**, **idle**,
-**attention**, or **done**. Termio derives these from a mix of signals: the
+Every session row carries a live status dot — **working**, **idle**, **done**, or
+**needs you**. Termio derives these from a mix of signals: the
 agent's own hooks where it exposes them, and the terminal's output otherwise, so
 the sidebar stays honest even for agents that don't emit structured events. The
 [sidebar guide](/docs/sidebar#status) explains what each state means, and
@@ -42,5 +42,5 @@ Clicking a session brings it forward instantly; the others keep running in the
 background. Because each session is a real process, an agent doesn't pause when
 it's off-screen — you can kick off a long run in one, switch to another, and come
 back when the first raises its hand. When you have more than a handful of
-sessions, `⌘⇧O` jumps straight to any of them by name — see
+sessions, `⇧⌘O` jumps straight to any of them by name — see
 [Navigation](/docs/navigation).

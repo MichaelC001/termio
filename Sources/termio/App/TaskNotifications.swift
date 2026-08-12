@@ -62,6 +62,26 @@ final class TaskNotificationCenter: NSObject {
         self.store = store
         guard AppChannel.isBundledApp else { return }
         UNUserNotificationCenter.current().delegate = self
+        // Ask for authorization eagerly, at launch, when the feature is on.
+        // The lazy per-settle request (below) only ever fires while termio is
+        // *backgrounded* — so a user who watches their agents finish never
+        // trips it, the prompt never appears, and no grant is ever recorded
+        // (the failure is completely silent). Requesting here guarantees the
+        // prompt is offered once. `requestAuthorization` is idempotent: after
+        // the first decision it returns the recorded answer without
+        // re-prompting, so this is free on every later launch.
+        guard store.settings.notifyOnTaskCompletion else { return }
+        UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .sound]) { granted, error in
+                if let error {
+                    // An ad-hoc-signed dev build is rejected outright here
+                    // (UNErrorDomain 1) — dev builds can NEVER banner; test on
+                    // the release build. A user denial just reads granted=false.
+                    Log.app.error("notification authorization failed at launch: \(error.localizedDescription, privacy: .public)")
+                } else {
+                    Log.app.info("notification authorization at launch: granted=\(granted, privacy: .public)")
+                }
+            }
     }
 
     /// A session's turn began. Called from the status choke point on the
@@ -93,16 +113,23 @@ final class TaskNotificationCenter: NSObject {
         // policy Cursor and Codex both ship (`unfocused`-only). While termio is
         // frontmost, the sidebar dot and menu-bar pulse are the completion
         // channel; a banner would duplicate them in a louder one.
-        guard !NSApp.isActive else { return }
+        guard !NSApp.isActive else {
+            Log.app.debug("notification suppressed for \(id, privacy: .public): termio is frontmost")
+            return
+        }
         if status == .done {
             // A quick reply isn't worth an interruption; a blocked agent always is.
             if let since = turn?.workingSince,
                Date().timeIntervalSince(since) < Self.minimumTurnDuration {
+                Log.app.debug("notification suppressed for \(id, privacy: .public): turn shorter than \(Self.minimumTurnDuration, privacy: .public)s")
                 return
             }
             // Task vs chat: a turn that ran no tools produced an answer, not work.
             // Applied only to sessions with proven tool telemetry.
-            if let turn, turn.toolCapable, !turn.sawTool { return }
+            if let turn, turn.toolCapable, !turn.sawTool {
+                Log.app.debug("notification suppressed for \(id, privacy: .public): tool-capable turn ran no tool")
+                return
+            }
         }
 
         let content = UNMutableNotificationContent()
@@ -114,50 +141,94 @@ final class TaskNotificationCenter: NSObject {
         if store.settings.notificationSoundEnabled { content.sound = .default }
         content.userInfo = [Self.sessionKey: id.uuidString]
 
+        // One identifier per session: a follow-up settle *replaces* the delivered
+        // banner rather than stacking, so a session never shows two at once.
         let generation = states[id, default: TurnState()].generation
+        deliver(content, identifier: Self.identifier(for: id), agent: agent) { [weak self] in
+            // Re-validate on the main actor before posting: the user may have
+            // engaged with the session (`withdraw` bumps the generation), closed
+            // it, or switched the setting off while authorization was in flight.
+            guard let self else { return false }
+            return self.states[id]?.generation == generation
+                && self.store?.session(id) != nil
+                && self.store?.settings.notifyOnTaskCompletion == true
+        }
+    }
+
+    /// Posts a notification on an agent's explicit request (`termio notify`),
+    /// bypassing the automatic path's policy gates — the agent asked for it, so it
+    /// fires whether or not termio is frontmost. When a calling session is known,
+    /// the banner is keyed to it (so a click focuses it and a later automatic
+    /// banner replaces rather than stacks) and carries the agent's icon; a
+    /// plain-shell caller posts a standalone, unlinked banner. Deliberately not
+    /// gated on `notifyOnTaskCompletion`: that switch governs the *automatic*
+    /// banners, whereas this is a direct, opt-in call.
+    func postManual(title: String, body: String, project: Project?, session: Session?) {
+        guard AppChannel.isBundledApp else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        if let project { content.subtitle = project.name }
+        content.body = body
+        if store?.settings.notificationSoundEnabled == true { content.sound = .default }
+        let agent = session.flatMap { store?.effectiveAgent(for: $0) }
+        let identifier: String
+        if let session {
+            content.userInfo = [Self.sessionKey: session.id.uuidString]
+            identifier = Self.identifier(for: session.id)
+        } else {
+            identifier = "task-manual.\(UUID().uuidString)"
+        }
+        deliver(content, identifier: identifier, agent: agent)
+    }
+
+    /// Shared delivery tail for both the automatic settle banner and the manual
+    /// `termio notify` path. Authorization is requested once at launch
+    /// (`activate`); here we read the *settled* decision via
+    /// `getNotificationSettings` rather than re-prompting each time, and only fall
+    /// back to a request when it's still `.notDetermined` (e.g. a settle before
+    /// the launch prompt was answered — chaining on that request preserves the
+    /// very banner that triggered it). The icon attachment and the caller's
+    /// `precondition` re-check run together on the main actor, so the "attachment
+    /// is created only when the post is certain" invariant lives in one place —
+    /// the system *moves* the attached file, so an earlier copy would be orphaned
+    /// by any bail-out.
+    private func deliver(_ content: UNMutableNotificationContent,
+                         identifier: String,
+                         agent: AgentPreset?,
+                         precondition: @escaping () -> Bool = { true }) {
+        // The whole flow stays on the main actor — content and precondition
+        // never cross an isolation boundary; only the awaits on the center do.
         let center = UNUserNotificationCenter.current()
-        // Idempotent after the user's first answer; asking here rather than at
-        // launch means the prompt appears the moment it's explainable. On the
-        // very first settle the completion fires only once the user answers, so
-        // the notification that triggered the prompt still gets delivered —
-        // chaining on it (rather than a parallel `getNotificationSettings` read,
-        // which would race the prompt and report `.notDetermined`) is what saves
-        // that first banner.
-        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
-            // Failures here are otherwise invisible and cost a real investigation
-            // once: an ad-hoc-signed dev build is rejected outright by usernoted
-            // (UNErrorDomain 1 — dev builds can NEVER banner; test on a release
-            // build), and a user denial just reads `granted == false`.
-            if let error {
-                Log.app.error("notification authorization failed: \(error.localizedDescription, privacy: .public)")
-            }
-            guard granted else { return }
-            DispatchQueue.main.async {
-                // Re-validate on the main actor: the user may have engaged with
-                // the session (`withdraw` bumps the generation), closed it, or
-                // switched the setting off while the round-trip was in flight.
-                guard self.states[id]?.generation == generation,
-                      self.store?.session(id) != nil,
-                      self.store?.settings.notifyOnTaskCompletion == true else { return }
-                // The banner's leading icon is always termio's own (macOS
-                // reserves it for the posting app), so the agent's identity
-                // rides as the trailing thumbnail instead. Created only now,
-                // when the request is certain to be scheduled — the system
-                // *moves* the attached file, so an earlier copy would be
-                // orphaned in the temp directory by any bail-out above.
-                if let attachment = Self.agentIconAttachment(for: agent) {
+        Task { @MainActor in
+            let post = {
+                guard precondition() else { return }
+                // The banner's leading icon is always termio's own (macOS reserves
+                // it for the posting app), so the agent's mark rides as the trailing
+                // thumbnail instead.
+                if let agent, let attachment = Self.agentIconAttachment(for: agent) {
                     content.attachments = [attachment]
                 }
-                // One identifier per session: a follow-up settle *replaces* the
-                // delivered banner rather than stacking, so a session never
-                // shows two at once.
-                let request = UNNotificationRequest(
-                    identifier: Self.identifier(for: id), content: content, trigger: nil)
-                center.add(request) { error in
+                center.add(UNNotificationRequest(
+                    identifier: identifier, content: content, trigger: nil)) { error in
                     if let error {
                         Log.app.error("notification post failed: \(error.localizedDescription, privacy: .public)")
                     }
                 }
+            }
+            switch await center.notificationSettings().authorizationStatus {
+            case .authorized, .provisional, .ephemeral:
+                post()
+            case .notDetermined:
+                // No decision yet — request now. An ad-hoc-signed dev build is
+                // rejected outright here (UNErrorDomain 1: dev builds can never
+                // banner — test on a release build); a denial reads granted=false.
+                do {
+                    if try await center.requestAuthorization(options: [.alert, .sound]) { post() }
+                } catch {
+                    Log.app.error("notification authorization failed: \(error.localizedDescription, privacy: .public)")
+                }
+            default:
+                break  // .denied — the user said no; nothing to post.
             }
         }
     }
@@ -263,9 +334,21 @@ extension TaskNotificationCenter: UNUserNotificationCenterDelegate {
     ) {
         let userInfo = response.notification.request.content.userInfo
         let id = (userInfo[Self.sessionKey] as? String).flatMap(UUID.init)
+        // The handler is UN's own continuation — called exactly once, after the
+        // main-actor work; the box only carries it across the hop.
+        let done = UncheckedSendable(completionHandler)
         DispatchQueue.main.async {
-            if let id { self.store?.revealSession(id) }
-            completionHandler()
+            MainActor.assumeIsolated {
+                if let id { self.store?.revealSession(id) }
+            }
+            done.value()
         }
     }
+}
+
+/// Carries a non-Sendable value across a hop the compiler cannot check; every
+/// use site documents why the crossing is safe.
+private struct UncheckedSendable<Value>: @unchecked Sendable {
+    let value: Value
+    init(_ value: Value) { self.value = value }
 }

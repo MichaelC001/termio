@@ -25,7 +25,11 @@ extension TermioStore {
     /// beside a working agent, and silently auto-launching another agent
     /// instance is a side effect ⌘D shouldn't have; an agent can still be put
     /// there by splitting from it or grouping it later.
-    func splitSelectedPane(_ direction: SplitDirection) {
+    ///
+    /// `slot` is which half the new pane takes: `.second` is Split Right / Split
+    /// Down, `.first` is Split Left / Split Up. Either way the new pane takes
+    /// focus — the direction says where the pane lands, not where attention goes.
+    func splitSelectedPane(_ direction: SplitDirection, slot: SplitSlot = .second) {
         guard let focusedID = selectedSessionID,
               let projectIndex = projects.firstIndex(where: { $0.sessions.contains { $0.id == focusedID } }),
               let sessionIndex = projects[projectIndex].sessions.firstIndex(where: { $0.id == focusedID })
@@ -37,18 +41,20 @@ extension TermioStore {
         // A worktree session runs somewhere other than the project root; the
         // companion shell should land where the focused session actually works.
         newSession.worktreePath = session(focusedID)?.worktreePath
-        // Right below the session it splits, not at the end of the project — the
+        // Beside the session it splits, not at the end of the project — the
         // sidebar then reads the split group as adjacent rows, which is what lets
-        // it draw the VS Code-style ┌/└ group bracket (see `splitLinkMarks`).
-        projects[projectIndex].sessions.insert(newSession, at: sessionIndex + 1)
+        // it draw the VS Code-style ┌/└ group bracket (see `splitLinkMarks`). The
+        // row order follows the layout, so a leading split lists above its origin.
+        projects[projectIndex].sessions.insert(newSession, at: slot == .first ? sessionIndex : sessionIndex + 1)
 
         if let group = groupIndex(containing: focusedID) {
             splitGroups[group] = splitGroups[group]
-                .splitting(leaf: focusedID, direction: direction, adding: newSession.id)
+                .splitting(leaf: focusedID, direction: direction, adding: newSession.id, slot: slot)
         } else {
-            splitGroups.append(.split(SplitBranch(direction: direction, ratio: 0.5,
-                                                  first: .leaf(focusedID),
-                                                  second: .leaf(newSession.id))))
+            splitGroups.append(.split(SplitBranch(
+                direction: direction, ratio: 0.5,
+                first: .leaf(slot == .first ? newSession.id : focusedID),
+                second: .leaf(slot == .first ? focusedID : newSession.id))))
         }
         // The new pane takes focus; it is a member of the (possibly new) group,
         // so the derived `splitRoot` keeps showing this layout.
@@ -68,9 +74,12 @@ extension TermioStore {
     /// the pane you're looking at when it belongs to this project, else the
     /// project's last session (a cross-project selection is ignored, so a
     /// background agent's sibling never gets dragged into another project's group).
-    /// The split axis alternates across the anchor's current one, tiling-WM style —
-    /// a lone anchor opens side by side. With no pane to anchor to (an empty
-    /// project) it falls back to a plain `addSession`.
+    /// A lone anchor opens side by side; further spawns land on the *far side*
+    /// of the anchor's divider, stacked on the cross axis — the anchor (the
+    /// agent you're watching) keeps its full pane and its companions tile up
+    /// opposite it, instead of the anchor being carved smaller on every spawn.
+    /// With no pane to anchor to (an empty project) it falls back to a plain
+    /// `addSession`.
     ///
     /// With `takeFocus` false the selection stays where the user put it: the new
     /// pane is mounted invisibly instead (see `activateInBackground`), so its
@@ -107,21 +116,19 @@ extension TermioStore {
         // rows and draws its ┌/└ bracket (see `splitLinkMarks`).
         projects[projectIndex].sessions.insert(newSession, at: anchorIndex + 1)
 
-        // Alternate the split axis across the anchor's current one; a lone anchor
-        // (no enclosing branch) opens side by side.
-        let group = groupIndex(containing: anchorID)
-        let direction: SplitDirection
-        if let group, let current = splitGroups[group].branchDirection(childLeaf: anchorID) {
-            direction = current == .horizontal ? .vertical : .horizontal
+        // A lone anchor opens side by side; an anchor that already has a
+        // neighbour keeps its full pane, with the newcomer stacked into the
+        // opposite side of its divider (see `splitting(oppositeLeaf:adding:)`).
+        if let group = groupIndex(containing: anchorID) {
+            if splitGroups[group].branchDirection(childLeaf: anchorID) != nil {
+                splitGroups[group] = splitGroups[group]
+                    .splitting(oppositeLeaf: anchorID, adding: newSession.id)
+            } else {
+                splitGroups[group] = splitGroups[group]
+                    .splitting(leaf: anchorID, direction: .horizontal, adding: newSession.id)
+            }
         } else {
-            direction = .horizontal
-        }
-
-        if let group {
-            splitGroups[group] = splitGroups[group]
-                .splitting(leaf: anchorID, direction: direction, adding: newSession.id)
-        } else {
-            splitGroups.append(.split(SplitBranch(direction: direction, ratio: 0.5,
+            splitGroups.append(.split(SplitBranch(direction: .horizontal, ratio: 0.5,
                                                   first: .leaf(anchorID),
                                                   second: .leaf(newSession.id))))
         }
@@ -166,6 +173,7 @@ extension TermioStore {
     func detachFromSplit(_ id: Session.ID) {
         guard let group = groupIndex(containing: id) else { return }
         setGroup(at: group, to: splitGroups[group].removing(leaf: id))
+        gatherSplitRuns()
         selectedSessionID = id
         isPaneZoomed = false
     }
@@ -244,6 +252,7 @@ extension TermioStore {
               let group = groupIndex(containing: focusedID) else { return }
         let neighbor = neighborPane(of: focusedID, in: splitGroups[group])
         setGroup(at: group, to: splitGroups[group].removing(leaf: focusedID))
+        gatherSplitRuns()
         if let neighbor { selectedSessionID = neighbor }
         isPaneZoomed = false
     }
@@ -255,6 +264,30 @@ extension TermioStore {
         guard splitRoot != nil else { return }
         isPaneZoomed.toggle()
     }
+
+    /// Lands a dragged pane on `target` (issue #183). An edge zone
+    /// re-splits the target with the dragged pane on that side — the pane
+    /// leaves its old slot first, its vacated space collapsing into the
+    /// sibling exactly as if it had closed, so one gesture subsumes move +
+    /// re-split + orientation. The center zone trades places, same as "Move
+    /// Pane". Dropping a pane on itself, or across groups, is a no-op — the
+    /// self-drop guard matters, because removing the pane and then missing
+    /// the (gone) target would otherwise drop it from the tree entirely.
+    func dropPane(_ source: Session.ID, onto target: Session.ID, zone: PaneDropZone) {
+        guard source != target,
+              let group = groupIndex(containing: source),
+              group == groupIndex(containing: target) else { return }
+        if let direction = zone.splitDirection {
+            guard let vacated = splitGroups[group].removing(leaf: source) else { return }
+            splitGroups[group] = vacated.splitting(leaf: target, direction: direction,
+                                                   adding: source, slot: zone.slot)
+        } else {
+            splitGroups[group] = splitGroups[group].swapping(source, and: target)
+        }
+        selectedSessionID = source
+        isPaneZoomed = false
+    }
+
 
     /// Moves pane focus directionally (⌥⌘ arrows), scored on the visible
     /// group's normalized geometry. No-op without splits or when nothing lies
@@ -307,6 +340,25 @@ extension TermioStore {
         return preferred
     }
 
+    /// Restores the invariant every split group's sidebar bracket is drawn from:
+    /// a group's rows are one adjacent run (see `splitLinkMarks`). Insertion keeps
+    /// the run intact by construction, but a row can still be lifted out from
+    /// under it — "Ungroup" leaves the detached row wedged between its former
+    /// mates, and a drag can drop a stranger into the middle. The bracket then
+    /// spans only the longest surviving run, so a three-pane group reads as a
+    /// two-row bracket while three panes are on screen.
+    func gatherSplitRuns() {
+        let groups = splitGroups.map(\.leafIDs)
+        for index in projects.indices {
+            let rows = projects[index].sessions.map(\.id)
+            let gathered = gatheringSplitRuns(rows, groups: groups)
+            guard gathered != rows else { continue }
+            let byID = Dictionary(projects[index].sessions.map { ($0.id, $0) },
+                                  uniquingKeysWith: { first, _ in first })
+            projects[index].sessions = gathered.compactMap { byID[$0] }
+        }
+    }
+
     /// Installs a mutated group, dissolving it when fewer than two panes remain
     /// (absence of a group *is* the single-pane state).
     private func setGroup(at index: Int, to tree: SplitNode?) {
@@ -325,4 +377,36 @@ extension TermioStore {
         if index + 1 < leaves.count { return leaves[index + 1] }
         return index > 0 ? leaves[index - 1] : nil
     }
+}
+
+/// Reorders one project's session rows so each split group's members sit
+/// together. A run lands where its own first member already sat and its members
+/// keep their relative order, so the gesture that broke the run is what moves:
+/// a detached pane, or a stranger dragged into the middle, slides just below the
+/// group it interrupted. Pure and idempotent — rows already in runs come back
+/// untouched, which is what lets the store call it after every such mutation.
+func gatheringSplitRuns(_ rows: [Session.ID], groups: [[Session.ID]]) -> [Session.ID] {
+    var groupOf: [Session.ID: Int] = [:]
+    for (index, members) in groups.enumerated() {
+        for id in members { groupOf[id] = index }
+    }
+    guard rows.contains(where: { groupOf[$0] != nil }) else { return rows }
+
+    // Row order, not tree order: the sidebar's own order is what the user
+    // arranged, and gathering must not silently re-sort a run to match the layout.
+    var membersInRowOrder: [Int: [Session.ID]] = [:]
+    for id in rows {
+        guard let group = groupOf[id] else { continue }
+        membersInRowOrder[group, default: []].append(id)
+    }
+
+    var emitted: Set<Int> = []
+    var gathered: [Session.ID] = []
+    for id in rows {
+        guard let group = groupOf[id] else { gathered.append(id); continue }
+        if emitted.insert(group).inserted {
+            gathered.append(contentsOf: membersInRowOrder[group] ?? [id])
+        }
+    }
+    return gathered
 }

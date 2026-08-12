@@ -1,5 +1,30 @@
 import Darwin
 import Foundation
+import TermioShared
+
+/// The environment for **every** app-side `git` subprocess. `GIT_OPTIONAL_LOCKS=0`
+/// stops read-only git — notably `git status` — from taking the index lock and
+/// rewriting `.git/index` to refresh its stat/untracked cache. That write fires an
+/// FSEvent under `.git`, which the git pane's watcher treats as a change and
+/// re-reads: a `status → index-write → status` loop that never settles while the
+/// working tree keeps changing (a live dev server, a busy agent) and pegged a
+/// long-running app at ~20% CPU, starving the main actor until `sessions list`
+/// timed out.
+///
+/// It is applied at *every* git spawn site (GitService, BranchModel,
+/// WorktreeService, CommandPalette, CompanionServer), not just the pane's, so no
+/// path can reintroduce the loop — the same reason VS Code's git extension sets it
+/// globally rather than per-command. Safe for writes too: `--no-optional-locks`
+/// only skips *optional* locks, never the ones a real mutation needs. The inherited
+/// environment is preserved (git still finds config/credentials), and it is scoped
+/// to the app's own subprocesses — terminal sessions are never touched.
+enum GitEnvironment {
+    static let optionalLocksDisabled: [String: String] = {
+        var env = ProcessInfo.processInfo.environment
+        env["GIT_OPTIONAL_LOCKS"] = "0"
+        return env
+    }()
+}
 
 // MARK: - Git
 
@@ -33,7 +58,7 @@ enum GitService {
             // default 3-line context rather than parse (and render) a whole huge file.
             let text = full.count <= 1_500_000
                 ? full : loadDiffText(change, repoRoot, commit: commit, range: range)
-            return parseDiff(text)
+            return DiffParser.lines(from: text)
         }
     }
 
@@ -41,6 +66,13 @@ enum GitService {
     /// pasteboard, so it round-trips cleanly into `git apply` or an agent prompt.
     static func diffText(for change: GitChange, in repoRoot: String) async -> String {
         await offMain { loadDiffText(change, repoRoot) }
+    }
+
+    /// Parses ready-made unified-diff text (GitHub's inline PR `patch`) into rows off the
+    /// main thread — the same parser the local `git diff` path uses, so a PR file diffed
+    /// from the API renders identically without a subprocess or a checkout.
+    static func parseDiffText(_ text: String) async -> [DiffRow] {
+        await offMain { DiffParser.lines(from: text) }
     }
 
     /// Discards a whole selection in one confirmed action — the multi-select's
@@ -113,12 +145,14 @@ enum GitService {
 
     /// The changed files of a single commit. `--name-status` gives the status letter and
     /// path; `--numstat` gives the counts — merged by path. `--format=` drops the commit
-    /// header so only the file lines remain. The first-parent diff (`<sha>^!`) is used so
-    /// a merge shows a sensible file set; the root commit falls back to the empty tree.
+    /// header so only the file lines remain. `--first-parent` makes a merge diff against
+    /// its first parent (the branch that was merged into) — without it `git show` emits a
+    /// combined diff, which is empty for a clean merge, so every PR merge in the history
+    /// read as "No file changes". The root commit diffs against the empty tree as before.
     private static func loadCommitChanges(_ sha: String, _ repoRoot: String) -> [GitChange] {
         var order: [String] = []
         var status: [String: GitFileStatus] = [:]
-        if let out = run(["show", "--name-status", "--format=", "-M", sha], in: repoRoot) {
+        if let out = run(["show", "--name-status", "--format=", "-M", "--first-parent", sha], in: repoRoot) {
             for line in out.split(separator: "\n") {
                 let parts = line.split(separator: "\t")
                 guard let code = parts.first?.first, parts.count >= 2 else { continue }
@@ -128,7 +162,7 @@ enum GitService {
             }
         }
         var counts: [String: (Int, Int)] = [:]
-        if let out = run(["show", "--numstat", "--format=", sha], in: repoRoot) {
+        if let out = run(["show", "--numstat", "--format=", "--first-parent", sha], in: repoRoot) {
             for line in out.split(separator: "\n") {
                 let parts = line.split(separator: "\t", maxSplits: 2)
                 guard parts.count == 3 else { continue }
@@ -384,9 +418,10 @@ enum GitService {
                        in: repoRoot, ignoreStatus: true) ?? ""
         }
         // History file row: the file's change within one commit. `--format=` strips the
-        // commit header so parseDiff sees only the unified diff.
+        // commit header so the parser sees only the unified diff; `--first-parent` keeps
+        // a merge commit's file diff non-empty, matching the file list above.
         if let commit {
-            return run(["show", "--format=", "-M"] + contextArguments + [commit, "--", change.path],
+            return run(["show", "--format=", "-M", "--first-parent"] + contextArguments + [commit, "--", change.path],
                        in: repoRoot, ignoreStatus: true) ?? ""
         }
         if change.isUntracked {
@@ -404,115 +439,6 @@ enum GitService {
         return run(["diff"] + contextArguments + ["--cached", "--", change.path], in: repoRoot) ?? ""
     }
 
-    /// Parses unified-diff text into rows, tracking old/new line numbers from each
-    /// hunk header and dropping the file-header lines (`diff --git`, `+++`, …).
-    private static func parseDiff(_ text: String) -> [DiffRow] {
-        var rows: [DiffRow] = []
-        var id = 0
-        var oldNo = 0
-        var newNo = 0
-        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(raw)
-            if line.hasPrefix("@@") {
-                if let (o, n) = parseHunkHeader(line) { oldNo = o; newNo = n }
-                // Hunk rows carry their start numbers so the overlay can size the gap
-                // to the previous hunk when it renders the boundary as a "⋯ n lines" band.
-                rows.append(DiffRow(id: id, kind: .hunk, text: line, oldLine: oldNo, newLine: newNo)); id += 1
-                continue
-            }
-            if isFileHeader(line) { continue }
-            guard let first = line.first else { continue }
-            let body = String(line.dropFirst())
-            switch first {
-            case "+":
-                rows.append(DiffRow(id: id, kind: .addition, text: body, oldLine: nil, newLine: newNo)); id += 1; newNo += 1
-            case "-":
-                rows.append(DiffRow(id: id, kind: .deletion, text: body, oldLine: oldNo, newLine: nil)); id += 1; oldNo += 1
-            case " ":
-                rows.append(DiffRow(id: id, kind: .context, text: body, oldLine: oldNo, newLine: newNo)); id += 1; oldNo += 1; newNo += 1
-            default:
-                continue
-            }
-        }
-        applyIntraline(&rows)
-        return rows
-    }
-
-    /// Marks the changed span inside modified lines (Critique/Xcode's intraline
-    /// highlight): within each hunk, a run of deletions immediately followed by a run
-    /// of additions is paired index-wise, and each pair gets its common prefix/suffix
-    /// stripped to leave the span that actually changed.
-    private static func applyIntraline(_ rows: inout [DiffRow]) {
-        var i = 0
-        while i < rows.count {
-            guard rows[i].kind == .deletion else { i += 1; continue }
-            let delStart = i
-            while i < rows.count, rows[i].kind == .deletion { i += 1 }
-            let addStart = i
-            while i < rows.count, rows[i].kind == .addition { i += 1 }
-            for k in 0..<min(addStart - delStart, i - addStart) {
-                guard let (old, new) = emphasisRanges(rows[delStart + k].text, rows[addStart + k].text)
-                else { continue }
-                rows[delStart + k].emphasis = old
-                rows[addStart + k].emphasis = new
-            }
-        }
-    }
-
-    /// The changed spans of a deletion/addition line pair: common prefix and suffix
-    /// are peeled off, then the boundaries snap outward to whole words so renaming
-    /// `newValue` → `oldValue` highlights the identifiers, not a `ldValue` tail.
-    /// Returns `nil` when the sides share under a fifth of the shorter line — a
-    /// rewrite, where span-highlighting the whole line would just be noise.
-    private static func emphasisRanges(_ oldText: String, _ newText: String) -> (Range<Int>, Range<Int>)? {
-        guard oldText != newText, oldText.count <= 2000, newText.count <= 2000 else { return nil }
-        let o = Array(oldText), n = Array(newText)
-        var prefix = 0
-        while prefix < o.count, prefix < n.count, o[prefix] == n[prefix] { prefix += 1 }
-        var suffix = 0
-        while suffix < o.count - prefix, suffix < n.count - prefix,
-              o[o.count - 1 - suffix] == n[n.count - 1 - suffix] { suffix += 1 }
-        guard (prefix + suffix) * 5 >= min(o.count, n.count) else { return nil }
-
-        // CJK scripts have no intra-word boundaries, so snapping there would swallow
-        // the whole run — every ideograph/kana counts as its own boundary instead.
-        func isWord(_ c: Character) -> Bool {
-            guard c.isLetter || c.isNumber || c == "_" else { return false }
-            guard let scalar = c.unicodeScalars.first else { return false }
-            return scalar.value < 0x2E80
-        }
-        while prefix > 0, isWord(o[prefix - 1]),
-              (prefix < o.count - suffix && isWord(o[prefix]))
-                || (prefix < n.count - suffix && isWord(n[prefix])) {
-            prefix -= 1
-        }
-        while suffix > 0, isWord(o[o.count - suffix]),
-              (o.count - suffix > prefix && isWord(o[o.count - suffix - 1]))
-                || (n.count - suffix > prefix && isWord(n[n.count - suffix - 1])) {
-            suffix -= 1
-        }
-        return (prefix..<(o.count - suffix), prefix..<(n.count - suffix))
-    }
-
-    private static func isFileHeader(_ line: String) -> Bool {
-        for prefix in ["diff ", "index ", "--- ", "+++ ", "new file", "deleted file",
-                       "old mode", "new mode", "similarity ", "dissimilarity ",
-                       "rename ", "copy ", "\\ "] where line.hasPrefix(prefix) {
-            return true
-        }
-        return false
-    }
-
-    /// Pulls the starting old and new line numbers out of `@@ -a,b +c,d @@`.
-    private static func parseHunkHeader(_ line: String) -> (Int, Int)? {
-        let parts = line.split(separator: " ")
-        guard parts.count >= 3 else { return nil }
-        func start(_ s: Substring) -> Int? {
-            Int(s.dropFirst().split(separator: ",").first ?? s.dropFirst())
-        }
-        guard let o = start(parts[1]), let n = start(parts[2]) else { return nil }
-        return (o, n)
-    }
 
     /// A recognized code-hosting forge, detected from the origin remote's hostname.
     /// Each forge shapes its branch-tree URL differently, so a "view remote" link
@@ -536,6 +462,19 @@ enum GitService {
             case .gitlab: return "-/tree/\(branch)"
             case .bitbucket: return "src/\(branch)"
             case .gitea: return "src/branch/\(branch)"
+            }
+        }
+
+        /// The path that opens a pull/merge request from `branch`, relative to the
+        /// repo's web URL. GitHub/GitLab/Bitbucket default the base branch on
+        /// their own; Gitea's compare route wants it explicit, so the caller
+        /// passes one (only consulted there).
+        fileprivate func newPullRequestPath(branch: String, base: String) -> String {
+            switch self {
+            case .github: return "compare/\(branch)?expand=1"
+            case .gitlab: return "-/merge_requests/new?merge_request%5Bsource_branch%5D=\(branch)"
+            case .bitbucket: return "pull-requests/new?source=\(branch)"
+            case .gitea: return "compare/\(base)...\(branch)"
             }
         }
 
@@ -568,9 +507,9 @@ enum GitService {
     private static func resolveRemotePage(_ dir: String) -> RemotePage? {
         guard let remote = run(["remote", "get-url", "origin"], in: dir)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
-            let (host, path) = parseRemote(remote),
-            let forge = Forge(host: host),
-            let repo = URL(string: "https://\(host)/\(path)") else { return nil }
+            let parsed = parseRemote(remote),
+            let forge = Forge(host: parsed.host),
+            let repo = URL(string: "https://\(parsed.host)/\(parsed.path)") else { return nil }
         guard run(["rev-parse", "--abbrev-ref", "@{upstream}"], in: dir) != nil,
               let branch = run(["rev-parse", "--abbrev-ref", "HEAD"], in: dir)?
                   .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -581,6 +520,44 @@ enum GitService {
         return RemotePage(forge: forge, url: branchURL)
     }
 
+    /// The forge page for opening a pull request from `dir`'s current branch —
+    /// GitHub Desktop's Branch ▸ New Pull Request jump, verbatim: a browser
+    /// hand-off, so the PR itself is still authored on the forge, never in
+    /// termio. `nil` when the origin remote isn't a forge we can shape a URL
+    /// for, the checkout is detached, or the branch has no upstream yet (the
+    /// forge would 404 on a branch it has never seen — the caller tells the
+    /// user to push first).
+    static func newPullRequestPage(in dir: String) async -> URL? {
+        await offMain { resolveNewPullRequestPage(dir) }
+    }
+
+    private static func resolveNewPullRequestPage(_ dir: String) -> URL? {
+        guard let remote = run(["remote", "get-url", "origin"], in: dir)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            let parsed = parseRemote(remote),
+            let forge = Forge(host: parsed.host),
+            let repo = URL(string: "https://\(parsed.host)/\(parsed.path)"),
+            run(["rev-parse", "--abbrev-ref", "@{upstream}"], in: dir) != nil,
+            let branch = run(["rev-parse", "--abbrev-ref", "HEAD"], in: dir)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !branch.isEmpty, branch != "HEAD",
+            let escaped = branch.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+        else { return nil }
+        // Gitea's compare route is the only one needing an explicit base branch.
+        // `origin/HEAD` is the local record of the remote's default (unset in
+        // some clones — then "main" is the best guess).
+        var base = "main"
+        if forge == .gitea,
+           let head = run(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], in: dir)?
+               .trimmingCharacters(in: .whitespacesAndNewlines) {
+            // "origin/main" → "main" (keeping any slashes inside the branch name).
+            let short = head.split(separator: "/").dropFirst().joined(separator: "/")
+            if !short.isEmpty { base = short }
+        }
+        let path = forge.newPullRequestPath(branch: escaped, base: base)
+        return URL(string: "\(repo.absoluteString)/\(path)")
+    }
+
     /// The `owner/repo` slug when the origin remote points at github.com — the
     /// Issues pane's zero-config binding (docs/design/issue-tracker-integration.md).
     /// `nil` for non-GitHub remotes or a repo with no origin.
@@ -588,74 +565,89 @@ enum GitService {
         await offMain {
             guard let remote = run(["remote", "get-url", "origin"], in: dir)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-                let (host, path) = parseRemote(remote),
-                host == "github.com" || host == "www.github.com"
+                let parsed = parseRemote(remote)
             else { return nil }
-            return path
-        }
-    }
-
-    /// Fetches a pull request's head (`refs/pull/N/head` — GitHub serves every PR
-    /// there, fork or not) into `origin/pr/N`, plus the PR's base branch, so the
-    /// Files tab can show three-dot merge-base diffs without any checkout. Returns
-    /// the `base...head` range string to diff with, or `nil` when the fetch failed.
-    static func fetchPullRequestRef(number: Int, baseRef: String, in repoRoot: String) async -> String? {
-        await offMain {
-            guard run(["fetch", "--no-tags", "origin", baseRef,
-                       "+refs/pull/\(number)/head:refs/remotes/origin/pr/\(number)"],
-                      in: repoRoot) != nil
+            // A literal github.com host binds directly, whatever the transport.
+            if isGitHubHostName(parsed.host) { return parsed.path }
+            // Otherwise it may be an SSH `~/.ssh/config` alias (`Host github-work`
+            // → `HostName github.com`, the standard trick for juggling accounts).
+            // `sshTarget` is non-nil only for SSH remotes, so an HTTPS host never
+            // triggers `ssh -G` — which would be pointless and could fire a
+            // `Match exec` or falsely bind an unrelated repo to public GitHub.
+            guard let target = parsed.sshTarget,
+                  let resolved = resolveSSHHostName(target),
+                  isGitHubHostName(resolved)
             else { return nil }
-            return "origin/\(baseRef)...origin/pr/\(number)"
+            return parsed.path
         }
     }
 
-    /// Checks the PR's branch out: a same-repo PR switches to its real head branch
-    /// (tracking `origin`); a fork PR materializes the pull ref as local `pr/N`.
-    /// Returns an error description, or `nil` on success.
-    static func checkoutPullRequest(
-        number: Int, headRef: String, crossRepository: Bool, in repoRoot: String
-    ) async -> String? {
-        await offMain {
-            if !crossRepository {
-                guard run(["fetch", "--no-tags", "origin", headRef], in: repoRoot) != nil else {
-                    return "Couldn’t fetch \(headRef) from origin."
-                }
-                // `switch` DWIMs a local tracking branch from origin/<headRef>.
-                guard run(["switch", headRef], in: repoRoot) != nil else {
-                    return "Couldn’t switch to \(headRef) — the working tree may have conflicting changes."
-                }
-                return nil
-            }
-            guard run(["fetch", "--no-tags", "origin",
-                       "+refs/pull/\(number)/head:refs/heads/pr/\(number)"], in: repoRoot) != nil
-            else { return "Couldn’t fetch the pull request from origin." }
-            guard run(["switch", "pr/\(number)"], in: repoRoot) != nil else {
-                return "Couldn’t switch to pr/\(number) — the working tree may have conflicting changes."
-            }
-            return nil
-        }
+    private static func isGitHubHostName(_ host: String) -> Bool {
+        let lower = host.lowercased()
+        return lower == "github.com" || lower == "www.github.com"
     }
 
-    /// Splits a remote into web-addressable host + repo path, from either the scp-like
-    /// form (`git@host:owner/repo.git`) or a real URL (`https://…`, `ssh://…`). Ports
-    /// and userinfo are dropped — the web UI lives on plain https.
-    private static func parseRemote(_ remote: String) -> (host: String, path: String)? {
-        var host: String
+    private nonisolated(unsafe) static var sshHostNameCache: [String: String] = [:]
+    private static let sshHostNameLock = NSLock()
+
+    /// The real hostname `ssh` resolves `target` (`[user@]host`) to, after alias /
+    /// Include / Match expansion — mirrors how `gh` (go-gh's SSH translator)
+    /// resolves the same case. `nil` when ssh can't be run or reports nothing; an
+    /// empty string is cached for "no answer" so a missing ssh isn't retried per
+    /// repo. The cache key keeps the target's case (OpenSSH matching is
+    /// case-sensitive), so `github-work` and `GitHub-Work` stay distinct.
+    private static func resolveSSHHostName(_ target: String) -> String? {
+        // The subprocess runs *outside* the lock (never hold a lock across a fork);
+        // a rare duplicate lookup just recomputes the same value.
+        if let cached = sshHostNameLock.withLock({ sshHostNameCache[target] }) {
+            return cached.isEmpty ? nil : cached
+        }
+        // `ssh -G <target>` prints the fully-resolved effective config; its
+        // `hostname <value>` line is the destination the alias points at.
+        let value = output(of: "/usr/bin/ssh", ["-G", target])?
+            .split(separator: "\n")
+            .first { $0.lowercased().hasPrefix("hostname ") }
+            .map { String($0.dropFirst("hostname ".count)).trimmingCharacters(in: .whitespaces) } ?? ""
+        sshHostNameLock.withLock { sshHostNameCache[target] = value }
+        return value.isEmpty ? nil : value
+    }
+
+    /// A git remote split into its web-addressable host + repo path, plus the
+    /// `[user@]host` to hand `ssh -G` when git reaches it over SSH.
+    private struct ParsedRemote {
+        let host: String
+        let path: String
+        /// Present only for SSH remotes (scp-like or `ssh://`); `nil` for HTTPS /
+        /// git://. Case and userinfo are preserved so `Host` patterns and
+        /// `Match user` / `%r` rules resolve as git's own ssh would.
+        let sshTarget: String?
+    }
+
+    /// Splits a remote from either the scp-like form (`git@host:owner/repo.git`) or a
+    /// real URL (`https://…`, `ssh://…`). Ports and userinfo are dropped from `host` /
+    /// `path` — the web UI lives on plain https — but kept in `sshTarget`.
+    private static func parseRemote(_ remote: String) -> ParsedRemote? {
+        let host: String
         var path: String
+        var sshTarget: String?
         if !remote.contains("://"), remote.contains("@"), let colon = remote.firstIndex(of: ":") {
-            let hostPart = String(remote[..<colon])
+            let hostPart = String(remote[..<colon])   // user@host, original case
             host = hostPart.components(separatedBy: "@").last ?? hostPart
             path = String(remote[remote.index(after: colon)...])
+            sshTarget = hostPart
         } else if let url = URL(string: remote), let urlHost = url.host {
             host = urlHost
             path = url.path
+            if url.scheme == "ssh" {
+                sshTarget = url.user.map { "\($0)@\(urlHost)" } ?? urlHost
+            }
         } else {
             return nil
         }
         path = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if path.hasSuffix(".git") { path = String(path.dropLast(4)) }
         guard !host.isEmpty, !path.isEmpty else { return nil }
-        return (host, path)
+        return ParsedRemote(host: host, path: path, sshTarget: sshTarget)
     }
 
     // MARK: Stall detection
@@ -684,14 +676,26 @@ enum GitService {
         }
     }
 
-    /// Runs `git -C <dir> <args>` and returns stdout, or `nil` on launch failure (or a
-    /// non-zero exit unless `ignoreStatus`). stdout is drained *before* `waitUntilExit`
-    /// because a diff can exceed the 64 KB pipe buffer and otherwise deadlock the child;
-    /// stderr is sent to the null device so it can never fill either.
+    /// Runs `git -C <dir> <args>` and returns stdout, or `nil` on launch failure or a
+    /// non-zero exit (unless `ignoreStatus`).
     private static func run(_ args: [String], in dir: String, ignoreStatus: Bool = false) -> String? {
+        output(of: "/usr/bin/git", ["-C", dir] + args, ignoreStatus: ignoreStatus)
+    }
+
+    /// Runs an executable and returns stdout, or `nil` on launch failure or a non-zero
+    /// exit (unless `ignoreStatus`). stdout is drained *before* `waitUntilExit` because
+    /// output can exceed the 64 KB pipe buffer and otherwise deadlock the child; stderr
+    /// is sent to the null device so it can never fill either. The environment is
+    /// inherited, so ssh finds `~/.ssh/config`.
+    private static func output(of executable: String, _ args: [String], ignoreStatus: Bool = false) -> String? {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = ["-C", dir] + args
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = args
+        // See `GitEnvironment`: keeps `git status` from rewriting `.git/index` and
+        // re-triggering the pane watcher. `ssh` (the other caller) ignores it.
+        if executable.hasSuffix("/git") {
+            process.environment = GitEnvironment.optionalLocksDisabled
+        }
         let out = Pipe()
         process.standardOutput = out
         process.standardError = FileHandle.nullDevice

@@ -2,6 +2,7 @@ import Combine
 import Foundation
 import GhosttyTerminal
 import GhosttyTheme
+import TermioShared
 
 /// Resolves an agent's on-disk conversation entries from the declarative store
 /// descriptor its manifest supplies (`ResumeSpec.Store`) — one probe for every agent,
@@ -111,6 +112,15 @@ enum PiSession {
 }
 
 extension TermioStore {
+    /// `path` when it still names a real directory, else `nil`. A recorded cwd outlives
+    /// the folder it points at, and a shell spawned in a deleted directory lands at `/`.
+    static func existingDirectory(_ path: String?) -> String? {
+        guard let path else { return nil }
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+        return exists && isDirectory.boolValue ? path : nil
+    }
+
     /// Returns the cached terminal surface for a session, creating and starting
     /// it on first access. The surface launches `session.command` (or the login
     /// shell) in the project's working directory via the real PTY (`.exec`).
@@ -124,15 +134,17 @@ extension TermioStore {
         // A loose terminal instead respawns at the cwd it last reported over OSC 7
         // (its path is the session's own mutable property, not the container's) —
         // so a relaunch drops the user back where they `cd`'d, not at `$HOME`.
-        // A directory deleted since then falls back to the container's `$HOME`.
-        let restoredCwd: String? = project.kind == .terminals
-            ? session.lastWorkingDirectory.flatMap { path in
-                var isDirectory: ObjCBool = false
-                let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
-                return exists && isDirectory.boolValue ? path : nil
-            }
+        // Ahead of the worktree/project anchor sits the directory the session was
+        // opened in (⌘T): where the user asked *this* shell to start, even when the
+        // session belongs to a project rooted elsewhere. Each rung must still exist —
+        // a stale path falls through rather than dropping the shell at `/`.
+        let restoredCwd = project.kind == .terminals
+            ? Self.existingDirectory(session.lastWorkingDirectory)
             : nil
-        let workspacePath = session.worktreePath ?? restoredCwd ?? project.path
+        let workspacePath = restoredCwd
+            ?? Self.existingDirectory(session.spawnDirectory)
+            ?? session.worktreePath
+            ?? project.path
 
         // Resolve the launch command *with* any resume arguments, so a session that was
         // running when the app last quit picks its conversation back up instead of
@@ -252,6 +264,15 @@ extension TermioStore {
             let agentID = session.agent.id
             let isAgentSession = session.agent != .terminal && !session.isSSH
             let statusTrace = ProcessInfo.processInfo.environment["TERMIO_STATUS_TRACE"] != nil
+            // Reads this session's ConEmu `OSC 9;4` progress out of the raw stream as
+            // a busy/idle signal (Grok emits it natively). Scanned on every chunk
+            // *before* the 1 s status throttle below — an agent's turn boundary is an
+            // edge, not something to sample once a second. The scan runs for every
+            // session (a plain terminal can be promoted to a hand-started Grok, whose
+            // sink was built while the row was still a shell); whether a transition is
+            // *acted on* is gated in `applyProgressActivity` by the session's live
+            // agent, so an unrelated shell's `wget`/`npm` progress bar can't move a dot.
+            var progressScanner = OSCProgressScanner()
             var lastPoke = Date.distantPast
             var lastScreenSignature: Int?
             // Bytes seen since the last poke, so the throttled tick can report the
@@ -260,6 +281,23 @@ extension TermioStore {
             var pendingBytes = 0
             pty.addSink { [weak self, weak inMemory, weak pty] data in
                 pendingBytes += data.count
+                for progress in progressScanner.scan(data) {
+                    if statusTrace {
+                        AgentStatusRules.trace(
+                            agent: "\(agentID).progress", session: session.id,
+                            activity: progress, matched: "OSC 9;4")
+                    }
+                    // Tie the event to the PTY that produced it. Unlike the title
+                    // channel — whose Combine subscription is torn down with the view
+                    // state on relaunch — this sink is only session-id-keyed, so a
+                    // same-agent relaunch could otherwise let a dead PTY's queued
+                    // `working` mark the replacement process. Applying only while this
+                    // PTY is still the session's live one drops that stale event.
+                    DispatchQueue.main.async { [weak pty] in
+                        guard let self, let pty, self.ptyProcesses[session.id] === pty else { return }
+                        self.applyProgressActivity(progress, for: session.id)
+                    }
+                }
                 let now = Date()
                 guard now.timeIntervalSince(lastPoke) >= 1 else { return }
                 lastPoke = now
@@ -332,7 +370,14 @@ extension TermioStore {
                     // usually microseconds, but they take locks and can stall under
                     // memory pressure or on a slow mount, and a main-thread stall is a
                     // beachball. Only the @MainActor-published tree writes hop to main.
-                    let work = DispatchWorkItem {
+                    //
+                    // `@Sendable` is what says "off the main thread" to the compiler,
+                    // and it is load-bearing: a closure written in this main-actor
+                    // scope otherwise inherits main-actor isolation, and the block
+                    // `DispatchWorkItem` wraps it in re-checks that isolation when the
+                    // utility queue runs it — a trap on the first poll rather than a
+                    // hop. Marking it also makes the captures checked for real.
+                    let work = DispatchWorkItem { @Sendable [weak self, weak pty] in
                         guard let pty else { return }
                         // A hand-started agent (a `claude` typed at the prompt) becomes
                         // the foreground process; when it exits the shell returns and
@@ -341,8 +386,10 @@ extension TermioStore {
                             .flatMap { AgentCatalog.shared.agent(forForegroundArguments: $0) }
                         let cwd = followCwd ? pty.currentWorkingDirectory() : nil
                         DispatchQueue.main.async {
-                            self?.noteForegroundAgent(detected, for: sessionID)
-                            if let cwd { self?.noteWorkingDirectory(cwd, for: sessionID) }
+                            MainActor.assumeIsolated {
+                                self?.noteForegroundAgent(detected, for: sessionID)
+                                if let cwd { self?.noteWorkingDirectory(cwd, for: sessionID) }
+                            }
                         }
                     }
                     pendingPoll = work
@@ -712,15 +759,15 @@ extension TermioStore {
     /// attaches (the session was created but never shown).
     private func warmUpRendering(_ state: TerminalViewState) {
         let started = Date()
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak state] timer in
-            MainActor.assumeIsolated {
-                guard let state else { timer.invalidate(); return }
+        let ref = WeakMainActorRef(state)
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { timer in
+            let keepPumping = MainActor.assumeIsolated { () -> Bool in
+                guard let state = ref.value else { return false }
                 state.controller.tick()
                 let elapsed = Date().timeIntervalSince(started)
-                if (state.surfaceSize != nil && elapsed > 2.0) || elapsed > 6.0 {
-                    timer.invalidate()
-                }
+                return !((state.surfaceSize != nil && elapsed > 2.0) || elapsed > 6.0)
             }
+            if !keepPumping { timer.invalidate() }
         }
         RunLoop.main.add(timer, forMode: .common)
     }
@@ -741,6 +788,21 @@ extension TermioStore {
     private func applyAppearance(to builder: inout TerminalConfiguration.Builder) {
         if !settings.fontFamily.isEmpty {
             builder.withFontFamily(settings.fontFamily)
+            // Fallback faces from the user's Ghostty config ride along even over a
+            // termio-chosen primary — repeated font-family keys form Ghostty's fallback
+            // chain, and they only engage for glyphs the primary lacks (CJK above all).
+            for fallback in settings.ghosttyFontFallbacks where fallback != settings.fontFamily {
+                builder.withFontFamily(fallback)
+            }
+            // When the chain still can't draw hanzi, close with a purpose-built dual-width
+            // CJK face if one is installed — otherwise the system falls back to proportional
+            // PingFang per glyph, whose weight and metrics visibly fight the Latin face.
+            // (The grid's cell width still follows the primary; only a dual-width *primary*
+            // removes the spacing gaps entirely.)
+            let chain = [settings.fontFamily] + settings.ghosttyFontFallbacks
+            if let cjkFallback = InstalledFonts.cjkMonospaceFallback(existingChain: chain) {
+                builder.withFontFamily(cjkFallback)
+            }
         }
         builder.withFontSize(Float(settings.fontSize))
         builder.withFontThicken(settings.fontThicken)
@@ -777,29 +839,18 @@ extension TermioStore {
         // it just vanishes like a native terminal tab.
         builder.withCustom("wait-after-command", "true")
 
-        // termio's palettes live on ⌘⇧P (Command Palette) and ⌘⇧O (Open
-        // Quickly, see `buildMainMenu`); ghostty binds keys like these to its
-        // own actions, and a surface-handled keybind is consumed before the
-        // menu bar ever sees the event. Unbind them inside the surface so the
-        // shortcuts always reach termio's menu.
-        builder.withCustom("keybind", "super+shift+p=unbind")
-        builder.withCustom("keybind", "super+shift+o=unbind")
-        // ⌘T is termio's "New Terminal" (see `buildMainMenu`). Ghostty binds it to
-        // its own `new_tab`, which is a no-op in termio's tab-less embedding — so a
-        // focused surface swallows the key and the menu action never fires ("nothing
-        // happens"). Unbind it so ⌘T always reaches termio's menu.
-        builder.withCustom("keybind", "super+t=unbind")
-        // Font size and split zoom are termio menu actions too: font size is
-        // driven from the persisted `fontSize` setting (so it survives relaunch
-        // and applies to every surface), and zoom is a host SplitTree operation
-        // (ghostty has no splits in embedded mode). Unbind ghostty's built-in
-        // versions so ⌘=/⌘-/⌘0 and ⌘⇧↩ reach `buildMainMenu` instead of being
-        // swallowed by the surface.
-        builder.withCustom("keybind", "super+equal=unbind")
-        builder.withCustom("keybind", "super+plus=unbind")
-        builder.withCustom("keybind", "super+minus=unbind")
-        builder.withCustom("keybind", "super+zero=unbind")
-        builder.withCustom("keybind", "super+shift+enter=unbind")
+        // The keyboard is split in two: keys that act on the terminal's text
+        // (copy, paste, clear, scrollback, selection, word motion, search) stay
+        // ghostty's, and keys that act on the app (sessions, panes, palettes,
+        // settings, full screen) are the host's. Ghostty ships defaults on both
+        // sides — ⌘D is `new_split`, ⌘T `new_tab`, ⌘, `open_config` — and a
+        // surface-handled keybind is consumed before the menu bar sees the
+        // event, so every host-claimed trigger has to be unbound here or the
+        // menu action never fires. `surfaceUnbindTriggers` derives that set from
+        // the effective binding table, so a rebind in Settings is covered too.
+        for trigger in KeybindingStore.shared.surfaceUnbindTriggers {
+            builder.withCustom("keybind", "\(trigger)=unbind")
+        }
     }
 
     /// The light/dark theme pair libghostty switches between as the system
@@ -827,16 +878,63 @@ extension TermioStore {
     /// than waiting for the next PTY-output wakeup. A fixed short pump is enough: a
     /// color/font reconfigure needs no reply-gated handshake the way a cold spawn
     /// does, so a handful of frames flush the new look.
+    /// Repaints the selected session's surface for a brief window. Used when a full-window
+    /// overlay — the maximized inspector detail — is torn down and re-exposes the terminal:
+    /// this embedding has no continuous tick (see `warmUpRendering`), so an uncovered surface
+    /// would otherwise sit on its stale last frame (a blank on a fresh session) until the next
+    /// PTY-output or focus event. This is issue #160's fullscreen blank-on-tab-switch.
+    func repaintSelectedSurface() {
+        guard let id = selectedSessionID, let state = surfaces[id] else { return }
+        pumpRendering(state, duration: 0.25)
+    }
+
+    /// Keeps every visible surface painting for the length of a pane drag.
+    ///
+    /// The drag overlay washes translucently over the *live* surfaces, so the
+    /// layer underneath is re-blended every frame of the gesture. Ghostty.app
+    /// affords that by ticking the core every vsync from a display link; this
+    /// embedding advances only on a PTY-output wakeup (see `warmUpRendering`),
+    /// so a quiet terminal hands the compositor its last frame for the whole
+    /// drag and the wash smears stale pixels. Same failure as the uncovered
+    /// surface above, same fix: pump while it matters, stop when it doesn't.
+    func beginPaneDragRepaint() {
+        paneDragRepaintTimer?.invalidate()
+        let ref = WeakMainActorRef(self)
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { timer in
+            let keepPumping = MainActor.assumeIsolated { () -> Bool in
+                guard let self = ref.value else { return false }
+                for id in self.visiblePaneIDs {
+                    self.surfaces[id]?.controller.tick()
+                }
+                return true
+            }
+            if !keepPumping { timer.invalidate() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        paneDragRepaintTimer = timer
+    }
+
+    /// Ends the drag pump, with one last pass so the panes settle on a fresh
+    /// frame after the tree has been rebuilt under them.
+    func endPaneDragRepaint() {
+        paneDragRepaintTimer?.invalidate()
+        paneDragRepaintTimer = nil
+        for id in visiblePaneIDs {
+            guard let state = surfaces[id] else { continue }
+            pumpRendering(state, duration: 0.25)
+        }
+    }
+
     private func pumpRendering(_ state: TerminalViewState, duration: TimeInterval) {
         let started = Date()
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak state] timer in
-            MainActor.assumeIsolated {
-                guard let state else { timer.invalidate(); return }
+        let ref = WeakMainActorRef(state)
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { timer in
+            let keepPumping = MainActor.assumeIsolated { () -> Bool in
+                guard let state = ref.value else { return false }
                 state.controller.tick()
-                if Date().timeIntervalSince(started) > duration {
-                    timer.invalidate()
-                }
+                return Date().timeIntervalSince(started) <= duration
             }
+            if !keepPumping { timer.invalidate() }
         }
         RunLoop.main.add(timer, forMode: .common)
     }
@@ -886,7 +984,7 @@ extension TermioStore {
                     }
                     self.applyTitleActivity(activity, for: id)
                 }
-                let cleaned = self.sanitizedLiveTitle(title)
+                let cleaned = LiveTerminalTitle.sanitized(title)
                 guard self.isMeaningfulLiveTitle(cleaned, for: session),
                       self.runtimes[id]?.liveTitle != cleaned else { return }
                 self.setLiveTitle(cleaned, for: id)
@@ -923,18 +1021,6 @@ extension TermioStore {
         projects[location.project].sessions[location.session].lastWorkingDirectory = cwd
     }
 
-    /// Strips a leading decorative glyph from a live title before it is shown.
-    /// Claude Code prefixes its terminal title with a `✳` status star (and cycles
-    /// it through spinner frames); since the sidebar row already draws the agent
-    /// icon, that prefix would render as a duplicate icon. Drop any leading run of
-    /// non-alphanumeric characters (the star, bullets, emoji) and the whitespace
-    /// after it, leaving just the human-readable text.
-    private func sanitizedLiveTitle(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let stripped = trimmed.drop { !$0.isLetter && !$0.isNumber }
-        return String(stripped).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     /// Whether a live terminal title is worth showing as the session's label, as
     /// opposed to the startup noise we'd rather not flash. Only agent sessions adopt
     /// one — a declared agent, or a plain terminal running a *detected* hand-started
@@ -968,4 +1054,13 @@ extension TermioStore {
         }
         return true
     }
+}
+
+/// Carries a weak main-actor reference into a pump timer's @Sendable closure.
+/// @unchecked: the timers are added to RunLoop.main only, and their closures
+/// re-enter the main actor (`assumeIsolated`) before touching the referent.
+private struct WeakMainActorRef<Value: AnyObject>: @unchecked Sendable {
+    private weak var referent: Value?
+    init(_ value: Value) { referent = value }
+    @MainActor var value: Value? { referent }
 }

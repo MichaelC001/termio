@@ -96,14 +96,9 @@ struct TraceView: View {
     @State private var loadError: String?
 
     var body: some View {
-        Group {
-            if let html {
-                TraceWebView(html: html, background: settings.terminalBackgroundColor)
-            } else if let loadError {
-                ContentUnavailableView("Couldn't build the trace", huge: .bot, description: Text(loadError))
-            } else {
-                ProgressView()
-            }
+        VStack(spacing: 0) {
+            header
+            content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Match the editor/diff overlays: opaque terminal background bleeding under the titlebar.
@@ -114,10 +109,56 @@ struct TraceView: View {
         .onChange(of: colorScheme) { Task { await build() } }
     }
 
+    /// The session title on the left, content-area window controls on the right — the
+    /// same native header layout as `IssueDetailView` (12pt medium title truncating at
+    /// the tail, 8pt horizontal padding, the shared top-bar height and bottom hairline),
+    /// so the trace and issue overlays read as one family. The HTML document drops its
+    /// own `<header>` on Mac (see `build()`); the phone keeps it.
+    private var header: some View {
+        HStack(spacing: 6) {
+            Text(request.title)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 6)
+            InspectorDetailChromeButtons()
+        }
+        .padding(.horizontal, 8)
+        .frame(height: GitChangesView.topBarHeight)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        Group {
+            if let html {
+                TraceWebView(html: html)
+            } else if let loadError {
+                PaneEmptyState("Couldn’t build the trace", icon: .bot, message: loadError)
+            } else {
+                ProgressView()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private func build() async {
         let theme = TraceTheme.resolve(settings: settings, colorScheme: colorScheme)
         do {
-            html = try SessionTraceRenderer.html(jsonlPath: request.jsonlPath, title: request.title, theme: theme)
+            // The Mac overlay draws its own native header (see `header`), so the HTML
+            // document omits its `<header>`; the phone (companion) keeps the default.
+            let document = try SessionTraceRenderer.html(
+                jsonlPath: request.jsonlPath, title: request.title, theme: theme,
+                includeHeader: false)
+            // An agent that drew a diagram gets it drawn: the fences are swapped for SVG
+            // before the page is handed to the web view, so nothing runs mermaid here.
+            let sources = MermaidRenderer.sources(in: document)
+            let drawn = sources.isEmpty
+                ? [:]
+                : await MermaidRenderer.shared.diagrams(
+                    for: sources, theme: MermaidRenderer.Theme(theme))
+            html = MermaidRenderer.applying(drawn, to: document)
             loadError = nil
         } catch {
             loadError = error.localizedDescription
@@ -130,10 +171,12 @@ struct TraceView: View {
 /// during load, avoiding a white flash before the themed page paints.
 private struct TraceWebView: NSViewRepresentable {
     let html: String
-    let background: NSColor
 
     func makeNSView(context: Context) -> WKWebView {
-        let view = WKWebView()
+        // PreviewWebView: right-click stripped to Copy — the rendered trace is
+        // read-only, so WebKit's Reload / Look Up / Services grab-bag has nothing
+        // to act on.
+        let view = PreviewWebView()
         view.setValue(false, forKey: "drawsBackground")
         view.navigationDelegate = context.coordinator
         view.loadHTMLString(html, baseURL: nil)

@@ -92,6 +92,13 @@ extension AppSettings {
         return .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
+    /// Extra leading (points) lifting `font`'s natural line height to the configured
+    /// `codeLineHeight` multiple of its point size; zero when the font already provides it.
+    func codeLineSpacing(for font: NSFont) -> CGFloat {
+        let natural = NSLayoutManager().defaultLineHeight(for: font)
+        return max(0, (CGFloat(codeLineHeight) * font.pointSize - natural).rounded())
+    }
+
     /// Muted line-number ink shared by every code surface's gutter (file editor, diff view),
     /// chosen against the theme *background's* darkness via `ChromeTheme.overlayInk` — an
     /// earlier foreground-derived version sank into black backgrounds whenever the theme's
@@ -101,6 +108,21 @@ extension AppSettings {
     func gutterInk(for colorScheme: ColorScheme) -> NSColor {
         let dark = chromeTheme(for: colorScheme)?.isDark ?? (colorScheme == .dark)
         return ChromeTheme.overlayInk(onDark: dark, alpha: dark ? 0.55 : 0.42)
+    }
+
+    /// The diff's add/delete tints, resolved against the same theme `gutterInk` reads so
+    /// the washes and the numbers drawn on them can never disagree about which slot is
+    /// showing. `terminalBackgroundColor` is dynamic and would resolve against whatever
+    /// `NSAppearance.current` happened to be during the Oklab mix — the theme's own
+    /// background is the already-resolved counterpart.
+    func diffPalette(for colorScheme: ColorScheme) -> DiffPalette {
+        let theme = chromeTheme(for: colorScheme)
+        let dark = theme?.isDark ?? (colorScheme == .dark)
+        let background = theme.map { NSColor($0.background) }
+            ?? (dark
+                ? NSColor(srgbRed: 0x21 / 255.0, green: 0x21 / 255.0, blue: 0x21 / 255.0, alpha: 1)
+                : .white)
+        return DiffPalette(background: background, isDark: dark)
     }
 
     var terminalBackgroundColor: NSColor {

@@ -33,6 +33,14 @@ extension TermioStore {
         }
     }
 
+    /// Whether any session is an agent (declared or detected via `effectiveAgent`). Gates
+    /// the "status is off" reminder — a shell-only workspace has nothing to report.
+    var isRunningAnyAgent: Bool {
+        projects.contains { project in
+            project.sessions.contains { effectiveAgent(for: $0) != .terminal }
+        }
+    }
+
     /// Re-aligns the installed hooks when, and only when, the hooks setting itself
     /// changed. Called from the shared settings observer, which fires for every
     /// preference, so the guard keeps unrelated changes from rewriting the file.
@@ -158,9 +166,10 @@ extension TermioStore {
             // The agent is blocked waiting on the user (a permission prompt or a
             // free-text answer). Mirror the bell path: only flag a session the user
             // isn't actually watching — with termio backgrounded, even the selected
-            // session needs the cue (it's what fires the desktop notification).
+            // session needs the cue (it's what fires the desktop notification). This
+            // is an observable blocking condition, so its dot survives a click.
             clearWorking(id)
-            if !isViewing(id) { setStatus(.needsAttention, for: id) }
+            flagBlockingAttention(for: id)
         case "idle":
             clearWorking(id)
             setStatus(.idle, for: id)
@@ -199,8 +208,24 @@ extension TermioStore {
         lastUserInputAt[id] = nil
         promotionStreak[id] = nil
         lastTitleActivity[id] = nil
+        lastProgressActivity[id] = nil
         lastScreenActivity[id] = nil
         stallProbes[id] = nil
+        blockingAttention.remove(id)
+    }
+
+    /// Light the "blocked on you" dot from a genuine, observable blocking condition
+    /// (a hook / screen / title "attention" signal). Unlike a one-shot bell, these
+    /// have a matching "resolved" transition, so the dot is recorded as blocking
+    /// (`blockingAttention`) and survives a click in `markSeen` — looking at a
+    /// permission prompt isn't answering it. Only flags a session the user isn't
+    /// already watching, mirroring the raw `!isViewing` guard it replaces; the flag
+    /// is still set even when the status write is a no-op, so a bell-set dot already
+    /// showing gets *upgraded* to blocking when the real signal arrives.
+    func flagBlockingAttention(for id: Session.ID) {
+        guard !isViewing(id) else { return }
+        blockingAttention.insert(id)
+        setStatus(.needsAttention, for: id)
     }
 
     /// Marks the moment of live user input into a session's terminal. Keystroke
@@ -301,7 +326,7 @@ extension TermioStore {
             setStatus(.working, for: id)
         case .attention:
             clearWorking(id)
-            if !isViewing(id) { setStatus(.needsAttention, for: id) }
+            flagBlockingAttention(for: id)
         case .idle:
             clearWorking(id)
             if previous == .working || previous == .attention {
@@ -336,7 +361,45 @@ extension TermioStore {
             lastWorkingAt[id] = Date()
         case .attention:
             clearWorking(id)
-            if !isViewing(id) { setStatus(.needsAttention, for: id) }
+            flagBlockingAttention(for: id)
+        case .idle:
+            guard previous == .working, status(for: id) == .working else { return }
+            clearWorking(id)
+            setStatus(isViewing(id) ? .idle : .done, for: id)
+        }
+    }
+
+    /// Drives status from the agent's ConEmu-style `OSC 9;4` progress reports —
+    /// the in-band busy/idle signal Grok ships natively (`9;4;1;-1` while a turn
+    /// runs, `9;4;0;` when it ends). Like the title, this is a *correction* channel
+    /// layered over hooks on the one channel that cannot break (the PTY byte stream),
+    /// so its arbitration is deliberately identical to `applyTitleActivity` and just
+    /// as subordinate: a progress-working never overrides `needsAttention` (a blocked
+    /// agent can keep its busy bar lit — the herdr "blocker outranks a stale busy
+    /// progress" rule), and a progress-idle only ends a turn that is genuinely
+    /// working, so a lone or stale `9;4;0` can't clear a hook- or title-set state.
+    /// The `OSCProgressScanner` only reaches busy/idle, never attention, so the
+    /// attention arm is unreachable here but kept exhaustive for the shared enum.
+    func applyProgressActivity(_ activity: AgentStatusRules.Activity, for id: Session.ID) {
+        // Gate on the session's *live* agent, not a value captured when the sink was
+        // built: a plain terminal promoted to a hand-started Grok now opts in, while a
+        // shell that stays a shell (its `wget` bar) stays out. Re-reading the session
+        // here also drops any event that outlived the pane it came from — a session
+        // torn down or relaunched before this main-actor block ran no longer resolves,
+        // or resolves to an agent that doesn't emit progress, so it can't repopulate a
+        // cleared entry or move a replacement process's dot.
+        guard let session = session(id), effectiveAgent(for: session).emitsProgressStatus else { return }
+        guard lastProgressActivity[id] != activity else { return }
+        let previous = lastProgressActivity[id]
+        lastProgressActivity[id] = activity
+        switch activity {
+        case .working:
+            guard status(for: id) != .needsAttention else { return }
+            setStatus(.working, for: id)
+            lastWorkingAt[id] = Date()
+        case .attention:
+            clearWorking(id)
+            flagBlockingAttention(for: id)
         case .idle:
             guard previous == .working, status(for: id) == .working else { return }
             clearWorking(id)
@@ -399,6 +462,7 @@ extension TermioStore {
         projects[location.project].sessions[location.session] = session
         setLiveTitle(nil, for: id)
         lastTitleActivity[id] = nil
+        lastProgressActivity[id] = nil
         clearWorking(id)
         let current = status(for: id)
         if current == .working || current == .done { setStatus(.idle, for: id) }
@@ -648,7 +712,7 @@ extension TermioStore {
             + (transcriptLinesGrown == 1 ? "" : "s")
         var event = SessionWatchEvent(
             projectID: project.id,
-            handle: sessionHandle(for: session),
+            link: sessionLink(for: session),
             status: "stalled",
             title: displayTitle(for: session),
             cwd: runtimes[id]?.workingDirectory ?? "")

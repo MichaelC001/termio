@@ -372,16 +372,16 @@ struct RemoteFileTreeView: View {
                 .controlSize(.small)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .disconnected:
-            ContentUnavailableView(
-                "Not Connected",
-                huge: .serverStack,
-                description: Text("The SSH connection is closed. Reconnect in the terminal, then refresh.")
+            PaneEmptyState(
+                localized("Not connected"),
+                icon: .serverStack,
+                message: localized("The SSH connection is closed. Reconnect in the terminal, then refresh.")
             )
         case .failed(let message):
-            ContentUnavailableView(
-                "Can't Browse \(model.host)",
-                huge: .serverStack,
-                description: Text(message)
+            PaneEmptyState(
+                localized("Can’t browse \(model.host)"),
+                icon: .serverStack,
+                message: message
             )
         case .ready:
             List(model.rootNodes, children: \.children, selection: $selection) { node in
@@ -491,7 +491,7 @@ private struct RemoteFileRow: View {
         .onHover { isHovering = $0 }
         .opacity(node.isDirectory || node.canPreview ? 1 : 0.55)
         .help(node.isDirectory || node.canPreview ? "" : "Special files can't be previewed")
-        .background(OutlineSelectionStyleStripper())
+        .background(OutlineViewFixups())
         .background(OutlineViewCapture(onFound: captureOutline))
         .listRowBackground(
             SidebarRowHighlight(

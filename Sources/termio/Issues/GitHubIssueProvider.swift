@@ -16,6 +16,10 @@ struct GitHubIssueProvider: IssueProvider {
 
     enum APIError: LocalizedError {
         case status(Int)
+        /// A 403/429 that is GitHub throttling, not an access denial — kept distinct from
+        /// `.status(403)` so the pane offers "wait and retry" rather than the reconnect/grant-org
+        /// recovery, which can't fix a rate limit.
+        case rateLimited
         case decoding
 
         var errorDescription: String? {
@@ -24,6 +28,7 @@ struct GitHubIssueProvider: IssueProvider {
             case .status(403): return "GitHub denied the request — the token may lack access to this repository."
             case .status(404): return "GitHub can’t find this repository with the connected account."
             case .status(let code): return "GitHub replied with HTTP \(code)."
+            case .rateLimited: return "GitHub’s rate limit is exhausted. Wait a moment and try again."
             case .decoding: return "GitHub returned an unexpected reply."
             }
         }
@@ -47,7 +52,7 @@ struct GitHubIssueProvider: IssueProvider {
         let raw: [RawIssue] = try await get(components.url!)
         return raw
             .filter { ($0.pullRequest != nil) == (query.kind == .pullRequest) }
-            .map { $0.summary(in: container) }
+            .map { $0.summary() }
     }
 
     func detail(_ number: Int, in container: IssueContainer) async throws -> IssueDetail {
@@ -56,7 +61,7 @@ struct GitHubIssueProvider: IssueProvider {
         async let rawComments: [RawComment] = get(URL(string: "\(base)/comments?per_page=100")!)
         let (issue, comments) = try await (rawIssue, rawComments)
         return IssueDetail(
-            summary: issue.summary(in: container),
+            summary: issue.summary(),
             bodyMarkdown: issue.body ?? "",
             authorAvatarURL: issue.user?.avatarUrl,
             createdAt: issue.createdAt,
@@ -87,37 +92,20 @@ struct GitHubIssueProvider: IssueProvider {
 
     // MARK: Pull-request extras (GitHub-specific, outside the tracker protocol)
 
-    /// The PR's branch facts, from `/pulls/{n}` — the fields the `/issues` view of
-    /// a PR doesn't carry.
-    func pullRequestGitInfo(_ number: Int, in container: IssueContainer) async throws -> PullRequestGitInfo {
-        struct RawPR: Decodable {
-            struct Side: Decodable {
-                struct Repo: Decodable { let fullName: String }
-                let ref: String
-                let repo: Repo?
-            }
-            let head: Side
-            let base: Side
-        }
-        let raw: RawPR = try await get(
-            URL(string: "https://api.github.com/repos/\(container.id)/pulls/\(number)")!)
-        return PullRequestGitInfo(
-            headRef: raw.head.ref,
-            baseRef: raw.base.ref,
-            // A deleted fork leaves `head.repo` null — only the pull ref remains.
-            crossRepository: raw.head.repo?.fullName != raw.base.repo?.fullName
-        )
-    }
-
-    /// The PR's changed files as `GitChange` rows (the git pane's own model), so
-    /// the Files tab and the diff overlay's sibling walk reuse everything.
-    func pullRequestFiles(_ number: Int, in container: IssueContainer) async throws -> [GitChange] {
+    /// The PR's changed files as `GitChange` rows (the git pane's own model) *with the
+    /// diff inline*: the `/pulls/{n}/files` response already carries each file's unified
+    /// `patch`, so the Files tab renders straight from this one call — no `git fetch` of
+    /// the PR refs, no per-file `git diff`, and it works for cross-fork PRs with nothing
+    /// checked out locally. GitHub omits `patch` for binaries and diffs too large to
+    /// inline; those arrive as `nil` and the UI shows a note instead.
+    func pullRequestFiles(_ number: Int, in container: IssueContainer) async throws -> [PullRequestFile] {
         struct RawFile: Decodable {
             let filename: String
             let status: String
             let additions: Int
             let deletions: Int
             let previousFilename: String?
+            let patch: String?
         }
         let raw: [RawFile] = try await get(
             URL(string: "https://api.github.com/repos/\(container.id)/pulls/\(number)/files?per_page=100")!)
@@ -134,7 +122,9 @@ struct GitHubIssueProvider: IssueProvider {
             change.additions = file.additions
             change.deletions = file.deletions
             change.originalPath = file.previousFilename
-            return change
+            // No `patch` on a binary file; GitHub also drops it past its inline-size cap.
+            change.isBinary = file.patch == nil && file.additions == 0 && file.deletions == 0
+            return PullRequestFile(change: change, patch: file.patch)
         }
     }
 
@@ -157,6 +147,17 @@ struct GitHubIssueProvider: IssueProvider {
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            // GitHub signals throttling with a 403 or 429 carrying an exhausted primary-limit
+            // header (`x-ratelimit-remaining: 0`) or a secondary-limit `retry-after`. Classify
+            // those as `.rateLimited` so a 403 that is really "no access to this repo" stays the
+            // only case that offers the reconnect/grant-org recovery.
+            if http.statusCode == 403 || http.statusCode == 429 {
+                let remaining = http.value(forHTTPHeaderField: "x-ratelimit-remaining")
+                let retryAfter = http.value(forHTTPHeaderField: "retry-after")
+                if remaining == "0" || retryAfter != nil {
+                    throw APIError.rateLimited
+                }
+            }
             throw APIError.status(http.statusCode)
         }
         let decoder = JSONDecoder()
@@ -193,14 +194,13 @@ private struct RawIssue: Decodable {
     let body: String?
     let labels: [RawLabel]
     let user: RawUser?
-    let comments: Int?
     let createdAt: Date
     let updatedAt: Date
     let htmlUrl: URL?
     let draft: Bool?
     let pullRequest: RawPullRequest?
 
-    func summary(in container: IssueContainer) -> IssueSummary {
+    func summary() -> IssueSummary {
         let kind: IssueKind = pullRequest == nil ? .issue : .pullRequest
         let itemState: IssueItemState
         if state == "open" {
@@ -216,7 +216,6 @@ private struct RawIssue: Decodable {
             state: itemState,
             labels: labels.map { IssueLabel(name: $0.name, colorHex: $0.color ?? "") },
             author: user?.login ?? "ghost",
-            commentCount: comments ?? 0,
             updatedAt: updatedAt,
             url: htmlUrl
         )

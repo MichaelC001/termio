@@ -24,6 +24,18 @@ final class TermioStore: ObservableObject {
         // "needs attention" (or unseen "done") is, by definition, answered.
         didSet {
             guard oldValue != selectedSessionID else { return }
+            // Save the inspector layout of the session we're leaving and restore the one
+            // we're arriving at, so each terminal tab keeps its own right-side context
+            // (issue #160). This replaces the blanket overlay-clear that used to live in
+            // `TerminalPane` — and, because we no longer tear the maximize host down to
+            // nothing on every switch, it also removes the fullscreen blank-screen race.
+            // Suppressed during launch restore: `restored()` seeds every session's layout
+            // and applies the selected one by hand, so capturing here would overwrite a
+            // just-seeded layout with the still-default live inspector.
+            if !isRestoringInspector {
+                if let old = oldValue { inspectorStates[old] = captureInspectorState() }
+                applyInspectorState(selectedSessionID.flatMap { inspectorStates[$0] } ?? InspectorState())
+            }
             if let id = selectedSessionID {
                 // A mid-turn `.working` keeps its spinner; only the resting
                 // "your turn" states are answered by looking.
@@ -77,12 +89,32 @@ final class TermioStore: ObservableObject {
     /// pane. `TerminalPane` honours it only while a split is on screen.
     @Published var isPaneZoomed = false
 
+    /// The in-flight pane drag (issue #183): written by `PaneDragRearrange`
+    /// as the pointer moves, read by `TerminalPane` to draw the drop-zone
+    /// highlight. Transient gesture state, never persisted.
+    @Published var paneDrag: PaneDragState?
+
+    /// The pane whose grab handle is revealed right now — the pointer is on its
+    /// top edge. Also written by `PaneDragRearrange`; nil means no handle is
+    /// showing.
+    @Published var paneHandleHover: PaneHandleHover?
+
+    /// A still of the pane picked up by the current drag, drawn scaled under the
+    /// pointer. Nil when no drag is in flight, or when the surface could not be
+    /// captured — the drag then simply has no preview.
+    @Published var paneDragPreview: NSImage?
+
+    /// Drives the visible surfaces while a pane drag is in flight (see
+    /// `beginPaneDragRepaint`). Not published: nothing renders from it.
+    var paneDragRepaintTimer: Timer?
+
     /// Activation *requests* for sessions that are neither selected nor in the
     /// visible group: a background spawn's fresh pane, a `send` target never
     /// shown. `TerminalPane` folds these into its own `activated` list — the
-    /// actual mounted set — so the pane mounts invisibly at full size, which is
-    /// what attaches the libghostty surface: the queued prompt can then be
-    /// delivered without yanking the user's selection over to the new pane.
+    /// actual mounted set — so the pane mounts invisibly at the size its layout
+    /// gives it, which is what attaches the libghostty surface: the queued
+    /// prompt can then be delivered without yanking the user's selection over
+    /// to the new pane.
     /// Transient and not persisted — on relaunch the pane mounts the normal way.
     @Published private(set) var backgroundActivationIDs: [Session.ID] = []
 
@@ -120,7 +152,7 @@ final class TermioStore: ObservableObject {
                     openFileDisplayName = nil
                 }
             }
-            if openFileURL != nil { openDiff = nil; openTrace = nil }
+            if openFileURL != nil { openDiff = nil; openTrace = nil; openIssueDetail = nil }
             // Closing always returns to the editable default; a read-only open re-asserts the flag
             // immediately before setting the URL (see `openTerminalLink`). The jump line clears too,
             // so a later plain open of the same file doesn't scroll to a stale hit.
@@ -129,6 +161,7 @@ final class TermioStore: ObservableObject {
                 openFileLine = nil
                 openFileAllowsActiveWebContent = true
             }
+            refreshDetailPresentation()
         }
     }
 
@@ -159,7 +192,7 @@ final class TermioStore: ObservableObject {
     /// pane covers itself with `GitDiffView` while it is non-nil. Opening a diff dismisses any open
     /// file editor.
     @Published var openDiff: GitDiffRequest? {
-        didSet { if openDiff != nil { openFileURL = nil; openTrace = nil } }
+        didSet { if openDiff != nil { openFileURL = nil; openTrace = nil }; refreshDetailPresentation() }
     }
 
     /// The agent trace currently shown over the terminal, or `nil` when none is. The
@@ -167,13 +200,157 @@ final class TermioStore: ObservableObject {
     /// "View Trace" sets it, and `TerminalPane` covers itself with `TraceView` while
     /// it is non-nil. Mutually exclusive with the other two.
     @Published var openTrace: TraceRequest? {
-        didSet { if openTrace != nil { openFileURL = nil; openDiff = nil } }
+        didSet { if openTrace != nil { openFileURL = nil; openDiff = nil; openIssueDetail = nil }; refreshDetailPresentation() }
+    }
+
+    /// The GitHub issue / pull request whose detail is shown, or `nil` when none is. The
+    /// fourth inspector detail: clicking a row in the Issues pane sets it, and the inspector
+    /// shows the conversation / PR files in place of its list (see `InspectorDetailHost`).
+    /// Unlike the others it deliberately COEXISTS with `openDiff`: a PR's file diff stacks on
+    /// top of the detail, so closing the diff returns to the PR rather than the list.
+    @Published var openIssueDetail: IssueSummary? {
+        didSet { if openIssueDetail != nil { openFileURL = nil; openDiff = nil; openTrace = nil }; refreshDetailPresentation() }
+    }
+
+    /// True while any inspector detail (file, diff, trace, PR/issue) is open. Drives the app
+    /// delegate: it un-collapses the inspector and gives it a comfortable reading width on the
+    /// first detail, and tears down the full-window maximize host when the last one closes.
+    /// `private(set)` — only the detail setters above flip it, via `refreshDetailPresentation`.
+    @Published private(set) var isDetailPresented = false
+
+    /// Whether the active inspector detail is blown up to fill the whole window. The inspector
+    /// hosts the detail beside the terminal by default; the detail's maximize button flips this
+    /// to cover everything (see the app delegate's full-window host), and it resets to `false`
+    /// automatically whenever the last detail closes.
+    @Published var inspectorMaximized = false
+
+    /// Whether the list column is collapsed so the detail fills the whole inspector (terminal still
+    /// visible), one step short of `inspectorMaximized`. Flipped by the detail chrome's list toggle;
+    /// resets to `false` when the last detail closes, so the list is back for the next browse.
+    @Published var inspectorListCollapsed = false
+
+    /// Recomputes `isDetailPresented` from the four detail properties and drops the maximize
+    /// state once nothing is left to show. Called from each detail setter's `didSet`.
+    private func refreshDetailPresentation() {
+        let presented = openFileURL != nil || openDiff != nil || openTrace != nil || openIssueDetail != nil
+        if isDetailPresented != presented { isDetailPresented = presented }
+        if !presented {
+            if inspectorMaximized { inspectorMaximized = false }
+            if inspectorListCollapsed { inspectorListCollapsed = false }
+        }
+        // Every detail change (and, via the tab's own clears, every tab switch) funnels
+        // through here, so it's the one place to schedule the durable-layout save.
+        persistInspectorSoon()
+    }
+
+    /// The Issues pane's models, cached by repo root, held here (beyond the inspector view
+    /// that owns each) so an open PR/issue detail keeps its data — conversation, PR files,
+    /// checkout — even when the inspector switches tab / collapses and `IssuesView` is torn
+    /// down. `IssuesView` registers its model on appear; the detail overlay reads
+    /// `issuesModel`, which resolves to the *selected session's* repo. That pairing is what
+    /// makes per-session issue restore (issue #160) safe: returning to a session can never
+    /// render its saved issue against another repo's model.
+    @Published private(set) var issuesModels: [String: IssuesPanelModel] = [:]
+
+    /// Fetched issue / PR list + detail, keyed by *remote* identity so it outlives the per-repo
+    /// `IssuesPanelModel` instances above — the fix for the pane re-fetching (spinner) on every
+    /// session switch. See `IssueCache`.
+    let issueCache = IssueCache()
+
+    /// Registers (or refreshes) the Issues model for its repo root, wiring it to the shared
+    /// cache so a fresh model (a remount, or a different worktree of the same repo) reads the
+    /// previously fetched list + detail instead of hitting GitHub again. Called by `IssuesView`.
+    func registerIssuesModel(_ model: IssuesPanelModel) {
+        model.attachCache(issueCache)
+        // The list DATA survives a remount through the cache, but the query — the
+        // Issues/Pull Requests kind, the filters — lives on the model instance. Hand it
+        // to the successor, or every remount (session switch, tab switch) snaps the pane
+        // back to the default Issues kind under whatever detail is open.
+        if let outgoing = issuesModels[model.repoRoot], outgoing !== model {
+            model.query = outgoing.query
+            // And the last-opened item: its row keeps the selected grey after the
+            // detail closes, a memory that must survive the same remounts.
+            model.openItem = outgoing.openItem
+        }
+        issuesModels[model.repoRoot] = model
+    }
+
+    /// The Issues model for the currently selected session's repo, or `nil` when none has
+    /// loaded yet — the detail overlay then falls back to the list rather than fetching an
+    /// issue against the wrong repo. Keyed on `inspectorProjectPath`, the exact string
+    /// `IssuesView` is created with (see `FileBrowserView.projectPath`).
+    var issuesModel: IssuesPanelModel? {
+        inspectorProjectPath.flatMap { issuesModels[$0] }
+    }
+
+    /// The git pane's inner mode (Changes / History) per repo root — the same continuity
+    /// the Issues pane's kind gets through its model registry: an inspector tab flip or
+    /// session switch remounts `GitChangesView` with its `@State` mode back at Changes,
+    /// so the pane resumes from here instead. In-memory only, like the registry.
+    var gitPaneModes: [String: GitPaneMode] = [:]
+
+    /// Whether the selected session is running a coding agent (not a plain shell) —
+    /// gates the file tree's "Add to Chat" row action.
+    var selectedSessionRunsAgent: Bool {
+        guard let id = selectedSessionID, let session = session(id) else { return false }
+        return !session.agent.isShell
+    }
+
+    /// Types a file's shell-quoted path (plus a trailing space) into the selected
+    /// session's terminal — the file tree's "Add to Chat", the menu twin of dropping
+    /// the row on the terminal (`TerminalPane.sendPaths`, which shares these tokens).
+    @discardableResult
+    func addPathToSelectedSessionPrompt(_ url: URL) -> Bool {
+        guard let id = selectedSessionID, let session = session(id),
+              let project = project(for: id) else { return false }
+        return surface(for: session, in: project).send(Self.promptToken(for: url) + " ")
+    }
+
+    /// Pastes selected text into the selected session's prompt, wrapped in bracketed
+    /// paste so its newlines land as one pasted block instead of submitting line by
+    /// line. Unconditional wrapping is safe here because every caller is gated on the
+    /// session running a coding agent, and agent TUIs all enable mode 2004 — the same
+    /// convention the iOS upload path relies on.
+    ///
+    /// The bytes go RAW into the PTY (the backend session's input), NOT through
+    /// `state.send`: that routes into `ghostty_surface_text`, whose input encoder
+    /// re-encodes the ESC of a hand-written `\e[200~` as an escape KEYPRESS (CSI 27u
+    /// under the kitty keyboard protocol agents enable) — the TUI then shows a
+    /// literal `[200~`. Bracketed-paste framing only means anything as verbatim
+    /// PTY input.
+    @discardableResult
+    func addSnippetToSelectedSessionPrompt(_ text: String) -> Bool {
+        guard let id = selectedSessionID, let session = session(id),
+              let project = project(for: id) else { return false }
+        let state = surface(for: session, in: project)
+        guard case let .inMemory(backend) = state.configuration.backend else { return false }
+        backend.sendInput(Data(("\u{1B}[200~" + text + "\u{1B}[201~").utf8))
+        return true
+    }
+
+    /// The shell-quoted token to insert at a prompt for a URL. A `file://` URL becomes
+    /// its local path (the file-tree/Finder case, so the prompt gets a usable path);
+    /// any other scheme — an https GitHub issue/PR dragged from the Issues pane —
+    /// keeps its full `absoluteString`, since stripping to `.path` would drop the
+    /// scheme and host and leave a meaningless `/owner/repo/issues/123` fragment.
+    static func promptToken(for url: URL) -> String {
+        shellQuoted(url.isFileURL ? url.path : url.absoluteString)
     }
 
     /// Which pane the trailing inspector shows — the file tree or git changes. Set by the toolbar's
     /// segmented switch and read by `FileBrowserView`. (The inspector's open/closed state is owned by
     /// the app delegate's `NSSplitViewItem`, not mirrored here, so the two cannot desync.)
-    @Published var inspectorTab: InspectorTab = .files
+    /// Switching tabs closes any open detail: a detail belongs to the item you picked in *this* tab,
+    /// so the new tab starts on a clean list rather than showing the old tab's file/issue/diff.
+    @Published var inspectorTab: InspectorTab = .files {
+        didSet {
+            guard inspectorTab != oldValue else { return }
+            openFileURL = nil
+            openDiff = nil
+            openTrace = nil
+            openIssueDetail = nil
+        }
+    }
 
     /// The repo's dirty-file count, surfaced from the Changes pane so callers can reflect "has
     /// changes" without the inspector being open.
@@ -204,6 +381,84 @@ final class TermioStore: ObservableObject {
     /// spawning `git status` for a pane nobody could see.
     @Published var inspectorVisible = false
 
+    /// A per-session snapshot of the inspector's *content* — which tab is showing and
+    /// which detail (file / diff / trace / PR-issue) is open, plus the detail's
+    /// maximize / list-collapse chrome. Switching terminal tabs restores each session's
+    /// own right-side context instead of clearing it (issue #160): one session left on a
+    /// file, another on a PR, another on the changes list. The inspector's *width* and
+    /// *open/closed* state stay global — those belong to the AppKit split item; it's the
+    /// content that is session-specific.
+    struct InspectorState {
+        var tab: InspectorTab = .files
+        var openFileURL: URL?
+        var openFileLine: Int?
+        var openFileReadOnly = false
+        var openDiff: GitDiffRequest?
+        var openTrace: TraceRequest?
+        var openIssueDetail: IssueSummary?
+        var maximized = false
+        var listCollapsed = false
+    }
+
+    /// Each session's saved inspector layout, written when the selection leaves a
+    /// session and read back when it returns (see `selectedSessionID`'s didSet). Seeded
+    /// from `state.json` on launch for the tab + open-file subset; the live diff / trace
+    /// / PR details are in-memory only — they're snapshots of data that gets re-fetched,
+    /// so they don't survive a quit (matching VS Code's hot exit, which restores open
+    /// files but not transient views). Keyed by session, so a dead session's entry is
+    /// pruned alongside its runtime in `syncRuntimes`.
+    var inspectorStates: [Session.ID: InspectorState] = [:]
+
+    /// True only while `restored()` seeds the saved layouts and hand-applies the selected
+    /// one — it suppresses the capture/restore in `selectedSessionID`'s didSet so a
+    /// programmatic selection during launch can't overwrite a just-seeded layout.
+    private var isRestoringInspector = false
+
+    /// Debounced whole-state save for durable inspector edits (opening a file, switching
+    /// the tab). Unlike a session switch, these don't move `selectedSessionID`, so nothing
+    /// else persists them — without this, opening a file and quitting without switching
+    /// would lose it. Debounced so a burst of clicks writes once. Skipped during restore.
+    private func persistInspectorSoon() {
+        guard !isRestoringInspector else { return }
+        persistDebounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.persist() } }
+        persistDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
+    /// Snapshots the inspector's current content into an `InspectorState`.
+    private func captureInspectorState() -> InspectorState {
+        InspectorState(
+            tab: inspectorTab,
+            openFileURL: openFileURL,
+            openFileLine: openFileLine,
+            openFileReadOnly: openFileReadOnly,
+            openDiff: openDiff,
+            openTrace: openTrace,
+            openIssueDetail: openIssueDetail,
+            maximized: inspectorMaximized,
+            listCollapsed: inspectorListCollapsed
+        )
+    }
+
+    /// Restores a session's saved inspector layout (or the default when it has none).
+    /// Order is load-bearing: `inspectorTab`'s didSet clears the details, so the tab is
+    /// set first; the issue is set before the diff because a PR file diff deliberately
+    /// stacks on top of an open issue (see `openIssueDetail`); and the read-only flag /
+    /// jump line precede the file URL (see `openFileURL`).
+    private func applyInspectorState(_ state: InspectorState) {
+        inspectorTab = state.tab
+        openFileURL = nil; openDiff = nil; openTrace = nil; openIssueDetail = nil
+        openTrace = state.openTrace
+        openIssueDetail = state.openIssueDetail
+        openFileReadOnly = state.openFileReadOnly
+        openFileLine = state.openFileLine
+        openFileURL = state.openFileURL
+        openDiff = state.openDiff
+        inspectorMaximized = state.maximized
+        inspectorListCollapsed = state.listCollapsed
+    }
+
     /// Per-session high-frequency live state (status, running tool, live title, cwd),
     /// each held in its own `@Observable` `SessionRuntime` so a change re-renders only
     /// the owning sidebar row rather than the whole tree. Deliberately **not**
@@ -215,7 +470,7 @@ final class TermioStore: ObservableObject {
     /// no-op writes and ping `sessionRuntimeDidChange` for the non-SwiftUI observers.
     private(set) var runtimes: [Session.ID: SessionRuntime] = [:]
 
-    /// A coarse "some session's runtime changed" ping for observers that can't
+    /// A coarse "some session’s runtime changed" ping for observers that can't
     /// subscribe to a per-session `@Observable` — the menu-bar tray and the window
     /// title bar (both plain AppKit). The sidebar deliberately ignores this: its rows
     /// track their own `SessionRuntime`, so this signal never rebuilds the tree. The
@@ -250,6 +505,8 @@ final class TermioStore: ObservableObject {
         let live = Set(projects.flatMap(\.sessions).map(\.id))
         for id in live where runtimes[id] == nil { runtimes[id] = SessionRuntime() }
         for id in runtimes.keys where !live.contains(id) { runtimes.removeValue(forKey: id) }
+        // A closed session's saved inspector layout goes with it.
+        for id in inspectorStates.keys where !live.contains(id) { inspectorStates.removeValue(forKey: id) }
     }
 
     /// Sets a session's status, no-op-guarded so a redundant same-value write (the hook
@@ -262,6 +519,10 @@ final class TermioStore: ObservableObject {
         guard runtime.status != status else { return false }
         let previous = runtime.status
         runtime.status = status
+        // A blocked session's dot survives a click (see `markSeen`); any genuine
+        // transition off `.needsAttention` — the agent proceeded, or the condition
+        // otherwise cleared — retires the "still blocking" flag that kept it lit.
+        if status != .needsAttention { blockingAttention.remove(id) }
         // Stall detection (§4.7) keys off continuous time spent `.working`, so the
         // window opens on the genuine transition in — this method is the single
         // status choke point — and closes on the way out: a session that stopped
@@ -279,7 +540,7 @@ final class TermioStore: ObservableObject {
         if let session = session(id), let project = project(for: id) {
             var event = SessionWatchEvent(
                 projectID: project.id,
-                handle: sessionHandle(for: session),
+                link: sessionLink(for: session),
                 status: Self.statusToken(status),
                 title: displayTitle(for: session),
                 cwd: runtimes[id]?.workingDirectory ?? "")
@@ -474,6 +735,20 @@ final class TermioStore: ObservableObject {
     /// transitions — a spinner frame change re-classifies as the same `working`
     /// and is dropped here.
     var lastTitleActivity: [Session.ID: AgentStatusRules.Activity] = [:]
+    /// The last busy/idle state an agent's `OSC 9;4` progress reports resolved to
+    /// (see `applyProgressActivity` / `OSCProgressScanner`). The scanner already
+    /// collapses keepalives, but a session torn down and rebuilt gets a fresh scanner,
+    /// so the store dedupes here too — and the transition guard mirrors the title path.
+    var lastProgressActivity: [Session.ID: AgentStatusRules.Activity] = [:]
+    /// Sessions whose `.needsAttention` dot came from a genuine, *observable*
+    /// blocking condition — a hook / screen / title "attention" signal, all of which
+    /// have a matching "resolved" transition (the agent proceeds → working/idle/done).
+    /// `markSeen` keeps such a dot lit through a click, because looking at a
+    /// permission prompt isn't answering it; only the real resolving transition
+    /// clears it (dropped here in `setStatus` on any move off `.needsAttention`). A
+    /// one-shot bell/notification attention — which has no "resolved" event to wait
+    /// for — is deliberately *not* recorded here, so it still dismisses on view.
+    var blockingAttention: Set<Session.ID> = []
     var staleWorkingSweep: Timer?
     /// How long a `.working` session may go with *no screen change and no working
     /// hook* before the sweep flips it back to idle. A working agent's TUI repaints
@@ -595,7 +870,15 @@ final class TermioStore: ObservableObject {
             self?.scheduleWorktreeReconcile(for: folder)
         }
         appActiveObserver = NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
-            .sink { [weak self] _ in self?.scheduleWorktreeReconcile() }
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.scheduleWorktreeReconcile()
+                // Re-assert agent hooks on refocus: a third-party tool can overwrite the
+                // shared hooks file while termio is backgrounded, wiping ours. Re-installing
+                // restores them (and drops the conflicting entries); skipped when the file
+                // is already byte-identical.
+                if self.settings.agentHooksEnabled { AgentStatusHooks.sync(enabled: true) }
+            }
         reconcileWorktrees()
 
         startHookMonitoring()
@@ -723,9 +1006,35 @@ final class TermioStore: ObservableObject {
             projects: migratingScratchProject(migratingHomeProject(normalizingAgentTitles(snapshot.projects))),
             settings: settings
         )
+        // Seed each session's saved inspector layout (tab + open file). The file is
+        // validated for existence — a file deleted, or a worktree removed, while the app
+        // was closed silently falls back to no detail rather than an error overlay.
+        if let layouts = snapshot.inspectorLayouts {
+            let live = Set(store.projects.flatMap(\.sessions).map(\.id))
+            for (key, layout) in layouts {
+                guard let id = UUID(uuidString: key), live.contains(id) else { continue }
+                var state = InspectorState(tab: layout.tab)
+                if let path = layout.filePath, FileManager.default.fileExists(atPath: path) {
+                    state.openFileURL = URL(fileURLWithPath: path)
+                    state.openFileLine = layout.fileLine
+                    state.openFileReadOnly = layout.fileReadOnly ?? false
+                }
+                store.inspectorStates[id] = state
+            }
+        }
+        // Guard the selection change so its didSet neither captures the (still-default)
+        // live inspector over a just-seeded layout nor schedules a startup save.
+        store.isRestoringInspector = true
         if let id = snapshot.selectedSessionID, store.session(id) != nil {
             store.selectedSessionID = id
         }
+        // The designated init set the selection without firing its didSet, and re-setting
+        // it to the same id above is a no-op, so apply the selected session's restored
+        // layout to the live inspector props explicitly.
+        if let id = store.selectedSessionID, let state = store.inspectorStates[id] {
+            store.applyInspectorState(state)
+        }
+        store.isRestoringInspector = false
         // Restore the split groups, keeping only those whose panes all still
         // resolve to live sessions (a stale group is dropped whole rather than
         // patched — the user just re-splits). State files from before groups
@@ -734,6 +1043,10 @@ final class TermioStore: ObservableObject {
         store.splitGroups = savedGroups.filter { group in
             group.leafIDs.count >= 2 && group.leafIDs.allSatisfy { store.session($0) != nil }
         }
+        // State files written before the runs were kept adjacent can hold a group
+        // whose rows a since-ungrouped session still sits between; heal it on load
+        // rather than waiting for the next group edit.
+        store.gatherSplitRuns()
         return store
     }
 
@@ -810,10 +1123,26 @@ final class TermioStore: ObservableObject {
     }
 
     private func persist() {
+        // Fold the current selection's live inspector layout in — it isn't copied into
+        // `inspectorStates` until the selection leaves it.
+        var states = inspectorStates
+        if let id = selectedSessionID { states[id] = captureInspectorState() }
+        var layouts: [String: StateFile.InspectorLayout] = [:]
+        for (id, state) in states {
+            // Skip the plain default (Files tab, nothing open) to keep the file lean.
+            guard state.tab != .files || state.openFileURL != nil else { continue }
+            layouts[id.uuidString] = StateFile.InspectorLayout(
+                tab: state.tab,
+                filePath: state.openFileURL?.path,
+                fileLine: state.openFileLine,
+                fileReadOnly: state.openFileReadOnly
+            )
+        }
         stateFile.save(.init(
             projects: projects,
             selectedSessionID: selectedSessionID,
-            splitGroups: splitGroups
+            splitGroups: splitGroups,
+            inspectorLayouts: layouts.isEmpty ? nil : layouts
         ))
     }
 
@@ -846,9 +1175,20 @@ final class TermioStore: ObservableObject {
     func markSeen(_ id: Session.ID) {
         // Engaging with the session makes any delivered banner stale too.
         TaskNotificationCenter.shared.withdraw(for: id)
-        let current = status(for: id)
-        if current == .done || current == .needsAttention {
+        switch status(for: id) {
+        case .done:
+            // A finished cue is dismissed by engaging with the row — seeing "ready
+            // for you" is enough.
             setStatus(.idle, for: id)
+        case .needsAttention where !blockingAttention.contains(id):
+            // A blocked cue is NOT dismissed by looking: reading a permission prompt
+            // isn't answering it, so a dot from a real blocking condition stays lit
+            // until the agent actually proceeds (the resolving transition clears it).
+            // Only a one-shot bell/notification attention — untracked, with no
+            // "resolved" event to wait for — is dismissed on view, as it always was.
+            setStatus(.idle, for: id)
+        default:
+            break
         }
     }
 
@@ -942,6 +1282,15 @@ final class TermioStore: ObservableObject {
         if all.contains(.working) { return .working }
         if all.contains(.done) { return .done }
         return .idle
+    }
+
+    /// The sessions a quit would cut short: an agent mid-turn, or one already
+    /// blocked on the user. A finished (`.done`) session has nothing left to lose,
+    /// so it doesn't count — the quit confirmation names these and only these.
+    var busySessionTitles: [String] {
+        projects.flatMap(\.sessions)
+            .filter { [.working, .needsAttention].contains(status(for: $0.id)) }
+            .map { displayTitle(for: $0) }
     }
 
     func session(_ id: Session.ID) -> Session? {

@@ -120,7 +120,10 @@ enum AgentIcon: Hashable {
 /// with iOS); these aliases keep the app's unqualified references compiling.
 typealias HugeIcon = TermioShared.HugeIcon
 typealias HugeIconView = TermioShared.HugeIconView
-typealias HugeIconShape = TermioShared.HugeIconShape
+
+/// GitHub's Octicons for issue/PR state, shared with iOS from `TermioShared`.
+typealias StateOcticon = TermioShared.StateOcticon
+typealias OcticonView = TermioShared.OcticonView
 
 /// A vendor brand mark, stored as its official SVG path so it renders crisp at any
 /// size without shipping binary image assets. Rendered in the vendor's brand color
@@ -235,6 +238,13 @@ struct Session: Identifiable, Hashable, Codable {
     /// real (`.folder`) project never set it; their anchor is the project path.
     var lastWorkingDirectory: String?
 
+    /// Where this session was opened, when that isn't its project's own anchor: ⌘T
+    /// records the directory the user was in, so the new shell starts *there* rather
+    /// than at the project root. Persisted, so a relaunch reopens it in the same
+    /// place. `lastWorkingDirectory` outranks it for a loose terminal — a shell that
+    /// reported its own cwd knows better than the seed it was given.
+    var spawnDirectory: String?
+
     /// The last meaningful terminal title (`OSC 0/2`) the session's agent reported,
     /// e.g. Claude Code's conversation topic. Persisted so the sidebar keeps the
     /// adopted label across app restarts — the agent only re-emits a title once it
@@ -257,7 +267,7 @@ struct Session: Identifiable, Hashable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, agent, createdAt, worktreePath, resumeID, launched, launchedAt,
-             liveTitle, lastWorkingDirectory, sshHost, pinned
+             liveTitle, lastWorkingDirectory, spawnDirectory, sshHost, pinned
     }
 
     /// Custom decoding so state files written before the resume fields existed still
@@ -277,6 +287,7 @@ struct Session: Identifiable, Hashable, Codable {
         launchedAt = try container.decodeIfPresent(Date.self, forKey: .launchedAt)
         liveTitle = try container.decodeIfPresent(String.self, forKey: .liveTitle)
         lastWorkingDirectory = try container.decodeIfPresent(String.self, forKey: .lastWorkingDirectory)
+        spawnDirectory = try container.decodeIfPresent(String.self, forKey: .spawnDirectory)
         sshHost = try container.decodeIfPresent(String.self, forKey: .sshHost)
     }
 }

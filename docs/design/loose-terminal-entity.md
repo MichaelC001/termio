@@ -34,7 +34,7 @@ connected complaints:
    targets. His fix suggestion: make `+` a dropdown (new terminal / open
    folder), which we adopt.
 
-An earlier termio version *did* make cd-creates-a-project the model, and it was
+An earlier Termio version *did* make cd-creates-a-project the model, and it was
 deliberately backed out: it's too fluid — cd'ing around sprays project entries,
 and projects should be persistent, deliberately-created things. That decision
 stands. This RFC keeps the project entity exactly as it is and fixes the other
@@ -42,7 +42,7 @@ half of the model.
 
 ## Problem
 
-termio today has one entity: **Project** (a path that owns sessions). Loose
+Termio today has one entity: **Project** (a path that owns sessions). Loose
 terminals are shoehorned into it via a synthetic project at `$HOME`
 (`addScratchSession`, `Project.firstRunProjects`). All three complaints above
 are downstream of that one lie:
@@ -64,7 +64,7 @@ Two entity kinds, with opposite ownership arrows:
 | **Loose terminal** | the session itself | a *mutable property* (live cwd) | one |
 
 This matches the two mental models users already have: iTerm2 (the tab is the
-entity, cwd is ephemeral state) and VS Code (the folder is the entity). termio
+entity, cwd is ephemeral state) and VS Code (the folder is the entity). Termio
 needs both, as two honest kinds — not one kind simulating the other.
 
 ### Sidebar: a "Terminals" section
@@ -142,13 +142,13 @@ exclusion lists because its architecture never needs one):
 1. **Never recursively walk down from `$HOME`** — no indexing, no watchers, no
    full-tree scans rooted there. Enumerating `~` itself is TCC-free; descending
    into `~/Music`, `~/Desktop`, `~/Library/...` is what fires the Apple
-   Music/Photos/Contacts prompts, attributed to termio as the responsible
+   Music/Photos/Contacts prompts, attributed to Termio as the responsible
    process.
 2. **Detect repos by walking *up*** from the reported cwd (`.git` parent
    lookup), never down. Cheap, TCC-free, and doubles as the promotion signal.
 3. **Lazy enumeration only** in the file tree — expanding a protected folder is
    the user's explicit intent, and the prompt is then expected.
-4. Agents are child processes termio can't gate in-process the way Warp gates
+4. Agents are child processes Termio can't gate in-process the way Warp gates
    its in-process AI file reads; the equivalents are cwd scoping
    (`~/.termio/default`) and the Seatbelt sandbox (a Seatbelt deny returns
    EPERM *before* tccd is consulted — no prompt at all).

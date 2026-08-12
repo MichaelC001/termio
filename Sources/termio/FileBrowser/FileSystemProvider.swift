@@ -83,32 +83,23 @@ struct LocalFileSystemProvider: FileSystemProvider {
 
     func root() async throws -> String { rootPath }
 
+    /// Reads through `FileNode.listContents`, so the local tree keeps exactly one
+    /// `FileManager` walk — the one that already resolves a symlinked folder to a
+    /// folder and feeds the watcher's refresh path.
     func list(_ path: String) async throws -> [FileEntry] {
-        Self.listSync(URL(fileURLWithPath: path, isDirectory: true))
+        FileNode.listContents(of: URL(fileURLWithPath: path, isDirectory: true))
+            .map { entry in
+                FileEntry(
+                    name: entry.url.lastPathComponent,
+                    kind: entry.isSymbolicLink && !entry.isDirectory
+                        ? .symlink
+                        : (entry.isDirectory ? .directory : .file))
+            }
     }
 
     func read(_ path: String, limit: Int) async throws -> Data {
         let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
         defer { try? handle.close() }
         return try handle.read(upToCount: limit) ?? Data()
-    }
-
-    /// Directory entries, shown per the tree's shared conventions. Dotfiles are
-    /// shown (the VS Code explorer default); only the metadata in
-    /// `FileEntry.ignoredNames` is dropped.
-    static func listSync(_ url: URL) -> [FileEntry] {
-        let manager = FileManager.default
-        guard let entries = try? manager.contentsOfDirectory(
-            at: url,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: []
-        ) else { return [] }
-
-        return entries
-            .map { entry in
-                let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-                return FileEntry(name: entry.lastPathComponent, isDirectory: isDirectory)
-            }
-            .sortedForTree()
     }
 }

@@ -66,12 +66,14 @@ struct FilePreviewView: View {
                 .font(.system(size: 12.5, weight: .medium))
                 .lineLimit(1)
                 .truncationMode(.middle)
-            // Close moved to the toolbar (a bordered, Liquid Glass button on the terminal
-            // column's trailing edge); this trailing spacer keeps the file name left-aligned.
-            Spacer()
+            Spacer(minLength: 8)
+            // The content-area window controls (hide list / maximize / close) ride the header's
+            // trailing edge, matching the editor and every other inspector detail — so a previewed
+            // image/PDF/page has the same visible exit as a diff, not just Escape.
+            InspectorDetailChromeButtons()
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .frame(height: GitChangesView.topBarHeight)
         .background(Color(nsColor: settings.terminalBackgroundColor))
     }
 
@@ -92,15 +94,27 @@ struct FilePreviewView: View {
                     .scaledToFit()
                     .padding(24)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .contextMenu {
+                        Button(localized("Copy Image")) {
+                            // The NSImage goes on the pasteboard as bitmap data, so it pastes
+                            // into chat and design apps as the picture, not a file path.
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.writeObjects([image])
+                        }
+                        Button(localized("Reveal in Finder")) {
+                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                        }
+                    }
             } else if Self.usesWebFallback(
                 imageDecoded: false, allowsWebFallback: allowsWebFallback
             ) {
                 WebPreview(url: url)
             } else {
-                ContentUnavailableView(
-                    "Can't Preview",
-                    huge: .fileQuestion,
-                    description: Text("“\(fileName)” isn't a supported image.")
+                PaneEmptyState(
+                    localized("Can’t preview"),
+                    icon: .fileQuestion,
+                    message: localized("“\(fileName)” isn’t a supported image.")
                 )
             }
         }
@@ -139,7 +153,9 @@ private struct WebPreview: NSViewRepresentable {
     let url: URL
 
     func makeNSView(context: Context) -> WKWebView {
-        let view = WKWebView()
+        // PreviewWebView: right-click stripped to Copy, like the trace and the
+        // Markdown reader — a read-only preview has no use for WebKit's default menu.
+        let view = PreviewWebView()
         view.setValue(false, forKey: "drawsBackground")
         view.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
         return view

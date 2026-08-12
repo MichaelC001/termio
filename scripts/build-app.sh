@@ -6,7 +6,8 @@
 # no bundle, so macOS shows a generic Dock icon. This script builds the release
 # binary and wraps it in a `.app` bundle whose Info.plist + AppIcon.icns give it
 # a proper name and Dock icon, then embeds Sparkle (which SwiftPM links but does
-# NOT bundle on its own) under Contents/Frameworks.
+# NOT bundle on its own) under Contents/Frameworks. The release bundle is universal
+# (arm64 + x86_64) so one DMG runs on Apple silicon and Intel Macs alike.
 #
 # Usage:
 #   ./scripts/build-app.sh            # ad-hoc-signed release build into ./termio.app
@@ -49,17 +50,66 @@ contents_dir="$app_dir/Contents"
 macos_dir="$contents_dir/MacOS"
 resources_dir="$contents_dir/Resources"
 frameworks_dir="$contents_dir/Frameworks"
-sign_identity="${SIGN_IDENTITY:--}"
-
-echo "==> Building $app_name ($configuration)"
-swift build -c "$configuration"
-
-bin_path="$(swift build -c "$configuration" --show-bin-path)"
-binary_path="$bin_path/$product_name"
-if [[ ! -x "$binary_path" ]]; then
-    echo "error: built binary not found at $binary_path" >&2
-    exit 1
+# Signing identity resolution:
+#   - Explicit SIGN_IDENTITY always wins (the release runbook sets it).
+#   - Otherwise a dev build tries to auto-pick a real identity from the keychain,
+#     because local notifications (UNUserNotificationCenter) are rejected outright
+#     for an ad-hoc-signed app — dev builds can only banner when properly signed.
+#   - If no identity is present (e.g. a contributor without a signing cert), fall
+#     back to ad-hoc so the build STILL succeeds — you just don't get notifications.
+if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+    sign_identity="$SIGN_IDENTITY"
+elif [[ "$channel" == "dev" ]]; then
+    # Prefer a Developer ID cert: it is self-sufficient for notification
+    # authorization. An "Apple Development" cert needs a matching provisioning
+    # profile or usernoted answers "Notifications are not allowed", so it is only
+    # a last resort.
+    ids="$(security find-identity -v -p codesigning 2>/dev/null)"
+    sign_identity="$(printf '%s\n' "$ids" | grep -oE '"Developer ID Application:[^"]*"' | head -1 | tr -d '"')"
+    [[ -z "$sign_identity" ]] && sign_identity="$(printf '%s\n' "$ids" | grep -oE '"Apple Development:[^"]*"' | head -1 | tr -d '"')"
+    sign_identity="${sign_identity:--}"
+    [[ "$sign_identity" == "-" ]] \
+        && echo "==> No signing identity found — ad-hoc (notifications will not work in this dev build)"
+else
+    sign_identity="-"
 fi
+
+# Regenerate the compiled .lproj resources from the String Catalog so a shipped
+# build can never carry strings that lag an edited Localizable.xcstrings.
+echo "==> Compiling localized strings"
+"$repo_root/scripts/compile-strings.sh"
+
+# Build one slice per Mac architecture, then lipo them together, so the shipped app
+# runs on Apple silicon and Intel from one bundle. SwiftPM's own multi-arch mode
+# (`swift build --arch arm64 --arch x86_64`) is NOT usable here: it routes the build
+# through the Xcode build system, whose eager-linking step links libghostty's static
+# xcframework with `-lghostty` but no matching `-L`, so it fails with "library not
+# found for -lghostty". One `--arch` at a time keeps the normal build system, which
+# resolves the xcframework correctly.
+#
+# Each slice lands in its own `.build/<arch>-apple-macosx/<config>` directory. Only
+# the executable differs between them — Sparkle.framework already ships universal
+# from its xcframework, and the SwiftPM resource bundles are arch-independent — so
+# everything else is copied out of the first slice's directory.
+#
+# A dev build only ever runs on the machine that produced it, so it builds the host
+# slice alone and keeps the rebuild loop at one compile.
+architectures=(arm64 x86_64)
+[[ "$channel" == "dev" ]] && architectures=("$(uname -m)")
+slice_binaries=()
+for arch in "${architectures[@]}"; do
+    echo "==> Building $app_name ($configuration, $arch)"
+    swift build -c "$configuration" --arch "$arch"
+
+    slice_bin_path="$(swift build -c "$configuration" --arch "$arch" --show-bin-path)"
+    slice_binary="$slice_bin_path/$product_name"
+    if [[ ! -x "$slice_binary" ]]; then
+        echo "error: built $arch binary not found at $slice_binary" >&2
+        exit 1
+    fi
+    slice_binaries+=("$slice_binary")
+    [[ -n "${bin_path:-}" ]] || bin_path="$slice_bin_path"
+done
 
 sparkle_src="$bin_path/Sparkle.framework"
 if [[ ! -d "$sparkle_src" ]]; then
@@ -70,8 +120,20 @@ fi
 echo "==> Assembling bundle at $app_dir"
 rm -rf "$app_dir"
 mkdir -p "$macos_dir" "$resources_dir" "$frameworks_dir"
-cp "$binary_path" "$macos_dir/$product_name"
+lipo -create "${slice_binaries[@]}" -output "$macos_dir/$product_name"
+chmod +x "$macos_dir/$product_name"
 cp "$repo_root/packaging/Info.plist" "$contents_dir/Info.plist"
+
+# Fail loudly rather than shipping a DMG that Intel Macs refuse to open: a build
+# that silently drops a slice is invisible until a user on the other arch tries it.
+bundled_archs="$(lipo -archs "$macos_dir/$product_name")"
+for required_arch in "${architectures[@]}"; do
+    if [[ " $bundled_archs " != *" $required_arch "* ]]; then
+        echo "error: bundled binary is missing the $required_arch slice — has [$bundled_archs]" >&2
+        exit 1
+    fi
+done
+echo "==> Bundled binary architectures: $bundled_archs"
 
 # Ship every SwiftPM resource bundle into the app's Resources. NOTE: this alone is
 # NOT enough for a dependency that reads its own `Bundle.module` — `swift build`
@@ -128,6 +190,7 @@ if [[ "$channel" == "dev" ]]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${base_id}.dev" "$plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleName termio dev" "$plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName termio dev" "$plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleURLTypes:0:CFBundleURLSchemes:0 termio-dev" "$plist"
     /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$plist" 2>/dev/null || true
     /usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks false" "$plist" 2>/dev/null || true
 fi
@@ -163,7 +226,10 @@ fi
 # the framework before the outer app, or codesign rejects the bundle.
 sign_args=(--force --sign "$sign_identity")
 if [[ "$sign_identity" != "-" ]]; then
-    sign_args+=(--options runtime --timestamp)
+    sign_args+=(--options runtime)
+    # A secure timestamp needs the network and only matters for notarized
+    # distribution; skip it for local dev builds so a rebuild works offline/fast.
+    [[ "$channel" == "dev" ]] || sign_args+=(--timestamp)
 fi
 
 echo "==> Signing with identity: $sign_identity"

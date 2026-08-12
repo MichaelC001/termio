@@ -1,8 +1,8 @@
 // Brand vectors shared by the macOS sidebar and the iOS session list, so both
 // platforms render the same marks from the same SVG data: agent logos (filled
 // vendor marks), Hugeicons stroke glyphs, and the SVG path parser under them.
-// Ported from the desktop app's BrandIcons.swift; the desktop still carries
-// its own copy until it migrates onto this package.
+// Ported from the desktop app's BrandIcons.swift; the desktop's AppKit
+// wrappers now draw through this parser too.
 
 import Foundation
 import SwiftUI
@@ -170,7 +170,9 @@ public struct BrandImageView: View {
 public enum HugeIcon: Hashable, Sendable {
     case terminal
     case folder
+    case camera
     case folderOpen
+    case folderSymlink
     case chevronRight
     case chevronLeft
     case gitPullRequest
@@ -179,13 +181,13 @@ public enum HugeIcon: Hashable, Sendable {
     case edit
     case view
     case settings
-    case paintBrush
+    case paintBoard
     case sidebarLeft
     case serverStack
     case keyboard
     case bot
-    case dashboardSpeed
-    case smartPhone
+    case chartColumn
+    case smartPhoneWifi
     case network
     case gitBranch
     case key
@@ -224,6 +226,9 @@ public enum HugeIcon: Hashable, Sendable {
     case wifiError
     case inbox
     case github
+    case voice
+    case close
+    case collapse
 
     /// Side length of the source SVG's square viewBox (Hugeicons uses 24).
     public var viewBox: CGFloat { 24 }
@@ -234,6 +239,20 @@ public enum HugeIcon: Hashable, Sendable {
             return "M7.5 7.5L8.72654 8.55719C9.24218 9.00163 9.5 9.22386 9.5 9.5C9.5 9.77614 9.24218 9.99836 8.72654 10.4428L7.5 11.5 M11.5 12.5H15.5 M12 21C15.7497 21 17.6246 21 18.9389 20.0451C19.3634 19.7367 19.7367 19.3634 20.0451 18.9389C21 17.6246 21 15.7497 21 12C21 8.25027 21 6.3754 20.0451 5.06107C19.7367 4.6366 19.3634 4.26331 18.9389 3.95491C17.6246 3 15.7497 3 12 3C8.25027 3 6.3754 3 5.06107 3.95491C4.6366 4.26331 4.26331 4.6366 3.95491 5.06107C3 6.3754 3 8.25027 3 12C3 15.7497 3 17.6246 3.95491 18.9389C4.26331 19.3634 4.6366 19.7367 5.06107 20.0451C6.3754 21 8.25027 21 12 21Z"
         case .folder:
             return "M8 7H16.75C18.8567 7 19.91 7 20.6667 7.50559C20.9943 7.72447 21.2755 8.00572 21.4944 8.33329C22 9.08996 22 10.1433 22 12.25C22 15.7612 22 17.5167 21.1573 18.7779C20.7926 19.3238 20.3238 19.7926 19.7779 20.1573C18.5167 21 16.7612 21 13.25 21H12C7.28595 21 4.92893 21 3.46447 19.5355C2 18.0711 2 15.714 2 11V7.94427C2 6.1278 2 5.21956 2.38032 4.53806C2.65142 4.05227 3.05227 3.65142 3.53806 3.38032C4.21956 3 5.1278 3 6.94427 3C8.10802 3 8.6899 3 9.19926 3.19101C10.3622 3.62712 10.8418 4.68358 11.3666 5.73313L12 7"
+        case .folderSymlink:
+            // Hugeicons "folder-symlink": the same folder body as `.folder` with an
+            // arrow pushing out through its left wall. A purpose-drawn glyph rather than
+            // the Finder's badge-on-top: rendered at 128pt the Finder's alias arrow is
+            // unmistakable, but at the 15pt this tree draws it collapses to a five-pixel
+            // grey smudge. A line set solves that by integrating the mark into the glyph
+            // — which is also why VS Code ships `file-symlink-directory` as its own
+            // codicon instead of compositing one.
+            return "M8 7H12M12 7H16.75C18.8567 7 19.91 7 20.6667 7.50559C20.9943 7.72447 21.2755 8.00572 21.4944 8.33329C22 9.08996 22 10.1433 22 12.25C22 15.7612 22 17.5167 21.1573 18.7779C20.7926 19.3238 20.3238 19.7926 19.7779 20.1573C18.5167 21 16.7612 21 13.25 21H12C7.28595 21 4.92893 21 3.46447 19.5355C2.93416 19.0052 2.64986 18.2157 2.50661 17.3979C2.27647 16.0841 2.16139 15.4271 2.76083 14.7136C3.36026 14 4.21042 14 5.91073 14L11 14M12 7L11.3666 5.73313C10.8418 4.68358 10.3622 3.62712 9.19926 3.19101C8.6899 3 8.10802 3 6.94427 3C5.1278 3 4.21956 3 3.53806 3.38032C3.05227 3.65142 2.65142 4.05227 2.38032 4.53806C2 5.21956 2 6.1278 2 7.94427L2.02008 10M9.00002 17C9.00002 17 12 14.7905 12 14C12 13.2094 9 11 9 11"
+        case .camera:
+            // Hugeicons "camera-01": a camera body with a round lens and a flash
+            // dot (three subpaths). Relative + arc commands, which the SVG parser
+            // handles (same command set as the GitHub octicons).
+            return "M12.697 3.5h-1.394c-.715 0-1.072 0-1.392.112a2 2 0 0 0-.545.292c-.271.204-.47.501-.866 1.096h0c-.203.305-.502.753-.621.879a2 2 0 0 1-1.106.591c-.17.03-.353.03-.72.03c-.98 0-1.47 0-1.87.113a3 3 0 0 0-2.07 2.07C2 9.083 2 9.573 2 10.553V14.5c0 2.828 0 4.243.879 5.121S5.172 20.5 8 20.5h8c2.829 0 4.243 0 5.122-.879C22 18.743 22 17.328 22 14.5v-3.946c0-.98 0-1.47-.113-1.871a3 3 0 0 0-2.07-2.07c-.4-.113-.89-.113-1.87-.113c-.366 0-.55 0-.72-.03a2 2 0 0 1-1.105-.591c-.12-.126-.419-.574-.622-.879c-.396-.595-.594-.892-.865-1.096a2 2 0 0 0-.545-.292c-.32-.112-.678-.112-1.393-.112 M16 13a4 4 0 1 1-8 0a4 4 0 0 1 8 0 M19.125 9.5H19m.25 0a.25.25 0 1 1-.5 0a.25.25 0 0 1 .5 0Z"
         case .folderOpen:
             // Hugeicons "folder-03": a single smooth rounded tray (the open body)
             // plus a simple tabbed back flap. Chosen over "folder-open" — whose two
@@ -269,10 +288,12 @@ public enum HugeIcon: Hashable, Sendable {
         case .settings:
             // Hugeicons "settings-02": a gear with a center circle — the General tab.
             return "M15.5 12C15.5 13.933 13.933 15.5 12 15.5C10.067 15.5 8.5 13.933 8.5 12C8.5 10.067 10.067 8.5 12 8.5C13.933 8.5 15.5 10.067 15.5 12Z M21.011 14.0965C21.5329 13.9558 21.7939 13.8854 21.8969 13.7508C22 13.6163 22 13.3998 22 12.9669V11.0332C22 10.6003 22 10.3838 21.8969 10.2493C21.7938 10.1147 21.5329 10.0443 21.011 9.90358C19.0606 9.37759 17.8399 7.33851 18.3433 5.40087C18.4817 4.86799 18.5509 4.60156 18.4848 4.44529C18.4187 4.28902 18.2291 4.18134 17.8497 3.96596L16.125 2.98673C15.7528 2.77539 15.5667 2.66972 15.3997 2.69222C15.2326 2.71472 15.0442 2.90273 14.6672 3.27873C13.208 4.73448 10.7936 4.73442 9.33434 3.27864C8.95743 2.90263 8.76898 2.71463 8.60193 2.69212C8.43489 2.66962 8.24877 2.77529 7.87653 2.98663L6.15184 3.96587C5.77253 4.18123 5.58287 4.28891 5.51678 4.44515C5.45068 4.6014 5.51987 4.86787 5.65825 5.4008C6.16137 7.3385 4.93972 9.37763 2.98902 9.9036C2.46712 10.0443 2.20617 10.1147 2.10308 10.2492C2 10.3838 2 10.6003 2 11.0332V12.9669C2 13.3998 2 13.6163 2.10308 13.7508C2.20615 13.8854 2.46711 13.9558 2.98902 14.0965C4.9394 14.6225 6.16008 16.6616 5.65672 18.5992C5.51829 19.1321 5.44907 19.3985 5.51516 19.5548C5.58126 19.7111 5.77092 19.8188 6.15025 20.0341L7.87495 21.0134C8.24721 21.2247 8.43334 21.3304 8.6004 21.3079C8.76746 21.2854 8.95588 21.0973 9.33271 20.7213C10.7927 19.2644 13.2088 19.2643 14.6689 20.7212C15.0457 21.0973 15.2341 21.2853 15.4012 21.3078C15.5682 21.3303 15.7544 21.2246 16.1266 21.0133L17.8513 20.034C18.2307 19.8187 18.4204 19.711 18.4864 19.5547C18.5525 19.3984 18.4833 19.132 18.3448 18.5991C17.8412 16.6616 19.0609 14.6226 21.011 14.0965Z"
-        case .paintBrush:
-            // Hugeicons "paint-brush-01": an angled brush with two bristle ticks —
-            // the Appearance tab.
-            return "M3.89089 20.8727L3 21L3.12727 20.1091C3.32086 18.754 3.41765 18.0764 3.71832 17.4751C4.01899 16.8738 4.50296 16.3898 5.47091 15.4218L16.9827 3.91009C17.4062 3.48654 17.618 3.27476 17.8464 3.16155C18.2811 2.94615 18.7914 2.94615 19.2261 3.16155C19.4546 3.27476 19.6663 3.48654 20.0899 3.91009C20.5135 4.33365 20.7252 4.54543 20.8385 4.77389C21.0539 5.20856 21.0539 5.71889 20.8385 6.15356C20.7252 6.38201 20.5135 6.59379 20.0899 7.01735L8.57816 18.5291C7.61022 19.497 7.12625 19.981 6.52491 20.2817C5.92357 20.5823 5.246 20.6791 3.89089 20.8727Z M6 15L9 18M8.5 12.5L11.5 15.5"
+        case .paintBoard:
+            // Hugeicons "paint-board": a palette with two paint wells and a thumb
+            // hole — the Appearance tab. Chosen over "paint-brush-01", whose angled
+            // shaft collapses into the `edit` pencil at sidebar size. The source's
+            // two `<circle>` wells are transcribed as arc subpaths.
+            return "M22 12c0-5.523-4.477-10-10-10S2 6.477 2 12s4.477 10 10 10c.842 0 2 .116 2-1c0-.609-.317-1.079-.631-1.546c-.46-.683-.917-1.359-.369-2.454c.667-1.333 1.778-1.333 3.482-1.333c.851 0 1.851 0 3.018-.167c2.101-.3 2.5-1.592 2.5-3.5Z M11 8.5a1.5 1.5 0 1 0-3 0a1.5 1.5 0 0 0 3 0Z M18 9.5a1.5 1.5 0 1 0-3 0a1.5 1.5 0 0 0 3 0Z M7.125 15H7m.25 0a.25.25 0 1 1-.5 0a.25.25 0 0 1 .5 0Z"
         case .sidebarLeft:
             // Hugeicons "sidebar-left": a window with a left rail and two rail rows —
             // the Interface tab.
@@ -286,18 +307,22 @@ public enum HugeIcon: Hashable, Sendable {
             // cable stub — the Keyboard tab.
             return "M14.5 7H9.5C6.21252 7 4.56878 7 3.46243 7.90796C3.25989 8.07418 3.07418 8.25989 2.90796 8.46243C2 9.56878 2 11.2125 2 14.5C2 17.7875 2 19.4312 2.90796 20.5376C3.07418 20.7401 3.25989 20.9258 3.46243 21.092C4.56878 22 6.21252 22 9.5 22H14.5C17.7875 22 19.4312 22 20.5376 21.092C20.7401 20.9258 20.9258 20.7401 21.092 20.5376C22 19.4312 22 17.7875 22 14.5C22 11.2125 22 9.56878 21.092 8.46243C20.9258 8.25989 20.7401 8.07418 20.5376 7.90796C19.4312 7 17.7875 7 14.5 7Z M12 7V5C12 4.44772 12.4477 4 13 4C13.5523 4 14 3.55228 14 3V2 M7 12L8 12 M11.5 12L12.5 12 M16 12L17 12 M7 17L17 17"
         case .bot:
-            // Hugeicons "bot": a robot head with antenna, ears, eyes, and mouth —
-            // the Agents tab.
-            return "M13 7H11C8.19108 7 6.78661 7 5.77772 7.67412C5.34096 7.96596 4.96596 8.34096 4.67412 8.77772C4 9.78661 4 11.1911 4 14C4 16.8089 4 18.2134 4.67412 19.2223C4.96596 19.659 5.34096 20.034 5.77772 20.3259C6.78661 21 8.19108 21 11 21H13C15.8089 21 17.2134 21 18.2223 20.3259C18.659 20.034 19.034 19.659 19.3259 19.2223C20 18.2134 20 16.8089 20 14C20 11.1911 20 9.78661 19.3259 8.77772C19.034 8.34096 18.659 7.96596 18.2223 7.67412C17.2134 7 15.8089 7 13 7Z M4 14H2 M10 17H14 M22 14H20 M15 11V13 M9 11V13 M12 7C12 5.11438 12 4.17157 11.4142 3.58579C10.8284 3 9.88562 3 8 3"
-        case .dashboardSpeed:
-            // Hugeicons "dashboard-speed-02": an open gauge arc with a needle and
-            // pivot circle (no enclosing box) — the Usage tab. The source's
-            // `<circle>` element is transcribed as two arc subpath halves.
-            return "M15 18a3 3 0 1 0-6 0a3 3 0 0 0 6 0Z M12 15V10 M22 13C22 7.47715 17.5228 3 12 3C6.47715 3 2 7.47715 2 13"
-        case .smartPhone:
-            // Hugeicons "smart-phone-01": a phone body with a home-indicator dot —
-            // the Mobile tab.
-            return "M13.5 2H10.5C8.14298 2 6.96447 2 6.23223 2.73223C5.5 3.46447 5.5 4.64298 5.5 7V17C5.5 19.357 5.5 20.5355 6.23223 21.2678C6.96447 22 8.14298 22 10.5 22H13.5C15.857 22 17.0355 22 17.7678 21.2678C18.5 20.5355 18.5 19.357 18.5 17V7C18.5 4.64298 18.5 3.46447 17.7678 2.73223C17.0355 2 15.857 2 13.5 2Z M12.125 19H12"
+            // Hugeicons "robot-01": an antenna'd head with two eye dots over a
+            // shoulder arc — agents. Preferred over Hugeicons' own "bot", whose
+            // ear stubs and mouth bar silt up into a grey block at sidebar size.
+            return "M12 4V2m8 20a8 8 0 1 0-16 0M9.375 8.25H9.25m.25 0a.25.25 0 1 1-.5 0a.25.25 0 0 1 .5 0m5.375 0h-.125m.25 0a.25.25 0 1 1-.5 0a.25.25 0 0 1 .5 0 M15.154 4H8.846c-1.255 0-1.883 0-2.372.22A2.5 2.5 0 0 0 5.22 5.474C5 5.964 5 6.591 5 7.846c0 2.008 0 3.013.352 3.796a4 4 0 0 0 2.006 2.006C8.141 14 9.146 14 11.154 14h1.692c2.008 0 3.013 0 3.796-.352a4 4 0 0 0 2.006-2.006C19 10.859 19 9.854 19 7.846c0-1.255 0-1.883-.22-2.372a2.5 2.5 0 0 0-1.254-1.254C17.036 4 16.409 4 15.154 4"
+        case .chartColumn:
+            // Hugeicons "chart-column": three bars over an L axis — the Usage tab.
+            // Replaces "dashboard-speed-02", whose thin gauge arc and pivot dot
+            // read as an unrelated smudge at sidebar size. Unboxed on purpose, so
+            // it doesn't echo the framed terminal and keyboard marks beside it.
+            return "M8 9v8m5-12v12m5-4v4M3 3v10c0 3.771 0 5.657 1.172 6.828S7.229 21 11 21h10"
+        case .smartPhoneWifi:
+            // Hugeicons "smartphone-wifi": a phone with signal arcs rising off its
+            // corner — the Mobile tab, which is about pairing an iPhone rather than
+            // about phones. A bare "smart-phone-01" body is an empty rounded box at
+            // sidebar size; the arcs are what make it read.
+            return "M8 6c-1.627.03-2.562.168-3.195.812C4 7.632 4 8.953 4 11.595v4.802c0 2.641 0 3.962.805 4.783c.806.82 2.102.82 4.695.82s3.89 0 4.695-.82c.805-.821.805-2.142.805-4.783v-2.901m-2.5-6.631a4 4 0 0 1 5 .01M15 10h.01M10 3.755a8 8 0 0 1 10 0M9 19h1"
         case .network:
             // Hugeicons "internet": a line globe — a remote/SSH link.
             return "M22 12a10 10 0 1 0 -20 0a10 10 0 0 0 20 0Z M16 12a4 10 0 1 0 -8 0a4 10 0 0 0 8 0Z M2 12H22"
@@ -415,6 +440,18 @@ public enum HugeIcon: Hashable, Sendable {
         case .inbox:
             // Hugeicons "inbox": a rounded tray — the iOS no-sessions empty state.
             return "M2.5 12C2.5 7.52166 2.5 5.28249 3.89124 3.89124C5.28249 2.5 7.52166 2.5 12 2.5C16.4783 2.5 18.7175 2.5 20.1088 3.89124C21.5 5.28249 21.5 7.52166 21.5 12C21.5 16.4783 21.5 18.7175 20.1088 20.1088C18.7175 21.5 16.4783 21.5 12 21.5C7.52166 21.5 5.28249 21.5 3.89124 20.1088C2.5 18.7175 2.5 16.4783 2.5 12Z M21.5 13.5H16.5743C15.7322 13.5 15.0706 14.2036 14.6995 14.9472C14.2963 15.7551 13.4889 16.5 12 16.5C10.5111 16.5 9.70373 15.7551 9.30054 14.9472C8.92942 14.2036 8.26777 13.5 7.42566 13.5H2.5"
+        case .voice:
+            // A microphone in the Hugeicons stroke style (mic body + cradle arc,
+            // stem, and base) — the Voice settings tab.
+            return "M9 6C9 4.34315 10.3431 3 12 3C13.6569 3 15 4.34315 15 6V11C15 12.6569 13.6569 14 12 14C10.3431 14 9 12.6569 9 11V6Z M18 11C18 14.3137 15.3137 17 12 17C8.68629 17 6 14.3137 6 11 M12 17V21 M8.5 21H15.5"
+        case .close:
+            // Hugeicons "cancel-01": a centered X (5–19 span, matching the set's optical size) —
+            // the inspector detail's close control.
+            return "M19.0005 4.99988L5.00049 18.9999M5.00049 4.99988L19.0005 18.9999"
+        case .collapse:
+            // The inward mirror of `.expand`, on the same 3.5–20.5 reach so the two read as a pair:
+            // two corner arrows drawn toward the centre — restores a maximized detail to the inspector.
+            return "M20.5 3.5L14.5 9.5 M14.5 9.5L18.5 9.5 M14.5 9.5L14.5 5.5 M3.5 20.5L9.5 14.5 M9.5 14.5L5.5 14.5 M9.5 14.5L9.5 18.5"
         }
     }
 }
@@ -482,6 +519,74 @@ public struct BrandLogoShape: Shape {
 
     public func path(in rect: CGRect) -> Path {
         scaledVectorPath(SVGPath(logo.pathData).cgPath, viewBox: logo.viewBox, in: rect)
+    }
+}
+
+// MARK: - GitHub state octicons
+
+/// GitHub's own Octicons for issue / pull-request lifecycle state, stored as
+/// their official 16×16 fill paths (primer/octicons, MIT). The Issues pane shows
+/// GitHub data, so it shows GitHub's exact state marks — the shapes users already
+/// read on github.com — rather than an approximation. Drawn *filled* (even-odd,
+/// so the rings and node holes carve correctly) and tinted by the caller, they
+/// live in the colored-status register, distinct from the monochrome Hugeicons
+/// chrome — the same status-vs-navigation split GitHub itself draws.
+public enum StateOcticon: Hashable, Sendable {
+    case issueOpened, issueClosed
+    case pullOpen, pullMerged, pullClosed, pullDraft
+
+    /// Side length of the octicon square viewBox (the 16px grid).
+    public var viewBox: CGFloat { 16 }
+
+    public var pathData: String {
+        switch self {
+        case .issueOpened:
+            return "M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z"
+        case .issueClosed:
+            return "M11.28 6.78a.75.75 0 0 0-1.06-1.06L7.25 8.69 5.78 7.22a.75.75 0 0 0-1.06 1.06l2 2a.75.75 0 0 0 1.06 0l3.5-3.5Z M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0Zm-1.5 0a6.5 6.5 0 1 0-13 0 6.5 6.5 0 0 0 13 0Z"
+        case .pullOpen:
+            return "M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"
+        case .pullMerged:
+            return "M5.45 5.154A4.25 4.25 0 0 0 9.25 7.5h1.378a2.251 2.251 0 1 1 0 1.5H9.25A5.734 5.734 0 0 1 5 7.123v3.505a2.25 2.25 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.95-.218ZM4.25 13.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm8.5-4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 3.25a.75.75 0 1 0 0 .005V3.25Z"
+        case .pullClosed:
+            return "M3.25 1A2.25 2.25 0 0 1 4 5.372v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.251 2.251 0 0 1 3.25 1Zm9.5 5.5a.75.75 0 0 1 .75.75v3.378a2.251 2.251 0 1 1-1.5 0V7.25a.75.75 0 0 1 .75-.75Zm-2.03-5.273a.75.75 0 0 1 1.06 0l.97.97.97-.97a.748.748 0 0 1 1.265.332.75.75 0 0 1-.205.729l-.97.97.97.97a.751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018l-.97-.97-.97.97a.749.749 0 0 1-1.275-.326.749.749 0 0 1 .215-.734l.97-.97-.97-.97a.75.75 0 0 1 0-1.06ZM2.5 3.25a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0ZM3.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm9.5 0a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"
+        case .pullDraft:
+            return "M3.25 1A2.25 2.25 0 0 1 4 5.372v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.251 2.251 0 0 1 3.25 1Zm9.5 14a2.25 2.25 0 1 1 0-4.5 2.25 2.25 0 0 1 0 4.5ZM2.5 3.25a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0ZM3.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm9.5 0a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM14 7.5a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Zm0-4.25a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Z"
+        }
+    }
+}
+
+/// Renders a `StateOcticon` as a filled, tinted glyph on the 16px grid.
+public struct OcticonView: View {
+    let icon: StateOcticon
+    let size: CGFloat
+    let color: Color
+
+    public init(icon: StateOcticon, size: CGFloat, color: Color) {
+        self.icon = icon
+        self.size = size
+        self.color = color
+    }
+
+    public var body: some View {
+        OcticonShape(icon: icon)
+            .fill(color, style: FillStyle(eoFill: true))
+            .frame(width: size, height: size)
+    }
+}
+
+/// A `Shape` that draws a `StateOcticon`'s SVG fill path, scaled from its 16px
+/// viewBox to fit the rect. Octicons are optically sized on that grid, so plain
+/// viewBox-fitting (unlike Hugeicons) already lines them up.
+public struct OcticonShape: Shape {
+    let icon: StateOcticon
+
+    public init(icon: StateOcticon) {
+        self.icon = icon
+    }
+
+    public func path(in rect: CGRect) -> Path {
+        scaledVectorPath(SVGPath(icon.pathData).cgPath, viewBox: icon.viewBox, in: rect)
     }
 }
 
@@ -565,12 +670,12 @@ private func scaledVectorPath(_ glyph: CGPath, viewBox: CGFloat, in rect: CGRect
 /// brand marks — moveto/lineto/horizontal/vertical, cubic and quadratic
 /// curves (with smooth variants), elliptical arcs, and close. SVG and Core
 /// Graphics coordinate spaces both run y-downward, so no axis flip.
-private struct SVGPath {
+public struct SVGPath {
     let pathData: String
 
-    init(_ pathData: String) { self.pathData = pathData }
+    public init(_ pathData: String) { self.pathData = pathData }
 
-    var cgPath: CGPath {
+    public var cgPath: CGPath {
         let path = CGMutablePath()
         var scanner = Scanner(pathData)
 

@@ -44,12 +44,27 @@ enum IssueItemState: Hashable, Sendable {
         }
     }
 
+    /// The state glyph: GitHub's own Octicon for this lifecycle state, so a row
+    /// shows the exact mark users read on github.com. Shape carries the state on
+    /// its own — open issue and closed PR are a red/green pair that colorblind
+    /// users can't separate by hue, but the shapes stay distinct.
+    func octicon(for kind: IssueKind) -> StateOcticon {
+        switch self {
+        case .open: return kind == .pullRequest ? .pullOpen : .issueOpened
+        case .closed: return kind == .pullRequest ? .pullClosed : .issueClosed
+        case .merged: return .pullMerged
+        case .draft: return .pullDraft
+        }
+    }
+
     var label: String {
         switch self {
-        case .open: return "Open"
-        case .closed: return "Closed"
-        case .merged: return "Merged"
-        case .draft: return "Draft"
+        // Explicit key: the English word "Open" is already the verb key (打开),
+        // and the state reads 开放 — the catalog disambiguates by key, not context.
+        case .open: return localized("issue.state.open")
+        case .closed: return localized("Closed")
+        case .merged: return localized("Merged")
+        case .draft: return localized("Draft")
         }
     }
 }
@@ -78,8 +93,6 @@ struct IssueLabel: Hashable, Sendable {
 struct IssueContainer: Hashable, Sendable {
     let provider: IssueProviderID
     let id: String
-
-    var displayName: String { id }
 }
 
 /// The list request: which kind, and the light filters the top bar offers.
@@ -101,7 +114,6 @@ struct IssueSummary: Identifiable, Hashable, Sendable {
     let state: IssueItemState
     let labels: [IssueLabel]
     let author: String
-    let commentCount: Int
     let updatedAt: Date
     let url: URL?
 
@@ -109,7 +121,7 @@ struct IssueSummary: Identifiable, Hashable, Sendable {
 }
 
 /// One comment in the detail thread.
-struct IssueComment: Identifiable, Sendable {
+struct IssueComment: Identifiable, Equatable, Sendable {
     let id: Int
     let author: String
     let avatarURL: URL?
@@ -118,7 +130,7 @@ struct IssueComment: Identifiable, Sendable {
 }
 
 /// The full item: the summary plus its markdown body and comment thread.
-struct IssueDetail: Sendable {
+struct IssueDetail: Equatable, Sendable {
     let summary: IssueSummary
     let bodyMarkdown: String
     let authorAvatarURL: URL?
@@ -126,13 +138,12 @@ struct IssueDetail: Sendable {
     let comments: [IssueComment]
 }
 
-/// The branch facts the Files tab and Checkout need from a pull request —
-/// which refs to fetch and diff, and whether the head lives in a fork (a fork's
-/// branch is only reachable through the `refs/pull/N/head` ref).
-struct PullRequestGitInfo: Sendable {
-    let headRef: String
-    let baseRef: String
-    let crossRepository: Bool
+/// One PR file with its unified-diff `patch` straight from the GitHub API — the Files
+/// tab renders from this without a local checkout or extra fetch. `patch` is `nil` when
+/// GitHub omits it (a binary file, or a diff too large to inline).
+struct PullRequestFile: Sendable {
+    let change: GitChange
+    let patch: String?
 }
 
 // MARK: - Provider protocol
