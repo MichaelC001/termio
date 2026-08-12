@@ -51,6 +51,9 @@ export function CtaBand() {
                 Download for iOS Beta
               </a>
             </div>
+            <p className="mt-4 text-sm text-muted-foreground">
+              Requires macOS 14 or later
+            </p>
           </div>
         </Reveal>
       </div>
