@@ -99,7 +99,7 @@ final class CompanionServer {
     /// Connections that have presented the pairing token. Everyone else gets
     /// silence and a short clock: the roster names every project on this Mac
     /// and an attach is keystroke access to a shell.
-    private var authed: Set<ObjectIdentifier> = []
+    private var authenticatedWireByConnection: [ObjectIdentifier: Int] = [:]
     private var bridges: [ObjectIdentifier: PTYBridge] = [:]
     private var lastRoster: CompanionRoster?
     private var pollTimer: Timer?
@@ -199,6 +199,7 @@ final class CompanionServer {
         for connection in connectionByID.values { connection.cancel() }
         connectionByID.removeAll()
         connections.removeAll()
+        authenticatedWireByConnection.removeAll()
     }
 
     private func accept(_ connection: NWConnection) {
@@ -220,7 +221,8 @@ final class CompanionServer {
         // to linger either.
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
             Task { @MainActor in
-                guard let self, self.connections.contains(id), !self.authed.contains(id) else { return }
+                guard let self, self.connections.contains(id),
+                      self.authenticatedWireByConnection[id] == nil else { return }
                 self.refuse(connection, message: "unauthorized — scan the QR code in Settings ▸ Mobile")
             }
         }
@@ -240,7 +242,7 @@ final class CompanionServer {
         connectionByID[id]?.cancel()
         connectionByID[id] = nil
         connections.remove(id)
-        authed.remove(id)
+        authenticatedWireByConnection[id] = nil
     }
 
     private func receive(on connection: NWConnection) {
@@ -254,6 +256,9 @@ final class CompanionServer {
             if let meta, let content, !content.isEmpty {
                 switch meta.opcode {
                 case .binary:
+                    // Binary frames are raw PTY bytes permanently. Compression,
+                    // encryption, or multiplexing needs a separately negotiated
+                    // mechanism and Wire gate so framing can never become keystrokes.
                     // Keystrokes from the phone into the session's PTY.
                     // Typing from the phone is active use — the size follows it.
                     Task { @MainActor in
@@ -276,16 +281,21 @@ final class CompanionServer {
 
     private func handle(_ control: CompanionControl, on connection: NWConnection) {
         let id = ObjectIdentifier(connection)
-        if case .auth(let token) = control {
+        if case .auth(let token, let wire) = control {
             guard token == PairingToken.current else {
                 refuse(connection, message: "unauthorized — re-scan the QR code on your Mac")
                 return
             }
-            authed.insert(id)
+            Log.companion.notice("phone declared wire version \(wire, privacy: .public)")
+            guard wire >= Wire.minimumClient else {
+                refuse(connection, message: "Update Termio on your phone to connect to this Mac.")
+                return
+            }
+            authenticatedWireByConnection[id] = wire
             send(rosterProvider(), to: connection)
             return
         }
-        guard authed.contains(id) else {
+        guard authenticatedWireByConnection[id] != nil else {
             refuse(connection, message: "unauthorized — scan the QR code in Settings ▸ Mobile")
             return
         }
@@ -374,10 +384,33 @@ final class CompanionServer {
             handleTrace(sessionID: sessionID, dark: dark, on: connection)
         case .sshConfigHosts:
             sendControl(.sshConfigList(hosts: Self.parseSSHConfigHosts()), to: connection)
+        case .unsupported(let type):
+            // Usually the phone speaks a newer vocabulary than this Mac, and
+            // this line is the only trace of why its button did nothing. But
+            // the tag is remote input — a paired phone chooses it — so it is
+            // sanitized before it reaches a `.public` log field, and the line
+            // states what happened rather than guessing which end is older.
+            Log.companion.notice(
+                "ignoring unsupported control \(Self.loggableTag(type), privacy: .public)"
+            )
         case .auth, .exit, .error, .started, .fileList, .file, .written, .uploaded,
              .searchResults, .traceHTML, .sshConfigList, .changes, .diff:
             break
         }
+    }
+
+    /// A wire tag reduced to something safe to write into a `.public` log field.
+    ///
+    /// The tag arrives from the phone, so it can carry newlines that forge extra
+    /// log lines, or a payload long enough to bury the surrounding entries. Only
+    /// the shape a real tag has survives — letters, digits, and the separators
+    /// the vocabulary already uses — and only the first 40 characters of it.
+    nonisolated static func loggableTag(_ tag: String) -> String {
+        let kept = tag.prefix(40).map { character -> Character in
+            character.isLetter || character.isNumber || character == "." || character == "-"
+                || character == "_" ? character : "?"
+        }
+        return kept.isEmpty ? "(empty)" : String(kept)
     }
 
     /// The Mac user's connectable `~/.ssh/config` hosts (see `SSHConfigFile`),
@@ -847,7 +880,7 @@ final class CompanionServer {
         // interleave with PTY traffic for no benefit. Unauthenticated ones
         // get nothing at all.
         for (id, connection) in connectionByID
-        where bridges[id] == nil && authed.contains(id) {
+        where bridges[id] == nil && authenticatedWireByConnection[id] != nil {
             send(roster, to: connection)
         }
     }

@@ -13,7 +13,7 @@ let package = Package(
         // live resize" suspicion that briefly rolled this back to Lakr233 was a
         // misdiagnosis — the real bug was termio's own PTY spawn shape (see
         // docs/bug/terminal-resize-no-reflow-HANDOFF.md §0).
-        .package(url: "https://github.com/jiweiyuan/libghostty-swift", from: "1.0.15"),
+        .package(url: "https://github.com/jiweiyuan/libghostty-swift", from: "1.0.16"),
         // Sparkle powers in-app auto-update (the "Check for Updates…" menu item and
         // background update checks). It reads the appcast published with each GitHub
         // release; the matching EdDSA public key is embedded in packaging/Info.plist.
@@ -65,6 +65,10 @@ let package = Package(
                 .process("Resources/Fonts"),
                 .copy("Resources/agents"),
                 .copy("Resources/terminal.json"),
+                // Agent skills installed into ~/.claude/skills and ~/.codex/skills
+                // by SessionSkillInstaller, kept as real markdown files. Folder copy
+                // so the skill-folder layout survives into the bundle.
+                .copy("Resources/skills"),
                 // Devicon language/tool logos (one SVG per file type), loaded by name
                 // for the file tree; see LangIconCatalog / LangIconView. Kept as a
                 // folder copy (not `.process`) so the lookup subdirectory survives.
@@ -83,6 +87,10 @@ let package = Package(
                 .product(name: "TermioShared", package: "Shared"),
             ],
             path: "Tests/termioTests",
+            // The Markdown feature sheet is both the end-to-end fixture
+            // `MarkdownFeatureSheetTests` renders and the document to open in the
+            // reader when judging the result by eye.
+            resources: [.copy("Fixtures")],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
             ]

@@ -2,6 +2,7 @@ import Combine
 import Foundation
 import GhosttyTerminal
 import GhosttyTheme
+import TermioShared
 
 /// Resolves an agent's on-disk conversation entries from the declarative store
 /// descriptor its manifest supplies (`ResumeSpec.Store`) — one probe for every agent,
@@ -111,6 +112,15 @@ enum PiSession {
 }
 
 extension TermioStore {
+    /// `path` when it still names a real directory, else `nil`. A recorded cwd outlives
+    /// the folder it points at, and a shell spawned in a deleted directory lands at `/`.
+    static func existingDirectory(_ path: String?) -> String? {
+        guard let path else { return nil }
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+        return exists && isDirectory.boolValue ? path : nil
+    }
+
     /// Returns the cached terminal surface for a session, creating and starting
     /// it on first access. The surface launches `session.command` (or the login
     /// shell) in the project's working directory via the real PTY (`.exec`).
@@ -124,15 +134,17 @@ extension TermioStore {
         // A loose terminal instead respawns at the cwd it last reported over OSC 7
         // (its path is the session's own mutable property, not the container's) —
         // so a relaunch drops the user back where they `cd`'d, not at `$HOME`.
-        // A directory deleted since then falls back to the container's `$HOME`.
-        let restoredCwd: String? = project.kind == .terminals
-            ? session.lastWorkingDirectory.flatMap { path in
-                var isDirectory: ObjCBool = false
-                let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
-                return exists && isDirectory.boolValue ? path : nil
-            }
+        // Ahead of the worktree/project anchor sits the directory the session was
+        // opened in (⌘T): where the user asked *this* shell to start, even when the
+        // session belongs to a project rooted elsewhere. Each rung must still exist —
+        // a stale path falls through rather than dropping the shell at `/`.
+        let restoredCwd = project.kind == .terminals
+            ? Self.existingDirectory(session.lastWorkingDirectory)
             : nil
-        let workspacePath = session.worktreePath ?? restoredCwd ?? project.path
+        let workspacePath = restoredCwd
+            ?? Self.existingDirectory(session.spawnDirectory)
+            ?? session.worktreePath
+            ?? project.path
 
         // Resolve the launch command *with* any resume arguments, so a session that was
         // running when the app last quit picks its conversation back up instead of
@@ -758,6 +770,21 @@ extension TermioStore {
     private func applyAppearance(to builder: inout TerminalConfiguration.Builder) {
         if !settings.fontFamily.isEmpty {
             builder.withFontFamily(settings.fontFamily)
+            // Fallback faces from the user's Ghostty config ride along even over a
+            // termio-chosen primary — repeated font-family keys form Ghostty's fallback
+            // chain, and they only engage for glyphs the primary lacks (CJK above all).
+            for fallback in settings.ghosttyFontFallbacks where fallback != settings.fontFamily {
+                builder.withFontFamily(fallback)
+            }
+            // When the chain still can't draw hanzi, close with a purpose-built dual-width
+            // CJK face if one is installed — otherwise the system falls back to proportional
+            // PingFang per glyph, whose weight and metrics visibly fight the Latin face.
+            // (The grid's cell width still follows the primary; only a dual-width *primary*
+            // removes the spacing gaps entirely.)
+            let chain = [settings.fontFamily] + settings.ghosttyFontFallbacks
+            if let cjkFallback = InstalledFonts.cjkMonospaceFallback(existingChain: chain) {
+                builder.withFontFamily(cjkFallback)
+            }
         }
         builder.withFontSize(Float(settings.fontSize))
         builder.withFontThicken(settings.fontThicken)
@@ -939,7 +966,7 @@ extension TermioStore {
                     }
                     self.applyTitleActivity(activity, for: id)
                 }
-                let cleaned = self.sanitizedLiveTitle(title)
+                let cleaned = LiveTerminalTitle.sanitized(title)
                 guard self.isMeaningfulLiveTitle(cleaned, for: session),
                       self.runtimes[id]?.liveTitle != cleaned else { return }
                 self.setLiveTitle(cleaned, for: id)
@@ -974,18 +1001,6 @@ extension TermioStore {
               projects[location.project].sessions[location.session]
                   .lastWorkingDirectory != cwd else { return }
         projects[location.project].sessions[location.session].lastWorkingDirectory = cwd
-    }
-
-    /// Strips a leading decorative glyph from a live title before it is shown.
-    /// Claude Code prefixes its terminal title with a `✳` status star (and cycles
-    /// it through spinner frames); since the sidebar row already draws the agent
-    /// icon, that prefix would render as a duplicate icon. Drop any leading run of
-    /// non-alphanumeric characters (the star, bullets, emoji) and the whitespace
-    /// after it, leaving just the human-readable text.
-    private func sanitizedLiveTitle(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let stripped = trimmed.drop { !$0.isLetter && !$0.isNumber }
-        return String(stripped).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Whether a live terminal title is worth showing as the session's label, as

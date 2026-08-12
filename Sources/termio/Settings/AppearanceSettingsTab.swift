@@ -16,7 +16,7 @@ struct AppearanceSettingsTab: View {
             } header: {
                 SectionHeaderLabel(title: "Appearance")
             } footer: {
-                Text("Pin termio to a light or dark look, or follow the system. The light and dark terminal themes below apply to the matching appearance.")
+                Text("Pin Termio to a light or dark look, or follow the system. The light and dark terminal themes below apply to the matching appearance.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -36,7 +36,7 @@ struct AppearanceSettingsTab: View {
             } header: {
                 SectionHeaderLabel(title: "Theme")
             } footer: {
-                Text("termio switches between these as macOS changes appearance; leave a slot on the default for termio's own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”")
+                Text("Termio switches between these as macOS changes appearance; leave a slot on the default for Termio's own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -57,11 +57,17 @@ struct AppearanceSettingsTab: View {
                 }
                 Toggle("Thicken glyphs", isOn: $settings.fontThicken)
             } header: {
-                SectionHeaderLabel(title: "Font")
+                SectionHeaderLabel(title: "Terminal font")
             } footer: {
-                Text("Line height applies to the file editor and diffs; the terminal keeps the font's own.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if settings.inheritsGhosttyDefaults {
+                    Text("Line height applies to the file editor and diffs; the terminal keeps the font's own. Font and theme values you haven't set here follow your Ghostty config.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Line height applies to the file editor and diffs; the terminal keeps the font's own.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Section {
                 Picker("Style", selection: $settings.cursorStyle) {
@@ -95,6 +101,35 @@ struct AppearanceSettingsTab: View {
                 SectionHeaderLabel(title: "Window")
             } footer: {
                 Text("Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                FontFamilyField(
+                    title: "Family",
+                    prompt: "System",
+                    families: InstalledFonts.all,
+                    previewSize: settings.interfaceFontSize,
+                    monospacedDefault: false,
+                    family: $settings.interfaceFontFamily
+                )
+                Stepper(value: $settings.interfaceFontSize, in: 9...20, step: 1) {
+                    Text("Size: \(Int(settings.interfaceFontSize)) pt")
+                }
+                LabeledContent("Row padding") {
+                    HStack(spacing: 8) {
+                        Slider(value: $settings.interfaceRowPadding, in: 0...12, step: 1)
+                            .frame(width: 160)
+                        Text("\(Int(settings.interfaceRowPadding)) pt")
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 40, alignment: .trailing)
+                    }
+                }
+            } header: {
+                SectionHeaderLabel(title: "Sidebar")
+            } footer: {
+                Text("The project and session list. Kept separate from the terminal font, and need not be monospaced.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

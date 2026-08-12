@@ -135,31 +135,35 @@ struct GitDiffView: View {
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                 .foregroundStyle(request.change.status.tint)
                 .frame(width: 16)
-            Text(request.name)
-                .font(.system(size: 12.5, weight: .medium))
-                .lineLimit(1)
-                .truncationMode(.middle)
+            // Name and directory as one text run with a single truncation point: as two
+            // flexible texts a narrow pane split the width between them and truncated
+            // both into noise. Tail truncation keeps the name (the head) readable longest.
             let directory = (request.change.path as NSString).deletingLastPathComponent
-            if !directory.isEmpty {
-                Text(directory)
+            let name = Text(request.name).font(.system(size: 12.5, weight: .medium))
+            (directory.isEmpty
+                ? name
+                : name + Text("  \(directory)")
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
-            }
+                    .foregroundStyle(.secondary))
+                .lineLimit(1)
+                .truncationMode(.tail)
             Spacer(minLength: 8)
             // "n of m" (Mail's message-walk wording) whenever there is a set to walk.
             if request.siblings.count > 1, let index = walkIndex {
                 Text("\(index + 1) of \(request.siblings.count)")
                     .font(.system(size: 10.5, weight: .medium).monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .fixedSize()
                     .padding(.trailing, 2)
             }
             // For a history diff, tag the header with the commit it belongs to.
+            // `fixedSize` (as on the ± counts) keeps the tag on one line in a narrow
+            // pane — the flexible path is the only element that gives up width.
             if let commit = request.commit {
                 Text("@ \(commit.prefix(7))")
                     .font(.system(size: 10.5, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .fixedSize()
                     .padding(.trailing, 2)
             }
             HStack(spacing: 5) {

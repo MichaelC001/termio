@@ -6,13 +6,13 @@ import SwiftUI
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case appearance
-    case interface
     case terminal
     case ssh
     case keyboard
     case agents
     case usage
     case mobile
+    case community
 
     var id: String { rawValue }
 
@@ -24,13 +24,13 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "General"
         case .appearance: return "Appearance"
-        case .interface: return "Interface"
         case .terminal: return "Terminal"
         case .ssh: return "SSH"
         case .keyboard: return "Keyboard"
         case .agents: return "Agents"
         case .usage: return "Usage"
         case .mobile: return "Mobile"
+        case .community: return "Community"
         }
     }
 
@@ -39,14 +39,14 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var icon: HugeIcon {
         switch self {
         case .general: return .settings
-        case .appearance: return .paintBrush
-        case .interface: return .sidebarLeft
+        case .appearance: return .paintBoard
         case .terminal: return .terminal
         case .ssh: return .serverStack
         case .keyboard: return .keyboard
         case .agents: return .bot
-        case .usage: return .dashboardSpeed
-        case .mobile: return .smartPhone
+        case .usage: return .chartColumn
+        case .mobile: return .smartPhoneWifi
+        case .community: return .bubbleChat
         }
     }
 
@@ -54,15 +54,15 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     /// matching macOS System Settings' navigation subtitle.
     var subtitle: String {
         switch self {
-        case .general: return "Notifications and the termio command-line tool"
-        case .appearance: return "Terminal font, theme, cursor, and window"
-        case .interface: return "The app's own sidebar font and density"
+        case .general: return "The termio command-line tool, agent skill, and notifications"
+        case .appearance: return "Theme, fonts, cursor, and window"
         case .terminal: return "Scrollback history and text selection"
         case .ssh: return "Your ~/.ssh/config hosts, one click away"
         case .keyboard: return "Keyboard shortcuts for every command"
         case .agents: return "Agent presets, live status, and control"
         case .usage: return "Token usage for your connected agents"
         case .mobile: return "Pair your iPhone and remote access"
+        case .community: return "Discord, GitHub, and the WeChat group"
         }
     }
 }

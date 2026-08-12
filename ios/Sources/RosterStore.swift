@@ -238,6 +238,17 @@ final class RosterStore {
             pendingStart = nil
             onStartError?(reason)
         }
+        client.onConnectionFailure = { [weak self] reason in
+            guard let self else { return }
+            // A refusal closes the socket immediately; stop the reconnect loop
+            // so its next optimistic open cannot erase the reason from the UI.
+            self.client?.stop()
+            projects = []
+            enabledAgents = []
+            sshHosts = []
+            CompanionLink.state = .failed(reason)
+            NotificationCenter.default.post(name: Self.didChange, object: nil)
+        }
         client.start()
         self.client = client
     }

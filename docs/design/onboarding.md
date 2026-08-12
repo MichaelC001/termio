@@ -8,7 +8,7 @@ related:
   - agent-extensibility.md
 ---
 
-# RFC：Onboarding —— termio 首次启动体验
+# RFC：Onboarding —— Termio 首次启动体验
 
 > 把用户从「装好却空白的 app」带到「一个 agent 在某个项目里跑起来」。引导只负责**搬走挡路的障碍**,不负责教功能。
 
@@ -19,15 +19,15 @@ related:
 **非目标(明确不做):**
 
 - 多屏价值轮播 / slideshow tour。
-- 强制登录或注册(termio 已免费,无账号体系)。
+- 强制登录或注册(Termio 已免费,无账号体系)。
 - 埋点漏斗、激活率 A/B。
 - 在用户跑起来之前就问主题、字体、sandbox、键位等外观/高级设置 —— 这些一律留给 Settings,按需发现。
 
-理由见 `docs/CLAUDE.md`:termio 是「刻意、最小、聚焦」的工具,引导也必须是终端式的极简,而不是消费 App 的那套。
+理由见 `docs/CLAUDE.md`:Termio 是「刻意、最小、聚焦」的工具,引导也必须是终端式的极简,而不是消费 App 的那套。
 
 ## 2. 核心问题:agent readiness 才是真正的卡点
 
-termio 是 agent CLI 的**宿主**。如果用户机器上没有 `claude` / `codex` / `opencode` / `pi`,打开 termio 就是一片空白、无从下手 —— 这是第一启动最常见、且**不引导就完全不可见**的失败。
+Termio 是 agent CLI 的**宿主**。如果用户机器上没有 `claude` / `codex` / `opencode` / `pi`,打开 Termio 就是一片空白、无从下手 —— 这是第一启动最常见、且**不引导就完全不可见**的失败。
 
 所以引导最有价值的单一动作,是**检测已安装的 agent,并指引装上至少一个**。这一块做对了,其余都是次要授权。
 

@@ -23,11 +23,11 @@ After the user runs `/clear` inside a Claude Code session:
 - The **sidebar row title** still shows the *old* conversation's topic
   (e.g. "Review Markdown preview feature on t…").
 - The **resume pin** (`Session.resumeID`) still points at the cleared
-  conversation, so quitting termio in this window would resume a conversation
+  conversation, so quitting Termio in this window would resume a conversation
   the user deliberately discarded.
 
 Everything self-heals on the *first prompt of the new conversation* — but until
-then termio is blind, and the Info pane actively shows wrong data.
+then Termio is blind, and the Info pane actively shows wrong data.
 
 ## Root cause
 
@@ -125,7 +125,7 @@ smallest spot that makes it graceful.
   is set.
 - **Hook install refresh.** `AgentStatusHooks.sync` rewrites
   `~/.claude/settings.json` at app launch, so the new event installs on next
-  termio start. Note: an *already-running* Claude session snapshots its hook
+  Termio start. Note: an *already-running* Claude session snapshots its hook
   config at startup and won't fire the new hook until relaunched — expected,
   document nothing.
 - **Other agents.** This is Claude-manifest-only. Codex/OpenCode use
@@ -177,7 +177,7 @@ dialect-interpreted, mechanism-named, never agent-named:
 
 Identity adoption is deliberately narrower than status adoption. It requires an
 *exactly-stamped* report (`TERMIO_SESSION` echoed back — the hook files are
-global, so a same-directory agent run outside termio also reports, and a
+global, so a same-directory agent run outside Termio also reports, and a
 cwd-guessed match must never re-pin a tab), fires only at a **turn boundary**
 (`state != working` — a working-state payload embeds prompt/tool content on
 stdin, where a colliding field name could be mined as the id; SessionStart/Stop
@@ -227,7 +227,7 @@ there is no pin to keep honest.
 
 ### Phase 2 test plan
 
-Per agent: start a session in termio, chat until the trace/title reflect the
+Per agent: start a session in Termio, chat until the trace/title reflect the
 conversation, run the rotation command, then verify (a) the resume pin
 (`Session.resumeID`) advances to the agent's new id, (b) the sidebar title
 falls back to the agent name, (c) View Trace follows for agents with a

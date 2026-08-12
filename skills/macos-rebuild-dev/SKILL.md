@@ -56,19 +56,14 @@ When invoked, execute these steps sequentially:
    pkill -9 -f "tunelo port 8788" || true
    ```
 
-2. **Refresh the icon PNG** from the SVG (non-fatal — if the renderer is missing,
-   the build just reuses the existing `AppIcon.png`):
-   ```bash
-   ./scripts/render-icon.sh || echo "icon render skipped (reusing existing AppIcon.png)"
-   ```
-
-3. **Build the dev bundle**. Show the tail of the output; if the build fails, show
-   the error and **stop — do NOT relaunch**:
+2. **Build the dev bundle** from the committed `packaging/AppIcon.png` — do *not*
+   re-render the icon (see "Icons" below). Show the tail of the output; if the
+   build fails, show the error and **stop — do NOT relaunch**:
    ```bash
    TERMIO_CHANNEL=dev ./scripts/build-app.sh 2>&1 | tail -12
    ```
 
-4. **Re-register the dev bundle with LaunchServices, then refresh the Dock cache.**
+3. **Re-register the dev bundle with LaunchServices, then refresh the Dock cache.**
    macOS resolves an app's icon by its bundle id (`sh.termio.app.dev`); `lsregister -f`
    forces our path to win and `killall Dock` drops the cached icon:
    ```bash
@@ -78,15 +73,32 @@ When invoked, execute these steps sequentially:
    killall Dock 2>/dev/null || true
    ```
 
-5. **Relaunch via `open`** (NOT `nohup` on the inner binary — that bypasses
+4. **Relaunch via `open`** (NOT `nohup` on the inner binary — that bypasses
    LaunchServices). `open`'s `--stdout` / `--stderr` still capture logs:
    ```bash
    open ./termio-dev.app --stdout /tmp/termio-dev.log --stderr /tmp/termio-dev.log
    echo "launched ./termio-dev.app (logs: /tmp/termio-dev.log)"
    ```
 
-6. **Report** the result: whether the build succeeded and the app relaunched, or
+5. **Report** the result: whether the build succeeded and the app relaunched, or
    what went wrong. If the window doesn't appear, check `/tmp/termio-dev.log`.
+
+## Icons
+
+`scripts/render-icon.sh` rasterizes `packaging/icon-static.svg` into
+`packaging/AppIcon.png` (and the iOS asset) through headless Chrome — and its
+output is **not reproducible**: rendering the same SVG twice writes two different
+files, neither matching the committed one. Running it on every rebuild therefore
+dirtied the tree with two unreviewable binary diffs, cost a Chrome launch, and
+risked overwriting hand-touched artwork. So it is not part of this loop.
+
+Re-render only when the SVG actually changed, and commit the PNGs as their own
+change:
+
+```bash
+./scripts/render-icon.sh && git add packaging/AppIcon.png \
+  ios/Sources/Assets.xcassets/AppIcon.appiconset/AppIcon.png
+```
 
 ## Notes
 

@@ -238,7 +238,7 @@ final class ProjectListViewController: UIViewController {
             emptyState.configure(
                 icon: .devicePair,
                 title: "No Mac connected",
-                message: "Open termio on your Mac, then pair this phone to see and drive your projects from here.",
+                message: "Open Termio on your Mac, then pair this phone to see and drive your projects from here.",
                 actionTitle: "Connect a Mac",
                 busy: false
             )
@@ -249,7 +249,7 @@ final class ProjectListViewController: UIViewController {
             emptyState.configure(
                 icon: .wifiError,
                 title: "Can't reach your Mac",
-                message: "It may be asleep or off your network. termio keeps trying — reopen the lid, or tap to retry now.",
+                message: "It may be asleep or off your network. Termio keeps trying — reopen the lid, or tap to retry now.",
                 actionTitle: "Try Again",
                 busy: false
             )
@@ -268,8 +268,18 @@ final class ProjectListViewController: UIViewController {
             emptyState.configure(
                 icon: .folder,
                 title: "No projects open",
-                message: "Open a project in termio on your Mac and it'll show up here.",
+                message: "Open a project in Termio on your Mac and it'll show up here.",
                 actionTitle: nil,
+                busy: false
+            )
+        case .failed(let reason):
+            stopConnectingGraceTimer()
+            reconnectStalled = false
+            emptyState.configure(
+                icon: .wifiError,
+                title: "Connection failed",
+                message: reason,
+                actionTitle: "Open Settings",
                 busy: false
             )
         }
@@ -302,6 +312,10 @@ final class ProjectListViewController: UIViewController {
             presentSettings(deepLinkToConnectivity: true)
             return
         }
+        if case .failed = CompanionLink.state {
+            presentSettings(deepLinkToConnectivity: true)
+            return
+        }
         reconnectStalled = false
         updateEmptyState()
         store.reconnectNow()
@@ -326,9 +340,9 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
         // Headers only when the strip splits the page in two; a plain project
         // list under the "Projects" page title needs no second label.
         guard sections.count > 1 else { return nil }
-        let header = tableView.dequeueReusableHeaderFooterView(
+        guard let header = tableView.dequeueReusableHeaderFooterView(
             withIdentifier: SectionCapView.reuseID
-        ) as! SectionCapView
+        ) as? SectionCapView else { return nil }
         header.configure(title: sections[section] == .needsYou ? "Needs You" : "Projects")
         return header
     }

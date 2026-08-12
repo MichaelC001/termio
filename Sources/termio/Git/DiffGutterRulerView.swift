@@ -197,8 +197,8 @@ final class DiffGutterRulerView: NSRulerView {
     }
 
     /// A band's reveal buttons: an arrow over a dotted line, github.com's shape. The dots
-    /// stand for the hidden lines and the arrow for the direction they come from — up
-    /// pulls down the lines nearest the code *below* the band, down those nearest the code
+    /// stand for the hidden lines and the arrow for the way the reveal walks — up pulls up
+    /// the lines nearest the code *below* the band, down pulls down those nearest the code
     /// above. A band that can only be read from one side draws only that button.
     private func drawRevealButtons(for line: DiffDocument.Line, y: CGFloat, height: CGFloat) {
         let controls = line.bandControls
@@ -228,14 +228,17 @@ final class DiffGutterRulerView: NSRulerView {
         let gap: CGFloat = 2.5
         let dotWidth: CGFloat = 1.2
         let originX = (rect.midX - width / 2).rounded()
-        // The arrow leans toward the code it reveals, the dots sit on the hidden side.
+        // The arrow points the way the reveal walks — the same reading github.com and
+        // GitHub Desktop use — and the dots trail behind it, on the side still hidden.
+        // A vertical NSRulerView is flipped, so `minY` is the block's *top* edge: an
+        // up-pointing arrow puts its tip at `minY` and its dots at the bottom.
         let pointsUp = direction == .up
         let block = NSRect(x: originX, y: rect.midY - (arrowHeight + gap + dotWidth) / 2,
                            width: width, height: arrowHeight + gap + dotWidth)
-        let dotsY = pointsUp ? block.minY : block.maxY - dotWidth
-        let tipY = pointsUp ? block.maxY : block.minY
-        let tailY = pointsUp ? block.maxY - arrowHeight : block.minY + arrowHeight
-        let barbY = pointsUp ? tipY - 2.4 : tipY + 2.4
+        let dotsY = pointsUp ? block.maxY - dotWidth : block.minY
+        let tipY = pointsUp ? block.minY : block.maxY
+        let tailY = pointsUp ? block.minY + arrowHeight : block.maxY - arrowHeight
+        let barbY = pointsUp ? tipY + 2.4 : tipY - 2.4
 
         ink.setStroke()
         let arrow = NSBezierPath()

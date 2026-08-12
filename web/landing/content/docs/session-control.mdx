@@ -9,7 +9,7 @@ command-line tool** that lets you — or another agent — drive sessions from t
 shell. Neither is required to use Termio; both make a fleet of agents easier to
 run.
 
-## Session control
+## Live agent status
 
 Termio can install small **status hooks** into your agents' own config files
 (Claude Code, Codex, Cursor, and the plugin-based agents). When an agent starts
@@ -17,21 +17,39 @@ working, finishes, or stops to ask a question, the hook reports that to Termio, 
 the sidebar's [status dots](/docs/sidebar#status) reflect exactly what's happening
 instead of being guessed from output.
 
-Turn it on from **Settings ▸ Agents** (Termio also offers it once on first
-launch). Toggling it off removes the hooks again, leaving any hooks you added
-yourself untouched.
+Turn it on from **Settings ▸ General ▸ Live agent status** (Termio also offers it
+once on first launch). Toggling it off removes the hooks again, leaving any hooks
+you added yourself untouched.
+
+## Session control
+
+**Settings ▸ General ▸ Session control** turns on the `termio sessions`
+orchestration API below, and teaches your agents it exists by installing a
+`termio` **agent skill** into each agent's skills folder (`~/.claude/skills`,
+`~/.codex/skills`). The skill loads on demand — an agent carries only its
+one-line description until a task actually involves driving sibling sessions —
+and Termio re-asserts it on every launch, so app updates propagate and
+hand-edits heal automatically. Toggling it off removes the skill again.
+
+Running an agent Termio doesn't auto-configure? The same skill is published at
+[termio.sh/skill.md](https://termio.sh/skill.md) and installable straight from
+the repo:
+
+```bash
+npx skills add termio-sh/termio --skill termio
+```
 
 <Callout type="note">
-  Session control only writes the status hooks into agent configs on your Mac.
-  Nothing leaves your machine — the reports travel over a local socket to the
-  Termio app, and nowhere else.
+  Both toggles only write files on your Mac — hook entries in agent configs and
+  the skill file. Nothing leaves your machine: status reports and session
+  commands travel over a local socket to the Termio app, and nowhere else.
 </Callout>
 
 ## The `termio` command-line tool
 
-Install the CLI from **Settings ▸ General ▸ Install Command-Line Tool**. It
-symlinks a `termio` command onto your `PATH` (at `/usr/local/bin/termio`; macOS
-asks for permission once).
+Turn on **Settings ▸ General ▸ Command-line tool**. It symlinks a `termio`
+command onto your `PATH` (at `/usr/local/bin/termio`; macOS asks for permission
+once), and turning it off removes the link again.
 
 ### Open a project
 
@@ -178,18 +196,18 @@ outcomes so scripts can branch without parsing: **0** settled, **1** error
 - **Heartbeat.** In `--json` mode the app writes `{"heartbeat":true}` after 30
   seconds of silence, so a quiet stream is distinguishable from a dead one.
 - **Exit codes.** `0` after Ctrl-C (the normal end of supervision), `2` when
-  the stream closed from the app side — "I chose to stop" and "termio went
+  the stream closed from the app side — "I chose to stop" and "Termio went
   away" are different outcomes.
 
 ### Spawned sessions know their caller
 
-When one termio session spawns another, the delivered prompt opens with a short
+When one Termio session spawns another, the delivered prompt opens with a short
 provenance envelope: it names the caller's link and allows exactly one
 back-channel — a mid-task question, or a one-line completion ping, via
 `termio sessions send <caller-link> …`. Nothing else travels that way: no
 conversation, no delegating tasks back. Results stay transcript-as-truth — the
 supervisor reads the worker's transcript, with `watch` as the backstop. A
-`spawn` from a plain shell (outside any termio session) gets no envelope.
+`spawn` from a plain shell (outside any Termio session) gets no envelope.
 
 ### Fail loud
 

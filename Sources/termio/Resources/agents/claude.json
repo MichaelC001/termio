@@ -13,6 +13,7 @@
   },
   "icon": { "vector": "claude" },
   "install": "https://claude.com/claude-code",
+  "skills": { "dir": "~/.claude/skills" },
   "titleStatus": {
     "working": ["^[⠀-⣿] "]
   },

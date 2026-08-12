@@ -827,7 +827,7 @@ enum SessionTraceRenderer {
         <html><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>\(escaped(title)) — termio trace</title>
-        <style>\(themeVariables(theme))\n\(css)</style></head>
+        <style>\(themeVariables(theme))\n\(MarkdownSkin.highlightTheme(dark: theme.isDark))\n\(MarkdownSkin.css(scope: ".text.md "))\n\(css)</style></head>
         <body>
         \(headerHTML)
         <main>
@@ -851,6 +851,7 @@ enum SessionTraceRenderer {
           --accent: \(t.accent);
           --line: \(t.isDark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.10)");
           --soft: \(t.isDark ? "rgba(255,255,255,0.045)" : "rgba(0,0,0,0.035)");
+        \(MarkdownSkin.alertVariables(dark: t.isDark))
         }
         """
     }
@@ -912,6 +913,17 @@ enum SessionTraceRenderer {
       background: var(--soft); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
     .text.md pre { background: var(--soft); border: 1px solid var(--line); border-radius: 8px; margin: 10px 0; }
     .text.md pre code { background: none; border: none; padding: 0; }
+    /* The hljs theme's own background/padding/base color lose to the trace's block style;
+       only its token colors are wanted. */
+    /* Alerts, math and footnotes: the same constructs the reader renders, at the trace's
+       tighter rhythm. Colors come from the shared --alert-* variables. */
+    .text.md .alert { margin: 10px 0; padding: 2px 0 2px 12px; border-left: 3px solid var(--alert-color); }
+    .text.md .alert-title { margin: 0 0 4px; color: var(--alert-color); font-size: 11px;
+      font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+    .text.md .alert > *:last-child { margin-bottom: 0; }
+    .text.md .math-display { margin: 10px 0; }
+    .text.md .footnotes { margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--line);
+      font-size: 12.5px; color: var(--muted); }
     .text.md ul, .text.md ol { margin: 8px 0; padding-left: 22px; }
     .text.md li { margin: 3px 0; }
     /* Task-list items (MarkdownHTML emits the Hugeicons box): box instead of bullet. */
