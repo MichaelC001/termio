@@ -173,7 +173,7 @@ struct CustomAgentEditorSheet: View {
                             .labelsHidden()
                     }
                 } footer: {
-                    Text(localized("Both optional. The flag powers the agent's “Skip permission prompts” switch; leave it empty if the CLI has none. The directory receives termio's session-control skill (as `<dir>/termio`); leave it empty to skip installing one."))
+                    Text(localized("Both optional. The flag powers the agent’s “Skip permission prompts” switch; leave it empty if the CLI has none. The directory receives termio’s session-control skill (as `<dir>/termio`); leave it empty to skip installing one."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

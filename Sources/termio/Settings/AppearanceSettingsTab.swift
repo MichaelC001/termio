@@ -36,7 +36,7 @@ struct AppearanceSettingsTab: View {
             } header: {
                 SectionHeaderLabel(title: localized("Theme"))
             } footer: {
-                Text(localized("Termio switches between these as macOS changes appearance; leave a slot on the default for Termio's own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”"))
+                Text(localized("Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -60,11 +60,11 @@ struct AppearanceSettingsTab: View {
                 SectionHeaderLabel(title: localized("Terminal font"))
             } footer: {
                 if settings.inheritsGhosttyDefaults {
-                    Text(localized("Line height applies to the file editor and diffs; the terminal keeps the font's own. Font and theme values you haven't set here follow your Ghostty config."))
+                    Text(localized("Line height applies to the file editor and diffs; the terminal keeps the font’s own. Font and theme values you haven’t set here follow your Ghostty config."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    Text(localized("Line height applies to the file editor and diffs; the terminal keeps the font's own."))
+                    Text(localized("Line height applies to the file editor and diffs; the terminal keeps the font’s own."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

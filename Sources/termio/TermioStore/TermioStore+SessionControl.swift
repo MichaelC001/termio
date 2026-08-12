@@ -38,7 +38,7 @@ extension TermioStore {
         }
         guard let project = callerProject(session: request.callerSession, cwd: request.callerCwd) else {
             return controlError(request, "no_scope",
-                "Couldn't tell which project you're in. Run this from inside a Termio session.")
+                "Couldn’t tell which project you’re in. Run this from inside a Termio session.")
         }
 
         switch request.op {
@@ -54,7 +54,7 @@ extension TermioStore {
     }
 
     /// `termio notify` — post a macOS notification on the agent's explicit request
-    /// ("I'm done", "I need input"). Unlike the automatic task-completion banner,
+    /// ("I’m done", "I need input"). Unlike the automatic task-completion banner,
     /// this carries no policy gate: the agent asked for it, so it fires whether or
     /// not termio is frontmost and regardless of turn length. The calling session
     /// rides in the banner so a click focuses it, and the project supplies the
@@ -92,7 +92,7 @@ extension TermioStore {
         }
         guard let project = callerProject(session: request.callerSession, cwd: request.callerCwd) else {
             return (nil, controlError(request, "no_scope",
-                "Couldn't tell which project you're in. Run this from inside a Termio session."), [])
+                "Couldn’t tell which project you’re in. Run this from inside a Termio session."), [])
         }
         guard request.snapshot != false else { return (project.id, nil, []) }
         let snapshot = project.sessions.map { session -> SessionWatchEvent in
@@ -285,7 +285,7 @@ extension TermioStore {
             to: project.id, agent: preset, anchor: caller?.id,
             takeFocus: caller == nil || caller?.id == selectedSessionID)
         guard let freshID, let fresh = session(freshID) else {
-            return controlError(request, "start_failed", "Could not start the session.")
+            return controlError(request, "start_failed", "Couldn’t start the session.")
         }
         let state = surface(for: fresh, in: project)
         // The envelope is agent guidance — typed into a shell it would *execute*

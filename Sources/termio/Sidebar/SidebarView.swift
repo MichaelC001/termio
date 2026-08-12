@@ -1263,7 +1263,7 @@ private struct AgentHooksOffBanner: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(localized("Live agent status is off"))
                     .font(.callout.weight(.medium))
-                Text(localized("Agents won't show as working."))
+                Text(localized("Agents won’t show as working."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

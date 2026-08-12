@@ -264,7 +264,7 @@ struct IssuesView: View {
                 // A valid token with no rights to *this* repo (403) — usually an org that hasn't
                 // authorized termio. Switch account, or grant org access.
                 zeroState(
-                    title: localized("Couldn’t Load"),
+                    title: localized("Couldn’t load"),
                     message: localized("Reconnect to sign in with a different account, or grant Termio access to the organization that owns this repository.")
                 ) {
                     Button(localized("Reconnect")) { Task { await model.reconnect() } }
@@ -277,7 +277,7 @@ struct IssuesView: View {
             case .retry, .none:
                 // Rate limit, 404, 5xx, network, decode — reconnecting won't help; just retry.
                 zeroState(
-                    title: localized("Couldn’t Load"),
+                    title: localized("Couldn’t load"),
                     message: localized("Something went wrong loading this repository. Try again in a moment.")
                 ) {
                     Button(localized("Try Again")) { Task { await model.loadList(force: true) } }
@@ -739,7 +739,7 @@ struct IssueDetailView: View {
                 diagrams = await MermaidRenderer.shared.diagrams(for: sources, theme: mermaidTheme)
             }
         } else if let error = model.detailError {
-            ContentUnavailableView(localized("Couldn’t Load"), huge: .github, description: Text(error))
+            ContentUnavailableView(localized("Couldn’t load"), huge: .github, description: Text(error))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ProgressView()

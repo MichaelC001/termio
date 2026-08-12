@@ -127,12 +127,12 @@ struct GitChangesView: View {
             Text(discardMessage(changes))
         }
         .alert(
-            localized("Couldn’t Update .gitignore"),
+            localized("Couldn’t update .gitignore"),
             isPresented: gitignoreErrorPresented
         ) {
             Button(localized("OK")) { gitignoreErrorMessage = nil }
         } message: {
-            Text(gitignoreErrorMessage ?? localized("The ignore rule could not be added."))
+            Text(gitignoreErrorMessage ?? localized("The ignore rule couldn’t be added."))
         }
     }
 
