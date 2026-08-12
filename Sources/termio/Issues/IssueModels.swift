@@ -144,6 +144,10 @@ struct IssueDetail: Equatable, Sendable {
 struct PullRequestFile: Sendable {
     let change: GitChange
     let patch: String?
+    /// GitHub's `contents_url` for this file, already pinned to the PR head. The patch
+    /// carries three lines of context, so expanding a hunk boundary means reading the file
+    /// itself — this is where from, without fetching the PR's refs.
+    let contentsURL: URL?
 }
 
 // MARK: - Provider protocol
