@@ -30,6 +30,9 @@ final class IssueCache {
         var detail: IssueDetail
         var prFiles: [GitChange]
         var prFilePatches: [String: String]
+        /// Each file's `contents_url` at the PR head, so a reopened-from-cache Files tab can
+        /// still read the file to expand a hunk boundary.
+        var prFileContentURLs: [String: URL]
         /// The conversation is cached the instant it lands — *before* a PR's heavy `/files`
         /// response — so even opening a PR and immediately switching away warms the cache. This
         /// marks whether that file list has since folded in: `false` means "files still pending",
@@ -45,6 +48,7 @@ final class IssueCache {
             detail == other.detail
                 && prFiles == other.prFiles
                 && prFilePatches == other.prFilePatches
+                && prFileContentURLs == other.prFileContentURLs
         }
     }
 

@@ -205,20 +205,24 @@ final class DiffGutterRulerView: NSRulerView {
         guard !controls.isEmpty else { return }
 
         var directions: [DiffBandDirection] = []
+        if controls.contains(.all) { directions.append(.all) }
         if controls.contains(.down) { directions.append(.down) }
         if controls.contains(.up) { directions.append(.up) }
 
-        // Side by side rather than github.com's stacked pair: its expander is double
-        // height to fit two 16pt icons, and a diff row here is barely taller than its text.
+        // Stacked, GitHub Desktop's shape: one gutter cell split in half, the downward
+        // reveal on top and the upward one below, each reading toward the code it pulls
+        // from. A lone control (a first hunk, or a gap short enough to open at once) takes
+        // the whole cell.
         let padding = DiffDocument.bandPadding
-        let cell = (ruleThickness - Self.leadingPad - Self.trailingPad)
-            / CGFloat(directions.count)
-        var x = Self.leadingPad
-        for direction in directions {
-            let hit = NSRect(x: x, y: y - padding, width: cell, height: height + padding * 2)
+        let width = ruleThickness - Self.leadingPad - Self.trailingPad
+        let full = NSRect(x: Self.leadingPad, y: y - padding,
+                          width: width, height: height + padding * 2)
+        let slice = full.height / CGFloat(directions.count)
+        for (index, direction) in directions.enumerated() {
+            let hit = NSRect(x: full.minX, y: full.minY + slice * CGFloat(index),
+                             width: full.width, height: slice)
             drawRevealIcon(direction, in: hit, ink: numberColor)
             buttonHits.append(ButtonHit(rect: hit, anchor: line.rowId, direction: direction))
-            x += cell
         }
     }
 
@@ -228,6 +232,35 @@ final class DiffGutterRulerView: NSRulerView {
         let gap: CGFloat = 2.5
         let dotWidth: CGFloat = 1.2
         let originX = (rect.midX - width / 2).rounded()
+        // "Open the whole gap" reads as both arrows meeting on the dots — GitHub Desktop's
+        // fold glyph — rather than either single direction, neither of which is what a
+        // click does here.
+        if direction == .all {
+            let dotsY = (rect.midY - dotWidth / 2).rounded()
+            ink.setFill()
+            var dotX = originX
+            while dotX < originX + width {
+                NSRect(x: dotX, y: dotsY, width: dotWidth, height: dotWidth).fill()
+                dotX += dotWidth * 2
+            }
+            ink.setStroke()
+            for pointsDown in [true, false] {
+                let tipY = pointsDown ? dotsY - gap : dotsY + dotWidth + gap
+                let tailY = pointsDown ? tipY - arrowHeight : tipY + arrowHeight
+                let barbY = pointsDown ? tipY - 2.4 : tipY + 2.4
+                let arrow = NSBezierPath()
+                arrow.lineWidth = 1.2
+                arrow.lineCapStyle = .round
+                arrow.lineJoinStyle = .round
+                arrow.move(to: NSPoint(x: rect.midX, y: tailY))
+                arrow.line(to: NSPoint(x: rect.midX, y: tipY))
+                arrow.move(to: NSPoint(x: originX + 1, y: barbY))
+                arrow.line(to: NSPoint(x: rect.midX, y: tipY))
+                arrow.line(to: NSPoint(x: originX + width - 1, y: barbY))
+                arrow.stroke()
+            }
+            return
+        }
         // The arrow points the way the reveal walks — the same reading github.com and
         // GitHub Desktop use — and the dots trail behind it, on the side still hidden.
         // A vertical NSRulerView is flipped, so `minY` is the block's *top* edge: an

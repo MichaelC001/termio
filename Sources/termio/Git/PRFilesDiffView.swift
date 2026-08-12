@@ -12,6 +12,8 @@ struct PRFilesSplitView: View {
     let files: [GitChange]
     /// Each file's inline unified-diff `patch` from the GitHub API, keyed by path.
     let patches: [String: String]
+    /// Reads a file at the PR head, for expanding a hunk boundary the patch left out.
+    let fileText: (String) async -> String?
     /// Only used to resolve each file's language for syntax coloring.
     let repoRoot: String
     @ObservedObject var settings: AppSettings
@@ -73,7 +75,7 @@ struct PRFilesSplitView: View {
     /// you see *all* the files, not one at a time, and selection / ⌘F run across the whole set.
     private var narrow: some View {
         StackedDiffBody(
-            files: files, patches: patches, repoRoot: repoRoot,
+            files: files, patches: patches, fileText: fileText, repoRoot: repoRoot,
             settings: settings, onClose: onClose
         )
     }
@@ -112,6 +114,7 @@ struct PRFilesSplitView: View {
             PRFileDiffBody(
                 change: change,
                 patch: patches[change.path],
+                fileText: fileText,
                 repoRoot: repoRoot,
                 settings: settings,
                 onClose: onClose,
@@ -149,6 +152,10 @@ struct PRFilesSplitView: View {
 private struct PRFileDiffBody: View {
     let change: GitChange
     let patch: String?
+    /// Reads the file at the PR head. GitHub's patch carries three lines of context, so a
+    /// hunk boundary can only be opened from the file itself; until this lands the bands
+    /// draw inert, the way GitHub Desktop draws a gap it cannot expand.
+    let fileText: (String) async -> String?
     let repoRoot: String
     @ObservedObject var settings: AppSettings
     let onClose: () -> Void
@@ -157,6 +164,7 @@ private struct PRFileDiffBody: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var rows: [DiffRow] = []
+    @State private var gapText: DiffGapText = .unavailable
     @State private var document: DiffDocument?
     @State private var styledLines: [Int: NSAttributedString] = [:]
     @State private var expansion = DiffExpansion()
@@ -258,6 +266,7 @@ private struct PRFileDiffBody: View {
         rows = parsed
         rebuildDocument()
         isLoading = false
+        await loadGapText()
         await buildStyledLines(parsed)
     }
 
@@ -269,7 +278,17 @@ private struct PRFileDiffBody: View {
             : DiffDocument.build(rows: rows, expansion: expansion,
                                  palette: settings.diffPalette(for: colorScheme),
                                  codeFont: settings.resolvedTerminalFont(),
-                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
+                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()),
+                                 gapText: gapText)
+    }
+
+
+    /// One read per opened file, behind the diff so the patch renders immediately. A file
+    /// that comes back empty (binary, too large, no access) leaves `gapText` unavailable.
+    private func loadGapText() async {
+        guard gapText.isEmpty, let text = await fileText(change.path) else { return }
+        gapText = DiffGapText(fileLines: text.components(separatedBy: "\n"))
+        rebuildDocument()
     }
 
     private func buildStyledLines(_ rows: [DiffRow]) async {
@@ -299,6 +318,8 @@ private struct PRFileDiffBody: View {
 private struct StackedDiffBody: View {
     let files: [GitChange]
     let patches: [String: String]
+    /// Reads a file at the PR head, for expanding a hunk boundary the patch left out.
+    let fileText: (String) async -> String?
     let repoRoot: String
     @ObservedObject var settings: AppSettings
     let onClose: () -> Void
@@ -313,6 +334,7 @@ private struct StackedDiffBody: View {
                     FileDiffCard(
                         change: change,
                         patch: patches[change.path],
+                        fileText: fileText,
                         repoRoot: repoRoot,
                         settings: settings,
                         collapsed: collapsed.contains(change.path),
@@ -337,6 +359,7 @@ private struct StackedDiffBody: View {
 private struct FileDiffCard: View {
     let change: GitChange
     let patch: String?
+    let fileText: (String) async -> String?
     let repoRoot: String
     @ObservedObject var settings: AppSettings
     let collapsed: Bool
@@ -345,6 +368,7 @@ private struct FileDiffCard: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var rows: [DiffRow] = []
+    @State private var gapText: DiffGapText = .unavailable
     @State private var document: DiffDocument?
     @State private var styledLines: [Int: NSAttributedString] = [:]
     @State private var expansion = DiffExpansion()
@@ -453,14 +477,24 @@ private struct FileDiffCard: View {
             : DiffDocument.build(rows: parsed, expansion: expansion,
                                  palette: settings.diffPalette(for: colorScheme),
                                  codeFont: settings.resolvedTerminalFont(),
-                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
+                                 lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()),
+                                 gapText: gapText)
+        await loadGapText()
         await buildStyled(parsed)
     }
 
     private func rebuildDocument() {
         document = DiffDocument.build(rows: rows, expansion: expansion, palette: settings.diffPalette(for: colorScheme),
                                       codeFont: settings.resolvedTerminalFont(),
-                                      lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()))
+                                      lineSpacing: settings.codeLineSpacing(for: settings.resolvedTerminalFont()),
+                                      gapText: gapText)
+    }
+
+    /// One read per opened card, behind the diff so the patch renders immediately.
+    private func loadGapText() async {
+        guard gapText.isEmpty, let text = await fileText(change.path) else { return }
+        gapText = DiffGapText(fileLines: text.components(separatedBy: "\n"))
+        rebuildDocument()
     }
 
     private func buildStyled(_ parsed: [DiffRow]) async {

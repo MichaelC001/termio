@@ -106,6 +106,7 @@ struct GitHubIssueProvider: IssueProvider {
             let deletions: Int
             let previousFilename: String?
             let patch: String?
+            let contentsUrl: String?
         }
         let raw: [RawFile] = try await get(
             URL(string: "https://api.github.com/repos/\(container.id)/pulls/\(number)/files?per_page=100")!)
@@ -124,8 +125,26 @@ struct GitHubIssueProvider: IssueProvider {
             change.originalPath = file.previousFilename
             // No `patch` on a binary file; GitHub also drops it past its inline-size cap.
             change.isBinary = file.patch == nil && file.additions == 0 && file.deletions == 0
-            return PullRequestFile(change: change, patch: file.patch)
+            return PullRequestFile(change: change, patch: file.patch,
+                                   contentsURL: file.contentsUrl.flatMap(URL.init(string:)))
         }
+    }
+
+    /// One PR file's text at the PR head, for expanding the context its patch left out.
+    /// `contents_url` is already pinned to the head sha, and the raw media type returns the
+    /// file itself rather than base64 in JSON — so this stays one request with no decode.
+    /// Binary or over-large files come back as something other than UTF-8 text and are
+    /// reported as missing, leaving the diff's bands inert.
+    func fileText(at url: URL) async throws -> String? {
+        var request = URLRequest(url: url, timeoutInterval: 15)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/vnd.github.raw", forHTTPHeaderField: "Accept")
+        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw APIError.status(http.statusCode)
+        }
+        return String(data: data, encoding: .utf8)
     }
 
     /// The connected account's login, fetched once per app run — the `assignee`
