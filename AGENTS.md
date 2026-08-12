@@ -159,7 +159,8 @@ Companion:
   re-pull from upstream instead.
 - Skills that encode this repo's workflows, by area:
   - Build & run: `macos-rebuild-dev`, `ios-rebuild-dev`, `app-screenshot-debug`
-  - Release: `bump-version`, `check-ghostty-update`, `asc` (App Store Connect)
+  - Release: `bump-version`, `check-ghostty-update`, `testflight-release`
+    (iOS beta builds), `asc` (App Store Connect)
   - Repo hygiene: `conventional-commit`, `doc`, `issue-creator`
   - Writing: `review-copy` (scores copy against `VOICE.md`)
   - Web/landing: `og-generation`
