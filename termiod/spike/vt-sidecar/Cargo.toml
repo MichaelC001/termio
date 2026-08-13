@@ -1,8 +1,0 @@
-[package]
-name = "termiod-vt-sidecar-spike"
-version = "0.0.0"
-edition = "2021"
-publish = false
-
-[dependencies]
-alacritty_terminal = { version = "0.26.0", default-features = false }
