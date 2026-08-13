@@ -1,12 +1,12 @@
 ---
 name: check-ghostty-update
-description: "Check whether ghostty (the terminal core termio embeds via the jiweiyuan/libghostty-swift fork) has shipped anything worth pulling since the binary termio is currently pinned to. Resolves the pinned ghostty sha, diffs it against ghostty main, filters the gap for changes that actually reach termio's embedded VT/terminal core (dropping app-chrome / packaging / i18n noise), and gives a keep-waiting-or-pull-now verdict. Invoke when the user says 'check ghostty update', 'is ghostty out of date', 'did ghostty ship anything major', 'should I bump ghostty/libghostty', '看看 ghostty 有没有更新', '检查 ghostty 更新', 'ghostty 有什么重大更新', or '要不要更新 libghostty'."
+description: "Check whether ghostty (the terminal core termio embeds via the termio-sh/libghostty-swift fork) has shipped anything worth pulling since the binary termio is currently pinned to. Resolves the pinned ghostty sha, diffs it against ghostty main, filters the gap for changes that actually reach termio's embedded VT/terminal core (dropping app-chrome / packaging / i18n noise), and gives a keep-waiting-or-pull-now verdict. Invoke when the user says 'check ghostty update', 'is ghostty out of date', 'did ghostty ship anything major', 'should I bump ghostty/libghostty', '看看 ghostty 有没有更新', '检查 ghostty 更新', 'ghostty 有什么重大更新', or '要不要更新 libghostty'."
 ---
 
 # Check ghostty update
 
 termio does **not** build ghostty itself — it embeds ghostty's terminal core through
-the **`jiweiyuan/libghostty-swift`** fork, whose weekly CI rebuilds `GhosttyKit.xcframework`
+the **`termio-sh/libghostty-swift`** fork, whose weekly CI rebuilds `GhosttyKit.xcframework`
 against ghostty `main` and publishes it as a `storage.X.Y.Z` release ([[termio-libghostty-swift]]).
 So "is ghostty up to date" really means: **how far is ghostty `main` ahead of the sha baked
 into the binary termio is pinned to, and is anything in that gap relevant to termio?**
@@ -32,7 +32,7 @@ names a `storage.X.Y.Z` binary → that storage release's **title** carries the 
 
 ```bash
 REPO=$(git rev-parse --show-toplevel)
-FORK=jiweiyuan/libghostty-swift
+FORK=termio-sh/libghostty-swift
 GHOSTTY=ghostty-org/ghostty
 
 VER=$(grep -A6 '"identity" : "libghostty-swift"' "$REPO/Package.resolved" \
@@ -106,7 +106,7 @@ Give a short, honest call:
 The binary can't be built locally. To pull ghostty early:
 1. Manually dispatch the fork's CI against a specific ghostty ref — the fork's
    `.github/workflows/build.yml` takes a `ghostty_ref` input (default builds `main` HEAD):
-   `gh workflow run build.yml --repo jiweiyuan/libghostty-swift -f ghostty_ref=main`
+   `gh workflow run build.yml --repo termio-sh/libghostty-swift -f ghostty_ref=main`
    (or pin an exact sha). It publishes a new `storage.X.Y.Z` + `X.Y.Z` tag (~30 min).
 2. Bump termio's pin (`Package.swift` `from:` + re-resolve `Package.resolved`), and the
    iOS `TermioMobile.xcodeproj` pin if the phone should get it too (it pins the fork

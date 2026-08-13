@@ -465,7 +465,7 @@
 /* Begin XCRemoteSwiftPackageReference section */
 		E76CADD6045BA4FE33901492 /* XCRemoteSwiftPackageReference "libghostty-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/jiweiyuan/libghostty-swift";
+			repositoryURL = "https://github.com/termio-sh/libghostty-swift";
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 1.0.16;

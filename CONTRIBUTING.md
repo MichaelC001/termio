@@ -12,7 +12,7 @@ open an issue and discuss before writing code.
 - Swift 6 (Xcode 26).
 - No `zig` toolchain needed: libghostty ships as a prebuilt
   `GhosttyKit.xcframework` via the
-  [jiweiyuan/libghostty-swift](https://github.com/jiweiyuan/libghostty-swift)
+  [termio-sh/libghostty-swift](https://github.com/termio-sh/libghostty-swift)
   package. Do not try to build Ghostty from source in this repo.
 
 ## Building and running
@@ -99,7 +99,7 @@ the upstream license in a vendor `README.md`, route resource lookups through
 header.
 
 Changes to libghostty itself go to the
-[jiweiyuan/libghostty-swift](https://github.com/jiweiyuan/libghostty-swift)
+[termio-sh/libghostty-swift](https://github.com/termio-sh/libghostty-swift)
 fork (as rebased patch files there), not this repo; Termio then bumps the
 package version in `Package.swift`.
 

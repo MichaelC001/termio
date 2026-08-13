@@ -42,7 +42,7 @@ software with no backend, no account, and no license server.
 
 macOS 14+ and Swift 6 (Xcode 26). No `zig` toolchain is needed: libghostty
 ships as a prebuilt `GhosttyKit.xcframework` through the
-[jiweiyuan/libghostty-swift](https://github.com/jiweiyuan/libghostty-swift)
+[termio-sh/libghostty-swift](https://github.com/termio-sh/libghostty-swift)
 package. Do not try to build Ghostty from source in this repo.
 
 ## Common commands
