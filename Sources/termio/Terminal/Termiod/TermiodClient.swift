@@ -139,7 +139,10 @@ enum Termiod {
     }
 
     private static let multiplexingLock = NSLock()
-    private static var multiplexingCache: [String: [String]] = [:]
+    /// `nonisolated(unsafe)` because every access goes through
+    /// `multiplexingLock` above — the lock, not the actor, is what makes this
+    /// safe, and the compiler cannot see that.
+    nonisolated(unsafe) private static var multiplexingCache: [String: [String]] = [:]
 
     private static func resolveMultiplexingArguments(host: String) -> [String] {
         guard userLeavesMultiplexingToUs(host: host),

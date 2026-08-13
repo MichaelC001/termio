@@ -11,10 +11,30 @@ import WebKit
 struct FilePreviewView: View {
     let url: URL
     @ObservedObject var settings: AppSettings
+    let displayName: String?
+    /// False for content copied from an SSH host. A failed raster decode must
+    /// stay inert instead of handing attacker-controlled bytes to WebKit.
+    let allowsWebFallback: Bool
     /// Dismisses the overlay (clears `store.openFileURL`) and hands focus back to the terminal.
     let onClose: () -> Void
 
     private enum Kind { case image, pdf, web }
+
+    init(
+        url: URL,
+        settings: AppSettings,
+        displayName: String? = nil,
+        allowsWebFallback: Bool = true,
+        onClose: @escaping () -> Void
+    ) {
+        self.url = url
+        self.settings = settings
+        self.displayName = displayName
+        self.allowsWebFallback = allowsWebFallback
+        self.onClose = onClose
+    }
+
+    private var fileName: String { displayName ?? url.lastPathComponent }
 
     private var kind: Kind {
         switch url.pathExtension.lowercased() {
@@ -42,7 +62,7 @@ struct FilePreviewView: View {
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
-            Text(url.lastPathComponent)
+            Text(fileName)
                 .font(.system(size: 12.5, weight: .medium))
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -76,20 +96,36 @@ struct FilePreviewView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
                     .contextMenu {
-                        Button("Copy Image") {
+                        Button(localized("Copy Image")) {
                             // The NSImage goes on the pasteboard as bitmap data, so it pastes
                             // into chat and design apps as the picture, not a file path.
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.writeObjects([image])
                         }
-                        Button("Reveal in Finder") {
+                        Button(localized("Reveal in Finder")) {
                             NSWorkspace.shared.activateFileViewerSelecting([url])
                         }
                     }
-            } else {
+            } else if Self.usesWebFallback(
+                imageDecoded: false, allowsWebFallback: allowsWebFallback
+            ) {
                 WebPreview(url: url)
+            } else {
+                PaneEmptyState(
+                    localized("Can’t preview"),
+                    icon: .fileQuestion,
+                    message: localized("“\(fileName)” isn’t a supported image.")
+                )
             }
         }
+    }
+
+    /// Internal so the security boundary has a direct regression test.
+    static func usesWebFallback(
+        imageDecoded: Bool,
+        allowsWebFallback: Bool
+    ) -> Bool {
+        !imageDecoded && allowsWebFallback
     }
 }
 

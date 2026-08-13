@@ -98,15 +98,11 @@ struct SessionInfoView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         } else {
-            ContentUnavailableView {
-                Label {
-                    Text("No Session")
-                } icon: {
-                    HugeIconView(icon: .infoCircle, size: 38, color: .secondary)
-                }
-            } description: {
-                Text("Select a session to see its info.")
-            }
+            PaneEmptyState(
+                localized("No Session"),
+                icon: .infoCircle,
+                message: localized("Select a session to see its info.")
+            )
         }
     }
 
@@ -114,18 +110,18 @@ struct SessionInfoView: View {
 
     private func workingDirectorySection(_ path: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Working Directory")
+            sectionLabel(localized("Working Directory"))
 
             VStack(alignment: .leading, spacing: 1) {
-                InfoRow(huge: .copy, title: "Copy Path") { copy(path) }
-                InfoRow(huge: .folder, title: "Reveal in Finder") { revealInFinder(path) }
+                InfoRow(huge: .copy, title: localized("Copy Path")) { copy(path) }
+                InfoRow(huge: .folder, title: localized("Reveal in Finder")) { revealInFinder(path) }
                 if let remotePage {
-                    InfoRow(forge: remotePage.forge, title: "View on \(remotePage.forge.name)") {
+                    InfoRow(forge: remotePage.forge, title: localized("View on \(remotePage.forge.name)")) {
                         NSWorkspace.shared.open(remotePage.url)
                     }
                 }
                 ForEach(EditorTarget.installed) { editor in
-                    InfoRow(appIcon: editor.appIcon, title: "Open in \(editor.name)") {
+                    InfoRow(appIcon: editor.appIcon, title: localized("Open in \(editor.name)")) {
                         editor.open(URL(fileURLWithPath: path))
                     }
                 }
@@ -153,7 +149,7 @@ struct SessionInfoView: View {
     private func agentSection(_ session: Session) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text("Agent")
+                Text(localized("Agent"))
                     .font(.system(size: 11, weight: .semibold))
                     .textCase(.uppercase)
                     .tracking(0.5)
@@ -166,12 +162,12 @@ struct SessionInfoView: View {
 
             if let transcriptPath {
                 VStack(alignment: .leading, spacing: 1) {
-                    InfoRow(huge: .listView, title: "View Trace") { viewTrace(transcriptPath, session: session) }
-                    InfoRow(huge: .copy, title: "Copy Path") { copy(transcriptPath) }
-                    InfoRow(huge: .folder, title: "Reveal in Finder") { revealInFinder(transcriptPath) }
+                    InfoRow(huge: .listView, title: localized("View Trace")) { viewTrace(transcriptPath, session: session) }
+                    InfoRow(huge: .copy, title: localized("Copy Path")) { copy(transcriptPath) }
+                    InfoRow(huge: .folder, title: localized("Reveal in Finder")) { revealInFinder(transcriptPath) }
                 }
             } else {
-                Text("Waiting for the agent's first status report.")
+                Text(localized("Waiting for the agent’s first status report."))
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)

@@ -17,7 +17,7 @@ related:
 ## Constraint
 
 The explicit constraint is **do not instrument the app**. No SDK, no new
-outbound call from termio itself. That leaves exactly one passive heartbeat the
+outbound call from Termio itself. That leaves exactly one passive heartbeat the
 Mac already emits and we already receive: **Sparkle's periodic `GET`
 of `downloads.termio.sh/appcast.xml`**.
 

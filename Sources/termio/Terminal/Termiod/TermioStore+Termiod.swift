@@ -345,18 +345,21 @@ extension TermioStore {
     func ensureRemoteReady(host: String, completion: @escaping (RemoteSetupResult) -> Void) {
         let hud = RemoteSetupHUD(message: "Setting up \(host)…")
         hud.show()
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = Self.performRemoteReadyCheck(host: host)
-            DispatchQueue.main.async { [weak self] in
-                hud.dismiss()
-                // Whatever the caller does next, the alias has now resolved to a
-                // machine — write that down before handing back, so state keyed by
-                // device is addressable by the time it is read.
-                if case .success(let device) = result {
-                    self?.adoptDevice(device, forRoute: .ssh(host))
-                }
-                completion(result)
+        // Only the probe leaves the main actor. `completion` is the caller's
+        // closure and captures main-actor state, so it must never be sent to
+        // another isolation domain — it is called here, where it was formed.
+        Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                Self.performRemoteReadyCheck(host: host)
+            }.value
+            hud.dismiss()
+            // Whatever the caller does next, the alias has now resolved to a
+            // machine — write that down before handing back, so state keyed by
+            // device is addressable by the time it is read.
+            if case .success(let device) = result {
+                self?.adoptDevice(device, forRoute: .ssh(host))
             }
+            completion(result)
         }
     }
 

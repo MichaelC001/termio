@@ -84,12 +84,13 @@ extension AppSettings {
     /// fallback: name lookup fails for system faces like the default "SF Mono"
     /// (Apple doesn't expose it by name to third-party apps), and SwiftUI's
     /// `Font.custom` would paper over that by silently substituting Helvetica.
-    func resolvedTerminalFont(minSize: Double = 11) -> NSFont {
-        let size = max(minSize, fontSize)
-        if !fontFamily.isEmpty, let font = NSFont(name: fontFamily, size: size) {
+    /// The size is the terminal's own — no floor of its own, or a code surface would
+    /// stop shrinking with the terminal it is supposed to match.
+    func resolvedTerminalFont() -> NSFont {
+        if !fontFamily.isEmpty, let font = NSFont(name: fontFamily, size: fontSize) {
             return font
         }
-        return .monospacedSystemFont(ofSize: size, weight: .regular)
+        return .monospacedSystemFont(ofSize: fontSize, weight: .regular)
     }
 
     /// Extra leading (points) lifting `font`'s natural line height to the configured

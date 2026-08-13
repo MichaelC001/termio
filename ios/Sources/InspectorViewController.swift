@@ -16,7 +16,7 @@ final class InspectorViewController: UIViewController {
     private let session: MockSession
     private let companionURL: URL?
     private let tableView = UITableView(frame: .zero, style: .plain)
-    private let segment = UISegmentedControl(items: ["Changes", "Files"])
+    private let segment = UISegmentedControl(items: [localized("Changes"), localized("Files")])
     private let spinner = UIActivityIndicatorView(style: .medium)
     private let searchBar = UISearchBar()
     private let refreshControl = UIRefreshControl()
@@ -85,7 +85,7 @@ final class InspectorViewController: UIViewController {
         navigationItem.titleView = segment
 
         searchBar.delegate = self
-        searchBar.placeholder = "Search files"
+        searchBar.placeholder = localized("Search files")
         searchBar.showsCancelButton = true
         searchBar.sizeToFit()
 
@@ -292,8 +292,8 @@ final class InspectorViewController: UIViewController {
             return
         }
         pendingRead = nil
-        let alert = UIAlertController(title: "Couldn't open file", message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        let alert = UIAlertController(title: localized("Couldn't open file"), message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: localized("OK"), style: .default))
         present(alert, animated: true)
     }
 
@@ -411,18 +411,18 @@ extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
             $0.added += $1.additions
             $0.deleted += $1.deletions
         }
-        let files = changes.count == 1 ? "1 changed file" : "\(changes.count) changed files"
-        return "\(files)  +\(totals.added) −\(totals.deleted)"
+        let files = changes.count == 1 ? localized("1 changed file") : localized("\(changes.count) changed files")
+        return localized("\(files)  +\(totals.added) −\(totals.deleted)")
     }
 
     func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         if isSearching, pane == .files, searchTruncated {
-            return "Too many matches — showing the first batch. Refine to narrow."
+            return localized("Too many matches — showing the first batch. Refine to narrow.")
         }
         if pane == .changes, changes.isEmpty {
             return changesLoaded
-                ? "No changes in this project's working tree."
-                : "Loading changes…"
+                ? localized("No changes in this project's working tree.")
+                : localized("Loading changes…")
         }
         return nil
     }

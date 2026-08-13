@@ -90,7 +90,7 @@ final class ProjectListViewController: UIViewController {
 
     private func configureTopBar() -> UIView {
         let pageTitle = UILabel()
-        pageTitle.text = "Projects"
+        pageTitle.text = localized("Projects")
         pageTitle.font = .systemFont(ofSize: 34, weight: .bold)
         pageTitle.textColor = .label
 
@@ -98,7 +98,7 @@ final class ProjectListViewController: UIViewController {
         // a glass circle riding the large title, menu as primary action.
         filterButton.applyGlassSymbol("line.3.horizontal.decrease")
         filterButton.tintColor = .label
-        filterButton.accessibilityLabel = "Sort"
+        filterButton.accessibilityLabel = localized("Sort")
         filterButton.showsMenuAsPrimaryAction = true
         filterButton.menu = UIMenu(children: [
             UIDeferredMenuElement.uncached { [weak self] completion in
@@ -127,10 +127,10 @@ final class ProjectListViewController: UIViewController {
     /// The same two orders as the Mac's sort menu, checkmarked like it too.
     private func sortMenuItems() -> [UIMenuElement] {
         [
-            UIAction(title: "Recent Activity", state: sortByName ? .off : .on) { [weak self] _ in
+            UIAction(title: localized("Recent Activity"), state: sortByName ? .off : .on) { [weak self] _ in
                 self?.setSortByName(false)
             },
-            UIAction(title: "Name", state: sortByName ? .on : .off) { [weak self] _ in
+            UIAction(title: localized("Name"), state: sortByName ? .on : .off) { [weak self] _ in
                 self?.setSortByName(true)
             },
         ]
@@ -142,14 +142,14 @@ final class ProjectListViewController: UIViewController {
         refilter()
     }
 
-    private func presentSettings(deepLinkToConnectivity: Bool = false) {
+    private func presentSettings(deepLinkToDevices: Bool = false) {
         // The sheet inherits the window's app-wide Appearance override, same
         // as every other screen.
         let nav = UINavigationController(rootViewController: SettingsViewController())
-        if deepLinkToConnectivity {
-            // "Connect a Mac" promises pairing, so land on the Connectivity
-            // page itself; back reveals full Settings, swipe-down dismisses.
-            nav.pushViewController(ConnectivitySettingsViewController(), animated: false)
+        if deepLinkToDevices {
+            // "Connect a Mac" promises pairing, so land on the Devices page
+            // itself; back reveals full Settings, swipe-down dismisses.
+            nav.pushViewController(DevicesSettingsViewController(), animated: false)
         }
         present(nav, animated: true)
     }
@@ -237,9 +237,9 @@ final class ProjectListViewController: UIViewController {
             reconnectStalled = false
             emptyState.configure(
                 icon: .devicePair,
-                title: "No Mac connected",
-                message: "Open termio on your Mac, then pair this phone to see and drive your projects from here.",
-                actionTitle: "Connect a Mac",
+                title: localized("No Mac connected"),
+                message: localized("Open Termio on your Mac, then pair this phone to see and drive your projects from here."),
+                actionTitle: localized("Connect a Mac"),
                 busy: false
             )
         case .connecting where reconnectStalled:
@@ -248,17 +248,17 @@ final class ProjectListViewController: UIViewController {
             // the link keeps trying on its slow heartbeat regardless.
             emptyState.configure(
                 icon: .wifiError,
-                title: "Can't reach your Mac",
-                message: "It may be asleep or off your network. termio keeps trying — reopen the lid, or tap to retry now.",
-                actionTitle: "Try Again",
+                title: localized("Can't reach your Mac"),
+                message: localized("It may be asleep or off your network. Termio keeps trying — reopen the lid, or tap to retry now."),
+                actionTitle: localized("Try Again"),
                 busy: false
             )
         case .connecting:
             startConnectingGraceTimer()
             emptyState.configure(
                 icon: nil,
-                title: "Connecting…",
-                message: "Reaching your Mac over the companion link.",
+                title: localized("Connecting…"),
+                message: localized("Reaching your Mac over the companion link."),
                 actionTitle: nil,
                 busy: true
             )
@@ -267,8 +267,8 @@ final class ProjectListViewController: UIViewController {
             reconnectStalled = false
             emptyState.configure(
                 icon: .folder,
-                title: "No projects open",
-                message: "Open a project in termio on your Mac and it'll show up here.",
+                title: localized("No projects open"),
+                message: localized("Open a project in Termio on your Mac and it'll show up here."),
                 actionTitle: nil,
                 busy: false
             )
@@ -277,9 +277,9 @@ final class ProjectListViewController: UIViewController {
             reconnectStalled = false
             emptyState.configure(
                 icon: .wifiError,
-                title: "Connection failed",
+                title: localized("Connection failed"),
                 message: reason,
-                actionTitle: "Open Settings",
+                actionTitle: localized("Open Settings"),
                 busy: false
             )
         }
@@ -309,11 +309,11 @@ final class ProjectListViewController: UIViewController {
     /// immediate reconnect and drop back to the "Connecting…" copy.
     private func emptyStateAction() {
         if case .unpaired = CompanionLink.state {
-            presentSettings(deepLinkToConnectivity: true)
+            presentSettings(deepLinkToDevices: true)
             return
         }
         if case .failed = CompanionLink.state {
-            presentSettings(deepLinkToConnectivity: true)
+            presentSettings(deepLinkToDevices: true)
             return
         }
         reconnectStalled = false
@@ -340,10 +340,10 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
         // Headers only when the strip splits the page in two; a plain project
         // list under the "Projects" page title needs no second label.
         guard sections.count > 1 else { return nil }
-        let header = tableView.dequeueReusableHeaderFooterView(
+        guard let header = tableView.dequeueReusableHeaderFooterView(
             withIdentifier: SectionCapView.reuseID
-        ) as! SectionCapView
-        header.configure(title: sections[section] == .needsYou ? "Needs You" : "Projects")
+        ) as? SectionCapView else { return nil }
+        header.configure(title: sections[section] == .needsYou ? localized("Needs You") : localized("Projects"))
         return header
     }
 
@@ -415,7 +415,7 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
               store.companionURL != nil,
               let sessionID = attention[indexPath.row].rosterID
         else { return nil }
-        let close = UIContextualAction(style: .destructive, title: "Close") { [weak self] _, _, done in
+        let close = UIContextualAction(style: .destructive, title: localized("Close")) { [weak self] _, _, done in
             self?.store.stopSession(sessionID)
             done(true)
         }

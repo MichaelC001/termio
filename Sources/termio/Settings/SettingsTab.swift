@@ -6,13 +6,13 @@ import SwiftUI
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case appearance
-    case interface
     case terminal
     case ssh
     case keyboard
     case agents
     case usage
     case mobile
+    case community
 
     var id: String { rawValue }
 
@@ -22,15 +22,15 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .general: return "General"
-        case .appearance: return "Appearance"
-        case .interface: return "Interface"
-        case .terminal: return "Terminal"
-        case .ssh: return "SSH"
-        case .keyboard: return "Keyboard"
-        case .agents: return "Agents"
-        case .usage: return "Usage"
-        case .mobile: return "Mobile"
+        case .general: return localized("General")
+        case .appearance: return localized("Appearance")
+        case .terminal: return localized("Terminal")
+        case .ssh: return localized("SSH")
+        case .keyboard: return localized("Keyboard")
+        case .agents: return localized("Agents")
+        case .usage: return localized("Usage")
+        case .mobile: return localized("Mobile")
+        case .community: return localized("Community")
         }
     }
 
@@ -39,14 +39,14 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var icon: HugeIcon {
         switch self {
         case .general: return .settings
-        case .appearance: return .paintBrush
-        case .interface: return .sidebarLeft
+        case .appearance: return .paintBoard
         case .terminal: return .terminal
         case .ssh: return .serverStack
         case .keyboard: return .keyboard
         case .agents: return .bot
-        case .usage: return .dashboardSpeed
-        case .mobile: return .smartPhone
+        case .usage: return .chartColumn
+        case .mobile: return .smartPhoneWifi
+        case .community: return .bubbleChat
         }
     }
 
@@ -54,15 +54,15 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     /// matching macOS System Settings' navigation subtitle.
     var subtitle: String {
         switch self {
-        case .general: return "Notifications and the termio command-line tool"
-        case .appearance: return "Terminal font, theme, cursor, and window"
-        case .interface: return "The app's own sidebar font and density"
-        case .terminal: return "Scrollback history and text selection"
-        case .ssh: return "Your ~/.ssh/config hosts, one click away"
-        case .keyboard: return "Keyboard shortcuts for every command"
-        case .agents: return "Agent presets, live status, and control"
-        case .usage: return "Token usage for your connected agents"
-        case .mobile: return "Pair your iPhone and remote access"
+        case .general: return localized("The termio command-line tool, agent skill, and notifications")
+        case .appearance: return localized("Theme, fonts, cursor, and window")
+        case .terminal: return localized("Scrollback history and text selection")
+        case .ssh: return localized("Your ~/.ssh/config hosts, one click away")
+        case .keyboard: return localized("Keyboard shortcuts for every command")
+        case .agents: return localized("The coding agents offered when you start a session")
+        case .usage: return localized("Token usage for your connected agents")
+        case .mobile: return localized("Pair your iPhone and remote access")
+        case .community: return localized("Discord, GitHub, and the WeChat group")
         }
     }
 }

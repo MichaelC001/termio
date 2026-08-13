@@ -137,6 +137,86 @@ final class DiffFoldTests: XCTestCase {
         XCTAssertEqual(bands.first?.0, 2...39) // the gap between the two hunks
         XCTAssertEqual(bands.first?.1, [], "the hidden lines were never sent, so nothing reveals them")
     }
+
+    /// GitHub Desktop's `getHunkExpansionType`, which termio's gutter copies: the file's
+    /// first hunk can only be read upward, a gap within one step opens in a single jump,
+    /// and anything longer offers both ends. All three need the file on hand.
+    func testGapControlsFollowGitHubDesktopsRules() {
+        let firstHunkDiff = """
+        @@ -92,2 +92,2 @@
+        -ninetytwo
+        +NINETYTWO
+        """
+        let file = DiffGapText(fileLines: (1...200).map { "line \($0)" })
+        XCTAssertEqual(controls(of: firstHunkDiff, gapText: file), [.up],
+                       "nothing is rendered above a first hunk to read downward from")
+
+        let shortGap = """
+        @@ -1,2 +1,2 @@
+        -one
+        +ONE
+        @@ -12,2 +12,2 @@
+        -twelve
+        +TWELVE
+        """
+        XCTAssertEqual(controls(of: shortGap, gapText: file), [.all],
+                       "a gap no longer than one step opens at once")
+
+        let longGap = """
+        @@ -1,2 +1,2 @@
+        -one
+        +ONE
+        @@ -80,2 +80,2 @@
+        -eighty
+        +EIGHTY
+        """
+        XCTAssertEqual(controls(of: longGap, gapText: file), [.up, .down])
+        XCTAssertEqual(controls(of: longGap, gapText: .unavailable), [],
+                       "without the file there is nothing to splice, so the band stays inert")
+    }
+
+    func testRevealingAGapSplicesTheFilesOwnLines() {
+        let diff = """
+        @@ -1,2 +1,2 @@
+        -one
+        +ONE
+        @@ -80,2 +80,2 @@
+        -eighty
+        +EIGHTY
+        """
+        let rows = DiffParser.lines(from: diff)
+        let file = DiffGapText(fileLines: (1...200).map { "line \($0)" })
+        // The gap is 2…79; the band anchors on the second hunk row.
+        guard let anchor = rows.last(where: { $0.kind == .hunk })?.id else {
+            return XCTFail("the fixture has two hunks")
+        }
+        var expansion = DiffExpansion()
+        expansion.reveal(anchor, .down)
+        let items = DiffParser.displayItems(lines: rows, expansion: expansion, gapText: file)
+        let spliced = items.compactMap { item -> DiffLine? in
+            if case .line(let line) = item, line.id < 0 { return line }
+            return nil
+        }
+        XCTAssertEqual(spliced.count, DiffExpansion.step)
+        XCTAssertEqual(spliced.first?.newLine, 2, "revealing downward starts at the gap's top")
+        XCTAssertEqual(spliced.first?.text, "line 2")
+        XCTAssertEqual(spliced.first?.oldLine, 2, "unchanged lines carry the same number on both sides")
+        XCTAssertEqual(spliced.last?.newLine, 21)
+        let bands = items.compactMap { item -> ClosedRange<Int>? in
+            if case .band(_, let range, _, _) = item { return range }
+            return nil
+        }
+        XCTAssertEqual(bands, [22...79], "the band keeps what is still hidden")
+    }
+
+    private func controls(of diff: String, gapText: DiffGapText) -> DiffBandControls? {
+        let items = DiffParser.displayItems(lines: DiffParser.lines(from: diff),
+                                            expansion: DiffExpansion(), gapText: gapText)
+        for item in items {
+            if case .band(_, _, let controls, _) = item { return controls }
+        }
+        return nil
+    }
 }
 
 final class DiffIntralineSpanTests: XCTestCase {

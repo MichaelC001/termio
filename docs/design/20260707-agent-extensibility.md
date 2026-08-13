@@ -63,7 +63,7 @@ related:
 > sweep 误清）。**刻意不抄** herdr 的 regions / priorities / 远程 manifest 引擎——两条正则数组足够，表面积最小。
 > 无效正则记日志跳过；不写 `status` = 退回零配置铃/OSC。误报靠用户调正则（整屏匹配的固有取舍，已在文档说明）。
 >
-> **调试（借 herdr 的 `agent explain`）**：设 `TERMIO_STATUS_TRACE=1` 启动 termio，每次分类往
+> **调试（借 herdr 的 `agent explain`）**：设 `TERMIO_STATUS_TRACE=1` 启动 Termio，每次分类往
 > `/tmp/termio-status.log` 追一行 `[sess] <agent> → working /matched-pattern/`，用户调 `status` 正则时
 > 能直接看到活屏命中了哪条规则（没命中 → idle）。零成本（env 只查一次）。
 >
@@ -71,7 +71,7 @@ related:
 > 视口**，会跟随用户的 scrollback——把内联渲染的 agent 面板往上滚，分类器就读到过期的行，直到滚回底部自愈。
 > herdr 专门读**活跃底部缓冲**规避此问题。这里的干净修法需要 libghostty wrapper 上一个 `readActiveText()`
 > （用 `GHOSTTY_POINT_ACTIVE`）——其 blessed 读在私有锁下与 PTY 写串行，而从读泵线程直接发无锁
-> `GHOSTTY_POINT_ACTIVE` 读会和 `inMemory.receive` 抢，正是 termio 栽过的 libghostty 线程 UAF 雷区。
+> `GHOSTTY_POINT_ACTIVE` 读会和 `inMemory.receive` 抢，正是 Termio 栽过的 libghostty 线程 UAF 雷区。
 > **故作为上游 ask 记录，不在本仓做不安全的绕路**。影响面小且自愈（仅"有 status 规则的用户 agent"+"滚离底部"时
 > 侧栏状态点短暂错，无误动作）。
 >
@@ -79,12 +79,12 @@ related:
 > **精确**状态（不止刮屏）。三档"侧栏怎么知道状态"的阶梯，从便宜到精确：
 > 1. **`status` 刮屏正则**——任何 agent，零代码（上面那节）。
 > 2. **`hooks` JSON-hook-file**——仍是**纯数据、无需写任何 JS**，给"自带 Claude/Codex/Cursor 形状 hook
->    文件"的 agent 用。termio 自己写 report 命令（`reportCommand`），用户只声明 `file` + `dialect` +
+>    文件"的 agent 用。Termio 自己写 report 命令（`reportCommand`），用户只声明 `file` + `dialect` +
 >    `events:[{event,state,matcher?}]`。装/卸随全局 hooks 开关（`AgentStatusHooks.installers` 现在 =
 >    内置 + 每个带 `hookSpec` 的用户 agent，复用 `JSONHookFile.userAgent(id:spec:)`，零新 installer 代码）。
 > 3. **plugin-API agent（Pi/Amp/OpenCode 式）**——**没有 hook 文件，只有各自的插件 API**，事件名/接口都不同，
->    termio 无法替未知 API 生成插件。这类**只能有人手写插件 JS**。但因为 socket 收任何来源的报文，用户的插件
->    直接往 socket 发 `{termio_session,state,cwd}` 即可（wire 契约文档化），**无需 termio 配置**；若不想写插件，
+>    Termio 无法替未知 API 生成插件。这类**只能有人手写插件 JS**。但因为 socket 收任何来源的报文，用户的插件
+>    直接往 socket 发 `{termio_session,state,cwd}` 即可（wire 契约文档化），**无需 Termio 配置**；若不想写插件，
 >    退回第 1 档刮屏即可。故本仓**不做 pluginFile 配置**（RFC §5.3 早已判定：为未知插件 API 背代码不值当）。
 >
 > **权威唯一（对标 herdr "one authority per pane"）**：一个 agent 同时声明 `hooks` 和 `status` 时，
@@ -99,11 +99,11 @@ related:
 
 > 状态：草案（Draft）· 作者：—— · 关联：[`20260719-vibe-island-status.md`](./20260719-vibe-island-status.md)（hook 状态层的前置设计）
 >
-> 目标：让 termio 支持任意 CLI coding agent，且用户能**用配置（而非改 Swift、发版本）**新增一个 agent 及其状态 hook。
+> 目标：让 Termio 支持任意 CLI coding agent，且用户能**用配置（而非改 Swift、发版本）**新增一个 agent 及其状态 hook。
 
 ## 一、摘要（TL;DR）
 
-termio 当前把 agent 写死成一个**闭合枚举** `AgentPreset`（`Models.swift:18-78`），新增一个
+Termio 当前把 agent 写死成一个**闭合枚举** `AgentPreset`（`Models.swift:18-78`），新增一个
 agent = 改 Swift + 发版。而 2026 年的 agent 榜单换得比发版还快（Gemini CLI 2026-06-18 起停服
 个人用户、转向闭源 Antigravity；Claw Code 空降第一；Roo Code 自我归档）。结论：**不该用枚举追长尾，
 应该把 agent 做成数据。**
@@ -117,10 +117,10 @@ agent = 改 Swift + 发版。而 2026 年的 agent 榜单换得比发版还快�
 3. Hook 也配置化：`agent.json` 里一个 `hooks` 块即可声明该 agent 的状态集成；常见情形是**纯声明
    数据**（event→state 映射），复杂情形提供 **shell 逃生舱**。
 4. **明确否决**：内嵌 Lua 运行时、完整插件平台（manifest/activation/API/marketplace）、
-   "termio 进程内执行 agent 代码"的 smart-receive 变体。
+   "Termio 进程内执行 agent 代码"的 smart-receive 变体。
 
 不变量保持不变：统一的 wire format（`{termio_session,state,cwd}` 经 `nc -U` 进一个 socket）、
-**termio 自身从不执行 agent 提供的代码**（hook 始终跑在 agent 进程里）。
+**Termio 自身从不执行 agent 提供的代码**（hook 始终跑在 agent 进程里）。
 
 ## 二、动机
 
@@ -148,10 +148,10 @@ hook 配置散落在各 agent 自己的家里：`~/.claude`、`~/.codex`、`~/.c
 ## 三、非目标（Non-goals）
 
 - **不**做完整插件平台：没有 manifest schema、activation events、暴露给插件的 API、版本协商、市场。
-  那些是为第三方生态服务的；termio 是单一用途工具，不是平台。除非明确要做 marketplace，否则属于
+  那些是为第三方生态服务的；Termio 是单一用途工具，不是平台。除非明确要做 marketplace，否则属于
   "宏大架构"陷阱。
 - **不**内嵌 Lua / JS 运行时（理由见 §六）。
-- **不**在 termio 进程内执行 agent 提供的脚本（保留"termio 从不跑 agent 代码"这一安全/简单性属性）。
+- **不**在 Termio 进程内执行 agent 提供的脚本（保留"Termio 从不跑 agent 代码"这一安全/简单性属性）。
 - **不**改 wire format、不改 `HookListener` 的 socket 传输层。
 
 ## 四、设计
@@ -220,7 +220,7 @@ struct AgentDefinition: Identifiable, Hashable, Codable {
 
 ### 4.4 Hook：三档现实 + shell 逃生舱
 
-现有 hook 层（`HookListener.swift`）的精髓：**wire format 统一、termio 不做按-agent 解析**，
+现有 hook 层（`HookListener.swift`）的精髓：**wire format 统一、Termio 不做按-agent 解析**，
 所有按-agent 知识都被隔离在 *installer* 里，而 installer 只有两种形状：
 
 - `JSONHookFile`（`HookListener.swift:238`）—— Claude 形状 JSON 文件；全部可变性 = `url` + `events`。
@@ -250,7 +250,7 @@ agent 按 hook 能力分三档，这是"任意岛都能配 hook"无法一键化�
   ```
 
 - **Tier-2 插件**：`PluginFile` 已是通用（`url`+`contents`）。可让配置指 `kind:pluginFile`
-  + `path` + 目录内 `plugin.js`，termio 仅负责带 marker 丢入/安全卸载。**但**几乎没人会照某 agent
+  + `path` + 目录内 `plugin.js`，Termio 仅负责带 marker 丢入/安全卸载。**但**几乎没人会照某 agent
   的私有 API 手写插件——**暂缓，不投机**。
 - **Tier-3 无 hook**：无可安装，且没关系——已优雅退化。唯一要做的是**诚实**：设置里按 agent 标注
   "实时状态" vs "仅完成（铃）"，免得用户困惑 Aider 为何永不转圈。
@@ -268,13 +268,13 @@ agent 按 hook 能力分三档，这是"任意岛都能配 hook"无法一键化�
 
 ### 5.1 内嵌 Lua 运行时 —— 否
 
-决定性事实：**hook 不跑在 termio 里，跑在 agent 进程里**。termio 把命令装进 agent 的配置，由
-*agent* 执行，termio 只从 socket 读 JSON。那 Lua 跑哪？
+决定性事实：**hook 不跑在 Termio 里，跑在 agent 进程里**。Termio 把命令装进 agent 的配置，由
+*agent* 执行，Termio 只从 socket 读 JSON。那 Lua 跑哪？
 
 - **agent 进程内** → hook 变 `lua x.lua | nc`，但 macOS 不带 Lua，得 bundle 一个 `lua` 二进制；
   而 shell 已能干这活、零依赖。Lua 只多给"更好的解析语言"。
-- **termio 进程内** → 收原始 payload 后跑 per-agent Lua 归一化。这是**唯一**有意思的变体，但要内嵌
-  Lua VM、设计暴露给 Lua 的 API、做沙箱，并**放弃"termio 从不跑 agent 代码"**。为罕见情形背永久的
+- **Termio 进程内** → 收原始 payload 后跑 per-agent Lua 归一化。这是**唯一**有意思的变体，但要内嵌
+  Lua VM、设计暴露给 Lua 的 API、做沙箱，并**放弃"Termio 从不跑 agent 代码"**。为罕见情形背永久的
   大面积 surface area，违背"小而专"。
 
 Lua 相对 shell 只多"复杂 payload 解析更顺手"，这场景稀少到不值一个内嵌解释器。**用 shell 逃生舱替代。**
@@ -284,11 +284,11 @@ Lua 相对 shell 只多"复杂 payload 解析更顺手"，这场景稀少到不�
 那套基础设施是为第三方生态存在的。没有 marketplace 意图时，"文件夹 + 声明式 `agent.json` +
 shell 逃生舱"以 5% 成本拿到 95% 收益。
 
-### 5.3 Smart-receive（termio 跑归一化脚本）—— 否
+### 5.3 Smart-receive（Termio 跑归一化脚本）—— 否
 
 今天是 smart-install / dumb-receive（装 N 条 per-event 入口，各自硬编码 state）。插件式替代是
-dumb-install / smart-receive（装一条转发原始 payload，termio 跑 per-agent 脚本归一）。它能把
-per-agent 逻辑集中到一个文件（很"插件"），**但**正是要在 termio 内跑 agent 代码的那个变体，且只对
+dumb-install / smart-receive（装一条转发原始 payload，Termio 跑 per-agent 脚本归一）。它能把
+per-agent 逻辑集中到一个文件（很"插件"），**但**正是要在 Termio 内跑 agent 代码的那个变体，且只对
 "单一 catch-all hook + 全 payload"的 agent 成立（Claude 仍需 per-event matcher）。集中化的收益
 不抵丢失隔离的代价。
 
@@ -298,7 +298,7 @@ per-agent 逻辑集中到一个文件（很"插件"），**但**正是要在 ter
   的 `TERMIO_HOOK_TRACE` 诊断就在查"Codex TUI 到底发不发、`termio_session` 是否活着进到 hook"）。
   → 把 trace 作为"测试你 agent 的 hook"的文档化步骤，别假设声明即生效。
 - **shell 逃生舱 = 任意代码执行**。但用户在自己配置里写自己的 shell，信任级别等同其 shell rc；且仍跑在
-  agent 进程，不在 termio。可接受。
+  agent 进程，不在 Termio。可接受。
 - **路径/解析健壮性**：拒绝改写无法解析的文件（现有 `JSONHookFile` 已如此）；`agent.json` 解析失败应
   跳过该 agent 并记日志，不影响其余。
 

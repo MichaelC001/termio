@@ -79,9 +79,10 @@ final class DiffDocument {
     /// than a handful of lines collapse to a band keeping 3 lines of context on the
     /// side(s) that face a change, and whatever `expansion` has revealed is spliced back in.
     static func build(rows: [DiffRow], expansion: DiffExpansion, palette: DiffPalette,
-                      codeFont: NSFont, lineSpacing: CGFloat) -> DiffDocument {
-        build(items: displayItems(rows: rows, expansion: expansion), allRows: rows,
-              palette: palette, codeFont: codeFont, lineSpacing: lineSpacing)
+                      codeFont: NSFont, lineSpacing: CGFloat,
+                      gapText: DiffGapText = .unavailable) -> DiffDocument {
+        build(items: displayItems(rows: rows, expansion: expansion, gapText: gapText),
+              allRows: rows, palette: palette, codeFont: codeFont, lineSpacing: lineSpacing)
     }
 
     /// The shared assembly: lays the display items down as one attributed string with
@@ -233,8 +234,9 @@ final class DiffDocument {
     /// skipped lines are, not how many there are: a line range tells the reader what they
     /// are jumping over, while "137 unchanged lines" only describes the widget. git's
     /// section heading rides along when the gap came from a hunk boundary.
-    private static func displayItems(rows: [DiffRow], expansion: DiffExpansion) -> [DisplayItem] {
-        DiffParser.displayItems(lines: rows, expansion: expansion).map { item in
+    private static func displayItems(rows: [DiffRow], expansion: DiffExpansion,
+                                     gapText: DiffGapText) -> [DisplayItem] {
+        DiffParser.displayItems(lines: rows, expansion: expansion, gapText: gapText).map { item in
             switch item {
             case .line(let row):
                 return .line(row)

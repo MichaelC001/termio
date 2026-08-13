@@ -31,10 +31,10 @@ struct GitHistoryView: View {
                     .controlSize(.small)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.commits.isEmpty {
-                ContentUnavailableView(
-                    "No History",
-                    huge: .clock,
-                    description: Text("This branch has no commits yet.")
+                PaneEmptyState(
+                    localized("No History"),
+                    icon: .clock,
+                    message: localized("This branch has no commits yet.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -72,7 +72,7 @@ struct GitHistoryView: View {
     private func commitFiles(_ commit: GitCommit) -> some View {
         if let files = filesByCommit[commit.sha] {
             if files.isEmpty {
-                Text("No file changes")
+                Text(localized("No file changes"))
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
                     .padding(.leading, 24)
@@ -168,7 +168,7 @@ private struct CommitRow: View {
                                 .font(.system(size: 8, weight: .semibold))
                                 .foregroundStyle(.secondary)
                                 .layoutPriority(1)
-                                .help("Not pushed to upstream")
+                                .help(localized("Not pushed to upstream"))
                         }
                     }
                     .font(.system(size: 10.5))

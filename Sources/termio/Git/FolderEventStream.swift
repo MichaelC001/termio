@@ -20,8 +20,14 @@ final class FolderEventStream {
     /// queue overflowed, FSEvents sets `kFSEventStreamEventFlagMustScanSubDirs` and
     /// the path means "anything under here may have changed" — a consumer applying
     /// events incrementally must widen to a rescan or go silently stale.
+    /// `handler` is `@Sendable` because FSEvents calls it on `queue`, which is rarely the
+    /// main one. Without it a closure written inside a `@MainActor` type silently *inherits*
+    /// that isolation, compiles clean, and traps the moment an event arrives — the Swift 6
+    /// executor check turns the first main-actor touch into `SIGTRAP`, killing the app.
+    /// `@Sendable` forbids the inheritance, so the hop back is the caller's explicit job and
+    /// forgetting it is a compile error rather than a crash in someone's editor.
     init?(paths: [String], latency: TimeInterval, queue: DispatchQueue,
-          handler: @escaping ([String], [FSEventStreamEventFlags]) -> Void) {
+          handler: @escaping @Sendable ([String], [FSEventStreamEventFlags]) -> Void) {
         var context = FSEventStreamContext()
         context.info = Unmanaged.passRetained(Handler(handler)).toOpaque()
         context.release = { info in

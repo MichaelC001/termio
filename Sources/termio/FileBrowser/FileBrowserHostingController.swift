@@ -8,7 +8,10 @@ import SwiftUI
 /// controller sits in that chain (above the SwiftUI tree it hosts), it is the
 /// natural owner of the panel while the inspector is focused.
 @MainActor
-final class FileBrowserHostingController: NSHostingController<AnyView>, @MainActor QLPreviewPanelDataSource {
+// @preconcurrency: `panel.dataSource = self` needs a conformance usable from a
+// nonisolated context; Quick Look delivers its data-source calls on the main
+// thread, which the dynamic check this buys enforces.
+final class FileBrowserHostingController: NSHostingController<AnyView>, @preconcurrency QLPreviewPanelDataSource {
     private let state: FileBrowserState
 
     init(store: TermioStore, settings: AppSettings) {

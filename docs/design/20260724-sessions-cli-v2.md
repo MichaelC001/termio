@@ -170,7 +170,7 @@ and needs no code.
 - **`cwd`**: omit the key when unknown rather than emitting `""`.
 - **Exit codes**: `0` on interrupt (normal supervision end), `2` when the server
   vanishes (missed heartbeats / EOF) — so a supervising agent can distinguish
-  "I chose to stop" from "termio died".
+  "I chose to stop" from "Termio died".
 
 ### 4.4 One sync vocabulary (reimplement #72)
 
@@ -219,7 +219,7 @@ and injection):
   encourage summarizing results into a message (workers forget instructions;
   the supervisor's `watch`/transcript path is the reliable one and remains the
   backstop regardless).
-- Only injected when the caller *is* a termio session (`caller_session`
+- Only injected when the caller *is* a Termio session (`caller_session`
   resolves); a plain-shell `spawn` gets no envelope.
 
 ### 4.7 Loop-level stall detection — `stalled` watch events (Phase 4)
@@ -229,12 +229,12 @@ the fleet-scale runaway: a session that is `working` for tens of minutes while
 producing nothing — the unattended-runaway anti-pattern (arXiv 2607.00038), the
 one loop-engineering primitive the supervision plane can uniquely own. Prior
 art is all in-harness (OpenHands StuckDetector kills its own agent off its own
-event stream, with documented false-kills on legitimately slow builds); termio
+event stream, with documented false-kills on legitimately slow builds); Termio
 watches any agent from outside, across the fleet.
 
 **Two design laws, learned from OpenHands' scars:**
 
-1. **Signal, never kill.** termio emits an event; the supervisor (agent or
+1. **Signal, never kill.** Termio emits an event; the supervisor (agent or
    human, possibly on the phone) decides. A wrong alert costs nothing; a wrong
    kill destroys a long legitimate task.
 2. **Multi-signal AND, edge-triggered.** No single signal may fire alone; any

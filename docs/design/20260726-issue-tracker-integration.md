@@ -15,8 +15,8 @@ related:
 
 ## 1. 为什么做 / 边界
 
-- 用户在 termio 里看着 repo、开着 agent，但查 issue / PR 要回浏览器。原生 macOS 的阅读器这个位置是空的（GitHub Desktop 的 PR 只在 branch 下拉里；Trailer/Gitify 是通知聚合器；GitHawk 死了且是 iOS）。
-- termio 的差异点不是"更好看的 issue 列表"，而是**读完直接派活**：issue / PR → send to agent，接上 [issue-triage-local-agent.md](20260723-issue-triage-local-agent.md) 的出站半场（那篇是事件*进来*自动触发，本篇是人*看着*手动派）。
+- 用户在 Termio 里看着 repo、开着 agent，但查 issue / PR 要回浏览器。原生 macOS 的阅读器这个位置是空的（GitHub Desktop 的 PR 只在 branch 下拉里；Trailer/Gitify 是通知聚合器；GitHawk 死了且是 iOS）。
+- Termio 的差异点不是"更好看的 issue 列表"，而是**读完直接派活**：issue / PR → send to agent，接上 [issue-triage-local-agent.md](20260723-issue-triage-local-agent.md) 的出站半场（那篇是事件*进来*自动触发，本篇是人*看着*手动派）。
 - **PR 从第一版就在读的范围内**：读是每日高频动作，PR 是 agent 干活的产物；而且 GitHub API 里 PR 就是带附加字段的 issue（同一个 list endpoint），issue 读通了 PR 读几乎免费。PR 读 = 标题/正文/评论线 + 状态，到此为止。
 - **第一版不做**：通知（badge / 系统通知都不做）、建 issue、关闭/改状态、Jira provider、PR review 线程 / 本地 diff / checks 详情 / merge 操作（PR 本地 diff 属于 git pane 的 Review mode，后续单独接）。协议为它们留缝，但不实现。
 
@@ -68,7 +68,7 @@ protocol IssueProvider: Sendable {
 
 | Provider | 流程 | 为什么 |
 | --- | --- | --- |
-| GitHub | **OAuth Device Flow**：Connect → 显示 8 位码 + 自动开 `github.com/login/device` → 轮询换 token。scope `repo`（写 label/评论需要）。 | 只需公开 client_id，无 secret 无回调服务器——termio 开源，secret 不能进仓库。需在 GitHub 注册 OAuth App 并勾选 Enable Device Flow（发布前的一次性人工步骤）。 |
+| GitHub | **OAuth Device Flow**：Connect → 显示 8 位码 + 自动开 `github.com/login/device` → 轮询换 token。scope `repo`（写 label/评论需要）。 | 只需公开 client_id，无 secret 无回调服务器——Termio 开源，secret 不能进仓库。需在 GitHub 注册 OAuth App 并勾选 Enable Device Flow（发布前的一次性人工步骤）。 |
 | Linear | **Personal API key 粘贴**：Connect → 开 `linear.app/settings/api` → 用户粘贴 key。 | Linear OAuth2 强制 client secret，开源 app 用不了；API key 是 Linear 给本地工具的正路（linear-cli 同款）。 |
 
 凭证一律进 Keychain（service `sh.termio.app.issues`，account = provider id）。断开 = 删 Keychain 项 + 清 binding。Usage tab 已有读 OAuth 凭证的先例，模式一致。
@@ -85,7 +85,7 @@ protocol IssueProvider: Sendable {
 
 读 + 派活在前（每日高频 + 差异点，且派活只是「拼 prompt + 现成 deliver 路径」的小步）；写在后（每个写操作都有浏览器兜底）；Linear 收尾（协议从第一天就管住它，conformance 不急）。
 
-1. **M1 读（issues + PRs）**：协议 + GitHub provider（device flow、列表、详情、kind filter）、tab + 零态 + 列表 + 详情渲染。→ [#99](https://github.com/jiweiyuan/termio/issues/99)
-2. **M2 派活**：Send to Agent（prompt 模板、目标 session 选择），issue 与 PR 同一条路径。→ [#102](https://github.com/jiweiyuan/termio/issues/102)
-3. **M3 写**：reaction、label 编辑、评论（GitHub，issue 与 PR 通用）。→ [#100](https://github.com/jiweiyuan/termio/issues/100)
-4. **M4 Linear**：API key connect、GraphQL provider、binding 选择器。→ [#101](https://github.com/jiweiyuan/termio/issues/101)
+1. **M1 读（issues + PRs）**：协议 + GitHub provider（device flow、列表、详情、kind filter）、tab + 零态 + 列表 + 详情渲染。→ [#99](https://github.com/termio-sh/termio/issues/99)
+2. **M2 派活**：Send to Agent（prompt 模板、目标 session 选择），issue 与 PR 同一条路径。→ [#102](https://github.com/termio-sh/termio/issues/102)
+3. **M3 写**：reaction、label 编辑、评论（GitHub，issue 与 PR 通用）。→ [#100](https://github.com/termio-sh/termio/issues/100)
+4. **M4 Linear**：API key connect、GraphQL provider、binding 选择器。→ [#101](https://github.com/termio-sh/termio/issues/101)

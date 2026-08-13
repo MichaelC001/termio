@@ -7,18 +7,18 @@ updated: 2026-07-19
 
 # 设计：Vibe Island 式 Agent 状态层（Claude Code hooks）
 
-> 目标：把竞品分析 `docs/competitive-analysis/07-vibe-island.md` 里 "状态监控方法论" 落到 termio。
-> termio 已经做完了**结构性的难活**，本设计只补上唯一缺口：可靠的"忙 / 思考中 / 在用哪个工具"。
+> 目标：把竞品分析 `docs/competitive-analysis/07-vibe-island.md` 里 "状态监控方法论" 落到 Termio。
+> Termio 已经做完了**结构性的难活**，本设计只补上唯一缺口：可靠的"忙 / 思考中 / 在用哪个工具"。
 
 ## 一、为什么这是个小改动
 
-termio 当前的状态链路（已存在，勿重写）：
+Termio 当前的状态链路（已存在，勿重写）：
 
 - `SessionStatus`（`Models.swift:175`）：`idle / working / needsAttention` 三态。
 - `TermioStore.monitor(_:for:)`（`TermioStore.swift:333`）：订阅 libghostty 已发布的
   `lastBellAt` / `lastDesktopNotificationAt`，在用户不在看该会话时置
   `statuses[id] = .needsAttention`。**零配置**——Claude Code 原生发 OSC 9/99，
-  Ghostty 直出，termio 直接消费。
+  Ghostty 直出，Termio 直接消费。
 
 唯一缺口写在代码注释里（`Models.swift:172`）：
 
@@ -29,7 +29,7 @@ termio 当前的状态链路（已存在，勿重写）：
 `.working` 这个枚举值已经造好、UI（侧栏 `StatusDot`、菜单栏 `circle.dotted` 脉冲）也已接好，
 **就是没有任何代码去 set 它**。本设计就是把它驱动起来。
 
-| 状态 | vibe-island 来源 | termio 现状 | 本设计 |
+| 状态 | vibe-island 来源 | Termio 现状 | 本设计 |
 |---|---|---|---|
 | 需要你（铃 / 权限） | OSC 9·99 / hooks | ✅ 零配置 → `.needsAttention` | 保留为 fallback |
 | 完成（离开时收尾） | `Stop` hook | ✅ 铃声近似 | hook 精确化 |
@@ -37,7 +37,7 @@ termio 当前的状态链路（已存在，勿重写）：
 
 ## 二、架构：`hook → unix socket → reducer → 既有 UI`
 
-照搬 `Octane0411/open-vibe-island` 的蓝图，但 termio 因自有 PTY，比所有外挂都更稳
+照搬 `Octane0411/open-vibe-island` 的蓝图，但 Termio 因自有 PTY，比所有外挂都更稳
 （不需要 `claude-watch` 那种 tail `~/.claude/projects/*.jsonl` 的脆弱推断）。
 
 ```
@@ -85,12 +85,12 @@ TermioStore.applyHookEvent(_:)  (reducer)  ──写──▶  statuses[id]
 >   不再有歧义，Claude-narrowing 启发式已删。
 > - **manifest 驱动安装器**（`AgentStatusHooks.sync`）：
 >   - Claude `~/.claude/settings.json`、Codex `~/.codex/hooks.json`、Cursor
->     `~/.cursor/hooks.json` —— `JSONHookFile` 合并 termio 自己的条目，保留用户配置。
->   - Kimi `~/.kimi/config.toml` —— `TOMLHookBlock` 维护 marker 包围的 termio block。
->   - Grok `~/.grok/hooks/termio.json` —— Grok 自动发现的 termio 专属 JSON 文件。
+>     `~/.cursor/hooks.json` —— `JSONHookFile` 合并 Termio 自己的条目，保留用户配置。
+>   - Kimi `~/.kimi/config.toml` —— `TOMLHookBlock` 维护 marker 包围的 Termio block。
+>   - Grok `~/.grok/hooks/termio.json` —— Grok 自动发现的 Termio 专属 JSON 文件。
 >   - OpenCode `~/.config/opencode/plugin/termio.js`、Pi `~/.pi/agent/extensions/termio.js`、
->     Amp `~/.config/amp/plugins/termio.ts` —— `PluginFile` 写入 termio 自带模板。
->   - 升级时只删除内容可确认为 termio 所有的旧 `termio-status.*` 文件；若简洁新文件名已被
+>     Amp `~/.config/amp/plugins/termio.ts` —— `PluginFile` 写入 Termio 自带模板。
+>   - 升级时只删除内容可确认为 Termio 所有的旧 `termio-status.*` 文件；若简洁新文件名已被
 >     用户文件占用则拒绝覆盖，避免重复 hook 或破坏用户配置。
 > - **实测**：Claude 全链路（spinner+env-id 命中）已验；Codex `codex exec` 实跑确认 hooks 触发
 >   （`hook: UserPromptSubmit` / `hook: Stop`）；全部 JSON/TOML/plugin 文件已生成并通过语法检查，
@@ -103,7 +103,7 @@ TermioStore.applyHookEvent(_:)  (reducer)  ──写──▶  statuses[id]
 > 会把刚 done 的会话错误标橙）；零配置 bell/OSC 仍是所有 agent 通用的"需要你"兜底。另加
 > **stale-`.working` 清扫**（`lastWorkingAt` + 30s Timer，>300s 无活动且仍 working → idle，
 > 救回中途崩溃的 agent——正是 cmux issue #3749 缺的兜底）。安装器修了一个 bug：`install` 现在跨
-> *所有* hook 事件清除 termio 旧条目，删掉某事件映射时不会留孤儿。
+> *所有* hook 事件清除 Termio 旧条目，删掉某事件映射时不会留孤儿。
 >
 > **更新（2026-07-07，screen-change 兜底，对标 herdr 调研）**：stale-`.working` 清扫的活性判据
 > 从"有没有 PTY 字节流动"改成"**渲染出来的屏幕有没有变化**"。原判据的漏洞：agent 跑完停在 idle
@@ -118,7 +118,7 @@ TermioStore.applyHookEvent(_:)  (reducer)  ──写──▶  statuses[id]
 > 这是从 [herdr](https://github.com/ogulcancelik/herdr) 借来的**唯一**高价值点：herdr 全程用
 > **屏幕刮取 + per-agent manifest 正则**（`❯` 提示框=idle、OSC 标题盲文 spinner=working、
 > 未知即 idle 兜底）当唯一真相源，天然不会卡死——但代价是要养 18 家 agent 的 manifest（脆、需远程
-> 更新）。termio 的 hook 层是**精确**信号（工具名、transcript 路径），不该丢；只把 herdr 的
+> 更新）。Termio 的 hook 层是**精确**信号（工具名、transcript 路径），不该丢；只把 herdr 的
 > "屏幕内容才是活性真相"用作 hook 缺失时的**通用兜底**，不引入 manifest。这也部分回答了
 > `20260707-agent-extensibility.md` §八 #3 那个"tier-3 死感 / 轻量推断"的待定问题——recovery 方向已解，
 > "无 hook 的 agent 从不转圈"那半仍待办。
@@ -127,10 +127,10 @@ TermioStore.applyHookEvent(_:)  (reducer)  ──写──▶  statuses[id]
 
 ### 1. 关联键：cwd → worktreePath（主方案）
 
-hook 事件回来后，termio 要回答"这是我哪个会话？"。hook payload 自带 `cwd`，而每个会话
+hook 事件回来后，Termio 要回答"这是我哪个会话？"。hook payload 自带 `cwd`，而每个会话
 跑在自己的 worktree 目录（`session.worktreePath`，逐会话唯一）。所以
 **`event.cwd → worktreePath` 直接精确命中，零注入、零 libghostty API 风险**。
-这是 termio 因自有 PTY + 每会话 worktree 拿到的免费关联键。
+这是 Termio 因自有 PTY + 每会话 worktree 拿到的免费关联键。
 
 唯一的歧义：**worktree 关闭**时，同一 project 下多个会话共享 `project.path`，cwd 撞车
 （实测就是常态：一个 repo 里跑一个 Claude Code + 一个普通 Terminal）。**as-built 解法**
@@ -155,7 +155,7 @@ hook 事件回来后，termio 要回答"这是我哪个会话？"。hook payload
 Claude Code hooks 在 `~/.claude/settings.json`，按事件跑 shell 命令，hook 输入从
 stdin 给 JSON（含 `hook_event_name` / `tool_name` / `cwd` / `session_id`）。
 
-termio 启动时**幂等地**写入（已存在则跳过）一组 hook，命令形如：
+Termio 启动时**幂等地**写入（已存在则跳过）一组 hook，命令形如：
 
 ```jsonc
 // UserPromptSubmit / PreToolUse / PostToolUse / Notification / Stop / SubagentStop
@@ -164,9 +164,9 @@ termio 启动时**幂等地**写入（已存在则跳过）一组 hook，命令�
 
 - hook 输入（含 `cwd` / `session_id` / `hook_event_name` / `tool_name`）从 stdin 原样
   灌进 socket，`HookListener` 端解码——不需要 `jq` 改写 payload，cwd 已在里面。
-- `nc -U` 走 unix socket，macOS 自带。若担心精简环境无 `nc`，换 termio 随包的极小转发
+- `nc -U` 走 unix socket，macOS 自带。若担心精简环境无 `nc`，换 Termio 随包的极小转发
   二进制 / 脚本，读 stdin 直送 socket。
-- 自动安装要**克制**：只追加 termio 自己的 hook 条目（带可识别标记便于卸载/升级），
+- 自动安装要**克制**：只追加 Termio 自己的 hook 条目（带可识别标记便于卸载/升级），
   绝不覆盖用户已有 hooks。设置里给一个开关 + "重装/移除 hooks" 按钮。
 
 ### 4. Reducer：事件 → 三态
@@ -195,12 +195,12 @@ termio 启动时**幂等地**写入（已存在则跳过）一组 hook，命令�
 ## 三、"等你输入"是最难的状态（照搬竞品结论）
 
 Claude Code 只有 `Notification` 一个信号，且把"等权限审批（可靠、即时）"与
-"等自由文本回答（~60s 定时器近似）"混在一起。termio 的处理：
+"等自由文本回答（~60s 定时器近似）"混在一起。Termio 的处理：
 
 - **权限审批**：`Notification` → `.needsAttention`，可靠。
 - **等自由文本**：`Stop` 之后若长时间无 `UserPromptSubmit`，用一个 ~60s 定时器近似
   推 `.needsAttention`。属 best-effort。
-- 好在 termio 的 bell/OSC 已经把"需要你"兜住了，hook 层主要贡献是把 **`.working`**
+- 好在 Termio 的 bell/OSC 已经把"需要你"兜住了，hook 层主要贡献是把 **`.working`**
   做实，而不是去啃这个最难的细分。
 
 ## 四、改动清单（最小面）
@@ -215,7 +215,7 @@ Claude Code 只有 `Notification` 一个信号，且把"等权限审批（可靠
 
 ## 五、形态决策（已定，记录在案）
 
-termio 选**菜单栏托盘**（已做），不做刘海。更克制、不挡内容——与竞品文档结论一致。
+Termio 选**菜单栏托盘**（已做），不做刘海。更克制、不挡内容——与竞品文档结论一致。
 本设计不引入任何新窗口/HUD。
 
 ## 六、开放问题（实现前确认）
@@ -229,6 +229,6 @@ termio 选**菜单栏托盘**（已做），不做刘海。更克制、不挡内
 
 - 蓝图：https://github.com/Octane0411/open-vibe-island （`hook → socket → reducer`）
 - 冗余通道参考：https://github.com/gmr/claude-status
-- 无 hook tail 方案（termio 不需要）：https://github.com/sooink/claude-watch
+- 无 hook tail 方案（Termio 不需要）：https://github.com/sooink/claude-watch
 - Claude Code Hooks：https://code.claude.com/docs/en/hooks-guide
 - 竞品分析原文：`docs/competitive-analysis/07-vibe-island.md`

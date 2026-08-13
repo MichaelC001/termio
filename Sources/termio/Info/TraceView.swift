@@ -133,9 +133,9 @@ struct TraceView: View {
     @ViewBuilder private var content: some View {
         Group {
             if let html {
-                TraceWebView(html: html, background: settings.terminalBackgroundColor)
+                TraceWebView(html: html)
             } else if let loadError {
-                ContentUnavailableView("Couldn't build the trace", huge: .bot, description: Text(loadError))
+                PaneEmptyState("Couldn’t build the trace", icon: .bot, message: loadError)
             } else {
                 ProgressView()
             }
@@ -148,8 +148,17 @@ struct TraceView: View {
         do {
             // The Mac overlay draws its own native header (see `header`), so the HTML
             // document omits its `<header>`; the phone (companion) keeps the default.
-            html = try SessionTraceRenderer.html(jsonlPath: request.jsonlPath, title: request.title,
-                                                 theme: theme, includeHeader: false)
+            let document = try SessionTraceRenderer.html(
+                jsonlPath: request.jsonlPath, title: request.title, theme: theme,
+                includeHeader: false)
+            // An agent that drew a diagram gets it drawn: the fences are swapped for SVG
+            // before the page is handed to the web view, so nothing runs mermaid here.
+            let sources = MermaidRenderer.sources(in: document)
+            let drawn = sources.isEmpty
+                ? [:]
+                : await MermaidRenderer.shared.diagrams(
+                    for: sources, theme: MermaidRenderer.Theme(theme))
+            html = MermaidRenderer.applying(drawn, to: document)
             loadError = nil
         } catch {
             loadError = error.localizedDescription
@@ -162,7 +171,6 @@ struct TraceView: View {
 /// during load, avoiding a white flash before the themed page paints.
 private struct TraceWebView: NSViewRepresentable {
     let html: String
-    let background: NSColor
 
     func makeNSView(context: Context) -> WKWebView {
         // PreviewWebView: right-click stripped to Copy — the rendered trace is

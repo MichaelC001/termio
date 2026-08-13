@@ -42,12 +42,13 @@ struct SSHSettingsTab: View {
                 url: target.url,
                 settings: settings,
                 jumpLine: target.line,
+                showsInspectorChrome: false,
                 onClose: { configEditor = nil }
             )
             .frame(minWidth: 640, minHeight: 460)
-            // FileEditorView delegates its close to an external toolbar that only
-            // exists over the terminal pane — in a sheet there's none, so supply
-            // one. Escape closes too; the visible button is the guaranteed way out.
+            // The editor's own header controls belong to the inspector, which a sheet
+            // doesn't have — so supply the one control that still applies. Escape closes
+            // too; the visible button is the guaranteed way out.
             .overlay(alignment: .topTrailing) {
                 Button { configEditor = nil } label: {
                     Image(systemName: "xmark")
@@ -58,7 +59,7 @@ struct SSHSettingsTab: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.cancelAction)
-                .help("Close (Esc)")
+                .help(localized("Close (Esc)"))
                 .padding(8)
             }
         }
@@ -67,7 +68,7 @@ struct SSHSettingsTab: View {
     private var hostsSection: some View {
         Section {
             if hosts.isEmpty {
-                Text("No hosts yet — add one, or write a Host block in ~/.ssh/config.")
+                Text(localized("No hosts yet — add one, or write a Host block in ~/.ssh/config."))
                     .foregroundStyle(.secondary)
             }
             ForEach(hosts) { host in
@@ -78,12 +79,12 @@ struct SSHSettingsTab: View {
                 )
             }
             Button { addingHost = true } label: {
-                Label("Add Host", systemImage: "plus")
+                Label(localized("Add Host"), systemImage: "plus")
             }
         } header: {
-            SectionHeaderLabel(title: "Hosts")
+            SectionHeaderLabel(title: localized("Hosts"))
         } footer: {
-            Text("Your Host entries from ~/.ssh/config — the same aliases `ssh` resolves. Right-click a host to connect.")
+            Text(.init(localized("Your Host entries from ~/.ssh/config — the same aliases `ssh` resolves. Right-click a host to connect.")))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -92,16 +93,16 @@ struct SSHSettingsTab: View {
     private var configSection: some View {
         Section {
             LabeledContent {
-                Button("Edit") { presentEditor(for: nil) }
+                Button(localized("Edit")) { presentEditor(for: nil) }
             } label: {
                 SettingsLabel(
                     .huge(.fileDoc),
                     title: "~/.ssh/config",
-                    subtext: "Reads ~/.ssh/config directly — termio keeps no separate host list."
+                    subtext: localized("Reads ~/.ssh/config directly — Termio keeps no separate host list.")
                 )
             }
         } header: {
-            SectionHeaderLabel(title: "Config file")
+            SectionHeaderLabel(title: localized("Config file"))
         }
     }
 
@@ -117,15 +118,15 @@ struct SSHSettingsTab: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 8)
-                    Button(copiedKeyID == key.id ? "Copied" : "Copy") { copy(key) }
+                    Button(copiedKeyID == key.id ? localized("Copied") : localized("Copy")) { copy(key) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                 }
             }
         } header: {
-            SectionHeaderLabel(title: "Public keys")
+            SectionHeaderLabel(title: localized("Public keys"))
         } footer: {
-            Text("The public keys in ~/.ssh. Copy one to paste into a server's authorized_keys — private keys are never read.")
+            Text(localized("The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -195,17 +196,17 @@ private struct SSHHostRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .help(host.identityFile.map { "Uses \($0)" } ?? "")
+                    .help(host.identityFile.map { localized("Uses \($0)") } ?? "")
             }
             Spacer(minLength: 8)
             probeControl
         }
         .contentShape(Rectangle())
         .contextMenu {
-            Button("Connect", action: connect)
-            Button("Test Connection", action: runProbe)
-            Button("Edit in Config", action: editInConfig)
-            Button("Copy ssh Command") {
+            Button(localized("Connect"), action: connect)
+            Button(localized("Test Connection"), action: runProbe)
+            Button(localized("Edit in Config"), action: editInConfig)
+            Button(localized("Copy ssh Command")) {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString("ssh \(host.alias)", forType: .string)
             }
@@ -218,7 +219,7 @@ private struct SSHHostRow: View {
     private var probeControl: some View {
         switch probe {
         case .idle:
-            Button("Test", action: runProbe)
+            Button(localized("Test"), action: runProbe)
                 .buttonStyle(.bordered)
                 .controlSize(.small)
         case .running:
@@ -233,7 +234,7 @@ private struct SSHHostRow: View {
             }
             .buttonStyle(.borderless)
             .controlSize(.small)
-            .help("\(outcome.detail) — click to re-test")
+            .help(localized("\(outcome.detail) — click to re-test"))
         }
     }
 
@@ -253,8 +254,8 @@ private struct SSHHostRow: View {
 private extension SSHProbeResult {
     var label: String {
         switch self {
-        case .reachable: return "Reachable"
-        case .authFailed: return "Auth failed"
+        case .reachable: return localized("Reachable")
+        case .authFailed: return localized("Auth failed")
         case .unreachable(let reason): return reason
         }
     }
@@ -269,7 +270,7 @@ private extension SSHProbeResult {
 
     var detail: String {
         switch self {
-        case .reachable: return "Connected and authenticated"
+        case .reachable: return localized("Connected and authenticated")
         case .authFailed(let message), .unreachable(let message): return message
         }
     }
@@ -310,29 +311,29 @@ struct AddSSHHostSheet: View {
         VStack(spacing: 0) {
             Form {
                 Section {
-                    TextField("Alias", text: $alias, prompt: Text("myserver"))
-                    TextField("Host", text: $hostName, prompt: Text("server.example.com"))
-                    TextField("User", text: $user, prompt: Text("optional"))
-                    TextField("Port", text: $port, prompt: Text("22"))
-                    LabeledContent("Key file") {
+                    TextField(localized("Alias"), text: $alias, prompt: Text("myserver"))
+                    TextField(localized("Host"), text: $hostName, prompt: Text("server.example.com"))
+                    TextField(localized("User"), text: $user, prompt: Text(localized("optional")))
+                    TextField(localized("Port"), text: $port, prompt: Text("22"))
+                    LabeledContent(localized("Key file")) {
                         HStack(spacing: 6) {
                             TextField(
                                 "", text: $identityFile,
-                                prompt: Text("optional — ~/.ssh/id_ed25519")
+                                prompt: Text(localized("optional — ~/.ssh/id_ed25519"))
                             )
                             .labelsHidden()
-                            Button("Choose…", action: chooseIdentityFile)
+                            Button(localized("Choose…"), action: chooseIdentityFile)
                         }
                     }
                 } header: {
-                    SectionHeaderLabel(title: "Add SSH Host")
+                    SectionHeaderLabel(title: localized("Add SSH Host"))
                 } footer: {
                     if aliasTaken {
-                        Text("“\(trimmedAlias)” is already in your config.")
+                        Text(localized("“\(trimmedAlias)” is already in your config."))
                             .font(.caption)
                             .foregroundStyle(.orange)
                     } else {
-                        Text("Appends a Host block to ~/.ssh/config, so the alias works in plain `ssh \(trimmedAlias.isEmpty ? "myserver" : trimmedAlias)` too.")
+                        Text(.init(localized("Appends a Host block to ~/.ssh/config, so the alias works in plain `ssh \(trimmedAlias.isEmpty ? "myserver" : trimmedAlias)` too.")))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -348,11 +349,11 @@ struct AddSSHHostSheet: View {
                         .lineLimit(2)
                 }
                 Spacer()
-                Button("Cancel") { finish(nil) }
+                Button(localized("Cancel")) { finish(nil) }
                     .keyboardShortcut(.cancelAction)
                 // On the menu path adding also opens the connection — the button
                 // must promise both (HIG: the label describes the result).
-                Button(completion == nil ? "Add" : "Add & Connect", action: add)
+                Button(completion == nil ? localized("Add") : localized("Add & Connect"), action: add)
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canAdd)
             }
@@ -372,7 +373,7 @@ struct AddSSHHostSheet: View {
             )
             finish(trimmedAlias)
         } catch {
-            writeError = "Couldn't write ~/.ssh/config: \(error.localizedDescription)"
+            writeError = localized("Couldn’t write ~/.ssh/config: \(error.localizedDescription)")
         }
     }
 

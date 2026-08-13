@@ -18,7 +18,7 @@ related:
 
 ## Summary
 
-termio runs coding agents (Claude Code, Codex, OpenCode, Pi) in terminal sessions.
+Termio runs coding agents (Claude Code, Codex, OpenCode, Pi) in terminal sessions.
 A project can opt into a **sandbox**: every session of that project runs as a normal
 host process wrapped in an Apple **Seatbelt** profile (`sandbox-exec -f`). The
 project directory stays read-write, system paths stay readable, and everything else
@@ -47,7 +47,7 @@ across a VM boundary from the terminal**:
 Studying `nolabs-ai/nono` (a zero-VM agent sandbox: macOS Seatbelt, Linux Landlock+seccomp)
 made the reframe obvious: **the VM was the wrong axis for a terminal app.** Seatbelt
 keeps the agent a host process (PTY stays native), costs ~0 (no boot, no disk), and
-fully covers termio's actual threat model. Every line in the list above disappears.
+fully covers Termio's actual threat model. Every line in the list above disappears.
 
 ## Threat model
 
@@ -59,18 +59,18 @@ the agent's *own* non-Bash tools (e.g. a file-read tool) and any subprocess it s
 (that only gates its Bash tool).
 
 **Out of scope.** A macOS kernel privilege-escalation exploit chained by the agent to
-escape Seatbelt. A VM is a stronger boundary here, but this is not termio's threat
+escape Seatbelt. A VM is a stronger boundary here, but this is not Termio's threat
 model — and the defense would fail anyway the moment the user pastes the agent's output.
 
 ## Design
 
-### One enforcement layer, owned by termio
+### One enforcement layer, owned by Termio
 
 macOS **forbids applying a second Seatbelt sandbox inside an existing one** (verified:
 nested `sandbox-exec` fails to initialize). Both Claude Code and Codex sandbox their
 own Bash execution via Seatbelt. Therefore the agent **must be told to stand down its
-own sandbox** so termio's outer profile is the single layer — this is required, not an
-optimization. termio's outer profile already covers every Bash command the agent runs
+own sandbox** so Termio's outer profile is the single layer — this is required, not an
+optimization. Termio's outer profile already covers every Bash command the agent runs
 (inheritance), *plus* the agent process itself, so nothing is lost.
 
 Per-agent stand-down (`AgentPreset.sandboxStandDownArguments`):

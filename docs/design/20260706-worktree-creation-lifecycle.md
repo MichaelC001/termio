@@ -10,7 +10,7 @@ related:
 
 # Git worktree creation & lifecycle (Codex-aligned)
 
-> How termio *creates*, *names*, *branches*, and *cleans up* git worktrees for agent
+> How Termio *creates*, *names*, *branches*, and *cleans up* git worktrees for agent
 > sessions. The sibling IA doc covers how worktrees are *presented*; this covers the
 > mechanics it deferred.
 
@@ -54,32 +54,32 @@ Surveyed 2026-07-16; all three confirm the nested "folder-under-repo" IA and add
 few borrowables:
 
 - **Naming: hide "worktree."** Codex = "thread," Conductor = "Workspace," Air =
-  "Task." Users never type `git worktree`. termio's "New Worktree Session…" is close;
+  "Task." Users never type `git worktree`. Termio's "New Worktree Session…" is close;
   the noun users see should be the *session/branch*, not the git primitive.
 - **Disk: everyone moved out of the repo.** Conductor `~/conductor/workspaces/<repo>/`,
   Air `~/Library/Caches/JetBrains/Air/tasks/`, Codex `~/.codex/worktrees/`. Conductor
-  *deprecated* its in-repo `.conductor/` layout. termio's `~/.termio/worktrees/` is on
+  *deprecated* its in-repo `.conductor/` layout. Termio's `~/.termio/worktrees/` is on
   the right side of this.
 - **Untracked-files gap is universal.** All three copy gitignored files in; Conductor
-  + Claude Code use the *same* `.worktreeinclude` format termio already adopted.
+  + Claude Code use the *same* `.worktreeinclude` format Termio already adopted.
 - **Setup + teardown hooks are table stakes.** Conductor `[scripts]` setup/run/archive;
   Air `.air/worktree.json` setup/cleanup. Both pair a create-time setup with a
   **pre-delete cleanup** hook (tear down DBs/containers living outside the dir).
 - **Branch handle:** Conductor auto-generates a city-name dir handle (`warsaw`)
   *separate* from the branch, then has the agent rename the branch from the first
-  prompt. Air names the branch `air/<task>`. termio's "repo-name + session-id" leaf is
+  prompt. Air names the branch `air/<task>`. Termio's "repo-name + session-id" leaf is
   a fine handle; the live branch already shows separately (IA doc rule 2).
 
 ## Guiding principle
 
-**Match Codex exactly; diverge only where termio's architecture forces it.** During
+**Match Codex exactly; diverge only where Termio's architecture forces it.** During
 design, every reflex to *add structure* (sibling dirs, Application Support nesting,
 per-project subdirs, forced branch prefixes) turned out to buy nothing over Codex's
 plainer shape. The two justified divergences are both architectural, not aesthetic:
 
-1. termio is a **terminal**, so the worktree's cwd basename is visible everywhere
+1. Termio is a **terminal**, so the worktree's cwd basename is visible everywhere
    (shell prompt, tab title) → the folder name must be self-describing.
-2. termio already has `Session.worktreePath` and resolves it as the PTY cwd
+2. Termio already has `Session.worktreePath` and resolves it as the PTY cwd
    everywhere → bind the worktree to a **session**, reusing existing plumbing.
 
 ## What Codex does (the model we're following)
@@ -95,7 +95,7 @@ plainer shape. The two justified divergences are both architectural, not aesthet
 - `.worktreeinclude` copies git-ignored files (`.env`, secrets) into fresh
   worktrees; a post-create setup hook runs.
 
-## termio design
+## Termio design
 
 ### Entry point
 
@@ -119,7 +119,7 @@ plain "New Worktree" makes the empty container, the ⌥-accelerator fills it in 
 ```
 
 - **`~/.termio/`, not `~/Library/Application Support/termio/`.** The Application
-  Support path exists to satisfy the App Store sandbox; termio ships via
+  Support path exists to satisfy the App Store sandbox; Termio ships via
   Sparkle/direct-download and is **not sandboxed**, so a `~/.termio/` home dotfolder
   is both the Unix dev-tool idiom (`~/.ssh`, `~/.codex`) and more faithful to Codex.
   The codebase already treats `~/.termio` as a fallback location (`StateFile.swift`,
@@ -128,7 +128,7 @@ plain "New Worktree" makes the empty container, the ⌥-accelerator fills it in 
   so a `<project>/` namespace level is redundant. The repo name lives *in the leaf*
   for orientation, not as a directory level.
 - **Leaf = `<repo-dir-name>-worktree-<8char-session-id>`.** The repo name earns its
-  place because termio is a terminal: a bare-UUID basename would leave you blind in
+  place because Termio is a terminal: a bare-UUID basename would leave you blind in
   the shell prompt / tab title. Codex's plain `thread-N` is fine for a chat-desktop
   app where the basename isn't surfaced; it isn't for us. The `<id>` is the same
   8-char id shown in `termio sessions list`, so the folder matches the id the user
@@ -159,7 +159,7 @@ git worktree add --detach <path> <base>
 ### Branch naming when materializing
 
 Single editable text field, **pre-filled with a slug of `Session.liveTitle`** (the
-agent-updated title termio already tracks):
+agent-updated title Termio already tracks):
 
 ```
 Session "Fix login redirect"  →  prefill: fix-login-redirect  (Enter, or edit)
@@ -177,7 +177,7 @@ Session "Fix login redirect"  →  prefill: fix-login-redirect  (Enter, or edit)
 
 A fresh worktree has **no `.env`, no `node_modules`, no secrets** — so the agent's
 dev server won't boot and half its commands fail. This is very likely *why worktree
-creation was walked back before* (`Models.swift` says "termio no longer creates
+creation was walked back before* (`Models.swift` says "Termio no longer creates
 worktrees itself"). It must be solved for the feature to be real.
 
 #### How the field solves it (survey)
@@ -199,7 +199,7 @@ One trap the field warns about:
   on dependency drift, Node realpath resolution (Vite/Vitest), native addons, and
   **pnpm refuses to install into a symlinked `node_modules`**. Never automate it.
 
-#### termio's approach — the field minimum, and that's it
+#### Termio's approach — the field minimum, and that's it
 
 Match the proven, low-surface-area answer everyone converged on. No cleverness:
 
@@ -215,11 +215,11 @@ That's the whole design. It's already fast where the package manager has a globa
 store (**pnpm/uv** hard-link from it; pnpm's `enableGlobalVirtualStore: true` is
 purpose-built for multi-worktree agents). **npm / yarn-classic** re-install is
 inherently slower (no global store) — we accept that; the fix is "use pnpm/uv," not
-more machinery in termio.
+more machinery in Termio.
 
 #### Rejected: copy-on-write (APFS `clonefile`) of `node_modules`
 
-Considered and **rejected** (2026-07-06). termio is macOS-native on APFS, so it
+Considered and **rejected** (2026-07-06). Termio is macOS-native on APFS, so it
 *could* `clonefile`-clone `node_modules` to make npm/yarn setup near-instant — and no
 competitor ships this. But it was cut deliberately:
 
@@ -248,13 +248,13 @@ field models:
   one-branch-one-checkout rule). Air's model avoids the branch-in-two-places error *by
   construction*.
 
-**termio recommendation:** since termio starts **detached** (no branch), the natural
+**Termio recommendation:** since Termio starts **detached** (no branch), the natural
 hand-off is Air-shaped — a session action **"Bring changes to <main-checkout>"** that
 either (a) `git -C <main> checkout <sha> -- .`-style applies the worktree's diff as
 uncommitted changes into the primary checkout, or (b) if a branch was materialized,
 checks it out in the main checkout (suffixing `-copy` on the one-checkout conflict).
 Full PR flow is just "commit + push from the session's terminal" — no bespoke UI
-needed; termio *is* a terminal. Ship (a) first (matches the "mostly disposable,
+needed; Termio *is* a terminal. Ship (a) first (matches the "mostly disposable,
 occasionally graduate" reality); (b) when branch-materialization lands.
 
 ### Cleanup / retention
@@ -272,12 +272,12 @@ occasionally graduate" reality); (b) when branch-materialization lands.
   Codex's *snapshot-before-delete* of dirty ones is real engineering — ship
   retention-of-clean first, add snapshotting when the flow is trusted.
 
-### Parallel-agent hygiene: port collisions (termio's own thesis)
+### Parallel-agent hygiene: port collisions (Termio's own thesis)
 
-termio's reason to exist is *many agents at once*; N worktrees each booting a dev
+Termio's reason to exist is *many agents at once*; N worktrees each booting a dev
 server on the same port collide. **Conductor's fix:** reserve a 10-port block per
 worktree and expose it as `CONDUCTOR_PORT`..`+9`, plus a `run_mode`
-(`concurrent`/`nonconcurrent`) guard. termio's equivalent: hand the `setup.sh`/session
+(`concurrent`/`nonconcurrent`) guard. Termio's equivalent: hand the `setup.sh`/session
 env a `TERMIO_PORT` (base of a reserved block, allocated per live worktree) so a
 project's `dev` script can bind `$TERMIO_PORT` instead of a hard-coded 3000. Small,
 optional, but it's the difference between "5 agents" working and "5 agents" all
@@ -318,7 +318,7 @@ The *Branch* section above chose `git worktree add --detach` (materialize a bran
 on intent). Shipping it exposed a concrete UX bug: a **detached HEAD has no name**, so
 the same worktree was labelled three different ways — the sidebar node showed the folder
 name (`feedar-worktree`), while the inspector branch chip and zsh's own prompt showed the
-commit SHA (`563b5e2`). The shell prompt is unreachable from termio (zsh reads `HEAD`
+commit SHA (`563b5e2`). The shell prompt is unreachable from Termio (zsh reads `HEAD`
 itself), so the *only* way to make all surfaces agree is a real branch.
 
 Now: `git worktree add -b <name> <path> HEAD`, where `<name>` is the worktree's

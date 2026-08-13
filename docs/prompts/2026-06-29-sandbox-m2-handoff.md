@@ -1,6 +1,6 @@
 # 2026-06-29 — Sandbox M2 handoff prompt
 
-Handoff prompt for another agent to continue the termio sandbox work (M2:
+Handoff prompt for another agent to continue the Termio sandbox work (M2:
 per-project container + agent install). Paste the block below.
 
 ---

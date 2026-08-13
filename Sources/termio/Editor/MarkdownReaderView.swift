@@ -22,17 +22,41 @@ struct MarkdownReaderView: View {
     var addToChat: ((String?) -> Void)? = nil
     var canAddToChat: (() -> Bool)? = nil
 
+    /// Rendered mermaid diagrams, filled in by the task below. Drawing one needs a DOM and
+    /// is therefore asynchronous, so the document renders immediately with its diagrams as
+    /// source and re-renders once they arrive — the reader already restores scroll across
+    /// a re-render, so the swap is where you were looking.
+    @State private var diagrams: [String: String] = [:]
+
     var body: some View {
         let theme = TraceTheme.resolveReader(settings: settings, colorScheme: colorScheme)
+        let mermaidTheme = MermaidRenderer.Theme(theme)
+        let document = MarkdownReaderRenderer.document(
+            source, theme: theme, fontFamily: settings.fontFamily)
+        let sources = MermaidRenderer.sources(in: document)
+        // Anything already drawn goes into the first pass, so reopening a file or flipping
+        // the theme back shows its diagrams without a flash of source.
+        let drawn = diagrams.merging(
+            MermaidRenderer.shared.cachedDiagrams(for: sources, theme: mermaidTheme)) { _, new in new }
         // Relative image paths (`![](./shot.png)`) resolve against the file's own folder.
         MarkdownReaderWebView(
-            html: MarkdownReaderRenderer.document(source, theme: theme, fontFamily: settings.fontFamily),
+            html: MermaidRenderer.applying(drawn, to: document),
             baseURL: fileURL.deletingLastPathComponent(),
             fileURL: fileURL,
-            background: settings.terminalBackgroundColor,
             addToChat: addToChat,
             canAddToChat: canAddToChat
         )
+        .task(id: DiagramRequest(sources: sources, theme: mermaidTheme)) {
+            guard !sources.isEmpty else { return }
+            diagrams = await MermaidRenderer.shared.diagrams(for: sources, theme: mermaidTheme)
+        }
+    }
+
+    /// What a render depends on: change either the diagrams or the colors and the task
+    /// runs again; type anything else in the editor and it doesn't.
+    private struct DiagramRequest: Equatable {
+        let sources: [String]
+        let theme: MermaidRenderer.Theme
     }
 }
 
@@ -44,7 +68,6 @@ private struct MarkdownReaderWebView: NSViewRepresentable {
     let html: String
     let baseURL: URL
     let fileURL: URL
-    let background: NSColor
     var addToChat: ((String?) -> Void)?
     var canAddToChat: (() -> Bool)?
 

@@ -52,7 +52,7 @@ struct GitHubIssueProvider: IssueProvider {
         let raw: [RawIssue] = try await get(components.url!)
         return raw
             .filter { ($0.pullRequest != nil) == (query.kind == .pullRequest) }
-            .map { $0.summary(in: container) }
+            .map { $0.summary() }
     }
 
     func detail(_ number: Int, in container: IssueContainer) async throws -> IssueDetail {
@@ -61,7 +61,7 @@ struct GitHubIssueProvider: IssueProvider {
         async let rawComments: [RawComment] = get(URL(string: "\(base)/comments?per_page=100")!)
         let (issue, comments) = try await (rawIssue, rawComments)
         return IssueDetail(
-            summary: issue.summary(in: container),
+            summary: issue.summary(),
             bodyMarkdown: issue.body ?? "",
             authorAvatarURL: issue.user?.avatarUrl,
             createdAt: issue.createdAt,
@@ -92,27 +92,6 @@ struct GitHubIssueProvider: IssueProvider {
 
     // MARK: Pull-request extras (GitHub-specific, outside the tracker protocol)
 
-    /// The PR's branch facts, from `/pulls/{n}` — the fields the `/issues` view of
-    /// a PR doesn't carry.
-    func pullRequestGitInfo(_ number: Int, in container: IssueContainer) async throws -> PullRequestGitInfo {
-        struct RawPR: Decodable {
-            struct Side: Decodable {
-                struct Repo: Decodable { let fullName: String }
-                let ref: String
-                let repo: Repo?
-            }
-            let head: Side
-            let base: Side
-        }
-        let raw: RawPR = try await get(
-            URL(string: "https://api.github.com/repos/\(container.id)/pulls/\(number)")!)
-        return PullRequestGitInfo(
-            headRef: raw.head.ref,
-            // A deleted fork leaves `head.repo` null — only the pull ref remains.
-            crossRepository: raw.head.repo?.fullName != raw.base.repo?.fullName
-        )
-    }
-
     /// The PR's changed files as `GitChange` rows (the git pane's own model) *with the
     /// diff inline*: the `/pulls/{n}/files` response already carries each file's unified
     /// `patch`, so the Files tab renders straight from this one call — no `git fetch` of
@@ -127,6 +106,7 @@ struct GitHubIssueProvider: IssueProvider {
             let deletions: Int
             let previousFilename: String?
             let patch: String?
+            let contentsUrl: String?
         }
         let raw: [RawFile] = try await get(
             URL(string: "https://api.github.com/repos/\(container.id)/pulls/\(number)/files?per_page=100")!)
@@ -145,8 +125,26 @@ struct GitHubIssueProvider: IssueProvider {
             change.originalPath = file.previousFilename
             // No `patch` on a binary file; GitHub also drops it past its inline-size cap.
             change.isBinary = file.patch == nil && file.additions == 0 && file.deletions == 0
-            return PullRequestFile(change: change, patch: file.patch)
+            return PullRequestFile(change: change, patch: file.patch,
+                                   contentsURL: file.contentsUrl.flatMap(URL.init(string:)))
         }
+    }
+
+    /// One PR file's text at the PR head, for expanding the context its patch left out.
+    /// `contents_url` is already pinned to the head sha, and the raw media type returns the
+    /// file itself rather than base64 in JSON — so this stays one request with no decode.
+    /// Binary or over-large files come back as something other than UTF-8 text and are
+    /// reported as missing, leaving the diff's bands inert.
+    func fileText(at url: URL) async throws -> String? {
+        var request = URLRequest(url: url, timeoutInterval: 15)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/vnd.github.raw", forHTTPHeaderField: "Accept")
+        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw APIError.status(http.statusCode)
+        }
+        return String(data: data, encoding: .utf8)
     }
 
     /// The connected account's login, fetched once per app run — the `assignee`
@@ -215,14 +213,13 @@ private struct RawIssue: Decodable {
     let body: String?
     let labels: [RawLabel]
     let user: RawUser?
-    let comments: Int?
     let createdAt: Date
     let updatedAt: Date
     let htmlUrl: URL?
     let draft: Bool?
     let pullRequest: RawPullRequest?
 
-    func summary(in container: IssueContainer) -> IssueSummary {
+    func summary() -> IssueSummary {
         let kind: IssueKind = pullRequest == nil ? .issue : .pullRequest
         let itemState: IssueItemState
         if state == "open" {
@@ -238,7 +235,6 @@ private struct RawIssue: Decodable {
             state: itemState,
             labels: labels.map { IssueLabel(name: $0.name, colorHex: $0.color ?? "") },
             author: user?.login ?? "ghost",
-            commentCount: comments ?? 0,
             updatedAt: updatedAt,
             url: htmlUrl
         )

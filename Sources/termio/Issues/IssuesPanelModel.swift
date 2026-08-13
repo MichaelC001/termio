@@ -312,7 +312,7 @@ final class IssuesPanelModel: ObservableObject {
         detailError = nil
         prFiles = []
         prFilePatches = [:]
-        prInfo = nil
+        prFileContentURLs = [:]
         prFilesLoading = false
         do {
             let conversation = try await provider.detail(item.number, in: container)
@@ -321,7 +321,7 @@ final class IssuesPanelModel: ObservableObject {
             // Cache the conversation the moment it lands — before a PR's heavy file list — so a
             // switch-away still warms the cache. `filesLoaded: false` marks the pending files.
             cache?.store(
-                .init(detail: conversation, prFiles: [], prFilePatches: [:], prInfo: nil,
+                .init(detail: conversation, prFiles: [], prFilePatches: [:], prFileContentURLs: [:],
                       filesLoaded: item.kind != .pullRequest, fetchedAt: Date()),
                 container, item.number)
             if item.kind == .pullRequest {
@@ -333,25 +333,23 @@ final class IssuesPanelModel: ObservableObject {
         }
     }
 
-    /// Fetches a PR's branch facts + changed files (`/files` carries every patch inline, the heavy
-    /// part) and folds them into the already-shown conversation, upgrading the cache entry to
+    /// Fetches a PR's changed files (`/files` carries every patch inline, the heavy part) and folds
+    /// them into the already-shown conversation, upgrading the cache entry to
     /// `filesLoaded: true`. Runs behind the conversation so the default tab never waits on it; a
     /// failure just leaves the Files tab empty rather than erroring the whole detail.
     private func loadPRFiles(_ item: IssueSummary, provider: GitHubIssueProvider,
                              container: IssueContainer, conversation: IssueDetail) async {
         prFilesLoading = true
-        async let info = provider.pullRequestGitInfo(item.number, in: container)
-        async let files = provider.pullRequestFiles(item.number, in: container)
         do {
-            let (prI, loadedFiles) = try await (info, files)
+            let loadedFiles = try await provider.pullRequestFiles(item.number, in: container)
             guard openItem?.number == item.number else { prFilesLoading = false; return }
             let mapped = prFileMapping(loadedFiles)
-            prInfo = prI
             prFiles = mapped.changes
             prFilePatches = mapped.patches
+            prFileContentURLs = mapped.contentURLs
             cache?.store(
-                .init(detail: conversation, prFiles: mapped.changes, prFilePatches: mapped.patches,
-                      prInfo: prI, filesLoaded: true, fetchedAt: Date()),
+                .init(detail: conversation, prFiles: mapped.changes, prFilePatches: mapped.patches, prFileContentURLs: mapped.contentURLs,
+                      filesLoaded: true, fetchedAt: Date()),
                 container, item.number)
         } catch {
             // The conversation stays; the Files tab simply shows no files.
@@ -359,17 +357,30 @@ final class IssuesPanelModel: ObservableObject {
         prFilesLoading = false
     }
 
+    /// Reads one PR file at the head, for a diff pane that wants to expand past the three
+    /// lines of context GitHub's patch carries. Nil whenever that cannot be done — no
+    /// provider, no `contents_url`, a binary blob, or the request failing — and the pane
+    /// then leaves its bands inert rather than offering a control that would do nothing.
+    func prFileText(_ path: String) async -> String? {
+        guard let provider, let url = prFileContentURLs[path] else { return nil }
+        return try? await provider.fileText(at: url)
+    }
+
     /// Maps GitHub's `/files` payload into the git pane's `GitChange` rows plus each file's inline
     /// unified-diff patch keyed by path — what the Files tab renders with no further network or git
     /// work. Absent patch keys are files GitHub gave none for (binary / diff too large to inline).
     private func prFileMapping(
         _ files: [PullRequestFile]
-    ) -> (changes: [GitChange], patches: [String: String]) {
+    ) -> (changes: [GitChange], patches: [String: String], contentURLs: [String: URL]) {
         let patches = Dictionary(
             uniqueKeysWithValues: files.compactMap { file in
                 file.patch.map { (file.change.path, $0) }
             })
-        return (files.map(\.change), patches)
+        let contentURLs = Dictionary(
+            uniqueKeysWithValues: files.compactMap { file in
+                file.contentsURL.map { (file.change.path, $0) }
+            })
+        return (files.map(\.change), patches, contentURLs)
     }
 
     /// Publishes a fetched entry into the pane's detail state.
@@ -377,14 +388,14 @@ final class IssuesPanelModel: ObservableObject {
         detail = entry.detail
         prFiles = entry.prFiles
         prFilePatches = entry.prFilePatches
-        prInfo = entry.prInfo
+        prFileContentURLs = entry.prFileContentURLs
         prFilesLoading = false
         detailError = nil
     }
 
-    /// One network round-trip for an item's full detail: the conversation, and for a PR its git
-    /// info and changed files (with each file's inline patch keyed by path). Pure fetch — no
-    /// state writes — so both the cold and revalidation paths share it.
+    /// One network round-trip for an item's full detail: the conversation, and for a PR its
+    /// changed files (with each file's inline patch keyed by path). Pure fetch — no state
+    /// writes — so both the cold and revalidation paths share it.
     private func fetchEntry(
         _ item: IssueSummary,
         provider: GitHubIssueProvider,
@@ -392,29 +403,30 @@ final class IssuesPanelModel: ObservableObject {
     ) async throws -> IssueCache.Entry {
         if item.kind == .pullRequest {
             async let loadedDetail = provider.detail(item.number, in: container)
-            async let info = provider.pullRequestGitInfo(item.number, in: container)
             async let files = provider.pullRequestFiles(item.number, in: container)
-            let (detail, prInfo, loadedFiles) = try await (loadedDetail, info, files)
+            let (detail, loadedFiles) = try await (loadedDetail, files)
             let mapped = prFileMapping(loadedFiles)
             return .init(
-                detail: detail, prFiles: mapped.changes, prFilePatches: mapped.patches,
-                prInfo: prInfo, filesLoaded: true, fetchedAt: Date())
+                detail: detail, prFiles: mapped.changes, prFilePatches: mapped.patches, prFileContentURLs: mapped.contentURLs,
+                filesLoaded: true, fetchedAt: Date())
         } else {
             let detail = try await provider.detail(item.number, in: container)
             return .init(
-                detail: detail, prFiles: [], prFilePatches: [:], prInfo: nil,
+                detail: detail, prFiles: [], prFilePatches: [:], prFileContentURLs: [:],
                 filesLoaded: true, fetchedAt: Date())
         }
     }
 
     // MARK: Pull-request extras
 
-    /// The PR's changed files (empty for issues) and branch facts.
+    /// The PR's changed files (empty for issues).
     @Published private(set) var prFiles: [GitChange] = []
     /// Each file's inline unified-diff patch from the API, keyed by path — what the Files
     /// tab renders. Absent keys are files GitHub gave no patch for (binary / too large).
     @Published private(set) var prFilePatches: [String: String] = [:]
-    @Published private(set) var prInfo: PullRequestGitInfo?
+    /// Each PR file's `contents_url`, pinned to the head — the Files tab reads the file
+    /// through it to expand the context GitHub's three-line patch left out.
+    @Published private(set) var prFileContentURLs: [String: URL] = [:]
 
     /// The PR's file list is still in flight *after* the conversation has already rendered —
     /// the two are fetched separately so the (small, fast) conversation isn't gated behind the

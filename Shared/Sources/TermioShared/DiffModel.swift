@@ -62,6 +62,41 @@ public struct DiffBandControls: OptionSet, Sendable, Equatable {
     public init(rawValue: Int) { self.rawValue = rawValue }
     public static let up = DiffBandControls(rawValue: 1 << 0)
     public static let down = DiffBandControls(rawValue: 1 << 1)
+    /// One control that opens the whole run at once, for a gap no longer than a single
+    /// step — GitHub Desktop's "Expand All", where two ends would each swallow the gap.
+    public static let all = DiffBandControls(rawValue: 1 << 2)
+}
+
+/// The file's own text for lines a fixed-context patch never carried, keyed by new-side
+/// line number. A `git diff` termio runs itself asks for the whole file as context, so its
+/// gaps are already in the rows; GitHub's PR `patch` is fixed at three lines, and a hunk
+/// boundary there can only be opened by reading the file. Empty means the surface has no
+/// file to read, and the band draws inert — GitHub Desktop's placeholder state.
+public struct DiffGapText: Sendable, Equatable {
+    private let lines: [Int: String]
+
+    public static let unavailable = DiffGapText(lines: [:])
+
+    public init(lines: [Int: String]) { self.lines = lines }
+
+    /// The new-side text of a whole file, `first` being the line number of `text`'s first
+    /// line (1 for a complete file).
+    public init(fileLines text: [String], startingAt first: Int = 1) {
+        var lines: [Int: String] = [:]
+        lines.reserveCapacity(text.count)
+        for (offset, line) in text.enumerated() { lines[first + offset] = line }
+        self.lines = lines
+    }
+
+    public var isEmpty: Bool { lines.isEmpty }
+
+    public func line(_ number: Int) -> String? { lines[number] }
+
+    /// Whether every line of `range` is on hand — a partial read must not offer a control
+    /// that would splice a hole into the file.
+    public func covers(_ range: ClosedRange<Int>) -> Bool {
+        !lines.isEmpty && range.allSatisfy { lines[$0] != nil }
+    }
 }
 
 /// How much of each folded run the reader has revealed, keyed by the run's anchor line id.
@@ -142,12 +177,18 @@ public enum DiffParser {
         return rows
     }
 
+    /// The id of a line spliced in from the file instead of parsed out of the patch.
+    /// Negative, so it can never collide with a parsed row's id, and stable per line
+    /// number, so re-folding keeps the syntax pass and the selection anchored.
+    public static func gapLineID(forNewLine number: Int) -> Int { -(number + 1) }
+
     /// Folds parsed lines into the display list: hunk plumbing disappears (its gap
     /// becomes a band), unchanged runs longer than a handful of lines collapse to a
     /// band keeping 3 lines of context on the side(s) facing a change, and ids in
     /// `expanded` splice their hidden lines back in.
     public static func displayItems(lines rows: [DiffLine],
-                                    expansion: DiffExpansion) -> [DiffItem] {
+                                    expansion: DiffExpansion,
+                                    gapText: DiffGapText = .unavailable) -> [DiffItem] {
         var items: [DiffItem] = []
         var run: [DiffLine] = []
         var sawChange = false
@@ -190,10 +231,44 @@ public enum DiffParser {
             case .hunk:
                 flush(isLast: false)
                 if let start = row.newLine, start > lastNewLine + 1 {
-                    items.append(.band(
-                        id: row.id, lines: (lastNewLine + 1)...(start - 1),
-                        controls: [], heading: hunkHeading(row.text)
-                    ))
+                    let gap = (lastNewLine + 1)...(start - 1)
+                    let heading = hunkHeading(row.text)
+                    // The gap's own lines are never in the patch, so the reveal splices them
+                    // from the file. Without the file the band stays inert, the way GitHub
+                    // Desktop draws a placeholder where it cannot expand.
+                    guard gapText.covers(gap) else {
+                        items.append(.band(id: row.id, lines: gap, controls: [], heading: heading))
+                        break
+                    }
+                    // Unchanged through the gap, so both sides advance together: this hunk's
+                    // own numbers give the offset back to the old side.
+                    let oldOffset = (row.oldLine ?? start) - start
+                    let revealed = expansion.revealed(row.id, of: gap.count)
+                    func spliced(_ numbers: some Sequence<Int>) -> [DiffItem] {
+                        numbers.compactMap { number in
+                            gapText.line(number).map { text in
+                                .line(DiffLine(id: gapLineID(forNewLine: number), kind: .context,
+                                               text: text, oldLine: number + oldOffset,
+                                               newLine: number))
+                            }
+                        }
+                    }
+                    items += spliced(gap.prefix(revealed.head))
+                    let hidden = gap.dropFirst(revealed.head).dropLast(revealed.tail)
+                    if let first = hidden.first, let last = hidden.last {
+                        // GitHub Desktop's `getHunkExpansionType`: the file's first hunk can
+                        // only be read upward, a gap within one step opens in a single jump,
+                        // and anything longer offers both ends.
+                        var controls: DiffBandControls = [.up, .down]
+                        if items.isEmpty {
+                            controls = .up
+                        } else if hidden.count <= DiffExpansion.step {
+                            controls = .all
+                        }
+                        items.append(.band(id: row.id, lines: first...last,
+                                           controls: controls, heading: heading))
+                    }
+                    items += spliced(gap.suffix(revealed.tail))
                 }
             case .context:
                 run.append(row)

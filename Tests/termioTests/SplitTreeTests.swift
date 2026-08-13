@@ -141,4 +141,68 @@ final class SplitTreeTests: XCTestCase {
         XCTAssertEqual(PaneDropZone.center.highlightRect(in: frame), frame)
     }
 
+    /// Issue #245: a pane's frame must not depend on which group is selected.
+    /// Every group lays out in the same rect, so a hidden group's panes keep the
+    /// frames they had — no frame change means no SIGWINCH and no repaint when
+    /// the selection comes back.
+    func testPaneFramesCoverEveryGroupIdenticallyToItsOwnLayout() {
+        let bounds = CGRect(x: 0, y: 0, width: 800, height: 600)
+        let first = SplitNode.split(SplitBranch(direction: .horizontal, ratio: 0.4,
+                                                first: .leaf(agent), second: .leaf(run1)))
+        let second = SplitNode.split(SplitBranch(direction: .vertical, ratio: 0.5,
+                                                 first: .leaf(run2), second: .leaf(run3)))
+
+        let frames = SplitNode.paneFrames(of: [first, second], in: bounds)
+        XCTAssertEqual(Set(frames.keys), [agent, run1, run2, run3])
+        for group in [first, second] {
+            for (id, frame) in group.layout(in: bounds).frames {
+                XCTAssertEqual(frames[id], frame)
+            }
+        }
+        // Whichever group is on screen, neither one's panes fill the pane area.
+        XCTAssertNotEqual(frames[agent], bounds)
+        XCTAssertNotEqual(frames[run2], bounds)
+    }
+
+    /// A session in no group has no split geometry to keep; the pane falls back
+    /// to its full bounds, which is the size that session has when selected.
+    func testPaneFramesOmitUngroupedSessions() {
+        let group = SplitNode.split(SplitBranch(direction: .horizontal, ratio: 0.5,
+                                                first: .leaf(agent), second: .leaf(run1)))
+        let frames = SplitNode.paneFrames(of: [group],
+                                          in: CGRect(x: 0, y: 0, width: 800, height: 600))
+        XCTAssertNil(frames[run2])
+    }
+
+    /// Ungrouping the middle pane of a three-pane group used to leave its row
+    /// wedged between its former mates, so the sidebar bracketed two rows while
+    /// three panes were on screen. The run closes back up and the detached row
+    /// lands just below it.
+    func testGatheringClosesTheRunAroundADetachedRow() {
+        let above = Session.ID(), below = Session.ID()
+        let rows = [above, agent, run1, run2, below]
+        XCTAssertEqual(gatheringSplitRuns(rows, groups: [[agent, run2]]),
+                       [above, agent, run2, run1, below])
+    }
+
+    /// Two groups whose rows touch stay two runs, and a run already adjacent is
+    /// returned untouched — gathering runs after every group edit, so it must be
+    /// idempotent and must never fuse neighbouring groups.
+    func testGatheringLeavesAdjacentRunsAlone() {
+        let other1 = Session.ID(), other2 = Session.ID()
+        let rows = [agent, run1, other1, other2, run3]
+        let groups = [[agent, run1], [other1, other2]]
+        XCTAssertEqual(gatheringSplitRuns(rows, groups: groups), rows)
+        XCTAssertEqual(gatheringSplitRuns(gatheringSplitRuns(rows, groups: groups),
+                                          groups: groups), rows)
+    }
+
+    /// A member dragged clear of its group is pulled back into the run: rows
+    /// join and leave a group through "Group with" / "Ungroup", never by drag.
+    func testGatheringPullsBackAStrayMember() {
+        let stranger = Session.ID()
+        let rows = [agent, stranger, run1]
+        XCTAssertEqual(gatheringSplitRuns(rows, groups: [[agent, run1]]),
+                       [agent, run1, stranger])
+    }
 }

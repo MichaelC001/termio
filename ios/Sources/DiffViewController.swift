@@ -232,13 +232,13 @@ final class DiffViewController: UIViewController {
         storage.setAttributedString(NSAttributedString())
         titleLabel.text = change.name
         subtitleLabel.text = change.caption
-        walkerLabel.text = "\(index + 1) of \(files.count)"
+        walkerLabel.text = localized("\(index + 1) of \(files.count)")
         previousButton.isEnabled = index > 0
         nextButton.isEnabled = index < files.count - 1
         hunkButton.isHidden = true
         statusLabel.isHidden = true
         guard !change.isBinary else {
-            show(status: "Binary file — no text diff to show.")
+            show(status: localized("Binary file — no text diff to show."))
             return
         }
         pendingPath = change.path
@@ -252,12 +252,12 @@ final class DiffViewController: UIViewController {
         pendingPath = nil
         spinner.stopAnimating()
         guard !diff.binary else {
-            show(status: "Binary file — no text diff to show.")
+            show(status: localized("Binary file — no text diff to show."))
             return
         }
         rows = DiffParser.lines(from: diff.text)
         guard !rows.isEmpty else {
-            show(status: "No textual changes in this file.")
+            show(status: localized("No textual changes in this file."))
             return
         }
         statusLabel.isHidden = true
@@ -348,11 +348,11 @@ final class DiffViewController: UIViewController {
         guard expandable else {
             // A fixed band's lines were never fetched — say so instead of no-oping.
             let alert = UIAlertController(
-                title: "Not available",
-                message: "This diff was fetched without full context because the file is large, so the skipped lines aren't on the phone.",
+                title: localized("Not available"),
+                message: localized("This diff was fetched without full context because the file is large, so the skipped lines aren't on the phone."),
                 preferredStyle: .alert
             )
-            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            alert.addAction(UIAlertAction(title: localized("OK"), style: .default))
             present(alert, animated: true)
             return
         }
@@ -401,7 +401,7 @@ extension DiffViewController: UITextViewDelegate {
         suggestedActions: [UIMenuElement]
     ) -> UIMenu? {
         guard onSendToAgent != nil, range.length > 0 else { return nil }
-        let send = UIAction(title: "Send to Agent", image: UIImage(systemName: "arrow.up.message")) {
+        let send = UIAction(title: localized("Send to Agent"), image: UIImage(systemName: "arrow.up.message")) {
             [weak self] _ in
             guard let self, let code = selectedCode() else { return }
             onSendToAgent?(code)

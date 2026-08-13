@@ -69,11 +69,6 @@ struct SettingsLabel: View {
         self.titleFont = titleFont
     }
 
-    /// Convenience for the common SF Symbol case, mirroring `IconBadge(symbol:)`.
-    init(symbol: String, title: String, subtext: String? = nil, titleFont: Font = .headline) {
-        self.init(.symbol(symbol), title: title, subtext: subtext, titleFont: titleFont)
-    }
-
     /// Icon-less row, for a nested sub-option that hangs under an icon-led row.
     init(title: String, subtext: String? = nil, titleFont: Font = .body) {
         self.icon = nil
@@ -131,10 +126,10 @@ struct InstallFeedback: Equatable {
     ) -> InstallFeedback {
         let installed = InstallOutcome.list(outcome.succeeded, unit: unit)
         let missed = InstallOutcome.list(outcome.failed, unit: unit)
-        if outcome.isEmpty { return .failure("Nothing to install.") }
-        if outcome.failed.isEmpty { return .success("\(headline) — \(installed).") }
-        if outcome.succeeded.isEmpty { return .failure("Couldn’t update \(missed).") }
-        return .failure("\(headline) — \(installed). Couldn’t update \(missed).")
+        if outcome.isEmpty { return .failure(localized("Nothing to install.")) }
+        if outcome.failed.isEmpty { return .success(localized("\(headline) — \(installed).")) }
+        if outcome.succeeded.isEmpty { return .failure(localized("Couldn’t update \(missed).")) }
+        return .failure(localized("\(headline) — \(installed). Couldn’t update \(missed)."))
     }
 }
 
@@ -255,6 +250,49 @@ enum InstalledFonts {
             return font.isFixedPitch
         }.sorted()
     }
+
+    /// Dual-width CJK monospace faces users commonly install, in preference order —
+    /// each draws hanzi at exactly two terminal cells, so falling back to one keeps
+    /// weight and style consistent with the Latin face.
+    private static let cjkFallbackCandidates = [
+        "Sarasa Term SC", "Sarasa Mono SC", "Sarasa Fixed SC",
+        "Maple Mono NF CN", "Maple Mono CN",
+        "LXGW WenKai Mono",
+        "Noto Sans Mono CJK SC",
+    ]
+
+    /// The first installed candidate, probed once per process — fonts installed mid-run are
+    /// deliberately not tracked (a relaunch picks them up).
+    @MainActor private static let installedCJKCandidate: String? =
+        cjkFallbackCandidates.first { NSFont(name: $0, size: 12) != nil }
+
+    /// Whether a family can draw hanzi, memoized per process: `coveredCharacterSet` allocates
+    /// a full coverage bitmap on every call, and the caller sits on the re-style path that
+    /// runs once per open surface on every settings change.
+    @MainActor private static var hanCoverage: [String: Bool] = [:]
+
+    /// The first installed CJK-capable face to append to the terminal's font chain, or
+    /// `nil` when the chain already covers CJK (checked against U+4E00) or none of the known
+    /// candidates is installed. Silent by design: no setting, just a better fallback than the
+    /// system's proportional PingFang when the user has a purpose-built face on disk.
+    @MainActor static func cjkMonospaceFallback(existingChain: [String]) -> String? {
+        guard let han = Unicode.Scalar(0x4E00) else { return nil }
+        for family in existingChain where !family.isEmpty {
+            let covers: Bool
+            if let cached = hanCoverage[family] {
+                covers = cached
+            } else {
+                covers = NSFont(name: family, size: 12)
+                    .map { ($0.coveredCharacterSet as CharacterSet).contains(han) } ?? false
+                hanCoverage[family] = covers
+            }
+            if covers { return nil }
+        }
+        guard let candidate = installedCJKCandidate, !existingChain.contains(candidate) else {
+            return nil
+        }
+        return candidate
+    }
 }
 
 /// A font-family editor: a native pop-up menu of installed families above a live
@@ -339,10 +377,10 @@ struct FontFamilyField: View {
                     Text(name).tag(name)
                 }
                 Divider()
-                Text("Custom…").tag(Self.customTag)
+                Text(localized("Custom…")).tag(Self.customTag)
             }
             if showingCustomField {
-                TextField("Font name", text: $family, prompt: Text("e.g. JetBrains Mono"))
+                TextField(localized("Font name"), text: $family, prompt: Text(localized("e.g. JetBrains Mono")))
                     .textFieldStyle(.roundedBorder)
                     .focused($customFieldFocused)
                     .padding(.top, 4)
@@ -354,7 +392,7 @@ struct FontFamilyField: View {
                 .truncationMode(.tail)
                 .foregroundStyle(preview.isFallback ? .tertiary : .secondary)
             if preview.isFallback {
-                Text("“\(family)” isn’t installed — showing the system default.")
+                Text(localized("“\(family)” isn’t installed — showing the system default."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

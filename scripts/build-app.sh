@@ -6,7 +6,8 @@
 # no bundle, so macOS shows a generic Dock icon. This script builds the release
 # binary and wraps it in a `.app` bundle whose Info.plist + AppIcon.icns give it
 # a proper name and Dock icon, then embeds Sparkle (which SwiftPM links but does
-# NOT bundle on its own) under Contents/Frameworks.
+# NOT bundle on its own) under Contents/Frameworks. The release bundle is universal
+# (arm64 + x86_64) so one DMG runs on Apple silicon and Intel Macs alike.
 #
 # Usage:
 #   ./scripts/build-app.sh            # ad-hoc-signed release build into ./termio.app
@@ -73,15 +74,42 @@ else
     sign_identity="-"
 fi
 
-echo "==> Building $app_name ($configuration)"
-swift build -c "$configuration"
+# Regenerate the compiled .lproj resources from the String Catalog so a shipped
+# build can never carry strings that lag an edited Localizable.xcstrings.
+echo "==> Compiling localized strings"
+"$repo_root/scripts/compile-strings.sh"
 
-bin_path="$(swift build -c "$configuration" --show-bin-path)"
-binary_path="$bin_path/$product_name"
-if [[ ! -x "$binary_path" ]]; then
-    echo "error: built binary not found at $binary_path" >&2
-    exit 1
-fi
+# Build one slice per Mac architecture, then lipo them together, so the shipped app
+# runs on Apple silicon and Intel from one bundle. SwiftPM's own multi-arch mode
+# (`swift build --arch arm64 --arch x86_64`) is NOT usable here: it routes the build
+# through the Xcode build system, whose eager-linking step links libghostty's static
+# xcframework with `-lghostty` but no matching `-L`, so it fails with "library not
+# found for -lghostty". One `--arch` at a time keeps the normal build system, which
+# resolves the xcframework correctly.
+#
+# Each slice lands in its own `.build/<arch>-apple-macosx/<config>` directory. Only
+# the executable differs between them — Sparkle.framework already ships universal
+# from its xcframework, and the SwiftPM resource bundles are arch-independent — so
+# everything else is copied out of the first slice's directory.
+#
+# A dev build only ever runs on the machine that produced it, so it builds the host
+# slice alone and keeps the rebuild loop at one compile.
+architectures=(arm64 x86_64)
+[[ "$channel" == "dev" ]] && architectures=("$(uname -m)")
+slice_binaries=()
+for arch in "${architectures[@]}"; do
+    echo "==> Building $app_name ($configuration, $arch)"
+    swift build -c "$configuration" --arch "$arch"
+
+    slice_bin_path="$(swift build -c "$configuration" --arch "$arch" --show-bin-path)"
+    slice_binary="$slice_bin_path/$product_name"
+    if [[ ! -x "$slice_binary" ]]; then
+        echo "error: built $arch binary not found at $slice_binary" >&2
+        exit 1
+    fi
+    slice_binaries+=("$slice_binary")
+    [[ -n "${bin_path:-}" ]] || bin_path="$slice_bin_path"
+done
 
 sparkle_src="$bin_path/Sparkle.framework"
 if [[ ! -d "$sparkle_src" ]]; then
@@ -92,8 +120,20 @@ fi
 echo "==> Assembling bundle at $app_dir"
 rm -rf "$app_dir"
 mkdir -p "$macos_dir" "$resources_dir" "$frameworks_dir"
-cp "$binary_path" "$macos_dir/$product_name"
+lipo -create "${slice_binaries[@]}" -output "$macos_dir/$product_name"
+chmod +x "$macos_dir/$product_name"
 cp "$repo_root/packaging/Info.plist" "$contents_dir/Info.plist"
+
+# Fail loudly rather than shipping a DMG that Intel Macs refuse to open: a build
+# that silently drops a slice is invisible until a user on the other arch tries it.
+bundled_archs="$(lipo -archs "$macos_dir/$product_name")"
+for required_arch in "${architectures[@]}"; do
+    if [[ " $bundled_archs " != *" $required_arch "* ]]; then
+        echo "error: bundled binary is missing the $required_arch slice — has [$bundled_archs]" >&2
+        exit 1
+    fi
+done
+echo "==> Bundled binary architectures: $bundled_archs"
 
 # Ship every SwiftPM resource bundle into the app's Resources. NOTE: this alone is
 # NOT enough for a dependency that reads its own `Bundle.module` — `swift build`

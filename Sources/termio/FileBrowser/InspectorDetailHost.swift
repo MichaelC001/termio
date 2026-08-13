@@ -198,13 +198,31 @@ struct InspectorDetailContent: View {
             IssueDetailView(item: item, model: model, settings: settings, onBack: close)
                 .id(item.number)
         } else if let url = store.openFileURL {
-            if FileActivation.isPreviewable(url) {
-                FilePreviewView(url: url, settings: settings, onClose: close)
+            // Content staged from an SSH host is previewed as source, never as live
+            // web content: HTML and SVG from a remote box would otherwise run in
+            // WebKit with the file's own origin.
+            if FileActivation.isPreviewable(url),
+               store.openFileAllowsActiveWebContent
+                || !FileActivation.isActiveWebContent(url) {
+                FilePreviewView(url: url, settings: settings,
+                                displayName: store.openFileDisplayName,
+                                allowsWebFallback: store.openFileAllowsActiveWebContent,
+                                onClose: close)
                     .id(url)
             } else {
                 FileEditorView(url: url, settings: settings,
                                readOnly: store.openFileReadOnly,
-                               jumpLine: store.openFileLine, onClose: close)
+                               jumpLine: store.openFileLine,
+                               displayName: store.openFileDisplayName,
+                               addToChat: { selection in
+                                   if let selection {
+                                       _ = store.addSnippetToSelectedSessionPrompt(selection)
+                                   } else {
+                                       _ = store.addPathToSelectedSessionPrompt(url)
+                                   }
+                               },
+                               canAddToChat: { store.selectedSessionRunsAgent },
+                               onClose: close)
                     .id(url)
             }
         } else if let request = store.openTrace {

@@ -41,16 +41,16 @@ blank. Coasting (flick-and-release) rarely trips it; a sustained drag does.
 
 ## What the panel actually is
 
-It is **not** a termio view — there is no label to hide, no `.isHidden`, no API
+It is **not** a Termio view — there is no label to hide, no `.isHidden`, no API
 to suppress the string. It is painted by **libghostty's Zig renderer directly
 into its own Metal surface** when the renderer flips itself to
 `GHOSTTY_RENDERER_HEALTH_UNHEALTHY` after repeated GPU/Metal errors. libghostty
 ships as a remote SwiftPM package (`Lakr233/libghostty-spm`, pinned at 1.2.8),
-so the panel lives on the GPU, inside code termio cannot patch without forking.
+so the panel lives on the GPU, inside code Termio cannot patch without forking.
 
 Two consequences follow:
 
-- **We can't hide it.** The only way termio can *clear* it is to tear down and
+- **We can't hide it.** The only way Termio can *clear* it is to tear down and
   rebuild the surface — which the manual reload button (`reloadSurface()`)
   already does. That treats the symptom, not the trigger.
 - **So we must prevent the Metal error that trips it.** That is what this fix
@@ -110,7 +110,7 @@ explains the stale content bleeding through) are covered by
 The **true root fix** still lives upstream:
 
 1. libghostty should forward `GHOSTTY_ACTION_RENDERER_HEALTH` to the host so
-   termio can auto-reload instead of showing the panel. The wrapper currently
+   Termio can auto-reload instead of showing the panel. The wrapper currently
    drops that action (`default:` case), so nothing rebuilds the dead surface.
 2. `ghostty_surface_free` should nil the orphaned layer's delegate and
    `removeFromSuperlayer()` before returning.

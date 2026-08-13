@@ -505,6 +505,15 @@ final class PTYProcess: @unchecked Sendable {
     /// keystrokes via the companion bridge, synthetic `sessions send` text — so
     /// this is the one place input can be timestamped for all of them. Guarded
     /// by `writeLock` like the rest of the writer state.
+    ///
+    /// It cuts the other way too: in `.inMemory` mode this is also how libghostty
+    /// answers protocol queries — DSR, DA, XTGETTCAP — and a reply is
+    /// indistinguishable from a keystroke here, so a TUI that queries more often
+    /// than `userInputQuietWindow` starves `noteOutputActivity`'s idle→working
+    /// promotion. Hooks are no escape: a session is on that path *because* it has
+    /// hooks (`statusRules` is nil then), and `antigravity`/`hermes` have neither.
+    /// The fix is to stamp the key/paste entry and the companion input handler
+    /// instead of every stdin byte.
     private var lastInputAtLocked = Date.distantPast
 
     /// Thread-safe read of the last stdin-write instant. The status tap reads it
@@ -895,6 +904,26 @@ final class PTYProcess: @unchecked Sendable {
             }
         }
         return arguments.isEmpty ? nil : arguments
+    }
+
+    /// Whether the child is still running — the session has a live process to
+    /// lose. False once the pid is reaped.
+    var isAlive: Bool {
+        lock.lock()
+        let exited = childExited
+        lock.unlock()
+        return !exited && pid > 0
+    }
+
+    /// Whether something other than the child shell itself holds the tty's
+    /// foreground group, i.e. a command is actually running in the pane rather
+    /// than a shell idling at its prompt. This is the signal iTerm2 keys its
+    /// prompt-on-close off; a bare prompt is its own foreground group and reads
+    /// as free to close.
+    var hasForegroundJob: Bool {
+        guard isAlive else { return false }
+        let foreground = tcgetpgrp(masterFD)
+        return foreground > 0 && foreground != pid
     }
 
     /// SIGKILLs the child's process group if it hasn't been reaped yet.

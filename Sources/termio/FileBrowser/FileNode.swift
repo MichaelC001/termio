@@ -211,9 +211,7 @@ final class FileNode: Identifiable {
             }
     }
 
-    /// VCS and OS metadata that is always noise, dropped even though dotfiles are
-    /// otherwise shown. Mirrors VS Code's default `files.exclude`
-    /// (`.git`/`.svn`/`.hg`/`.DS_Store`/`Thumbs.db`); like VS Code it does *not* hide
-    /// `node_modules` or build output — those stay visible, loaded lazily on expand.
-    private static let ignoredNames: Set<String> = [".git", ".svn", ".hg", ".DS_Store", "Thumbs.db"]
+    /// The tree's shared ignore list, so a local directory and a remote one hide the
+    /// same metadata (see `FileEntry.ignoredNames`).
+    private static var ignoredNames: Set<String> { FileEntry.ignoredNames }
 }

@@ -34,11 +34,11 @@ extension TermioStore {
         }
         guard settings.sessionControlEnabled else {
             return controlError(request, "disabled",
-                "Session control is off. Enable it in termio ▸ Settings ▸ Agents.")
+                "Session control is off. Enable it in Termio ▸ Settings ▸ Agents.")
         }
         guard let project = callerProject(session: request.callerSession, cwd: request.callerCwd) else {
             return controlError(request, "no_scope",
-                "Couldn't tell which project you're in. Run this from inside a termio session.")
+                "Couldn’t tell which project you’re in. Run this from inside a Termio session.")
         }
 
         switch request.op {
@@ -54,7 +54,7 @@ extension TermioStore {
     }
 
     /// `termio notify` — post a macOS notification on the agent's explicit request
-    /// ("I'm done", "I need input"). Unlike the automatic task-completion banner,
+    /// ("I’m done", "I need input"). Unlike the automatic task-completion banner,
     /// this carries no policy gate: the agent asked for it, so it fires whether or
     /// not termio is frontmost and regardless of turn length. The calling session
     /// rides in the banner so a click focuses it, and the project supplies the
@@ -73,7 +73,7 @@ extension TermioStore {
         let title = request.title?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedTitle = (title?.isEmpty == false)
             ? title!
-            : caller.map { effectiveAgent(for: $0).displayName } ?? "termio"
+            : caller.map { effectiveAgent(for: $0).displayName } ?? "Termio"
         TaskNotificationCenter.shared.postManual(
             title: resolvedTitle, body: body, project: project, session: caller)
         return control(request, ok: true, text: "notified",
@@ -88,11 +88,11 @@ extension TermioStore {
     func resolveWatchScope(_ request: ControlRequest) -> (UUID?, Data?, [SessionWatchEvent]) {
         guard settings.sessionControlEnabled else {
             return (nil, controlError(request, "disabled",
-                "Session control is off. Enable it in termio ▸ Settings ▸ Agents."), [])
+                "Session control is off. Enable it in Termio ▸ Settings ▸ Agents."), [])
         }
         guard let project = callerProject(session: request.callerSession, cwd: request.callerCwd) else {
             return (nil, controlError(request, "no_scope",
-                "Couldn't tell which project you're in. Run this from inside a termio session."), [])
+                "Couldn’t tell which project you’re in. Run this from inside a Termio session."), [])
         }
         guard request.snapshot != false else { return (project.id, nil, []) }
         let snapshot = project.sessions.map { session -> SessionWatchEvent in
@@ -236,7 +236,7 @@ extension TermioStore {
         switch resolveTarget(token, in: project) {
         case .found(let session):
             let state = surface(for: session, in: project)
-            return await deliver(payload, to: session, state: state, request: request, in: project)
+            return await deliver(payload, to: session, state: state, request: request)
         case .notFound:
             return controlError(request, "not_found", targetNotFoundMessage(request.target))
         case .ambiguous:
@@ -285,7 +285,7 @@ extension TermioStore {
             to: project.id, agent: preset, anchor: caller?.id,
             takeFocus: caller == nil || caller?.id == selectedSessionID)
         guard let freshID, let fresh = session(freshID) else {
-            return controlError(request, "start_failed", "Could not start the session.")
+            return controlError(request, "start_failed", "Couldn’t start the session.")
         }
         let state = surface(for: fresh, in: project)
         // The envelope is agent guidance — typed into a shell it would *execute*
@@ -300,7 +300,7 @@ extension TermioStore {
             await waitForBootSettle(of: state)
             guard await performDelivery(delivered, to: fresh, state: state) else {
                 return controlError(request, "not_live",
-                    "\(displayTitle(for: fresh)) has no live terminal yet — open it once in termio.")
+                    "\(displayTitle(for: fresh)) has no live terminal yet — open it once in Termio.")
             }
             let cursorAtSend = transcriptPaths[fresh.id].map(Self.lineCount)
             return await waitForReply(request, session: fresh,
@@ -355,11 +355,11 @@ extension TermioStore {
     /// turn settles and reports the outcome plus the transcript range it landed in.
     private func deliver(
         _ payload: String, to session: Session, state: TerminalViewState,
-        request: ControlRequest, in project: Project
+        request: ControlRequest
     ) async -> Data {
         guard await performDelivery(payload, to: session, state: state) else {
             return controlError(request, "not_live",
-                "\(displayTitle(for: session)) has no live terminal yet — open it once in termio.")
+                "\(displayTitle(for: session)) has no live terminal yet — open it once in Termio.")
         }
         guard request.wantsWait else { return sentReply(request, session) }
         // The cursor to read the reply from: wherever the transcript stands right
@@ -607,7 +607,7 @@ extension TermioStore {
         case .found(let session):
             guard var lines = screenLines(for: session.id) else {
                 return controlError(request, "not_live",
-                    "\(displayTitle(for: session)) has no live terminal yet — open it once in termio.")
+                    "\(displayTitle(for: session)) has no live terminal yet — open it once in Termio.")
             }
             if let cap = request.lines, cap > 0 { lines = Array(lines.suffix(cap)) }
             let screen = lines.joined(separator: "\n")

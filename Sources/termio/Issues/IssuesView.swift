@@ -96,14 +96,14 @@ struct IssuesView: View {
     private var refreshButton: some View {
         // VS Code codicon refresh — the two-arrow ring reads more refined than the Hugeicons
         // single-arrow one, and matches the File Explorer header's four codicon actions.
-        TreeHeaderButton(codicon: .refresh, help: "Refresh") {
+        TreeHeaderButton(codicon: .refresh, help: localized("Refresh")) {
             Task { await model.loadList(force: true) }
         }
     }
 
     private var kindSwitch: some View {
         CapsuleSwitch(
-            segments: [("Issues", IssueKind.issue), ("Pull Requests", .pullRequest)],
+            segments: [(localized("Issues"), IssueKind.issue), (localized("Pull Requests"), .pullRequest)],
             selection: Binding(get: { model.query.kind }, set: { model.query.kind = $0 })
         )
     }
@@ -114,30 +114,30 @@ struct IssuesView: View {
             // things you can filter by, not a flat pile of toggles. State and
             // assignee are single-select (inline Picker = radio); labels stay
             // multi-select with GitHub's AND semantics.
-            Menu("State") {
-                Picker("State", selection: Binding(
+            Menu(localized("State")) {
+                Picker(localized("State"), selection: Binding(
                     get: { model.query.openOnly },
                     set: { model.query.openOnly = $0 }
                 )) {
-                    Text("Open").tag(true)
-                    Text("All").tag(false)
+                    Text(localized("issue.state.open")).tag(true)
+                    Text(localized("All")).tag(false)
                 }
                 .pickerStyle(.inline)
             }
-            Menu("Assignee") {
-                Picker("Assignee", selection: Binding(
+            Menu(localized("Assignee")) {
+                Picker(localized("Assignee"), selection: Binding(
                     get: { model.query.assignedToMe },
                     set: { model.query.assignedToMe = $0 }
                 )) {
-                    Text("Anyone").tag(false)
-                    Text("Assigned to Me").tag(true)
+                    Text(localized("Anyone")).tag(false)
+                    Text(localized("Assigned to Me")).tag(true)
                 }
                 .pickerStyle(.inline)
             }
             // The repo's full label set, checkmarked from the current query —
             // only when the repo actually has labels to offer.
             if !model.availableLabels.isEmpty {
-                Menu("Labels") {
+                Menu(localized("Labels")) {
                     ForEach(model.availableLabels, id: \.name) { label in
                         Toggle(label.name, isOn: Binding(
                             get: { model.query.labels.contains(label.name) },
@@ -179,7 +179,7 @@ struct IssuesView: View {
             .allowsHitTesting(false)
         }
         .onHover { filterHovering = $0 }
-        .help("Filter")
+        .help(localized("Filter"))
     }
 
     /// Any axis narrowing the list away from its default (all open items, anyone,
@@ -195,17 +195,17 @@ struct IssuesView: View {
         switch model.phase {
         case .disconnected:
             zeroState(
-                title: "GitHub Issues",
-                message: "Connect your GitHub account to read this project’s issues and pull requests here."
+                title: localized("GitHub Issues"),
+                message: localized("Connect your GitHub account to read this project’s issues and pull requests here.")
             ) {
-                Button("Connect GitHub") { Task { await model.connect() } }
+                Button(localized("Connect GitHub")) { Task { await model.connect() } }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.regular)
             }
         case .connecting(let userCode):
             zeroState(
-                title: "Enter Code on GitHub",
-                message: "Type this code at github.com/login/device to approve termio. Waiting for approval…"
+                title: localized("Enter Code on GitHub"),
+                message: localized("Type this code at github.com/login/device to approve Termio. Waiting for approval…")
             ) {
                 Text(userCode)
                     .font(.system(size: 22, weight: .semibold, design: .monospaced))
@@ -214,10 +214,10 @@ struct IssuesView: View {
             }
         case .unbound:
             zeroState(
-                title: "No GitHub Repository",
-                message: "This project’s origin remote doesn’t point at github.com, so there is no issue tracker to show."
+                title: localized("No GitHub Repository"),
+                message: localized("This project’s origin remote doesn’t point at github.com, so there is no issue tracker to show.")
             ) {
-                Button("Disconnect GitHub") { model.disconnect() }
+                Button(localized("Disconnect GitHub")) { model.disconnect() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
             }
@@ -264,32 +264,32 @@ struct IssuesView: View {
                 // A valid token with no rights to *this* repo (403) — usually an org that hasn't
                 // authorized termio. Switch account, or grant org access.
                 zeroState(
-                    title: "Couldn’t Load",
-                    message: "Reconnect to sign in with a different account, or grant termio access to the organization that owns this repository."
+                    title: localized("Couldn’t load"),
+                    message: localized("Reconnect to sign in with a different account, or grant Termio access to the organization that owns this repository.")
                 ) {
-                    Button("Reconnect") { Task { await model.reconnect() } }
+                    Button(localized("Reconnect")) { Task { await model.reconnect() } }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.regular)
-                    Button("Grant Org Access…") { model.openConnectionSettings() }
+                    Button(localized("Grant Org Access…")) { model.openConnectionSettings() }
                         .buttonStyle(.link)
                         .controlSize(.small)
                 }
             case .retry, .none:
                 // Rate limit, 404, 5xx, network, decode — reconnecting won't help; just retry.
                 zeroState(
-                    title: "Couldn’t Load",
-                    message: "Something went wrong loading this repository. Try again in a moment."
+                    title: localized("Couldn’t load"),
+                    message: localized("Something went wrong loading this repository. Try again in a moment.")
                 ) {
-                    Button("Try Again") { Task { await model.loadList(force: true) } }
+                    Button(localized("Try Again")) { Task { await model.loadList(force: true) } }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.regular)
                 }
             }
         } else if model.items.isEmpty {
-            ContentUnavailableView(
-                model.query.kind == .issue ? "No Issues" : "No Pull Requests",
-                huge: .checkCircle,
-                description: Text(emptyMessage)
+            PaneEmptyState(
+                model.query.kind == .issue ? localized("No Issues") : localized("No Pull Requests"),
+                icon: .checkCircle,
+                message: emptyMessage
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -335,8 +335,14 @@ struct IssuesView: View {
     }
 
     private var emptyMessage: String {
-        let noun = model.query.kind == .issue ? "issues" : "pull requests"
-        return model.query.openOnly ? "No open \(noun) right now." : "No \(noun) found."
+        if model.query.kind == .issue {
+            return model.query.openOnly
+                ? localized("No open issues right now.")
+                : localized("No issues found.")
+        }
+        return model.query.openOnly
+            ? localized("No open pull requests right now.")
+            : localized("No pull requests found.")
     }
 }
 
@@ -521,12 +527,12 @@ private struct IssueRowContextMenu: NSViewRepresentable {
             let menu = NSMenu()
             // The agent verb leads, like the file tree's rows.
             if canAddToChat?() == true {
-                let add = menuItem("Add to Chat", #selector(addToChatAction))
+                let add = menuItem(localized("Add to Chat"), #selector(addToChatAction))
                 menu.addItem(add)
                 menu.addItem(.separator())
             }
-            menu.addItem(menuItem("Copy Link", #selector(copyLink)))
-            menu.addItem(menuItem("Open in Browser", #selector(openInBrowser)))
+            menu.addItem(menuItem(localized("Copy Link"), #selector(copyLink)))
+            menu.addItem(menuItem(localized("Open in Browser"), #selector(openInBrowser)))
             menu.popUp(positioning: nil, at: recognizer.location(in: hostView), in: hostView)
         }
 
@@ -577,6 +583,13 @@ private struct DetailTaskKey: Hashable {
     let model: ObjectIdentifier
 }
 
+/// What a diagram render depends on: the diagrams in the open item and the colors to draw
+/// them in. Anything else about the item can change without re-drawing.
+private struct DiagramTaskKey: Hashable {
+    let sources: [String]
+    let theme: MermaidRenderer.Theme
+}
+
 struct IssueDetailView: View {
     let item: IssueSummary
     @ObservedObject var model: IssuesPanelModel
@@ -591,6 +604,8 @@ struct IssueDetailView: View {
 
     private enum Tab: Hashable { case conversation, files }
     @State private var tab: Tab = .conversation
+    /// Mermaid diagrams found in the body or comments, once drawn — see `conversationBody`.
+    @State private var diagrams: [String: String] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -654,7 +669,7 @@ struct IssueDetailView: View {
                 .truncationMode(.tail)
             Spacer(minLength: 6)
             if let url = item.url {
-                TreeHeaderButton(huge: .squareArrowUpRight, help: "Open on GitHub") {
+                TreeHeaderButton(huge: .squareArrowUpRight, help: localized("Open on GitHub")) {
                     NSWorkspace.shared.open(url)
                 }
             }
@@ -674,7 +689,7 @@ struct IssueDetailView: View {
     private var prTabBar: some View {
         HStack(spacing: 0) {
             CapsuleSwitch(
-                segments: [("Conversation", Tab.conversation), ("Files", .files)],
+                segments: [(localized("Conversation"), Tab.conversation), (localized("Files"), .files)],
                 selection: $tab
             )
             Spacer(minLength: 0)
@@ -691,12 +706,16 @@ struct IssueDetailView: View {
     @ViewBuilder
     private var conversationBody: some View {
         if let detail = model.detail {
+            let theme = TraceTheme.resolve(settings: settings, colorScheme: colorScheme)
+            let document = IssueDetailHTML.page(detail, theme: theme)
+            let sources = MermaidRenderer.sources(in: document)
+            let mermaidTheme = MermaidRenderer.Theme(theme)
+            // GitHub draws mermaid in issue and PR bodies, so the pane does too — drawn
+            // off to the side and swapped in, like the reader and the trace.
+            let drawn = diagrams.merging(
+                MermaidRenderer.shared.cachedDiagrams(for: sources, theme: mermaidTheme)) { _, new in new }
             IssueWebView(
-                html: IssueDetailHTML.page(
-                    detail,
-                    theme: TraceTheme.resolve(settings: settings, colorScheme: colorScheme)
-                ),
-                background: settings.terminalBackgroundColor,
+                html: MermaidRenderer.applying(drawn, to: document),
                 // Selected conversation text goes over as the pasted snippet; a
                 // selection-less click hands the agent the item's GitHub URL — the
                 // same token dragging the list row inserts.
@@ -714,8 +733,12 @@ struct IssueDetailView: View {
             // collapses the detail to a sliver — and the empty area paints the window background
             // (reads as a black window, most visibly across a minimize/restore relayout).
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .task(id: DiagramTaskKey(sources: sources, theme: mermaidTheme)) {
+                guard !sources.isEmpty else { return }
+                diagrams = await MermaidRenderer.shared.diagrams(for: sources, theme: mermaidTheme)
+            }
         } else if let error = model.detailError {
-            ContentUnavailableView("Couldn’t Load", huge: .github, description: Text(error))
+            PaneEmptyState(localized("Couldn’t load"), icon: .github, message: error)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ProgressView()
@@ -731,6 +754,7 @@ struct IssueDetailView: View {
             // diff on the right, rendered from the API's inline patches (no fetch, no git).
             PRFilesSplitView(
                 files: model.prFiles, patches: model.prFilePatches,
+                fileText: { await model.prFileText($0) },
                 repoRoot: model.repoRoot, settings: settings, onClose: onBack
             )
         } else if model.prFilesLoading || (model.detail == nil && model.detailError == nil) {
@@ -740,9 +764,9 @@ struct IssueDetailView: View {
                 .controlSize(.small)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ContentUnavailableView(
-                "No Files", huge: .fileDoc,
-                description: Text("This pull request changes no files.")
+            PaneEmptyState(
+                localized("No Files"), icon: .fileDoc,
+                message: localized("This pull request changes no files.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -800,14 +824,14 @@ private struct CapsuleSwitch<Value: Hashable>: View {
 /// `documentMode`, so raw HTML (bot comments, `<picture>`/`<img>`/tables) renders
 /// through the GitHub-mirroring `HTMLSanitizer` whitelist the way GitHub itself
 /// does, colored from the live `TraceTheme`.
-private enum IssueDetailHTML {
+enum IssueDetailHTML {
     static func page(_ detail: IssueDetail, theme: TraceTheme) -> String {
         let s = detail.summary
         let labels = s.labels.map {
             "<span class=\"label\" style=\"border-color:#\($0.colorHex.isEmpty ? "888888" : $0.colorHex)\">\(escape($0.name))</span>"
         }.joined()
         let body = detail.bodyMarkdown.isEmpty
-            ? "<p class=\"empty\">No description provided.</p>"
+            ? "<p class=\"empty\">\(localized("No description provided."))</p>"
             : MarkdownHTML.html(detail.bodyMarkdown, documentMode: true)
         let comments = detail.comments.map { comment in
             """
@@ -822,17 +846,54 @@ private enum IssueDetailHTML {
         <style>\(css(theme))</style></head><body>
         <header>
         <h1>\(escape(s.title))</h1>
-        <div class="meta">\(escape(s.identifier)) · <span class="state">\(s.state.label)</span> · \(avatar(detail.authorAvatarURL))\(escape(s.author)) opened \(relative(detail.createdAt))</div>
+        <div class="meta">\(escape(s.identifier)) · <span class="state">\(s.state.label)</span> · \(avatar(detail.authorAvatarURL))\(localized("\(escape(s.author)) opened \(relative(detail.createdAt))"))</div>
         \(labels.isEmpty ? "" : "<div class=\"labels\">\(labels)</div>")
         </header>
         <article class="body">\(body)</article>
         \(comments)
+        <script>\(attachmentFallbackScript)</script>
         </body></html>
         """
-        return routeImages(page)
+        return routeImages(embedAttachments(page))
     }
 
-    /// Point every `<img>`/`<source>` at the token-authenticating loader so a private
+    /// GitHub uploads a video as a bare attachment URL on its own line and turns it into a
+    /// player when it renders; the markdown only ever carries the link, so the pane makes the
+    /// same substitution. Images never take this shape — the composer writes them as `<img>`
+    /// or `![…]()` — so a paragraph that is nothing but an attachment link is a video.
+    static func embedAttachments(_ html: String) -> String {
+        let link = #/<p><a href="([^"]+)">[^<]*</a></p>/#
+        return html.replacing(link) { match in
+            let url = String(match.1)
+            guard isAttachment(url) else { return String(match.0) }
+            return "<video class=\"attachment\" controls preload=\"metadata\" src=\"\(url)\"></video>"
+        }
+    }
+
+    /// An uploaded attachment: today's `github.com/user-attachments/assets/<uuid>` (typeless
+    /// in the URL) and the older `*.githubusercontent.com` files, which name their format.
+    private static func isAttachment(_ url: String) -> Bool {
+        guard let parsed = URL(string: url), let host = parsed.host else { return false }
+        let path = parsed.path.lowercased()
+        if host == "github.com" { return path.hasPrefix("/user-attachments/assets/") }
+        guard host.hasSuffix("githubusercontent.com") else { return false }
+        return [".mp4", ".mov", ".webm", ".m4v"].contains { path.hasSuffix($0) }
+    }
+
+    /// The attachment URL carries no type, so a bare link that turns out to be an image
+    /// would render as a dead player. Media that fails to load is one, so swap in the
+    /// image rather than leaving the black box.
+    private static let attachmentFallbackScript = """
+    for (const video of document.querySelectorAll("video.attachment")) {
+      video.addEventListener("error", () => {
+        const image = document.createElement("img");
+        image.src = video.src;
+        video.replaceWith(image);
+      });
+    }
+    """
+
+    /// Point every `<img>`/`<video>`/`<source>` at the token-authenticating loader so a private
     /// repo's attachments resolve — the raw `<img src>` GitHub embeds targets
     /// `github.com/user-attachments/…`, which 404s anonymously and only returns bytes
     /// with the connect token attached (see `GitHubAssetSchemeHandler`). Only `src`/
@@ -857,7 +918,11 @@ private enum IssueDetailHTML {
 
     private static func css(_ theme: TraceTheme) -> String {
         """
-        :root { color-scheme: \(theme.isDark ? "dark" : "light"); }
+        \(MarkdownSkin.highlightTheme(dark: theme.isDark))
+        \(MarkdownSkin.css(scope: ""))
+        :root { color-scheme: \(theme.isDark ? "dark" : "light");
+        \(MarkdownSkin.alertVariables(dark: theme.isDark))
+        }
         body { margin: 0; padding: 14px 16px 24px; background: \(theme.background);
                color: \(theme.foreground); font: 13px/1.55 -apple-system, sans-serif;
                word-wrap: break-word; }
@@ -885,7 +950,11 @@ private enum IssueDetailHTML {
         pre code { background: none; padding: 0; }
         blockquote { border-left: 3px solid \(theme.secondary); margin-left: 0;
                      padding-left: 10px; color: \(theme.secondary); }
-        img { max-width: 100%; }
+        /* `height: auto` is what keeps a screenshot in proportion: GitHub writes the
+           upload's pixel size onto the image tag, so a width clamped to the pane
+           against a height still set to 1080 stretches the picture vertically. */
+        img, video { max-width: 100%; height: auto; }
+        video.attachment { display: block; border-radius: 6px; }
         table { border-collapse: collapse; }
         td, th { border: 1px solid rgba(128,128,128,.3); padding: 3px 8px; }
         h1, h2, h3, h4 { font-size: 13.5px; margin: 12px 0 6px; }
@@ -893,6 +962,12 @@ private enum IssueDetailHTML {
         li.task { list-style: none; margin-left: -18px; }
         .task-box { vertical-align: -3px; margin-right: 4px; color: \(theme.secondary); }
         .task-box.checked { color: \(theme.accent); }
+        .alert { padding: 1px 0 1px 10px; border-left: 3px solid var(--alert-color); }
+        .alert-title { margin: 0 0 4px; color: var(--alert-color); font-size: 10.5px;
+                       font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+        .footnotes { margin-top: 12px; padding-top: 8px;
+                     border-top: 1px solid rgba(128,128,128,.3); font-size: 12px;
+                     color: \(theme.secondary); }
         """
     }
 
@@ -908,7 +983,6 @@ private enum IssueDetailHTML {
 /// page: transparent while loading, links open in the browser.
 private struct IssueWebView: NSViewRepresentable {
     let html: String
-    let background: NSColor
     /// "Add to Chat" in the conversation's right-click menu — selection as pasted
     /// snippet, `nil` (no selection) as the item's GitHub URL. Injected by
     /// `IssueDetailView`, which holds both the item and the store.
@@ -942,6 +1016,7 @@ private struct IssueWebView: NSViewRepresentable {
         (view as? IssueDetailWKWebView)?.canAddToChat = canAddToChat
         if context.coordinator.lastHTML != html {
             context.coordinator.lastHTML = html
+            context.coordinator.assetHandler.forgetMedia()
             view.loadHTMLString(html, baseURL: nil)
         }
     }
@@ -987,16 +1062,16 @@ private final class IssueDetailWKWebView: WKWebView {
     func contextMenu(for click: WebContextMenuBridge.Click) -> NSMenu {
         let menu = NSMenu()
         if !click.selection.isEmpty {
-            menu.addPlainItem("Copy", target: self, action: #selector(copyText(_:)),
+            menu.addPlainItem(localized("Copy"), target: self, action: #selector(copyText(_:)),
                               representedObject: click.selection)
         }
         if let link = click.link {
-            menu.addPlainItem("Copy Link", target: self, action: #selector(copyText(_:)),
+            menu.addPlainItem(localized("Copy Link"), target: self, action: #selector(copyText(_:)),
                               representedObject: link.absoluteString)
         }
         if canAddToChat?() == true {
             if !menu.items.isEmpty { menu.addItem(.separator()) }
-            menu.addPlainItem("Add to Chat", target: self, action: #selector(addToChatAction(_:)),
+            menu.addPlainItem(localized("Add to Chat"), target: self, action: #selector(addToChatAction(_:)),
                               representedObject: click.selection)
         }
         return menu
@@ -1028,6 +1103,12 @@ final class GitHubAssetSchemeHandler: NSObject, WKURLSchemeHandler {
     static let scheme = "x-termio-ghasset"
 
     private var live = Set<ObjectIdentifier>()
+    /// The one asset a media element is currently reading, held whole. WebKit walks a video
+    /// in dozens of tiny byte ranges — the container's header, then its index at the far end,
+    /// then playback — and answering each with its own trip to GitHub rate-limits the pane
+    /// before the first frame appears. Only a ranged request fills this: an image is fetched
+    /// once and never seeks, so it never displaces the video being watched.
+    private var media: (key: String, mimeType: String?, data: Data)?
     private let lock = NSLock()
 
     func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
@@ -1048,6 +1129,15 @@ final class GitHubAssetSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
 
+        let seeking = task.request.value(forHTTPHeaderField: "Range") != nil
+        if seeking {
+            lock.lock(); let held = media?.key == raw ? media : nil; lock.unlock()
+            if let held {
+                settle { Self.respond(to: $0, url: url, mimeType: held.mimeType, body: held.data) }
+                return
+            }
+        }
+
         var request = URLRequest(url: url)
         if let host = url.host,
            host == "github.com" || host.hasSuffix(".githubusercontent.com"),
@@ -1055,30 +1145,78 @@ final class GitHubAssetSchemeHandler: NSObject, WKURLSchemeHandler {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            DispatchQueue.main.async {
-                if let error {
-                    settle { $0.didFailWithError(error) }
-                } else if let data, let response {
-                    settle {
-                        // Frame the payload under the request's own custom-scheme URL so
-                        // WebKit doesn't reject a response that arrived over https.
-                        let framed = URLResponse(
-                            url: $0.request.url ?? url, mimeType: response.mimeType,
-                            expectedContentLength: data.count, textEncodingName: nil)
-                        $0.didReceive(framed)
-                        $0.didReceive(data)
-                        $0.didFinish()
-                    }
-                } else {
+        // The scheme task must never leave the main actor (WebKit traps on
+        // off-main use), so the load runs in a main-actor task and only the
+        // Sendable request/data/response cross to URLSession and back.
+        Task { @MainActor in
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                // GitHub answers a refused asset with an HTML page, which would otherwise be
+                // held as the video and re-served for every seek that follows.
+                if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
                     settle { $0.didFailWithError(URLError(.badServerResponse)) }
+                    return
                 }
+                if seeking {
+                    self.lock.withLock { self.media = (key: raw, mimeType: response.mimeType, data: data) }
+                }
+                settle { Self.respond(to: $0, url: url, mimeType: response.mimeType, body: data) }
+            } catch {
+                settle { $0.didFailWithError(error) }
             }
-        }.resume()
+        }
     }
 
     func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {
         lock.lock(); live.remove(ObjectIdentifier(task)); lock.unlock()
+    }
+
+    /// Drops the held asset — the page that was playing it is gone, and it is the largest
+    /// thing this handler keeps.
+    func forgetMedia() {
+        lock.lock(); media = nil; lock.unlock()
+    }
+
+    /// Answers under the custom-scheme URL — WebKit rejects a response that claims to have
+    /// arrived over https — serving the slice the task asked for. The `206` and its
+    /// `Content-Range` are what tell a `<video>` element it may seek; a plain `URLResponse`
+    /// carries neither status nor headers, and a range request answered with the whole file
+    /// reads as a broken stream.
+    private static func respond(to task: any WKURLSchemeTask, url: URL,
+                                mimeType: String?, body: Data) {
+        let target = task.request.url ?? url
+        let requested = byteRange(task.request.value(forHTTPHeaderField: "Range"), count: body.count)
+        let slice = requested.map { body.subdata(in: $0) } ?? body
+        var headers = [
+            "Content-Type": mimeType ?? "application/octet-stream",
+            "Content-Length": String(slice.count),
+            "Accept-Ranges": "bytes",
+        ]
+        if let requested {
+            headers["Content-Range"] =
+                "bytes \(requested.lowerBound)-\(requested.upperBound - 1)/\(body.count)"
+        }
+        let response = HTTPURLResponse(
+            url: target, statusCode: requested == nil ? 200 : 206,
+            httpVersion: "HTTP/1.1", headerFields: headers)
+            ?? URLResponse(url: target, mimeType: mimeType,
+                           expectedContentLength: slice.count, textEncodingName: nil)
+        task.didReceive(response)
+        task.didReceive(slice)
+        task.didFinish()
+    }
+
+    /// `bytes=first-last` with an open end, the only form WebKit's media loader sends.
+    /// Anything else (a suffix range, a multi-range list) answers as the whole asset, which
+    /// is a legal reply to any range request.
+    static func byteRange(_ header: String?, count: Int) -> Range<Int>? {
+        guard count > 0, let header, header.hasPrefix("bytes=") else { return nil }
+        let bounds = header.dropFirst("bytes=".count)
+            .split(separator: "-", omittingEmptySubsequences: false)
+        guard bounds.count == 2, let first = Int(bounds[0]), first < count else { return nil }
+        let last = Int(bounds[1]).map { min($0, count - 1) } ?? count - 1
+        guard last >= first else { return nil }
+        return first..<(last + 1)
     }
 }
 
@@ -1087,10 +1225,10 @@ private extension Date {
     var issueRowAge: String {
         let seconds = max(0, -timeIntervalSinceNow)
         switch seconds {
-        case ..<3600: return "\(max(1, Int(seconds / 60)))m"
-        case ..<86_400: return "\(Int(seconds / 3600))h"
-        case ..<(86_400 * 28): return "\(Int(seconds / 86_400))d"
-        default: return "\(Int(seconds / (86_400 * 7)))w"
+        case ..<3600: return localized("\(max(1, Int(seconds / 60)))m")
+        case ..<86_400: return localized("\(Int(seconds / 3600))h")
+        case ..<(86_400 * 28): return localized("\(Int(seconds / 86_400))d")
+        default: return localized("\(Int(seconds / (86_400 * 7)))w")
         }
     }
 }

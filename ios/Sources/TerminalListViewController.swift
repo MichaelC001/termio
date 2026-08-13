@@ -61,7 +61,7 @@ final class TerminalListViewController: UIViewController {
 
     private func configureTopBar() -> UIView {
         let pageTitle = UILabel()
-        pageTitle.text = "Terminals"
+        pageTitle.text = localized("Terminals")
         pageTitle.font = .systemFont(ofSize: 34, weight: .bold)
         pageTitle.textColor = .label
 
@@ -104,11 +104,11 @@ final class TerminalListViewController: UIViewController {
     private func configureNewTerminalButton() {
         newTerminalButton.applyGlassIcon(.add, boxSize: 24)
         newTerminalButton.tintColor = .label
-        newTerminalButton.accessibilityLabel = "New Terminal"
+        newTerminalButton.accessibilityLabel = localized("New Terminal")
         newTerminalButton.showsMenuAsPrimaryAction = true
         newTerminalButton.menu = UIMenu(children: [
             UIAction(
-                title: "New Terminal",
+                title: localized("New Terminal"),
                 image: HugeIcon.terminal.strokeImage(boxSize: 22)
             ) { [weak self] _ in self?.store.startNewTerminal() },
             UIDeferredMenuElement.uncached { [weak self] completion in
@@ -125,9 +125,9 @@ final class TerminalListViewController: UIViewController {
         let icon = HugeIcon.network.strokeImage(boxSize: 22)
         let hosts = store.sshHosts
         guard !hosts.isEmpty else {
-            let hint = UIAction(title: "Add hosts in ~/.ssh/config on your Mac") { _ in }
+            let hint = UIAction(title: localized("Add hosts in ~/.ssh/config on your Mac")) { _ in }
             hint.attributes = .disabled
-            return UIMenu(title: "New SSH", image: icon, children: [hint])
+            return UIMenu(title: localized("New SSH"), image: icon, children: [hint])
         }
         let items = hosts.map { host in
             UIAction(
@@ -135,7 +135,7 @@ final class TerminalListViewController: UIViewController {
                 subtitle: host.user.isEmpty ? host.hostName : "\(host.user)@\(host.hostName)"
             ) { [weak self] _ in self?.store.startSSH(host: host.alias) }
         }
-        return UIMenu(title: "New SSH", image: icon, children: items)
+        return UIMenu(title: localized("New SSH"), image: icon, children: items)
     }
 
     // MARK: - Table
@@ -195,10 +195,10 @@ final class TerminalListViewController: UIViewController {
         let canStart = store.companionURL != nil
         emptyState.configure(
             icon: .terminal,
-            title: "No terminals yet",
+            title: localized("No terminals yet"),
             message: canStart
-                ? "Terminals are plain shells that aren't tied to a project. Start one with ＋, or on your Mac."
-                : "Terminals are plain shells that aren't tied to a project. Start one on your Mac and it appears here.",
+                ? localized("Terminals are plain shells that aren't tied to a project. Start one with ＋, or on your Mac.")
+                : localized("Terminals are plain shells that aren't tied to a project. Start one on your Mac and it appears here."),
             actionTitle: nil,
             busy: false
         )
@@ -243,7 +243,7 @@ extension TerminalListViewController: UITableViewDataSource, UITableViewDelegate
         guard store.companionURL != nil,
               let sessionID = terminals[indexPath.row].rosterID
         else { return nil }
-        let close = UIContextualAction(style: .destructive, title: "Close") { [weak self] _, _, done in
+        let close = UIContextualAction(style: .destructive, title: localized("Close")) { [weak self] _, _, done in
             self?.store.stopSession(sessionID)
             done(true)
         }

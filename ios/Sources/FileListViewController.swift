@@ -59,7 +59,7 @@ final class FileListViewController: UITableViewController {
     }
 
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        loaded && entries.isEmpty ? "This folder is empty." : nil
+        loaded && entries.isEmpty ? localized("This folder is empty.") : nil
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -149,11 +149,11 @@ enum FileRow {
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak browser] _ in
             var actions: [UIMenuElement] = []
             if !entry.isDir {
-                actions.append(UIAction(title: "Open File", image: UIImage(systemName: "doc.text")) { _ in
+                actions.append(UIAction(title: localized("Open File"), image: UIImage(systemName: "doc.text")) { _ in
                     browser?.openFile(at: relative)
                 })
             }
-            actions.append(UIAction(title: "Copy Path", image: UIImage(systemName: "doc.on.doc")) { _ in
+            actions.append(UIAction(title: localized("Copy Path"), image: UIImage(systemName: "doc.on.doc")) { _ in
                 UIPasteboard.general.string = absolute
             })
             return UIMenu(title: relative, children: actions)

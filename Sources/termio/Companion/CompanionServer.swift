@@ -1,11 +1,12 @@
 import Foundation
 import Network
 import Security
+import SystemConfiguration
 import TermioShared
 
 /// The shared secret a phone must present before the companion server serves
 /// it anything. It rides the pairing QR as a `t` query param, so possession
-/// means "was shown the Mac's screen" — which holds up whether the socket is
+/// means "was shown the Mac’s screen" — which holds up whether the socket is
 /// reached over the LAN or through a public tunnel URL.
 ///
 /// Stored in UserDefaults rather than the Keychain on purpose: the trust
@@ -34,6 +35,34 @@ enum PairingToken {
             .replacingOccurrences(of: "=", with: "")
         UserDefaults.standard.set(token, forKey: defaultsKey)
         return token
+    }
+}
+
+/// This Mac's identity on the phone's paired-Mac list: a UUID minted once and
+/// kept for the install's lifetime, plus the user-facing computer name. The
+/// phone keys its pairings by the UUID, so re-scanning a QR after a tunnel
+/// restart updates the existing entry instead of duplicating it — the URL is
+/// the one thing about a Mac that doesn't hold still.
+enum MacIdentity {
+    static let defaultsKey = "companion.macID"
+
+    static var id: String {
+        if let existing = UserDefaults.standard.string(forKey: defaultsKey), !existing.isEmpty {
+            return existing
+        }
+        let minted = UUID().uuidString
+        UserDefaults.standard.set(minted, forKey: defaultsKey)
+        return minted
+    }
+
+    /// The computer name from Sharing settings ("Jiwei's MacBook Pro"),
+    /// falling back to the DNS hostname stripped of its ".local" suffix.
+    static var displayName: String {
+        if let name = SCDynamicStoreCopyComputerName(nil, nil) as String?, !name.isEmpty {
+            return name
+        }
+        let host = ProcessInfo.processInfo.hostName
+        return host.hasSuffix(".local") ? String(host.dropLast(".local".count)) : host
     }
 }
 
@@ -288,7 +317,7 @@ final class CompanionServer {
             }
             Log.companion.notice("phone declared wire version \(wire, privacy: .public)")
             guard wire >= Wire.minimumClient else {
-                refuse(connection, message: "Update termio on your phone to connect to this Mac.")
+                refuse(connection, message: "Update Termio on your phone to connect to this Mac.")
                 return
             }
             authenticatedWireByConnection[id] = wire
@@ -384,10 +413,33 @@ final class CompanionServer {
             handleTrace(sessionID: sessionID, dark: dark, on: connection)
         case .sshConfigHosts:
             sendControl(.sshConfigList(hosts: Self.parseSSHConfigHosts()), to: connection)
+        case .unsupported(let type):
+            // Usually the phone speaks a newer vocabulary than this Mac, and
+            // this line is the only trace of why its button did nothing. But
+            // the tag is remote input — a paired phone chooses it — so it is
+            // sanitized before it reaches a `.public` log field, and the line
+            // states what happened rather than guessing which end is older.
+            Log.companion.notice(
+                "ignoring unsupported control \(Self.loggableTag(type), privacy: .public)"
+            )
         case .auth, .exit, .error, .started, .fileList, .file, .written, .uploaded,
              .searchResults, .traceHTML, .sshConfigList, .changes, .diff:
             break
         }
+    }
+
+    /// A wire tag reduced to something safe to write into a `.public` log field.
+    ///
+    /// The tag arrives from the phone, so it can carry newlines that forge extra
+    /// log lines, or a payload long enough to bury the surrounding entries. Only
+    /// the shape a real tag has survives — letters, digits, and the separators
+    /// the vocabulary already uses — and only the first 40 characters of it.
+    nonisolated static func loggableTag(_ tag: String) -> String {
+        let kept = tag.prefix(40).map { character -> Character in
+            character.isLetter || character.isNumber || character == "." || character == "-"
+                || character == "_" ? character : "?"
+        }
+        return kept.isEmpty ? "(empty)" : String(kept)
     }
 
     /// The Mac user's connectable `~/.ssh/config` hosts (see `SSHConfigFile`),
@@ -1194,7 +1246,10 @@ extension TermioStore {
                     tintHex: $0.tintHex,
                     icon: $0.iconRef)
             }
-        return CompanionRoster(projects: projects, agents: agents)
+        return CompanionRoster(
+            projects: projects, agents: agents,
+            macID: MacIdentity.id, macName: MacIdentity.displayName
+        )
     }
 
     private static func wireAgent(_ agent: AgentPreset) -> String {

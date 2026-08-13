@@ -47,6 +47,13 @@ struct FileBrowserView: View {
     /// parking pattern as `GitPanelModel`; replayed once when the pane is next visible.
     @State private var pendingWatcherRefresh = false
 
+    /// The host of the selected session when it is an SSH session. Non-nil means the
+    /// local disk isn't this session's disk: `inspectorProjectPath` resolves to nil,
+    /// so the watcher, the root read, and the drop target all stand down on their own.
+    private var sshHost: String? {
+        store.selectedSessionID.flatMap(store.session)?.sshHost
+    }
+
     /// The directory the tree is rooted at — see `TermioStore.inspectorProjectPath`.
     private var projectPath: String? { store.inspectorProjectPath }
 
@@ -57,9 +64,17 @@ struct FileBrowserView: View {
             // on a huge root (a home directory) costs whole seconds per switch —
             // and loses the tree's disclosure state besides (#207). Same
             // always-mounted-under-an-opaque-overlay shape as `InspectorRoot`.
-            VStack(spacing: 0) {
-                if let root { header(root: root) }
-                content
+            Group {
+                if let host = sshHost {
+                    // Fresh identity per host, so tree state never leaks between hosts.
+                    RemoteFileTreeView(host: host)
+                        .id(host)
+                } else {
+                    VStack(spacing: 0) {
+                        if let root { header(root: root) }
+                        content
+                    }
+                }
             }
             .allowsHitTesting(store.inspectorTab == .files)
             .accessibilityHidden(store.inspectorTab != .files)
@@ -198,10 +213,11 @@ struct FileBrowserView: View {
         case .files:
             EmptyView()
         case .search:
-            if let root {
+            if sshHost != nil {
+                remoteUnavailable(pane: localized("Search"))
+            } else if let root {
                 FileSearchView(
                     rootURL: root.url,
-                    font: settings.interfaceFont,
                     onDismiss: { store.inspectorTab = .files },
                     onOpen: { url, line in store.openFileInEditor(url, at: line) }
                 )
@@ -212,7 +228,9 @@ struct FileBrowserView: View {
                 noProject
             }
         case .changes:
-            if let repoRoot = projectPath {
+            if sshHost != nil {
+                remoteUnavailable(pane: localized("Changes"))
+            } else if let repoRoot = projectPath {
                 // Fresh identity per repo, so the panel model (selection, draft message,
                 // PR status) resets cleanly when the selected project moves.
                 // The visibility closure reads the store live (weakly — the model may
@@ -228,7 +246,9 @@ struct FileBrowserView: View {
                 noProject
             }
         case .issues:
-            if let repoRoot = projectPath {
+            if sshHost != nil {
+                remoteUnavailable(pane: localized("Issues"))
+            } else if let repoRoot = projectPath {
                 // Fresh identity per repo, like Changes: the panel model (connection
                 // phase, binding, list, pushed-in detail) resets when the project moves.
                 IssuesView(repoRoot: repoRoot)
@@ -270,12 +290,22 @@ struct FileBrowserView: View {
         }
     }
 
+    /// What a pane that only reads local disk shows for an SSH session. Honest about
+    /// the gap rather than showing the Mac's own files under a remote session.
+    private func remoteUnavailable(pane: String) -> some View {
+        PaneEmptyState(
+            localized("Remote session"),
+            icon: .serverStack,
+            message: localized("\(pane) isn’t available for SSH sessions yet.")
+        )
+    }
+
     /// The empty state the Files and Search panes share when no session is selected.
     private var noProject: some View {
-        ContentUnavailableView(
-            "No Project",
-            huge: .folder,
-            description: Text("Select a session to browse its files.")
+        PaneEmptyState(
+            localized("No Project"),
+            icon: .folder,
+            message: localized("Select a session to browse its files.")
         )
     }
 
@@ -292,16 +322,16 @@ struct FileBrowserView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 8)
-            TreeHeaderButton(codicon: .newFile, help: "New File") {
+            TreeHeaderButton(codicon: .newFile, help: localized("New File")) {
                 createFile(in: root.url)
             }
-            TreeHeaderButton(codicon: .newFolder, help: "New Folder") {
+            TreeHeaderButton(codicon: .newFolder, help: localized("New Folder")) {
                 createFolder(in: root.url)
             }
-            TreeHeaderButton(codicon: .refresh, help: "Refresh") {
+            TreeHeaderButton(codicon: .refresh, help: localized("Refresh")) {
                 refresh()
             }
-            TreeHeaderButton(codicon: .collapseAll, help: "Collapse All") {
+            TreeHeaderButton(codicon: .collapseAll, help: localized("Collapse All")) {
                 treeGeneration += 1
             }
         }
@@ -492,7 +522,7 @@ struct FileBrowserView: View {
     /// Prompts for a name, creates an empty file in `directory`, then selects and
     /// opens it — VS Code's "New File". A name clash gets a numbered suffix.
     private func createFile(in directory: URL) {
-        guard let name = promptForName(title: "New File", defaultName: "untitled.txt") else { return }
+        guard let name = promptForName(title: localized("New File"), defaultName: "untitled.txt") else { return }
         let target = uniqueDestination(for: name, in: directory, manager: .default)
         guard FileManager.default.createFile(atPath: target.path, contents: nil) else {
             Log.files.error("failed to create file at \(target.path, privacy: .public)")
@@ -505,7 +535,7 @@ struct FileBrowserView: View {
 
     /// Prompts for a name and creates a folder in `directory`, then selects it.
     private func createFolder(in directory: URL) {
-        guard let name = promptForName(title: "New Folder", defaultName: "untitled folder") else { return }
+        guard let name = promptForName(title: localized("New Folder"), defaultName: "untitled folder") else { return }
         let target = uniqueDestination(for: name, in: directory, manager: .default)
         do {
             try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
@@ -521,14 +551,14 @@ struct FileBrowserView: View {
     /// selection moves to the new URL and it is re-activated, so the editor follows
     /// the rename instead of holding (and auto-saving back) the old path.
     private func rename(_ url: URL) {
-        guard let name = promptForName(title: "Rename “\(url.lastPathComponent)”", defaultName: url.lastPathComponent, buttonTitle: "Rename"),
+        guard let name = promptForName(title: localized("Rename “\(url.lastPathComponent)”"), defaultName: url.lastPathComponent, buttonTitle: localized("Rename")),
               name != url.lastPathComponent
         else { return }
         let target = url.deletingLastPathComponent().appendingPathComponent(name)
         guard !FileManager.default.fileExists(atPath: target.path) else {
             let alert = NSAlert()
-            alert.messageText = "“\(name)” already exists."
-            alert.informativeText = "Choose a different name."
+            alert.messageText = localized("“\(name)” already exists.")
+            alert.informativeText = localized("Choose a different name.")
             alert.runModal()
             return
         }
@@ -549,10 +579,10 @@ struct FileBrowserView: View {
     /// it from the selection, and refreshes.
     private func delete(_ url: URL) {
         let alert = NSAlert()
-        alert.messageText = "Move “\(url.lastPathComponent)” to the Trash?"
-        alert.informativeText = "You can restore it from the Trash."
-        alert.addButton(withTitle: "Move to Trash")
-        alert.addButton(withTitle: "Cancel")
+        alert.messageText = localized("Move “\(url.lastPathComponent)” to the Trash?")
+        alert.informativeText = localized("You can restore it from the Trash.")
+        alert.addButton(withTitle: localized("Move to Trash"))
+        alert.addButton(withTitle: localized("Cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
             try FileManager.default.trashItem(at: url, resultingItemURL: nil)
@@ -565,11 +595,11 @@ struct FileBrowserView: View {
 
     /// A modal name prompt — one text field in an `NSAlert`, pre-filled with
     /// `defaultName`. Returns the trimmed entry, or `nil` if cancelled or emptied.
-    private func promptForName(title: String, defaultName: String, buttonTitle: String = "Create") -> String? {
+    private func promptForName(title: String, defaultName: String, buttonTitle: String = localized("Create")) -> String? {
         let alert = NSAlert()
         alert.messageText = title
         alert.addButton(withTitle: buttonTitle)
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: localized("Cancel"))
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
         field.stringValue = defaultName
         alert.accessoryView = field

@@ -59,10 +59,12 @@ enum IssueItemState: Hashable, Sendable {
 
     var label: String {
         switch self {
-        case .open: return "Open"
-        case .closed: return "Closed"
-        case .merged: return "Merged"
-        case .draft: return "Draft"
+        // Explicit key: the English word "Open" is already the verb key (打开),
+        // and the state reads 开放 — the catalog disambiguates by key, not context.
+        case .open: return localized("issue.state.open")
+        case .closed: return localized("Closed")
+        case .merged: return localized("Merged")
+        case .draft: return localized("Draft")
         }
     }
 }
@@ -91,8 +93,6 @@ struct IssueLabel: Hashable, Sendable {
 struct IssueContainer: Hashable, Sendable {
     let provider: IssueProviderID
     let id: String
-
-    var displayName: String { id }
 }
 
 /// The list request: which kind, and the light filters the top bar offers.
@@ -114,7 +114,6 @@ struct IssueSummary: Identifiable, Hashable, Sendable {
     let state: IssueItemState
     let labels: [IssueLabel]
     let author: String
-    let commentCount: Int
     let updatedAt: Date
     let url: URL?
 
@@ -139,20 +138,16 @@ struct IssueDetail: Equatable, Sendable {
     let comments: [IssueComment]
 }
 
-/// The branch facts Checkout needs from a pull request — which head ref to fetch,
-/// and whether it lives in a fork (a fork's branch is only reachable through the
-/// `refs/pull/N/head` ref).
-struct PullRequestGitInfo: Equatable, Sendable {
-    let headRef: String
-    let crossRepository: Bool
-}
-
 /// One PR file with its unified-diff `patch` straight from the GitHub API — the Files
 /// tab renders from this without a local checkout or extra fetch. `patch` is `nil` when
 /// GitHub omits it (a binary file, or a diff too large to inline).
 struct PullRequestFile: Sendable {
     let change: GitChange
     let patch: String?
+    /// GitHub's `contents_url` for this file, already pinned to the PR head. The patch
+    /// carries three lines of context, so expanding a hunk boundary means reading the file
+    /// itself — this is where from, without fetching the PR's refs.
+    let contentsURL: URL?
 }
 
 // MARK: - Provider protocol

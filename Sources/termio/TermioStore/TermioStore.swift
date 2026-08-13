@@ -111,9 +111,10 @@ final class TermioStore: ObservableObject {
     /// Activation *requests* for sessions that are neither selected nor in the
     /// visible group: a background spawn's fresh pane, a `send` target never
     /// shown. `TerminalPane` folds these into its own `activated` list — the
-    /// actual mounted set — so the pane mounts invisibly at full size, which is
-    /// what attaches the libghostty surface: the queued prompt can then be
-    /// delivered without yanking the user's selection over to the new pane.
+    /// actual mounted set — so the pane mounts invisibly at the size its layout
+    /// gives it, which is what attaches the libghostty surface: the queued
+    /// prompt can then be delivered without yanking the user's selection over
+    /// to the new pane.
     /// Transient and not persisted — on relaunch the pane mounts the normal way.
     @Published private(set) var backgroundActivationIDs: [Session.ID] = []
 
@@ -144,13 +145,21 @@ final class TermioStore: ObservableObject {
     /// Opening a file dismisses any open diff — the two overlays are mutually exclusive.
     @Published var openFileURL: URL? {
         didSet {
-            if openFileURL != nil { openDiff = nil; openTrace = nil; openIssueDetail = nil }
+            if oldValue != openFileURL {
+                filePresentationGeneration &+= 1
+                if remotePreviewLease?.fileURL != openFileURL {
+                    remotePreviewLease = nil
+                    openFileDisplayName = nil
+                }
+            }
+            if openFileURL != nil { openDiff = nil; openTrace = nil; openIssueDetail = nil; noteDetailOpened() }
             // Closing always returns to the editable default; a read-only open re-asserts the flag
             // immediately before setting the URL (see `openTerminalLink`). The jump line clears too,
             // so a later plain open of the same file doesn't scroll to a stale hit.
             else {
                 openFileReadOnly = false
                 openFileLine = nil
+                openFileAllowsActiveWebContent = true
             }
             refreshDetailPresentation()
         }
@@ -165,12 +174,25 @@ final class TermioStore: ObservableObject {
     /// edit it by mistake. The inspector's own file opens stay editable (`openFileInEditor`).
     @Published var openFileReadOnly = false
 
+    /// False for files staged from an SSH host. HTML/SVG must then open as
+    /// read-only source rather than executing in the local web preview.
+    @Published var openFileAllowsActiveWebContent = true
+
+    /// A monotonically increasing guard for asynchronous remote downloads. Any
+    /// local open/close/replacement invalidates a pending remote presentation.
+    private(set) var filePresentationGeneration: UInt64 = 0
+
+    /// Retaining the lease retains the staged file. Replacing or closing the
+    /// overlay releases it and deletes only its private directory.
+    private var remotePreviewLease: RemotePreviewLease?
+    private(set) var openFileDisplayName: String?
+
     /// The changed file currently shown in the diff overlay, or `nil` when none is. The git
     /// counterpart of `openFileURL`: clicking a row in the Changes pane sets it, and the terminal
     /// pane covers itself with `GitDiffView` while it is non-nil. Opening a diff dismisses any open
     /// file editor.
     @Published var openDiff: GitDiffRequest? {
-        didSet { if openDiff != nil { openFileURL = nil; openTrace = nil }; refreshDetailPresentation() }
+        didSet { if openDiff != nil { openFileURL = nil; openTrace = nil; noteDetailOpened() }; refreshDetailPresentation() }
     }
 
     /// The agent trace currently shown over the terminal, or `nil` when none is. The
@@ -178,7 +200,7 @@ final class TermioStore: ObservableObject {
     /// "View Trace" sets it, and `TerminalPane` covers itself with `TraceView` while
     /// it is non-nil. Mutually exclusive with the other two.
     @Published var openTrace: TraceRequest? {
-        didSet { if openTrace != nil { openFileURL = nil; openDiff = nil; openIssueDetail = nil }; refreshDetailPresentation() }
+        didSet { if openTrace != nil { openFileURL = nil; openDiff = nil; openIssueDetail = nil; noteDetailOpened() }; refreshDetailPresentation() }
     }
 
     /// The GitHub issue / pull request whose detail is shown, or `nil` when none is. The
@@ -187,14 +209,46 @@ final class TermioStore: ObservableObject {
     /// Unlike the others it deliberately COEXISTS with `openDiff`: a PR's file diff stacks on
     /// top of the detail, so closing the diff returns to the PR rather than the list.
     @Published var openIssueDetail: IssueSummary? {
-        didSet { if openIssueDetail != nil { openFileURL = nil; openDiff = nil; openTrace = nil }; refreshDetailPresentation() }
+        didSet { if openIssueDetail != nil { openFileURL = nil; openDiff = nil; openTrace = nil; noteDetailOpened() }; refreshDetailPresentation() }
     }
 
-    /// True while any inspector detail (file, diff, trace, PR/issue) is open. Drives the app
-    /// delegate: it un-collapses the inspector and gives it a comfortable reading width on the
-    /// first detail, and tears down the full-window maximize host when the last one closes.
+    /// True while any inspector detail (file, diff, trace, PR/issue) is open. A render
+    /// predicate — "is there content to show" — read by the inspector, the terminal context
+    /// menu and the pane drag, and by the app delegate to mount or tear down the full-window
+    /// maximize host. It is deliberately *not* what reveals the inspector; see `detailDidOpen`.
     /// `private(set)` — only the detail setters above flip it, via `refreshDetailPresentation`.
     @Published private(set) var isDetailPresented = false
+
+    /// Fires when a detail opens because the *user* opened one — a file or diff clicked in the
+    /// inspector, a trace, a PR row, a cmd-clicked path in the terminal. The app delegate
+    /// un-collapses the inspector on it, and nothing else does. Deliberately silent while a
+    /// detail is merely re-stated (see `isRestatingDetail`): what the inspector shows is
+    /// per-session, but whether the panel is open is global, so a session switch (or a launch
+    /// restore) must never flip it back open (issue #272). An event rather than an edge
+    /// detected on `isDetailPresented`, which cannot tell a user's open from a restore.
+    let detailDidOpen = PassthroughSubject<Void, Never>()
+
+    /// Raised by each detail setter when it is handed a detail to show, so *every* user open
+    /// reveals a collapsed inspector — not just the first. Keying this off `isDetailPresented`
+    /// going false → true would miss opening a second file (or a diff over a file) while the
+    /// inspector is collapsed, which is precisely the state a collapse-with-a-detail-open
+    /// leaves behind: the aggregate never dips, so the new detail would open unseen.
+    private func noteDetailOpened() {
+        guard !isRestatingDetail else { return }
+        detailDidOpen.send()
+    }
+
+    /// Re-points the open working-tree diff at a freshened sibling list — the set ← / → walks
+    /// and the header's "n of m" — without counting as a user open. The Changes pane calls this
+    /// when its change list reloads under a diff that is already on screen; re-stating the same
+    /// target must leave a collapsed inspector collapsed (issue #272).
+    func refreshOpenDiffSiblings(_ siblings: [GitChange]) {
+        guard var request = openDiff, request.commit == nil, request.siblings != siblings else { return }
+        request.siblings = siblings
+        isRestatingDetail = true
+        defer { isRestatingDetail = false }
+        openDiff = request
+    }
 
     /// Whether the active inspector detail is blown up to fill the whole window. The inspector
     /// hosts the detail beside the terminal by default; the detail's maximize button flips this
@@ -335,7 +389,8 @@ final class TermioStore: ObservableObject {
     @Published var gitChangeCount = 0
 
     /// The directory the inspector panes root at: the selected session's worktree if it
-    /// has one, otherwise its project folder. `nil` when nothing is selected.
+    /// has one, otherwise its project folder. `nil` when nothing is selected or the
+    /// selected session is SSH — its filesystem is remote, not this Mac's.
     /// A loose terminal roots at its *live* cwd instead (falling back to the cwd
     /// persisted from the last run, then `$HOME`) — the session owns its path, so
     /// the tree, search, and changes panes all follow a `cd`. Real projects keep
@@ -346,6 +401,7 @@ final class TermioStore: ObservableObject {
     var inspectorProjectPath: String? {
         guard let id = selectedSessionID, let project = project(for: id) else { return nil }
         if project.kind == .host { return nil }
+        guard session(id)?.sshHost == nil else { return nil }
         if project.kind == .terminals {
             return workingDirectory(for: id)
                 ?? session(id)?.lastWorkingDirectory
@@ -361,13 +417,18 @@ final class TermioStore: ObservableObject {
     /// spawning `git status` for a pane nobody could see.
     @Published var inspectorVisible = false
 
-    /// A per-session snapshot of the inspector's *content* — which tab is showing and
-    /// which detail (file / diff / trace / PR-issue) is open, plus the detail's
-    /// maximize / list-collapse chrome. Switching terminal tabs restores each session's
+    /// A per-session snapshot of the inspector's *content* — which tab is showing, which
+    /// detail (file / diff / trace / PR-issue) is open, and how that detail splits the
+    /// panel between its list and itself. Switching terminal tabs restores each session's
     /// own right-side context instead of clearing it (issue #160): one session left on a
-    /// file, another on a PR, another on the changes list. The inspector's *width* and
-    /// *open/closed* state stay global — those belong to the AppKit split item; it's the
-    /// content that is session-specific.
+    /// file, another on a PR, another on the changes list.
+    ///
+    /// Chrome that covers something the arriving session did not ask to hide is deliberately
+    /// absent. The inspector's *width* and *open/closed* state belong to the AppKit split
+    /// item, and the full-window maximize is not carried either: re-mounting that host on a
+    /// session switch buries the terminal without the user asking (the same defect as #272,
+    /// which is why the reveal is an event now). A returning session shows its detail docked;
+    /// the user re-maximizes if they want it back.
     struct InspectorState {
         var tab: InspectorTab = .files
         var openFileURL: URL?
@@ -376,7 +437,6 @@ final class TermioStore: ObservableObject {
         var openDiff: GitDiffRequest?
         var openTrace: TraceRequest?
         var openIssueDetail: IssueSummary?
-        var maximized = false
         var listCollapsed = false
     }
 
@@ -393,6 +453,13 @@ final class TermioStore: ObservableObject {
     /// one — it suppresses the capture/restore in `selectedSessionID`'s didSet so a
     /// programmatic selection during launch can't overwrite a just-seeded layout.
     private var isRestoringInspector = false
+
+    /// True while a detail is being *re-stated* rather than opened: `applyInspectorState`
+    /// re-hydrating a session's saved layout (the session switch and the launch restore both
+    /// route through it), or `refreshOpenDiffSiblings` freshening the walk order under a diff
+    /// already on screen. The detail setters run normally — only `detailDidOpen` is withheld,
+    /// so putting content back can never re-expand an inspector the user collapsed.
+    private var isRestatingDetail = false
 
     /// Debounced whole-state save for durable inspector edits (opening a file, switching
     /// the tab). Unlike a session switch, these don't move `selectedSessionID`, so nothing
@@ -416,7 +483,6 @@ final class TermioStore: ObservableObject {
             openDiff: openDiff,
             openTrace: openTrace,
             openIssueDetail: openIssueDetail,
-            maximized: inspectorMaximized,
             listCollapsed: inspectorListCollapsed
         )
     }
@@ -427,6 +493,8 @@ final class TermioStore: ObservableObject {
     /// stacks on top of an open issue (see `openIssueDetail`); and the read-only flag /
     /// jump line precede the file URL (see `openFileURL`).
     private func applyInspectorState(_ state: InspectorState) {
+        isRestatingDetail = true
+        defer { isRestatingDetail = false }
         inspectorTab = state.tab
         openFileURL = nil; openDiff = nil; openTrace = nil; openIssueDetail = nil
         openTrace = state.openTrace
@@ -435,7 +503,10 @@ final class TermioStore: ObservableObject {
         openFileLine = state.openFileLine
         openFileURL = state.openFileURL
         openDiff = state.openDiff
-        inspectorMaximized = state.maximized
+        // Always docked, never carried: see `InspectorState`. A session left maximized
+        // must not blow its detail back up over the arriving terminal, and the departing
+        // session's maximize must not follow the selection either.
+        inspectorMaximized = false
         inspectorListCollapsed = state.listCollapsed
     }
 
@@ -450,7 +521,7 @@ final class TermioStore: ObservableObject {
     /// no-op writes and ping `sessionRuntimeDidChange` for the non-SwiftUI observers.
     private(set) var runtimes: [Session.ID: SessionRuntime] = [:]
 
-    /// A coarse "some session's runtime changed" ping for observers that can't
+    /// A coarse "some session’s runtime changed" ping for observers that can't
     /// subscribe to a per-session `@Observable` — the menu-bar tray and the window
     /// title bar (both plain AppKit). The sidebar deliberately ignores this: its rows
     /// track their own `SessionRuntime`, so this signal never rebuilds the tree. The
@@ -1033,6 +1104,10 @@ final class TermioStore: ObservableObject {
         store.splitGroups = savedGroups.filter { group in
             group.leafIDs.count >= 2 && group.leafIDs.allSatisfy { store.session($0) != nil }
         }
+        // State files written before the runs were kept adjacent can hold a group
+        // whose rows a since-ungrouped session still sits between; heal it on load
+        // rather than waiting for the next group edit.
+        store.gatherSplitRuns()
         return store
     }
 
@@ -1342,6 +1417,15 @@ final class TermioStore: ObservableObject {
         return .idle
     }
 
+    /// The sessions a quit would cut short: an agent mid-turn, or one already
+    /// blocked on the user. A finished (`.done`) session has nothing left to lose,
+    /// so it doesn't count — the quit confirmation names these and only these.
+    var busySessionTitles: [String] {
+        projects.flatMap(\.sessions)
+            .filter { [.working, .needsAttention].contains(status(for: $0.id)) }
+            .map { displayTitle(for: $0) }
+    }
+
     func session(_ id: Session.ID) -> Session? {
         for project in projects {
             if let session = project.sessions.first(where: { $0.id == id }) {
@@ -1360,7 +1444,11 @@ final class TermioStore: ObservableObject {
     /// these two methods (rather than assigning `openFileURL` directly) keeps the read-only flag and
     /// the URL in step.
     func openFileInEditor(_ url: URL, at line: Int? = nil) {
+        filePresentationGeneration &+= 1
+        remotePreviewLease = nil
+        openFileDisplayName = nil
         openFileReadOnly = false
+        openFileAllowsActiveWebContent = true
         openFileLine = line
         openFileURL = url
     }
@@ -1391,15 +1479,40 @@ final class TermioStore: ObservableObject {
         presentFilePreview(url.standardizedFileURL)
     }
 
-    /// Covers the terminal with a read-only preview of `url`, but only if it points at an existing
-    /// regular file — a missing path or a directory is silently dropped rather than opening an empty
-    /// overlay.
+    /// Covers the terminal with a read-only preview of a local `url`, but only
+    /// if it points at an existing regular file.
     private func presentFilePreview(_ url: URL) {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
               !isDirectory.boolValue else { return }
+        filePresentationGeneration &+= 1
+        remotePreviewLease = nil
+        openFileDisplayName = nil
         openFileReadOnly = true
+        openFileAllowsActiveWebContent = true
         openFileURL = url
+    }
+
+    /// Adopts a staged remote file only if no newer presentation won while its
+    /// bytes were downloading. The lease owns cleanup and the remote display
+    /// name stays separate from the randomized local leaf.
+    @discardableResult
+    func presentRemoteFilePreview(
+        _ lease: RemotePreviewLease,
+        expectedGeneration: UInt64
+    ) -> Bool {
+        guard expectedGeneration == filePresentationGeneration,
+              FileManager.default.fileExists(atPath: lease.fileURL.path)
+        else { return false }
+
+        filePresentationGeneration &+= 1
+        remotePreviewLease = lease
+        openFileDisplayName = lease.displayName
+        openFileReadOnly = true
+        openFileAllowsActiveWebContent = false
+        openFileLine = nil
+        openFileURL = lease.fileURL
+        return true
     }
 
     /// The working directory of the selected session (its worktree, else the project root), used as

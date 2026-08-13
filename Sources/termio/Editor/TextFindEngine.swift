@@ -66,12 +66,6 @@ final class TextFindEngine {
         }
     }
 
-    /// Drop every match and wipe the highlights — the query cleared or the bar closed.
-    func clear(in textView: NSTextView) {
-        matches.removeAll()
-        clearHighlights(in: textView)
-    }
-
     private func clearHighlights(in textView: NSTextView) {
         guard let layoutManager = textView.layoutManager else { return }
         let fullRange = NSRange(location: 0, length: (textView.string as NSString).length)

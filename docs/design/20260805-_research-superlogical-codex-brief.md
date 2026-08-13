@@ -77,9 +77,9 @@ related:
   - Superlogical receives no private libghostty entitlement: it will consume public MIT-licensed components and upstream generally useful terminal work.
   - libghostty is therefore shared infrastructure, not an exclusive Superlogical moat. [Mitchell’s announcement](https://mitchellh.com/writing/superlogical)
 
-## Competitive implications for termio
+## Competitive implications for Termio
 
-- **Where Superlogical directly overlaps termio**
+- **Where Superlogical directly overlaps Termio**
   - Durable terminal sessions surviving client closure and reconnection.
   - A daemon/server boundary separate from the viewing client.
   - Native macOS and iOS access to the same sessions.
@@ -91,7 +91,7 @@ related:
   - A future structured API through which software can inspect or drive sessions.
   - Native scrollback, selection, and terminal interaction rather than tmux-style nested terminal behavior.
 
-- **Competitive conclusion:** Superlogical should now be treated as a **direct competitor at termio’s session-mux layer**, not merely a distant “platform peer.” Its broader platform ambition does not reduce the near-term overlap: its first product is almost exactly the durable, cross-device terminal foundation described in termio’s design.
+- **Competitive conclusion:** Superlogical should now be treated as a **direct competitor at Termio’s session-mux layer**, not merely a distant “platform peer.” Its broader platform ambition does not reduce the near-term overlap: its first product is almost exactly the durable, cross-device terminal foundation described in Termio’s design.
 
 - **Where Superlogical deliberately does not position itself**
   - It is not presented as an agent-specific coding harness or agent-only IDE.
@@ -101,7 +101,7 @@ related:
   - It is not commercializing or replacing the Ghostty terminal emulator.
   - These are current positioning differences, not durable guarantees; its composability goal could eventually support many of these workflows.
 
-- **Where termio can still win**
+- **Where Termio can still win**
   - **Agent-native ADE:** Make the managed object an agent workstream with repository, branch/worktree, task, status, approvals, and artifacts—not just a terminal block.
   - **Reliable agent status:** Treat `working`, `idle`, `needs-you`, `failed`, and `done` as protocol-level state with explicit events and notifications. Avoid relying only on terminal-output heuristics.
   - **Multi-agent CLI:** Keep `termio sessions` as a stable automation and delegation surface for humans and agents. Structured, scriptable supervision is a clearer wedge than terminal multiplexing alone.
@@ -110,13 +110,13 @@ related:
   - **Narrower scope and faster delivery:** Superlogical is pursuing terminals, automation, production systems, multiplayer work, and a general platform. Termio can make a smaller set of agent-development workflows excellent sooner.
   - **Interoperability:** Existing SSH configuration, keys, Tailscale/Headscale networks, shells, agents, and repositories can remain user-owned. Avoid forcing users into a proprietary execution environment.
   - **Transparent protocol and self-hosting:** If termiod’s protocol and daemon are open and independently deployable, that can become a meaningful distinction. Superlogical has announced some OSS releases but not an open-source product.
-  - **Caveat:** Superlogical has an unusually experienced, funded infrastructure-and-design team. “Local-first” or “agent-native” will only differentiate termio if they produce visibly better workflows and simpler trust boundaries, not merely different architecture labels.
+  - **Caveat:** Superlogical has an unusually experienced, funded infrastructure-and-design team. “Local-first” or “agent-native” will only differentiate Termio if they produce visibly better workflows and simpler trust boundaries, not merely different architecture labels.
 
 ## Suggested updates to docs/design/20260730-termiod-session-mux.md
 
 - **Replace the “Why we can beat Superlogical” premise.**
   - Remove or soften the characterization of Superlogical as merely a Go platform foundation whose “partners become remote.”
-  - Replace it with: Superlogical is a direct durable-session competitor with a broader long-term platform scope; termio’s differentiation is an agent-native ADE, local-first ownership, and multi-agent supervision.
+  - Replace it with: Superlogical is a direct durable-session competitor with a broader long-term platform scope; Termio’s differentiation is an agent-native ADE, local-first ownership, and multi-agent supervision.
   - Rationale: the current wording understates the announced native Apple clients, remote discovery, sharing, libghostty use, and terminal-first product.
 
 - **Correct the competitive matrix.**
@@ -131,12 +131,12 @@ related:
 
 - **Change “platform peer, not product twin” to a more precise conclusion.**
   - Suggested claim: “Direct session-layer competitor; differentiated product thesis.”
-  - Rationale: the products overlap strongly at the mux layer even if termio remains more opinionated about agent development.
+  - Rationale: the products overlap strongly at the mux layer even if Termio remains more opinionated about agent development.
 
 - **Define “agent-native” operationally.**
   - Add explicit protocol objects/events for agent identity, task, project, worktree, status, `needs-you`, approval requests, completion, errors, and notification routing.
   - Define which state comes from agent integrations and which may be inferred from PTY output.
-  - Rationale: this is termio’s clearest remaining wedge and must be architectural, not a sidebar added to a generic mux.
+  - Rationale: this is Termio’s clearest remaining wedge and must be architectural, not a sidebar added to a generic mux.
 
 - **Revisit the raw-PTY-first protocol decision before freezing it. — SUPERSEDED 2026-08-08. Do not implement.**
   - *Original recommendation, kept for the record:* a raw byte stream is useful for bootstrap compatibility, but make terminal snapshots/diffs and authoritative reconnect state an early design decision rather than an optional distant optimization — because heterogeneous web/macOS/iOS clients, late attachment, native scrollback, sharing, and resynchronization get harder if the protocol assumes one continuously connected emulator.
@@ -150,7 +150,7 @@ related:
 
 - **Clarify the SSH boundary.**
   - Replace “Superlogical owns SSH as product: yes” with a sourced, narrower statement: integrated SSH/remote connectivity is part of its mux architecture, but implementation and custody details are unpublished.
-  - Describe termio’s use of system SSH as a deliberate trust and compatibility choice, not merely missing functionality.
+  - Describe Termio’s use of system SSH as a deliberate trust and compatibility choice, not merely missing functionality.
   - Rationale: system SSH reduces security scope and preserves user configuration, while integrated SSH may offer smoother discovery and reconnection. The trade-off should be explicit.
   - **Added 2026-08-08 — the part of “the mux owns SSH” that is a real critique, and lands.** *Using* system SSH is the trust choice and stays. *Who owns the connection* is a separate question, and termio currently answers it the way Mitchell calls a dead end: the Mac client opens **one `ssh` process per session**, owned by that pane and killed with it (`TermiodClient.swift` `Transport.ssh`), plus one more for every `list`/`kill`/probe, with no `ControlMaster` on that path — so a dropped pipe reads as session death rather than a reconnect. Owning SSH means the **device connection** is the durable object: one link per device, N sessions as channels on it, health and reconnect at that layer, outliving any pane. That is already what [20260805-termiod-device-architecture.md](20260805-termiod-device-architecture.md) §5 describes and §8 now schedules; the gap is implementation, not direction.
 
@@ -167,7 +167,7 @@ related:
 
 - **Add a client-capability matrix.**
   - Cover macOS, iOS, CLI, and possible web clients across attach/control, read-only monitoring, input, scrollback, file links, approvals, notifications, background reconnect, and session creation.
-  - Rationale: “Mac+iOS support” is now table stakes against Superlogical; termio should specify the ADE actions each client uniquely enables.
+  - Rationale: “Mac+iOS support” is now table stakes against Superlogical; Termio should specify the ADE actions each client uniquely enables.
 
 - **Make iOS intervention a product-level differentiator.**
   - Specify low-friction approval, `needs-you` response, voice input, safe command dispatch, reconnect, and read-only monitoring modes.
@@ -179,12 +179,12 @@ related:
 
 - **Avoid treating libghostty as a competitive moat.**
   - Reframe it as shared terminal infrastructure.
-  - Identify termio’s moat as agent-aware state, workflow protocol, local-first deployment, Apple interaction design, and multi-agent automation.
+  - Identify Termio’s moat as agent-aware state, workflow protocol, local-first deployment, Apple interaction design, and multi-agent automation.
   - Rationale: Superlogical and other applications can consume the same library, and shared improvements may be upstreamed.
 
 - **Add explicit non-goals relative to Superlogical.**
-  - Unless termio intends otherwise, list production application multiplexing, incident response, live production debugging, CI replacement, and a general “multiplexer for all work” as out of scope.
-  - Rationale: prevents Superlogical’s broader vision from pulling termio away from its sharper ADE opportunity.
+  - Unless Termio intends otherwise, list production application multiplexing, incident response, live production debugging, CI replacement, and a general “multiplexer for all work” as out of scope.
+  - Rationale: prevents Superlogical’s broader vision from pulling Termio away from its sharper ADE opportunity.
 
 - **Add a competitive-evidence policy.**
   - Label statements as shipped, announced, inferred, or unknown.

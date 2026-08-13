@@ -10,7 +10,7 @@ related:
 
 # Worktree information architecture
 
-How termio presents git worktrees in the sidebar, and why. The revised model
+How Termio presents git worktrees in the sidebar, and why. The revised model
 (2026-07-16) is at the top; the original derived-grouping design and its rules
 follow it for context and are partly superseded — read the revised section first.
 
@@ -40,7 +40,7 @@ that node behaves exactly like a project header.**
   (Conductor/GitKraken/VS Code/GitLens) uppercases branch names. The project name *is*
   uppercased — a folder-name section label is less type-critical than a ref. A
   worktree's container-ness is carried by the folder-git glyph + indent, not by casing.
-  termio does **not** add a `>`/`⌄` disclosure triangle; the row toggles on tap. (The
+  Termio does **not** add a `>`/`⌄` disclosure triangle; the row toggles on tap. (The
   git-marked glyph has no open/closed variant, so unlike the project folder it doesn't
   swap on collapse — the child rows appearing/disappearing carry that cue.)
 - **Shallow primary.** The project header *is* the primary checkout. Its sessions sit
@@ -51,7 +51,7 @@ that node behaves exactly like a project header.**
   is three levels, one past Apple's HIG "avoid more than two levels in a sidebar." A
   design-validation pass flagged this as the main HIG deviation and offered the
   sanctioned alternative (push the 3rd level into a content-area session list). That
-  alternative was **rejected**: termio already built and dropped a content-area session
+  alternative was **rejected**: Termio already built and dropped a content-area session
   tab strip as redundant (see `termio-session-tabs-dropped`), and the folder-tree is
   the one pattern every user already knows (Finder, Xcode navigator) while keeping
   every agent one click away — which a terminal you tab between agents in needs. So the
@@ -97,7 +97,7 @@ agents into it — creation no longer has to force a session.
 
 `git worktree add ../fix-auth -b fix-auth` creates a real directory on disk with a
 full checkout, sharing the repo's `.git`. So "worktree = folder" is not a metaphor —
-it is the filesystem truth. A termio *project* is also a folder (the directory you
+it is the filesystem truth. A Termio *project* is also a folder (the directory you
 opened). The two are the same kind of thing (a directory); they differ only in git
 semantics (same repo, different checkout).
 
@@ -166,7 +166,7 @@ Storage stays **flat**: `Project { sessions: [Session] }`, `Session.worktreePath
 session already knows its folder (`worktreePath ?? project.path`), so grouping by
 that folder yields the levels for free — without rippling a nested model through
 persistence, the `termio sessions` control plane, and every session lookup. This
-fits termio's "small surface area" ethos and was far lower-risk.
+fits Termio's "small surface area" ethos and was far lower-risk.
 
 - **`BranchModel.swift`** — live current-branch per folder. Resolves via `git
   rev-parse` off the main thread; watches the directory containing each folder's
@@ -219,7 +219,7 @@ actually run many parallel worktrees:
    bar with a 🔔 "waiting for input" state · uzi-style dev-server URL · merged-PR pill).
    This is the home for the third level when the sidebar tree gets crowded, and for
    **empty worktrees** that have no session to nest.
-7. **Mac "Needs You" strip** — mirror termio's existing iOS cross-project attention
+7. **Mac "Needs You" strip** — mirror Termio's existing iOS cross-project attention
    queue (see the iOS home design) so a blocked/done agent in *any* worktree floats to
    the top; navigate by attention, not by tree position. Reuse the iOS pattern rather
    than invent a Mac-specific one.

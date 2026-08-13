@@ -1,4 +1,4 @@
-# termio docs — wiki
+# Termio docs — wiki
 
 How the docs in this folder are organized. GitHub renders this as the landing
 page when you browse `docs/`.
@@ -9,9 +9,9 @@ page when you browse `docs/`.
   **YAML front matter** at the top of the file. Subfolders (`design/`,
   `competitive-analysis/`, …) are just loose grouping — the authoritative
   category is the front matter `type`, **not** the path.
-- **Product promo assets** (App Store shots, social covers) stay under
-  `marketing/` in this repo. **Strategy / pitch markdown** lives in the sibling
-  `pitch` repo: `/Users/yuanjiwei/Documents/GitHub/pitch/termio`.
+- **Product promo assets and posts** (App Store shots, social covers, launch
+  posts) live in a private sibling `marketing` repo, and **strategy / pitch
+  markdown** in a private sibling `pitch` repo — neither ships here.
 - Each doc declares: `title`, `status`, `type`, `created`/`updated`, and optional
   `related`. The front matter is the **single source of truth** for status —
   there is no separate status file to keep in sync.
@@ -34,7 +34,6 @@ from the real front matter).
 <!-- BEGIN docs-index -->
 | status | type | title |
 | --- | --- | --- |
-|  |  | [](talks/shaogefenhao-20260725/shaogefenhao-ai-product-termio.md) |
 | active | backlog | [Backlog](backlog/backlog.md) |
 | active | bug | [iOS libghostty "non-functional" panel + surface-teardown crash — fix journey](bug/ios-ghostty-renderer-panic-and-teardown-uaf.md) |
 | active | design | ["Issue tracker 集成：inspector Issues tab（GitHub / Linear，per-project provider）"](design/20260726-issue-tracker-integration.md) |
@@ -42,6 +41,7 @@ from the real front matter).
 | active | design | [iOS libghostty "non-functional" panel + teardown UAF — root-cause findings](design/20260706-ios-ghostty-renderer-panic-investigation-findings.md) |
 | active | design | [iOS terminal input & attachments](design/20260703-ios-terminal-input.md) |
 | active | design | [iOS TestFlight runbook — build, upload, and drive ASC from the API](runbook/ios-testflight-runbook.md) |
+| active | design | [Keyboard and command design](design/keyboard-command-design.md) |
 | active | design | [macOS release runbook — cut, notarize, publish termio.dmg](runbook/macos-release-runbook.md) |
 | active | design | [Research brief — termiod Session Protocol (for design agent)](design/20260730-_research-session-protocol-brief.md) |
 | active | design | [Sessions CLI v2 — reliability & command design](design/20260724-sessions-cli-v2.md) |
@@ -63,7 +63,7 @@ from the real front matter).
 | done | design | [Config-driven agent resume](design/20260720-config-driven-agent-resume.md) |
 | done | design | [Quick theme switching from the command palette](design/20260727-command-palette-theme-switching.md) |
 | done | design | [Vibe Island 式 Agent 状态层（Claude Code hooks）](design/20260719-vibe-island-status.md) |
-| done | research | ["ADE 赛道全景表（2026-07）：开源 + 闭源一张表，termio 亮点"](competitive-analysis/10-landscape-table-2026-07.md) |
+| done | research | ["ADE 赛道全景表（2026-07）：开源 + 闭源一张表，Termio 亮点"](competitive-analysis/10-landscape-table-2026-07.md) |
 | done | research | ["Competitive analysis: claude-squad"](competitive-analysis/05-claude-squad.md) |
 | done | research | ["Competitive analysis: cmux (manaflow-ai)"](competitive-analysis/02-cmux.md) |
 | done | research | ["Competitive analysis: Conductor"](competitive-analysis/03-conductor.md) |
@@ -73,7 +73,7 @@ from the real front matter).
 | done | research | ["Competitive analysis: Unpeel"](competitive-analysis/01-unpeel.md) |
 | done | research | ["Competitive analysis: Vibe Island family (status monitors)"](competitive-analysis/07-vibe-island.md) |
 | done | research | ["Competitive analysis: Warp (alternative paradigm)"](competitive-analysis/08-warp.md) |
-| done | research | ["termio differentiation, gaps, and risks"](competitive-analysis/09-differentiation-and-gaps.md) |
+| done | research | ["Termio differentiation, gaps, and risks"](competitive-analysis/09-differentiation-and-gaps.md) |
 | draft (v2) | design | [移动端 Agent UI 协议 —— PTY 之上的旁路结构面（ACP 词汇）](design/20260711-mobile-agent-ui-protocol.md) |
 | draft | design | [分享 Agent 会话（带密码的实时分享链接）](design/20260628-session-share.md) |
 | draft | design | [调研：下一批 AgentAdapter 的落盘格式（OpenCode / Pi / Amp / Cursor / Kimi）](design/20260711-agent-transcript-survey.md) |
@@ -94,6 +94,7 @@ from the real front matter).
 | draft | essay | ["How Claude Code Got the Mouse: Reverse-Engineering the Clickable Terminal"](essays/how-claude-code-got-the-mouse.md) |
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/20260630-sandbox-seatbelt.md) |
 | draft | rfc | [Automation — scheduled agent runs](rfcs/automation-scheduled-agent-runs.md) |
+| draft | rfc | [Companion Wire Protocol](design/companion-wire-protocol.md) |
 | draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](rfcs/fork-libghostty-spm.md) |
 | draft | rfc | [Loose terminals as first-class entities](design/20260713-loose-terminal-entity.md) |
 | draft | rfc | [Onboarding —— 首次启动体验设计](design/20260630-onboarding.md) |

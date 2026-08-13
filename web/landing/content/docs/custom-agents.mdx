@@ -83,10 +83,10 @@ matching regular expressions against the terminal screen. List patterns that mea
 }
 ```
 
-A line matching `attention` flips the session to the **attention** state (it wins
-over `working`, since a prompt can sit under a still-spinning header); a line
-matching `working` marks it **working**. See the [sidebar status
-reference](/docs/sidebar#status) for what each state means.
+A line matching `attention` flips the session to **needs you** (the key keeps the
+protocol's name; it wins over `working`, since a prompt can sit under a
+still-spinning header); a line matching `working` marks it **working**. See the
+[sidebar status reference](/docs/sidebar#status) for what each state means.
 
 <Callout type="note">
   Agents that ship their own hook system (like the built-ins) get more precise

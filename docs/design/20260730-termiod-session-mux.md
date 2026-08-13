@@ -17,7 +17,7 @@ related:
 # Design: termiod — Agent-native session mux
 
 > **A session lives in a host. Viewers only attach.**  
-> Architecture is **composable** and **direct** — Superlogical’s sequencing, termio’s agent-native wedge. Not a clone of “multiplexer for all work.”
+> Architecture is **composable** and **direct** — Superlogical’s sequencing, Termio’s agent-native wedge. Not a clone of “multiplexer for all work.”
 
 **Evidence policy:** Superlogical statements are **announced / pre-beta** unless marked shipped. Wire-protocol and SSH-custody details they have not published stay **unknown**. Revisit after their first beta or protocol devlog.
 
@@ -49,7 +49,7 @@ Superlogical’s step 2 is *make everything composable*. We take that and add **
 
 Pipes (Unix socket / SSH / Tailscale / WSS) are **not a fourth product**. They plug under the protocol — **composable**. Each pipe is a straight byte path — **direct**.
 
-### Three steps (Superlogical-shaped sequence, termio wedge)
+### Three steps (Superlogical-shaped sequence, Termio wedge)
 
 1. **Incredible host** — durable sessions; detach ≠ kill; multi-viewer; local + remote same model (**direct**).  
 2. **Composable agent surface** — workstreams, `needs-you`, worktrees, `termio sessions` as real clients of the same protocol (**composable**).  
@@ -64,7 +64,7 @@ Pipes (Unix socket / SSH / Tailscale / WSS) are **not a fourth product**. They p
 
 ## 1. Problem
 
-termio solves “run a session and show it” in four places:
+Termio solves “run a session and show it” in four places:
 
 | Path | Today | Failure |
 | --- | --- | --- |
@@ -83,7 +83,7 @@ Market context (2026-07):
 | **herdr / cmux** | Agent or ADE mux shells; mostly local or thin remote |
 | **tmux / zellij** | Durable sessions; weak agent UX and multi-device |
 
-**termio’s gap is not another UI — sessions lack a home independent of the Mac window.**
+**Termio’s gap is not another UI — sessions lack a home independent of the Mac window.**
 
 ## 2. Superlogical (sourced snapshot)
 
@@ -110,7 +110,7 @@ Market context (2026-07):
 | Discovery | **Direct Tailscale integration** likely ships: servers join, clients find with one config |
 | Clients | Web + Swift macOS/iOS; multi-attach |
 
-### 2.3 Overlap with termio (session layer)
+### 2.3 Overlap with Termio (session layer)
 
 Durable sessions, daemon≠viewer, Mac+iOS, remote reconnect, Tailscale-class discovery, libghostty fidelity, multi-client / sharing, agents-in-terminals, future software-driven API, native scrollback UX.
 
@@ -149,7 +149,7 @@ Also non-goals: inventing SSH/mosh; Windows host first; multiplayer product befo
 
 ## 4. Architecture
 
-Inspired by Superlogical’s clarity (*durable session as the missing layer; start with an incredible mux*) and zmx’s restraint (*persist sessions; do not reimplement the window manager*). termio’s cut is narrower and agent-first.
+Inspired by Superlogical’s clarity (*durable session as the missing layer; start with an incredible mux*) and zmx’s restraint (*persist sessions; do not reimplement the window manager*). Termio’s cut is narrower and agent-first.
 
 ### 4.0 The clean model
 
@@ -212,7 +212,7 @@ One binary may ship host *and* a reference CLI client (tmux/zmx style). That is 
 ### 4.2 Session vs agent workstream
 
 A **session** is the durable runtime (PTY + terminal state).
-An **agent workstream** is termio’s product object on top:
+An **agent workstream** is Termio’s product object on top:
 
 ```
 Workstream {
@@ -285,7 +285,7 @@ Built-in discovery: **Local** socket · **Static** SSH config hosts · optional 
 
 ### 4.5 SSH boundary (deliberate vs Superlogical)
 
-| Superlogical (announced) | termio |
+| Superlogical (announced) | Termio |
 | --- | --- |
 | Mux “owns SSH”; integrated remote | **OpenSSH / user Tailscale** as transport to user-run `termiod` |
 | Custody **unknown** | Keys stay in ssh-agent / user config |
@@ -297,7 +297,7 @@ Smaller security scope; existing ops muscle. Reconnection polish (ControlMaster,
 | Asset | Lives where |
 | --- | --- |
 | PTY, scrollback, agent events | **Host termiod** (user machine) |
-| Credentials | ssh-agent / OS keychain — not termio cloud |
+| Credentials | ssh-agent / OS keychain — not Termio cloud |
 | Default listen | **Unix socket only** (no public bind) |
 | Hosted relay | Optional; never required for local or direct SSH |
 
@@ -321,7 +321,7 @@ Cloud sandboxes = Phase 5+ plugins, not v1.
 
 ## 5. Competitive matrix (updated)
 
-| Dimension | Superlogical (**announced**) | termio target |
+| Dimension | Superlogical (**announced**) | Termio target |
 | --- | --- | --- |
 | Durable sessions | Yes | Yes |
 | Daemon ≠ viewer | Yes | Yes (`termiod`) |
@@ -402,7 +402,7 @@ Native Apple clients alone are **table stakes** vs Superlogical; **ADE actions**
 
 ## 8. Open decisions
 
-1. ~~Host language for Linux~~ → **Rust POC shipped** ([#177](https://github.com/jiweiyuan/termio/pull/177) / #170–#172); revisit only if spike fails product needs.
+1. ~~Host language for Linux~~ → **Rust POC shipped** ([#177](https://github.com/termio-sh/termio/pull/177) / #170–#172); revisit only if spike fails product needs.
 2. Multi-viewer write policy (single writer vs lock vs CRDT — default single writer).
 3. Sharing with external identities: v1 non-goal or scoped feature?
 4. Phone → Mac gateway vs phone-direct-to-remote-termiod first.
@@ -443,5 +443,5 @@ Native Apple clients alone are **table stakes** vs Superlogical; **ADE actions**
 
 **Build `termiod` as a Superlogical-class durable session host** — three clean parts (host · protocol · clients), local = remote to localhost, SSH only a pipe — then win with an **agent-native, local-first ADE** on that foundation. Do not race “multiplexer for all work”; do not describe the architecture as a CLI.
 
-Tracking issue: https://github.com/jiweiyuan/termio/issues/164  
-POC: https://github.com/jiweiyuan/termio/pull/177
+Tracking issue: https://github.com/termio-sh/termio/issues/164  
+POC: https://github.com/termio-sh/termio/pull/177

@@ -50,7 +50,7 @@ struct KeybindingsSettingsTab: View {
             }
         }
         .formStyle(.grouped)
-        .searchable(text: $query, placement: .toolbar, prompt: "Search commands")
+        .searchable(text: $query, placement: .toolbar, prompt: Text(localized("Search commands")))
     }
 
     // MARK: - Pieces
@@ -81,13 +81,13 @@ struct KeybindingsSettingsTab: View {
     /// with the recording hints as its footer, replacing the old pinned bottom bar.
     private var restoreSection: some View {
         Section {
-            Button("Restore Defaults") {
+            Button(localized("Restore Defaults")) {
                 keys.resetAll()
                 clearRejection()
             }
             .disabled(keys.overrides.isEmpty)
         } footer: {
-            Text("Shortcuts must include ⌘ so they can't shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel.")
+            Text(localized("Shortcuts must include ⌘ so they can’t shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -199,16 +199,28 @@ final class RecorderSearchField: NSSearchField, NSSearchFieldDelegate {
     private var currentDisplay: String?
     private var currentCustomized = false
     private var isRecording = false
-    private var eventMonitor: Any?
+    /// Holds the recording session's event monitor and window observer. Their
+    /// last-resort teardown lives in this bag's own deinit: the recorder's
+    /// deinit is nonisolated in Swift 6 and cannot touch main-actor state, but
+    /// dropping the recorder drops the bag, which still removes both handles.
+    private final class RecordingMonitors: @unchecked Sendable {
+        var eventMonitor: Any?
+        var windowObserver: NSObjectProtocol?
+        deinit {
+            if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
+            if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) }
+        }
+    }
+
+    private let monitors = RecordingMonitors()
     private var cancelCell: NSButtonCell?
-    private var windowObserver: NSObjectProtocol?
 
     init() {
         super.init(frame: .zero)
         delegate = self
         alignment = .center
         wantsLayer = true
-        placeholderString = "Record Shortcut"
+        placeholderString = localized("Record Shortcut")
         // The magnifier and the ⨯ hide via transparency, never by detaching the
         // cells: macOS 26's accessibility builds this cell's AX children by
         // inserting both button cells into an array without a nil check, so a
@@ -226,11 +238,6 @@ final class RecorderSearchField: NSSearchField, NSSearchFieldDelegate {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
-
-    deinit {
-        if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
-        if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) }
-    }
 
     /// The upstream control's fixed footprint, one width for every row.
     override var intrinsicContentSize: NSSize {
@@ -269,16 +276,16 @@ final class RecorderSearchField: NSSearchField, NSSearchFieldDelegate {
         // The current glyphs stay visible while recording (as upstream does) —
         // writing `stringValue` here would end the just-started editing session,
         // whose did-end notification tears the recording straight back down.
-        placeholderString = "Press Shortcut…"
+        placeholderString = localized("Press Shortcut…")
         // The field editor attaches just after focus lands; hide its caret then
         // (there is nothing to type — the monitor consumes every key).
         DispatchQueue.main.async { [weak self] in
             (self?.currentEditor() as? NSTextView)?.insertionPointColor = .clear
         }
-        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        monitors.eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handle(event)
         }
-        windowObserver = NotificationCenter.default.addObserver(
+        monitors.windowObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification, object: window, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.blur() }
@@ -323,15 +330,15 @@ final class RecorderSearchField: NSSearchField, NSSearchFieldDelegate {
     private func endRecording() {
         guard isRecording else { return }
         isRecording = false
-        if let eventMonitor {
+        if let eventMonitor = monitors.eventMonitor {
             NSEvent.removeMonitor(eventMonitor)
-            self.eventMonitor = nil
+            monitors.eventMonitor = nil
         }
-        if let windowObserver {
+        if let windowObserver = monitors.windowObserver {
             NotificationCenter.default.removeObserver(windowObserver)
-            self.windowObserver = nil
+            monitors.windowObserver = nil
         }
-        placeholderString = "Record Shortcut"
+        placeholderString = localized("Record Shortcut")
         stringValue = currentDisplay ?? ""
         setShowsCancel(currentCustomized)
     }

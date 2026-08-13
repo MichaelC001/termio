@@ -45,7 +45,7 @@ struct FileTreeList: View {
 /// thread continuously. Closure properties would make the plain view compare
 /// unequal every time, so equality is spelled out over the values that actually
 /// affect the rows; the closures are stable for the life of the pane and skipped.
-private struct EquatableTree: View, Equatable {
+private struct EquatableTree: View, @MainActor Equatable {
     let nodes: [FileNode]
     let revision: Int
     @Binding var selection: URL?
@@ -245,7 +245,7 @@ private struct SymbolicLinkTooltip: ViewModifier {
 
     func body(content: Content) -> some View {
         if let target {
-            content.help("Alias → \(target)")
+            content.help(localized("Alias → \(target)"))
         } else {
             content
         }
@@ -350,28 +350,28 @@ private struct RowContextMenu: NSViewRepresentable {
             // prompt as a shell-quoted path — the same token a drag onto the terminal
             // inserts. Gated live at open time; a plain shell has no chat to add to.
             if actions?.canAddToChat() == true {
-                let add = menuItem("Add to Chat", #selector(addToChat))
+                let add = menuItem(localized("Add to Chat"), #selector(addToChat))
                 menu.addItem(add)
                 menu.addItem(.separator())
             }
             if isDirectory {
-                menu.addItem(menuItem("New File", #selector(newFile)))
-                menu.addItem(menuItem("New Folder", #selector(newFolder)))
+                menu.addItem(menuItem(localized("New File"), #selector(newFile)))
+                menu.addItem(menuItem(localized("New Folder"), #selector(newFolder)))
                 menu.addItem(.separator())
             }
             // The Finder's own verb for an alias, and directly above Reveal in Finder so
             // the pair reads as "the original" versus "this link". Absent on a row that
             // isn't a link, and on one whose target is gone.
             if symbolicLinkTarget != nil {
-                menu.addItem(menuItem("Show Original", #selector(showOriginal)))
+                menu.addItem(menuItem(localized("Show Original"), #selector(showOriginal)))
             }
-            menu.addItem(menuItem("Reveal in Finder", #selector(revealInFinder)))
+            menu.addItem(menuItem(localized("Reveal in Finder"), #selector(revealInFinder)))
             menu.addItem(.separator())
-            menu.addItem(menuItem("Copy Path", #selector(copyPath)))
-            menu.addItem(menuItem("Copy Relative Path", #selector(copyRelativePath)))
+            menu.addItem(menuItem(localized("Copy Path"), #selector(copyPath)))
+            menu.addItem(menuItem(localized("Copy Relative Path"), #selector(copyRelativePath)))
             menu.addItem(.separator())
-            menu.addItem(menuItem("Rename…", #selector(rename)))
-            menu.addItem(menuItem("Delete", #selector(deleteItem)))
+            menu.addItem(menuItem(localized("Rename…"), #selector(rename)))
+            menu.addItem(menuItem(localized("Delete"), #selector(deleteItem)))
             menu.popUp(positioning: nil, at: recognizer.location(in: hostView), in: hostView)
         }
 
@@ -497,8 +497,8 @@ private struct EmptyAreaContextMenu: NSViewRepresentable {
             // Only the empty area — a click on a real row is handled by its own menu.
             guard table.row(at: point) == -1 else { return }
             let menu = NSMenu()
-            menu.addItem(menuItem("New File", #selector(newFile)))
-            menu.addItem(menuItem("New Folder", #selector(newFolder)))
+            menu.addItem(menuItem(localized("New File"), #selector(newFile)))
+            menu.addItem(menuItem(localized("New Folder"), #selector(newFolder)))
             menu.popUp(positioning: nil, at: point, in: table)
         }
 
@@ -539,8 +539,9 @@ private struct EmptyAreaContextMenu: NSViewRepresentable {
 /// primary-click recognizers in its own mouse tracking). Mounted *inside a row* (like
 /// `OutlineViewFixups`), so the outline view is a real ancestor on its
 /// superview chain — a `.background` on the List sits in a sibling subtree and can't
-/// reach it.
-private struct OutlineViewCapture: NSViewRepresentable {
+/// reach it. Shared with the remote tree (`RemoteFileRow`), which needs the same
+/// capture for the same click-to-expand gesture.
+struct OutlineViewCapture: NSViewRepresentable {
     let onFound: (NSOutlineView?) -> Void
 
     func makeNSView(context: Context) -> NSView {
@@ -637,12 +638,18 @@ struct OutlineViewFixups: NSViewRepresentable {
             object: scroll.contentView,
             queue: nil
         ) { [weak scroll] _ in
-            guard let scroll, scroll.verticalLineScroll != 24 else { return }
-            scroll.verticalLineScroll = 24
+            // `queue: nil` delivers on the posting thread, and AppKit posts a clip
+            // view's bounds change on main — the isolation the scroll view's own
+            // properties require.
+            MainActor.assumeIsolated {
+                guard let scroll, scroll.verticalLineScroll != 24 else { return }
+                scroll.verticalLineScroll = 24
+            }
         }
         objc_setAssociatedObject(scroll, &enforcementKey, token, .OBJC_ASSOCIATION_RETAIN)
     }
 }
 
-/// Unique address keying the enforcement token onto its scroll view.
-private var enforcementKey: UInt8 = 0
+/// Unique address keying the enforcement token onto its scroll view. Only its
+/// address is ever taken; the value itself is never read or written.
+nonisolated(unsafe) private var enforcementKey: UInt8 = 0

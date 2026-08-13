@@ -113,7 +113,7 @@ opt-in bad-network degrade.
   (phone through hostile NAT, relay as blind pipe).
 
 One-sentence differentiator vs Superlogical's mux layer: **Superlogical is
-building a general multiplexer for all work (Announced); termio's protocol is
+building a general multiplexer for all work (Announced); Termio's protocol is
 deliberately narrower — an agent-native session contract where `working` /
 `needs-you` / approvals are wire events, running local-first over pipes the
 user already trusts.**
@@ -324,7 +324,7 @@ libghostty-vt 1.3.2 exposes render-state cell iteration + per-row dirty tracking
 required regardless of engine. **v1 engine DECISION (2026-07-31): `libghostty-vt`**,
 FFI'd into the Rust host. The spike's build-convenience pick was
 `alacritty_terminal`, but that was overridden on a **correctness** ground: every
-termio client *is* libghostty (Mac embeds it, iOS mirrors it), and the
+Termio client *is* libghostty (Mac embeds it, iOS mirrors it), and the
 "synchronized distributed state machines" model only holds if the host authority
 runs the **same** VT — a different engine (alacritty) can diverge on grapheme /
 width / autowrap / obscure-escape handling, so its `S` snapshot would not match
@@ -684,7 +684,7 @@ replication schemes; a single-mechanism resource plane cannot drift that way.
 
 | | Unix socket | SSH stdio | QUIC (later) | WSS + relay (later) |
 | --- | --- | --- | --- | --- |
-| **Auth** | Filesystem perms on `$XDG_RUNTIME_DIR/termiod/` (0700); peer-cred check optional | ssh-agent / `~/.ssh/config` — user's existing identity, keys never touch termio | Borrowed identity only: Tailscale tailnet, or pairing-pinned host cert (TOFU like SSH). **No DIY PKI** | Pairing token (companion model), scoped per device; tokens gate every connection |
+| **Auth** | Filesystem perms on `$XDG_RUNTIME_DIR/termiod/` (0700); peer-cred check optional | ssh-agent / `~/.ssh/config` — user's existing identity, keys never touch Termio | Borrowed identity only: Tailscale tailnet, or pairing-pinned host cert (TOFU like SSH). **No DIY PKI** | Pairing token (companion model), scoped per device; tokens gate every connection |
 | **Channel mapping** | 1 connection = 1 channel | 1 exec (`termiod stdio`) = 1 channel; ControlMaster **would** multiplex execs over one TCP+auth session — **not implemented**, see the note below the table | 1 QUIC connection per (client, host); stream 0 = control, one bidi stream per attach — the roles were designed for this | 1 WebSocket = 1 channel (matches today's companion shape) |
 | **Failure / reconnect** | Retry connect; host down = launchd/systemd restarts it | TCP drop = detach, never kill; reattach replays ring / snapshot; ControlMaster + `ServerAliveInterval` for fast resume | Connection migration = roaming survives network flips; 0-RTT resume | Relay drop = detach; client re-pairs/reconnects; tiered ReconnectPolicy already exists on iOS |
 | **When (product)** | Local, always — the default | Remote VPS/devbox — the default remote through v1 | Only after measured pain: the §D p95 criterion, or a supersedable plane the browser needs | **The web client's transport** (a Replica over WSS), plus a phone with no tailnet behind hostile NAT |
@@ -723,7 +723,7 @@ the custody sense of that phrase (§F #2).
 
 **SSH vs QUIC — complementary planes, not a religion.** SSH's unbeatable
 asset is **deployed identity and trust**: every target VPS already has the
-user's key, agent, jump hosts, and ops muscle; using it means termio ships
+user's key, agent, jump hosts, and ops muscle; using it means Termio ships
 zero crypto and inherits every enterprise's existing audit story. Its real
 costs are per-connection process+handshake overhead (amortizable by
 ControlMaster once it is passed), TCP head-of-line blocking under loss, and no
@@ -757,7 +757,7 @@ rejected: it is QUIC's identity problem with none of QUIC's benefits.
 
 *(For reference: Superlogical says its mux "owns SSH" as a durable session
 resource — **Announced** in spirit, custody and implementation **Unknown**.
-termio's fork — system OpenSSH as a pipe to a user-run host — stays deliberate:
+Termio's fork — system OpenSSH as a pipe to a user-run host — stays deliberate:
 smaller security scope, at the cost of some seamless-reconnect polish we buy
 back with ControlMaster and setup helpers.)*
 
@@ -867,7 +867,7 @@ measured except the p95 hiccup.
 
 ## E. Comparison matrix
 
-| Dimension | **termio Session Protocol** | Superlogical | tmux | zmx | herdr-style remote | termio Companion wire (today) |
+| Dimension | **Termio Session Protocol** | Superlogical | tmux | zmx | herdr-style remote | Termio Companion wire (today) |
 | --- | --- | --- | --- | --- | --- | --- |
 | Durable host ≠ viewer | ✅ `termiod` | ✅ **Announced** (long-lived sessions, reconnect) | ✅ | ✅ | Partial (app/daemon hybrid) | ❌ host is the GUI |
 | Transport-agnostic protocol | ✅ channels over any pipe | **Unknown** (nothing published) | ❌ Unix socket only | ❌ local socket; SSH as workflow | ❌ bespoke per-feature | ❌ WSS-only, bespoke |
@@ -887,7 +887,7 @@ announced has `needs_you` on the wire.
 | # | Risk / decision | Position |
 | --- | --- | --- |
 | 1 | **Phone→Mac gateway vs phone-direct-to-remote-termiod** | Start with Mac-as-gateway (reuses companion pairing + relay work; one trust decision for the user). Phone-direct is v2 via Tailscale, where identity comes free. Gateway's cost: Mac must be reachable — already a known constraint. **Needs product call (§ top-5).** |
-| 2 | **Does termio ever "own SSH"?** | The phrase conflates three things and they carry wildly different prices, so answer them separately. **(a) The connection is a durable resource the mux holds**, not a process each session spawns — **accept, and it is overdue**: that is ControlMaster/ControlPersist, three flags, zero new security surface (see the note under §D). **(b) termio implements the SSH protocol in-process** — **refuse**: key custody, agent forwarding, host-key policy, a security surface Superlogical appears to have chosen (**Announced** in spirit, custody **Unknown**) and we deliberately will not staff. **(c) termio owns the wire that carries session bytes** — **later, and as a route, not a rewrite** (§D.1). The standing position was written as a flat "no" and so quietly declined (a) along with (b); (a) is where most of the felt UX of "owns SSH" actually lives. |
+| 2 | **Does Termio ever "own SSH"?** | The phrase conflates three things and they carry wildly different prices, so answer them separately. **(a) The connection is a durable resource the mux holds**, not a process each session spawns — **accept, and it is overdue**: that is ControlMaster/ControlPersist, three flags, zero new security surface (see the note under §D). **(b) Termio implements the SSH protocol in-process** — **refuse**: key custody, agent forwarding, host-key policy, a security surface Superlogical appears to have chosen (**Announced** in spirit, custody **Unknown**) and we deliberately will not staff. **(c) Termio owns the wire that carries session bytes** — **later, and as a route, not a rewrite** (§D.1). The standing position was written as a flat "no" and so quietly declined (a) along with (b); (a) is where most of the felt UX of "owns SSH" actually lives. |
 | 3 | **Sharing ACL** | Out of protocol v1. The writer token + `hello` identity are the future hook; external identities (a colleague's device) need a pairing/ACL design that must not be improvised. |
 | 4 | **Relay threat model** | Relay is a blind pipe: no session semantics, no `hello` termination, no plaintext `env`/`D` unless the leg is user-owned (own cloudflared/tunnel today). True E2EE-through-untrusted-relay is future work; until then docs must say plainly which legs see plaintext. |
 | 5 | **Ring vs snapshot gap (v0→v1)** | v0 ring replay can tear TUIs on reattach (replayed escape torrent). Confirmed live 2026-07-30: reattaching to a remote `top`, the alt-screen enter (`ESC[?1049h`) had scrolled out of the 41 KB ring — `top` self-heals (periodic repaint), an idle TUI like vim would not. Acceptable for POC; v1 snapshot is the fix — don't polish ring replay further. |
@@ -901,11 +901,11 @@ announced has `needs_you` on the wire.
 ## G. Phased roadmap
 
 Mapped to the three-step sequence (§0 of the mux doc) and the GitHub epic
-[#164](https://github.com/jiweiyuan/termio/issues/164):
+[#164](https://github.com/termio-sh/termio/issues/164):
 
 | Step | Protocol work | Repo milestone |
 | --- | --- | --- |
-| **1 · Incredible host** | **v0 frozen** (shipped in POC, [#177](https://github.com/jiweiyuan/termio/pull/177)). **v0.1 implemented** (branch commit `6855552`): `hello`+caps, `seq`/`re`, error codes, `E` frames, `send`/`wait`, `workstream` in CreateSpec — 28 local + 8 fake-ssh smoke checks green. **Live VPS e2e passed 2026-07-30** on `ukvps` (aarch64, static-musl cross-compile deploy): detach ≠ kill across hard disconnect, send-without-attach, set-status; echo 12.1 ms median, throughput ≈ local | #170 local host: Mac app attaches over Unix socket; sessions survive app quit. #171 SSH deploy helper. #172 remote open (same protocol, SSH pipe) |
+| **1 · Incredible host** | **v0 frozen** (shipped in POC, [#177](https://github.com/termio-sh/termio/pull/177)). **v0.1 implemented** (branch commit `6855552`): `hello`+caps, `seq`/`re`, error codes, `E` frames, `send`/`wait`, `workstream` in CreateSpec — 28 local + 8 fake-ssh smoke checks green. **Live VPS e2e passed 2026-07-30** on `ukvps` (aarch64, static-musl cross-compile deploy): detach ≠ kill across hard disconnect, send-without-attach, set-status; echo 12.1 ms median, throughput ≈ local | #170 local host: Mac app attaches over Unix socket; sessions survive app quit. #171 SSH deploy helper. #172 remote open (same protocol, SSH pipe) |
 | **2 · Composable agent surface** | **v1**: host-side vt authority, `S` snapshot on attach/resize, host-side status sources (hooks/OSC on the host, heuristics as fallback), approvals in events. `termio sessions` CLI re-based on control channel (retires transcript scraping) | Post-#172: iOS roster + needs-you from `subscribe`; unify companion semantics onto the protocol |
 | **3 · Multi-device operable** | **v1.1**: `G` dirty-row diffs (phone first); QUIC spike behind the channel abstraction; WSS relay binding with blind-pipe rule | Discovery providers (static SSH config, optional Tailscale); phone-direct decision falls due here |
 
@@ -957,7 +957,7 @@ impossible retroactively.
    hard we must version, document, and stabilize.
 4. **SSH custody line:** confirm the standing bet — system OpenSSH forever,
    even if Superlogical's integrated remote UX is smoother — or budget a
-   future "termio manages the connection" mode with its key-custody cost.
+   future "Termio manages the connection" mode with its key-custody cost.
 5. **Deprecation policy:** how long do v0-only clients (raw PTY, no `hello`)
    stay supported once v1 ships — i.e., when may the host require `hello`?
    This is a support/commercial promise, not an engineering choice.

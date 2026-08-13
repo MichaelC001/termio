@@ -52,7 +52,7 @@ render alike), answered with arrow keys rather than digits.
 
 ## 3. The route taken: ask the agent
 
-termio is not an emulator. It installs hooks, reads agent manifests, and owns
+Termio is not an emulator. It installs hooks, reads agent manifests, and owns
 the session lifecycle — so it does not have to guess what the agent is asking.
 It can be told.
 
