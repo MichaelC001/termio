@@ -108,23 +108,27 @@ no throughput regression (16–24×), the backlog drop fires ("dropping slow cli
 - `termiod/` — the daemon+client crate (`src/{daemon,session,client,protocol,pty,remote,main,paths}.rs`).
   - `smoke_test.py` (27 checks), `remote_smoke_test.py` (8 checks) — keep green.
   - `bench/bench_100x.py` (+ `README.md`) — the anti-100× benchmark.
-  - `spike/vt-sidecar/` — alacritty proof (reference; NOT the chosen engine).
-  - `spike/vt-ffi/` — **libghostty-vt FFI proof (the chosen engine)**. `build.rs`
-    shells Zig (herdr's pattern), bindgens `include/ghostty/vt.h`, links the
-    static lib. Vendored libghostty-vt `1.3.2-HEAD-+c5a21edfc`.
+  - `vt/` — termiod's snapshot boundary. The engine comes from the
+    `libghostty-vt` crate, which owns the Zig build and the FFI; this crate owns
+    only the engine-neutral wire cell. Nothing is vendored.
+  - `spike/` is gone: both proofs (alacritty `vt-sidecar`, libghostty-vt
+    `vt-ffi`) were standalone and are preserved in history at `bc36438`.
 - `docs/design/20260730-termiod-session-protocol.md` — **the spec** (§A invariant, §C.5/§C.6
   terminal plane, §D transports/QUIC, §E matrix, §F risks — incl. #9 pipe-mode,
   #10 backlog, #11 resize, and the general v1 plan). Read this first.
 - `docs/design/20260730-termiod-session-mux.md`, `20260731-termiod-vt-sidecar-spike.md`.
 
 **Toolchains:**
-- Mac Zig 0.15.2: `~/.local/share/termiod-toolchains/zig-0.15.2/zig`. Build the FFI
-  crate with `ZIG=<that> DEVELOPER_DIR=/Library/Developer/CommandLineTools cargo …`
-  (the `DEVELOPER_DIR` avoids Xcode 26.4's arm64e-only SDK).
-- VPS `ukvps` Zig 0.15.2: `~/.local/share/zig-0.15.2/zig`; Rust via rustup
-  (`~/.cargo/bin`); `aarch64-unknown-linux-musl` target + `libclang` installed.
-  The FFI crate is rsynced at `ukvps:~/vt-ffi/` and builds natively:
-  `cd ~/vt-ffi && ZIG=$HOME/.local/share/zig-0.15.2/zig ~/.cargo/bin/cargo run --locked --target aarch64-unknown-linux-musl`.
+- Mac Zig **0.15.2**: `~/.local/share/termiod-toolchains/zig-0.15.2/zig`. It must be on
+  `PATH` — `libghostty-vt-sys` invokes `zig` by name and honours no `ZIG` override.
+  0.16.0 is installed alongside it for the pending engine bump; see the note in
+  `vt/Cargo.toml` for why the bump is not a rev change.
+  Build with `PATH=<that dir>:$PATH DEVELOPER_DIR=/Library/Developer/CommandLineTools
+  cargo …` (the `DEVELOPER_DIR` avoids Xcode 26.4's arm64e-only SDK). `libclang` is
+  no longer needed on the host: the `-sys` crate ships pre-generated bindings.
+- The VPS needs no Zig and no Rust: `remote deploy` cross-compiles the static musl
+  binary on the Mac and ships the ELF. Only a native build on the box would need the
+  0.16 toolchain there — `ukvps` still has 0.15.2, which no longer suffices.
 - `build.rs` pins Zig to exactly 0.15.2 and only allows macOS + aarch64-musl
   targets (rejects `linux-gnu` — build for musl on the VPS).
 

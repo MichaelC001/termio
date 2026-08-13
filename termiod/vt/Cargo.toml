@@ -3,7 +3,20 @@ name = "termiod-vt"
 version = "0.1.0"
 edition = "2021"
 publish = false
-build = "build.rs"
 
-[build-dependencies]
-bindgen = "0.72.1"
+# The engine build (Zig, cross-target, static archive) and the raw FFI both live
+# in `libghostty-vt`, so this crate carries no vendored source and no build
+# script. What stays here is termiod's own snapshot boundary: the wire cell is
+# ours, not the engine's.
+#
+# Pinned to the release, which builds ghostty a887df42c against Zig 0.15.2.
+# Moving to the 0.16 generation — what libghostty-swift 1.0.16 ships to the Mac
+# and iOS clients, and where host/client VT parity actually lives — is blocked on
+# bindings: `libghostty-vt-sys` ships pre-generated ones, so pointing
+# GHOSTTY_SOURCE_DIR at a different ghostty silently mismatches struct layouts.
+# Both 0.16 attempts failed that way. ghostty ab0b9da9 corrupts the heap —
+# unrelated HashMaps spin forever in the probe loop — and 9d8fbd1 fails the JOIN
+# invariant plus two snapshot/scrollback smoke checks. The fix is a fork that
+# regenerates bindings against the ghostty it builds, not a rev bump here.
+[dependencies]
+libghostty-vt = "0.2.1"
