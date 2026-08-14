@@ -119,10 +119,8 @@ no throughput regression (16–24×), the backlog drop fires ("dropping slow cli
 - `docs/design/20260730-termiod-session-mux.md`, `20260731-termiod-vt-sidecar-spike.md`.
 
 **Toolchains:**
-- Mac Zig **0.15.2**: `~/.local/share/termiod-toolchains/zig-0.15.2/zig`. It must be on
+- Mac Zig **0.16.0**: `~/.local/share/termiod-toolchains/zig-0.16.0/zig`. It must be on
   `PATH` — `libghostty-vt-sys` invokes `zig` by name and honours no `ZIG` override.
-  0.16.0 is installed alongside it for the pending engine bump; see the note in
-  `vt/Cargo.toml` for why the bump is not a rev change.
   Build with `PATH=<that dir>:$PATH DEVELOPER_DIR=/Library/Developer/CommandLineTools
   cargo …` (the `DEVELOPER_DIR` avoids Xcode 26.4's arm64e-only SDK). `libclang` is
   no longer needed on the host: the `-sys` crate ships pre-generated bindings.

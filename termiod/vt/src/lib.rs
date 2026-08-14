@@ -175,9 +175,18 @@ impl VtTerminal {
     /// carries SGR (so bold/underline/italic survive, unlike the packed cell
     /// format) and `hyperlink` carries OSC 8.
     ///
-    /// `modes`, `charsets`, `tabstops`, and the scrolling region are included
-    /// so a reattached client inherits the screen's actual mode state rather
-    /// than a plausible-looking default.
+    /// `modes`, `charsets`, and the scrolling region are included so a
+    /// reattached client inherits the screen's actual mode state rather than a
+    /// plausible-looking default.
+    ///
+    /// `tabstops` is the exception, and it is off for a correctness reason
+    /// rather than a taste one. The formatter writes them as a walk —
+    /// `ESC[3g` then `ESC[<col>G ESC H` per stop — which leaves the cursor on
+    /// the last stop. ghostty a887df42c emitted that walk *after* the screen
+    /// content, so it was harmless; 9d8fbd1 moved it *before*, so every row
+    /// paints from column 73 instead of column 1. Re-asserting the cursor at
+    /// the end fixes where the cursor lands but cannot un-paint the content.
+    /// Custom tab stops are worth less than a correctly painted screen.
     ///
     /// The payload carries its own prologue (`SNAPSHOT_PROLOGUE`), so a client
     /// applies it raw and must not prepend a reset of its own.
@@ -191,7 +200,9 @@ impl VtTerminal {
             .with_palette(false)
             .with_modes(true)
             .with_scrolling_region(true)
-            .with_tabstops(true)
+            // See the note above: the walk that writes these lands the cursor
+            // on the last stop, and 9d8fbd1 emits it ahead of the content.
+            .with_tabstops(false)
             .with_pwd(true)
             .with_keyboard(true)
             .with_cursor(true)
