@@ -686,11 +686,13 @@ async fn render_snapshot<W: AsyncWriteExt + Unpin>(
     output: &mut W,
     snapshot: &Snapshot,
 ) -> Result<()> {
-    // Format v2: the host already expressed the screen as VT sequences. Write
-    // them through untouched — synthesising anything here would put this client
-    // back in the business of deciding colour.
+    // Format v2: the host already expressed the screen as VT sequences, prologue
+    // included. Write them through untouched — synthesising anything here would
+    // put this client back in the business of deciding colour, and prepending a
+    // reset of its own is what the host-owned prologue exists to replace (a
+    // client-side `ESC[2J ESC[H` clears the screen but leaves the mode state
+    // that actually breaks the repaint).
     if let Some(vt) = &snapshot.vt {
-        output.write_all(b"\x1b[2J\x1b[H").await?;
         output.write_all(vt).await?;
         output.flush().await?;
         return Ok(());

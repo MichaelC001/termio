@@ -3,7 +3,7 @@ title: termiod Session Protocol
 status: draft
 type: design
 created: 2026-07-30
-updated: 2026-08-07
+updated: 2026-08-13
 related:
   - 20260730-termiod-session-mux.md
   - 20260708-session-daemon-architecture.md
@@ -47,7 +47,12 @@ for project dests and `session` for `temp:` dests — the host cannot anchor
 confinement (or reap scratch with its session) without being told which.
 (4) cancellation of `fs.search` is a generic `cancel {request}` verb rather
 than a search-specific one, since request ids are already protocol-wide; and
-the `git:` kind is gated on a `git` capability, parallel to `fs_watch`. -->
+the `git:` kind is gated on a `git` capability, parallel to `fs_watch`.
+2026-08-13: §C.6 gained the snapshot-prologue rule (delta D2 of
+`20260805-termiod-hot-path-and-client-classes.md`) — the `S` payload carries its
+own scoped reset and clients apply it raw. Implemented in `VtTerminal::format_vt`
+with `termiod/tests/snapshot_prologue.rs` as the acceptance test; the reference
+client and the Mac client stopped synthesising preludes of their own. -->
 
 
 # Design: termiod Session Protocol
@@ -256,6 +261,38 @@ makes one control channel safely multiplexable. Ops marked ✦ exist in POC v0.
 5. steady state: `D`/`R` up, `D`/`S`/`G`/`E` down
 6. `detach` (or channel death — equivalent) → session unaffected
 
+**Invariant JOIN — the attach boundary is exact, and the PTY never pauses.**
+For each attaching client there is exactly one boundary B in the session's
+output byte stream such that the `S` payload reflects the terminal after
+applying every byte before B, and the client receives every byte from B onward,
+in order, exactly once. B is established by enqueueing `Snapshot` on the sidecar
+FIFO in the same critical section that flips the client to `SnapshotPending`, so
+the snapshot boundary is "after every `Write` enqueued before this `Snapshot`"
+and the per-client buffer starts at the same instant. **The FIFO is the sequence
+number** — which is why no cursor rides the wire (a per-`D` sequence would tax
+the one path §A exists to keep free, and the client could not act on it anyway,
+because the host has already done the filtering).
+
+Three corollaries, each load bearing:
+
+1. **The sidecar channel must be lossless and ordered with respect to `Write`.**
+   If bytes destined for the VT can be dropped or reordered, B stops existing
+   and `S` silently describes a screen that never occurred. The permitted
+   degrade under queue pressure is therefore never "drop bytes to the VT" — it
+   is to mark the VT stale and refuse snapshots, falling back to ring replay.
+2. **Snapshot failure falls back to ring replay, and that fallback is lossy.**
+   `RING_CAP` is 128 KiB, so a client resynced from the ring alone can land
+   mid-escape. It must be reported, not silent.
+3. **Resize is the same barrier, not a second mechanism.** `Resize` and the
+   per-client `Snapshot` land adjacently on the FIFO with no intervening
+   `Write`, and `TIOCSWINSZ` failure surfaces before stored dimensions move.
+
+`termiod/tests/join_invariant.rs` is the acceptance test: a second client
+attaches mid-flood of a monotonic counter, and the sequence must run unbroken
+from the last complete line on the snapshot screen into the first line of the
+buffered stream. The flood must be unbroken — a paced one lets the attach land
+in a gap, where an empty buffer hides a broken barrier.
+
 **Every client parses at the authoritative PTY dimensions — this is a
 correctness requirement, not a preference.** Input replication is only
 deterministic if the replicas run the same state machine on the same input,
@@ -266,10 +303,11 @@ and diverge — the synchronized-state-machine guarantee silently breaks. So:
 `attached` (and the v1 `S` snapshot) **carry `rows`/`cols`**, and a smart client
 maintains an internal grid at *authoritative PTY dimensions* with its own
 *local* viewport layered on top (letterbox / scale / scroll) — never by parsing
-at its own window size. *(POC gap: `Attached` omits `rows`/`cols`
-(`protocol.rs`), and the reference client ignores `Resized`/`WriterChanged`
-(`client.rs`) — acceptable for a single same-size CLI, incorrect the moment a
-second differently-sized viewer attaches.)*
+at its own window size. *(`Attached` carries `rows`/`cols` as of Phase 1c. The
+residual gap is client conformance, not the wire: the reference client still
+ignores `Resized`/`WriterChanged` (`client.rs`) — acceptable for a single
+same-size CLI, incorrect the moment a second differently-sized viewer
+attaches.)*
 
 **Writer policy — single writer, newest claim, observable.** Any
 `mode:"interact"` attach takes the write token; the previous writer stays
@@ -356,6 +394,27 @@ One caveat worth keeping: the formatter emits the cursor's CUP *before* state
 extras, and some extras move the cursor as a side effect (`tabstops` walks the
 row with CHA/HTS; DECSTBM homes it). The host re-asserts the true position with
 a trailing CUP.
+
+**The `S` payload carries its own prologue, and clients MUST apply it raw.**
+Applying one snapshot to a client screen in any prior state must land where
+applying it to a fresh terminal would; a client that prepends its own reset
+cannot deliver that, because the state that actually breaks a repaint is mode
+state, not screen content. The formatter alone does not deliver it either: it
+emits only state the host *has* — `ESC[?1049h` for an alt-screen session,
+`ESC(0` for a shifted charset, `ESC[?6h` for origin mode — never the negation,
+and it paints relative to wherever the cursor already sits. Measured, a client
+in five ordinary states (stale content, alt-screen, origin mode, a shifted
+charset, a pending SGR) reached a different screen than a fresh one. So the host
+prepends a scoped reset: `DECSTR` for what is not enumerated, then explicit
+primary-screen / SGR / charset / origin-mode / autowrap / insert-mode /
+reverse-video / margin resets, then erase-and-home. It stops short of `RIS`,
+which would clear what the client owns — palette, title, scrollback. Nothing in
+the prologue is host state the payload does not immediately restate. Acceptance
+test: `termiod/tests/snapshot_prologue.rs`, one case per state, plus the reverse
+direction (an alt-screen host must still land its client on the alternate
+screen). *(libghostty's own `DECSTR` was measured incomplete — SGR, charsets,
+origin mode and autowrap survive it — which is why the explicit resets follow
+it rather than trusting it.)*
 
 Format v1 survives **only** for `grid_diff` clients, whose model is explicitly
 server-side state and which need cells to seed their grid.

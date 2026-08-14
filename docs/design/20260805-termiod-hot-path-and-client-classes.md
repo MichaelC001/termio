@@ -3,7 +3,7 @@ title: Hot path, attach join point, and client classes
 status: draft
 type: design
 created: 2026-08-05
-updated: 2026-08-05
+updated: 2026-08-13
 related:
   - 20260730-termiod-session-protocol.md
   - 20260805-termiod-device-architecture.md
@@ -343,8 +343,8 @@ break.
 
 | # | Section | Delta | Kind |
 | --- | --- | --- | --- |
-| **D1** | §C.5 | Add invariant **JOIN** (§D.2) with its three corollaries, replacing the prose "resync: … one `S` snapshot". Explicitly: the PTY is never paused; the sidecar FIFO is the ordering authority; no wire `seq` | Spec only, no code |
-| **D2** | §C.6 | The `S` payload **includes its own prologue** and must be state-independent on apply. Clients MUST NOT prepend their own reset. Frame order after `attached` is fixed: `S` → `ready` → `H`* interleavable with `D` | Wire semantics (payload grows) |
+| **D1** | §C.5 | Add invariant **JOIN** (§D.2) with its three corollaries, replacing the prose "resync: … one `S` snapshot". Explicitly: the PTY is never paused; the sidecar FIFO is the ordering authority; no wire `seq` | **Landed 2026-08-12** |
+| **D2** | §C.6 | The `S` payload **includes its own prologue** and must be state-independent on apply. Clients MUST NOT prepend their own reset. Frame order after `attached` is fixed: `S` → `ready` → `H`* interleavable with `D` | **Landed 2026-08-13** (prologue in `format_vt`; the reference client and the Mac client apply raw) |
 | **D3** | §C.6 | Replace the stage table's "who parses VT" column with the **client-class profiles** of §D.3. Stages describe the host's capability; classes describe what a client negotiates | Doc restructure |
 | **D4** | §F #10 | Mark risk #10 **closed** (4 MiB `CLIENT_BACKLOG_CAP`, shipped) and open its two residuals: (a) the degrade should be **forced resync** (`S` + `ready` + `E{ev:"resynced", reason:"backlog"}`), dropping only on a second strike; (b) the **sidecar command queue is unbounded** — give it its own budget whose only legal degrade is `vt_stale` (refuse snapshots, fall back to ring replay, emit an event), never dropping bytes to the VT | New risk + wire event |
 | **D5** | §C.4, §C.5 | `attach` gains `claim:"newest"|"polite"` (default `newest`, i.e. today's behaviour). `polite` returns `error{code:"busy"}` when a live writer exists. Supersedes the sticky-writer idea | Additive control field |
@@ -361,12 +361,17 @@ transport table, §D.1's QUIC binding, §H's rejection list.
 
 ## F. Open questions for a human
 
-1. **What is the snapshot prologue, exactly?** Does libghostty's formatter have a
-   "self-contained repaint" mode (emitting the reset it needs), or must termiod
-   prepend a scoped reset — and which one, given that `RIS` would also clear
-   things the client legitimately owns? The test is cheap and definitive: apply
-   one `S` to a client sitting in alt-screen with a scrolling region set, and
-   diff against the same `S` applied to a fresh terminal. **Blocks D2.**
+1. ~~**What is the snapshot prologue, exactly?**~~ **Answered 2026-08-13 by the
+   test.** The formatter has no self-contained mode — it emits only state the
+   host *has*, never the negation, and paints relative to the cursor it finds —
+   so termiod prepends the reset. `DECSTR` is the right lead (it covers G2/G3,
+   DECSCA, the saved cursor, keypad, and touches nothing the client owns) but is
+   not sufficient: measured against libghostty, SGR, charsets, origin mode and
+   autowrap all survive it, so each is re-asserted explicitly, then erase-and-home.
+   `RIS` stays rejected — palette, title and scrollback are the client's.
+   One consequence worth stating: the prologue leaves the alternate screen
+   unconditionally, so the payload owes the re-entry, which the formatter already
+   emits and the test now pins in both directions.
 2. **What should a wedged client cost a healthy one?** Today a slow client is
    dropped at 4 MiB. Forced resync is friendlier and unbounded in the pathological
    case (a client that cannot keep up will fail resync repeatedly). Drop, resync,
@@ -402,9 +407,9 @@ current correctness *provable*.
 | # | PR | Contents | Depends on |
 | --- | --- | --- | --- |
 | 1 | **Spec: join point and vocabulary** | Protocol doc D1, D7, D8, D9. No code | — |
-| 2 | **Test: attach during a flood** | Attach a second client mid-`yes`-flood; assert the second client's byte stream, replayed through a VT, is identical to a control capture of the first client's screen at the same boundary. Locks invariant JOIN before anyone optimises the sidecar | 1 |
-| 3 | **Test: snapshot applied to a dirty screen** | Golden test for §F.1 — alt-screen, scrolling region, charset, pending SGR. Expected to **fail**; that failure is the spec for PR 4 | 1 |
-| 4 | **Host-owned snapshot prologue** | D2. `S` carries its own prologue; `render_snapshot` stops emitting `ESC[2J ESC[H`; Mac/iOS apply raw. Old clients that still prepend a reset stay correct (idempotent) | 3 |
+| 2 | **Test: attach during a flood** — **landed 2026-08-12** (`termiod/tests/join_invariant.rs`) | A second client attaches mid-flood of a monotonic counter; the `S` payload is replayed through a VT and the sequence must run unbroken from the last complete line on that screen into the first line of the buffered stream, with the early client's delivery untouched. Proven to bite by dropping one buffered chunk in `finish_snapshot`: "the snapshot ends at 55861 but the stream resumes at 55868". **The flood must be unbroken** — a paced one lets the attach land in a gap, where an empty buffer hides a broken barrier and the test passes vacuously | 1 |
+| 3 | **Test: snapshot applied to a dirty screen** — **landed 2026-08-13** (`termiod/tests/snapshot_prologue.rs`) | One case per state a client can be carrying when `S` arrives; each applies the payload after that state and diffs against a fresh terminal. It failed on five of nine before PR 4 — stale content showing through, alt-screen kept, origin mode re-basing the cursor addressing, a shifted charset turning the text into line-drawing glyphs, a pending SGR colouring the first row. Insert mode, autowrap-off and a scrolling region passed only because the fixture's content was short enough not to expose them; reverse video is a render-time flip the cell snapshot cannot see at all | 1 |
+| 4 | **Host-owned snapshot prologue** — **landed 2026-08-13** | D2. `SNAPSHOT_PROLOGUE` prepended in `VtTerminal::format_vt`; `render_snapshot` and `TermiodSnapshot.render` stop synthesising a prelude and apply raw. Old clients that still prepend a reset stay correct (idempotent). The Mac's prelude was asymmetric in the same way the formatter is — it entered the alternate screen but never left it, so a primary-screen snapshot repainted onto the alt buffer | 3 |
 | 5 | **Backlog degrade: resync before drop** | D4(a). Reuse `begin_snapshot_barrier` for one client; add `E{ev:"resynced", reason}`; drop on second strike. Decide D10 here or defer explicitly | 2 |
 | 6 | **Sidecar queue budget** | D4(b). Bound the `SidecarCommand` channel by bytes; on exhaustion mark the VT stale, refuse snapshots (existing `fallback_snapshot` path), emit an event. Never drop bytes to the VT | 2 |
 | 7 | **Client conformance suite** | D3, D8. Replica and Mirror profiles; skew matrix; assert clients parse at authoritative dims and honour `Resized`/`WriterChanged` | 1 |

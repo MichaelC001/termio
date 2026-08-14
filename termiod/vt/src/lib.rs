@@ -93,6 +93,39 @@ const DEFAULT_FOREGROUND: Rgb = Rgb {
 };
 const DEFAULT_BACKGROUND: Rgb = Rgb { r: 0, g: 0, b: 0 };
 
+/// What a snapshot payload must undo before it paints, so that applying it to a
+/// client screen in *any* prior state lands where applying it to a fresh
+/// terminal would. The formatter only ever emits state the host *has* — it
+/// writes `ESC[?1049h` for an alt-screen session and `ESC(0` for a shifted
+/// charset, but never the negation — and it paints the screen relative to
+/// wherever the cursor already sits. So every one of these is a state a client
+/// could be carrying that the payload would otherwise inherit
+/// (`tests/snapshot_prologue.rs` is the acceptance test, one case each).
+///
+/// `DECSTR` (`ESC[!p`) leads because it covers what is not enumerated here —
+/// G2/G3, DECSCA protection, the saved cursor, keypad mode. It is not sufficient
+/// on its own: measured against libghostty, SGR, charsets, origin mode, and
+/// autowrap all survive it, so each is re-asserted explicitly afterwards.
+///
+/// The line stops short of `RIS`, which would also clear what the *client*
+/// legitimately owns — its palette, title, and scrollback are not the host's to
+/// reset. Nothing here is host state the payload does not immediately restate:
+/// a host in alt-screen re-enters it, a host with a scrolling region redeclares
+/// it, and a host with a shifted charset re-shifts.
+const SNAPSHOT_PROLOGUE: &[u8] = concat!(
+    "\x1b[?1049l", // leave the alternate screen; the payload re-enters if the host is there
+    "\x1b[!p",     // DECSTR — soft reset, for the state not enumerated below
+    "\x1b[m",      // no SGR pending, so the erase below paints the default background
+    "\x1b(B\x1b)B\x0f", // G0/G1 back to US-ASCII and shifted in
+    "\x1b[?6l",    // origin mode off, so the payload's cursor addressing is absolute
+    "\x1b[?7h",    // autowrap on — the default the formatter's full-width rows assume
+    "\x1b[4l",     // insert mode off, or painted text shoves what follows it right
+    "\x1b[?5l",    // reverse video off; it inverts the whole screen and DECSTR misses it
+    "\x1b[r",      // full-height scrolling region; the payload redeclares a narrower one
+    "\x1b[2J\x1b[H", // clear and home — the formatter paints relative from the cursor
+)
+.as_bytes();
+
 /// A terminal plus reusable render iterators. This type is deliberately
 /// `!Send`/`!Sync`; construct and use it on the sidecar thread that owns it.
 pub struct VtTerminal {
@@ -145,6 +178,9 @@ impl VtTerminal {
     /// `modes`, `charsets`, `tabstops`, and the scrolling region are included
     /// so a reattached client inherits the screen's actual mode state rather
     /// than a plausible-looking default.
+    ///
+    /// The payload carries its own prologue (`SNAPSHOT_PROLOGUE`), so a client
+    /// applies it raw and must not prepend a reset of its own.
     pub fn format_vt(&mut self) -> Result<Vec<u8>> {
         let options = FormatterOptions::new()
             .with_format(Format::Vt)
@@ -165,14 +201,15 @@ impl VtTerminal {
             .with_kitty_keyboard(true)
             .with_charsets(true);
 
-        let mut formatted = {
+        let mut formatted = SNAPSHOT_PROLOGUE.to_vec();
+        {
             let mut formatter = check(
                 Formatter::new(&self.terminal, options),
                 "Formatter::new(terminal)",
             )?;
             let bytes = check(formatter.format_alloc(None), "Formatter::format_alloc")?;
-            bytes.to_vec()
-        };
+            formatted.extend_from_slice(&bytes);
+        }
 
         // The formatter emits the cursor's CUP *before* the state extras, and
         // some of those move the cursor as a side effect — `tabstops` walks the

@@ -116,17 +116,15 @@ enum TermiodSnapshot {
     /// idempotent — feeding it again repaints the same frame — so a mid-session
     /// keyframe (the resize barrier's fresh `S`) can reuse it verbatim.
     static func render(_ frame: Frame) -> Data {
-        // v2: the host already produced the repaint. Clear, then replay it
-        // verbatim — deciding anything about colour here is exactly the bug
-        // this format exists to fix.
+        // v2: the host already produced the repaint, prologue included. Replay it
+        // verbatim — deciding anything about colour here is exactly the bug this
+        // format exists to fix, and a client-side prelude is what the host-owned
+        // prologue replaces. The old one was also asymmetric in the same way the
+        // formatter is: it entered the alternate screen for an alt-screen frame
+        // but never left it, so a primary-screen snapshot arriving while this
+        // surface still sat in alt repainted onto the wrong buffer.
         if let vt = frame.vt {
-            var output = Data()
-            if frame.alternateScreen {
-                output.append(contentsOf: Array("\u{1b}[?1049h".utf8))
-            }
-            output.append(contentsOf: Array("\u{1b}[2J\u{1b}[H".utf8))
-            output.append(vt)
-            return output
+            return vt
         }
 
         var output = String()

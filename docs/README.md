@@ -78,9 +78,11 @@ from the real front matter).
 | draft | design | [分享 Agent 会话（带密码的实时分享链接）](design/20260628-session-share.md) |
 | draft | design | [调研：下一批 AgentAdapter 的落盘格式（OpenCode / Pi / Amp / Cursor / Kimi）](design/20260711-agent-transcript-survey.md) |
 | draft | design | ["Markdown preview — Apple-grade reading typography"](design/20260718-markdown-preview-reading-typography.md) |
+| draft | design | [Agent Plugins](design/agent-plugins.md) |
+| draft | design | [Browser Control over CDP](design/browser-cdp.md) |
 | draft | design | [Device Architecture — one server per device, every UI a client](design/20260805-termiod-device-architecture.md) |
 | draft | design | [Hot path, attach join point, and client classes](design/20260805-termiod-hot-path-and-client-classes.md) |
-| draft | design | [Issue Triage → 本地 agent（GitHub / Linear 事件驱动 termio session）](design/20260723-issue-triage-local-agent.md) |
+| draft | design | [Issue Triage → 本地 agent（GitHub / Linear 事件驱动 Termio session）](design/20260723-issue-triage-local-agent.md) |
 | draft | design | [Mac retention analytics (no app changes)](design/20260715-mac-retention-analytics.md) |
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/20260708-remote-projects.md) |
 | draft | design | [Session Daemon Architecture (termiod — one model for local, remote, mobile)](design/20260708-session-daemon-architecture.md) |
@@ -98,6 +100,7 @@ from the real front matter).
 | draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](rfcs/fork-libghostty-spm.md) |
 | draft | rfc | [Loose terminals as first-class entities](design/20260713-loose-terminal-entity.md) |
 | draft | rfc | [Onboarding —— 首次启动体验设计](design/20260630-onboarding.md) |
+| draft | rfc | [Retire "remote" — every machine is a device](rfcs/remote-to-device.md) |
 | fixed | bug | [New terminal opens unfocused (hollow cursor, beeps until clicked)](bug/terminal-focus-loss-on-new-session-mount.md) |
 | fixed | bug | [Terminal loses focus after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
 | fixed | bug | [Terminal loses focus while the window stays key — sibling-render trigger](bug/terminal-focus-loss-on-sibling-render.md) |
