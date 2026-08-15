@@ -125,10 +125,16 @@ no throughput regression (16–24×), the backlog drop fires ("dropping slow cli
   cargo …` (the `DEVELOPER_DIR` avoids Xcode 26.4's arm64e-only SDK). `libclang` is
   no longer needed on the host: the `-sys` crate ships pre-generated bindings.
 - The VPS needs no Zig and no Rust: `remote deploy` cross-compiles the static musl
-  binary on the Mac and ships the ELF. Only a native build on the box would need the
-  0.16 toolchain there — `ukvps` still has 0.15.2, which no longer suffices.
-- `build.rs` pins Zig to exactly 0.15.2 and only allows macOS + aarch64-musl
-  targets (rejects `linux-gnu` — build for musl on the VPS).
+  binary on the Mac and ships the ELF. A native build on the box needs the 0.16
+  toolchain there; `ukvps` now has it at the same path as the Mac. It still cannot
+  complete one: Zig's own TLS client fails to reach `deps.files.ghostty.org` from
+  that host (`TlsInitializationFailed`) while `ziglang.org` and `github.com` fetch
+  fine, so ghostty's package fetch dies. `GHOSTTY_ZIG_SYSTEM_DIR` (a pre-seeded
+  package store) is the way around it if a native build is ever needed there.
+- The old vendored `build.rs` pinned Zig to 0.15.2 and rejected `linux-gnu`. That
+  is gone with the vendored tree: the fork's `-sys` crate builds for the host it
+  is given, which is why the CI workflow can build on macOS and cross-compile musl
+  from the same checkout.
 
 **Deploy path:** `termiod remote deploy ukvps` cross-compiles the daemon
 (aarch64-musl) from the Mac and scps it. Stop the running daemon first (`ssh ukvps
