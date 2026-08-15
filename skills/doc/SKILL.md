@@ -26,8 +26,8 @@ status: draft        # see vocabulary below
 type: design         # design | rfc | marketing
 created: 2026-06-28  # YYYY-MM-DD, only the day the doc was first written
 updated: 2026-06-28  # YYYY-MM-DD, bump on every meaningful edit
-related:             # optional — sibling doc filenames this builds on
-  - vibe-island-status.md
+related:             # optional — sibling filenames (YYYYMMDD- prefix under design/)
+  - 20260719-vibe-island-status.md
 ---
 ```
 

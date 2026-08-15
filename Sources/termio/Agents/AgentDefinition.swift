@@ -141,7 +141,7 @@ struct AgentDefinition: Identifiable {
     /// templates with an `{id}` placeholder plus descriptions of the agent's on-disk
     /// session store — so a new agent needs no Swift at all. Strategies describe
     /// *mechanisms* (file formats, field paths), never agent identities. See
-    /// docs/design/agent-resume-identity.md.
+    /// docs/design/20260716-agent-resume-identity.md.
     struct ResumeSpec: Hashable, Sendable {
         /// Launch template for a fresh, termio-pinned id (e.g. `--session-id {id}`). Its
         /// presence means the id is pinned up front; its absence means the id is

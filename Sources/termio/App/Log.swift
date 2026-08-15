@@ -19,6 +19,7 @@ enum Log {
     private static let subsystem = Bundle.main.bundleIdentifier ?? "sh.termio.app"
     static let tunnel = Logger(subsystem: subsystem, category: "tunnel")
     static let pty = Logger(subsystem: subsystem, category: "pty")
+    static let termiod = Logger(subsystem: subsystem, category: "termiod")
     static let companion = Logger(subsystem: subsystem, category: "companion")
     static let files = Logger(subsystem: subsystem, category: "files")
     static let issues = Logger(subsystem: subsystem, category: "issues")

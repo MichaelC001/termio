@@ -4,7 +4,7 @@ import SwiftUI
 // MARK: - Issue tracker models
 
 /// A built-in issue tracker backend. Linear/Jira arrive as further cases +
-/// `IssueProvider` conformances (see docs/design/issue-tracker-integration.md);
+/// `IssueProvider` conformances (see docs/design/20260726-issue-tracker-integration.md);
 /// the UI never branches on this — it reads `IssueCapabilities` instead.
 enum IssueProviderID: String, Sendable {
     case github

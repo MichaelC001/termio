@@ -5,8 +5,8 @@ type: bug
 created: 2026-07-06
 updated: 2026-07-06
 related:
-  - ../design/ios-ghostty-renderer-panic-investigation-findings.md
-  - ../design/ios-scroll-renderer-health.md
+  - ../design/20260706-ios-ghostty-renderer-panic-investigation-findings.md
+  - ../design/20260706-ios-scroll-renderer-health.md
   - ../prompts/ios-ghostty-renderer-panic-investigation.md
 ---
 
@@ -37,7 +37,7 @@ back to the live bottom** (the toggle behavior — important later).
 
 1. **"The panel is libghostty's renderer-health failsafe (GPU/Metal)."** We spent
    days here. We cut `scrollback-limit` 2 MB→256 KB, cut `maxRecentTerminals`,
-   added scroll-draw coalescing (`docs/design/ios-scroll-renderer-health.md`),
+   added scroll-draw coalescing (`docs/design/20260706-ios-scroll-renderer-health.md`),
    forked the wrapper to forward `GHOSTTY_ACTION_RENDERER_HEALTH` and auto-rebuild
    the surface. **None stopped the panel.**
 2. **On-device ground truth killed that theory.** `log collect --device-udid`

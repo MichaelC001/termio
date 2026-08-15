@@ -11,7 +11,7 @@ import os
 /// "project-scoped by default" rule.
 ///
 /// Sessions are addressed by their id: canonically a deep link
-/// (`termio://session/<uuid>`, see docs/design/session-deep-link.md), or a bare
+/// (`termio://session/<uuid>`, see docs/design/20260801-session-deep-link.md), or a bare
 /// id/prefix. The address names the pane, never its mutable contents, so any
 /// copied address survives the session promoting or demoting. `send` with *no*
 /// target starts a fresh agent session — targeting an existing sibling is
@@ -127,7 +127,7 @@ extension TermioStore {
         }
     }
 
-    /// The canonical deep link for a session (docs/design/session-deep-link.md):
+    /// The canonical deep link for a session (docs/design/20260801-session-deep-link.md):
     /// full UUID so a link written down anywhere stays unambiguous, channel
     /// scheme so dev and release never claim each other's links.
     func sessionLink(for session: Session) -> String {

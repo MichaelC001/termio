@@ -559,7 +559,7 @@ enum GitService {
     }
 
     /// The `owner/repo` slug when the origin remote points at github.com — the
-    /// Issues pane's zero-config binding (docs/design/issue-tracker-integration.md).
+    /// Issues pane's zero-config binding (docs/design/20260726-issue-tracker-integration.md).
     /// `nil` for non-GitHub remotes or a repo with no origin.
     static func gitHubRepoSlug(in dir: String) async -> String? {
         await offMain {
@@ -580,6 +580,51 @@ enum GitService {
             else { return nil }
             return parsed.path
         }
+    }
+
+    /// What "Clone on Remote…" needs to know about a checkout: the `origin`
+    /// URL to hand `git clone` on the remote, a repo name derived from it (the
+    /// clone's directory), and how many local commits are ahead of the upstream
+    /// (they live only on this Mac and won't travel with a fresh clone — the
+    /// action warns before proceeding). `nil` when the folder has no `origin`
+    /// remote, so the menu item can disable itself with a clear reason.
+    struct CloneInfo: Sendable {
+        let originURL: String
+        let repositoryName: String
+        /// Commits on the current branch not yet on its upstream; `nil` when the
+        /// branch has no upstream (nothing to compare, so no warning).
+        let unpushedCommits: Int?
+    }
+
+    static func cloneInfo(in dir: String) async -> CloneInfo? {
+        await offMain { () -> CloneInfo? in
+            guard let origin = run(["remote", "get-url", "origin"], in: dir)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                !origin.isEmpty
+            else { return nil }
+            let name = repositoryName(fromRemote: origin)
+            // `@{upstream}` fails (nil) when the branch tracks nothing — treat that
+            // as "unknown", not "0 unpushed", so the warning only fires when we
+            // actually measured commits that would be left behind.
+            let unpushed: Int? = run(
+                ["rev-list", "--count", "@{upstream}..HEAD"], in: dir
+            ).flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            return CloneInfo(originURL: origin, repositoryName: name, unpushedCommits: unpushed)
+        }
+    }
+
+    /// The clone directory name `git clone <url>` would pick: the last path
+    /// component with any trailing `.git` and slashes stripped (matching git's own
+    /// `guess_dir_name`). Falls back to "repo" if the URL has no usable component.
+    static func repositoryName(fromRemote remote: String) -> String {
+        var trimmed = remote.trimmingCharacters(in: .whitespaces)
+        while trimmed.hasSuffix("/") { trimmed.removeLast() }
+        if trimmed.hasSuffix(".git") { trimmed.removeLast(4) }
+        // Both `/` (https, scp-less) and `:` (scp-style `host:owner/repo`) can
+        // precede the final component.
+        let component = trimmed.split(whereSeparator: { $0 == "/" || $0 == ":" }).last
+        let name = component.map(String.init) ?? ""
+        return name.isEmpty ? "repo" : name
     }
 
     private static func isGitHubHostName(_ host: String) -> Bool {

@@ -395,8 +395,12 @@ final class TermioStore: ObservableObject {
     /// persisted from the last run, then `$HOME`) — the session owns its path, so
     /// the tree, search, and changes panes all follow a `cd`. Real projects keep
     /// their stable root; the anchor is the point of a project.
+    /// A session on a remote host has no local root at all — its files live on the
+    /// other box — so it reports `nil` and the panes show their empty state rather
+    /// than a local directory that merely shares a name with the remote one.
     var inspectorProjectPath: String? {
         guard let id = selectedSessionID, let project = project(for: id) else { return nil }
+        if project.kind == .host { return nil }
         guard session(id)?.sshHost == nil else { return nil }
         if project.kind == .terminals {
             return workingDirectory(for: id)
@@ -689,6 +693,10 @@ final class TermioStore: ObservableObject {
     /// The termio-owned PTY behind each host-managed session — the byte stream
     /// the surface renders and the companion server taps for a phone.
     var ptyProcesses: [Session.ID: PTYProcess] = [:]
+    /// Flag-on (`TERMIO_TERMIOD=1`) counterpart of `ptyProcesses`: each
+    /// session's attach channel into the local termiod daemon, which owns the
+    /// PTY so the session outlives this app instance.
+    var termiodLinks: [Session.ID: TermiodSessionLink] = [:]
 
     /// App-quit teardown: without this, session children outlive the app — the
     /// closing PTY's SIGHUP is swallowed by agent TUIs, and they pile up as
@@ -697,6 +705,11 @@ final class TermioStore: ObservableObject {
     /// remains — the quit path can't rely on `terminate()`'s dispatched
     /// escalation timer, because the process dies before it fires.
     func terminateAllSessions() {
+        // Termiod-backed sessions are the opposite case: surviving the quit is
+        // their whole point, so the channel detaches and the daemon keeps the
+        // process. Kill is reserved for the explicit Close Session verb.
+        for link in termiodLinks.values { link.detach() }
+        termiodLinks.removeAll()
         let ptys = Array(ptyProcesses.values)
         guard !ptys.isEmpty else { return }
         for pty in ptys { pty.terminate() }
@@ -1050,7 +1063,8 @@ final class TermioStore: ObservableObject {
         }
 
         let store = TermioStore(
-            projects: migratingScratchProject(migratingHomeProject(normalizingAgentTitles(snapshot.projects))),
+            projects: liftingRemoteSessionsToHosts(
+                migratingScratchProject(migratingHomeProject(normalizingAgentTitles(snapshot.projects)))),
             settings: settings
         )
         // Seed each session's saved inspector layout (tab + open file). The file is
@@ -1123,7 +1137,7 @@ final class TermioStore: ObservableObject {
     }
 
     /// State files from before the loose-terminals entity existed (see
-    /// docs/design/loose-terminal-entity.md) modeled scratch terminals as a plain
+    /// docs/design/20260713-loose-terminal-entity.md) modeled scratch terminals as a plain
     /// project rooted at `$HOME`. Re-tag that container as `.terminals` (with the
     /// fixed section name) so it renders as the Terminals section rather than a
     /// fake home project. Idempotent — an already-tagged container passes through
@@ -1134,6 +1148,11 @@ final class TermioStore: ObservableObject {
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
         return projects.map { project in
             var project = project
+            // A host container's `path` is a *remote* path, and its default `~`
+            // tilde-expands to this Mac's home — without this guard the home rule
+            // below would swallow every host into the Terminals funnel on relaunch,
+            // undoing exactly what `liftingRemoteSessionsToHosts` just did.
+            guard project.kind != .host else { return project }
             guard project.kind == .terminals
                 || (project.path as NSString).standardizingPath == home else { return project }
             project.kind = .terminals
@@ -1167,6 +1186,73 @@ final class TermioStore: ObservableObject {
             project.path = newPath
             return project
         }
+    }
+
+    /// State files written before the `.host` container existed put every remote
+    /// session — plain `ssh` and durable termiod alike — in the `.terminals` funnel,
+    /// where a box you SSH into rendered as a loose local shell. Lift each one into
+    /// its machine's own container, keyed by alias, preserving session order within
+    /// each host. Only the loose funnel is drained: a remote terminal opened *from* a
+    /// project belongs to that project (the row you clicked is the row it appears
+    /// under), so `.folder` containers are left alone. Idempotent — a state file that
+    /// already has its hosts split out has nothing remote left in `.terminals`.
+    nonisolated static func liftingRemoteSessionsToHosts(_ projects: [Project]) -> [Project] {
+        func alias(_ session: Session) -> String? { session.termiodRemoteHost ?? session.sshHost }
+        guard projects.contains(where: { $0.kind == .terminals && $0.sessions.contains { alias($0) != nil } })
+        else { return projects }
+
+        var result: [Project] = []
+        // Host containers already in the file absorb the lifted sessions rather than
+        // being duplicated, so the merge survives a half-migrated state.
+        var hostIndex: [String: Int] = [:]
+        for (offset, project) in projects.enumerated() where project.kind == .host {
+            if let host = project.sshHost { hostIndex[host] = offset }
+        }
+
+        var lifted: [String: [Session]] = [:]
+        for var project in projects {
+            if project.kind == .terminals {
+                for session in project.sessions {
+                    guard let host = alias(session) else { continue }
+                    lifted[host, default: []].append(session)
+                }
+                project.sessions = project.sessions.filter { alias($0) == nil }
+            }
+            result.append(project)
+        }
+
+        for (host, sessions) in lifted.sorted(by: { $0.key < $1.key }) {
+            // In the funnel a remote session was auto-named for its box, since that
+            // was the only thing telling it apart from the local shells around it.
+            // Inside the box's own block that name is the header, so it renumbers —
+            // `ukvps ▸ ukvps` says the same word twice. Titles the user (or a clone)
+            // chose are left exactly as they are.
+            var taken = Set(hostIndex[host].map { result[$0].sessions.map(\.title) } ?? [])
+            taken.formUnion(sessions.map(\.title))
+            var counter = 0
+            let renamed = sessions.map { session -> Session in
+                guard session.title == host else { return session }
+                var session = session
+                repeat { counter += 1 } while taken.contains("Terminal \(counter)")
+                session.title = "Terminal \(counter)"
+                taken.insert(session.title)
+                return session
+            }
+            if let existing = hostIndex[host] {
+                result[existing].sessions.append(contentsOf: renamed)
+            } else {
+                // The remote cwd is the session's own property, so the container's
+                // root stays `~` unless a session already records one.
+                let root = renamed.compactMap(\.termiodRemoteCwd).first
+                result.append(Project(
+                    name: host, path: root ?? "~", branch: "—",
+                    sessions: renamed, kind: .host, sshHost: host
+                ))
+            }
+        }
+        // A funnel emptied by the lift is dropped: an empty Terminals section is
+        // hidden in the sidebar anyway, and keeping it would resurrect on next launch.
+        return result.filter { $0.kind != .terminals || !$0.sessions.isEmpty }
     }
 
     private func persist() {
@@ -1291,7 +1377,7 @@ final class TermioStore: ObservableObject {
         }
         // A loose terminal is labeled by its live cwd's basename (`~` at home):
         // the session owns its path, so `cd ~/code/foo` renames the row to `foo`
-        // (see docs/design/loose-terminal-entity.md). Falls back to the cwd
+        // (see docs/design/20260713-loose-terminal-entity.md). Falls back to the cwd
         // persisted from the last run, then to a bare `Terminal` before the
         // shell's first OSC 7 report. Project terminals keep the plain label —
         // their place is the project, not wherever they've wandered.

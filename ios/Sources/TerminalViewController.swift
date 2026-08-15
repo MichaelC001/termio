@@ -810,6 +810,12 @@ final class TerminalViewController: UIViewController {
             builder.withBackgroundOpacity(0)
             builder.withFontSize(Float(MobileSettings.shared.fontSize))
             builder.withWindowPaddingX(8)
+            // Without a font-family the phone rendered CJK unlike the Mac —
+            // libghostty dropped in proportional PingFang whose metrics fight the
+            // Latin face. Set the chain to match the desktop (see `terminalFontChain`).
+            for family in terminalFontChain() {
+                builder.withFontFamily(family)
+            }
             // The phone is a viewer, not the scrollback of record — the Mac keeps
             // the full history. libghostty's renderer paints its "non-functional"
             // panel when it exhausts a GPU/allocator resource reflowing scrollback
@@ -821,6 +827,29 @@ final class TerminalViewController: UIViewController {
             // still ~thousands of lines — plenty for a phone viewer.
             builder.withCustom("scrollback-limit", "256000")
         }
+    }
+
+    /// Ghostty reads repeated `font-family` as a fallback chain — first loadable
+    /// face is the primary and sets cell metrics; later faces only cover glyphs
+    /// it lacks, and unresolvable names are skipped. `SF Mono` matches the Mac's
+    /// default (`Menlo` behind it as the always-present floor); the CJK candidates
+    /// mirror the Mac's, ending on `PingFang SC` so hanzi never fall to an
+    /// arbitrary system face.
+    private static func terminalFontChain() -> [String] {
+        var chain = ["SF Mono", "Menlo"]
+        let cjkCandidates = [
+            "Sarasa Term SC", "Sarasa Mono SC", "Sarasa Fixed SC",
+            "Maple Mono NF CN", "Maple Mono CN",
+            "LXGW WenKai Mono",
+            "Noto Sans Mono CJK SC",
+        ]
+        if let installed = cjkCandidates.first(where: { UIFont(name: $0, size: 12) != nil }) {
+            chain.append(installed)
+        }
+        if UIFont(name: "PingFang SC", size: 12) != nil {
+            chain.append("PingFang SC")
+        }
+        return chain
     }
 
     /// Restyles the live surface in place after a settings change, then
@@ -1628,7 +1657,7 @@ private final class DisplayTerminalView: UITerminalView {
     /// few it trips its renderer-health failsafe — the "This terminal is
     /// non-functional" panel painted straight into the surface. Coalescing the
     /// drag onto this link caps us at one drawable per frame, so the pool never
-    /// empties. See docs/design/ios-scroll-renderer-health.md.
+    /// empties. See docs/design/20260706-ios-scroll-renderer-health.md.
     private var scrollPump: CADisplayLink?
     /// Set by pan `.changed`; the pump consumes it once per frame during a drag.
     private var needsScrollDraw = false
