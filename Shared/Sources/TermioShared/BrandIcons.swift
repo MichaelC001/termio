@@ -454,6 +454,30 @@ public enum HugeIcon: Hashable, Sendable {
             return "M20.5 3.5L14.5 9.5 M14.5 9.5L18.5 9.5 M14.5 9.5L14.5 5.5 M3.5 20.5L9.5 14.5 M9.5 14.5L5.5 14.5 M9.5 14.5L9.5 18.5"
         }
     }
+
+    /// Which of the glyph's `M`-delimited subpaths form its solid silhouette,
+    /// for marks that have a filled twin. The listed subpaths are filled; every
+    /// other one — the bubble's dots, the terminal's prompt, the gear's bore —
+    /// is punched back out of that fill, which is how Hugeicons draws its own
+    /// solid style. `nil` where a mark has no solid reading: the free Hugeicons
+    /// set ships stroke glyphs only, so a filled variant exists only where the
+    /// stroke outline already closes into a body.
+    ///
+    /// Used for the selected state of the iOS home tabs, matching the platform
+    /// convention that a selected tab's symbol fills in.
+    public var solidSubpaths: [Int]? {
+        switch self {
+        // One open outline that closes into the folder silhouette.
+        case .folder: return [0]
+        // Bubble, then the three dots.
+        case .bubbleChat: return [0]
+        // Prompt chevron, prompt line, then the screen body.
+        case .terminal: return [2]
+        // Bore, then the gear body.
+        case .settings: return [1]
+        default: return nil
+        }
+    }
 }
 
 /// A vendor brand mark, stored as its official SVG path so it renders crisp
