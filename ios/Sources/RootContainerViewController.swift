@@ -72,6 +72,9 @@ final class RootContainerViewController: UIViewController {
                 image: destination.icon.strokeImage(boxSize: 24, strokeWeight: 1.7),
                 tag: index
             )
+            // A selected tab fills its symbol in, the way every system tab bar
+            // does; the outline stays for the unselected ones.
+            item.selectedImage = destination.icon.solidImage(boxSize: 24)
             item.accessibilityIdentifier = "home.tab.\(destination.key)"
             destination.nav.tabBarItem = item
         }

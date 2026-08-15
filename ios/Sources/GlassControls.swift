@@ -70,4 +70,88 @@ extension HugeIcon {
             cg.strokePath()
         }.withRenderingMode(.alwaysTemplate)
     }
+
+    /// The glyph's filled twin, for a selected tab — nil for marks that have no
+    /// solid reading (see `solidSubpaths`). Drawn from the same path at the same
+    /// placement as `strokeImage`, minus the half-stroke inset, so the fill's
+    /// outer edge lands exactly where the outline's did and the mark neither
+    /// shifts nor changes size when the tab is selected. The remaining subpaths
+    /// are punched back out in `.clear`, which is what keeps the bubble's dots,
+    /// the terminal's prompt, and the gear's bore legible against the fill: a
+    /// closed one becomes a hole, an open one a cleared stroke of the same
+    /// round-capped line the outline drew.
+    func solidImage(boxSize: CGFloat) -> UIImage? {
+        guard let solidSubpaths else { return nil }
+        let bounds = CGRect(x: 0, y: 0, width: boxSize, height: boxSize)
+        let subpaths = HugeIconShape(icon: self).path(in: bounds).cgPath.subpaths
+        // A shade heavier than the outline's own line: a cleared mark on a solid
+        // body reads thinner than the same line drawn on its own.
+        let detailWidth = max(1.4, boxSize * 2.0 / viewBox)
+        let renderer = UIGraphicsImageRenderer(bounds: bounds)
+        return renderer.image { context in
+            let cg = context.cgContext
+            cg.setFillColor(UIColor.white.cgColor)
+            for (index, subpath) in subpaths.enumerated() where solidSubpaths.contains(index) {
+                cg.addPath(subpath.path)
+            }
+            cg.fillPath(using: .evenOdd)
+
+            let detail = subpaths.enumerated()
+                .filter { !solidSubpaths.contains($0.offset) }
+                .map(\.element)
+            cg.setBlendMode(.clear)
+            for hole in detail where hole.isClosed {
+                cg.addPath(hole.path)
+            }
+            cg.fillPath(using: .evenOdd)
+
+            cg.setLineWidth(detailWidth)
+            cg.setLineCap(.round)
+            cg.setLineJoin(.round)
+            for mark in detail where !mark.isClosed {
+                cg.addPath(mark.path)
+            }
+            cg.strokePath()
+        }.withRenderingMode(.alwaysTemplate)
+    }
+}
+
+/// One `M`-delimited run of a glyph, and whether it closed — a closed run
+/// bounds an area (the gear's bore), an open one is a line (the terminal's
+/// prompt), and the solid renderer punches each out accordingly.
+private struct Subpath {
+    let path: CGPath
+    let isClosed: Bool
+}
+
+private extension CGPath {
+    /// The path split at each `moveTo`, so a glyph's body can be filled while
+    /// its interior detail is drawn separately. Walking the built path rather
+    /// than splitting the source string keeps relative `m` subpaths correct.
+    var subpaths: [Subpath] {
+        var paths: [CGMutablePath] = []
+        var closed: [Bool] = []
+        applyWithBlock { element in
+            let points = element.pointee.points
+            switch element.pointee.type {
+            case .moveToPoint:
+                let subpath = CGMutablePath()
+                subpath.move(to: points[0])
+                paths.append(subpath)
+                closed.append(false)
+            case .addLineToPoint:
+                paths.last?.addLine(to: points[0])
+            case .addQuadCurveToPoint:
+                paths.last?.addQuadCurve(to: points[1], control: points[0])
+            case .addCurveToPoint:
+                paths.last?.addCurve(to: points[2], control1: points[0], control2: points[1])
+            case .closeSubpath:
+                paths.last?.closeSubpath()
+                if !closed.isEmpty { closed[closed.count - 1] = true }
+            @unknown default:
+                break
+            }
+        }
+        return zip(paths, closed).map { Subpath(path: $0, isClosed: $1) }
+    }
 }
