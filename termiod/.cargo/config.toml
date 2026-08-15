@@ -11,10 +11,16 @@ LIBGHOSTTY_VT_SYS_OPTIMIZE = "ReleaseFast"
 # the Mac. The one non-Rust dependency, libghostty-vt's static archive, is
 # built by Zig for the same target and links fine here. If you have a
 # musl-cross toolchain, override `linker` here.
+#
+# `rust-lld` is a bare name on purpose: rustc resolves it out of the *active*
+# toolchain's sysroot, so this works on any machine and on CI. Spelling the
+# path out instead pins the build to one developer's home directory. The
+# flavor has to name lld's Unix entrypoint — `rust-lld` is the generic driver
+# and refuses to guess.
 [target.aarch64-unknown-linux-musl]
-linker = "/Users/yuanjiwei/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/gcc-ld/ld.lld"
-rustflags = ["-C", "linker-flavor=ld"]
+linker = "rust-lld"
+rustflags = ["-C", "linker-flavor=ld.lld"]
 
 [target.x86_64-unknown-linux-musl]
-linker = "/Users/yuanjiwei/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/gcc-ld/ld.lld"
-rustflags = ["-C", "linker-flavor=ld"]
+linker = "rust-lld"
+rustflags = ["-C", "linker-flavor=ld.lld"]

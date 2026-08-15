@@ -12,7 +12,7 @@ Everything below assumes an SSH alias in `~/.ssh/config` (the examples use
 
 ```sh
 # 1. Build the CLI on the Mac (from the repo's termiod/ directory)
-export ZIG=$HOME/.local/share/termiod-toolchains/zig-0.15.2/zig
+export PATH=$HOME/.local/share/termiod-toolchains/zig-0.16.0:$PATH
 export DEVELOPER_DIR=/Library/Developer/CommandLineTools
 cargo build
 alias tio=./target/debug/termiod
@@ -75,16 +75,19 @@ keeps running. Reconnect with `termiod remote attach my-vps <id>` (or `open`).
 ## Cross-compiling on the Mac
 
 Since v1 the crate embeds **libghostty-vt** (the `termiod/vt` crate), which is
-built by **Zig 0.15.2** via `build.rs` — Zig doubles as the C cross-compiler,
+built by **Zig 0.16.0** via `build.rs` — Zig doubles as the C cross-compiler,
 so the output is still a single **static musl** Linux binary and no
 `musl-gcc`/Docker is needed. Rust-side cross-linking uses the `rust-lld` that
-ships with the toolchain, wired in `.cargo/config.toml` (checked in; note its
-`linker` paths are Mac-specific — **building natively on Linux instead? delete
-that file**, the defaults work there). Required environment on the Mac:
+ships with the toolchain, wired in `.cargo/config.toml` (checked in; it names
+`rust-lld` rather than a path, so it resolves from whatever toolchain is active
+and is fine to keep when building natively on Linux). Required environment on
+the Mac:
 
 ```sh
-export ZIG=$HOME/.local/share/termiod-toolchains/zig-0.15.2/zig
-export DEVELOPER_DIR=/Library/Developer/CommandLineTools   # avoids Xcode 26.4's arm64e-only SDK
+# On PATH, under that exact name: `libghostty-vt-sys` invokes `zig` by name and
+# honours no `ZIG` override.
+export PATH=$HOME/.local/share/termiod-toolchains/zig-0.16.0:$PATH
+export DEVELOPER_DIR=/Library/Developer/CommandLineTools   # avoids Xcode 26's arm64e-only SDK
 ```
 
 One-time target install:
