@@ -133,8 +133,9 @@ no throughput regression (16–24×), the backlog drop fires ("dropping slow cli
   package store) is the way around it if a native build is ever needed there.
 - The old vendored `build.rs` pinned Zig to 0.15.2 and rejected `linux-gnu`. That
   is gone with the vendored tree: the fork's `-sys` crate builds for the host it
-  is given, which is why the CI workflow can build on macOS and cross-compile musl
-  from the same checkout.
+  is given. `.github/workflows/termiod.yml` leans on that — one job builds, tests,
+  smokes and cross-compiles on macOS, a second does the same natively on
+  `ubuntu-24.04-arm`, both from this checkout.
 
 **Deploy path:** `termiod remote deploy ukvps` cross-compiles the daemon
 (aarch64-musl) from the Mac and scps it. Stop the running daemon first (`ssh ukvps
