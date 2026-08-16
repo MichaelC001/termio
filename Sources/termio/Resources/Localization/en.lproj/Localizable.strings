@@ -572,6 +572,8 @@
 	<string>No Base Branch</string>
 	<key>No Changes</key>
 	<string>No Changes</string>
+	<key>No Common History</key>
+	<string>No Common History</string>
 	<key>No Diff</key>
 	<string>No Diff</string>
 	<key>No File Selected</key>
@@ -966,10 +968,12 @@
 	<string>Themes</string>
 	<key>Thicken glyphs</key>
 	<string>Thicken glyphs</string>
+	<key>This branch and the base branch share no commits.</key>
+	<string>This branch and the base branch share no commits.</string>
 	<key>This branch has no commits yet.</key>
 	<string>This branch has no commits yet.</string>
-	<key>This branch is even with the branch it would merge into.</key>
-	<string>This branch is even with the branch it would merge into.</string>
+	<key>This branch has nothing the base branch doesn’t already have.</key>
+	<string>This branch has nothing the base branch doesn’t already have.</string>
 	<key>This checkout has no other branch to compare with.</key>
 	<string>This checkout has no other branch to compare with.</string>
 	<key>This diff is too large to show here — open the file on GitHub.</key>

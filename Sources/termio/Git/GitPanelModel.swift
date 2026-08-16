@@ -33,9 +33,9 @@ final class GitPanelModel: ObservableObject {
     /// `nil` while a comparison is loading — the Compare tab shows a spinner then, so no
     /// separate loading flag is needed.
     @Published private(set) var compare: GitService.BranchCompare?
-    /// The picked base no longer resolves (its branch was deleted). Held as its own state
-    /// so the pane can say so — an empty file list would read as "nothing to review".
-    @Published private(set) var compareBaseMissing = false
+    /// Why the comparison couldn't be made, when it couldn't. Held as its own state so the
+    /// pane can say so — an empty file list would read as "nothing to review".
+    @Published private(set) var compareProblem: GitService.CompareProblem?
 
     private var watcher: FolderEventStream?
     private var appActiveObserver: AnyCancellable?
@@ -164,7 +164,7 @@ final class GitPanelModel: ObservableObject {
         guard base != compareBase else { return }
         compareBase = base
         compare = nil
-        compareBaseMissing = false
+        compareProblem = nil
         await loadCompare()
     }
 
@@ -174,13 +174,19 @@ final class GitPanelModel: ObservableObject {
     func loadCompare() async {
         guard let base = compareBase else {
             compare = nil
-            compareBaseMissing = false
+            compareProblem = nil
             return
         }
-        let loaded = await GitService.branchCompare(base: base, in: repoRoot)
+        let outcome = await GitService.branchCompare(base: base, in: repoRoot)
         guard compareBase == base else { return }
-        compare = loaded
-        compareBaseMissing = loaded == nil
+        switch outcome {
+        case .ready(let loaded):
+            compare = loaded
+            compareProblem = nil
+        case .problem(let problem):
+            compare = nil
+            compareProblem = problem
+        }
     }
 
     /// Replays a refresh that was deferred while the pane was hidden. Called by the

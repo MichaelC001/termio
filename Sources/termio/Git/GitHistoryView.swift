@@ -84,26 +84,37 @@ struct GitCompareView: View {
         // remembered per branch — so the comparison follows the checkout instead of
         // measuring the new branch against the old branch's base.
         .onChange(of: model.compareContext?.branch) { _, _ in
+            dropOpenRangeDiff()
             Task { await restoreBase() }
         }
     }
 
     @ViewBuilder
     private var content: some View {
-        if let context = model.compareContext, !hasComparableBranches(context) {
+        if let context = model.compareContext, context.remoteBranches.isEmpty, context.localBranches.isEmpty {
             PaneEmptyState(
                 localized("Nothing to Compare"),
                 icon: .gitBranch,
                 message: localized("This checkout has no other branch to compare with.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if model.compareBaseMissing {
-            PaneEmptyState(
-                localized("Base Branch Missing"),
-                icon: .gitBranch,
-                message: localized("Choose another branch to compare with.")
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let problem = model.compareProblem {
+            switch problem {
+            case .missingBase:
+                PaneEmptyState(
+                    localized("Base Branch Missing"),
+                    icon: .gitBranch,
+                    message: localized("Choose another branch to compare with.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .noCommonHistory:
+                PaneEmptyState(
+                    localized("No Common History"),
+                    icon: .gitBranch,
+                    message: localized("This branch and the base branch share no commits.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         } else if model.compareContext != nil, model.compareBase == nil {
             PaneEmptyState(
                 localized("No Base Branch"),
@@ -113,10 +124,12 @@ struct GitCompareView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let compare = model.compare {
             if compare.files.isEmpty, compare.commits.isEmpty {
+                // True whether the two are even or this branch is simply behind — saying
+                // "even" would contradict the Behind chip in the bar right above.
                 PaneEmptyState(
                     localized("No Changes"),
                     icon: .gitBranch,
-                    message: localized("This branch is even with the branch it would merge into.")
+                    message: localized("This branch has nothing the base branch doesn’t already have.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -142,12 +155,12 @@ struct GitCompareView: View {
         }
     }
 
-    /// Whether there is anything to compare against: a branch (not a detached HEAD) and at
-    /// least one other ref.
-    private func hasComparableBranches(_ context: GitService.CompareContext) -> Bool {
-        guard let branch = context.branch else { return false }
-        return context.remoteBranches.contains { $0 != "origin/\(branch)" }
-            || context.localBranches.contains { $0 != branch }
+    /// Drops a diff opened from an earlier comparison. Its request carries the old
+    /// `base...HEAD` range, so leaving it up would show one base's diff beside another
+    /// base's file list.
+    private func dropOpenRangeDiff() {
+        if store.openDiff?.range != nil { store.openDiff = nil }
+        lastOpenedPath = nil
     }
 
     /// Applies the base remembered for the current branch, falling back to the suggested
@@ -167,6 +180,7 @@ struct GitCompareView: View {
         store.gitCompareBases[
             TermioStore.compareBaseKey(repoRoot: repoRoot, branch: context.branch)] = base ?? ""
         filesExpanded = true
+        dropOpenRangeDiff()
         Task { await model.setCompareBase(base) }
     }
 
@@ -313,12 +327,9 @@ private struct CompareBar: View {
                     Divider()
                 }
                 if let context = model.compareContext {
-                    let remotes = pinned(
-                        context.remoteBranches.filter { $0 != "origin/\(context.branch ?? "")" },
-                        first: context.suggestedBase)
-                    let locals = pinned(
-                        context.localBranches.filter { $0 != context.branch },
-                        first: context.suggestedBase)
+                    // Already filtered of the checkout's own branch and its upstream.
+                    let remotes = pinned(context.remoteBranches, first: context.suggestedBase)
+                    let locals = pinned(context.localBranches, first: context.suggestedBase)
                     if !remotes.isEmpty {
                         Section(localized("Remote")) {
                             ForEach(remotes, id: \.self) { branch in

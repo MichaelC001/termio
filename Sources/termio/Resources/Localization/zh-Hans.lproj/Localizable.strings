@@ -572,6 +572,8 @@
 	<string>未选择基础分支</string>
 	<key>No Changes</key>
 	<string>没有更改</string>
+	<key>No Common History</key>
+	<string>没有共同历史</string>
 	<key>No Diff</key>
 	<string>没有差异</string>
 	<key>No File Selected</key>
@@ -966,10 +968,12 @@
 	<string>主题</string>
 	<key>Thicken glyphs</key>
 	<string>加粗字形</string>
+	<key>This branch and the base branch share no commits.</key>
+	<string>这个分支和基础分支没有共同的提交。</string>
 	<key>This branch has no commits yet.</key>
 	<string>此分支还没有提交。</string>
-	<key>This branch is even with the branch it would merge into.</key>
-	<string>当前分支与它将要合入的分支没有差异。</string>
+	<key>This branch has nothing the base branch doesn’t already have.</key>
+	<string>这个分支没有基础分支尚未包含的内容。</string>
 	<key>This checkout has no other branch to compare with.</key>
 	<string>这个检出没有其他分支可以对比。</string>
 	<key>This diff is too large to show here — open the file on GitHub.</key>

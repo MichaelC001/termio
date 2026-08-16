@@ -5445,16 +5445,6 @@
         }
       }
     },
-    "This branch is even with the branch it would merge into.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "当前分支与它将要合入的分支没有差异。"
-          }
-        }
-      }
-    },
     "Compare": {
       "localizations": {
         "zh-Hans": {
@@ -5501,6 +5491,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "这个检出没有其他分支可以对比。"
+          }
+        }
+      }
+    },
+    "No Common History": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有共同历史"
+          }
+        }
+      }
+    },
+    "This branch and the base branch share no commits.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个分支和基础分支没有共同的提交。"
+          }
+        }
+      }
+    },
+    "This branch has nothing the base branch doesn’t already have.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个分支没有基础分支尚未包含的内容。"
           }
         }
       }

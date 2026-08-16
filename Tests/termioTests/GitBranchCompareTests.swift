@@ -40,7 +40,7 @@ final class GitBranchCompareTests: XCTestCase {
         try git(["commit", "-qam", "moved on"])
         try git(["checkout", "-q", "feature"])
 
-        let loaded = await GitService.branchCompare(base: "main", in: repo.path)
+        let loaded = await readyCompare(base: "main")
         let compare = try XCTUnwrap(loaded)
         XCTAssertEqual(compare.files.map(\.path), ["feature.txt"])
         XCTAssertEqual(compare.files.first?.additions, 2)
@@ -52,12 +52,54 @@ final class GitBranchCompareTests: XCTestCase {
 
     /// A base that was deleted since it was picked reads as "missing", never as an empty
     /// comparison — an empty file list would say "nothing to review" about work that exists.
-    func testMissingBaseIsNilRatherThanEmpty() async throws {
+    func testMissingBaseIsStatedRatherThanShownAsAnEmptyDiff() async throws {
         try write("a.txt", "a\n")
         try git(["add", "."])
         try git(["commit", "-qm", "one"])
-        let compare = await GitService.branchCompare(base: "origin/gone", in: repo.path)
-        XCTAssertNil(compare)
+        let outcome = await GitService.branchCompare(base: "origin/gone", in: repo.path)
+        guard case .problem(.missingBase) = outcome else {
+            return XCTFail("expected a missing base, got \(outcome)")
+        }
+    }
+
+    /// Unrelated histories have no merge base, so the three-dot diff fails while
+    /// `base..HEAD` would still list every commit. Reporting that as "0 files, N commits"
+    /// is a lie about the branch; the tab has to say what is actually wrong.
+    func testUnrelatedHistoriesAreReportedRatherThanDiffedToNothing() async throws {
+        try write("a.txt", "a\n")
+        try git(["add", "."])
+        try git(["commit", "-qm", "one"])
+        try git(["checkout", "-q", "--orphan", "detached-history"])
+        try write("b.txt", "b\n")
+        try git(["add", "."])
+        try git(["commit", "-qm", "unrelated"])
+
+        let outcome = await GitService.branchCompare(base: "main", in: repo.path)
+        guard case .problem(.noCommonHistory) = outcome else {
+            return XCTFail("expected no common history, got \(outcome)")
+        }
+    }
+
+    /// Git applies a path limit *before* rename detection, so asking for the destination
+    /// alone turns a pure rename into the whole file arriving as additions — contradicting
+    /// the row's own `R` badge and its zero counts.
+    func testRenameOpensAsARenameNotAWholeFileAdd() async throws {
+        try write("old.swift", (1...40).map { "line \($0)\n" }.joined())
+        try git(["add", "."])
+        try git(["commit", "-qm", "base"])
+        try git(["checkout", "-qb", "feature"])
+        try git(["mv", "old.swift", "new.swift"])
+        try git(["commit", "-qm", "rename"])
+
+        let loaded = await readyCompare(base: "main")
+        let compare = try XCTUnwrap(loaded)
+        let renamed = try XCTUnwrap(compare.files.first)
+        XCTAssertEqual(renamed.status, .renamed)
+        XCTAssertEqual(renamed.originalPath, "old.swift")
+
+        let rows = await GitService.diffRows(for: renamed, in: repo.path, range: "main...HEAD")
+        XCTAssertTrue(rows.allSatisfy { $0.kind == .context || $0.kind == .hunk },
+                      "a pure rename has no added or deleted lines")
     }
 
     func testSuggestedBaseIsTheBranchTheCheckoutWouldMergeInto() async throws {
@@ -69,7 +111,31 @@ final class GitBranchCompareTests: XCTestCase {
         let context = await GitService.compareContext(in: repo.path)
         XCTAssertEqual(context.branch, "feat/x")
         XCTAssertEqual(context.suggestedBase, "main")
-        XCTAssertEqual(context.localBranches.sorted(), ["feat/x", "main"])
+        XCTAssertEqual(context.localBranches, ["main"], "the checkout's own branch is not a base")
+    }
+
+    /// A branch's own upstream is not a base to compare with, whatever the remote is
+    /// called — comparing a branch with the ref it tracks answers "what haven't I pushed",
+    /// which is the Changes and History tabs' question.
+    func testTheBranchsOwnUpstreamIsNotOfferedAsABase() async throws {
+        let remote = repo.appendingPathExtension("remote.git")
+        try FileManager.default.createDirectory(at: remote, withIntermediateDirectories: true)
+        try git(["init", "-q", "--bare", remote.path])
+        try write("a.txt", "a\n")
+        try git(["add", "."])
+        try git(["commit", "-qm", "one"])
+        // Deliberately not named `origin`: the filter must follow the configured upstream,
+        // not a hard-coded remote name (a fork's `upstream/…` is the real-world case).
+        try git(["remote", "add", "fork", remote.path])
+        try git(["checkout", "-qb", "feat/x"])
+        try git(["push", "-q", "-u", "fork", "main", "feat/x"])
+        defer { try? FileManager.default.removeItem(at: remote) }
+
+        let context = await GitService.compareContext(in: repo.path)
+        XCTAssertEqual(context.branch, "feat/x")
+        XCTAssertFalse(context.remoteBranches.contains("fork/feat/x"), "own upstream offered as a base")
+        XCTAssertTrue(context.remoteBranches.contains("fork/main"))
+        XCTAssertFalse(context.localBranches.contains("feat/x"), "own branch offered as a base")
     }
 
     // MARK: Base resolution
@@ -156,6 +222,14 @@ final class GitBranchCompareTests: XCTestCase {
     }
 
     // MARK: Helpers
+
+    /// The comparison when it could be made, `nil` when the service reported a problem.
+    private func readyCompare(base: String) async -> GitService.BranchCompare? {
+        if case .ready(let compare) = await GitService.branchCompare(base: base, in: repo.path) {
+            return compare
+        }
+        return nil
+    }
 
     private func git(_ args: [String]) throws {
         let process = Process()
