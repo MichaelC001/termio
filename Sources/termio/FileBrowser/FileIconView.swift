@@ -76,13 +76,17 @@ struct FileIconView: View {
 @MainActor
 final class LangIconLoader {
     static let shared = LangIconLoader()
-    private var cache: [String: NSImage] = [:]
+    /// `NSImage?`, not `NSImage`: an extension with no Devicon has to be remembered too.
+    /// Caching only the hits left every `.jsonl`, `.lock` and `.plist` in the tree
+    /// repeating a bundle resource lookup — filesystem work — on each row realization,
+    /// and rows realize on every scroll and every layout pass.
+    private var cache: [String: NSImage?] = [:]
 
     func image(named name: String) -> NSImage? {
         if let hit = cache[name] { return hit }
-        guard let url = Bundle.termioResources.url(
+        let image = Bundle.termioResources.url(
             forResource: name, withExtension: "svg", subdirectory: "LangIcons"
-        ), let image = NSImage(contentsOf: url) else { return nil }
+        ).flatMap { NSImage(contentsOf: $0) }
         cache[name] = image
         return image
     }
