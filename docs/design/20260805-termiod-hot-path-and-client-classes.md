@@ -3,7 +3,7 @@ title: Hot path, attach join point, and client classes
 status: draft
 type: design
 created: 2026-08-05
-updated: 2026-08-13
+updated: 2026-08-16
 related:
   - 20260730-termiod-session-protocol.md
   - 20260805-termiod-device-architecture.md
@@ -58,7 +58,9 @@ details nobody wrote down:
    `session.rs:1064`). Refusing to block byte delivery on the VT parse means a
    slow parse now accumulates *the whole PTY output* in a queue instead. It is
    the same bug as risk #10, one hop upstream, and it is not written anywhere
-   (D4).
+   (D4). **Closed 2026-08-16** by `SidecarQueue`: the channel stays unbounded and
+   fire-and-forget, and a byte budget beside it decides when to stop feeding the
+   VT. The degrade is `vt_stale`, never a dropped byte — in either direction.
 
 Everything else in this doc is naming, policy wording, and PR sequencing.
 
@@ -346,7 +348,7 @@ break.
 | **D1** | §C.5 | Add invariant **JOIN** (§D.2) with its three corollaries, replacing the prose "resync: … one `S` snapshot". Explicitly: the PTY is never paused; the sidecar FIFO is the ordering authority; no wire `seq` | **Landed 2026-08-12** |
 | **D2** | §C.6 | The `S` payload **includes its own prologue** and must be state-independent on apply. Clients MUST NOT prepend their own reset. Frame order after `attached` is fixed: `S` → `ready` → `H`* interleavable with `D` | **Landed 2026-08-13** (prologue in `format_vt`; the reference client and the Mac client apply raw) |
 | **D3** | §C.6 | Replace the stage table's "who parses VT" column with the **client-class profiles** of §D.3. Stages describe the host's capability; classes describe what a client negotiates | Doc restructure |
-| **D4** | §F #10 | Mark risk #10 **closed** (4 MiB `CLIENT_BACKLOG_CAP`, shipped) and open its two residuals: (a) the degrade should be **forced resync** (`S` + `ready` + `E{ev:"resynced", reason:"backlog"}`), dropping only on a second strike; (b) the **sidecar command queue is unbounded** — give it its own budget whose only legal degrade is `vt_stale` (refuse snapshots, fall back to ring replay, emit an event), never dropping bytes to the VT | New risk + wire event |
+| **D4** | §F #10 | Mark risk #10 **closed** (4 MiB `CLIENT_BACKLOG_CAP`, shipped) and both residuals closed too: (a) the degrade is **forced resync** — `S` + `ready` + `E{ev:"resynced", reason}`, dropping only on a second strike; (b) the sidecar command queue carries a 16 MiB budget whose only legal degrade is `E{ev:"vt_stale", reason}` (refuse snapshots, fall back to ring replay), never dropping bytes to the VT and never dropping a byte owed to a client | **Landed 2026-08-16** |
 | **D5** | §C.4, §C.5 | `attach` gains `claim:"newest"|"polite"` (default `newest`, i.e. today's behaviour). `polite` returns `error{code:"busy"}` when a live writer exists. Supersedes the sticky-writer idea | Additive control field |
 | **D6** | §C.6 | Normative: `grid_diff` MUST NOT be selected by transport class; legal selection signals enumerated (§D.4). Lead with the capability argument, cite the 8.6× second | Wording, normative |
 | **D7** | §C.10 + §C.6 | State the shared mechanism once — *durable object + monotonic cursor + bounded ring + explicit gap signal* — and keep the two words distinct: **`gap`** = your baseline is unusable, resync; **tombstone** = this session is dead and here is why (`tombstone.rs`). The terminal plane adopts `gap`, not the word "tombstone" | Vocabulary |
@@ -372,11 +374,13 @@ transport table, §D.1's QUIC binding, §H's rejection list.
    One consequence worth stating: the prologue leaves the alternate screen
    unconditionally, so the payload owes the re-entry, which the formatter already
    emits and the test now pins in both directions.
-2. **What should a wedged client cost a healthy one?** Today a slow client is
-   dropped at 4 MiB. Forced resync is friendlier and unbounded in the pathological
-   case (a client that cannot keep up will fail resync repeatedly). Drop, resync,
-   or freeze-and-notify is a UX call: a phone in a tunnel should not be able to
-   degrade the Mac the user is typing on, and it also should not silently vanish.
+2. ~~**What should a wedged client cost a healthy one?**~~ **Answered 2026-08-16
+   by PR 5: resync once, then drop.** The pathological case is bounded by never
+   forgiving a strike — the resync zeroes what the client owes, so a second
+   overflow proves it cannot keep up even from a clean start. What the resync
+   discards is the point of it: retiring the queued megabytes is what lets a
+   phone coming out of a tunnel rejoin at a screen instead of replaying a flood.
+   The residual is D10, unchanged: the resynced client's scrollback is a hole.
 3. **Do we speak Superlogical's protocol if it ships as open?** Described as
    *"predominantly part of libghostty"* and an *open protocol* (**Announced**).
    If both ends are libghostty anyway, a shared wire is plausible — and would
@@ -391,7 +395,16 @@ transport table, §D.1's QUIC binding, §H's rejection list.
    it means the host renders — a deliberate, scoped exception to the presentation
    boundary. Not building it means the CLI is a debugging tool, not a product
    surface.
-6. **Should `polite` be the default for the Mac app?** Newest-claim-wins means
+6. **Can a stale VT ever recover?** Today it cannot: once the sidecar budget
+   bites, that session answers snapshots from the ring for the rest of its life,
+   which for an agent session is days. The tempting fix — reset the VT and
+   re-seed it from the 128 KiB ring once the queue drains — is refused here
+   because it would make `S` silently approximate: the payload would claim a
+   boundary it does not describe, which is exactly the failure invariant JOIN
+   exists to prevent. An honest recovery needs a *marked* baseline (`gap:true`
+   on the snapshot, §D7's vocabulary), not a quiet reseed.
+
+7. **Should `polite` be the default for the Mac app?** Newest-claim-wins means
    glancing at a session on the phone silently demotes the Mac. That is correct
    for a single user with two devices *if* the demotion is visible; it is wrong
    the moment sharing exists (§F #3 of the protocol doc).
@@ -410,8 +423,8 @@ current correctness *provable*.
 | 2 | **Test: attach during a flood** — **landed 2026-08-12** (`termiod/tests/join_invariant.rs`) | A second client attaches mid-flood of a monotonic counter; the `S` payload is replayed through a VT and the sequence must run unbroken from the last complete line on that screen into the first line of the buffered stream, with the early client's delivery untouched. Proven to bite by dropping one buffered chunk in `finish_snapshot`: "the snapshot ends at 55861 but the stream resumes at 55868". **The flood must be unbroken** — a paced one lets the attach land in a gap, where an empty buffer hides a broken barrier and the test passes vacuously | 1 |
 | 3 | **Test: snapshot applied to a dirty screen** — **landed 2026-08-13** (`termiod/tests/snapshot_prologue.rs`) | One case per state a client can be carrying when `S` arrives; each applies the payload after that state and diffs against a fresh terminal. It failed on five of nine before PR 4 — stale content showing through, alt-screen kept, origin mode re-basing the cursor addressing, a shifted charset turning the text into line-drawing glyphs, a pending SGR colouring the first row. Insert mode, autowrap-off and a scrolling region passed only because the fixture's content was short enough not to expose them; reverse video is a render-time flip the cell snapshot cannot see at all | 1 |
 | 4 | **Host-owned snapshot prologue** — **landed 2026-08-13** | D2. `SNAPSHOT_PROLOGUE` prepended in `VtTerminal::format_vt`; `render_snapshot` and `TermiodSnapshot.render` stop synthesising a prelude and apply raw. Old clients that still prepend a reset stay correct (idempotent). The Mac's prelude was asymmetric in the same way the formatter is — it entered the alternate screen but never left it, so a primary-screen snapshot repainted onto the alt buffer | 3 |
-| 5 | **Backlog degrade: resync before drop** | D4(a). Reuse `begin_snapshot_barrier` for one client; add `E{ev:"resynced", reason}`; drop on second strike. Decide D10 here or defer explicitly | 2 |
-| 6 | **Sidecar queue budget** | D4(b). Bound the `SidecarCommand` channel by bytes; on exhaustion mark the VT stale, refuse snapshots (existing `fallback_snapshot` path), emit an event. Never drop bytes to the VT | 2 |
+| 5 | **Backlog degrade: resync before drop** — **landed 2026-08-16** | D4(a). `force_resync` retires the client's queued payloads by bumping a backlog *epoch* — the socket writer drops anything reserved under an older one — then takes a fresh snapshot barrier for that client alone and follows `S`/`ready` with `E{ev:"resynced"}`. Second strike drops. D10 is **deferred**: `H` is still attach-only, so a resynced client's scrollback is a hole it cannot see | 2 |
+| 6 | **Sidecar queue budget** — **landed 2026-08-16** | D4(b). `SidecarQueue` charges every `Write` and credits it back when the VT has parsed it. At 16 MiB the session stops feeding the VT, marks it stale, emits `E{ev:"vt_stale"}`, disconnects Mirrors, and fails every pending and future snapshot into `fallback_snapshot`. `fan_out` is untouched, so no client loses a byte. **Stale is sticky** — see §F #7 | 2 |
 | 7 | **Client conformance suite** | D3, D8. Replica and Mirror profiles; skew matrix; assert clients parse at authoritative dims and honour `Resized`/`WriterChanged` | 1 |
 | 8 | **`claim:"polite"`** | D5. Additive `attach` field, `busy` error, Mac wiring (attach as observer with a visible badge instead of stealing) | 7 |
 | 9 | **`G` policy wording + selection signals** | D6. Wording, plus removing any client-side "remote ⇒ `grid_diff`" heuristic if one has crept in | 7 |

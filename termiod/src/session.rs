@@ -11,7 +11,7 @@ use crate::pty::Pty;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -23,12 +23,29 @@ pub type ClientId = String;
 const RING_CAP: usize = 128 * 1024;
 const READ_CHUNK: usize = 64 * 1024;
 const CLIENT_BACKLOG_CAP: usize = 4 * 1024 * 1024;
+/// PTY bytes allowed to sit unparsed in the VT sidecar's command FIFO. The
+/// per-client budget stopped a slow socket from buying unbounded memory; this
+/// stops a slow *parse* from doing the same one hop upstream.
+const SIDECAR_QUEUE_CAP: usize = 16 * 1024 * 1024;
 pub const SCROLLBACK_STAGE_MAX_BYTES: usize = 1024 * 1024;
 pub const KEYFRAME_EVERY_FRAMES: u32 = 256;
+
+/// A payload admitted against a client's backlog. The epoch pins it to the
+/// reservation that let it through, so a forced resync can discard everything
+/// already queued for that client without corrupting the count.
+#[derive(Clone)]
+pub struct Metered {
+    pub bytes: Bytes,
+    epoch: u64,
+}
 
 /// Counts PTY bytes queued anywhere between a session and its socket writer.
 pub(crate) struct ClientBacklog {
     outstanding: AtomicUsize,
+    /// Bumped by a forced resync. Everything reserved under an older epoch is
+    /// stale: it precedes a snapshot that supersedes it, so it is dropped
+    /// undelivered and never released.
+    epoch: AtomicU64,
     dropped: AtomicBool,
 }
 
@@ -36,23 +53,53 @@ impl ClientBacklog {
     pub(crate) fn new() -> Self {
         Self {
             outstanding: AtomicUsize::new(0),
+            epoch: AtomicU64::new(0),
             dropped: AtomicBool::new(false),
         }
     }
 
-    fn try_reserve(&self, bytes: usize) -> bool {
+    fn reserve(&self, bytes: Bytes) -> Option<Metered> {
         self.outstanding
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |outstanding| {
                 outstanding
-                    .checked_add(bytes)
+                    .checked_add(bytes.len())
                     .filter(|total| *total <= CLIENT_BACKLOG_CAP)
             })
-            .is_ok()
+            .ok()?;
+        Some(Metered {
+            bytes,
+            epoch: self.epoch.load(Ordering::Acquire),
+        })
     }
 
-    pub(crate) fn release(&self, bytes: usize) {
-        let previous = self.outstanding.fetch_sub(bytes, Ordering::Relaxed);
-        debug_assert!(previous >= bytes);
+    /// True once the client has consumed everything the session handed it.
+    #[cfg(test)]
+    fn is_drained(&self) -> bool {
+        self.outstanding.load(Ordering::Relaxed) == 0
+    }
+
+    /// Discard everything already queued for this client and start a new epoch.
+    /// The queued payloads are dropped where they sit rather than released, so
+    /// the counter is reset here instead of unwound.
+    fn begin_resync(&self) {
+        self.epoch.fetch_add(1, Ordering::AcqRel);
+        self.outstanding.store(0, Ordering::Release);
+    }
+
+    /// True while this payload still belongs to the client's current stream.
+    pub(crate) fn is_current(&self, payload: &Metered) -> bool {
+        payload.epoch == self.epoch.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn release(&self, payload: &Metered) {
+        if !self.is_current(payload) {
+            return;
+        }
+        let _ =
+            self.outstanding
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |outstanding| {
+                    Some(outstanding.saturating_sub(payload.bytes.len()))
+                });
     }
 
     fn mark_dropped(&self) {
@@ -64,13 +111,44 @@ impl ClientBacklog {
     }
 }
 
+/// Counts PTY bytes queued for the VT sidecar but not yet parsed.
+struct SidecarQueue {
+    outstanding: AtomicUsize,
+}
+
+impl SidecarQueue {
+    fn new() -> Self {
+        Self {
+            outstanding: AtomicUsize::new(0),
+        }
+    }
+
+    fn try_reserve(&self, bytes: usize) -> bool {
+        self.outstanding
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |outstanding| {
+                outstanding
+                    .checked_add(bytes)
+                    .filter(|total| *total <= SIDECAR_QUEUE_CAP)
+            })
+            .is_ok()
+    }
+
+    fn release(&self, bytes: usize) {
+        let _ =
+            self.outstanding
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |outstanding| {
+                    Some(outstanding.saturating_sub(bytes))
+                });
+    }
+}
+
 /// Pushed to an attached connection task.
 #[derive(Clone)]
 pub enum ClientEvent {
-    Data(Bytes),
+    Data(Metered),
     Snapshot(Snapshot),
-    History(Bytes),
-    Grid(Bytes),
+    History(Metered),
+    Grid(Metered),
     Control(Control),
     Event(Event),
     Exited(i32),
@@ -158,13 +236,18 @@ struct ClientEntry {
     /// Attach-only history staging. Resize barriers discard any remainder and
     /// deliberately do not restage it; resize/reflow history is a later policy.
     staged_history: VecDeque<Bytes>,
+    /// Backlog strikes taken by this attachment. The first buys a forced
+    /// resync; the second is the drop. Strikes are never forgiven — the resync
+    /// already zeroed the count of what the client owes, so a second overflow
+    /// means it could not keep up even from a clean start.
+    backlog_strikes: u32,
 }
 
 enum ClientDelivery {
     Live,
     SnapshotPending {
         request_id: u64,
-        data: VecDeque<Bytes>,
+        data: VecDeque<Metered>,
         deferred: VecDeque<ClientEvent>,
     },
 }
@@ -228,6 +311,11 @@ struct Session {
     ring_bytes: usize,
     events: broadcast::Sender<Event>,
     sidecar_tx: Option<std_mpsc::Sender<SidecarCommand>>,
+    sidecar_queue: Arc<SidecarQueue>,
+    /// Set once the VT has been denied bytes it needed. The screen it holds no
+    /// longer describes any boundary in the output stream, so it can never
+    /// answer a snapshot again — attach and resync fall back to ring replay.
+    vt_stale: Option<String>,
 }
 
 impl Session {
@@ -287,6 +375,73 @@ impl Session {
         sent
     }
 
+    /// The one path that puts PTY bytes into the VT. It is budgeted, and the
+    /// only legal degrade is to stop feeding the VT and say so — dropping bytes
+    /// silently would leave `S` describing a screen that never occurred, and
+    /// blocking here would put the VT parse back on the fan-out path.
+    fn write_sidecar(&mut self, chunk: Bytes) {
+        if self.vt_stale.is_some() || self.sidecar_tx.is_none() {
+            return;
+        }
+        if !self.sidecar_queue.try_reserve(chunk.len()) {
+            self.mark_vt_stale(format!(
+                "VT sidecar fell more than {} MiB behind the PTY",
+                SIDECAR_QUEUE_CAP / (1024 * 1024)
+            ));
+            return;
+        }
+        let len = chunk.len();
+        if !self.send_sidecar(SidecarCommand::Write(chunk)) {
+            self.sidecar_queue.release(len);
+        }
+    }
+
+    fn mark_vt_stale(&mut self, reason: String) {
+        if self.vt_stale.is_some() {
+            return;
+        }
+        eprintln!(
+            "termiod: VT sidecar for session {} is stale: {reason}; snapshots now fall back to ring replay",
+            self.id
+        );
+        self.vt_stale = Some(reason.clone());
+        // Nothing more will reach the VT, so drain what is queued rather than
+        // let a wedged parse hold the memory.
+        self.send_sidecar(SidecarCommand::Shutdown);
+        self.sidecar_tx.take();
+        self.emit_event(Event::VtStale {
+            session: self.id.clone(),
+            reason: reason.clone(),
+        });
+        self.disconnect_grid_clients(&reason);
+        self.fallback_all_pending(&reason);
+    }
+
+    /// Ask the sidecar for one client's snapshot, or fail it straight into the
+    /// ring-replay fallback when the VT can no longer answer.
+    fn request_snapshot(&mut self, client_id: ClientId, request_id: u64, scrollback: bool) {
+        let refusal = self.vt_stale.clone().or_else(|| {
+            self.sidecar_tx
+                .is_none()
+                .then(|| "VT sidecar is unavailable".to_string())
+        });
+        if let Some(reason) = refusal {
+            self.finish_snapshot(&client_id, request_id, Err(reason));
+            return;
+        }
+        if !self.send_sidecar(SidecarCommand::Snapshot {
+            client_id: client_id.clone(),
+            request_id,
+            scrollback,
+        }) {
+            self.finish_snapshot(
+                &client_id,
+                request_id,
+                Err("VT sidecar is unavailable".to_string()),
+            );
+        }
+    }
+
     fn wants_grid_diffs(&self) -> bool {
         self.clients.values().any(|entry| entry.grid_diff)
     }
@@ -336,18 +491,45 @@ impl Session {
         // these requests are adjacent to the Resize command in the sidecar
         // FIFO, with no intervening Write command.
         for (client_id, request_id) in requests {
-            if !self.send_sidecar(SidecarCommand::Snapshot {
-                client_id: client_id.clone(),
-                request_id,
-                scrollback: false,
-            }) {
-                let _ = self.finish_snapshot(
-                    &client_id,
-                    request_id,
-                    Err("VT sidecar is unavailable".to_string()),
-                );
-            }
+            self.request_snapshot(client_id, request_id, false);
         }
+    }
+
+    /// D4(a): a client that outruns its backlog gets one forced resync before it
+    /// gets dropped. Everything already queued for it is discarded — that is the
+    /// point, since replaying megabytes to a client that could not keep up is
+    /// what put it here — and the snapshot that follows re-establishes JOIN at a
+    /// fresh boundary. No other client is touched.
+    fn force_resync(&mut self, client_id: &ClientId, reason: &str) {
+        let request_id = self.allocate_snapshot_request();
+        let session_id = self.id.clone();
+        let Some(entry) = self.clients.get_mut(client_id) else {
+            return;
+        };
+        entry.backlog_strikes += 1;
+        entry.staged_history.clear();
+        entry.backlog.begin_resync();
+        let previous = std::mem::replace(&mut entry.delivery, ClientDelivery::Live);
+        let mut deferred = match previous {
+            ClientDelivery::Live => VecDeque::new(),
+            // The buffered data was reserved under the epoch just retired, so it
+            // is dropped with the rest rather than replayed past the new `S`.
+            ClientDelivery::SnapshotPending { deferred, .. } => deferred,
+        };
+        deferred.push_back(ClientEvent::Event(Event::Resynced {
+            session: session_id,
+            reason: reason.to_string(),
+        }));
+        entry.delivery = ClientDelivery::SnapshotPending {
+            request_id,
+            data: VecDeque::new(),
+            deferred,
+        };
+        eprintln!(
+            "termiod: resyncing client {client_id} on session {}: {reason}",
+            self.id
+        );
+        self.request_snapshot(client_id.clone(), request_id, false);
     }
 
     fn queue_non_data(entry: &mut ClientEntry, event: ClientEvent) -> bool {
@@ -418,6 +600,7 @@ impl Session {
     /// Fan PTY output out to every attached client; drop dead ones.
     fn fan_out(&mut self, data: Bytes) {
         self.push_ring(data.clone());
+        let mut resync = Vec::new();
         let dead = self
             .clients
             .iter_mut()
@@ -428,30 +611,43 @@ impl Session {
                 if entry.grid_diff {
                     return None;
                 }
-                if !entry.backlog.try_reserve(data.len()) {
+                let Some(payload) = entry.backlog.reserve(data.clone()) else {
+                    if entry.backlog_strikes == 0 && entry.snapshot_capable {
+                        resync.push(id.clone());
+                        return None;
+                    }
                     entry.backlog.mark_dropped();
                     eprintln!(
-                        "termiod: dropping slow client {id} from session {}: output backlog exceeded {} MiB",
+                        "termiod: dropping slow client {id} from session {}: output backlog exceeded {} MiB again",
                         self.id,
                         CLIENT_BACKLOG_CAP / (1024 * 1024)
                     );
                     return Some(id.clone());
-                }
+                };
                 match &mut entry.delivery {
                     ClientDelivery::Live => {
-                        if entry.out.send(ClientEvent::Data(data.clone())).is_err() {
-                            entry.backlog.release(data.len());
+                        if entry.out.send(ClientEvent::Data(payload.clone())).is_err() {
+                            entry.backlog.release(&payload);
                             return Some(id.clone());
                         }
                     }
                     ClientDelivery::SnapshotPending { data: buffered, .. } => {
-                        buffered.push_back(data.clone());
+                        buffered.push_back(payload);
                     }
                 }
                 None
             })
             .collect();
         self.remove_dead(dead);
+        for client_id in resync {
+            self.force_resync(
+                &client_id,
+                &format!(
+                    "output backlog exceeded {} MiB",
+                    CLIENT_BACKLOG_CAP / (1024 * 1024)
+                ),
+            );
+        }
     }
 
     fn fan_out_grid(&mut self, grid: GridDiff) {
@@ -476,7 +672,7 @@ impl Session {
                     // client's S boundary, so the S supersedes it.
                     return None;
                 }
-                if !entry.backlog.try_reserve(payload.len()) {
+                let Some(metered) = entry.backlog.reserve(payload.clone()) else {
                     entry.backlog.mark_dropped();
                     eprintln!(
                         "termiod: dropping slow grid-diff client {id} from session {}: output backlog exceeded {} MiB",
@@ -484,9 +680,9 @@ impl Session {
                         CLIENT_BACKLOG_CAP / (1024 * 1024)
                     );
                     return Some(id.clone());
-                }
-                if entry.out.send(ClientEvent::Grid(payload.clone())).is_err() {
-                    entry.backlog.release(payload.len());
+                };
+                if entry.out.send(ClientEvent::Grid(metered.clone())).is_err() {
+                    entry.backlog.release(&metered);
                     return Some(id.clone());
                 }
                 None
@@ -536,21 +732,21 @@ impl Session {
         let Some(payload) = entry.staged_history.front() else {
             return Ok(false);
         };
-        if !entry.backlog.try_reserve(payload.len()) {
+        let Some(metered) = entry.backlog.reserve(payload.clone()) else {
             entry.backlog.mark_dropped();
             eprintln!(
                 "termiod: dropping slow client {client_id} from session {session_id}: scrollback backlog exceeded {} MiB",
                 CLIENT_BACKLOG_CAP / (1024 * 1024)
             );
             return Err(());
-        }
-        let payload = entry
-            .staged_history
-            .pop_front()
-            .expect("history payload disappeared after reservation");
-        let len = payload.len();
-        if entry.out.send(ClientEvent::History(payload)).is_err() {
-            entry.backlog.release(len);
+        };
+        entry.staged_history.pop_front();
+        if entry
+            .out
+            .send(ClientEvent::History(metered.clone()))
+            .is_err()
+        {
+            entry.backlog.release(&metered);
             return Err(());
         }
         Ok(!entry.staged_history.is_empty())
@@ -681,10 +877,9 @@ impl Session {
                 return false;
             }
         };
-        while let Some(bytes) = data.pop_front() {
-            let len = bytes.len();
-            if entry.out.send(ClientEvent::Data(bytes)).is_err() {
-                entry.backlog.release(len);
+        while let Some(payload) = data.pop_front() {
+            if entry.out.send(ClientEvent::Data(payload.clone())).is_err() {
+                entry.backlog.release(&payload);
                 release_buffered(&entry.backlog, data);
                 self.remove_finished_client(client_id);
                 return false;
@@ -792,7 +987,7 @@ impl Session {
         &mut self,
         client_id: &str,
         entry: ClientEntry,
-        buffered: VecDeque<Bytes>,
+        buffered: VecDeque<Metered>,
         deferred: VecDeque<ClientEvent>,
         error: &str,
     ) {
@@ -803,13 +998,13 @@ impl Session {
         release_buffered(&entry.backlog, buffered);
 
         for replay in &self.ring {
-            if !entry.backlog.try_reserve(replay.len()) {
+            let Some(metered) = entry.backlog.reserve(replay.clone()) else {
                 entry.backlog.mark_dropped();
                 self.remove_finished_client(client_id);
                 return;
-            }
-            if entry.out.send(ClientEvent::Data(replay.clone())).is_err() {
-                entry.backlog.release(replay.len());
+            };
+            if entry.out.send(ClientEvent::Data(metered.clone())).is_err() {
+                entry.backlog.release(&metered);
                 self.remove_finished_client(client_id);
                 return;
             }
@@ -956,9 +1151,9 @@ fn should_emit_keyframe(frame_seq: u32, every: u32) -> bool {
     every > 0 && frame_seq.is_multiple_of(every)
 }
 
-fn release_buffered(backlog: &ClientBacklog, data: VecDeque<Bytes>) {
-    for bytes in data {
-        backlog.release(bytes.len());
+fn release_buffered(backlog: &ClientBacklog, data: VecDeque<Metered>) {
+    for payload in data {
+        backlog.release(&payload);
     }
 }
 
@@ -1001,7 +1196,7 @@ pub fn spawn(
         }
     });
 
-    let (sidecar_tx, sidecar_snapshots, sidecar_thread) = spawn_sidecar(rows, cols)?;
+    let sidecar = spawn_sidecar(rows, cols)?;
 
     let (tx, rx) = mpsc::unbounded_channel();
     let session = Session {
@@ -1025,7 +1220,9 @@ pub fn spawn(
         ring: VecDeque::new(),
         ring_bytes: 0,
         events,
-        sidecar_tx: Some(sidecar_tx),
+        sidecar_tx: Some(sidecar.commands),
+        sidecar_queue: sidecar.queue,
+        vt_stale: None,
     };
 
     let waiter = tokio::task::spawn_blocking(move || {
@@ -1044,25 +1241,29 @@ pub fn spawn(
         rx,
         waiter,
         on_exit,
-        sidecar_snapshots,
-        sidecar_thread,
+        sidecar.results,
+        sidecar.thread,
     ));
     Ok(SessionHandle { id, tx })
 }
 
-fn spawn_sidecar(
-    rows: u16,
-    cols: u16,
-) -> anyhow::Result<(
-    std_mpsc::Sender<SidecarCommand>,
-    mpsc::UnboundedReceiver<SidecarResult>,
-    JoinHandle<()>,
-)> {
-    // Deliberately unbounded and fire-and-forget: PTY delivery must never wait
-    // for VT parsing. The consumer drains adjacent Bytes writes in batches.
-    // Only opt-in grid-diff clients depend on this consumer's progress.
+struct Sidecar {
+    commands: std_mpsc::Sender<SidecarCommand>,
+    results: mpsc::UnboundedReceiver<SidecarResult>,
+    queue: Arc<SidecarQueue>,
+    thread: JoinHandle<()>,
+}
+
+fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
+    // The channel itself stays unbounded and fire-and-forget — PTY delivery must
+    // never wait for VT parsing. `SidecarQueue` is the budget instead: the
+    // producer stops feeding the VT and declares it stale rather than blocking
+    // or letting a slow parse buy unbounded memory. The consumer drains
+    // adjacent Bytes writes in batches.
     let (command_tx, command_rx) = std_mpsc::channel::<SidecarCommand>();
     let (result_tx, result_rx) = mpsc::unbounded_channel::<SidecarResult>();
+    let queue = Arc::new(SidecarQueue::new());
+    let parsed = queue.clone();
     let thread = std::thread::Builder::new()
         .name("termiod-vt".to_string())
         .spawn(move || {
@@ -1094,12 +1295,14 @@ fn spawn_sidecar(
                         if let Some(terminal) = terminal.as_mut() {
                             terminal.vt_write(&bytes);
                         }
+                        parsed.release(bytes.len());
                         loop {
                             match command_rx.try_recv() {
                                 Ok(SidecarCommand::Write(bytes)) => {
                                     if let Some(terminal) = terminal.as_mut() {
                                         terminal.vt_write(&bytes);
                                     }
+                                    parsed.release(bytes.len());
                                 }
                                 Ok(command) => {
                                     pending = Some(command);
@@ -1195,7 +1398,12 @@ fn spawn_sidecar(
             }
         })
         .map_err(|error| anyhow::anyhow!("spawning VT sidecar thread: {error}"))?;
-    Ok((command_tx, result_rx, thread))
+    Ok(Sidecar {
+        commands: command_tx,
+        results: result_rx,
+        queue,
+        thread,
+    })
 }
 
 async fn run(
@@ -1256,8 +1464,9 @@ async fn run(
                     Ok(n) => {
                         let chunk = Bytes::copy_from_slice(&buf[..n]);
                         // This refcount clone + unbounded send is strictly
-                        // fire-and-forget. Fan-out never waits for VT parsing.
-                        session.send_sidecar(SidecarCommand::Write(chunk.clone()));
+                        // fire-and-forget. Fan-out never waits for VT parsing,
+                        // and it runs even when the VT has gone stale.
+                        session.write_sidecar(chunk.clone());
                         session.fan_out(chunk);
                     }
                     // Linux delivers EIO when the slave side closes.
@@ -1319,10 +1528,11 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
 
             if !snapshot {
                 for replay in &session.ring {
-                    if backlog.try_reserve(replay.len())
-                        && out.send(ClientEvent::Data(replay.clone())).is_err()
-                    {
-                        backlog.release(replay.len());
+                    let Some(metered) = backlog.reserve(replay.clone()) else {
+                        break;
+                    };
+                    if out.send(ClientEvent::Data(metered.clone())).is_err() {
+                        backlog.release(&metered);
                         break;
                     }
                 }
@@ -1346,6 +1556,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
                         ClientDelivery::Live
                     },
                     staged_history: VecDeque::new(),
+                    backlog_strikes: 0,
                 },
             );
             // Enabling precedes this client's in-band Snapshot request, so
@@ -1362,17 +1573,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
             });
 
             if let Some(request_id) = snapshot_request {
-                if !session.send_sidecar(SidecarCommand::Snapshot {
-                    client_id: id.clone(),
-                    request_id,
-                    scrollback,
-                }) {
-                    let _ = session.finish_snapshot(
-                        &id,
-                        request_id,
-                        Err("VT sidecar is unavailable".to_string()),
-                    );
-                }
+                session.request_snapshot(id.clone(), request_id, scrollback);
             }
 
             if session.writer != old_writer {
@@ -1455,27 +1656,79 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
 mod tests {
     use super::{
         handle_msg, scrollback_row_limit, should_emit_keyframe, spawn_sidecar, ClientBacklog,
-        ClientDelivery, ClientEntry, ClientEvent, Session, SessionMsg, SidecarCommand,
-        SidecarResult, CLIENT_BACKLOG_CAP, SCROLLBACK_STAGE_MAX_BYTES, SNAPSHOT_CELL_SIZE,
+        ClientDelivery, ClientEntry, ClientEvent, Session, SessionMsg, Sidecar, SidecarCommand,
+        SidecarQueue, SidecarResult, CLIENT_BACKLOG_CAP, SCROLLBACK_STAGE_MAX_BYTES,
+        SIDECAR_QUEUE_CAP, SNAPSHOT_CELL_SIZE,
     };
-    use crate::protocol::{Control, ErrorCode};
+    use crate::protocol::{Control, ErrorCode, Event};
     use crate::pty::Pty;
     use bytes::Bytes;
     use std::collections::{HashMap, VecDeque};
     use std::sync::{mpsc as std_mpsc, Arc};
-    use tokio::sync::{broadcast, mpsc};
+    use tokio::sync::{broadcast, mpsc, oneshot};
+
+    fn chunk(len: usize) -> Bytes {
+        Bytes::from(vec![b'x'; len])
+    }
 
     #[test]
     fn client_backlog_enforces_byte_cap() {
         let backlog = ClientBacklog::new();
 
-        assert!(backlog.try_reserve(CLIENT_BACKLOG_CAP - 1));
-        assert!(backlog.try_reserve(1));
-        assert!(!backlog.try_reserve(1));
+        let bulk = backlog
+            .reserve(chunk(CLIENT_BACKLOG_CAP - 1))
+            .expect("bulk reservation");
+        let last = backlog.reserve(chunk(1)).expect("last byte");
+        assert!(backlog.reserve(chunk(1)).is_none());
 
-        backlog.release(CLIENT_BACKLOG_CAP);
-        assert!(backlog.try_reserve(1));
-        backlog.release(1);
+        backlog.release(&bulk);
+        backlog.release(&last);
+        assert!(backlog.is_drained());
+        let after = backlog
+            .reserve(chunk(1))
+            .expect("reservation after release");
+        backlog.release(&after);
+    }
+
+    #[test]
+    fn resync_retires_queued_payloads_without_unwinding_the_count() {
+        let backlog = ClientBacklog::new();
+        let stale = backlog
+            .reserve(chunk(CLIENT_BACKLOG_CAP))
+            .expect("full reservation");
+        assert!(backlog.reserve(chunk(1)).is_none());
+
+        backlog.begin_resync();
+
+        // The queued payload is dropped where it sits, so the client starts the
+        // new epoch with the whole budget rather than waiting for a drain.
+        assert!(!backlog.is_current(&stale));
+        assert!(backlog.is_drained());
+        let fresh = backlog
+            .reserve(chunk(CLIENT_BACKLOG_CAP))
+            .expect("fresh reservation");
+
+        // A late release of a retired payload must not credit the new epoch.
+        backlog.release(&stale);
+        assert!(backlog.reserve(chunk(1)).is_none());
+        backlog.release(&fresh);
+        assert!(backlog.is_drained());
+    }
+
+    #[test]
+    fn sidecar_queue_stops_admitting_bytes_past_its_budget() {
+        let queue = SidecarQueue::new();
+
+        assert!(queue.try_reserve(SIDECAR_QUEUE_CAP));
+        assert!(!queue.try_reserve(1));
+
+        queue.release(SIDECAR_QUEUE_CAP);
+        assert!(queue.try_reserve(1));
+        queue.release(1);
+        // Releasing more than was reserved is a bug, not a panic: the VT thread
+        // and the session actor account independently.
+        queue.release(SIDECAR_QUEUE_CAP);
+        assert!(queue.try_reserve(SIDECAR_QUEUE_CAP));
     }
 
     #[test]
@@ -1498,7 +1751,14 @@ mod tests {
 
     #[test]
     fn resize_snapshot_request_is_an_exact_sidecar_fifo_boundary() {
-        let (sidecar, mut snapshots, thread) = spawn_sidecar(2, 16).unwrap();
+        let Sidecar {
+            commands: sidecar,
+            results: mut snapshots,
+            queue,
+            thread,
+        } = spawn_sidecar(2, 16).unwrap();
+        assert!(queue.try_reserve("BEFORE".len()));
+        assert!(queue.try_reserve("AFTER".len()));
         sidecar
             .send(SidecarCommand::Write(Bytes::from_static(b"BEFORE")))
             .unwrap();
@@ -1535,6 +1795,260 @@ mod tests {
 
         sidecar.send(SidecarCommand::Shutdown).unwrap();
         thread.join().unwrap();
+        // Every byte the session charged to the queue is credited back once the
+        // VT has parsed it, or the budget ratchets shut on a healthy session.
+        assert_eq!(
+            queue.outstanding.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    /// A session with no clients, a live sidecar, and a PTY that only has to
+    /// exist — none of the backlog paths touch it.
+    fn test_session(
+        sidecar_tx: std_mpsc::Sender<SidecarCommand>,
+        sidecar_queue: Arc<SidecarQueue>,
+    ) -> (Session, broadcast::Receiver<Event>) {
+        let pty = Arc::new(Pty::non_pty_for_resize_failure_test().unwrap());
+        let (input_tx, _input_rx) = mpsc::unbounded_channel();
+        let (events, event_rx) = broadcast::channel(64);
+        (
+            Session {
+                id: "session".to_string(),
+                name: "test".to_string(),
+                cwd: String::new(),
+                command: "cat".to_string(),
+                pid: 0,
+                rows: 24,
+                cols: 80,
+                created_unix: 0,
+                status: "unknown".to_string(),
+                title: None,
+                workstream: None,
+                pty,
+                input_tx,
+                clients: HashMap::new(),
+                writer: None,
+                next_seq: 0,
+                next_snapshot_request: 1,
+                ring: VecDeque::new(),
+                ring_bytes: 0,
+                events,
+                sidecar_tx: Some(sidecar_tx),
+                sidecar_queue,
+                vt_stale: None,
+            },
+            event_rx,
+        )
+    }
+
+    /// Hand the session the sidecar replies it is waiting on. `run` does this in
+    /// its select loop; the tests do it by hand so the barrier is deterministic.
+    /// The count is awaited rather than polled — the VT is a real thread, so a
+    /// `try_recv` here would race it and hide a working barrier as a hang.
+    async fn pump_sidecar(
+        session: &mut Session,
+        results: &mut mpsc::UnboundedReceiver<SidecarResult>,
+        expected: usize,
+    ) {
+        for _ in 0..expected {
+            let result = tokio::time::timeout(std::time::Duration::from_secs(10), results.recv())
+                .await
+                .expect("the VT sidecar never answered")
+                .expect("the VT sidecar hung up");
+            apply_sidecar(session, result);
+        }
+        while let Ok(result) = results.try_recv() {
+            apply_sidecar(session, result);
+        }
+    }
+
+    fn apply_sidecar(session: &mut Session, result: SidecarResult) {
+        match result {
+            SidecarResult::Snapshot {
+                client_id,
+                request_id,
+                result,
+            } => {
+                session.finish_snapshot(&client_id, request_id, result);
+            }
+            SidecarResult::Grid(grid) => session.fan_out_grid(grid),
+            SidecarResult::Keyframe(snapshot) => session.fan_out_keyframe(snapshot),
+        }
+    }
+
+    fn attach_snapshot_client(
+        session: &mut Session,
+        id: &str,
+    ) -> (mpsc::UnboundedReceiver<ClientEvent>, Arc<ClientBacklog>) {
+        let (client_tx, client_rx) = mpsc::unbounded_channel();
+        let backlog = Arc::new(ClientBacklog::new());
+        let (reply, _reply_rx) = oneshot::channel();
+        handle_msg(
+            session,
+            SessionMsg::AddClient {
+                id: id.to_string(),
+                interactive: false,
+                out: client_tx,
+                backlog: backlog.clone(),
+                snapshot: true,
+                scrollback: false,
+                grid_diff: false,
+                reply,
+            },
+        );
+        (client_rx, backlog)
+    }
+
+    /// D4(a): the first time a client outruns its budget it is resynced, not
+    /// dropped — the queued bytes are retired, a fresh `S`/`ready` pair
+    /// re-establishes JOIN, and `resynced` says why. The second overflow is the
+    /// drop, because a client that cannot keep up from a clean start is wedged.
+    #[tokio::test]
+    async fn backlog_pressure_resyncs_a_client_once_before_dropping_it() {
+        let Sidecar {
+            commands,
+            mut results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        let (mut client, backlog) = attach_snapshot_client(&mut session, "slow");
+        pump_sidecar(&mut session, &mut results, 1).await;
+        // The attach snapshot: S, then ready.
+        assert!(matches!(
+            client.recv().await,
+            Some(ClientEvent::Snapshot(_))
+        ));
+        assert!(matches!(
+            client.recv().await,
+            Some(ClientEvent::Event(Event::Ready { .. }))
+        ));
+
+        // Nothing on the far end ever releases, so the budget fills for real.
+        let mib = chunk(1024 * 1024);
+        for _ in 0..(CLIENT_BACKLOG_CAP / mib.len()) {
+            session.fan_out(mib.clone());
+        }
+        assert!(backlog.reserve(chunk(1)).is_none(), "budget is not full");
+        assert!(session.clients.contains_key("slow"));
+
+        // The overflow chunk. It is not delivered — it is what the snapshot
+        // replaces — and the client survives it.
+        session.fan_out(mib.clone());
+        assert!(
+            session.clients.contains_key("slow"),
+            "the first overflow dropped the client instead of resyncing it"
+        );
+        assert!(
+            backlog.is_drained(),
+            "the resync did not retire the queued backlog"
+        );
+        pump_sidecar(&mut session, &mut results, 1).await;
+
+        let mut kinds = Vec::new();
+        while let Ok(event) = client.try_recv() {
+            kinds.push(match event {
+                ClientEvent::Data(_) => "D".to_string(),
+                ClientEvent::Snapshot(_) => "S".to_string(),
+                ClientEvent::Event(Event::Ready { .. }) => "ready".to_string(),
+                ClientEvent::Event(Event::Resynced { reason, .. }) => format!("resynced:{reason}"),
+                _ => "other".to_string(),
+            });
+        }
+        let boundary = kinds
+            .iter()
+            .position(|kind| kind == "S")
+            .expect("no fresh S after the forced resync");
+        assert_eq!(kinds[boundary + 1], "ready", "S was not followed by ready");
+        assert!(
+            kinds[boundary..]
+                .iter()
+                .any(|kind| kind.starts_with("resynced:output backlog exceeded")),
+            "the client was never told why its stream restarted: {kinds:?}"
+        );
+
+        // Second strike. The client starts from an empty budget and still
+        // cannot drain, so this time it goes.
+        for _ in 0..(CLIENT_BACKLOG_CAP / mib.len()) {
+            session.fan_out(mib.clone());
+        }
+        session.fan_out(mib.clone());
+        assert!(
+            !session.clients.contains_key("slow"),
+            "the second overflow did not drop the client"
+        );
+        assert!(backlog.is_dropped());
+
+        let _ = session.sidecar_tx.take();
+        let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+    }
+
+    /// D4(b): the sidecar budget's only legal degrade. Bytes reach every client
+    /// unchanged; what stops is the VT, which then refuses snapshots instead of
+    /// answering one that describes a screen that never occurred.
+    #[tokio::test]
+    async fn an_over_budget_sidecar_goes_stale_without_costing_a_client_one_byte() {
+        let Sidecar {
+            commands,
+            mut results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        // Park the whole budget so the next PTY chunk cannot be admitted. This
+        // stands in for a VT parse that has stopped making progress.
+        assert!(queue.try_reserve(SIDECAR_QUEUE_CAP));
+        let (mut session, mut events) = test_session(commands, queue);
+        let (mut client, _backlog) = attach_snapshot_client(&mut session, "raw");
+        pump_sidecar(&mut session, &mut results, 1).await;
+        assert!(matches!(
+            client.recv().await,
+            Some(ClientEvent::Snapshot(_))
+        ));
+        assert!(matches!(
+            client.recv().await,
+            Some(ClientEvent::Event(Event::Ready { .. }))
+        ));
+
+        let chunk = Bytes::from_static(b"still mine\r\n");
+        session.write_sidecar(chunk.clone());
+        session.fan_out(chunk.clone());
+
+        assert!(session.vt_stale.is_some(), "the budget did not bite");
+        let mut announced = false;
+        while let Ok(event) = events.try_recv() {
+            announced |= matches!(event, Event::VtStale { .. });
+        }
+        assert!(announced, "the stale VT was never announced");
+        // The invariant this whole budget exists to protect: the client's bytes
+        // are not what gets sacrificed.
+        let mut delivered = Vec::new();
+        while let Ok(event) = client.try_recv() {
+            if let ClientEvent::Data(payload) = event {
+                delivered.extend_from_slice(&payload.bytes);
+            }
+        }
+        assert_eq!(delivered, chunk, "a stale VT cost the client PTY bytes");
+
+        // A client attaching now is told the truth by falling back to the ring
+        // rather than being handed a snapshot the VT can no longer vouch for.
+        // No sidecar round trip this time: a stale VT is refused in-process.
+        let (mut late, _late_backlog) = attach_snapshot_client(&mut session, "late");
+        pump_sidecar(&mut session, &mut results, 0).await;
+        let mut replayed = Vec::new();
+        let mut snapshots = 0;
+        while let Ok(event) = late.try_recv() {
+            match event {
+                ClientEvent::Snapshot(_) => snapshots += 1,
+                ClientEvent::Data(payload) => replayed.extend_from_slice(&payload.bytes),
+                _ => {}
+            }
+        }
+        assert_eq!(snapshots, 0, "a stale VT still answered a snapshot");
+        assert_eq!(replayed, chunk, "the ring-replay fallback did not run");
+
+        let _ = session.sidecar_tx.take();
+        let _ = tokio::task::spawn_blocking(move || thread.join()).await;
     }
 
     #[tokio::test]
@@ -1570,6 +2084,7 @@ mod tests {
                     grid_diff: false,
                     delivery: ClientDelivery::Live,
                     staged_history: VecDeque::new(),
+                    backlog_strikes: 0,
                 },
             )]),
             writer: Some("writer".to_string()),
@@ -1579,6 +2094,8 @@ mod tests {
             ring_bytes: 0,
             events,
             sidecar_tx: Some(sidecar_tx),
+            sidecar_queue: Arc::new(SidecarQueue::new()),
+            vt_stale: None,
         };
 
         assert!(!handle_msg(
