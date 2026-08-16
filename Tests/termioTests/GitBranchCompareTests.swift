@@ -114,18 +114,17 @@ final class GitBranchCompareTests: XCTestCase {
         XCTAssertEqual(context.localBranches, ["main"], "the checkout's own branch is not a base")
     }
 
-    /// A branch's own upstream is not a base to compare with, whatever the remote is
-    /// called — comparing a branch with the ref it tracks answers "what haven't I pushed",
-    /// which is the Changes and History tabs' question.
-    func testTheBranchsOwnUpstreamIsNotOfferedAsABase() async throws {
+    /// Only the checkout's own branch is excluded from the picker. Its upstream stays:
+    /// `origin/main` from a checkout of `main` answers "what haven't I pushed", and
+    /// dropping it left a trunk checkout with nothing at all to pick.
+    func testOnlyTheCheckoutsOwnBranchIsExcludedFromTheBases() async throws {
         let remote = repo.appendingPathExtension("remote.git")
         try FileManager.default.createDirectory(at: remote, withIntermediateDirectories: true)
         try git(["init", "-q", "--bare", remote.path])
         try write("a.txt", "a\n")
         try git(["add", "."])
         try git(["commit", "-qm", "one"])
-        // Deliberately not named `origin`: the filter must follow the configured upstream,
-        // not a hard-coded remote name (a fork's `upstream/…` is the real-world case).
+        // Deliberately not named `origin`, so a hard-coded remote name would show up here.
         try git(["remote", "add", "fork", remote.path])
         try git(["checkout", "-qb", "feat/x"])
         try git(["push", "-q", "-u", "fork", "main", "feat/x"])
@@ -133,9 +132,30 @@ final class GitBranchCompareTests: XCTestCase {
 
         let context = await GitService.compareContext(in: repo.path)
         XCTAssertEqual(context.branch, "feat/x")
-        XCTAssertFalse(context.remoteBranches.contains("fork/feat/x"), "own upstream offered as a base")
-        XCTAssertTrue(context.remoteBranches.contains("fork/main"))
         XCTAssertFalse(context.localBranches.contains("feat/x"), "own branch offered as a base")
+        XCTAssertTrue(context.remoteBranches.contains("fork/main"))
+        XCTAssertTrue(context.remoteBranches.contains("fork/feat/x"),
+                      "the upstream is a legitimate base — it answers what hasn't been pushed")
+    }
+
+    /// A checkout of the trunk opens compared against its own remote. Before the fix both
+    /// the local `main` and its upstream were filtered out, leaving the tab telling the
+    /// user to pick a branch from a menu that contained none.
+    func testTrunkCheckoutComparesAgainstItsRemote() async throws {
+        let remote = repo.appendingPathExtension("remote.git")
+        try FileManager.default.createDirectory(at: remote, withIntermediateDirectories: true)
+        try git(["init", "-q", "--bare", remote.path])
+        try write("a.txt", "a\n")
+        try git(["add", "."])
+        try git(["commit", "-qm", "one"])
+        try git(["remote", "add", "origin", remote.path])
+        try git(["push", "-q", "-u", "origin", "main"])
+        defer { try? FileManager.default.removeItem(at: remote) }
+
+        let context = await GitService.compareContext(in: repo.path)
+        XCTAssertEqual(context.branch, "main")
+        XCTAssertEqual(context.remoteBranches, ["origin/main"])
+        XCTAssertEqual(context.suggestedBase, "origin/main")
     }
 
     // MARK: Base resolution
@@ -163,13 +183,19 @@ final class GitBranchCompareTests: XCTestCase {
             "master")
     }
 
-    func testNoBaseIsSuggestedForTheTrunkItself() {
-        // On `main`, comparing against `origin/main` would answer "what have I not pushed",
-        // which is the History tab's own job — so the pane opens uncompared.
-        XCTAssertNil(
+    func testTheTrunkComparesAgainstItsOwnRemote() {
+        // On `main`, the useful comparison is against `origin/main` — what hasn't been
+        // pushed. Suggesting nothing left the tab on an empty state with no way forward.
+        XCTAssertEqual(
             GitService.suggestedCompareBase(
                 branch: "main", originHead: "origin/main",
-                remoteBranches: ["origin/main"], localBranches: ["main"]))
+                remoteBranches: ["origin/main"], localBranches: []),
+            "origin/main")
+        // A local branch that *is* the checkout stays excluded — that comparison is
+        // always empty — and a detached HEAD has no branch to compare at all.
+        XCTAssertNil(
+            GitService.suggestedCompareBase(
+                branch: "main", originHead: nil, remoteBranches: [], localBranches: []))
         XCTAssertNil(
             GitService.suggestedCompareBase(
                 branch: nil, originHead: nil, remoteBranches: [], localBranches: ["main"]))
