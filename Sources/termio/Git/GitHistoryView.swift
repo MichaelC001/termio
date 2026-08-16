@@ -1,4 +1,5 @@
 import SwiftUI
+import TermioShared
 
 // MARK: - History tab
 
@@ -8,21 +9,11 @@ import SwiftUI
 /// terminal via the shared `store.openDiff` overlay. Read-only — history is for reading,
 /// not editing.
 struct GitHistoryView: View {
-    @EnvironmentObject var store: TermioStore
     @ObservedObject var model: GitPanelModel
 
     let repoRoot: String
     let chrome: ChromeTheme?
     let font: Font
-
-    /// The single expanded commit (one at a time keeps the narrow column legible).
-    @State private var expanded: String?
-    /// Files per commit, fetched lazily on first expand and kept for the session.
-    @State private var filesByCommit: [String: [GitChange]] = [:]
-    /// The last file diff opened from this list — its row keeps the selected grey after
-    /// the overlay closes (the Issues list's rule), so coming back from a full-screen
-    /// diff still shows which file it was.
-    @State private var lastOpenedFile: (sha: String, path: String)?
 
     var body: some View {
         Group {
@@ -39,24 +30,207 @@ struct GitHistoryView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView(.vertical) {
-                    // No separators: fixed-height rows + the hover/selection wash do the
-                    // separating, like a modern SwiftUI List (hairlines between every row
-                    // read as legacy chrome in a narrow pane).
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(model.commits) { commit in
-                            CommitRow(commit: commit, isExpanded: expanded == commit.sha, chrome: chrome, font: font) {
-                                toggle(commit)
-                            }
-                            if expanded == commit.sha {
-                                commitFiles(commit)
-                            }
-                        }
-                    }
-                    .padding(.vertical, 6)
+                    CommitList(commits: model.commits, repoRoot: repoRoot, chrome: chrome, font: font)
+                        .padding(.vertical, 6)
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+// MARK: - Compare tab
+
+/// The git pane's **Compare** tab: this branch measured against the branch it would be
+/// merged into — the pull request you are about to open, before you open it. The files come
+/// from a three-dot diff, so the list matches what the forge will show, and each row opens
+/// that file's diff over the terminal. The commits below are the ones the merge would bring.
+///
+/// A tab of its own rather than a mode hidden inside History: preparing a pull request is
+/// what you do at the end of a branch, and it should not be reachable only by knowing that
+/// History has a picker in it.
+struct GitCompareView: View {
+    @EnvironmentObject var store: TermioStore
+    @ObservedObject var model: GitPanelModel
+
+    let repoRoot: String
+    let chrome: ChromeTheme?
+    let font: Font
+
+    /// The last file diff opened from this list — its row keeps the selected grey after the
+    /// overlay closes (the Issues list's rule), so coming back from a full-screen diff still
+    /// shows which file it was.
+    @State private var lastOpenedPath: String?
+    /// Whether the file list is unfolded. Open by default: with a base picked, the files
+    /// *are* what you came to read.
+    @State private var filesExpanded = true
+
+    var body: some View {
+        VStack(spacing: 0) {
+            CompareBar(model: model, chrome: chrome, onPick: pick)
+            content
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // ← / → walk the open overlay across the files; the last-opened memory chases the
+        // shown file so the grey lands on the right row on close.
+        .onChange(of: store.openDiff) { _, request in
+            if let request, request.range != nil { lastOpenedPath = request.change.path }
+        }
+        .task {
+            if model.compareContext == nil { await model.loadCompareContext() }
+            await restoreBase()
+        }
+        // A checkout in the terminal moves the branch under the pane, and the base is
+        // remembered per branch — so the comparison follows the checkout instead of
+        // measuring the new branch against the old branch's base.
+        .onChange(of: model.compareContext?.branch) { _, _ in
+            Task { await restoreBase() }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let context = model.compareContext, !hasComparableBranches(context) {
+            PaneEmptyState(
+                localized("Nothing to Compare"),
+                icon: .gitBranch,
+                message: localized("This checkout has no other branch to compare with.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if model.compareBaseMissing {
+            PaneEmptyState(
+                localized("Base Branch Missing"),
+                icon: .gitBranch,
+                message: localized("Choose another branch to compare with.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if model.compareContext != nil, model.compareBase == nil {
+            PaneEmptyState(
+                localized("No Base Branch"),
+                icon: .gitBranch,
+                message: localized("Pick the branch this one would merge into.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let compare = model.compare {
+            if compare.files.isEmpty, compare.commits.isEmpty {
+                PaneEmptyState(
+                    localized("No Changes"),
+                    icon: .gitBranch,
+                    message: localized("This branch is even with the branch it would merge into.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView(.vertical) {
+                    // No separators: fixed-height rows + the hover/selection wash do the
+                    // separating, like a modern SwiftUI List (hairlines between every row
+                    // read as legacy chrome in a narrow pane).
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        compareFiles(compare)
+                        SectionLabel(title: localized("Commits"), count: compare.commits.count)
+                        CommitList(commits: compare.commits, repoRoot: repoRoot, chrome: chrome, font: font)
+                    }
+                    // No top inset: the summary row is the file list's header and butts
+                    // against the compare bar's hairline. Inset it and the gap reads as a
+                    // stray empty band above a highlighted row.
+                    .padding(.bottom, 6)
+                }
+            }
+        } else {
+            ProgressView()
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// Whether there is anything to compare against: a branch (not a detached HEAD) and at
+    /// least one other ref.
+    private func hasComparableBranches(_ context: GitService.CompareContext) -> Bool {
+        guard let branch = context.branch else { return false }
+        return context.remoteBranches.contains { $0 != "origin/\(branch)" }
+            || context.localBranches.contains { $0 != branch }
+    }
+
+    /// Applies the base remembered for the current branch, falling back to the suggested
+    /// one the first time a branch is seen — so a feature branch opens already compared
+    /// against the trunk it would merge into.
+    private func restoreBase() async {
+        guard let context = model.compareContext else { return }
+        let remembered = store.gitCompareBases[
+            TermioStore.compareBaseKey(repoRoot: repoRoot, branch: context.branch)]
+        // An empty remembered value is the user having turned the comparison off.
+        let base: String? = remembered.map { $0.isEmpty ? nil : $0 } ?? context.suggestedBase
+        await model.setCompareBase(base)
+    }
+
+    private func pick(_ base: String?) {
+        guard let context = model.compareContext else { return }
+        store.gitCompareBases[
+            TermioStore.compareBaseKey(repoRoot: repoRoot, branch: context.branch)] = base ?? ""
+        filesExpanded = true
+        Task { await model.setCompareBase(base) }
+    }
+
+    /// The comparison's changed files: a foldable summary row over the same file rows the
+    /// commit drill-down uses, each opening the file's three-dot diff across the range —
+    /// the same diff the forge will show on the pull request.
+    @ViewBuilder
+    private func compareFiles(_ compare: GitService.BranchCompare) -> some View {
+        let range = "\(compare.base)...HEAD"
+        CompareSummaryRow(
+            files: compare.files, isExpanded: filesExpanded, chrome: chrome, font: font
+        ) {
+            filesExpanded.toggle()
+        }
+        if filesExpanded {
+            ForEach(compare.files) { file in
+                CommitFileRow(
+                    change: file,
+                    font: font,
+                    chrome: chrome,
+                    isSelected: (store.openDiff?.range == range
+                        && store.openDiff?.change.path == file.path)
+                        || (store.openDiff == nil && lastOpenedPath == file.path)
+                ) {
+                    lastOpenedPath = file.path
+                    store.openDiff = GitDiffRequest(repoRoot: repoRoot, change: file,
+                                                    range: range, siblings: compare.files)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Commit list
+
+/// The commit rows shared by History (the branch's own commits) and Compare (the commits a
+/// merge would bring over): one expandable row per commit, its files underneath.
+private struct CommitList: View {
+    @EnvironmentObject var store: TermioStore
+
+    let commits: [GitCommit]
+    let repoRoot: String
+    let chrome: ChromeTheme?
+    let font: Font
+
+    /// The single expanded commit (one at a time keeps the narrow column legible).
+    @State private var expanded: String?
+    /// Files per commit, fetched lazily on first expand and kept for the session.
+    @State private var filesByCommit: [String: [GitChange]] = [:]
+    /// The last file diff opened from this list, so its row keeps the selected grey after
+    /// the overlay closes.
+    @State private var lastOpenedFile: (sha: String, path: String)?
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(commits) { commit in
+                CommitRow(commit: commit, isExpanded: expanded == commit.sha, chrome: chrome, font: font) {
+                    toggle(commit)
+                }
+                if expanded == commit.sha {
+                    commitFiles(commit)
+                }
+            }
+        }
         // ← / → walk the open overlay across the commit's files; the last-opened
         // memory chases the shown file so the grey lands on the right row on close.
         .onChange(of: store.openDiff) { _, request in
@@ -115,6 +289,171 @@ struct GitHistoryView: View {
                 filesByCommit[commit.sha] = files
             }
         }
+    }
+}
+
+// MARK: - Compare bar
+
+/// The base-branch picker above the history, GitHub Desktop's "Compare to branch": which
+/// branch this one would be merged into. Bases are listed remote-first — a stale local
+/// `main` in a long-lived clone would overstate the diff — and the trailing chip says when
+/// the base has moved on since the last fetch, since nothing here fetches on its own.
+private struct CompareBar: View {
+    @ObservedObject var model: GitPanelModel
+    let chrome: ChromeTheme?
+    let onPick: (String?) -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Menu {
+                if model.compareBase != nil {
+                    Button(localized("Don’t Compare")) { onPick(nil) }
+                    Divider()
+                }
+                if let context = model.compareContext {
+                    let remotes = pinned(
+                        context.remoteBranches.filter { $0 != "origin/\(context.branch ?? "")" },
+                        first: context.suggestedBase)
+                    let locals = pinned(
+                        context.localBranches.filter { $0 != context.branch },
+                        first: context.suggestedBase)
+                    if !remotes.isEmpty {
+                        Section(localized("Remote")) {
+                            ForEach(remotes, id: \.self) { branch in
+                                Button(branch) { onPick(branch) }
+                            }
+                        }
+                    }
+                    if !locals.isEmpty {
+                        Section(localized("Local")) {
+                            ForEach(locals, id: \.self) { branch in
+                                Button(branch) { onPick(branch) }
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    HugeIconView(icon: .gitBranch, size: 10, color: .secondary)
+                    Text(model.compareBase ?? localized("Compare to branch"))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(model.compareBase == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 6)
+                .frame(height: 21)
+                .contentShape(Rectangle())
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color.primary.opacity(hovering ? 0.07 : 0))
+                )
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .onHover { hovering = $0 }
+            .help(localized("Compare this branch with the branch it would merge into."))
+
+            Spacer(minLength: 4)
+
+            if let compare = model.compare, compare.behind > 0 {
+                Text(verbatim: "\(localized("Behind")) (\(compare.behind))")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1.5)
+                    .background(Capsule().strokeBorder(Color.primary.opacity(0.18), lineWidth: 1))
+                    .help(localized("The base branch has commits this branch doesn’t have, as of the last fetch."))
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 30)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)
+        }
+    }
+
+    /// Lifts the branch this checkout would actually merge into to the top of its section.
+    /// The rest stay in `for-each-ref`'s alphabetical order, where a repo with a hundred
+    /// remote branches buries `origin/main` under every `origin/agent/…` ever pushed.
+    private func pinned(_ branches: [String], first: String?) -> [String] {
+        guard let first, let index = branches.firstIndex(of: first) else { return branches }
+        var rest = branches
+        rest.remove(at: index)
+        return [first] + rest
+    }
+}
+
+/// The comparison's header row: how many files the merge would touch and the totals, over
+/// the file list it folds open. Shaped like a commit row so the two read as one list, but
+/// it only lifts on hover — a permanent selection wash would compete with the real
+/// selection on the file rows underneath.
+private struct CompareSummaryRow: View {
+    let files: [GitChange]
+    let isExpanded: Bool
+    let chrome: ChromeTheme?
+    let font: Font
+    let onTap: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 6) {
+                Text(localized("Files changed"))
+                    .font(font)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(verbatim: "\(files.count)")
+                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 6)
+                // Binary files report no counts, so the totals are of what git measured.
+                let additions = files.reduce(0) { $0 + $1.additions }
+                let deletions = files.reduce(0) { $0 + $1.deletions }
+                if additions > 0 { Text(verbatim: "+\(additions)").foregroundStyle(.green) }
+                if deletions > 0 { Text(verbatim: "−\(deletions)").foregroundStyle(.red) }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            }
+            .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(SidebarRowHighlight(isSelected: false, isHovering: isHovering, chrome: chrome))
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+    }
+}
+
+/// A quiet divider label between the comparison's files and its commits.
+private struct SectionLabel: View {
+    let title: String
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Text(title)
+            Text(verbatim: "\(count)")
+                .foregroundStyle(.tertiary)
+        }
+        .font(.system(size: 10, weight: .medium))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

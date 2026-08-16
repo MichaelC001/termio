@@ -63,6 +63,7 @@ struct GitChangesView: View {
             topBar
             switch mode {
             case .changes: changesBody
+            case .compare: GitCompareView(model: model, repoRoot: repoRoot, chrome: chrome, font: settings.interfaceFont)
             case .history: GitHistoryView(model: model, repoRoot: repoRoot, chrome: chrome, font: settings.interfaceFont)
             }
             // Only Changes has a real total to report ("N files +A −D"). History's
@@ -77,8 +78,12 @@ struct GitChangesView: View {
             // which only fires on change and so misses a diff that was already open.
             if let remembered = store.gitPaneModes[repoRoot] { mode = remembered }
             if let request = store.openDiff, request.repoRoot == repoRoot {
-                mode = request.commit == nil ? .changes : .history
-                if request.commit == nil {
+                if request.range != nil {
+                    mode = .compare
+                } else if request.commit != nil {
+                    mode = .history
+                } else {
+                    mode = .changes
                     selection = [request.change.path]
                     lastOpenedPath = request.change.path
                 }
@@ -120,7 +125,10 @@ struct GitChangesView: View {
         // and release a lone selection so clicking the same row reopens its diff. The
         // `openFileURL` guards keep a diff↔preview hand-off from reading as a close.
         .onChange(of: store.openDiff) { _, request in
-            if let request, request.commit == nil {
+            // Only a working-tree diff belongs to this list; a commit's or a branch
+            // comparison's file rows live in their own tab and must not move the
+            // Changes selection under them.
+            if let request, request.commit == nil, request.range == nil {
                 lastOpenedPath = request.change.path
                 if selection != [request.change.path] { selection = [request.change.path] }
             }
@@ -166,6 +174,7 @@ struct GitChangesView: View {
     private var modeSwitch: some View {
         HStack(spacing: 0) {
             segment(localized("Changes"), .changes)
+            segment(localized("Compare"), .compare)
             segment(localized("History"), .history)
         }
         // The selection pill rides behind the active segment and slides across on switch.

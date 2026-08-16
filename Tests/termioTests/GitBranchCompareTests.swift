@@ -1,0 +1,176 @@
+import XCTest
+@testable import termio
+
+/// The branch comparison behind the History tab's compare bar: the diff a pull request
+/// from this branch would carry. Two things here are easy to get wrong and invisible
+/// once wrong — the three-dot range, and `-z` record parsing — so both are pinned.
+final class GitBranchCompareTests: XCTestCase {
+    private var repo: URL!
+
+    override func setUpWithError() throws {
+        repo = FileManager.default.temporaryDirectory
+            .appendingPathComponent("termio-git-compare-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        try git(["init", "-q", "-b", "main"])
+        try git(["config", "user.email", "test@termio.sh"])
+        try git(["config", "user.name", "Test"])
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: repo)
+    }
+
+    // MARK: Range semantics
+
+    /// The comparison must diff from the *merge base*, not from the base branch's tip.
+    /// With a two-dot range, a file that only ever changed on `main` after the branch was
+    /// cut shows up in the branch's list — inverted, as a change the branch never made.
+    func testCompareIgnoresCommitsThatLandedOnTheBaseAfterBranching() async throws {
+        try write("shared.txt", "one\n")
+        try git(["add", "."])
+        try git(["commit", "-qm", "base"])
+
+        try git(["checkout", "-qb", "feature"])
+        try write("feature.txt", "hello\nthere\n")
+        try git(["add", "."])
+        try git(["commit", "-qm", "feature work"])
+
+        try git(["checkout", "-q", "main"])
+        try write("shared.txt", "one\ntwo\n")
+        try git(["commit", "-qam", "moved on"])
+        try git(["checkout", "-q", "feature"])
+
+        let loaded = await GitService.branchCompare(base: "main", in: repo.path)
+        let compare = try XCTUnwrap(loaded)
+        XCTAssertEqual(compare.files.map(\.path), ["feature.txt"])
+        XCTAssertEqual(compare.files.first?.additions, 2)
+        XCTAssertEqual(compare.files.first?.status, .added)
+        XCTAssertEqual(compare.commits.map(\.subject), ["feature work"])
+        // The base moved on by exactly the one commit — surfaced, not silently folded in.
+        XCTAssertEqual(compare.behind, 1)
+    }
+
+    /// A base that was deleted since it was picked reads as "missing", never as an empty
+    /// comparison — an empty file list would say "nothing to review" about work that exists.
+    func testMissingBaseIsNilRatherThanEmpty() async throws {
+        try write("a.txt", "a\n")
+        try git(["add", "."])
+        try git(["commit", "-qm", "one"])
+        let compare = await GitService.branchCompare(base: "origin/gone", in: repo.path)
+        XCTAssertNil(compare)
+    }
+
+    func testSuggestedBaseIsTheBranchTheCheckoutWouldMergeInto() async throws {
+        try write("a.txt", "a\n")
+        try git(["add", "."])
+        try git(["commit", "-qm", "one"])
+        try git(["checkout", "-qb", "feat/x"])
+
+        let context = await GitService.compareContext(in: repo.path)
+        XCTAssertEqual(context.branch, "feat/x")
+        XCTAssertEqual(context.suggestedBase, "main")
+        XCTAssertEqual(context.localBranches.sorted(), ["feat/x", "main"])
+    }
+
+    // MARK: Base resolution
+
+    func testBaseResolutionPrefersTheRemoteDefaultThenRemoteTrunks() {
+        // The remote's recorded default wins outright — it is what the forge will default
+        // the pull request's base to.
+        XCTAssertEqual(
+            GitService.suggestedCompareBase(
+                branch: "feat/x", originHead: "origin/dev",
+                remoteBranches: ["origin/dev", "origin/main"], localBranches: ["main"]),
+            "origin/dev")
+        // Without one, a remote trunk beats the same-named local branch, which in a
+        // long-lived clone is usually stale.
+        XCTAssertEqual(
+            GitService.suggestedCompareBase(
+                branch: "feat/x", originHead: nil,
+                remoteBranches: ["origin/main"], localBranches: ["main", "feat/x"]),
+            "origin/main")
+        // A local trunk is the fallback when nothing is on a remote.
+        XCTAssertEqual(
+            GitService.suggestedCompareBase(
+                branch: "feat/x", originHead: nil,
+                remoteBranches: [], localBranches: ["master", "feat/x"]),
+            "master")
+    }
+
+    func testNoBaseIsSuggestedForTheTrunkItself() {
+        // On `main`, comparing against `origin/main` would answer "what have I not pushed",
+        // which is the History tab's own job — so the pane opens uncompared.
+        XCTAssertNil(
+            GitService.suggestedCompareBase(
+                branch: "main", originHead: "origin/main",
+                remoteBranches: ["origin/main"], localBranches: ["main"]))
+        XCTAssertNil(
+            GitService.suggestedCompareBase(
+                branch: nil, originHead: nil, remoteBranches: [], localBranches: ["main"]))
+    }
+
+    // MARK: `-z` record parsing
+
+    /// `--numstat -z` writes a rename as an empty path field followed by the old and new
+    /// paths as their own records, and binary files as `-` counts. Both must survive, and
+    /// paths must arrive unquoted so they match the ones the diff overlay addresses.
+    func testRangeChangesParsesRenamesBinariesAndAwkwardPaths() {
+        let numstat = [
+            "3\t1\tSources/a.swift",
+            "0\t0\t", "old name.swift", "new name.swift",
+            "-\t-\tassets/icon.png",
+            "0\t9\tgone.txt",
+        ].joined(separator: "\0") + "\0"
+        let nameStatus = [
+            "M", "Sources/a.swift",
+            "R096", "old name.swift", "new name.swift",
+            "M", "assets/icon.png",
+            "D", "gone.txt",
+        ].joined(separator: "\0") + "\0"
+
+        let changes = GitService.rangeChanges(numstat: numstat, nameStatus: nameStatus)
+        XCTAssertEqual(changes.map(\.path),
+                       ["assets/icon.png", "gone.txt", "new name.swift", "Sources/a.swift"])
+
+        let renamed = changes.first { $0.path == "new name.swift" }
+        XCTAssertEqual(renamed?.status, .renamed)
+        XCTAssertEqual(renamed?.originalPath, "old name.swift")
+
+        let binary = changes.first { $0.path == "assets/icon.png" }
+        XCTAssertEqual(binary?.isBinary, true)
+        XCTAssertEqual(binary?.additions, 0)
+
+        let deleted = changes.first { $0.path == "gone.txt" }
+        XCTAssertEqual(deleted?.status, .deleted)
+        XCTAssertEqual(deleted?.deletions, 9)
+
+        let modified = changes.first { $0.path == "Sources/a.swift" }
+        XCTAssertEqual(modified?.status, .modified)
+        XCTAssertEqual(modified?.additions, 3)
+        XCTAssertEqual(modified?.deletions, 1)
+        XCTAssertEqual(modified?.isBinary, false)
+    }
+
+    func testRangeChangesIsEmptyForAnEmptyDiff() {
+        XCTAssertTrue(GitService.rangeChanges(numstat: "", nameStatus: "").isEmpty)
+    }
+
+    // MARK: Helpers
+
+    private func git(_ args: [String]) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = args
+        process.currentDirectoryURL = repo
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0, "git \(args.joined(separator: " ")) failed")
+    }
+
+    private func write(_ relative: String, _ contents: String) throws {
+        let url = repo.appendingPathComponent(relative)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(contents.utf8).write(to: url)
+    }
+}

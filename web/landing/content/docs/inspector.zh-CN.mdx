@@ -3,7 +3,7 @@ title: 检查器
 description: 浏览文件、带语法高亮地编辑、读 git 差异、搜索项目——一整块侧面板，永不把你从终端里拽出来。
 x-i18n:
   source_path: inspector.mdx
-  source_hash: affcce1214632250f4d7a06f5f39e4136484a8cb3f92313aea7cfb880a25cd2f
+  source_hash: b819a8f91967d9a35cbb611110137c5c886ccbd42c4fb62e67ecc4c0689fd1ad
   generated_at: 2026-08-16
 ---
 
@@ -31,9 +31,11 @@ x-i18n:
 
 ## 更改
 
-git 面板有两个只读标签：
+git 面板有三个只读标签：
 
 - **更改** —— 当前的差异，以清晰的统一视图渲染。
+- **对比** —— 当前分支相对它将要合入的分支：一个 PR 会带过去的文件和提交，从合并基点
+  算差异，所以列表和平台上看到的一致。
 - **历史** —— 最近的提交，带作者头像、可展开的文件列表和逐个提交的差异。
 
 <DocsImage

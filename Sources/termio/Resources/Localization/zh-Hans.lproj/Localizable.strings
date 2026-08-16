@@ -134,6 +134,10 @@
 	<string>仅当 Termio 从构建的应用包运行时可用。</string>
 	<key>Bar</key>
 	<string>竖线</string>
+	<key>Base Branch Missing</key>
+	<string>找不到基础分支</string>
+	<key>Behind</key>
+	<string>落后</string>
 	<key>Binary File</key>
 	<string>二进制文件</string>
 	<key>Binary file — open it on GitHub to view.</key>
@@ -172,6 +176,8 @@
 	<string>请选取其他名称。</string>
 	<key>Choose a project folder to open in Termio.</key>
 	<string>选取要在 Termio 中打开的项目文件夹。</string>
+	<key>Choose another branch to compare with.</key>
+	<string>请另选一个用于对比的分支。</string>
 	<key>Choose how projects are ordered</key>
 	<string>选取项目的排序方式</string>
 	<key>Choose…</key>
@@ -208,8 +214,16 @@
 	<string>命令行工具</string>
 	<key>Commit or discard the changes in “%@” before removing it.</key>
 	<string>移除前请先提交或放弃“%@”中的更改。</string>
+	<key>Commits</key>
+	<string>提交</string>
 	<key>Community</key>
 	<string>社区</string>
+	<key>Compare</key>
+	<string>对比</string>
+	<key>Compare this branch with the branch it would merge into.</key>
+	<string>把当前分支与它将要合入的分支做对比。</string>
+	<key>Compare to branch</key>
+	<string>对比分支</string>
 	<key>Config file</key>
 	<string>配置文件</string>
 	<key>Connect</key>
@@ -326,6 +340,8 @@
 	<string>Discord、GitHub 与微信群</string>
 	<key>Done</key>
 	<string>完成</string>
+	<key>Don’t Compare</key>
+	<string>不对比</string>
 	<key>Draft</key>
 	<string>草稿</string>
 	<key>Drag the list to change the order agents appear in.</key>
@@ -358,6 +374,8 @@
 	<string>文件</string>
 	<key>Files</key>
 	<string>文件</string>
+	<key>Files changed</key>
+	<string>变更文件</string>
 	<key>Filter</key>
 	<string>过滤</string>
 	<key>Find</key>
@@ -480,6 +498,8 @@
 	<string>Agent 实时状态</string>
 	<key>Live agent status is off</key>
 	<string>Agent 实时状态已关闭</string>
+	<key>Local</key>
+	<string>本地</string>
 	<key>Login shell</key>
 	<string>登录 shell</string>
 	<key>Match Case</key>
@@ -548,6 +568,8 @@
 	<string>下一个会话</string>
 	<key>No Agents Enabled</key>
 	<string>未启用任何 Agent</string>
+	<key>No Base Branch</key>
+	<string>未选择基础分支</string>
 	<key>No Changes</key>
 	<string>没有更改</string>
 	<key>No Diff</key>
@@ -608,6 +630,8 @@
 	<string>未连接</string>
 	<key>Not pushed to upstream</key>
 	<string>尚未推送到上游</string>
+	<key>Nothing to Compare</key>
+	<string>没有可对比的分支</string>
 	<key>Nothing to install.</key>
 	<string>没有可安装的内容。</string>
 	<key>Notifications</key>
@@ -660,6 +684,8 @@
 	<string>权限</string>
 	<key>Pick a file on the left to see its changes.</key>
 	<string>在左侧选择一个文件以查看其更改。</string>
+	<key>Pick the branch this one would merge into.</key>
+	<string>选择这个分支将要合入的分支。</string>
 	<key>Pin</key>
 	<string>固定</string>
 	<key>Pin Termio to a light or dark look, or follow the system. The light and dark terminal themes below apply to the matching appearance.</key>
@@ -730,6 +756,8 @@
 	<string>重新启动 Termio 以切换语言？</string>
 	<key>Reload</key>
 	<string>重新载入</string>
+	<key>Remote</key>
+	<string>远程</string>
 	<key>Remote session</key>
 	<string>远程会话</string>
 	<key>Remove</key>
@@ -914,6 +942,8 @@
 	<string>SSH 连接已关闭。请在终端中重新连接，然后刷新。</string>
 	<key>The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.</key>
 	<string>新建聊天（⌘N）启动的 Agent。“上次使用”跟随你最近一次聊天所用的 Agent。</string>
+	<key>The base branch has commits this branch doesn’t have, as of the last fetch.</key>
+	<string>截至上次 fetch，基础分支上有当前分支还没有的提交。</string>
 	<key>The coding agents offered when you start a session</key>
 	<string>新建会话时可以选用的编程 Agent</string>
 	<key>The folder was removed, but git couldn’t prune its stale worktree metadata.</key>
@@ -938,6 +968,10 @@
 	<string>加粗字形</string>
 	<key>This branch has no commits yet.</key>
 	<string>此分支还没有提交。</string>
+	<key>This branch is even with the branch it would merge into.</key>
+	<string>当前分支与它将要合入的分支没有差异。</string>
+	<key>This checkout has no other branch to compare with.</key>
+	<string>这个检出没有其他分支可以对比。</string>
 	<key>This diff is too large to show here — open the file on GitHub.</key>
 	<string>此差异太大，无法在此显示，请在 GitHub 上打开该文件。</string>
 	<key>This file is binary — open it on GitHub to view.</key>
