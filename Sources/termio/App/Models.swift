@@ -327,6 +327,27 @@ struct Session: Identifiable, Hashable, Codable {
     /// is nil.
     var termiodRemoteCwd: String?
 
+    /// Adopt another session's machine — both halves of it.
+    ///
+    /// A device has two identities during its life (device architecture §9.5):
+    /// the SSH alias it was *authored* against, known before anything connects,
+    /// and the `deviceID` the first `hello_ok` reveals. A session derived from
+    /// another — a split, and every future "open beside this" verb — has to
+    /// carry both, or it lands on this Mac while sitting in a pane that reads
+    /// as the same machine.
+    ///
+    /// This helper exists so the copying happens in one place rather than at
+    /// each call site: **when sessions stop naming a host and take their device
+    /// from the container that owns them, this method is the only thing to
+    /// delete.** Spreading `termiodRemoteHost = …` across call sites is what
+    /// makes that migration expensive, and it is the fork the RFC removes.
+    mutating func inheritDevice(from origin: Session?) {
+        guard let origin else { return }
+        deviceID = origin.deviceID
+        termiodRemoteHost = origin.termiodRemoteHost
+        termiodRemoteCwd = origin.termiodRemoteCwd
+    }
+
     /// The last working directory the shell reported over OSC 7, persisted for
     /// sessions in the loose-terminals container only: a loose terminal's identity
     /// is the session, its path is this mutable property — so a relaunched shell
