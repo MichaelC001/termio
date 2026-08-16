@@ -12,6 +12,13 @@ Termio uses Ghostty-format themes, so anything from the wider Ghostty theme
 ecosystem works. Pick a light and a dark theme from **Settings ▸ Appearance** and
 Termio follows the system between them.
 
+<DocsImage
+  src="/screenshots/docs/15-appearance-settings.png"
+  alt="Termio Appearance settings with System, Light, and Dark modes and separate light and dark terminal theme slots"
+  width={1664}
+  height={1288}
+/>
+
 If you already use Ghostty, there's nothing to pick on a fresh install: Termio
 reads your `~/.config/ghostty/config` on first launch and starts with the font and
 theme you chose there.
@@ -19,6 +26,13 @@ theme you chose there.
 To browse the catalog with your terminals as the preview, open the Command Palette
 (`⇧⌘P`) and pick **Change Theme…** — arrowing through the list restyles your open
 terminals live, Return keeps the theme, Escape puts it back.
+
+<DocsImage
+  src="/screenshots/docs/14-change-theme.png"
+  alt="The Change Theme palette over a Termio terminal with Catppuccin Latte selected and applied"
+  width={2424}
+  height={1664}
+/>
 
 To add your own, drop a Ghostty `.toml` theme file into:
 

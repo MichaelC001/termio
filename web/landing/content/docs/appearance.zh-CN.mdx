@@ -3,8 +3,8 @@ title: 外观
 description: 设置终端主题与字体、调整光标和窗口，并找到 Termio 其余的设置项——全都在一个熟悉的 macOS 设置窗口里。
 x-i18n:
   source_path: appearance.mdx
-  source_hash: 70be73fc10ae7cedef59f6507d98843f292770981f700d88efeddb0704db8d0a
-  generated_at: 2026-08-10
+  source_hash: 4d950cf23eea003c895983442da834003925a0c1f643eaa463f20b70294485c6
+  generated_at: 2026-08-16
 ---
 
 用 `⌘,` 打开 **设置**。这是一个标准的 macOS 设置窗口，左侧一列标签页；**外观** 就是
@@ -15,11 +15,25 @@ x-i18n:
 Termio 使用 Ghostty 格式的主题，所以 Ghostty 主题生态里的东西都能用。在
 **设置 ▸ 外观** 里各选一个浅色和深色主题，Termio 会跟随系统在两者之间切换。
 
+<DocsImage
+  src="/screenshots/docs/15-appearance-settings.png"
+  alt="Termio 外观设置显示「系统」「浅色」「深色」模式，以及独立的浅色和深色终端主题槽位"
+  width={1664}
+  height={1288}
+/>
+
 如果你本来就在用 Ghostty，全新安装时其实不用挑：Termio 首次启动会读取你的
 `~/.config/ghostty/config`，直接沿用你在那里选好的字体和主题。
 
 想以你自己的终端为预览来浏览整个目录，打开命令面板（`⇧⌘P`）并选择 **更改主题…**——
 在列表里上下移动会实时给你打开的终端重新上色，回车保留，Esc 还原。
+
+<DocsImage
+  src="/screenshots/docs/14-change-theme.png"
+  alt="「更改主题」面板覆盖在 Termio 终端上，Catppuccin Latte 已选中并应用"
+  width={2424}
+  height={1664}
+/>
 
 要加入你自己的主题，把 Ghostty 的 `.toml` 主题文件放进：
 

@@ -3,8 +3,8 @@ title: 自定义 Agent
 description: 往 ~/.termio/config/agents 里放一个小小的 JSON 清单，就能让 Termio 认识任何命令行工具——给它名字、图标和实时状态识别，它就和内置 Agent 一样是一等公民。
 x-i18n:
   source_path: custom-agents.mdx
-  source_hash: 2c4e0ac0c0bff32c2af308b27b1fd120d044bffdee8a6e45a2e0341e8be12311
-  generated_at: 2026-08-10
+  source_hash: 36b5baf646e8763d991681d0e60e28fea955d3e20afe03d506eb907f0faeef00
+  generated_at: 2026-08-16
 ---
 
 Termio 内置了常见的编程 Agent，但这个目录是开放的：任何命令行工具都能成为一等 Agent。
@@ -37,6 +37,13 @@ Termio 内置了常见的编程 Agent，但这个目录是开放的：任何命�
 Termio **只在启动时读取一次**这个文件夹，所以添加或修改清单后请重启应用。之后你在任何
 新建会话的地方都能看到它；像其他 Agent 一样，从 **设置 ▸ Agent** 里启用、排序或调整
 它的命令。
+
+<DocsImage
+  src="/screenshots/docs/26-custom-agent.png"
+  alt="Termio Agent 设置选中自定义 Review Agent，并显示由清单提供的命令、状态模式和删除操作"
+  width={1664}
+  height={1288}
+/>
 
 <Callout type="tip">
   用内置 Agent 的 `id`（例如 `claudeCode`）作为文件名可以**覆盖**它——想通过包装脚本

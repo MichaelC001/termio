@@ -3,8 +3,8 @@ title: 命令面板与快速打开
 description: 两个键盘面板让你不用鼠标也能驱动 Termio——命令面板执行任何操作，快速打开跳到任意会话、项目或文件。
 x-i18n:
   source_path: navigation.mdx
-  source_hash: a8448107eae41774649700affe38c6b264e77ebf99245109d948d01db8b24731
-  generated_at: 2026-08-10
+  source_hash: 49790c84598d4f1534e5fdfb1b3afacb0ae19987e5065135734398519732a79a
+  generated_at: 2026-08-16
 ---
 
 Termio 有两个覆盖面板，让你的手留在键盘上。一个执行*操作*，另一个跳到*东西*。两者都是
@@ -24,6 +24,13 @@ Agent，应用能做的都在这里。
 它同时是*学*快捷键的地方：每条命令都把自己的按键组合列在旁边，于是你今天用的面板，
 教你明天要按的键。
 
+<DocsImage
+  src="/screenshots/docs/10-command-palette.png"
+  alt="Termio 命令面板筛选出拆分操作，首项已选中，快捷键在右侧对齐"
+  width={2424}
+  height={1664}
+/>
+
 ## 快速打开 —— `⇧⌘O`
 
 按 `⇧⌘O` 跳转。快速打开会同时搜索三类目标，分组显示：
@@ -32,6 +39,13 @@ Agent，应用能做的都在这里。
 - **最近** —— 你打开过的项目和文件夹，一次按键就能重新打开。
 - **文件** —— 一旦你开始输入，就会搜索当前项目的文件（来自 `git ls-files`，因此被忽略
   的路径不会出现），直接在编辑器里打开。
+
+<DocsImage
+  src="/screenshots/docs/11-open-quickly.png"
+  alt="Termio「快速打开」用 SplitTree 同时搜索到一个会话和多个项目文件"
+  width={2424}
+  height={1664}
+/>
 
 它是命令面板「做任何事」的另一半：「跳到任何地方」。如果你想搜的是文件*内容*而不是
 文件名，用检查器的 [搜索标签](/zh-CN/docs/inspector#search)。

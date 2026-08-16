@@ -3,8 +3,8 @@ title: 核心概念
 description: Termio 由四个名词构成——项目、会话、窗格、worktree——再加上一套状态模型，告诉你哪个 Agent 需要你。
 x-i18n:
   source_path: concepts.mdx
-  source_hash: 66c4578358665991f506ac41f0fd4306d18cf272a564c40f18e815b437886618
-  generated_at: 2026-08-10
+  source_hash: 79ea4374780c6376ba9d3b511d3d106a5f7b079102836325309fc3962cd4ffc2
+  generated_at: 2026-08-16
 ---
 
 Termio 是一个用来同时运行多个编程 Agent 的终端。应用里的一切都由四个名词和一套状态
@@ -44,6 +44,13 @@ Termio 是一个用来同时运行多个编程 Agent 的终端。应用里的一
 窗格是视图层面的概念，不是第二种会话：窗格里的东西是一个完整的会话，有自己的侧栏行和
 自己的状态。这也是为什么动词是 **编组到** 和 **取消编组**，而不是「拆分」和「关闭窗格」
 ——编组改变的是会话怎么排布，不是它们是什么。
+
+<DocsImage
+  src="/screenshots/docs/03-grouped-panes.png"
+  alt="一个 Termio 项目包含三个已编组的窗格，分别显示 Agent、拆分树测试和文档预览"
+  width={2424}
+  height={1664}
+/>
 
 绑定见 [键盘快捷键](/zh-CN/docs/keyboard#panes)。
 
