@@ -190,14 +190,16 @@ enum GitService {
         /// no answer, so the pane offers no comparison.
         let branch: String?
         /// Remote-tracking refs (`origin/main`), the honest bases: a stale local `main`
-        /// would silently overstate the diff. The branch's own upstream is filtered out —
-        /// comparing a branch with the ref it tracks is not a pull request.
+        /// would silently overstate the diff. The branch's own upstream stays in the list —
+        /// `origin/main` from a checkout of `main` answers "what haven't I pushed", which is
+        /// a comparison worth making, and dropping it left a trunk checkout with no base to
+        /// pick at all.
         let remoteBranches: [String]
         /// Local branches other than the checkout's own.
         let localBranches: [String]
-        /// The base to preselect: the remote's recorded default branch, else the first
-        /// conventional trunk name that exists. `nil` when the checkout *is* the trunk —
-        /// there is nothing to open a pull request against.
+        /// The base to preselect, and the ref the picker lifts to the top of its section:
+        /// the remote's recorded default branch, else the first conventional trunk name
+        /// that exists. `nil` only when neither is there to pick.
         let suggestedBase: String?
     }
 
@@ -245,12 +247,6 @@ enum GitService {
         let head = run(["rev-parse", "--abbrev-ref", "HEAD"], in: repoRoot)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let branch = (head == "HEAD" || head?.isEmpty == true) ? nil : head
-        // The ref this branch tracks, whatever the remote is called. Filtering the literal
-        // `origin/<branch>` instead would leave a fork's `upstream/<branch>` in the list —
-        // offered as a base even though comparing a branch with its own upstream is the
-        // Changes-and-History question ("what haven't I pushed"), not a pull request.
-        let upstream = run(["rev-parse", "--abbrev-ref", "@{upstream}"], in: repoRoot)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
         var locals: [String] = []
         var remotes: [String] = []
         // Full refnames, not `%(refname:short)`: a local `feat/x` and a remote `origin/main`
@@ -258,12 +254,14 @@ enum GitService {
         for ref in (run(["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes"], in: repoRoot) ?? "")
             .split(separator: "\n").map(String.init) {
             if ref.hasPrefix("refs/heads/") {
+                // The checkout's own branch is the only ref that can't be a base: a branch
+                // compared with itself is always empty.
                 let short = String(ref.dropFirst("refs/heads/".count))
                 if short != branch { locals.append(short) }
             } else if ref.hasPrefix("refs/remotes/") {
                 let short = String(ref.dropFirst("refs/remotes/".count))
                 // `origin/HEAD` is a symbolic pointer at the default branch, not a branch.
-                if !short.hasSuffix("/HEAD"), short != upstream { remotes.append(short) }
+                if !short.hasSuffix("/HEAD") { remotes.append(short) }
             }
         }
         let originHead = run(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], in: repoRoot)?
@@ -282,18 +280,21 @@ enum GitService {
     /// (`origin/HEAD`, what the forge will default the pull request's base to), then the
     /// conventional trunk names — preferring `origin/main` over a local `main`, which in a
     /// long-lived clone is usually months stale and would invent changes the branch never made.
-    /// The branch is never compared against itself, so a checkout of the trunk gets `nil` —
-    /// as does a detached HEAD, which has no branch to open a pull request from.
+    ///
+    /// A checkout of the trunk gets `origin/main` rather than nothing: the comparison then
+    /// reads "what haven't I pushed", which is worth showing, and the tab used to open on a
+    /// dead end — telling the user to pick a base while the trunk was filtered out of the
+    /// menu. Only a local branch is skipped when it *is* the checkout (a branch compared
+    /// with itself is always empty), and a detached HEAD has no branch to compare at all.
     static func suggestedCompareBase(
         branch: String?, originHead: String?,
         remoteBranches: [String], localBranches: [String]
     ) -> String? {
         guard let branch else { return nil }
-        if let originHead, remoteBranches.contains(originHead),
-           remoteBranchName(originHead) != branch { return originHead }
-        for name in trunkBranchNames where name != branch {
+        if let originHead, remoteBranches.contains(originHead) { return originHead }
+        for name in trunkBranchNames {
             if let remote = remoteBranches.first(where: { remoteBranchName($0) == name }) { return remote }
-            if localBranches.contains(name) { return name }
+            if name != branch, localBranches.contains(name) { return name }
         }
         return nil
     }
