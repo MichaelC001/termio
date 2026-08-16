@@ -308,10 +308,13 @@ private struct CommitList: View {
 
 // MARK: - Compare bar
 
-/// The base-branch picker above the history, GitHub Desktop's "Compare to branch": which
+/// The base-branch picker above the file list, GitHub Desktop's "Compare to branch": which
 /// branch this one would be merged into. Bases are listed remote-first — a stale local
 /// `main` in a long-lived clone would overstate the diff — and the trailing chip says when
 /// the base has moved on since the last fetch, since nothing here fetches on its own.
+///
+/// No hairline under it: the mode switch above draws none either, and over an empty state
+/// a rule with nothing beneath it reads as a stray line rather than a boundary.
 private struct CompareBar: View {
     @ObservedObject var model: GitPanelModel
     let chrome: ChromeTheme?
@@ -386,9 +389,6 @@ private struct CompareBar: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 30)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)
-        }
     }
 
     /// Lifts the branch this checkout would actually merge into to the top of its section.
