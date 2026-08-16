@@ -11,11 +11,13 @@ enum InspectorTab: String, Hashable, Sendable, Codable {
     case files, search, changes, issues, info
 }
 
-/// The git pane's own inner switch: the working-tree changes, or the commit
-/// history — GitHub Desktop's Changes / History split. Committing lives in the
-/// terminal; the GUI is for staging, reviewing diffs, and reading history.
+/// The git pane's own inner switch, in scope order: what isn't committed yet, what
+/// this branch would merge into another (the pull request about to be opened), and
+/// the commit history — GitHub Desktop's Changes / History split with its branch
+/// comparison promoted beside them. Committing lives in the terminal; the GUI is for
+/// staging, reviewing diffs, and reading history.
 enum GitPaneMode: Hashable, Sendable {
-    case changes, history
+    case changes, compare, history
 }
 
 /// One changed file in the working tree, as reported by `git status`. `path` is

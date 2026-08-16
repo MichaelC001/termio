@@ -321,6 +321,18 @@ final class TermioStore: ObservableObject {
     /// so the pane resumes from here instead. In-memory only, like the registry.
     var gitPaneModes: [String: GitPaneMode] = [:]
 
+    /// The base branch the git pane's History tab compares against, per repo *and branch*
+    /// (`compareBaseKey`). Per branch, not per repo: the base is a property of the branch —
+    /// a feature branch cut from `main` and a stacked one cut from that feature branch
+    /// merge into different places, and one shared slot would mislabel every second
+    /// checkout. An empty value means the user turned the comparison off for that branch,
+    /// which must outlast a remount too. In-memory only, like `gitPaneModes`.
+    var gitCompareBases: [String: String] = [:]
+
+    static func compareBaseKey(repoRoot: String, branch: String?) -> String {
+        "\(repoRoot)\u{1f}\(branch ?? "")"
+    }
+
     /// Whether the selected session is running a coding agent (not a plain shell) —
     /// gates the file tree's "Add to Chat" row action.
     var selectedSessionRunsAgent: Bool {

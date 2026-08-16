@@ -8,6 +8,7 @@ related:
   - 20260805-termiod-device-architecture.md
   - 20260730-termiod-session-protocol.md
   - 20260805-termiod-hot-path-and-client-classes.md
+  - remote-to-device.decisions.md
 ---
 
 # Every machine is a device, every place you work is a project
@@ -64,6 +65,11 @@ this RFC retires, and the draft did not mention it.
 | Never embed SSH or crypto; the user's `~/.ssh/config` is authoritative — read it, **never override it** | `CLAUDE.md` #3, protocol §H #8 |
 | A viewer connects to the device it is showing, never through another viewer | device architecture §2.1 |
 | One protocol, versioned, transport-agnostic — no second protocol for the phone | protocol §H #9 |
+
+That SSH row was previously paraphrased here as "never write it", which is
+stricter than the rule actually says (`CLAUDE.md:43-44`). The distinction is
+load-bearing: appending a user-authorised `Host` block does not override
+anything, which is what keeps the shipped **Add Host** legitimate.
 
 ---
 
@@ -304,6 +310,38 @@ one-machine user is the one most likely to have no alternative when the local
 daemon fails (review-codex §6). The promise is *no steady-state tax*, not
 literal absence.
 
+**Against one list: the coexistence decision.** `remote-to-device.decisions.md`
+§1, written against the first draft, decided the opposite — that
+`Settings ▸ SSH` and `Settings ▸ Devices` **coexist**, split at the handshake:
+
+> `Settings ▸ SSH` owns **routes** — anything meaningful *before* `hello_ok`,
+> keyed by an SSH alias, or affecting how OpenSSH resolves and authenticates.
+> `Settings ▸ Devices` owns **identities** — anything learned *after*
+> `hello_ok`, keyed by `host_id`, or describing termiod, device lifecycle and
+> device preferences. A value is never persisted in both.
+
+Its argument is that an alias can exist before any device is known and one
+`host_id` can be reached through several aliases, so a single list must either
+invent device rows for unresolved routes or hide a second route model inside each
+device — the two-copies problem under one tab. Its accepted cost is that two tabs
+read as competing machine lists.
+
+This revision keeps the key rule and rejects the split. **The rule survives as a
+field-placement test** — routes are re-resolved from `~/.ssh/config`, identities
+live in `devices.json`, and no value is persisted in both (§3) — but a rule about
+where a *field* lives does not require two *tabs*. The unresolved-route case is
+not invented away here: §4.1 and the table above state it plainly, a row is a
+machine where one is known and a route where it is not, which is the same
+imprecision the coexistence decision routes around by hiding it in a second tab.
+One list makes it visible once instead of asking the user to learn which tab a
+machine is currently in.
+
+One divergence must be recorded rather than absorbed: the decisions doc also says
+**"Add Host. Remove it."** That is answered by §0 — `AddSSHHostSheet` ships and
+appends a real `Host` block, `CLAUDE.md` #3 says *never override*, not *never
+write*, and the decisions doc's own RFC edit says "Add Host stays in SSH". Add
+Host stays, in the Machines tab.
+
 ---
 
 ## 5. Readiness — one vocabulary, named once
@@ -352,6 +390,20 @@ Two consequences, both scheduled:
    master, one field on the `list` reply. Then the rule the product already
    believes in works on every device, which is this RFC's whole thesis applied to
    a guardrail.
+
+   It rides as an **optional additive field** on the existing session payload and
+   needs no `proto` bump: the protocol already treats unknown control ops and
+   events as ignorable, and its `caps` and error codes as additive
+   (`remote-to-device.decisions.md` §2). **Skew rule:** an older daemon that omits
+   the field preserves today's no-confirm behaviour. It must never be read as
+   "unknown, so confirm", which would tax every close on exactly the sessions the
+   shipped rule deliberately exempts. Both directions — old client / new daemon
+   and new client / old daemon — are tested.
+
+   Accepted cost, stated in the decisions doc and not reduced here: this turns a
+   vocabulary-and-UI RFC into a shipped Rust/Swift protocol change carrying
+   version-skew semantics. Splitting it out would not remove the dependency, only
+   let the convergence plan claim a parity it does not have.
 2. **That field is a precondition for deleting `TERMIO_TERMIOD`.** Retiring the
    flag deletes the in-process path, `ptyProcesses` becomes permanently empty,
    and the confirmation silently disappears **for every session on every device,
@@ -520,6 +572,19 @@ as an exception.
 
 The draft's ordering was reversed against architecture §8. Corrected: the fork
 dies before the vocabulary changes, and the connection object comes before both.
+The architecture doc orders the work — own the connection → delete the fork,
+including `TERMIO_TERMIOD` → device switcher — and marks the switcher *"Only
+meaningful after step 5 — before it, local is still a special case"*
+(`20260805-termiod-device-architecture.md:513-531`). That document is listed
+above under "do not reopen", so the RFC cannot contradict its ordering.
+
+The reversal is not academic. `Termiod.isEnabled` reads the flag
+(`TermiodClient.swift:17-20`) and surface creation still chooses between termiod
+and an in-process `PTYProcess` (`TermioStore+TerminalSurface.swift:214-231`), so
+with the flag off, opening on a non-local device stops at an alert reading *"Set
+TERMIO_TERMIOD=1 and relaunch termio"* (`TermioStore+Termiod.swift:468-476`). Any
+device-naming surface above that fork names a machine the product cannot open a
+session on.
 
 ### Stage 0 — prerequisites (no UI change)
 
@@ -621,6 +686,21 @@ route, and no alias left in `~/.ssh/config` does not count toward "more than one
 4. **Merge on the same Mac** (§9.5, §9.1): the dev and release channels are two
    `host_id`s on one machine, so merge is not only a cross-route feature. Not
    reopened here; noted because Settings ▸ Machines is where it surfaces.
+
+### 10.1 The first draft's questions, and where each went
+
+The pre-rewrite draft carried seven. None is silently dropped; two were settled in
+`remote-to-device.decisions.md` and the rest are answered by the model in §1.
+
+| Draft question | Disposition |
+| --- | --- |
+| 1. Colour assignment — auto-assign from a palette or let the user pick | **Dissolved.** §1.1 removes device colour entirely; sidebar colour means workstream status and nothing else |
+| 2. How far colour bleeds — chrome only, or the whole space | **Dissolved** with it. The presentation boundary still stands: the viewer decides, and nothing tints the grid |
+| 3. Guardrail strength on a non-local device | **Closed, and the question was wrong.** All three proposals were the local/remote fork wearing a warning triangle. §6 keys confirmation on irreversibility and blast radius, never on locality, and names the live defect: today the non-local session has *less* protection, not more |
+| 4. Does `Connect to…` belong in the `+` menu | **Answered by §4.1.** There is no `Connect to…`; `New Terminal on…` takes the slot `New Remote Terminal` occupies today, and the dead-end `(No SSH hosts in ~/.ssh/config)` row it complained about is replaced by `Add Host…` and `Other…` |
+| 5. Does `Settings ▸ Devices` subsume `Settings ▸ SSH` | **Decided coexist** in `remote-to-device.decisions.md` §1; §4.2 keeps that decision's key rule as a field-placement test and argues one tab instead of two, with the divergence and the Add Host reversal recorded there |
+| 6. Does foreground-job parity belong in this RFC | **Decided yes** in `remote-to-device.decisions.md` §2, and it gates the fork deletion. Carried as stage 0d (§8) with the additive-field and skew rules in §6 |
+| 7. What does an unreachable device look like | **Answered by §5.** Five named states with shipped copy, no eager probing, and one owner — the device's `TermiodConnection` |
 
 ---
 

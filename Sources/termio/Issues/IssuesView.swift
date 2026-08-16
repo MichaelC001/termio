@@ -331,6 +331,11 @@ struct IssuesView: View {
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 1)
+            // A kind or filter change swaps the whole data set under one table, and the
+            // reused table keeps the previous list's scroll offset and row metrics — a
+            // pane that draws nothing until a remount. Fresh identity rebuilds it.
+            // Revalidating the same query keeps its identity, so no flicker.
+            .id(model.query)
         }
     }
 

@@ -24,6 +24,19 @@ final class GitPanelModel: ObservableObject {
     @Published var isLoadingHistory = false
     private var didLoadHistory = false
 
+    /// The branch and the refs it can be compared against, for the Compare tab's base
+    /// picker. Nil until that tab is first opened; re-read whenever the git dir changes,
+    /// so a checkout in the terminal moves the picker with it.
+    @Published var compareContext: GitService.CompareContext?
+    /// The base the Compare tab is measuring the branch against.
+    @Published private(set) var compareBase: String?
+    /// `nil` while a comparison is loading — the Compare tab shows a spinner then, so no
+    /// separate loading flag is needed.
+    @Published private(set) var compare: GitService.BranchCompare?
+    /// Why the comparison couldn't be made, when it couldn't. Held as its own state so the
+    /// pane can say so — an empty file list would read as "nothing to review".
+    @Published private(set) var compareProblem: GitService.CompareProblem?
+
     private var watcher: FolderEventStream?
     private var appActiveObserver: AnyCancellable?
     private var refreshDebounce: Task<Void, Never>?
@@ -137,6 +150,45 @@ final class GitPanelModel: ObservableObject {
         isLoadingHistory = false
     }
 
+    // MARK: Branch compare
+
+    /// Re-reads the branch and the bases it can be compared against. Cheap enough to run
+    /// on every history refresh: three `git` reads of refs, no diff.
+    func loadCompareContext() async {
+        compareContext = await GitService.compareContext(in: repoRoot)
+    }
+
+    /// Points the Compare tab at a base branch (or `nil` for none) and loads the
+    /// comparison. The base itself is remembered by the view, per branch.
+    func setCompareBase(_ base: String?) async {
+        guard base != compareBase else { return }
+        compareBase = base
+        compare = nil
+        compareProblem = nil
+        await loadCompare()
+    }
+
+    /// Loads the diff and commits between the branch and its base. A base picked while a
+    /// load is in flight wins: the stale result is dropped rather than published under the
+    /// new base's label.
+    func loadCompare() async {
+        guard let base = compareBase else {
+            compare = nil
+            compareProblem = nil
+            return
+        }
+        let outcome = await GitService.branchCompare(base: base, in: repoRoot)
+        guard compareBase == base else { return }
+        switch outcome {
+        case .ready(let loaded):
+            compare = loaded
+            compareProblem = nil
+        case .problem(let problem):
+            compare = nil
+            compareProblem = problem
+        }
+    }
+
     /// Replays a refresh that was deferred while the pane was hidden. Called by the
     /// view when the pane (re)appears, so the shown list is never stale.
     func flushDeferredRefresh() {
@@ -195,6 +247,15 @@ final class GitPanelModel: ObservableObject {
             guard let self, !Task.isCancelled else { return }
             await self.load()
             if includeHistory, self.didLoadHistory { await self.loadHistory(force: true) }
+            // A commit, a checkout, or a fetch all land as git-dir events, and each one
+            // moves the comparison: new commits ahead, a different branch, a base that
+            // just gained commits. Gated on the Compare tab having been opened at least
+            // once (which is what fills `compareContext`), like the log above — a
+            // Changes-only session must not pay four `git` spawns an event.
+            if includeHistory, self.compareContext != nil {
+                await self.loadCompareContext()
+                await self.loadCompare()
+            }
         }
     }
 }
