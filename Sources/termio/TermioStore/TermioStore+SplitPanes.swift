@@ -41,6 +41,11 @@ extension TermioStore {
         // A worktree session runs somewhere other than the project root; the
         // companion shell should land where the focused session actually works.
         newSession.worktreePath = session(focusedID)?.worktreePath
+        // …and "where it works" includes *which machine*. Splitting a session
+        // that runs on another device must not silently hand back a shell on
+        // this Mac: the pane sits beside its origin and reads as the same
+        // place, so it has to be the same place.
+        newSession.inheritDevice(from: session(focusedID))
         // Beside the session it splits, not at the end of the project — the
         // sidebar then reads the split group as adjacent rows, which is what lets
         // it draw the VS Code-style ┌/└ group bracket (see `splitLinkMarks`). The
@@ -112,6 +117,9 @@ extension TermioStore {
         // Share the anchor's working directory so a worktree agent's sibling lands
         // in the same checkout — the same courtesy `splitSelectedPane` extends.
         newSession.worktreePath = session(anchorID)?.worktreePath
+        // And the anchor's device, for the same reason: a split of a session on
+        // another machine stays on that machine.
+        newSession.inheritDevice(from: session(anchorID))
         // Adjacent to the anchor, so the sidebar reads the group as neighbouring
         // rows and draws its ┌/└ bracket (see `splitLinkMarks`).
         projects[projectIndex].sessions.insert(newSession, at: anchorIndex + 1)
