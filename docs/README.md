@@ -94,17 +94,19 @@ from the real front matter).
 | draft | design | [termiod Session Protocol](design/20260730-termiod-session-protocol.md) |
 | draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/20260705-remote-access-relay-strategy.md) |
 | draft | essay | ["How Claude Code Got the Mouse: Reverse-Engineering the Clickable Terminal"](essays/how-claude-code-got-the-mouse.md) |
+| draft | rfc | ["Adversarial review: Retire remote — every machine is a device"](rfcs/remote-to-device.review-codex.md) |
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/20260630-sandbox-seatbelt.md) |
+| draft | rfc | [Adversarial review — Retire "remote", every machine is a device](rfcs/remote-to-device.review-claude.md) |
 | draft | rfc | [Automation — scheduled agent runs](rfcs/automation-scheduled-agent-runs.md) |
 | draft | rfc | [Companion Wire Protocol](design/companion-wire-protocol.md) |
 | draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](rfcs/fork-libghostty-spm.md) |
 | draft | rfc | [Loose terminals as first-class entities](design/20260713-loose-terminal-entity.md) |
 | draft | rfc | [Onboarding —— 首次启动体验设计](design/20260630-onboarding.md) |
-| draft | rfc | [Retire "remote" — every machine is a device](rfcs/remote-to-device.md) |
 | fixed | bug | [New terminal opens unfocused (hollow cursor, beeps until clicked)](bug/terminal-focus-loss-on-new-session-mount.md) |
 | fixed | bug | [Terminal loses focus after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
 | fixed | bug | [Terminal loses focus while the window stays key — sibling-render trigger](bug/terminal-focus-loss-on-sibling-render.md) |
 | in-progress | rfc | [可扩展 Agent —— 配置化定义 + 配置化 Hook](design/20260707-agent-extensibility.md) |
+| in-review | rfc | [Every machine is a device, every place you work is a project](rfcs/remote-to-device.md) |
 | in-review | rfc | [Split panes — Ghostty-style splits in the terminal column](rfcs/split-panes.md) |
 | resolved | bug | [iOS terminal fails "unauthorized" while the session list works (companion over tunnel)](bug/companion-terminal-unauthorized-over-tunnel.md) |
 <!-- END docs-index -->
