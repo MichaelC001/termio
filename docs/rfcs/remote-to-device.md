@@ -3,7 +3,7 @@ title: Retire "remote" — every machine is a device
 status: draft
 type: rfc
 created: 2026-08-14
-updated: 2026-08-14
+updated: 2026-08-15
 related:
   - 20260805-termiod-device-architecture.md
   - 20260730-termiod-session-protocol.md
@@ -64,11 +64,30 @@ file, stale in ours.
 
 | State | Produced by | Home |
 | --- | --- | --- |
-| The list of reachable machines | the user's `~/.ssh/config` | read-only; no Settings entry |
+| The list of reachable machines | the user's `~/.ssh/config` | **already has a Settings entry — see below** |
 | Device colour, display name, "forget" | termio | Settings ▸ Devices |
 | `termiod` version, install/upgrade status | termio's probe | Settings ▸ Devices |
 | Merged device identities (§9.5) | termio | Settings ▸ Devices |
 | A free-form `user@host` target the user typed | termio (it cannot be written to `~/.ssh/config`) | Settings ▸ Devices, entered through the verb |
+
+**Correction — `Settings ▸ SSH` already ships, and it writes.** The first row as
+originally drafted said "read-only; no Settings entry". Both halves are false.
+`Sources/termio/Settings/SSHSettingsTab.swift` is a shipped tab that lists every
+alias, probes reachability per host, opens the raw config in the editor, and
+appends `Host` blocks through **Add Host** — "a block indistinguishable from a
+hand-written one". So this RFC as drafted proposes `Settings ▸ Devices` beside an
+existing `Settings ▸ SSH`: two lists of machines, built from overlapping sources,
+with no stated boundary. That is the two-copies problem instantiated inside the
+Settings window by the document that exists to delete it.
+
+The ownership test cannot resolve it either, because reachability is produced by
+termio's own probe and therefore qualifies as "termio produced this state
+itself". **This is a blocking open decision, not a detail** — see Open question 5.
+
+The appending also sits close to the `~/.ssh/config` non-negotiable. Adding a new
+`Host` block arguably does not *override* anything, so this reads as a gap in the
+rule's wording rather than a violation, but the rule should say which it means
+before a second surface starts writing.
 
 This is why the analogy to `Settings ▸ Agents` misleads: an agent manifest **is**
 a termio-owned list, so `Add Agent` belongs there. A device list is not.
@@ -162,18 +181,40 @@ any shipped build still loads.
 
 ## Staging
 
-**This lands after PR #177.** That branch is 73 commits ahead of `main` at
-+20,084/−660 and still a draft; `main` has no `termiod/` directory and no
-`Sources/termio/Terminal/Termiod/` at all. Renaming now enlarges the diff that is
-already hard to merge, and no worktree cut from `main` can build against a device
-model that does not exist there.
+**PR #177 has merged** (`66b1722`), so `main` now carries `termiod/`,
+`Sources/termio/Terminal/Termiod/`, and the termiod CI workflow. The blocker
+this section originally described is gone.
 
-1. **Vocabulary and switcher.** Menu titles, the indicator, `Connect to…`,
-   single-device collapse. Client-only, no persistence change, independently
-   revertable.
-2. **Settings ▸ Devices.** Colour, name, forget, install status.
-3. **Data model.** Retire `sshHost`, demote `termiodRemoteHost`, migrate.
-4. **Merge** (§9.5), which only becomes safe once identities are primary.
+**Corrected order.** The draft staged the switcher first and never staged the
+flag at all. That reverses the settled architecture, which orders the work: own
+the connection (§4) → **delete the fork, including `TERMIO_TERMIOD`** (§5) →
+device switcher (§6), and marks §6 *"Only meaningful after step 5 — before it,
+local is still a special case"*
+(`20260805-termiod-device-architecture.md:513-531`). Since that document is
+listed above under "do not reopen", the RFC cannot contradict its ordering.
+
+The reversal is not academic. `Termiod.isEnabled` reads the flag
+(`TermiodClient.swift:17-20`) and surface creation still chooses between termiod
+and an in-process `PTYProcess` (`TermioStore+TerminalSurface.swift:214-231`), so
+with the flag off, opening on a non-local device stops at an alert reading *"Set
+TERMIO_TERMIOD=1 and relaunch termio"* (`TermioStore+Termiod.swift:468-476`). A
+device switcher above that fork shows a device the product cannot open a session
+on.
+
+1. **Own the connection.** `TermiodConnection` per device — transport, health,
+   reconnect — so readiness is a real state and a transport failure stops being
+   reported as `exited`. Architecture §4.
+2. **Delete the fork.** Remove `TERMIO_TERMIOD`, the in-process `PTYProcess`
+   path, per-session remote host, and every "Remote" verb. This is the stage
+   with real risk: it makes the daemon a release-critical dependency and changes
+   the execution path of *every* session, local included. It is not a rename and
+   must not be staged as one.
+3. **Vocabulary and switcher.** Menu titles, the indicator, `Connect to…`,
+   single-device collapse, reading readiness from stage 1.
+4. **Settings ▸ Devices**, once Open question 5 decides its boundary with
+   `Settings ▸ SSH`.
+5. **Data model.** Retire `sshHost`, demote `termiodRemoteHost`, migrate.
+6. **Merge** (§9.5), which only becomes safe once identities are primary.
 
 ## Open questions
 
@@ -184,7 +225,46 @@ model that does not exist there.
    terminal's colours belong to the user's theme — the presentation boundary says
    the viewer decides. The tint probably has to stop at chrome (sidebar, title
    bar, indicator) and never touch the grid.
-3. **Guardrail strength** for destructive actions on a non-local device: extra
-   confirmation, hold-to-confirm, or typed device name.
+3. ~~**Guardrail strength** for destructive actions on a non-local device: extra
+   confirmation, hold-to-confirm, or typed device name.~~ **Closed — the question
+   was wrong.** All three options are the local/remote fork wearing a warning
+   triangle. The shipped doctrine is narrower and better: `closeConfirmationReason`
+   (`TermioStore+ProjectActions.swift:684-692`) confirms on exactly one condition —
+   a *shell* with a live foreground job, because that command "exists nowhere
+   else" — and deliberately never for agent sessions. Confirm when closing
+   destroys the only copy of something; never because of where it runs.
+
+   The live defect is the opposite of the one asked about. That check reads
+   `ptyProcesses[session.id]`, and `hasForegroundJob` exists only on `PTYProcess`
+   (`PTYProcess.swift:923`) with no counterpart anywhere in `termiod/src`. **So a
+   remote session with a build running closes silently today, while a local one
+   asks** — non-local sessions have *less* protection, not more. The work item is
+   to carry the existing rule across the wire (a `tcgetpgrp` on the PTY master,
+   one field on `list`), not to add a dialog. Whether that rides in this RFC or
+   becomes its own protocol change is Open question 6.
+
+   Forget device and uninstall termiod keep an explicit confirmation: those are
+   device-scoped irreversible actions rather than command execution.
 4. **Does `Connect to…` belong in the `+` menu too?** Every item in that menu is
    global by rule; `Connect to…` qualifies, but it may not deserve the weight.
+   Proposal on the table: add no item — convert the existing dead end
+   `New Remote Terminal ▸ (No SSH hosts in ~/.ssh/config)` *into* `Connect to…`,
+   so the slot and weight are unchanged and the motivation's own complaint is
+   answered. Both reviews accept the slot and contest what the item does.
+
+5. **Does `Settings ▸ Devices` subsume `Settings ▸ SSH`, or coexist with it?**
+   Blocking. They are two lists of machines from overlapping sources, and the
+   ownership test cannot separate them because reachability is termio's own
+   probe. Subsuming is cleaner and deletes a surface; coexisting needs a stated,
+   defensible split written into this document before either is built.
+
+6. **Does porting `hasForegroundJob` across the wire belong here or in its own
+   protocol change?** It is additive on `list`, but it is a protocol change to a
+   daemon that now ships on `main`, and it fixes a live asymmetry rather than
+   supporting the rename.
+
+7. **What does an unreachable device look like?** Device identity is about to
+   appear in the sidebar, the menus, and the switcher, and nothing in this draft
+   says what any of them render when the device cannot be reached. Both reviews
+   raise it independently; there is prior pain here, where a stale tunnel URL
+   produced "list works but terminal unauthorized".
