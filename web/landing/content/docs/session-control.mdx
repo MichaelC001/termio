@@ -31,6 +31,13 @@ one-line description until a task actually involves driving sibling sessions —
 and Termio re-asserts it on every launch, so app updates propagate and
 hand-edits heal automatically. Toggling it off removes the skill again.
 
+<DocsImage
+  src="/screenshots/docs/25-session-control-settings.png"
+  alt="Termio General settings with Command-line tool, Session control, Live agent status, and task notifications enabled"
+  width={1664}
+  height={1288}
+/>
+
 Running an agent Termio doesn't auto-configure? The same skill is published at
 [termio.sh/skill.md](https://termio.sh/skill.md) and installable straight from
 the repo:
@@ -106,6 +113,13 @@ Add `--json` to any command for machine-readable output.
 unique id-prefix, or session title also works). Commands are scoped to the
 current project automatically, and `termio sessions <verb> --help` prints
 focused help for any one verb.
+
+<DocsImage
+  src="/screenshots/docs/18-sessions-list.png"
+  alt="A Termio terminal running only termio sessions list, with seven sessions and their agent types and live states matching the sidebar"
+  width={2424}
+  height={1664}
+/>
 
 <Callout type="note">
   `answer` is a deprecated alias of `send` (meaningful for agent sessions only), and `send` with no target behaves like

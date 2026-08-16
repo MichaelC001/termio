@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import type { ComponentProps, ReactNode } from "react";
 import type { MDXComponents } from "mdx/types";
@@ -109,6 +110,80 @@ function Card({
   );
 }
 
+type DocsImageVariant = "window" | "phone";
+
+function DocsImage({
+  src,
+  alt,
+  width,
+  height,
+  variant = "window",
+}: {
+  src: string;
+  alt: string;
+  width: number;
+  height: number;
+  variant?: DocsImageVariant;
+}) {
+  return (
+    <figure className="not-prose my-8">
+      <div
+        className={cn(
+          "mx-auto overflow-visible",
+          variant === "phone" ? "max-w-[380px]" : "w-full",
+        )}
+      >
+        <Image
+          src={src}
+          alt={alt}
+          width={width}
+          height={height}
+          sizes={
+            variant === "phone"
+              ? "(max-width: 640px) 88vw, 380px"
+              : "(max-width: 768px) 100vw, 768px"
+          }
+          className="h-auto w-full select-none"
+        />
+      </div>
+    </figure>
+  );
+}
+
+function DocsMediaGrid({ children }: { children: ReactNode }) {
+  return (
+    <div className="not-prose my-8 grid items-start gap-5 sm:grid-cols-2 [&>figure]:my-0">
+      {children}
+    </div>
+  );
+}
+
+function DocsVideo({
+  src,
+  poster,
+  label,
+}: {
+  src: string;
+  poster: string;
+  label: string;
+}) {
+  return (
+    <figure className="not-prose my-8">
+      <video
+        controls
+        muted
+        playsInline
+        preload="metadata"
+        poster={poster}
+        aria-label={label}
+        className="h-auto w-full rounded-xl"
+      >
+        <source src={src} type="video/mp4" />
+      </video>
+    </figure>
+  );
+}
+
 // Internal links route through Next's <Link>; anything absolute (http, mailto)
 // stays a plain anchor that opens in a new tab.
 function DocsLink({ href = "", ...props }: ComponentProps<"a">) {
@@ -128,6 +203,9 @@ export function getMDXComponents(extra?: MDXComponents): MDXComponents {
     Callout,
     Cards,
     Card,
+    DocsImage,
+    DocsMediaGrid,
+    DocsVideo,
     Keybindings,
     ...extra,
   };

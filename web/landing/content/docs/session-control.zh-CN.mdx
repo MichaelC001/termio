@@ -3,8 +3,8 @@ title: 会话控制与命令行
 description: Termio 的编排 API——让 Agent 汇报自己在做什么的状态 hooks，以及让你（或另一个 Agent）从 shell 里派生、驱动和监督会话的 termio sessions 命令行。
 x-i18n:
   source_path: session-control.mdx
-  source_hash: ef5a992ecd21c019e049a7a876652f74fe26a773b2c10d486a42573abaf3c583
-  generated_at: 2026-08-10
+  source_hash: 03434b91dddcb3121bcd9161e58d8d47b6447d40cd7f0f36c73b0f58407f376c
+  generated_at: 2026-08-16
 ---
 
 你在侧栏看到的实时状态背后，是两个相关的可选功能：让 Agent 汇报自己在做什么的**状态
@@ -28,6 +28,13 @@ Cursor 以及基于插件的那些）。当 Agent 开始工作、完成，或者
 来告诉你的 Agent 它存在。技能按需加载——Agent 平时只带着那一行描述，直到某个任务真的需要
 驱动同伴会话——而 Termio 每次启动都会重新确认它，因此应用更新会自动传播，手改过的内容也会
 自愈。关掉它会把技能移除。
+
+<DocsImage
+  src="/screenshots/docs/25-session-control-settings.png"
+  alt="Termio 通用设置开启命令行工具、会话控制、Agent 实时状态和任务通知"
+  width={1664}
+  height={1288}
+/>
 
 在跑 Termio 没有自动配置的 Agent？同一个技能发布在
 [termio.sh/skill.md](https://termio.sh/skill.md)，也可以直接从仓库安装：
@@ -90,6 +97,13 @@ termio ~/code/myapp    # 打开指定文件夹
 `<link>` 就是 `list` 打印的 `termio://session/<uuid>` 地址（裸 id、唯一 id 前缀或会话标题
 同样可用）。命令会自动限定在当前项目里，而 `termio sessions <verb> --help` 会为任意单个
 动词打印针对性的帮助。
+
+<DocsImage
+  src="/screenshots/docs/18-sessions-list.png"
+  alt="Termio 终端只运行 termio sessions list，七个会话的 Agent 类型和实时状态与侧栏一一对应"
+  width={2424}
+  height={1664}
+/>
 
 <Callout type="note">
   `answer` 是 `send` 的已弃用别名（只对 Agent 会话有意义），而不带目标的 `send` 行为等同于
