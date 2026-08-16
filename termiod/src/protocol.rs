@@ -730,6 +730,21 @@ pub enum Event {
         session: String,
         status: i32,
     },
+    /// This attachment's stream was cut and restarted at a fresh boundary. It
+    /// arrives after the `S`/`ready` pair that re-establishes JOIN, and it means
+    /// the bytes between the previous boundary and this one were never
+    /// delivered — the screen is right, but nothing scrolled past is recoverable.
+    Resynced {
+        session: String,
+        reason: String,
+    },
+    /// The host's VT no longer describes any boundary in this session's output,
+    /// so it can no longer answer a snapshot. Attach and resync fall back to
+    /// ring replay, which can open mid-escape.
+    VtStale {
+        session: String,
+        reason: String,
+    },
     /// A filesystem batch for an `fs:` resource (§C.10). `seq` is monotonic per
     /// resource and is what a reconnecting client passes back as `since`.
     /// `full_rescan` means the path set is not authoritative — re-walk what is

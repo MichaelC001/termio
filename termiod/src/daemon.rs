@@ -11,7 +11,7 @@ use crate::protocol::{
 };
 use crate::resource::Registry;
 use crate::session::{
-    self, ClientBacklog, ClientEvent, ClientId, SessionEnded, SessionHandle, SessionMsg,
+    self, ClientBacklog, ClientEvent, ClientId, Metered, SessionEnded, SessionHandle, SessionMsg,
 };
 use crate::tombstone::{EndReason, Graveyard};
 use anyhow::{Context, Result};
@@ -401,11 +401,11 @@ struct Connection {
 
 enum Outbound {
     Control(Control),
-    Data(Bytes),
+    Data(Metered),
     Event(Event),
     Snapshot(Snapshot),
-    History(Bytes),
-    Grid(Bytes),
+    History(Metered),
+    Grid(Metered),
     File(Bytes),
 }
 
@@ -415,26 +415,33 @@ async fn write_outbound(
     backlog: Arc<ClientBacklog>,
 ) {
     while let Some(message) = rx.recv().await {
+        // A forced resync retires everything queued under the old epoch. Those
+        // payloads precede a snapshot that supersedes them, so writing them
+        // would only make the client that could not keep up wait longer.
+        if let Outbound::Data(payload) | Outbound::History(payload) | Outbound::Grid(payload) =
+            &message
+        {
+            if !backlog.is_current(payload) {
+                continue;
+            }
+        }
         let result = match message {
             Outbound::Control(control) => write_control(&mut wr, &control).await,
-            Outbound::Data(data) => {
-                let len = data.len();
-                let result = write_data(&mut wr, &data).await;
-                backlog.release(len);
+            Outbound::Data(payload) => {
+                let result = write_data(&mut wr, &payload.bytes).await;
+                backlog.release(&payload);
                 result
             }
             Outbound::Event(event) => write_event(&mut wr, &event).await,
             Outbound::Snapshot(snapshot) => write_snapshot(&mut wr, &snapshot).await,
             Outbound::History(payload) => {
-                let len = payload.len();
-                let result = write_history_payload(&mut wr, &payload).await;
-                backlog.release(len);
+                let result = write_history_payload(&mut wr, &payload.bytes).await;
+                backlog.release(&payload);
                 result
             }
             Outbound::Grid(payload) => {
-                let len = payload.len();
-                let result = write_grid_payload(&mut wr, &payload).await;
-                backlog.release(len);
+                let result = write_grid_payload(&mut wr, &payload.bytes).await;
+                backlog.release(&payload);
                 result
             }
             Outbound::File(payload) => write_file_payload(&mut wr, &payload).await,
@@ -1547,6 +1554,10 @@ fn subscribed_to(subscriptions: &HashSet<String>, event: &Event) -> bool {
         }
         Event::Resized { .. } => false,
         Event::Ready { .. } => false,
+        // Both are addressed to one attachment's stream, not to the roster: a
+        // resync is that client's own, and a stale VT only means anything to a
+        // client that was going to ask for a snapshot.
+        Event::Resynced { .. } | Event::VtStale { .. } => false,
         // Resource events are delivered on the subscriber's own channel, not
         // through the roster broadcast, so they never match here.
         Event::FsChanged { .. } | Event::GitChanged { .. } | Event::SearchResults { .. } => false,
@@ -1616,10 +1627,9 @@ async fn run_attach(
     let mut bridge = tokio::spawn(async move {
         while let Some(event) = client_events.recv().await {
             match event {
-                ClientEvent::Data(bytes) => {
-                    let len = bytes.len();
-                    if event_out.send(Outbound::Data(bytes)).is_err() {
-                        bridge_backlog.release(len);
+                ClientEvent::Data(payload) => {
+                    if event_out.send(Outbound::Data(payload.clone())).is_err() {
+                        bridge_backlog.release(&payload);
                         break;
                     }
                 }
@@ -1630,21 +1640,19 @@ async fn run_attach(
                 }
                 ClientEvent::Snapshot(_) => {}
                 ClientEvent::History(payload) if supports_scrollback => {
-                    let len = payload.len();
-                    if event_out.send(Outbound::History(payload)).is_err() {
-                        bridge_backlog.release(len);
+                    if event_out.send(Outbound::History(payload.clone())).is_err() {
+                        bridge_backlog.release(&payload);
                         break;
                     }
                 }
-                ClientEvent::History(payload) => bridge_backlog.release(payload.len()),
+                ClientEvent::History(payload) => bridge_backlog.release(&payload),
                 ClientEvent::Grid(payload) if supports_grid_diff => {
-                    let len = payload.len();
-                    if event_out.send(Outbound::Grid(payload)).is_err() {
-                        bridge_backlog.release(len);
+                    if event_out.send(Outbound::Grid(payload.clone())).is_err() {
+                        bridge_backlog.release(&payload);
                         break;
                     }
                 }
-                ClientEvent::Grid(payload) => bridge_backlog.release(payload.len()),
+                ClientEvent::Grid(payload) => bridge_backlog.release(&payload),
                 ClientEvent::Control(control) if negotiated => {
                     if event_out.send(Outbound::Control(control)).is_err() {
                         break;
