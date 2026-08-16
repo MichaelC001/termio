@@ -134,6 +134,10 @@
 	<string>Available when Termio runs from the built app bundle.</string>
 	<key>Bar</key>
 	<string>Bar</string>
+	<key>Base Branch Missing</key>
+	<string>Base Branch Missing</string>
+	<key>Behind</key>
+	<string>Behind</string>
 	<key>Binary File</key>
 	<string>Binary File</string>
 	<key>Binary file — open it on GitHub to view.</key>
@@ -172,6 +176,8 @@
 	<string>Choose a different name.</string>
 	<key>Choose a project folder to open in Termio.</key>
 	<string>Choose a project folder to open in Termio.</string>
+	<key>Choose another branch to compare with.</key>
+	<string>Choose another branch to compare with.</string>
 	<key>Choose how projects are ordered</key>
 	<string>Choose how projects are ordered</string>
 	<key>Choose…</key>
@@ -208,8 +214,16 @@
 	<string>Command-line tool</string>
 	<key>Commit or discard the changes in “%@” before removing it.</key>
 	<string>Commit or discard the changes in “%@” before removing it.</string>
+	<key>Commits</key>
+	<string>Commits</string>
 	<key>Community</key>
 	<string>Community</string>
+	<key>Compare</key>
+	<string>Compare</string>
+	<key>Compare this branch with the branch it would merge into.</key>
+	<string>Compare this branch with the branch it would merge into.</string>
+	<key>Compare to branch</key>
+	<string>Compare to branch</string>
 	<key>Config file</key>
 	<string>Config file</string>
 	<key>Connect</key>
@@ -326,6 +340,8 @@
 	<string>Discord, GitHub, and the WeChat group</string>
 	<key>Done</key>
 	<string>Done</string>
+	<key>Don’t Compare</key>
+	<string>Don’t Compare</string>
 	<key>Draft</key>
 	<string>Draft</string>
 	<key>Drag the list to change the order agents appear in.</key>
@@ -358,6 +374,8 @@
 	<string>File</string>
 	<key>Files</key>
 	<string>Files</string>
+	<key>Files changed</key>
+	<string>Files changed</string>
 	<key>Filter</key>
 	<string>Filter</string>
 	<key>Find</key>
@@ -480,6 +498,8 @@
 	<string>Live agent status</string>
 	<key>Live agent status is off</key>
 	<string>Live agent status is off</string>
+	<key>Local</key>
+	<string>Local</string>
 	<key>Login shell</key>
 	<string>Login shell</string>
 	<key>Match Case</key>
@@ -548,8 +568,12 @@
 	<string>Next Session</string>
 	<key>No Agents Enabled</key>
 	<string>No Agents Enabled</string>
+	<key>No Base Branch</key>
+	<string>No Base Branch</string>
 	<key>No Changes</key>
 	<string>No Changes</string>
+	<key>No Common History</key>
+	<string>No Common History</string>
 	<key>No Diff</key>
 	<string>No Diff</string>
 	<key>No File Selected</key>
@@ -608,6 +632,8 @@
 	<string>Not connected</string>
 	<key>Not pushed to upstream</key>
 	<string>Not pushed to upstream</string>
+	<key>Nothing to Compare</key>
+	<string>Nothing to Compare</string>
 	<key>Nothing to install.</key>
 	<string>Nothing to install.</string>
 	<key>Notifications</key>
@@ -660,6 +686,8 @@
 	<string>Permissions</string>
 	<key>Pick a file on the left to see its changes.</key>
 	<string>Pick a file on the left to see its changes.</string>
+	<key>Pick the branch this one would merge into.</key>
+	<string>Pick the branch this one would merge into.</string>
 	<key>Pin</key>
 	<string>Pin</string>
 	<key>Pin Termio to a light or dark look, or follow the system. The light and dark terminal themes below apply to the matching appearance.</key>
@@ -730,6 +758,8 @@
 	<string>Relaunch Termio to switch language?</string>
 	<key>Reload</key>
 	<string>Reload</string>
+	<key>Remote</key>
+	<string>Remote</string>
 	<key>Remote session</key>
 	<string>Remote session</string>
 	<key>Remove</key>
@@ -914,6 +944,8 @@
 	<string>The SSH connection is closed. Reconnect in the terminal, then refresh.</string>
 	<key>The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.</key>
 	<string>The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.</string>
+	<key>The base branch has commits this branch doesn’t have, as of the last fetch.</key>
+	<string>The base branch has commits this branch doesn’t have, as of the last fetch.</string>
 	<key>The coding agents offered when you start a session</key>
 	<string>The coding agents offered when you start a session</string>
 	<key>The folder was removed, but git couldn’t prune its stale worktree metadata.</key>
@@ -936,8 +968,14 @@
 	<string>Themes</string>
 	<key>Thicken glyphs</key>
 	<string>Thicken glyphs</string>
+	<key>This branch and the base branch share no commits.</key>
+	<string>This branch and the base branch share no commits.</string>
 	<key>This branch has no commits yet.</key>
 	<string>This branch has no commits yet.</string>
+	<key>This branch has nothing the base branch doesn’t already have.</key>
+	<string>This branch has nothing the base branch doesn’t already have.</string>
+	<key>This checkout has no other branch to compare with.</key>
+	<string>This checkout has no other branch to compare with.</string>
 	<key>This diff is too large to show here — open the file on GitHub.</key>
 	<string>This diff is too large to show here — open the file on GitHub.</string>
 	<key>This file is binary — open it on GitHub to view.</key>

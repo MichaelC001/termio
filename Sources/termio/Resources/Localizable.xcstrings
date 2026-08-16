@@ -5334,6 +5334,196 @@
           }
         }
       }
+    },
+    "Base Branch Missing": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "找不到基础分支"
+          }
+        }
+      }
+    },
+    "Behind": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "落后"
+          }
+        }
+      }
+    },
+    "Choose another branch to compare with.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请另选一个用于对比的分支。"
+          }
+        }
+      }
+    },
+    "Commits": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "提交"
+          }
+        }
+      }
+    },
+    "Compare this branch with the branch it would merge into.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "把当前分支与它将要合入的分支做对比。"
+          }
+        }
+      }
+    },
+    "Compare to branch": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对比分支"
+          }
+        }
+      }
+    },
+    "Don’t Compare": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不对比"
+          }
+        }
+      }
+    },
+    "Files changed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "变更文件"
+          }
+        }
+      }
+    },
+    "Local": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地"
+          }
+        }
+      }
+    },
+    "Remote": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远程"
+          }
+        }
+      }
+    },
+    "The base branch has commits this branch doesn’t have, as of the last fetch.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "截至上次 fetch，基础分支上有当前分支还没有的提交。"
+          }
+        }
+      }
+    },
+    "Compare": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对比"
+          }
+        }
+      }
+    },
+    "No Base Branch": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未选择基础分支"
+          }
+        }
+      }
+    },
+    "Nothing to Compare": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有可对比的分支"
+          }
+        }
+      }
+    },
+    "Pick the branch this one would merge into.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择这个分支将要合入的分支。"
+          }
+        }
+      }
+    },
+    "This checkout has no other branch to compare with.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个检出没有其他分支可以对比。"
+          }
+        }
+      }
+    },
+    "No Common History": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有共同历史"
+          }
+        }
+      }
+    },
+    "This branch and the base branch share no commits.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个分支和基础分支没有共同的提交。"
+          }
+        }
+      }
+    },
+    "This branch has nothing the base branch doesn’t already have.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个分支没有基础分支尚未包含的内容。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -118,7 +118,10 @@ enum GitService {
     /// by RS (`\u{1e}`), so subjects with spaces/tabs survive intact. `%D` carries the
     /// commit's decorations, from which only tags are kept (branch refs would restate
     /// what the pane's scope and the sidebar already say).
-    private static func loadLog(_ repoRoot: String, _ limit: Int) -> [GitCommit] {
+    ///
+    /// `range` narrows the log to a revision range (`base..HEAD` for the branch compare);
+    /// without one it walks back from `HEAD`.
+    private static func loadLog(_ repoRoot: String, _ limit: Int, range: String? = nil) -> [GitCommit] {
         // Commits the upstream doesn't have yet. `run` returns nil on a non-zero exit,
         // so a branch with no upstream yields an empty set — no rows marked.
         let unpushed = Set(
@@ -127,7 +130,8 @@ enum GitService {
         )
         let format = ["%H", "%h", "%s", "%an", "%ae", "%ad", "%D"].joined(separator: "\u{1f}") + "\u{1e}"
         guard let out = run(
-            ["log", "-n", String(limit), "--date=relative", "--pretty=format:\(format)"],
+            ["log", "-n", String(limit), "--date=relative", "--pretty=format:\(format)"]
+                + (range.map { [$0] } ?? []),
             in: repoRoot
         ) else { return [] }
         return out.components(separatedBy: "\u{1e}").compactMap { record in
@@ -174,6 +178,228 @@ enum GitService {
             return GitChange(path: path, status: status[path] ?? .modified, isUntracked: false,
                              additions: c.0, deletions: c.1)
         }
+    }
+
+    // MARK: Branch compare
+
+    /// What the Compare tab's base picker needs about a checkout: the branch it is on, the
+    /// refs it can be compared against, and the base to start on. Gathered in one hop —
+    /// a menu that spawned a `git` per field would fork four processes every time it opened.
+    struct CompareContext: Sendable {
+        /// `nil` on a detached HEAD, where "the branch this pull request comes from" has
+        /// no answer, so the pane offers no comparison.
+        let branch: String?
+        /// Remote-tracking refs (`origin/main`), the honest bases: a stale local `main`
+        /// would silently overstate the diff. The branch's own upstream is filtered out —
+        /// comparing a branch with the ref it tracks is not a pull request.
+        let remoteBranches: [String]
+        /// Local branches other than the checkout's own.
+        let localBranches: [String]
+        /// The base to preselect: the remote's recorded default branch, else the first
+        /// conventional trunk name that exists. `nil` when the checkout *is* the trunk —
+        /// there is nothing to open a pull request against.
+        let suggestedBase: String?
+    }
+
+    /// A branch measured against the base it would be merged into.
+    struct BranchCompare: Sendable {
+        let base: String
+        /// The files the merge would touch, three-dot (from the merge base) — the change
+        /// the pull request itself introduces, matching what the forge will show. Committed
+        /// work only: uncommitted edits stay the Changes tab's business.
+        let files: [GitChange]
+        /// The commits the merge would bring over, newest first.
+        let commits: [GitCommit]
+        /// Commits on the base this branch doesn't have. Not an error — the base moved on —
+        /// but it dates the comparison, and it is measured against the last *fetched* state
+        /// of a remote base, never a fresh network fetch.
+        let behind: Int
+    }
+
+    /// Why a comparison couldn't be made — stated, never folded into an empty file list,
+    /// which would read as "this branch changes nothing".
+    enum CompareProblem: Sendable {
+        /// The picked base no longer resolves: its branch was deleted since it was chosen.
+        case missingBase
+        /// Nothing connects the two — unrelated histories, or a shallow clone whose graft
+        /// point sits above where the branches diverged. There is no merge base to diff
+        /// from, so any file list here would be the whole tree rather than a change.
+        case noCommonHistory
+    }
+
+    enum CompareOutcome: Sendable {
+        case ready(BranchCompare)
+        case problem(CompareProblem)
+    }
+
+    static func compareContext(in repoRoot: String) async -> CompareContext {
+        await offMain { loadCompareContext(repoRoot) }
+    }
+
+    /// The branch's diff and commits against `base`.
+    static func branchCompare(base: String, in repoRoot: String, limit: Int = 200) async -> CompareOutcome {
+        await offMain { loadBranchCompare(base, repoRoot, limit) }
+    }
+
+    private static func loadCompareContext(_ repoRoot: String) -> CompareContext {
+        let head = run(["rev-parse", "--abbrev-ref", "HEAD"], in: repoRoot)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let branch = (head == "HEAD" || head?.isEmpty == true) ? nil : head
+        // The ref this branch tracks, whatever the remote is called. Filtering the literal
+        // `origin/<branch>` instead would leave a fork's `upstream/<branch>` in the list —
+        // offered as a base even though comparing a branch with its own upstream is the
+        // Changes-and-History question ("what haven't I pushed"), not a pull request.
+        let upstream = run(["rev-parse", "--abbrev-ref", "@{upstream}"], in: repoRoot)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var locals: [String] = []
+        var remotes: [String] = []
+        // Full refnames, not `%(refname:short)`: a local `feat/x` and a remote `origin/main`
+        // are indistinguishable once shortened, and the two lists mean different things.
+        for ref in (run(["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes"], in: repoRoot) ?? "")
+            .split(separator: "\n").map(String.init) {
+            if ref.hasPrefix("refs/heads/") {
+                let short = String(ref.dropFirst("refs/heads/".count))
+                if short != branch { locals.append(short) }
+            } else if ref.hasPrefix("refs/remotes/") {
+                let short = String(ref.dropFirst("refs/remotes/".count))
+                // `origin/HEAD` is a symbolic pointer at the default branch, not a branch.
+                if !short.hasSuffix("/HEAD"), short != upstream { remotes.append(short) }
+            }
+        }
+        let originHead = run(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], in: repoRoot)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return CompareContext(
+            branch: branch, remoteBranches: remotes, localBranches: locals,
+            suggestedBase: suggestedCompareBase(
+                branch: branch, originHead: originHead,
+                remoteBranches: remotes, localBranches: locals))
+    }
+
+    /// Branch names a repository conventionally merges into, in the order they are tried.
+    private static let trunkBranchNames = ["main", "master", "dev", "develop", "trunk"]
+
+    /// Picks the base to compare a branch against: the remote's recorded default first
+    /// (`origin/HEAD`, what the forge will default the pull request's base to), then the
+    /// conventional trunk names — preferring `origin/main` over a local `main`, which in a
+    /// long-lived clone is usually months stale and would invent changes the branch never made.
+    /// The branch is never compared against itself, so a checkout of the trunk gets `nil` —
+    /// as does a detached HEAD, which has no branch to open a pull request from.
+    static func suggestedCompareBase(
+        branch: String?, originHead: String?,
+        remoteBranches: [String], localBranches: [String]
+    ) -> String? {
+        guard let branch else { return nil }
+        if let originHead, remoteBranches.contains(originHead),
+           remoteBranchName(originHead) != branch { return originHead }
+        for name in trunkBranchNames where name != branch {
+            if let remote = remoteBranches.first(where: { remoteBranchName($0) == name }) { return remote }
+            if localBranches.contains(name) { return name }
+        }
+        return nil
+    }
+
+    /// `origin/feat/x` → `feat/x`. Only ever applied to a remote-tracking ref, where the
+    /// first component is the remote's name.
+    private static func remoteBranchName(_ ref: String) -> String {
+        ref.split(separator: "/").dropFirst().joined(separator: "/")
+    }
+
+    private static func loadBranchCompare(_ base: String, _ repoRoot: String, _ limit: Int) -> CompareOutcome {
+        guard run(["rev-parse", "--verify", "--quiet", "\(base)^{commit}"], in: repoRoot) != nil
+        else { return .problem(.missingBase) }
+        // Without a merge base the three-dot diff below exits non-zero and would degrade to
+        // an empty file list — while `base..HEAD` still lists commits, so the tab would show
+        // "no files, 40 commits". Ask git first and say what is actually wrong.
+        guard run(["merge-base", base, "HEAD"], in: repoRoot) != nil
+        else { return .problem(.noCommonHistory) }
+        // Three dots: diff from the merge base, so commits that landed on the base since
+        // this branch started don't show up inverted as changes the branch never made.
+        let range = "\(base)...HEAD"
+        let files = rangeChanges(
+            numstat: run(["diff", "--numstat", "-z", "-M", range], in: repoRoot) ?? "",
+            nameStatus: run(["diff", "--name-status", "-z", "-M", range], in: repoRoot) ?? "")
+        // Two dots for the counts — "how far apart are the tips", not "what would merge".
+        let behind = Int((run(["rev-list", "--count", "HEAD..\(base)"], in: repoRoot) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        return .ready(BranchCompare(
+            base: base, files: files,
+            commits: loadLog(repoRoot, limit, range: "\(base)..HEAD"), behind: behind))
+    }
+
+    /// Merges `git diff --numstat -z` (counts) with `--name-status -z` (the status letter)
+    /// into the pane's change rows, keyed by the new path.
+    ///
+    /// `-z` rather than the default: without it git quotes any path holding a space or a
+    /// non-ASCII byte (`"src/\303\251.swift"`), and the quoted form doesn't match the path
+    /// the rest of the pane — the diff overlay, the file tree — addresses the file by.
+    static func rangeChanges(numstat: String, nameStatus: String) -> [GitChange] {
+        let statuses = parseNameStatus(nameStatus)
+        return parseNumstat(numstat)
+            .map { entry in
+                GitChange(
+                    path: entry.path,
+                    status: statuses[entry.path] ?? (entry.originalPath == nil ? .modified : .renamed),
+                    isUntracked: false,
+                    additions: entry.additions ?? 0, deletions: entry.deletions ?? 0,
+                    originalPath: entry.originalPath,
+                    isBinary: entry.additions == nil || entry.deletions == nil)
+            }
+            .sorted { $0.path.localizedCaseInsensitiveCompare($1.path) == .orderedAscending }
+    }
+
+    private struct NumstatEntry {
+        let path: String
+        let originalPath: String?
+        /// `nil` when git reported `-`, which it does for a binary file — `+`/`−` counts
+        /// would be a lie there, so the row shows none.
+        let additions: Int?
+        let deletions: Int?
+    }
+
+    /// One `--numstat -z` record is `"<adds>\t<dels>\t<path>"`. A rename or copy leaves the
+    /// path field empty and follows with the old and new paths as their own two records.
+    private static func parseNumstat(_ raw: String) -> [NumstatEntry] {
+        let fields = raw.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+        var entries: [NumstatEntry] = []
+        var index = 0
+        while index < fields.count {
+            let record = fields[index]
+            index += 1
+            guard !record.isEmpty else { continue }
+            let parts = record.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3 else { continue }
+            let additions = Int(parts[0])
+            let deletions = Int(parts[1])
+            var path = String(parts[2])
+            var originalPath: String?
+            if path.isEmpty {
+                guard index + 1 < fields.count else { break }
+                originalPath = fields[index]
+                path = fields[index + 1]
+                index += 2
+            }
+            entries.append(NumstatEntry(path: path, originalPath: originalPath,
+                                        additions: additions, deletions: deletions))
+        }
+        return entries
+    }
+
+    /// `--name-status -z` alternates a status record with its path — two paths for a rename
+    /// or copy, whose letter carries a similarity score (`R100`).
+    private static func parseNameStatus(_ raw: String) -> [String: GitFileStatus] {
+        let fields = raw.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+        var statuses: [String: GitFileStatus] = [:]
+        var index = 0
+        while index < fields.count {
+            let code = fields[index]
+            index += 1
+            guard let letter = code.first else { continue }
+            let isPair = letter == "R" || letter == "C"
+            guard index + (isPair ? 1 : 0) < fields.count else { break }
+            statuses[fields[index + (isPair ? 1 : 0)]] = GitFileStatus(code: letter)
+            index += isPair ? 2 : 1
+        }
+        return statuses
     }
 
     // MARK: Loading
@@ -413,8 +639,13 @@ enum GitService {
         let contextArguments = context.map { ["-U\($0)"] } ?? []
         // PR file row: the file's change across a `base...head` range (three-dot, so
         // git diffs from the merge base — the change the PR itself introduces).
+        //
+        // A rename is limited to *both* paths: git applies the path limit before rename
+        // detection, so asking only for the destination turns a pure rename into the whole
+        // file arriving as additions — contradicting the row's own `R` and its zero counts.
         if let range {
-            return run(["diff", "-M"] + contextArguments + [range, "--", change.path],
+            let paths = [change.path] + (change.originalPath.map { [$0] } ?? [])
+            return run(["diff", "-M"] + contextArguments + [range, "--"] + paths,
                        in: repoRoot, ignoreStatus: true) ?? ""
         }
         // History file row: the file's change within one commit. `--format=` strips the
