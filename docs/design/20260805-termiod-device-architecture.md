@@ -3,7 +3,7 @@ title: Device Architecture — one server per device, every UI a client
 status: draft
 type: design
 created: 2026-08-05
-updated: 2026-08-06
+updated: 2026-08-16
 related:
   - 20260730-termiod-session-protocol.md
   - 20260730-termiod-session-mux.md
@@ -349,7 +349,7 @@ to a Mirror (client-classes doc §D.4).
 | **Terminal** | raw bytes (default) · `S` VT snapshot (bootstrap) · `G` diffs (opt-in only — §3) | snapshot + seq | shipped |
 | **Resource** | subscriptions with `seq` + bounded ring + linger (`fs:` first) | re-subscribe at cursor | `fs:` shipped |
 | **Request** | `exec`, `list`, `read`, `write` | idempotent, request id | **not built** |
-| **Transfer** | bytes across the viewer↔device boundary (§4.1): clipboard, images, files | resume at offset | **not built** |
+| **Transfer** | bytes across the viewer↔device boundary (§4.1): clipboard, images, files | resume at offset | `temp:` + project uploads shipped |
 
 All four ride one connection per device, multiplexed by channel id, over one
 SSH ControlMaster. Reconnect is not a feature: open a pipe, re-subscribe every
@@ -538,7 +538,16 @@ Each step is independently shippable and mostly removes code.
    machine is pick-from-list rather than hand-written alias plus cross-compile.
 9. **Request plane**, then file tree and git move to the current device.
 10. **Transfer plane**, then clipboard and image paste cross the viewer↔device
-    boundary (§4.1).
+    boundary (§4.1). **Image paste done** — `upload.open` / `U` / `upload.commit`
+    on a control channel of their own (never an attachment, so the tee is
+    untouched), credit-of-one chunks, and re-open resuming at the offset the
+    device already holds. ⌘V at a session on another machine moves the bytes to
+    that session's scratch dir and pastes the path they landed at; a session on
+    this Mac is untouched, because there the agent reads the pasteboard itself.
+    **Not done:** the other three directions — text clipboard sync (§9.4's
+    push-on-copy vs pull-on-paste is still undecided), drag-a-file-onto-the-tree
+    (the same verbs, a project `dest` instead of `temp:`), and download-direction
+    drag-out.
 11. **Workspaces on the device (§2.2).** `termiod` gains a workspace registry —
     enumerate, open, and create worktrees on the device that owns them. This is
     what makes "open a remote project" a normal action rather than a mode, and

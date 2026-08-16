@@ -3,7 +3,7 @@ title: termiod Session Protocol
 status: draft
 type: design
 created: 2026-07-30
-updated: 2026-08-13
+updated: 2026-08-16
 related:
   - 20260730-termiod-session-mux.md
   - 20260708-session-daemon-architecture.md
@@ -678,7 +678,7 @@ listing, and three mechanisms buy back the replica's perceived speed:
 tree folder, drag into the terminal, paste an image at a remote agent):
 
 ```
-→ upload.open   {dest, size, sha256, mode?}    ← {upload_id}
+→ upload.open   {dest, size, sha256, mode?}    ← {upload_id, offset}
 → U <upload_id, offset> + ≤64 KiB payload      ← {ack, offset}   (×N, credit-of-one)
 → upload.commit {upload_id}                    ← {path}
    (or upload.abort {upload_id})
@@ -691,9 +691,14 @@ tree folder, drag into the terminal, paste an image at a remote agent):
   tree uploads to the real path and injects nothing — the `fs_changed` push
   makes the file appear in every attached client's tree.
 - Host writes to a dotfile, verifies size + sha256 on commit, `rename()`s
-  into place. Re-`open` with the same hash is idempotent. No resume in v1
-  (abort/retry; memory stays O(chunk)); `{resume: upload_id}` is a
-  compatible later extension.
+  into place. Memory stays O(chunk) throughout.
+- **Re-`open` is idempotent and resumes.** Same dest, size, and hash returns
+  the same `upload_id` plus the `offset` already on disk, so a client that
+  lost its pipe sends only the tail. Resuming is safe *because* size and
+  sha256 are declared at open: two transfers agreeing on both have the same
+  bytes, so any prefix of one is a prefix of the other and the running hash
+  stays valid. A client that ignores `offset` and sends from 0 is read as a
+  restart and served by rewinding, which is what makes the field additive.
 - **Head-of-line discipline** (the anti-100× clause for a shared pipe):
   credit-of-one — the client sends the next chunk only after the previous
   ack — and the daemon's writer drains PTY frames before upload chunks.

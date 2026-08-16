@@ -404,6 +404,8 @@ enum Termiod {
         case snapshot = 0x53 // 'S'
         case history = 0x48 // 'H'
         case grid = 0x47 // 'G'
+        case file = 0x46 // 'F'
+        case upload = 0x55 // 'U'
     }
 
     static let maximumFrameSize = 16 * 1024 * 1024
@@ -519,6 +521,32 @@ enum Termiod {
         let op = "detach"
     }
 
+    /// Opens a transfer into a session's scratch directory on the device
+    /// (§C.12 `temp:` dest). `session` is the termiod session name — the app's
+    /// session UUID — and the daemon reaps whatever lands there when that
+    /// session dies, so a pasted screenshot never outlives the conversation it
+    /// belonged to.
+    struct UploadOpenOperation: Encodable {
+        let op = "upload_open"
+        let dest: String
+        let session: String
+        let size: UInt64
+        let sha256: String
+        let seq: UInt64
+    }
+
+    struct UploadCommitOperation: Encodable {
+        let op = "upload_commit"
+        let uploadId: String
+        let seq: UInt64
+    }
+
+    struct UploadAbortOperation: Encodable {
+        let op = "upload_abort"
+        let uploadId: String
+        let seq: UInt64
+    }
+
     /// Only the `op` tag — the second decode pass picks the payload shape.
     private struct ControlTag: Decodable {
         let op: String
@@ -579,6 +607,39 @@ enum Termiod {
         let alive: Bool
     }
 
+    /// Reply to `upload_open`. `offset` is where the next chunk starts: 0 for a
+    /// fresh transfer, and the bytes the daemon already holds when this open
+    /// resumed one a dropped connection left behind. Absent on a daemon that
+    /// predates resume, which reads as "start over" — the same thing it does.
+    struct UploadOpenedPayload: Decodable {
+        let uploadId: String
+        let offset: UInt64
+
+        private enum CodingKeys: String, CodingKey {
+            case uploadId, offset
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            uploadId = try container.decode(String.self, forKey: .uploadId)
+            offset = try container.decodeIfPresent(UInt64.self, forKey: .offset) ?? 0
+        }
+    }
+
+    /// The credit-of-one grant: `offset` is the total the daemon has received,
+    /// which is where the next chunk goes. Holding the next chunk until this
+    /// arrives is what bounds a keystroke's wait on a shared pipe to one chunk.
+    struct UploadAckPayload: Decodable {
+        let uploadId: String
+        let offset: UInt64
+    }
+
+    /// Where the verified bytes landed on the device — an absolute path on
+    /// *that* machine, which is the whole point of the transfer.
+    struct UploadCommittedPayload: Decodable {
+        let path: String
+    }
+
     /// Decoded control frames the client reacts to. Anything else — unknown
     /// ops, responses this slice doesn't consume — becomes `.unknown` and is
     /// ignored, matching the protocol's additive-evolution rule.
@@ -588,6 +649,9 @@ enum Termiod {
         case attached(AttachedPayload)
         case exited(ExitedPayload)
         case sessions(SessionsPayload)
+        case uploadOpened(UploadOpenedPayload)
+        case uploadAck(UploadAckPayload)
+        case uploadCommitted(UploadCommittedPayload)
         case error(ErrorPayload)
         case unknown(String)
     }
@@ -613,6 +677,12 @@ enum Termiod {
             return .exited(try decoder.decode(ExitedPayload.self, from: payload))
         case "sessions":
             return .sessions(try decoder.decode(SessionsPayload.self, from: payload))
+        case "upload_opened":
+            return .uploadOpened(try decoder.decode(UploadOpenedPayload.self, from: payload))
+        case "upload_ack":
+            return .uploadAck(try decoder.decode(UploadAckPayload.self, from: payload))
+        case "upload_committed":
+            return .uploadCommitted(try decoder.decode(UploadCommittedPayload.self, from: payload))
         case "error":
             return .error(try decoder.decode(ErrorPayload.self, from: payload))
         default:
@@ -1025,10 +1095,12 @@ final class TermiodSessionLink: @unchecked Sendable {
                     }
                 case .control:
                     if self.handleControl(frame.payload) { return }
-                case .event, .resize, .history, .grid:
+                case .event, .resize, .history, .grid, .file, .upload:
                     // `ready` (an `E` event) marks snapshot-complete but needs no
                     // action — serial ordering already sequences S then D. The
-                    // rest is unnegotiated in this slice and safe to skip.
+                    // rest is unnegotiated in this slice and safe to skip;
+                    // `F`/`U` never ride an attach channel at all (transfers use
+                    // their own control channel, so the hot path stays raw).
                     break
                 }
             }

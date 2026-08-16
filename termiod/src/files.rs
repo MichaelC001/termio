@@ -562,8 +562,14 @@ struct UploadState {
 
 /// In-flight uploads (§C.12). Memory stays O(chunk): bytes stream through an
 /// incremental hasher into a dotfile beside the dest, and commit verifies
-/// size + sha256 before the atomic rename. No resume in v1 — a re-open with
-/// the same dest/size/hash is idempotent and restarts from zero.
+/// size + sha256 before the atomic rename.
+///
+/// A re-open with the same dest/size/hash is idempotent and **resumes**: it
+/// returns the same id and the byte count already on disk, so a client that
+/// lost its connection mid-transfer sends only the tail. Resuming is safe
+/// precisely because size and sha256 are declared up front — two transfers
+/// that agree on both have the same bytes, so any prefix of one is a prefix
+/// of the other, and the running hash over that prefix stays valid.
 #[derive(Clone, Default)]
 pub struct Uploads {
     inner: std::sync::Arc<std::sync::Mutex<UploadsInner>>,
@@ -581,7 +587,9 @@ impl Uploads {
     }
 
     /// Open (or idempotently re-open) an upload. `session` ties a scratch
-    /// upload to the session whose death reaps it.
+    /// upload to the session whose death reaps it. Returns the upload id and
+    /// the offset the next chunk must carry — 0 for a fresh open, the bytes
+    /// already landed when resuming.
     pub fn open(
         &self,
         dest: UploadDest,
@@ -589,7 +597,7 @@ impl Uploads {
         sha256: &str,
         mode: Option<u32>,
         session: Option<String>,
-    ) -> Result<String> {
+    ) -> Result<(String, u64)> {
         if sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             bail!("sha256 must be 64 hex characters");
         }
@@ -608,18 +616,11 @@ impl Uploads {
                     dest.final_path.display()
                 );
             }
-            // Idempotent re-open: same id, restarted from zero. This is the
-            // reconnect story — the client lost the acks, not the daemon.
-            let state = inner.by_id.get_mut(&id).expect("looked up above");
-            state.file.set_len(0).context("truncating upload dotfile")?;
-            use std::io::Seek;
-            state
-                .file
-                .seek(std::io::SeekFrom::Start(0))
-                .context("rewinding upload dotfile")?;
-            state.received = 0;
-            state.hasher = <sha2::Sha256 as sha2::Digest>::new();
-            return Ok(id);
+            // Idempotent re-open: same id, resumed where the bytes stopped.
+            // This is the reconnect story — the client lost the acks, not the
+            // daemon, so the daemon is the one that knows how far it got.
+            let state = inner.by_id.get(&id).expect("looked up above");
+            return Ok((id, state.received));
         }
 
         inner.counter += 1;
@@ -655,19 +656,34 @@ impl Uploads {
                 file,
             },
         );
-        Ok(id)
+        Ok((id, 0))
     }
 
     /// Apply one chunk. Credit-of-one makes chunks strictly sequential, so
     /// any offset other than the running total is a protocol violation, not
     /// something to reorder around. Returns the new total (the next expected
     /// offset, echoed in the ack).
+    ///
+    /// The one exception is offset 0 on an upload that already has bytes: that
+    /// is a client restarting rather than resuming — the shape every client
+    /// had before `upload_opened` carried an offset — and it rewinds instead
+    /// of failing.
     pub fn chunk(&self, upload_id: &str, offset: u64, data: &[u8]) -> Result<u64> {
         let mut inner = self.inner.lock().unwrap();
         let state = inner
             .by_id
             .get_mut(upload_id)
             .ok_or_else(|| anyhow!("no such upload: {upload_id}"))?;
+        if offset == 0 && state.received > 0 {
+            state.file.set_len(0).context("truncating upload dotfile")?;
+            use std::io::Seek;
+            state
+                .file
+                .seek(std::io::SeekFrom::Start(0))
+                .context("rewinding upload dotfile")?;
+            state.received = 0;
+            state.hasher = <sha2::Sha256 as sha2::Digest>::new();
+        }
         if offset != state.received {
             bail!(
                 "upload {upload_id} expected offset {}, got {offset}",
@@ -996,9 +1012,10 @@ mod tests {
         let uploads = Uploads::new();
         let body = vec![7u8; 100_000];
         let dest = resolve_project_dest(root.to_str().unwrap(), "out.bin").unwrap();
-        let id = uploads
+        let (id, offset) = uploads
             .open(dest, body.len() as u64, &hex_sha256(&body), None, None)
             .unwrap();
+        assert_eq!(offset, 0, "a fresh open starts at zero");
 
         let mut sent = 0;
         for piece in body.chunks(64 * 1024 - 64) {
@@ -1036,7 +1053,7 @@ mod tests {
         let root = scratch("upload-hash");
         let uploads = Uploads::new();
         let dest = resolve_project_dest(root.to_str().unwrap(), "bad.bin").unwrap();
-        let id = uploads
+        let (id, _) = uploads
             .open(dest, 4, &hex_sha256(b"good"), None, None)
             .unwrap();
         uploads.chunk(&id, 0, b"evil").unwrap();
@@ -1049,7 +1066,7 @@ mod tests {
         );
 
         let dest = resolve_project_dest(root.to_str().unwrap(), "short.bin").unwrap();
-        let id = uploads
+        let (id, _) = uploads
             .open(dest, 10, &hex_sha256(b"0123456789"), None, None)
             .unwrap();
         uploads.chunk(&id, 0, b"0123").unwrap();
@@ -1065,7 +1082,7 @@ mod tests {
     }
 
     #[test]
-    fn upload_reopen_with_the_same_hash_is_idempotent() {
+    fn upload_reopen_resumes_at_the_bytes_already_landed() {
         let root = scratch("upload-reopen");
         let uploads = Uploads::new();
         let body = b"reconnect survivor".to_vec();
@@ -1073,25 +1090,39 @@ mod tests {
         let root_str = root.to_str().unwrap();
 
         let dest = resolve_project_dest(root_str, "again.txt").unwrap();
-        let first = uploads
+        let (first, _) = uploads
             .open(dest, body.len() as u64, &sha, None, None)
             .unwrap();
         uploads.chunk(&first, 0, &body[..5]).unwrap();
 
-        // The connection dies; the client re-opens and starts over.
+        // The connection dies; the client re-opens and is told where to pick up.
         let dest = resolve_project_dest(root_str, "again.txt").unwrap();
-        let second = uploads
+        let (second, offset) = uploads
             .open(dest, body.len() as u64, &sha, None, None)
             .unwrap();
         assert_eq!(first, second, "same dest + hash + size = same upload");
-        uploads.chunk(&second, 0, &body).unwrap();
+        assert_eq!(offset, 5, "re-open resumes rather than restarting");
+        uploads.chunk(&second, offset, &body[5..]).unwrap();
         let landed = uploads.commit(&second).unwrap();
         assert_eq!(std::fs::read(&landed).unwrap(), body);
+
+        // A client that ignores the offset restarts from zero, which still
+        // works — the hash is what proves the bytes, not the route to them.
+        let dest = resolve_project_dest(root_str, "restart.txt").unwrap();
+        let (third, _) = uploads
+            .open(dest, body.len() as u64, &sha, None, None)
+            .unwrap();
+        uploads.chunk(&third, 0, &body[..5]).unwrap();
+        uploads.chunk(&third, 0, &body).unwrap();
+        assert_eq!(
+            std::fs::read(uploads.commit(&third).unwrap()).unwrap(),
+            body
+        );
 
         // A different payload aimed at the same dest is a conflict, not a
         // silent replacement.
         let dest = resolve_project_dest(root_str, "again.txt").unwrap();
-        let one = uploads.open(dest, 1, &hex_sha256(b"a"), None, None).unwrap();
+        let (one, _) = uploads.open(dest, 1, &hex_sha256(b"a"), None, None).unwrap();
         let dest = resolve_project_dest(root_str, "again.txt").unwrap();
         assert!(uploads.open(dest, 1, &hex_sha256(b"b"), None, None).is_err());
         uploads.abort(&one);
@@ -1138,7 +1169,7 @@ mod tests {
         let uploads = Uploads::new();
         let body = b"paste".to_vec();
         let dest = resolve_scratch_dest(&root, "paste-1.png").unwrap();
-        let id = uploads
+        let (id, _) = uploads
             .open(
                 dest,
                 body.len() as u64,
@@ -1156,7 +1187,7 @@ mod tests {
         // A second upload still in flight when the session dies leaves no
         // dotfile behind.
         let dest = resolve_scratch_dest(&root, "paste-2.png").unwrap();
-        let id = uploads
+        let (id, _) = uploads
             .open(dest, 4, &hex_sha256(b"gone"), None, Some("s_1".to_string()))
             .unwrap();
         uploads.chunk(&id, 0, b"go").unwrap();

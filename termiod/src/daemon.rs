@@ -1173,7 +1173,11 @@ async fn process_control(
                             .uploads
                             .open(resolved, size, &sha256, mode, session_id)
                         {
-                            Ok(upload_id) => Control::UploadOpened { upload_id, re: seq },
+                            Ok((upload_id, offset)) => Control::UploadOpened {
+                                upload_id,
+                                offset,
+                                re: seq,
+                            },
                             Err(e) => error(seq, ErrorCode::Denied, format!("{e:#}"), false),
                         }
                     }

@@ -629,8 +629,15 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },
+    /// Reply to `upload_open`. `offset` is where the next chunk should start:
+    /// 0 for a fresh upload, and the bytes already landed when this open
+    /// resumed one the daemon still holds. Purely additive — a client that
+    /// ignores the field starts at 0, which the daemon reads as "restart" and
+    /// serves by rewinding, exactly as it did before resume existed.
     UploadOpened {
         upload_id: String,
+        #[serde(default)]
+        offset: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },

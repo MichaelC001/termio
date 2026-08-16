@@ -187,9 +187,9 @@ def send_upload_chunk(client, upload_id, offset, data):
     client.send_frame("U", bytes([len(uid)]) + uid + struct.pack(">Q", offset) + data)
 
 
-def upload_credit_of_one(client, upload_id, body, chunk=64 * 1024 - 64):
+def upload_credit_of_one(client, upload_id, body, chunk=64 * 1024 - 64, start=0):
     """Send the body chunk by chunk, holding each until the previous ack."""
-    sent = 0
+    sent = start
     while True:
         piece = body[sent : sent + chunk]
         send_upload_chunk(client, upload_id, sent, piece)
@@ -1478,6 +1478,53 @@ def main():
         lambda kind, msg: kind == "C" and msg.get("op") == "error"
     )
     check("upload: a chunk for an unknown id is a typed error", ghost is not None)
+
+    # Resume: the upload outlives the connection that opened it, so a client
+    # that lost its link re-opens and is told where the bytes stopped.
+    resume_body = os.urandom(200_000)
+    resume_open = {
+        "op": "upload_open",
+        "root": updir,
+        "dest": f"assets/resume-{os.getpid()}.bin",
+        "size": len(resume_body),
+        "sha256": hashlib.sha256(resume_body).hexdigest(),
+        "seq": 110,
+    }
+    dying = WireClient(caps=["upload"])
+    dying.send_control(resume_open)
+    half, _ = dying.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "upload_opened" and msg.get("re") == 110
+    )
+    resume_id = half[1]["upload_id"]
+    fresh_offset = half[1].get("offset")
+    partial, _ = upload_credit_of_one(dying, resume_id, resume_body[:120_000])
+    dying.close()
+
+    up.send_control(dict(resume_open, seq=111))
+    reopened, _ = up.recv_matching(
+        lambda kind, msg: kind == "C" and msg.get("op") == "upload_opened" and msg.get("re") == 111
+    )
+    resumed_at = reopened[1].get("offset") if reopened else None
+    check(
+        "upload: re-opening resumes at the bytes already landed",
+        fresh_offset == 0
+        and reopened is not None
+        and reopened[1]["upload_id"] == resume_id
+        and resumed_at == partial
+        and partial > 0,
+    )
+    upload_credit_of_one(up, resume_id, resume_body, start=resumed_at)
+    up.send_control({"op": "upload_commit", "upload_id": resume_id, "seq": 112})
+    resume_done, _ = up.recv_matching(
+        lambda kind, msg: kind == "C"
+        and msg.get("op") == "upload_committed"
+        and msg.get("re") == 112
+    )
+    check(
+        "upload: only the tail is re-sent and the whole file still verifies",
+        resume_done is not None
+        and open(resume_done[1]["path"], "rb").read() == resume_body,
+    )
 
     up.send_control(
         {

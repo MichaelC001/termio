@@ -15,6 +15,9 @@ import GhosttyTerminal
 @MainActor
 final class TerminalContextMenu: NSObject {
     private weak var store: TermioStore?
+    /// The ⌘V interceptor, so the menu's Paste answers the image-at-a-remote-
+    /// session case the same way the key does instead of restating the rule.
+    private weak var imagePaste: TermiodImagePaste?
     // Held for the app's lifetime; never removed.
     private var monitor: Any?
     /// The surface the open menu acts on, resolved at click time.
@@ -24,8 +27,9 @@ final class TerminalContextMenu: NSObject {
     /// when the menu opens so the actions don't chase a moved mouse.
     private var clickedLinkURL: URL?
 
-    init(store: TermioStore) {
+    init(store: TermioStore, imagePaste: TermiodImagePaste?) {
         self.store = store
+        self.imagePaste = imagePaste
         super.init()
         monitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { event in
             // Local event monitors are always called on the main thread; the
@@ -97,11 +101,12 @@ final class TerminalContextMenu: NSObject {
             menu.addItem(storeItem(localized("Open Link"), action: #selector(openLink), symbol: "safari"))
             menu.addItem(.separator())
         }
-        // Copy/Paste target the surface's own responder actions: copy is a
-        // no-op without a selection, and paste routes through ghostty's
-        // `paste_from_clipboard` binding so bracketed paste is preserved.
+        // Copy targets the surface's own responder action, and is a no-op
+        // without a selection. Paste goes through `paste(_:)` below, which ends
+        // up at the same responder action for everything except the one case
+        // that cannot work there.
         menu.addItem(surfaceItem(localized("Copy"), action: "copy:", symbol: "doc.on.doc"))
-        menu.addItem(surfaceItem(localized("Paste"), action: "paste:", symbol: "doc.on.clipboard"))
+        menu.addItem(storeItem(localized("Paste"), action: #selector(paste), symbol: "doc.on.clipboard"))
         // The session's deep link (`termio://session/<uuid>`) — the canonical
         // address every `termio sessions` command takes and the form that stays
         // self-describing when pasted into an agent prompt, so wiring one agent
@@ -172,6 +177,15 @@ final class TerminalContextMenu: NSObject {
     @objc private func closeSession() {
         guard let id = clickedSessionID else { return }
         store?.requestCloseSession(id)
+    }
+
+    /// An image aimed at a session on another device crosses the boundary and
+    /// pastes the path it landed at; everything else is the surface's own
+    /// paste, which routes through ghostty's `paste_from_clipboard` binding so
+    /// bracketed paste is preserved.
+    @objc private func paste() {
+        if imagePaste?.pasteImageFromMenu(sessionID: clickedSessionID) == true { return }
+        clickedView?.perform(NSSelectorFromString("paste:"), with: nil)
     }
 
     @objc private func openLink() {
