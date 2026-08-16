@@ -3,7 +3,7 @@ title: Retire "remote" — every machine is a device
 status: draft
 type: rfc
 created: 2026-08-14
-updated: 2026-08-15
+updated: 2026-08-16
 related:
   - 20260805-termiod-device-architecture.md
   - 20260730-termiod-session-protocol.md
@@ -48,7 +48,12 @@ of devices. That is this RFC.
 | Version skew is negotiated (`proto`/`min_proto`), never lockstep; installs are content-addressed so versions coexist | device architecture §6 |
 | Workspaces belong to the device, not to a viewer | device architecture §2.2 |
 | The server never decides presentation | device architecture §4 |
-| The user's `~/.ssh/config` is authoritative — read it, never write it | `CLAUDE.md`, non-negotiable #3 |
+| The user's `~/.ssh/config` is authoritative — read it, **never override it** | `CLAUDE.md`, non-negotiable #3 |
+
+That last row was previously paraphrased here as "never write it", which is
+stricter than the rule actually says (`CLAUDE.md:43-44`). The distinction is
+load-bearing: appending a user-authorised `Host` block does not override
+anything, which is what keeps the shipped **Add Host** legitimate.
 
 ## The ownership rule
 
@@ -64,7 +69,7 @@ file, stale in ours.
 
 | State | Produced by | Home |
 | --- | --- | --- |
-| The list of reachable machines | the user's `~/.ssh/config` | **already has a Settings entry — see below** |
+| The list of reachable machines | the user's `~/.ssh/config` | **`Settings ▸ SSH`** — it already ships; see the correction below |
 | Device colour, display name, "forget" | termio | Settings ▸ Devices |
 | `termiod` version, install/upgrade status | termio's probe | Settings ▸ Devices |
 | Merged device identities (§9.5) | termio | Settings ▸ Devices |
@@ -81,13 +86,11 @@ with no stated boundary. That is the two-copies problem instantiated inside the
 Settings window by the document that exists to delete it.
 
 The ownership test cannot resolve it either, because reachability is produced by
-termio's own probe and therefore qualifies as "termio produced this state
-itself". **This is a blocking open decision, not a detail** — see Open question 5.
-
-The appending also sits close to the `~/.ssh/config` non-negotiable. Adding a new
-`Host` block arguably does not *override* anything, so this reads as a gap in the
-rule's wording rather than a violation, but the rule should say which it means
-before a second surface starts writing.
+termio's own probe and therefore qualifies as "termio produced this state itself".
+**Decided in Open question 5: the two tabs coexist, split at the handshake** —
+SSH owns routes, Devices owns identities. The ownership rule survives as a
+tiebreaker for *fields*, but it is not what separates the two surfaces; the
+handshake is.
 
 This is why the analogy to `Settings ▸ Agents` misleads: an agent manifest **is**
 a termio-owned list, so `Add Agent` belongs there. A device list is not.
@@ -209,6 +212,12 @@ on.
    with real risk: it makes the daemon a release-critical dependency and changes
    the execution path of *every* session, local included. It is not a rename and
    must not be staged as one.
+
+   **Blocked on foreground-job parity** (Open question 6). Until `termiod`
+   reports whether a session has a foreground job, deleting the in-process path
+   silently deletes the close confirmation for every local session, because the
+   check reads `ptyProcesses[session.id]`. Parity ships first, or this stage
+   removes a safety behaviour users already rely on.
 3. **Vocabulary and switcher.** Menu titles, the indicator, `Connect to…`,
    single-device collapse, reading readiness from stage 1.
 4. **Settings ▸ Devices**, once Open question 5 decides its boundary with
@@ -252,16 +261,54 @@ on.
    so the slot and weight are unchanged and the motivation's own complaint is
    answered. Both reviews accept the slot and contest what the item does.
 
-5. **Does `Settings ▸ Devices` subsume `Settings ▸ SSH`, or coexist with it?**
-   Blocking. They are two lists of machines from overlapping sources, and the
-   ownership test cannot separate them because reachability is termio's own
-   probe. Subsuming is cleaner and deletes a surface; coexisting needs a stated,
-   defensible split written into this document before either is built.
+5. ~~**Does `Settings ▸ Devices` subsume `Settings ▸ SSH`?**~~ **Decided: they
+   coexist, split by handshake.**
 
-6. **Does porting `hasForegroundJob` across the wire belong here or in its own
-   protocol change?** It is additive on `list`, but it is a protocol change to a
-   daemon that now ships on `main`, and it fixes a live asymmetry rather than
-   supporting the rename.
+   > `Settings ▸ SSH` owns **routes** — anything meaningful *before* `hello_ok`,
+   > keyed by an SSH alias, or affecting how OpenSSH resolves and authenticates.
+   > `Settings ▸ Devices` owns **identities** — anything learned *after*
+   > `hello_ok`, keyed by `host_id`, or describing termiod, device lifecycle and
+   > device preferences. A value is never persisted in both.
+
+   So alias reachability stays in SSH; post-handshake device health lives in
+   Devices. The rule is stated as a key test precisely so a new field can be
+   placed without reopening this.
+
+   Subsuming was rejected because an alias can exist before any device is known,
+   and one `host_id` can be reached through several aliases. A single list would
+   have to invent device rows for unresolved routes, or hide a second route model
+   inside each device — the two-copies problem again, under one tab.
+
+   Accepted cost: two tabs can read as competing machine lists, and users have to
+   meet the route/identity distinction. The key rule, distinct status vocabulary
+   for *reachable* versus *healthy*, and no duplicated persistence are what buy
+   that back.
+
+   **Add Host stays in SSH.** It is an explicit user edit to the authoritative
+   file, not a termio-owned route database; after appending, termio rereads the
+   file and uses OpenSSH's answer.
+
+6. ~~**Does porting `hasForegroundJob` across the wire belong here?**~~
+   **Decided: yes, and it gates stage 2.**
+
+   Not because the rename needs it, but because *this RFC causes the regression*.
+   Deleting the in-process PTY path removes a shipped safety behaviour from every
+   **local** session — not merely from a remote edge case — so the document that
+   proposes the deletion has to own the remedy and gate on it.
+
+   It rides as an **optional additive field** on the existing session payload,
+   which needs no `proto` bump: the protocol already treats unknown control ops
+   and events as ignorable and its `caps` and error codes as additive.
+
+   Accepted cost: this turns a vocabulary-and-UI RFC into a shipped Rust/Swift
+   protocol change carrying version-skew semantics. Splitting it out would not
+   remove the dependency — it would only let the convergence plan claim a parity
+   it does not have.
+
+   Skew rule: an older daemon that omits the field must preserve today's
+   no-confirm behaviour. It must never be read as "unknown, so confirm", which
+   would tax every close on exactly the sessions the shipped rule deliberately
+   exempts.
 
 7. **What does an unreachable device look like?** Device identity is about to
    appear in the sidebar, the menus, and the switcher, and nothing in this draft
