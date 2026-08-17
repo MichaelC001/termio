@@ -1038,7 +1038,7 @@
 	<string>使用 %@</string>
 	<key>View</key>
 	<string>显示</string>
-	<key>View Trace</key>
+	<key>View Trajectory</key>
 	<string>查看轨迹</string>
 	<key>View on %@</key>
 	<string>在 %@ 上查看</string>

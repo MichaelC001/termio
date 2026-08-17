@@ -1361,7 +1361,7 @@
         }
       }
     },
-    "Trace": {
+    "Trajectory": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -1451,7 +1451,7 @@
         }
       }
     },
-    "View Trace": {
+    "View Trajectory": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
