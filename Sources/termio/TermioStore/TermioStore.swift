@@ -1420,8 +1420,10 @@ final class TermioStore: ObservableObject {
     /// Agent sessions adopt the running program's live terminal title (`OSC 0/2`)
     /// once it reports something meaningful — that is how a `Claude Code` row
     /// becomes `Explore e2b.dev infra`, keeping two sessions of the same agent
-    /// distinguishable. A name the user set themselves (one that differs from the
-    /// agent's default display name) wins over the live title.
+    /// distinguishable. Agents whose OSC title names only the project can instead
+    /// fall back to a compact first-prompt title supplied by their hook. A name the
+    /// user set themselves wins, followed by a meaningful native title, then the
+    /// prompt-derived fallback.
     ///
     /// Plain terminals never adopt a live title (their shell would just report
     /// `user@host`/cwd noise); instead the auto-named ones (`Terminal N`) all show
@@ -1430,10 +1432,11 @@ final class TermioStore: ObservableObject {
     /// value is derived here.
     func displayTitle(for session: Session) -> String {
         if session.agent != .terminal {
-            if session.title != session.agent.displayName {
-                return session.title
-            }
-            return runtimes[session.id]?.liveTitle ?? session.liveTitle ?? session.title
+            return AgentSessionTitle.resolved(
+                stored: session.title,
+                agentName: session.agent.displayName,
+                native: runtimes[session.id]?.liveTitle ?? session.liveTitle,
+                promptFallback: session.promptTitle)
         }
         guard Self.isAutoTerminalName(session.title) else {
             return session.title
@@ -1584,5 +1587,18 @@ final class TermioStore: ObservableObject {
         guard let id = selectedSessionID, let session = session(id), let project = project(for: id)
         else { return nil }
         return session.worktreePath ?? project.path
+    }
+}
+
+/// The order the sidebar names an agent session in, kept out of `TermioStore` so a
+/// test can pin the precedence without standing up a window.
+enum AgentSessionTitle {
+    /// A name the user set wins outright. Otherwise the agent's own native title
+    /// speaks, and only when it says nothing does the first prompt stand in.
+    static func resolved(
+        stored: String, agentName: String, native: String?, promptFallback: String?
+    ) -> String {
+        guard stored == agentName else { return stored }
+        return native ?? promptFallback ?? stored
     }
 }

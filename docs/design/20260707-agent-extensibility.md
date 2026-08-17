@@ -294,9 +294,9 @@ per-agent 逻辑集中到一个文件（很"插件"），**但**正是要在 Ter
 
 ## 六、风险
 
-- **声明了事件 ≠ agent 真会触发**。代码自己都不确定 Codex 是否真发 hook（`HookListener.swift:150-167`
-  的 `TERMIO_HOOK_TRACE` 诊断就在查"Codex TUI 到底发不发、`termio_session` 是否活着进到 hook"）。
-  → 把 trace 作为"测试你 agent 的 hook"的文档化步骤，别假设声明即生效。
+- **声明了事件 ≠ agent 真会触发**。Codex 的 TUI 确实发 hook，`termio_session` 也活着进到 hook——这两点
+  当初由 `TERMIO_HOOK_TRACE` 诊断查实，诊断随后删除。→ 接新 agent 时仍要把声明的每个事件实测一遍，
+  别假设声明即生效。
 - **shell 逃生舱 = 任意代码执行**。但用户在自己配置里写自己的 shell，信任级别等同其 shell rc；且仍跑在
   agent 进程，不在 Termio。可接受。
 - **路径/解析健壮性**：拒绝改写无法解析的文件（现有 `JSONHookFile` 已如此）；`agent.json` 解析失败应

@@ -394,8 +394,8 @@ struct AgentStatusRules {
     }
 
     /// Appends one classification line to `/tmp/termio-status.log` when
-    /// `TERMIO_STATUS_TRACE` is set — mirroring the hook layer's `TERMIO_HOOK_TRACE`.
-    /// Costs nothing in normal runs (the caller checks the env once and skips this).
+    /// `TERMIO_STATUS_TRACE` is set. Costs nothing in normal runs (the caller checks
+    /// the environment once and skips this).
     static func trace(agent: String, session: Session.ID, activity: Activity, matched: String?) {
         let rule = matched.map { "/\($0)/" } ?? "(no match → idle)"
         let line = "[\(session.uuidString.prefix(8))] \(agent) → \(activity) \(rule)\n"
@@ -467,6 +467,9 @@ struct AgentHookSpec: Hashable {
     /// `tool_name`), so reports can distinguish real work from a prose-only turn.
     /// `nil` when the agent's hooks expose no tool identity.
     let tool: String?
+    /// The stdin JSON field carrying the user's prompt. Termio turns its first value
+    /// into a bounded fallback label when the agent does not emit a semantic OSC title.
+    let promptTitle: String?
     let events: [AgentHookEvent]
 }
 
@@ -959,6 +962,8 @@ struct AgentManifest: Decodable {
         var conversation: String?
         /// Stdin JSON field naming the running tool (see `AgentHookSpec.tool`).
         var tool: String?
+        /// Stdin JSON field carrying a prompt-derived fallback title.
+        var promptTitle: String?
         var events: [Event]
         struct Event: Decodable {
             var on: String?
@@ -1154,6 +1159,24 @@ struct AgentManifest: Decodable {
             tool = raw
         }
 
+        // A prompt-title locator follows the same stdin JSON-field contract as the
+        // tool locator. It is intentionally unavailable to plugin dialects until one
+        // exposes an equally stable prompt field.
+        var promptTitle: String?
+        if let raw = hooks.promptTitle?.trimmingCharacters(in: .whitespaces), !raw.isEmpty {
+            switch dialect {
+            case .claudeNested, .cursorFlat:
+                guard isIdentifier(raw[...]) else {
+                    throw ManifestError.invalid(
+                        "\(id): hook promptTitle must name a stdin JSON field, not '\(raw)'")
+                }
+            default:
+                throw ManifestError.invalid(
+                    "\(id): hook promptTitle is not supported for this dialect")
+            }
+            promptTitle = raw
+        }
+
         let validStates: Set<String> = ["working", "attention", "done", "idle"]
         let events = try hooks.events.map { event -> AgentHookEvent in
             guard let name = event.on ?? event.event, !name.isEmpty else {
@@ -1172,6 +1195,7 @@ struct AgentManifest: Decodable {
             capturesTranscript: hooks.capturesTranscript ?? false,
             conversation: conversation,
             tool: tool,
+            promptTitle: promptTitle,
             events: events)
     }
 

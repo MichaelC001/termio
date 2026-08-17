@@ -225,14 +225,32 @@ json_escape() {
         | awk 'BEGIN { ORS = "" } { if (NR > 1) printf "\\n"; printf "%s", $0 }'
 }
 
-# Mine a string field out of a JSON blob, jq-free: the first `"field":"value"`
-# occurrence, whitespace-tolerant around the colon. `head -1` closes the pipe so
-# the pipeline's exit status is sed's (0), keeping `set -e` happy even when grep
-# matches nothing.
+# Mine a string field out of a JSON blob, jq-free. The scan honours JSON's escapes,
+# which matters once the mined field is prose: the `grep -o "[^\"]*"` this replaces
+# stopped at the first escaped quote and handed back a fragment. `\uXXXX` becomes a
+# space rather than visible garbage — no awk on macOS decodes it portably, and the
+# hook hosts we install into all emit raw UTF-8 anyway.
 mine_field() {
-    printf '%s' "$2" \
-        | grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 \
-        | sed 's/^"[^"]*"[[:space:]]*:[[:space:]]*"//;s/"$//'
+    printf '%s' "$2" | awk -v field="$1" '
+        { text = text (NR == 1 ? "" : "\n") $0 }
+        END {
+            if (!match(text, "\"" field "\"[[:space:]]*:[[:space:]]*\"")) exit
+            for (i = RSTART + RLENGTH; i <= length(text); i++) {
+                c = substr(text, i, 1)
+                if (c == "\"") break
+                # A pasted prompt can run to megabytes and the app shows 64
+                # characters of it. Stopping at a space keeps the payload small
+                # without ever cutting a multi-byte character in half.
+                if (c == " " && length(value) >= 256) break
+                if (c != "\\") { value = value c; continue }
+                c = substr(text, ++i, 1)
+                if (c == "u") { value = value " "; i += 4 }
+                else if (index("bfnrt", c)) value = value " "
+                else value = value c
+            }
+            printf "%s", value
+        }
+    '
 }
 
 # Whether a token addresses a session rather than prompt text: a termio://
@@ -544,7 +562,8 @@ sessions() {
 
 # The public hook contract:
 #   `termio agent report <state> [--transcript] [--conversation <id>]
-#                                [--conversation-from <field>] [--tool-from <field>] [--reply]`
+#                                [--conversation-from <field>] [--tool-from <field>]
+#                                [--prompt-title-from <field>] [--reply]`
 # An agent's status hook runs this instead of a hand-rolled `printf | nc`; termio
 # stamps the absolute path to this script into the hook file at install time. It reads
 # the session id from $TERMIO_SESSION (which the PTY carries) and the cwd from $PWD,
@@ -564,6 +583,8 @@ sessions() {
 #                         of the JSON on stdin (Claude `tool_name`); events without
 #                         the field simply omit it. Feeds the sidebar tooltip and
 #                         the task-completion notification's work-vs-chat gate.
+#   --prompt-title-from   mine a first-prompt title candidate from the named stdin
+#                         field. Termio bounds and normalizes it before display.
 #   --reply               stay silent on stdout and print `{}` at the end, for agents
 #                         (Cursor) that read the hook's stdout as its JSON reply.
 agent() {
@@ -571,7 +592,7 @@ agent() {
     [ $# -gt 0 ] && shift || true
     if [ "$op" != "report" ]; then
         echo "termio: unknown agent command '${op:-}'" >&2
-        echo "usage: termio agent report <working|attention|done|idle> [--transcript] [--conversation <id>] [--conversation-from <field>] [--tool-from <field>] [--reply]" >&2
+        echo "usage: termio agent report <working|attention|done|idle> [--transcript] [--conversation <id>] [--conversation-from <field>] [--tool-from <field>] [--prompt-title-from <field>] [--reply]" >&2
         exit 1
     fi
 
@@ -581,6 +602,7 @@ agent() {
     conversation=""
     conversation_from=""
     tool_from=""
+    prompt_title_from=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --transcript) with_transcript=1 ;;
@@ -594,6 +616,9 @@ agent() {
             --tool-from)
                 [ $# -ge 2 ] || { echo "termio: --tool-from needs a field name" >&2; exit 1; }
                 tool_from="$2"; shift ;;
+            --prompt-title-from)
+                [ $# -ge 2 ] || { echo "termio: --prompt-title-from needs a field name" >&2; exit 1; }
+                prompt_title_from="$2"; shift ;;
             working|attention|done|idle) state="$1" ;;
             *) echo "termio: unknown agent report argument '$1'" >&2; exit 1 ;;
         esac
@@ -611,7 +636,7 @@ agent() {
     # ran the hook without piping its payload would leave `cat` waiting on the
     # terminal forever, while a closed/absent stdin still reads instantly as empty.
     input=""
-    if [ "$with_transcript" -eq 1 ] || [ -n "$conversation_from" ] || [ -n "$tool_from" ]; then
+    if [ "$with_transcript" -eq 1 ] || [ -n "$conversation_from" ] || [ -n "$tool_from" ] || [ -n "$prompt_title_from" ]; then
         if [ ! -t 0 ]; then input=$(cat); fi
     fi
     if [ -z "$conversation" ] && [ -n "$conversation_from" ]; then
@@ -620,6 +645,10 @@ agent() {
     tool=""
     if [ -n "$tool_from" ]; then
         tool=$(mine_field "$tool_from" "$input")
+    fi
+    prompt_title=""
+    if [ -n "$prompt_title_from" ]; then
+        prompt_title=$(mine_field "$prompt_title_from" "$input")
     fi
 
     payload=$(printf '{"termio_session":"%s","state":"%s","cwd":"%s"' \
@@ -633,6 +662,9 @@ agent() {
     fi
     if [ -n "$tool" ]; then
         payload=$(printf '%s,"tool":"%s"' "$payload" "$(json_escape "$tool")")
+    fi
+    if [ -n "$prompt_title" ]; then
+        payload=$(printf '%s,"prompt_title":"%s"' "$payload" "$(json_escape "$prompt_title")")
     fi
     payload="$payload}"
 
