@@ -42,7 +42,9 @@ extension TermioStore {
                 rows: UInt16(clamping: lastHostGridRows),
                 cols: UInt16(clamping: lastHostGridColumns))
         return TermiodSessionLink(
-            sessionName: session.id.uuidString,
+            // Its uuid for a session Termio opened; the name it already had for
+            // one adopted off the device's roster (see `Session.termiodSessionName`).
+            sessionName: daemonSessionName(for: session),
             specification: specification,
             route: route,
             rows: lastHostGridRows,
@@ -86,6 +88,11 @@ extension TermioStore {
         // machine it is on, with no extra round trip.
         link.onDevice = { [weak self] device in
             self?.adoptDevice(device, forRoute: link.route)
+            // An attach that succeeded is proof the session is running now, which
+            // outranks a grave dug before it. Without this, a row whose session
+            // was buried and then reopened keeps reading "ended" until the next
+            // roster arrives — the app disagreeing with the terminal beside it.
+            self?.termiodTombstones[link.sessionName] = nil
         }
         // The `events` half of the negotiated capabilities. Status is the one
         // that matters: an agent running on a VPS reports to the daemon that
@@ -226,62 +233,97 @@ extension TermioStore {
         }
     }
 
-    /// Startup roster check over a control-role channel: which persisted
-    /// sessions have a live counterpart in the daemon (and will therefore
-    /// reattach when surfaced) versus which will spawn fresh. Purely
-    /// diagnostic — the attach-by-name above is what actually decides.
+    // MARK: - The current device's roster
+
+    /// Asks the **current device** what is running on it, and publishes the answer.
     ///
-    /// Only this Mac's own device is asked. Reaching every known route at launch
-    /// would put an SSH round trip (216–292 ms cold) on the startup path for a
-    /// diagnostic; the cross-device roster is a deliberate later step, not a
-    /// side effect of logging.
-    func logTermiodRoster() {
+    /// This is the only source of the session list a device's world is drawn from.
+    /// It is a `list` over that device's own control channel — for this Mac a Unix
+    /// socket, for anything else `ssh <alias> termiod stdio` — so the same code
+    /// path serves every machine and this Mac is not a special case. What comes
+    /// back includes sessions this app never opened, which is the difference
+    /// between reading a device's state and filtering your own.
+    ///
+    /// Runs off the main thread (an SSH round trip is 216–292 ms cold) and drops
+    /// its reply if the user has moved on to another device meanwhile.
+    func refreshDeviceSessions() {
+        guard Termiod.isEnabled else {
+            deviceSessions = .unavailable
+            return
+        }
+        let device = currentDevice
+        let route = device.route
         let persistedNames = Set(projects.flatMap { project in
-            project.sessions.map { $0.id.uuidString }
+            project.sessions.map(daemonSessionName(for:))
         })
-        let route = TermiodRoute(sshAlias: Termiod.remoteHost)
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        deviceSessionsGeneration += 1
+        let generation = deviceSessionsGeneration
+        deviceSessions = .loading
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let outcome: Result<Termiod.SessionsPayload, Error>
             do {
-                let roster = try Termiod.roster(route: route)
-                let live = roster.sessions
-                // The graveyard is the other half of the answer, and the half
-                // that explains an empty list. Recorded before the live rows are
-                // logged so `termiodEndReason` is populated by the time anything
-                // asks why a row it restored has no session behind it.
-                let tombstones = roster.tombstones
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated {
-                        self?.recordTombstones(tombstones, persisted: persistedNames)
-                    }
-                }
-                // The handshake `roster` just performed recorded this
-                // route's device; naming it here is the visible proof that the
-                // app knows *which machine* it is talking to, not just a socket.
-                if let device = TermiodDeviceRegistry.shared.device(for: route) {
-                    Log.termiod.info("""
-                    device \(device.id, privacy: .public) \
-                    running \(device.daemonVersion, privacy: .public) \
-                    reachable via \(route.description, privacy: .public); \
-                    known routes: \
-                    \(device.routes.map(\.description).joined(separator: ", "), privacy: .public)
-                    """)
-                }
-                for information in live where information.alive {
-                    let verdict = persistedNames.contains(information.name)
-                        ? "will reattach" : "no matching app session"
-                    Log.termiod.info("""
-                    live termiod session name=\(information.name, privacy: .public) \
-                    pid=\(information.pid, privacy: .public) — \(verdict, privacy: .public)
-                    """)
-                }
-                if live.isEmpty {
-                    Log.termiod.info("no live termiod sessions at startup")
-                }
+                outcome = .success(try Termiod.roster(route: route))
             } catch {
-                Log.termiod.error("""
-                startup roster list failed: \
-                \(error.localizedDescription, privacy: .public)
+                outcome = .failure(error)
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.deviceSessionsGeneration == generation else { return }
+                    self.applyRoster(outcome, from: device, route: route,
+                                     persisted: persistedNames)
+                }
+            }
+        }
+    }
+
+    private func applyRoster(
+        _ outcome: Result<Termiod.SessionsPayload, Error>,
+        from device: KnownDevice,
+        route: TermiodRoute,
+        persisted: Set<String>
+    ) {
+        switch outcome {
+        case .failure(let error):
+            deviceSessions = .failed(error.localizedDescription)
+            Log.termiod.error("""
+            roster of \(route.description, privacy: .public) failed: \
+            \(error.localizedDescription, privacy: .public)
+            """)
+        case .success(let payload):
+            let live = payload.sessions.filter(\.alive)
+            // The graveyard is the other half of the answer, and the half that
+            // explains an empty list. Recorded before anything reads the rows so
+            // `termiodEndReason` is populated by the time the sidebar asks why a
+            // row it restored has no session behind it.
+            recordTombstones(payload.tombstones, live: live, persisted: persisted)
+            deviceSessions = .ready(
+                DeviceSessions(live: live, tombstones: payload.tombstones))
+            // The handshake `roster` just performed recorded this route's device;
+            // naming it here is the visible proof that the app knows *which
+            // machine* it is talking to, not just a socket.
+            if let identified = TermiodDeviceRegistry.shared.device(for: route) {
+                adoptDevice(identified, forRoute: route)
+                Log.termiod.info("""
+                device \(identified.id, privacy: .public) \
+                running \(identified.daemonVersion, privacy: .public) \
+                reachable via \(route.description, privacy: .public); \
+                known routes: \
+                \(identified.routes.map(\.description).joined(separator: ", "), privacy: .public)
                 """)
+            }
+            for information in live {
+                let verdict = persisted.contains(information.name)
+                    ? "has a row here" : "opened elsewhere"
+                Log.termiod.info("""
+                live session on \(device.name, privacy: .public): \
+                name=\(information.name, privacy: .public) \
+                pid=\(information.pid, privacy: .public) \
+                status=\(information.status, privacy: .public) — \
+                \(verdict, privacy: .public)
+                """)
+            }
+            if live.isEmpty {
+                Log.termiod.info("no live sessions on \(device.name, privacy: .public)")
             }
         }
     }
@@ -291,16 +333,25 @@ extension TermioStore {
     /// Files the daemon's graveyard, and says out loud what happened to any row
     /// this app restored whose session did not survive.
     ///
-    /// The tombstone list is capped host-side (100, newest first), so this keeps
-    /// what it is given rather than accumulating forever, and only for names
-    /// that map to a session this app knows — another client's sessions are not
-    /// this app's story to tell.
-    func recordTombstones(_ tombstones: [Termiod.SessionTombstone], persisted: Set<String>) {
-        termiodTombstones = Dictionary(
-            tombstones.filter { persisted.contains($0.name) }.map { ($0.name, $0) },
-            uniquingKeysWith: { first, _ in first } // newest first: the first wins
-        )
-        for tombstone in termiodTombstones.values.sorted(by: { $0.endedUnix > $1.endedUnix }) {
+    /// Merged rather than replaced, because each device buries its own dead and a
+    /// switch must not erase what the machine you just left told you. A name that
+    /// came back **live** in this reply loses its tombstone: the session was
+    /// restarted under the same name, so the grave is stale.
+    ///
+    /// Only names that map to a session this app knows are kept — another
+    /// client's sessions are not this app's story to tell, and the host caps the
+    /// list at 100 anyway.
+    func recordTombstones(
+        _ tombstones: [Termiod.SessionTombstone],
+        live: [Termiod.SessionInformation],
+        persisted: Set<String>
+    ) {
+        for information in live { termiodTombstones[information.name] = nil }
+        let liveNames = Set(live.map(\.name))
+        // Newest first, so the first tombstone for a name is the one to keep.
+        for tombstone in tombstones.reversed()
+        where persisted.contains(tombstone.name) && !liveNames.contains(tombstone.name) {
+            termiodTombstones[tombstone.name] = tombstone
             Log.termiod.info("""
             termiod session name=\(tombstone.name, privacy: .public) ended: \
             \(tombstone.reason, privacy: .public) \
@@ -318,7 +369,61 @@ extension TermioStore {
     /// turning it into something a person reads is the caller's job, because the
     /// host describes state and never decides presentation.
     func termiodEndReason(for id: Session.ID) -> Termiod.SessionTombstone? {
-        termiodTombstones[id.uuidString]
+        guard let session = session(id) else { return nil }
+        return termiodTombstones[daemonSessionName(for: session)]
+    }
+
+    // MARK: - Adopting a session the device already had
+
+    /// Takes a session the **device** reports but this app has no row for, and
+    /// gives it one.
+    ///
+    /// This is what makes the roster more than a read-only display: a session
+    /// started from `termiod` on the box, or by a phone, is a session on that
+    /// device, and a viewer of that device should be able to open it. The row
+    /// keeps the name the device gave it (`termiodSessionName`) instead of being
+    /// renamed to a fresh uuid, because the name is how the daemon is asked for
+    /// that exact PTY.
+    func adoptDeviceSession(_ information: Termiod.SessionInformation) {
+        guard Termiod.isEnabled else {
+            presentTermiodDisabledAlert()
+            return
+        }
+        let device = currentDevice
+        var session = Session(title: information.title ?? information.name, agent: .terminal)
+        session.termiodSessionName = information.name.isEmpty ? information.id : information.name
+        session.termiodRemoteHost = device.alias
+        session.deviceID = device.deviceID
+        session.termiodRemoteCwd = information.cwd.isEmpty ? nil : information.cwd
+        // Filed where the device's other rows live: its own block for another
+        // machine, the loose funnel for this one. Both are viewer-side containers;
+        // the workspace a session really belongs to is the device's to say, and
+        // it cannot say it yet (device architecture §2.2).
+        let containerID: Project.ID
+        if let alias = device.alias {
+            containerID = hostContainer(for: alias, remoteRoot: session.termiodRemoteCwd)
+        } else if let terminals = projects.first(where: { $0.kind == .terminals }) {
+            containerID = terminals.id
+        } else {
+            let container = Project(
+                name: "Terminals",
+                path: FileManager.default.homeDirectoryForCurrentUser.path,
+                branch: "—",
+                sessions: [session],
+                kind: .terminals
+            )
+            projects.append(container)
+            selectedSessionID = session.id
+            return
+        }
+        guard let index = projects.firstIndex(where: { $0.id == containerID }) else {
+            Log.termiod.error("""
+            adopting \(information.name, privacy: .public) found no container to file it under
+            """)
+            return
+        }
+        projects[index].sessions.append(session)
+        selectedSessionID = session.id
     }
 
     // MARK: - Remote terminals (per-session SSH host)
@@ -418,6 +523,9 @@ extension TermioStore {
         // learns its device on first attach.
         session.deviceID = deviceID
         session.termiodRemoteCwd = cwd
+        // Selecting it below is what enters the machine (see the selection's
+        // `didSet`), so a terminal opened on another device never lands in a world
+        // the window is not showing.
 
         // A remote terminal opened from a project belongs to that project — the
         // row you clicked is the row it appears under. Everything else belongs to

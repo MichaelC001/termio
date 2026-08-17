@@ -2,31 +2,6 @@ import AppKit
 import SwiftUI
 import TermioShared
 
-/// A machine Termio can put a session on, as the interface names it. This Mac is
-/// one, and so is every box the user has already worked on — the word "remote"
-/// describes the road, not the thing at the end of it, so it appears nowhere.
-///
-/// The identity carried here is the `~/.ssh/config` alias, not the device's
-/// `host_id`, because a menu is built synchronously and the id only exists after
-/// a handshake. That is the same bootstrap/stable split `Project.sshHost` and
-/// `Project.deviceID` already record (device architecture §9.5): the alias is
-/// what a row is born from, `deviceID` is what it turns out to be. Two aliases
-/// that resolve to one machine therefore still show as two rows — merging them
-/// is §9.5's job and is deliberately not done here.
-struct KnownDevice: Identifiable, Hashable {
-    /// The alias this device is reached by, or `nil` for this Mac.
-    let alias: String?
-    /// The `host_id` a handshake revealed, `nil` until one has run.
-    let deviceID: String?
-
-    var isLocal: Bool { alias == nil }
-    /// The switcher and every menu row name a device this way. This Mac has no
-    /// alias to show, and the host never supplies a display name (device
-    /// architecture §4), so the client picks one.
-    var name: String { alias ?? localized("This Mac") }
-    var id: String { alias ?? "" }
-}
-
 /// Which machines the interface knows about, and which ones it could reach but
 /// hasn't. The split follows the ownership rule: the *known* list is state Termio
 /// produced itself (a completed handshake, a session it opened), while the
@@ -54,8 +29,9 @@ enum DeviceRoster {
                 if let host = session.termiodRemoteHost { aliases.insert(host) }
             }
         }
-        // This Mac always leads: it is the device the user is looking at.
-        return [KnownDevice(alias: nil, deviceID: nil)]
+        // This Mac always leads — not because it is special, but because it is the
+        // one machine that is always there.
+        return [.thisMac]
             + aliases.sorted().map { KnownDevice(alias: $0, deviceID: deviceIDByAlias[$0]) }
     }
 

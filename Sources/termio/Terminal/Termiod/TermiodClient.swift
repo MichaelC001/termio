@@ -45,17 +45,6 @@ enum Termiod {
     /// mid-run change could not be honored anyway.
     static let isEnabled = ProcessInfo.processInfo.environment["TERMIO_TERMIOD"] == "1"
 
-    /// A dev/diagnostic host: which daemon `logTermiodRoster` inspects.
-    ///
-    /// It deliberately does **not** decide where sessions run. Host selection is
-    /// per-session (`Session.termiodRemoteHost`, set by the New Terminal device
-    /// picker and "Clone to <device>…"); when this was also a fallback it turned
-    /// every ordinary local terminal into a remote one.
-    static let remoteHost: String? = {
-        let host = ProcessInfo.processInfo.environment["TERMIO_TERMIOD_REMOTE"]
-        return (host?.isEmpty == false) ? host : nil
-    }()
-
     static let protocolVersion: UInt32 = 1
 
     /// Mirrors termiod/src/paths.rs exactly — both sides must derive the same
@@ -620,7 +609,7 @@ enum Termiod {
         let message: String
     }
 
-    struct SessionsPayload: Decodable {
+    struct SessionsPayload: Decodable, Sendable {
         let sessions: [SessionInformation]
         /// Sessions that have died, newest first. Absent on a daemon too old to
         /// bury them, which is why it decodes to an empty list rather than
@@ -639,13 +628,55 @@ enum Termiod {
         }
     }
 
-    /// The subset of `termiod list` this client acts on; unknown fields are
-    /// ignored so the daemon can grow the record additively.
-    struct SessionInformation: Decodable {
+    /// One row of `termiod list` — a session as the **device** describes it.
+    ///
+    /// This carries enough to draw a row without consulting anything on this Mac,
+    /// which is the point: a session the app never opened (started from the CLI,
+    /// or by another client) still has a name, a directory, a command, and an
+    /// agent status, and all four come from the machine it runs on. Unknown
+    /// fields are ignored and every field the daemon added after v0 decodes
+    /// optionally, so an older host degrades to blanks instead of a decode error.
+    struct SessionInformation: Decodable, Sendable, Hashable {
         let id: String
         let name: String
         let pid: Int32
         let alive: Bool
+        /// The directory the process runs in, **on the device**. Never a path on
+        /// this Mac, which is why it is only ever shown, never opened.
+        let cwd: String
+        let command: String
+        /// The workstream status the session last reported — `working · idle ·
+        /// needs_you · done · failed · unknown` (§4). The host names the state;
+        /// which dot it becomes is the client's call.
+        let status: String
+        let agentID: String?
+        /// The title the agent reported, when it reported one.
+        let title: String?
+        let createdUnix: UInt64
+        /// How many clients are attached right now. A non-zero count on a session
+        /// this app has no row for means someone else is watching it.
+        let attachedClients: Int
+
+        private enum CodingKeys: String, CodingKey {
+            case id, name, pid, alive, cwd, command, status, title, createdUnix
+            case agentID = "agentId"
+            case attachedClients
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            name = try container.decode(String.self, forKey: .name)
+            pid = try container.decodeIfPresent(Int32.self, forKey: .pid) ?? 0
+            alive = try container.decodeIfPresent(Bool.self, forKey: .alive) ?? true
+            cwd = try container.decodeIfPresent(String.self, forKey: .cwd) ?? ""
+            command = try container.decodeIfPresent(String.self, forKey: .command) ?? ""
+            status = try container.decodeIfPresent(String.self, forKey: .status) ?? "unknown"
+            agentID = try container.decodeIfPresent(String.self, forKey: .agentID)
+            title = try container.decodeIfPresent(String.self, forKey: .title)
+            createdUnix = try container.decodeIfPresent(UInt64.self, forKey: .createdUnix) ?? 0
+            attachedClients = try container.decodeIfPresent(Int.self, forKey: .attachedClients) ?? 0
+        }
     }
 
     /// A dead session, as the daemon buried it (termiod/src/tombstone.rs). This
@@ -1071,7 +1102,10 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// through it — so no lock is needed.
     private let workQueue = DispatchQueue(label: "sh.termio.termiod.link", qos: .userInitiated)
 
-    private let sessionName: String
+    /// The name this channel attached under — the app session's uuid, or the
+    /// name a session already had on the device when it was adopted. Readable
+    /// because the store keys its tombstones by it.
+    let sessionName: String
     private let specification: Termiod.CreateSpecification
     /// The road to the device this session lives on — `.local` for this Mac's
     /// daemon, `.ssh(alias)` for another box. The framed protocol and every other

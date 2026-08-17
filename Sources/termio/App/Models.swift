@@ -327,6 +327,20 @@ struct Session: Identifiable, Hashable, Codable {
     /// is nil.
     var termiodRemoteCwd: String?
 
+    /// The name this session answers to **inside its device's daemon**, when that
+    /// is not this session's own uuid.
+    ///
+    /// Sessions Termio opens are named with their uuid, which is what makes
+    /// reattach-after-relaunch work: `attach` resolves the name first, so the row
+    /// finds the same process. A session Termio did **not** open already had a
+    /// name before this app ever saw it — started from the `termiod` CLI, or by a
+    /// phone — and adopting it means keeping that name, because the name is how
+    /// the daemon is asked for that exact PTY. Renaming it to a fresh uuid would
+    /// spawn a second session beside the one the user was pointing at.
+    ///
+    /// `nil` for every session this app created, which is nearly all of them.
+    var termiodSessionName: String?
+
     /// Adopt another session's machine — both halves of it.
     ///
     /// A device has two identities during its life (device architecture §9.5):
@@ -385,7 +399,7 @@ struct Session: Identifiable, Hashable, Codable {
     private enum CodingKeys: String, CodingKey {
         case id, title, agent, createdAt, worktreePath, resumeID, launched, launchedAt,
              liveTitle, lastWorkingDirectory, spawnDirectory, sshHost, pinned,
-             termiodRemoteHost, termiodRemoteCwd, deviceID
+             termiodRemoteHost, termiodRemoteCwd, deviceID, termiodSessionName
     }
 
     /// Custom decoding so state files written before the resume fields existed still
@@ -410,6 +424,8 @@ struct Session: Identifiable, Hashable, Codable {
         termiodRemoteHost = try container.decodeIfPresent(String.self, forKey: .termiodRemoteHost)
         termiodRemoteCwd = try container.decodeIfPresent(String.self, forKey: .termiodRemoteCwd)
         deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
+        termiodSessionName = try container.decodeIfPresent(
+            String.self, forKey: .termiodSessionName)
     }
 }
 
