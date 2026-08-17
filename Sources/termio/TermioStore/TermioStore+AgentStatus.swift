@@ -88,6 +88,9 @@ extension TermioStore {
     /// installed, the zero-config signals remain the fallback when they are not.
     private func applyStatusReport(_ report: StatusReport) {
         guard let id = sessionID(for: report) else { return }
+        if let candidate = report.promptTitle {
+            recordPromptTitle(candidate, for: id)
+        }
         // Remember the session's transcript address whenever a hook carries it, so
         // `sessions send` can hand it back as the place to read the response.
         let carriedTranscript = report.transcriptPath.flatMap { $0.isEmpty ? nil : $0 }
@@ -176,6 +179,22 @@ extension TermioStore {
         default:
             break
         }
+    }
+
+    /// Records only the first usable prompt label in a conversation. It stays a
+    /// fallback: `displayTitle` gives an explicit Termio name and a meaningful native
+    /// OSC title higher priority. Persisting it on `Session` keeps resumed tabs named
+    /// before the agent emits any fresh terminal title.
+    private func recordPromptTitle(_ raw: String, for id: Session.ID) {
+        guard let location = locate(id) else { return }
+        var session = projects[location.project].sessions[location.session]
+        guard session.promptTitle == nil,
+              session.agent != .terminal,
+              session.title == session.agent.displayName,
+              let title = AgentPromptTitle.normalized(raw)
+        else { return }
+        session.promptTitle = title
+        projects[location.project].sessions[location.session] = session
     }
 
     /// A reported conversation id, accepted only when it is a bare token — the ids
@@ -462,6 +481,7 @@ extension TermioStore {
         }
         session.agent = .terminal
         session.liveTitle = nil
+        session.promptTitle = nil
         projects[location.project].sessions[location.session] = session
         setLiveTitle(nil, for: id)
         lastTitleActivity[id] = nil

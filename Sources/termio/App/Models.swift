@@ -383,6 +383,12 @@ struct Session: Identifiable, Hashable, Codable {
     /// default agent name after a relaunch. Display-only; `title` stays untouched.
     var liveTitle: String?
 
+    /// A compact label derived from the first user prompt in the current conversation.
+    /// This is a fallback for agents such as Codex whose default OSC title names only
+    /// the project. A meaningful native title still wins, and a title the user sets in
+    /// Termio wins over both. Cleared when the agent rotates to a new conversation.
+    var promptTitle: String?
+
     /// When the agent was first launched, used to correlate Codex/OpenCode's own
     /// session record (matched by working directory) back to *this* session — their
     /// CLIs won't accept an id up front, so the id is discovered afterward from the
@@ -398,7 +404,7 @@ struct Session: Identifiable, Hashable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, agent, createdAt, worktreePath, resumeID, launched, launchedAt,
-             liveTitle, lastWorkingDirectory, spawnDirectory, sshHost, pinned,
+             liveTitle, promptTitle, lastWorkingDirectory, spawnDirectory, sshHost, pinned,
              termiodRemoteHost, termiodRemoteCwd, deviceID, termiodSessionName
     }
 
@@ -418,6 +424,7 @@ struct Session: Identifiable, Hashable, Codable {
         pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         launchedAt = try container.decodeIfPresent(Date.self, forKey: .launchedAt)
         liveTitle = try container.decodeIfPresent(String.self, forKey: .liveTitle)
+        promptTitle = try container.decodeIfPresent(String.self, forKey: .promptTitle)
         lastWorkingDirectory = try container.decodeIfPresent(String.self, forKey: .lastWorkingDirectory)
         spawnDirectory = try container.decodeIfPresent(String.self, forKey: .spawnDirectory)
         sshHost = try container.decodeIfPresent(String.self, forKey: .sshHost)

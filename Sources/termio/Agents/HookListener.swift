@@ -28,6 +28,9 @@ struct StatusReport: Decodable {
     /// the agent rotates conversations in-process (`/new`), without needing the id
     /// to be encoded in a transcript filename. Absent for identity-blind hooks.
     let conversationID: String?
+    /// Raw first-prompt title candidate forwarded by hook hosts that expose one.
+    /// `TermioStore` normalizes and bounds it before persisting anything.
+    let promptTitle: String?
 
     private enum CodingKeys: String, CodingKey {
         case termioSession = "termio_session"
@@ -36,6 +39,42 @@ struct StatusReport: Decodable {
         case cwd
         case transcriptPath = "transcript_path"
         case conversationID = "conversation_id"
+        case promptTitle = "prompt_title"
+    }
+}
+
+/// Turns an agent hook's raw user prompt into a quiet sidebar fallback. This is
+/// intentionally deterministic: hooks run before the model, so the title must be
+/// available immediately without another request or a transcript-format dependency.
+enum AgentPromptTitle {
+    static let maximumLength = 64
+
+    /// Markdown a prompt often opens with. It decorates; it never names the topic.
+    private static let decoration: Set<Character> = ["#", ">", "*", "-", "•", "`"]
+
+    static func normalized(_ raw: String) -> String? {
+        let collapsed = raw.split(whereSeparator: isNoise).joined(separator: " ")
+        let title = collapsed.drop { decoration.contains($0) || $0 == " " }
+        guard !title.isEmpty else { return nil }
+        guard title.count > maximumLength else { return String(title) }
+        return bounded(title) + "…"
+    }
+
+    /// A control character travels in a prompt as literally as a newline does, and on
+    /// one sidebar line both are noise rather than text.
+    private static func isNoise(_ character: Character) -> Bool {
+        character.isWhitespace
+            || character.unicodeScalars.allSatisfy(CharacterSet.controlCharacters.contains)
+    }
+
+    /// Cuts to fit, preferring a word boundary — but only one past the halfway mark,
+    /// so a long opening word cannot shrink the label to a syllable.
+    private static func bounded(_ title: Substring) -> String {
+        let head = title.prefix(maximumLength - 1)
+        guard let lastSpace = head.lastIndex(of: " "),
+              head.distance(from: head.startIndex, to: lastSpace) >= maximumLength / 2
+        else { return String(head) }
+        return String(head[..<lastSpace])
     }
 }
 
@@ -264,7 +303,8 @@ enum AgentStatusHooks {
     /// hook-failure noise.
     static func reportCommand(
         state: String, withTranscript: Bool = false, conversationField: String? = nil,
-        toolField: String? = nil, dialect: HookDialect = .claudeNested
+        toolField: String? = nil, promptTitleField: String? = nil,
+        dialect: HookDialect = .claudeNested
     ) -> String {
         var command = "\(shellQuote(cliPath)) agent report \(state)"
         // Claude feeds each hook a JSON blob on stdin carrying `transcript_path`; the
@@ -281,6 +321,10 @@ enum AgentStatusHooks {
         // CLI mines it so reports can tell real work from a prose-only turn. Events
         // whose blob lacks the field simply omit it — same stdin caveat as above.
         if let toolField { command += " --tool-from \(toolField)" }
+        // Prompt-aware hosts can seed a compact sidebar label before they have a
+        // useful native terminal title. The receiving app normalizes and accepts
+        // only the first value for a conversation.
+        if let promptTitleField { command += " --prompt-title-from \(promptTitleField)" }
         // Cursor reads the hook's stdout as its JSON reply, so the CLI must stay silent
         // and print a benign `{}`. (Claude/Codex ignore hook stdout, so they don't.)
         // The fallback keeps that contract even when the CLI itself couldn't run.
@@ -371,6 +415,8 @@ private struct JSONHookFile: AgentStatusInstaller {
     /// The stdin JSON field naming the tool a hook event fires for (`hooks.tool`
     /// in the manifest), or `nil` when the agent exposes none. Same stdin caveat.
     var toolField: String?
+    /// The stdin JSON field carrying a first-prompt title candidate.
+    var promptTitleField: String?
     /// The file's structural shape (see `HookDialect`). Defaults to Claude's, which
     /// Codex also uses; Cursor overrides it.
     var dialect: HookDialect = .claudeNested
@@ -397,6 +443,7 @@ private struct JSONHookFile: AgentStatusInstaller {
             capturesTranscript: spec.capturesTranscript,
             conversationField: spec.conversation,
             toolField: spec.tool,
+            promptTitleField: spec.promptTitle,
             dialect: spec.dialect,
             removesFileWhenEmpty: isDedicatedTermioFile,
             legacyURLs: legacyURLs)
@@ -434,7 +481,8 @@ private struct JSONHookFile: AgentStatusInstaller {
             var groups = hooks[event.name] as? [[String: Any]] ?? []
             let command = AgentStatusHooks.reportCommand(
                 state: event.state, withTranscript: capturesTranscript,
-                conversationField: conversationField, toolField: toolField, dialect: dialect)
+                conversationField: conversationField, toolField: toolField,
+                promptTitleField: promptTitleField, dialect: dialect)
             let group: [String: Any]
             if dialect == .cursorFlat {
                 group = ["command": command]

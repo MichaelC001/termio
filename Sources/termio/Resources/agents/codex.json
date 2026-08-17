@@ -27,6 +27,8 @@
     "dialect": "codex",
     "capturesTranscript": true,
     "conversation": "session_id",
+    "tool": "tool_name",
+    "promptTitle": "prompt",
     "events": [
       { "on": "SessionStart", "state": "idle" },
       { "on": "UserPromptSubmit", "state": "working" },

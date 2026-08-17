@@ -675,13 +675,14 @@ extension TermioStore {
         guard conversationID != session.resumeID else { return false }
         // A genuine rotation (the pin already named a conversation and it changed —
         // not the first-report adoption of an unpinned session) also orphans the
-        // sidebar topic title: it describes the discarded conversation. Drop both
-        // the in-memory and the persisted copy so `displayTitle` falls back to the
-        // agent name until the new conversation earns a topic. Status and
-        // `lastTitleActivity` are separate channels — leave them alone.
+        // sidebar topic titles: they describe the discarded conversation. Drop the
+        // in-memory native title plus both persisted candidates so `displayTitle`
+        // falls back to the agent name until the new conversation earns a topic.
+        // Status and `lastTitleActivity` are separate channels — leave them alone.
         if session.resumeID != nil {
             setLiveTitle(nil, for: id)
             session.liveTitle = nil
+            session.promptTitle = nil
         }
         session.resumeID = conversationID
         projects[location.project].sessions[location.session] = session
