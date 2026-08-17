@@ -1108,16 +1108,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSAnimationContext.current.duration = 0
         defer { NSAnimationContext.endGrouping() }
         if visible {
-            guard index(of: .sortProjects) == nil, let sep = index(of: .sidebarTrackingSeparator) else { return }
-            // Insert in reverse at the separator's index so the final order is deviceSwitcher, flex,
-            // sortProjects, newTerminal.
+            guard index(of: .sortProjects) == nil else { return }
+            // Take the switcher off the content side first. It sits after the separator there, so
+            // removing it leaves the separator's index — the anchor every insert below uses — valid.
+            if let content = index(of: .deviceSwitcher) { toolbar.removeItem(at: content) }
+            guard let sep = index(of: .sidebarTrackingSeparator) else { return }
+            // Insert in reverse at that one index so the final order is deviceSwitcher, flex,
+            // sortProjects, newTerminal. Re-reading the separator's index between inserts would walk
+            // it past the items just added and land the switcher against the `+` instead.
             toolbar.insertItem(withItemIdentifier: .newTerminal, at: sep)
             toolbar.insertItem(withItemIdentifier: .sortProjects, at: sep)
             toolbar.insertItem(withItemIdentifier: .flexibleSpace, at: sep)
-            if let content = index(of: .deviceSwitcher) { toolbar.removeItem(at: content) }
-            if let sep = index(of: .sidebarTrackingSeparator) {
-                toolbar.insertItem(withItemIdentifier: .deviceSwitcher, at: sep)
-            }
+            toolbar.insertItem(withItemIdentifier: .deviceSwitcher, at: sep)
         } else {
             // Move the switcher to the content side of the separator — ahead of the window's title,
             // where it is still on screen with the sidebar away. Done before the guard below, because
