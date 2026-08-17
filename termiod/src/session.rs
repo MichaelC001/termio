@@ -1881,6 +1881,14 @@ mod tests {
         session: &mut Session,
         id: &str,
     ) -> (mpsc::UnboundedReceiver<ClientEvent>, Arc<ClientBacklog>) {
+        attach_client(session, id, true)
+    }
+
+    fn attach_client(
+        session: &mut Session,
+        id: &str,
+        snapshot: bool,
+    ) -> (mpsc::UnboundedReceiver<ClientEvent>, Arc<ClientBacklog>) {
         let (client_tx, client_rx) = mpsc::unbounded_channel();
         let backlog = Arc::new(ClientBacklog::new());
         let (reply, _reply_rx) = oneshot::channel();
@@ -1891,13 +1899,103 @@ mod tests {
                 interactive: false,
                 out: client_tx,
                 backlog: backlog.clone(),
-                snapshot: true,
+                snapshot,
                 scrollback: false,
                 grid_diff: false,
                 reply,
             },
         );
         (client_rx, backlog)
+    }
+
+    /// What a client got, in the order it got it. `ClientEvent` carries wire
+    /// payloads and no `Debug`, so the assertions compare this instead.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Received {
+        Data(Vec<u8>),
+        Snapshot,
+        Ready,
+    }
+
+    /// Everything waiting for a client, minus the control traffic an attach
+    /// emits — delivery order is what the barrier can break, not the greeting.
+    fn drain(client: &mut mpsc::UnboundedReceiver<ClientEvent>) -> Vec<Received> {
+        let mut seen = Vec::new();
+        while let Ok(event) = client.try_recv() {
+            match event {
+                ClientEvent::Data(payload) => seen.push(Received::Data(payload.bytes.to_vec())),
+                ClientEvent::Snapshot(_) => seen.push(Received::Snapshot),
+                ClientEvent::Event(Event::Ready { .. }) => seen.push(Received::Ready),
+                _ => {}
+            }
+        }
+        seen
+    }
+
+    /// JOIN's second half (§C.5): an attaching client may not affect anyone
+    /// else's delivery. `tests/join_invariant.rs` can only observe that through
+    /// two consumers racing a flood, where a reader that is merely behind looks
+    /// exactly like a stall — so it proves the joining client's boundary and
+    /// leaves this to a test that can hold the barrier open on purpose.
+    ///
+    /// Here the snapshot request is never answered, so the joining client sits
+    /// in `SnapshotPending` for the whole test. Any stall the barrier imposed on
+    /// the live client — for a moment or forever — is a missing `Data` below.
+    #[tokio::test]
+    async fn a_pending_snapshot_never_holds_up_another_client() {
+        let Sidecar {
+            commands,
+            mut results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+
+        // The control: never negotiates `snapshot`, so it stays `Live`.
+        let (mut live, _live_backlog) = attach_client(&mut session, "live", false);
+        session.fan_out(Bytes::from_static(b"before"));
+        assert_eq!(
+            drain(&mut live),
+            vec![Received::Data(b"before".to_vec())],
+            "the live client did not receive its pre-attach bytes"
+        );
+
+        // The barrier opens here and is deliberately left open.
+        let (mut joining, _joining_backlog) = attach_client(&mut session, "joining", true);
+        assert!(
+            matches!(
+                session.clients["joining"].delivery,
+                ClientDelivery::SnapshotPending { .. }
+            ),
+            "the joining client is not behind a barrier, so this proves nothing"
+        );
+
+        session.fan_out(Bytes::from_static(b"during"));
+        assert_eq!(
+            drain(&mut live),
+            vec![Received::Data(b"during".to_vec())],
+            "the pending snapshot held up the live client"
+        );
+        assert!(
+            drain(&mut joining).is_empty(),
+            "the joining client received its stream before the S that opens it"
+        );
+
+        // The other half of the invariant: those bytes were buffered, not lost.
+        // Once the snapshot lands they follow it, in order.
+        pump_sidecar(&mut session, &mut results, 1).await;
+        assert_eq!(
+            drain(&mut joining),
+            vec![
+                Received::Snapshot,
+                Received::Ready,
+                Received::Data(b"during".to_vec())
+            ],
+            "the snapshot boundary and the bytes buffered behind it did not line up"
+        );
+
+        let _ = session.sidecar_tx.take();
+        let _ = tokio::task::spawn_blocking(move || thread.join()).await;
     }
 
     /// D4(a): the first time a client outruns its budget it is resynced, not
