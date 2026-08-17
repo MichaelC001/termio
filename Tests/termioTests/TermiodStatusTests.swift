@@ -127,6 +127,17 @@ final class TermiodStatusTests: XCTestCase {
         return try decoder.decode(Termiod.SessionTombstone.self, from: Data(json.utf8))
     }
 
+    private func live(name: String) throws -> Termiod.SessionInformation {
+        let json = """
+        {"id":"s_1","name":"\(name)","pid":42,"alive":true,"cwd":"/code",
+         "command":"claude","status":"working","agent_id":null,"title":null,
+         "created_unix":1786880000,"attached_clients":1}
+        """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Termiod.SessionInformation.self, from: Data(json.utf8))
+    }
+
     /// The reason a row's session died is addressable from the row.
     func testAnEndReasonIsFoundBySessionID() throws {
         let session = Session(title: "agent", agent: .terminal)
@@ -134,9 +145,25 @@ final class TermiodStatusTests: XCTestCase {
         let name = session.id.uuidString
 
         store.recordTombstones(
-            [try tombstone(name: name, reason: "daemon_lost")], persisted: [name])
+            [try tombstone(name: name, reason: "daemon_lost")], live: [], persisted: [name])
 
         XCTAssertEqual(store.termiodEndReason(for: session.id)?.reason, "daemon_lost")
+    }
+
+    /// A name that comes back alive buries its own grave. Tombstones merge rather
+    /// than replace, so without this a session restarted under the same name would
+    /// keep wearing the end reason of the run before it.
+    func testALiveNameLosesItsTombstone() throws {
+        let session = Session(title: "agent", agent: .terminal)
+        let store = makeStore(with: session)
+        let name = session.id.uuidString
+
+        store.recordTombstones(
+            [try tombstone(name: name, reason: "daemon_lost")], live: [], persisted: [name])
+        XCTAssertNotNil(store.termiodEndReason(for: session.id))
+
+        store.recordTombstones([], live: [try live(name: name)], persisted: [name])
+        XCTAssertNil(store.termiodEndReason(for: session.id))
     }
 
     /// Another client's sessions share the daemon but not the sidebar. Keeping
@@ -147,7 +174,7 @@ final class TermiodStatusTests: XCTestCase {
 
         store.recordTombstones(
             [try tombstone(name: "someone-elses-session", reason: "exited")],
-            persisted: [session.id.uuidString])
+            live: [], persisted: [session.id.uuidString])
 
         XCTAssertTrue(store.termiodTombstones.isEmpty)
         XCTAssertNil(store.termiodEndReason(for: session.id))
