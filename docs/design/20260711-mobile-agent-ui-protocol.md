@@ -1,9 +1,9 @@
 ---
 title: 移动端 Agent UI 协议 —— PTY 之上的旁路结构面（ACP 词汇）
-status: draft (v2)
+status: archived
 type: design
 created: 2026-07-11
-updated: 2026-08-03
+updated: 2026-08-17
 related:
   - 20260705-remote-access-relay-strategy.md
   - 20260628-session-share.md
@@ -16,6 +16,11 @@ related:
 > 不改变 agent 的任何运行行为，基于 agent 自己落盘的 JSON（transcript）和 hooks 做一条旁路信号，
 > 归一化成 ACP 词汇的事件流供移动端（iOS 现在、Android 将来）渲染原生 chat UI；
 > PTY session 是唯一的 session 原语，Mac 是 PTY host，所有 UI 都只是应用层。
+
+**2026-08-17 归档：不做了。** chat UI 在这个产品上试了三次，结论每次一样——终端就是界面，
+不是拿去别处重画的一层。#275（本文 v3）、#296（实现）、#288（issue）一并关闭。
+本文留作设计记录：旁路结构面的推导方式本身是成立的，被否掉的是"给 agent 配一个 chat UI"这件事。
+第四次再提之前，先回答这一条为什么这次不一样。
 
 ## 1. 背景与问题
 
