@@ -67,10 +67,10 @@ enum DeviceRoster {
     }
 }
 
-/// The rows every device switcher shows, wherever it is mounted — the sidebar's
-/// indicator and the window's own device badge are two openings onto the same
-/// menu, because there is one current device and it would be a bug for two
-/// controls to disagree about it.
+/// The rows every device switcher shows, wherever it is mounted. The sidebar's
+/// indicator is the only opening today; the rows live here rather than inside it
+/// because there is one current device, and it would be a bug for two controls to
+/// disagree about which one it is.
 struct DeviceSwitcherMenuContent: View {
     @EnvironmentObject var store: TermioStore
 
