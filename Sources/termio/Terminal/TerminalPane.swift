@@ -332,16 +332,10 @@ struct TerminalPane: View {
         }
     }
 
-    /// True when the user has dialed the background below full opacity or enabled
-    /// blur, so the surface, window, and title bar must stay see-through.
-    private var isTranslucent: Bool {
-        settings.backgroundOpacity < 1.0 || settings.backgroundBlur > 0
-    }
-
     /// The terminal background fill, or clear when translucent — then the surface and
     /// window stay see-through.
     private var paneBackground: Color {
-        isTranslucent ? .clear : Color(nsColor: settings.terminalBackgroundColor)
+        settings.isBackgroundTranslucent ? .clear : Color(nsColor: settings.terminalBackgroundColor)
     }
 }
 

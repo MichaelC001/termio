@@ -641,7 +641,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// change, so the title bar tracks the terminal theme live.
     private func applyWindowTransparency() {
         guard let window else { return }
-        let translucent = settings.backgroundOpacity < 1.0 || settings.backgroundBlur > 0
+        let translucent = settings.isBackgroundTranslucent
         window.isOpaque = !translucent
         // Resolve the terminal background to a *static* color for the window's current
         // appearance, rather than handing the window the dynamic (appearance-resolving) color.
