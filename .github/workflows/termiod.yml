@@ -86,7 +86,7 @@ jobs:
       # Caching the registry and the git checkout of the libghostty-rs fork is
       # the cheap half; rebuilding the engine every run is the point.
       - name: Cache cargo downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -161,7 +161,7 @@ jobs:
           cargo --version
 
       - name: Cache cargo downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
