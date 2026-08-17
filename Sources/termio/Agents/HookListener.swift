@@ -142,29 +142,9 @@ final class HookListener {
             let count = read(descriptor, &buffer, buffer.count)
             guard count > 0 else { break }
             data.append(contentsOf: buffer[0..<count])
-            if let report = Self.decode(data) { Self.trace(data); dispatch(report); return }
+            if let report = Self.decode(data) { dispatch(report); return }
         }
-        Self.trace(data)
         if let report = Self.decode(data) { dispatch(report) }
-    }
-
-    /// Temporary diagnostic: append every raw payload received on the socket to a
-    /// debug file, so we can see whether an agent (notably Codex's interactive TUI)
-    /// fires its hooks at all and whether `termio_session` survives into the hook's
-    /// environment. Enabled only when `TERMIO_HOOK_TRACE` is set, so it costs nothing
-    /// in normal runs. Remove once the Codex-TUI question is settled.
-    private static func trace(_ data: Data) {
-        guard ProcessInfo.processInfo.environment["TERMIO_HOOK_TRACE"] != nil else { return }
-        let text = String(data: data, encoding: .utf8) ?? "<\(data.count) non-utf8 bytes>"
-        let line = "[\(Date())] decoded=\(decode(data) != nil) raw=\(text)\n"
-        let url = URL(fileURLWithPath: "/tmp/termio-hooks.log")
-        if let handle = try? FileHandle(forWritingTo: url) {
-            handle.seekToEndOfFile()
-            handle.write(Data(line.utf8))
-            try? handle.close()
-        } else {
-            try? Data(line.utf8).write(to: url)
-        }
     }
 
     private static func decode(_ data: Data) -> StatusReport? {

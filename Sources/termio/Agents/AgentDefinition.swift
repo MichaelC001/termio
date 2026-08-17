@@ -394,8 +394,8 @@ struct AgentStatusRules {
     }
 
     /// Appends one classification line to `/tmp/termio-status.log` when
-    /// `TERMIO_STATUS_TRACE` is set — mirroring the hook layer's `TERMIO_HOOK_TRACE`.
-    /// Costs nothing in normal runs (the caller checks the env once and skips this).
+    /// `TERMIO_STATUS_TRACE` is set. Costs nothing in normal runs (the caller checks
+    /// the environment once and skips this).
     static func trace(agent: String, session: Session.ID, activity: Activity, matched: String?) {
         let rule = matched.map { "/\($0)/" } ?? "(no match → idle)"
         let line = "[\(session.uuidString.prefix(8))] \(agent) → \(activity) \(rule)\n"
