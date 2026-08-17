@@ -373,6 +373,10 @@ struct CommandPaletteView: View {
         actions.append(.init(id: "change-theme", title: localized("Change Theme…"),
                              icon: nil, symbol: "paintpalette", shortcut: nil,
                              switchesMode: .themes) { _ in })
+        actions.append(.init(id: "browse-themes", title: localized("Browse Themes…"),
+                             icon: nil, symbol: "square.grid.2x2", shortcut: nil) { _ in
+            NSApp.sendAction(#selector(AppDelegate.browseThemes(_:)), to: nil, from: nil)
+        })
         actions.append(.init(id: "settings", title: localized("Settings…"),
                              icon: .settings, shortcut: "⌘,") { _ in
             NSApp.sendAction(#selector(AppDelegate.showSettings(_:)), to: nil, from: nil)
@@ -418,24 +422,19 @@ struct CommandPaletteView: View {
 
     // MARK: - Themes
 
-    /// The theme selector's rows: a "Terminal default" reset, the user's own
-    /// same-brightness custom themes, then the bundled catalog with the popular
-    /// picks pulled to the front. Only themes matching the slot's brightness show,
-    /// so the palette can never apply one that renders the wrong way.
+    /// The theme selector's rows: a "Terminal default" reset plus the installed
+    /// themes matching the slot's brightness, so the palette can never apply one
+    /// that renders the wrong way — or one that isn't in the library, which would
+    /// leave the slot pointing at a name nothing can resolve. Browsing the store's
+    /// uninstalled 50 is the sheet's job.
     private var themeItems: [PaletteItem] {
         let dark = slotIsDark
-        let popular = dark ? ThemeLibrary.popularDarkThemeNames : ThemeLibrary.popularLightThemeNames
-        let bundled = dark ? ThemeLibrary.darkBundledThemeNames : ThemeLibrary.lightBundledThemeNames
-        let custom = ThemeLibrary.userThemeNames.filter { ThemeLibrary.theme(named: $0)?.isDark == dark }
-
-        var items: [PaletteItem] = custom.map { themeItem(name: $0, section: .customThemes) }
-        // Return-to-default sits atop the main group; popular first, then the
-        // alphabetical remainder with popular removed so nothing repeats. The
-        // label names the slot being edited so "default" isn't ambiguous.
-        items.append(themeItem(name: "", title: dark ? localized("Default Dark Theme") : localized("Default Light Theme")))
-        items += popular.map { themeItem(name: $0) }
-        let popularSet = Set(popular)
-        items += bundled.filter { !popularSet.contains($0) }.map { themeItem(name: $0) }
+        // Return-to-default leads; the label names the slot being edited so
+        // "default" isn't ambiguous.
+        var items: [PaletteItem] = [
+            themeItem(name: "", title: dark ? localized("Default Dark Theme") : localized("Default Light Theme"))
+        ]
+        items += ThemeLibrary.installedThemeNames(dark: dark).map { themeItem(name: $0) }
         return items
     }
 
@@ -475,12 +474,15 @@ struct CommandPaletteView: View {
         themeSnapshot = currentSlotThemeName
         themeCommitted = false
         // Land the highlight on the theme already in use so browsing starts from the
-        // current look and the seed-preview is a no-op.
+        // current look and the seed-preview is a no-op. A miss means the slot points
+        // at a theme that is no longer in the library; moving the highlight to row 0
+        // would then live-apply "Terminal default" over it, so leave it alone.
         let current = currentSlotThemeName
-        highlighted = themeItems.firstIndex {
+        guard let index = themeItems.firstIndex(where: {
             if case .theme(let name) = $0.kind { return name == current }
             return false
-        } ?? 0
+        }) else { return }
+        highlighted = index
     }
 
     private func endThemeBrowsing(commit: Bool) {
@@ -619,7 +621,7 @@ struct CommandPaletteView: View {
 /// Open Quickly's display groups, in rank order; `.commands` is the palette's
 /// single (headerless) group.
 private enum PaletteSection: Int, Hashable {
-    case sessions, recentProjects, files, commands, customThemes, themes
+    case sessions, recentProjects, files, commands, themes
 
     var title: String? {
         switch self {
@@ -627,9 +629,8 @@ private enum PaletteSection: Int, Hashable {
         case .recentProjects: return localized("Recent")
         case .files: return localized("Files")
         case .commands: return nil
-        case .customThemes: return localized("Custom")
-        // No header when custom themes are absent (the common case) — a lone
-        // "Themes" banner over the whole list is noise (see `sectioned`).
+        // Themes are the only group in their mode, so the header never draws
+        // (see `sectioned`).
         case .themes: return localized("Themes")
         }
     }
