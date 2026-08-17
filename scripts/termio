@@ -46,6 +46,8 @@ options:
                    the final status and the transcript line range to read
                    (exit 0 settled, 1 error — including a stalled/vanished session, 3 timed out)
   --timeout <ms>   cap for --wait (default 300000, clamped 1000–600000); implies --wait
+  --no-enter       for `send`: deliver the text as-is, with no Return after it —
+                   the way to answer a gate that wants a bare keypress
   --lines <n>      for `read`: keep only the last n screen rows
   --state <s,…>    for `watch`: comma-separated states to report (working, idle, done,
                    needs-you, stalled; default done,needs-you)
@@ -142,12 +144,16 @@ the last N rows. Scrollback is not included.
 EOF
             ;;
         send|answer) cat <<'EOF'
-usage: termio sessions send <session> "<text>" [--wait [--timeout <ms>]] [--json]
+usage: termio sessions send <session> "<text>" [--no-enter] [--wait [--timeout <ms>]] [--json]
 
 Type text into an existing session and submit it with a real Return
 keypress — a prompt to drive it, or a menu choice ("1", "yes") to answer a
 permission prompt. Addresses come from `termio sessions list` or a `spawn`
 reply — a termio://session link or bare id, copied verbatim.
+
+The text reaches the terminal verbatim, so --no-enter (no Return after it)
+delivers a bare keypress: the lone `t` a trust gate waits for, or an escape
+sequence written by the shell, e.g. `send <session> $'\e' --no-enter`.
 
 --wait holds the reply until the turn the text kicked off settles (or
 --timeout ms elapse; default 300000, clamped 1000–600000). The reply then
@@ -185,14 +191,17 @@ SOCKET="$HOME/Library/Application Support/$SUPPORT_DIR_NAME/session-control.sock
 
 # JSON-escape a string for embedding in a request: backslashes, double quotes,
 # tabs, and newlines (which would otherwise break the single-line JSON object).
-# Every other C0 control byte is stripped outright — prompts are text for agent
-# TUIs, control bytes in them are never intentional, and one raw byte would make
-# the whole request undecodable.
+# ESC survives, as a JSON \u001b escape: an escape sequence is exactly the kind of
+# keypress `send --no-enter` exists to deliver (esc to back out of a menu, an arrow
+# key), and it reaches the PTY verbatim on the far side. Every other C0 byte is
+# stripped outright: they are never intentional in a prompt, and one raw byte
+# would make the whole request undecodable.
 json_escape() {
     tab=$(printf '\t')
+    esc=$(printf '\033')
     printf '%s' "$1" \
+        | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e "s/$tab/\\\\t/g" -e "s/$esc/\\\\u001b/g" \
         | tr -d '\000-\010\013-\037' \
-        | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e "s/$tab/\\\\t/g" \
         | awk 'BEGIN { ORS = "" } { if (NR > 1) printf "\\n"; printf "%s", $0 }'
 }
 
@@ -316,6 +325,7 @@ sessions() {
     text=""
     states=""
     no_snapshot=0
+    no_enter=0
     wait=false
     timeout_ms=""
     lines=""
@@ -324,6 +334,7 @@ sessions() {
         case "$1" in
             --json) format=json ;;
             --no-snapshot) no_snapshot=1 ;;
+            --no-enter) no_enter=1 ;;
             --wait) wait=true ;;
             --timeout)
                 [ $# -ge 2 ] || { echo "termio: --timeout needs a value in ms" >&2; exit 1; }
@@ -420,6 +431,16 @@ sessions() {
         if [ -z "${TERMIO_CLI_TIMEOUT:-}" ]; then
             CLIENT_TIMEOUT=$(( ${timeout_ms:-300000} / 1000 + 30 ))
         fi
+    fi
+
+    # --no-enter only reads on a send to an existing session: a spawn's prompt has
+    # to be submitted or the fresh agent just sits on a filled composer.
+    if [ "$no_enter" -eq 1 ]; then
+        case "$op" in
+            send|answer) [ -n "$targets" ] || { echo "termio: --no-enter needs a session to send to" >&2; exit 1; } ;;
+            *) echo "termio: --no-enter applies to send only" >&2; exit 1 ;;
+        esac
+        extra_json="${extra_json:+$extra_json,}\"enter\":false"
     fi
 
     if [ "$op" = watch ]; then
