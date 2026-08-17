@@ -40,9 +40,13 @@ id-prefix works too).
   be able to see and take over the process.
 - `termio sessions send <link> "<text>"` — type text into that existing
   sibling and submit it with a real Return keypress. Send a prompt to drive
-  it, or a menu choice (`"1"`, `"yes"`) to answer a permission prompt. Add
-  `--no-enter` when the gate wants a bare keypress and no Return — a lone
-  `t` to trust a folder, or `$'\e'` to back out.
+  it, or a menu choice (`"1"`, `"yes"`) to answer a permission prompt. A
+  single-line payload arrives verbatim, exactly as typed; a multi-line one is
+  wrapped in bracketed paste so a TUI takes it as one block instead of
+  submitting each line as its own turn. Add `--no-enter` when a gate wants a
+  bare keypress and no Return — a lone `t` to trust a folder, or `$'\e'` to
+  back out. `$'…'` is bash/zsh ANSI-C quoting and does nothing in plain `sh`;
+  from a POSIX shell use `"$(printf '\033')"` instead.
 - `termio sessions read <link> [--lines N]` — the session's current
   screen. The result channel for `run` sessions (a plain command has no
   transcript; its screen is the result) — for agent replies keep using the
