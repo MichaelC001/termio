@@ -225,14 +225,32 @@ json_escape() {
         | awk 'BEGIN { ORS = "" } { if (NR > 1) printf "\\n"; printf "%s", $0 }'
 }
 
-# Mine a string field out of a JSON blob, jq-free: the first `"field":"value"`
-# occurrence, whitespace-tolerant around the colon. `head -1` closes the pipe so
-# the pipeline's exit status is sed's (0), keeping `set -e` happy even when grep
-# matches nothing.
+# Mine a string field out of a JSON blob, jq-free. The scan honours JSON's escapes,
+# which matters once the mined field is prose: the `grep -o "[^\"]*"` this replaces
+# stopped at the first escaped quote and handed back a fragment. `\uXXXX` becomes a
+# space rather than visible garbage — no awk on macOS decodes it portably, and the
+# hook hosts we install into all emit raw UTF-8 anyway.
 mine_field() {
-    printf '%s' "$2" \
-        | grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 \
-        | sed 's/^"[^"]*"[[:space:]]*:[[:space:]]*"//;s/"$//'
+    printf '%s' "$2" | awk -v field="$1" '
+        { text = text (NR == 1 ? "" : "\n") $0 }
+        END {
+            if (!match(text, "\"" field "\"[[:space:]]*:[[:space:]]*\"")) exit
+            for (i = RSTART + RLENGTH; i <= length(text); i++) {
+                c = substr(text, i, 1)
+                if (c == "\"") break
+                # A mined field can run long — a pasted prompt reaches megabytes.
+                # Stopping at a space bounds the payload without ever cutting a
+                # multi-byte character in half.
+                if (c == " " && length(value) >= 256) break
+                if (c != "\\") { value = value c; continue }
+                c = substr(text, ++i, 1)
+                if (c == "u") { value = value " "; i += 4 }
+                else if (index("bfnrt", c)) value = value " "
+                else value = value c
+            }
+            printf "%s", value
+        }
+    '
 }
 
 # Whether a token addresses a session rather than prompt text: a termio://
