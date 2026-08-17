@@ -915,13 +915,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.addSSHSession(host: alias)
     }
 
-    /// A host row of the New Remote Terminal submenu (File menu and the toolbar
-    /// `+` share it). No project context here, so the session is host-scoped:
-    /// remote `$HOME`, grouped under Terminals like any loose shell. Unlike
-    /// `newSSHHost`, the session lives in that host's `termiod` and survives
+    /// A device row of the New Terminal submenu (File menu and the toolbar `+`
+    /// share it). No project context here, so the session starts at that machine's
+    /// `$HOME` and is grouped under its own block like any loose shell. Unlike
+    /// `newSSHHost`, the session lives in that device's `termiod` and survives
     /// both the connection and this app quitting.
     @objc func newRemoteTerminalHost(_ sender: NSMenuItem) {
         guard let alias = sender.representedObject as? String else { return }
+        store.addRemoteTerminal(host: alias)
+    }
+
+    /// A row of the Connect to… submenu — first contact with a machine from
+    /// `~/.ssh/config`. Opening a terminal on it is the connection: `termiod` is
+    /// installed there if missing, the handshake records which device the alias
+    /// reaches, and the machine becomes the current device, because reaching for a
+    /// box is also saying that is where you are about to work.
+    @objc func connectToDevice(_ sender: NSMenuItem) {
+        guard let alias = sender.representedObject as? String else { return }
+        settings.currentDeviceAlias = alias
         store.addRemoteTerminal(host: alias)
     }
 
@@ -1453,15 +1464,25 @@ private func makeNewChatItem() -> NSMenuItem {
     return item
 }
 
-/// The "New Remote Terminal ▸" parent item, filled the same lazy way as the
-/// others. Host-scoped here: a global `+` has no project context, so the session
-/// starts at the remote `$HOME` and lands in the Terminals section — exactly
-/// what "New Terminal" does locally. The project-scoped variant (which opens
-/// inside that repo's remote checkout) lives on the sidebar's project rows.
+/// Items whose shape depends on how many devices exist are found by tag when
+/// their menu opens: the File menu and the toolbar `+` each own one, and
+/// everything around it has to survive the refresh, so the item is reconfigured
+/// in place rather than the menu rebuilt.
+enum DeviceMenuTag {
+    static let newTerminal = 7301
+    static let newTerminalAtHome = 7302
+    static let connectTo = 7303
+}
+
+/// The "Connect to… ▸" parent item — the verb that reaches a machine used before,
+/// filled the same lazy way as the others with the `~/.ssh/config` aliases no
+/// device answers to yet. Hidden while there are none (see `refreshDeviceItems`):
+/// a row listing nothing is the dead end this replaces.
 @MainActor
-private func makeNewRemoteTerminalItem() -> NSMenuItem {
-    let item = NSMenuItem(title: "New Remote Terminal", action: nil, keyEquivalent: "")
-    let submenu = NSMenu(title: "New Remote Terminal")
+private func makeConnectToItem() -> NSMenuItem {
+    let item = NSMenuItem(title: localized("Connect to…"), action: nil, keyEquivalent: "")
+    item.tag = DeviceMenuTag.connectTo
+    let submenu = NSMenu(title: localized("Connect to…"))
     submenu.delegate = NSApp.delegate as? AppDelegate
     item.submenu = submenu
     return item
@@ -1480,20 +1501,110 @@ private func makeNewSSHItem() -> NSMenuItem {
 }
 
 extension AppDelegate: NSMenuDelegate {
-    /// Fills the lazily-populated menus this delegate serves, told apart by
-    /// title: the Session menu, New Chat, and New SSH Connection.
+    /// Serves every menu this delegate is attached to, told apart by title. Most
+    /// are filled from scratch on each open — the Session menu, New Chat, New SSH
+    /// Connection, Connect to…. The File menu and the toolbar `+` instead hold a
+    /// few device-aware items among items this delegate does not own, so they are
+    /// refreshed in place.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        // The two device-aware menus are refreshed in place: they hold items this
+        // delegate doesn't own, so emptying them would take the rest of the menu
+        // with it.
+        switch menu.title {
+        case localized("File"), localized("New Session"):
+            refreshDeviceItems(in: menu)
+            return
+        default:
+            break
+        }
         menu.removeAllItems()
         switch menu.title {
         case localized("Session"):
             fillSessionMenu(menu)
         case localized("New SSH Connection"):
             fillNewSSHMenu(menu)
-        case "New Remote Terminal":
-            fillNewRemoteTerminalMenu(menu)
+        case localized("Connect to…"):
+            fillConnectToMenu(menu)
         default:
             fillNewChatMenu(menu)
         }
+    }
+
+    /// Reshapes every device-aware item this menu carries, each time it opens, so
+    /// a machine that came or went since the last look is reflected without any
+    /// change-notification plumbing.
+    private func refreshDeviceItems(in menu: NSMenu) {
+        // AppKit runs this during its key-equivalent sweep as well as on open, so
+        // the roster is read once per pass rather than once per item — reading
+        // `~/.ssh/config` for "Connect to…" is the expensive half.
+        let known = DeviceRoster.known(in: store)
+        for item in menu.items {
+            switch item.tag {
+            case DeviceMenuTag.newTerminal:
+                refreshNewTerminalItem(item, known: known, atHome: false, command: .newTerminal)
+            case DeviceMenuTag.newTerminalAtHome:
+                refreshNewTerminalItem(item, known: known, atHome: true, command: nil)
+            case DeviceMenuTag.connectTo:
+                item.isHidden = DeviceRoster.unusedAliases(known: known).isEmpty
+            default:
+                continue
+            }
+        }
+    }
+
+    /// The single-device collapse, applied to one "new terminal" item: a plain
+    /// verb while this Mac is the only machine, a device submenu once there is
+    /// more than one. Someone who never leaves their laptop never sees a device
+    /// anywhere, which is the whole point of doing this in the menu rather than
+    /// with a permanent picker.
+    ///
+    /// The shortcut travels with the shape — on one device it sits on the item
+    /// itself, on several it moves to the current device's row — so ⌘T keeps
+    /// opening a terminal on the machine the switcher says you are working on.
+    /// (AppKit's key-equivalent sweep descends submenus, which is what makes the
+    /// second form work at all; the New Chat menu leans on the same behaviour.)
+    ///
+    /// A remote row always starts at that machine's `$HOME`: "here" names a
+    /// directory on this Mac, and it does not exist over there.
+    private func refreshNewTerminalItem(
+        _ item: NSMenuItem,
+        known: [KnownDevice],
+        atHome: Bool,
+        command: KeyCommandID?
+    ) {
+        let localAction = atHome
+            ? #selector(newScratchTerminal(_:))
+            : #selector(newTerminalHere(_:))
+        guard known.count > 1 else {
+            item.submenu = nil
+            item.action = localAction
+            item.target = self
+            if let command { item.applyShortcut(for: command) }
+            return
+        }
+        item.action = nil
+        item.target = nil
+        item.keyEquivalent = ""
+        item.keyEquivalentModifierMask = []
+        let current = DeviceRoster.current(settings, known: known)
+        let submenu = NSMenu(title: item.title)
+        for device in known {
+            let row: NSMenuItem
+            if let alias = device.alias {
+                row = submenu.addItem(
+                    withTitle: device.name,
+                    action: #selector(newRemoteTerminalHost(_:)),
+                    keyEquivalent: ""
+                )
+                row.representedObject = alias
+            } else {
+                row = submenu.addItem(
+                    withTitle: device.name, action: localAction, keyEquivalent: "")
+            }
+            row.target = self
+            if let command, device.id == current.id { row.applyShortcut(for: command) }
+        }
+        item.submenu = submenu
     }
 
     /// Fills the Session menu: the cycling and close verbs, then a live jump
@@ -1647,27 +1758,20 @@ extension AppDelegate: NSMenuDelegate {
         add.target = self
     }
 
-    /// One row per `~/.ssh/config` alias, opening a durable termiod session on
-    /// that host. An empty config says so rather than showing a dead submenu.
-    private func fillNewRemoteTerminalMenu(_ menu: NSMenu) {
-        let hosts = SSHConfigFile.hosts()
-        guard !hosts.isEmpty else {
-            let empty = menu.addItem(
-                withTitle: "No SSH hosts in ~/.ssh/config",
-                action: nil,
-                keyEquivalent: ""
-            )
-            empty.isEnabled = false
-            return
-        }
-        for host in hosts {
+    /// One row per `~/.ssh/config` alias no device answers to yet. Connecting
+    /// opens a terminal there, which installs `termiod` on the way
+    /// (`ensureRemoteReady`) and teaches the app which machine the alias reaches —
+    /// after which it is a device and moves out of this menu.
+    private func fillConnectToMenu(_ menu: NSMenu) {
+        let known = DeviceRoster.known(in: store)
+        for alias in DeviceRoster.unusedAliases(known: known) {
             let item = menu.addItem(
-                withTitle: host.alias,
-                action: #selector(newRemoteTerminalHost(_:)),
+                withTitle: alias,
+                action: #selector(connectToDevice(_:)),
                 keyEquivalent: ""
             )
             item.target = self
-            item.representedObject = host.alias
+            item.representedObject = alias
         }
     }
 }
@@ -1797,13 +1901,18 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     /// has no referent — the directory-following New Terminal is ⌘T, pressed with the
     /// terminal in front of you.
     func makeNewSessionMenu() -> NSMenu {
-        let menu = NSMenu()
+        // Titled and delegated so the AppDelegate can reshape the terminal item on
+        // open: one machine keeps it a plain verb, a second grows it into a device
+        // submenu (see `refreshNewTerminalItem`). Its rows target the AppDelegate,
+        // which is where both the local and the per-device actions live.
+        let menu = NSMenu(title: localized("New Session"))
+        menu.delegate = NSApp.delegate as? AppDelegate
         let terminal = NSMenuItem(title: localized("New Terminal at Home"),
-                                  action: #selector(newTerminal(_:)), keyEquivalent: "")
-        terminal.target = self
+                                  action: #selector(AppDelegate.newScratchTerminal(_:)),
+                                  keyEquivalent: "")
+        terminal.target = NSApp.delegate as? AppDelegate
+        terminal.tag = DeviceMenuTag.newTerminalAtHome
         menu.addItem(terminal)
-        // Directly under New Terminal: same verb, other machine.
-        menu.addItem(makeNewRemoteTerminalItem())
         menu.addItem(makeNewChatItem())
         menu.addItem(makeNewSSHItem())
         let folder = NSMenuItem(title: localized("Open Project…"), action: #selector(openFolder(_:)), keyEquivalent: "")
@@ -1812,7 +1921,6 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
         return menu
     }
 
-    @objc private func newTerminal(_ sender: Any?) { store.addScratchTerminal() }
     @objc private func openFolder(_ sender: Any?) { store.presentOpenProjectPanel() }
 
     /// The `.inspectorTabs` item's menu form, shown in the toolbar's `»` overflow menu when the
@@ -2108,6 +2216,10 @@ private func buildMainMenu() -> NSMenu {
     let fileItem = NSMenuItem()
     mainMenu.addItem(fileItem)
     let fileMenu = NSMenu(title: localized("File"))
+    // Device-aware items are reshaped on open (see `refreshDeviceItems`) — that's
+    // what collapses New Terminal to a plain verb on a one-machine install and
+    // grows it into a device submenu once there is a second.
+    fileMenu.delegate = NSApp.delegate as? AppDelegate
     // Keeps the `+` new-terminal action reachable when the navigator is collapsed and its toolbar
     // button is hidden (see `setNavigatorItemsVisible`). ⌘T is safe: TUI programs drive off Ctrl,
     // never Cmd, so it can't shadow a key a terminal app wants.
@@ -2115,7 +2227,7 @@ private func buildMainMenu() -> NSMenu {
         withTitle: localized("New Terminal"),
         action: #selector(AppDelegate.newTerminalHere(_:)),
         command: .newTerminal
-    )
+    ).tag = DeviceMenuTag.newTerminal
     // The always-`$HOME` terminal, kept as its own verb now that ⌘T follows the
     // focused session's directory.
     fileMenu.addItem(
@@ -2128,13 +2240,14 @@ private func buildMainMenu() -> NSMenu {
     // sits on the resolved default's row, so the shortcut stays one-press and the
     // menu names the agent it will open.
     fileMenu.addItem(makeNewChatItem())
-    // New Remote Terminal ▸ a durable termiod session on an ssh-config host —
-    // the remote counterpart of New Terminal, and unlike New SSH Connection it
-    // outlives both the connection and the app.
-    fileMenu.addItem(makeNewRemoteTerminalItem())
     // New SSH Connection ▸ one row per `~/.ssh/config` host, plus Add Host… for
     // machines not in it yet (filled on open by the AppDelegate — see `makeNewSSHItem`).
     fileMenu.addItem(makeNewSSHItem())
+    // Connect to… ▸ the machines in `~/.ssh/config` termio hasn't worked on yet.
+    // Finder's own split: reaching a machine is a verb in a menu, while what termio
+    // knows *about* a machine belongs in Settings. Hidden while there is nothing
+    // left to reach.
+    fileMenu.addItem(makeConnectToItem())
     fileMenu.addItem(.separator())
     fileMenu.addItem(
         withTitle: localized("Open Project…"),

@@ -189,7 +189,10 @@ extension TermioStore {
         return raw
     }
 
-    private func clearWorking(_ id: Session.ID) {
+    /// Not private: the termiod status path (`applyTermiodStatus`) ends a turn
+    /// through the same door, so the two cannot drift on what "stopped working"
+    /// clears.
+    func clearWorking(_ id: Session.ID) {
         setCurrentTool(nil, for: id)
         lastWorkingAt[id] = nil
         promotionStreak[id] = nil
