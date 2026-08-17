@@ -709,6 +709,16 @@ final class TermioStore: ObservableObject {
     /// session's attach channel into the local termiod daemon, which owns the
     /// PTY so the session outlives this app instance.
     var termiodLinks: [Session.ID: TermiodSessionLink] = [:]
+    /// Why a termiod session died, keyed by the daemon's session name — which,
+    /// for sessions this app created, is the `Session.ID` uuid string. Learned
+    /// from the roster reply (`Termiod.roster`), which carries the daemon's
+    /// graveyard alongside the live list.
+    ///
+    /// A session that is simply *missing* is indistinguishable from one that
+    /// never existed; a tombstone is the difference between "gone" and "the
+    /// daemon died under it while your agent was mid-turn". Read it with
+    /// `termiodEndReason(for:)`.
+    var termiodTombstones: [String: Termiod.SessionTombstone] = [:]
 
     /// App-quit teardown: without this, session children outlive the app — the
     /// closing PTY's SIGHUP is swallowed by agent TUIs, and they pile up as

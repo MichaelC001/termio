@@ -87,6 +87,25 @@ extension TermioStore {
         link.onDevice = { [weak self] device in
             self?.adoptDevice(device, forRoute: link.route)
         }
+        // The `events` half of the negotiated capabilities. Status is the one
+        // that matters: an agent running on a VPS reports to the daemon that
+        // owns its PTY, and this is the only path by which that reaches the Mac
+        // — the hook socket is on the wrong machine, which is exactly why
+        // `presentationEnvironment` withholds `TERMIO_SESSION` from a remote.
+        link.onStatus = { [weak self] status in
+            self?.applyTermiodStatus(status, for: session.id)
+        }
+        // The link itself acts on this (it stops sending `R` frames the daemon
+        // would reject, and re-asserts the grid when the token returns). Logged
+        // here because a demoted pane looks identical to a live one on screen —
+        // saying it out loud is what makes a silently-ignored keystroke
+        // explainable. Showing it in the pane is a client-UI step, not taken here.
+        link.onWriter = { writer in
+            Log.termiod.info("""
+            session \(session.id.uuidString, privacy: .public) is now \
+            \(writer ? "the writer" : "an observer", privacy: .public)
+            """)
+        }
         link.onExit = { [weak self, weak inMemory] code, runtimeMilliseconds in
             self?.termiodLinks[session.id] = nil
             self?.lastScreenActivity[session.id] = nil
@@ -107,6 +126,60 @@ extension TermioStore {
         }
         termiodLinks[session.id] = link
         link.start()
+    }
+
+    // MARK: - Host-reported workstream status
+
+    /// Lands an `E status` event on the session's row. The vocabulary is the
+    /// protocol's (`working · idle · needs_you · done · failed · unknown`, §4);
+    /// the mapping to a dot, a spinner, or a notification is this client's and
+    /// deliberately mirrors `applyStatusReport` arm for arm, so a session behaves
+    /// the same whether its status came from a local hook or from the daemon.
+    ///
+    /// Unlike the hook path there is no correlation guesswork: the event arrived
+    /// on this session's own attach channel, so it can only be about this
+    /// session. That is also why it is not gated on `effectiveAgent` — a remote
+    /// terminal is created as a plain `.terminal` row (the agent runs over
+    /// there), and gating would silently discard every status a VPS agent
+    /// reports, which is the entire reason this path exists.
+    func applyTermiodStatus(_ report: Termiod.StatusPayload, for id: Session.ID) {
+        guard session(id) != nil else { return }
+        // The workstream title is the agent's own label for what it is doing.
+        // It shares `liveTitle` with the OSC 0/2 channel — same field, last
+        // writer wins — because both answer the same question about the row.
+        if let title = report.title, !title.isEmpty { setLiveTitle(title, for: id) }
+        // A host that is speaking for this session is exactly the condition the
+        // screen-driven promotion stands down for (`hookQuietWindow`): the
+        // precise signal outranks the heuristic that exists in its absence.
+        if ["working", "idle", "needs_you", "done", "failed"].contains(report.status) {
+            lastHookReportAt[id] = Date()
+        }
+        switch report.status {
+        case "working":
+            setStatus(.working, for: id)
+            lastWorkingAt[id] = Date()
+        case "needs_you":
+            clearWorking(id)
+            flagBlockingAttention(for: id)
+        case "done":
+            clearWorking(id)
+            setStatus(.done, for: id)
+        case "idle":
+            clearWorking(id)
+            setStatus(.idle, for: id)
+        case "failed":
+            // Not `.done`: a green "ready for you" dot on a run that failed
+            // reads as success. Not `flagBlockingAttention` either — a failure
+            // has no resolving transition, so its dot should clear when the user
+            // looks at the row, which is what a plain `.needsAttention` does.
+            clearWorking(id)
+            setStatus(isViewing(id) ? .idle : .needsAttention, for: id)
+        default:
+            // `unknown` is the daemon's default for a session nobody has
+            // reported on. Writing it would overwrite what the local signals
+            // worked out, so it is left alone.
+            break
+        }
     }
 
     // MARK: - Device identity
@@ -167,10 +240,21 @@ extension TermioStore {
             project.sessions.map { $0.id.uuidString }
         })
         let route = TermiodRoute(sshAlias: Termiod.remoteHost)
-        DispatchQueue.global(qos: .utility).async {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             do {
-                let live = try Termiod.listSessions(route: route)
-                // The handshake `listSessions` just performed recorded this
+                let roster = try Termiod.roster(route: route)
+                let live = roster.sessions
+                // The graveyard is the other half of the answer, and the half
+                // that explains an empty list. Recorded before the live rows are
+                // logged so `termiodEndReason` is populated by the time anything
+                // asks why a row it restored has no session behind it.
+                let tombstones = roster.tombstones
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        self?.recordTombstones(tombstones, persisted: persistedNames)
+                    }
+                }
+                // The handshake `roster` just performed recorded this
                 // route's device; naming it here is the visible proof that the
                 // app knows *which machine* it is talking to, not just a socket.
                 if let device = TermiodDeviceRegistry.shared.device(for: route) {
@@ -200,6 +284,41 @@ extension TermioStore {
                 """)
             }
         }
+    }
+
+    // MARK: - Tombstones
+
+    /// Files the daemon's graveyard, and says out loud what happened to any row
+    /// this app restored whose session did not survive.
+    ///
+    /// The tombstone list is capped host-side (100, newest first), so this keeps
+    /// what it is given rather than accumulating forever, and only for names
+    /// that map to a session this app knows — another client's sessions are not
+    /// this app's story to tell.
+    func recordTombstones(_ tombstones: [Termiod.SessionTombstone], persisted: Set<String>) {
+        termiodTombstones = Dictionary(
+            tombstones.filter { persisted.contains($0.name) }.map { ($0.name, $0) },
+            uniquingKeysWith: { first, _ in first } // newest first: the first wins
+        )
+        for tombstone in termiodTombstones.values.sorted(by: { $0.endedUnix > $1.endedUnix }) {
+            Log.termiod.info("""
+            termiod session name=\(tombstone.name, privacy: .public) ended: \
+            \(tombstone.reason, privacy: .public) \
+            (status \(tombstone.status, privacy: .public), \
+            exit \(tombstone.exitStatus.map(String.init) ?? "unknown", privacy: .public))
+            """)
+        }
+    }
+
+    /// How a session's termiod counterpart died, if it did. `nil` for a session
+    /// that is running, that never ran, or whose tombstone has aged out of the
+    /// daemon's capped graveyard.
+    ///
+    /// The reason is the host's word (`exited` · `killed` · `daemon_lost`);
+    /// turning it into something a person reads is the caller's job, because the
+    /// host describes state and never decides presentation.
+    func termiodEndReason(for id: Session.ID) -> Termiod.SessionTombstone? {
+        termiodTombstones[id.uuidString]
     }
 
     // MARK: - Remote terminals (per-session SSH host)

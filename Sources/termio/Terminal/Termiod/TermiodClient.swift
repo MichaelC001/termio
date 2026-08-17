@@ -10,11 +10,37 @@ import Foundation
 ///
 /// Framing is `[kind: u8][length: u32 big-endian][payload]`. Control payloads
 /// are JSON; `D` (data) is raw PTY bytes and `R` (resize) is rows/cols as two
-/// big-endian u16. This client negotiates no optional capability yet — without
-/// `snapshot` the daemon bootstraps an attach with a ring-buffer byte replay,
-/// which is the accepted (possibly torn) repaint for this slice; the clean `S`
-/// snapshot path is the next one.
+/// big-endian u16.
 enum Termiod {
+    /// What this client offers on an **attach** channel, and — the part that
+    /// matters — who consumes each. A capability is a promise to handle the
+    /// frames it unlocks: offering one with nothing behind it is worse than not
+    /// offering it, because the daemon then spends bandwidth on frames that are
+    /// dropped on the floor. The daemon's full set is `HOST_CAPABILITIES` in
+    /// termiod/src/protocol.rs; the stance on every one of them:
+    ///
+    /// | Capability   | Offered | Consumer |
+    /// | ------------ | ------- | -------- |
+    /// | `snapshot`   | yes     | `S` → `TermiodSnapshot.render` → the surface's repaint |
+    /// | `events`     | yes     | `E` → `TermiodSessionLink.onStatus` (agent status), `applyWriter` (write gating), `applyAuthoritativeGrid` (§C.5 dimensions) |
+    /// | `scrollback` | no      | `H` carries packed cells to inject *above* the viewport; a byte-stream surface has nowhere to put them |
+    /// | `grid_diff`  | no      | `G` would make the host resolve every cell's colour, which overrides the viewer's theme — the §A/§H regression this client exists not to repeat |
+    /// | `send_wait`  | no      | `send`/`wait` are control-channel verbs; the app injects through its own attach channel |
+    /// | `resources`  | no      | `subscribe_resource` — the file tree and git panes are the consumers, on their own channel |
+    /// | `fs_watch`   | no      | ditto |
+    /// | `files`      | no      | ditto |
+    /// | `upload`     | no      | remote paste; rides a control channel, not an attachment |
+    /// | `git`        | no      | ditto |
+    ///
+    /// A later plane opens its own channel and passes its own `caps` to
+    /// `withControlChannel` — capabilities are per-connection, so nothing here
+    /// has to grow for the file tree or git to land.
+    static let attachCapabilities = ["snapshot", "events"]
+
+    /// What a plain control channel (`list`, `kill`) offers: nothing. Both verbs
+    /// are unconditional, and tombstones ride the `sessions` reply un-gated.
+    static let controlCapabilities: [String] = []
+
     /// Checked once — the flag flips the app's session backend wholesale, so a
     /// mid-run change could not be honored anyway.
     static let isEnabled = ProcessInfo.processInfo.environment["TERMIO_TERMIOD"] == "1"
@@ -568,6 +594,21 @@ enum Termiod {
 
     struct SessionsPayload: Decodable {
         let sessions: [SessionInformation]
+        /// Sessions that have died, newest first. Absent on a daemon too old to
+        /// bury them, which is why it decodes to an empty list rather than
+        /// failing the reply.
+        let tombstones: [SessionTombstone]
+
+        private enum CodingKeys: String, CodingKey {
+            case sessions, tombstones
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            sessions = try container.decode([SessionInformation].self, forKey: .sessions)
+            tombstones = try container.decodeIfPresent(
+                [SessionTombstone].self, forKey: .tombstones) ?? []
+        }
     }
 
     /// The subset of `termiod list` this client acts on; unknown fields are
@@ -579,6 +620,110 @@ enum Termiod {
         let alive: Bool
     }
 
+    /// A dead session, as the daemon buried it (termiod/src/tombstone.rs). This
+    /// is the only answer to "where did my session go?": a daemon that died
+    /// takes every PTY with it, and without a tombstone the roster just comes
+    /// back empty, which reads as "nothing was running".
+    ///
+    /// `reason` stays a string, not an enum, so a later daemon can bury a
+    /// session for a reason this build has never heard of without the reply
+    /// failing to decode. The host names the cause; the words shown to a person
+    /// are the client's to choose (see `TermioStore.termiodEndReason(for:)`).
+    struct SessionTombstone: Decodable, Sendable, Hashable {
+        let id: String
+        /// The termiod session name — which, for sessions this app created, is
+        /// the app `Session.ID` uuid string. That is what ties a tombstone back
+        /// to a row in the sidebar.
+        let name: String
+        let cwd: String
+        let command: String
+        /// `exited` · `killed` · `daemon_lost`, or whatever a newer daemon adds.
+        let reason: String
+        /// The process's exit code. Absent for `daemon_lost` — the daemon that
+        /// would have reaped the child died first, so there is no honest answer.
+        let exitStatus: Int32?
+        let createdUnix: UInt64
+        let endedUnix: UInt64
+        let agentID: String?
+        let title: String?
+        /// The workstream status the session last reported. A session that died
+        /// while `needs_you` is a different story from one that died `idle`.
+        let status: String
+
+        private enum CodingKeys: String, CodingKey {
+            case id, name, cwd, command, reason, exitStatus, createdUnix, endedUnix
+            case agentID = "agentId"
+            case title, status
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            name = try container.decode(String.self, forKey: .name)
+            cwd = try container.decodeIfPresent(String.self, forKey: .cwd) ?? ""
+            command = try container.decodeIfPresent(String.self, forKey: .command) ?? ""
+            reason = try container.decodeIfPresent(String.self, forKey: .reason) ?? "unknown"
+            exitStatus = try container.decodeIfPresent(Int32.self, forKey: .exitStatus)
+            createdUnix = try container.decodeIfPresent(UInt64.self, forKey: .createdUnix) ?? 0
+            endedUnix = try container.decodeIfPresent(UInt64.self, forKey: .endedUnix) ?? 0
+            agentID = try container.decodeIfPresent(String.self, forKey: .agentID)
+            title = try container.decodeIfPresent(String.self, forKey: .title)
+            status = try container.decodeIfPresent(String.self, forKey: .status) ?? "unknown"
+        }
+    }
+
+    /// Who owns the write token now. `writer` is a daemon-scoped client id, so
+    /// the only client that can tell whether it is the writer is the one that
+    /// remembers its own `client_id` from `hello_ok`.
+    struct WriterChangedPayload: Decodable, Sendable {
+        let session: String
+        let writer: String?
+    }
+
+    /// The authoritative PTY grid after a resize. Every client is required to
+    /// parse at these dimensions (§C.5) — an observer whose window is a
+    /// different size wraps the same bytes differently and diverges.
+    struct ResizedPayload: Decodable, Sendable {
+        let session: String
+        let rows: UInt16
+        let cols: UInt16
+    }
+
+    /// A workstream status delta — `working · idle · needs_you · done · failed ·
+    /// unknown` (§4). The host reports the *state*; which dot, which words, and
+    /// whether it fires a notification are entirely the client's call.
+    struct StatusPayload: Decodable, Sendable {
+        let session: String
+        let status: String
+        let title: String?
+    }
+
+    struct SessionExitedPayload: Decodable, Sendable {
+        let session: String
+        let status: Int32
+    }
+
+    /// Decoded `E` frames. Unknown events become `.unknown` and are ignored,
+    /// matching the protocol's additive-evolution rule.
+    enum IncomingEvent {
+        case ready(String)
+        case status(StatusPayload)
+        case writerChanged(WriterChangedPayload)
+        case resized(ResizedPayload)
+        case sessionExited(SessionExitedPayload)
+        case unknown(String)
+    }
+
+    private struct EventTag: Decodable {
+        let ev: String
+    }
+
+    /// Every event names its session and nothing else is required — enough to
+    /// decode `ready`, and the shape any future session-scoped event shares.
+    private struct SessionScopedPayload: Decodable {
+        let session: String
+    }
+
     /// Decoded control frames the client reacts to. Anything else — unknown
     /// ops, responses this slice doesn't consume — becomes `.unknown` and is
     /// ignored, matching the protocol's additive-evolution rule.
@@ -588,6 +733,11 @@ enum Termiod {
         case attached(AttachedPayload)
         case exited(ExitedPayload)
         case sessions(SessionsPayload)
+        /// The addressed half of `writer_changed`: sent to one client to tell it
+        /// who owns size now (§C.5). Same payload shape, so it feeds the same
+        /// handler — a client that only listened to the broadcast would still be
+        /// correct, and one that only listened to this would not.
+        case resizeClaim(WriterChangedPayload)
         case error(ErrorPayload)
         case unknown(String)
     }
@@ -613,6 +763,8 @@ enum Termiod {
             return .exited(try decoder.decode(ExitedPayload.self, from: payload))
         case "sessions":
             return .sessions(try decoder.decode(SessionsPayload.self, from: payload))
+        case "resize_claim":
+            return .resizeClaim(try decoder.decode(WriterChangedPayload.self, from: payload))
         case "error":
             return .error(try decoder.decode(ErrorPayload.self, from: payload))
         default:
@@ -620,22 +772,57 @@ enum Termiod {
         }
     }
 
+    /// Decodes an `E` frame. Same additive contract as `decodeControl`: an event
+    /// this build has never heard of is `.unknown`, never a decode failure.
+    static func decodeEvent(_ payload: Data) throws -> IncomingEvent {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let tag = try decoder.decode(EventTag.self, from: payload)
+        switch tag.ev {
+        case "ready":
+            return .ready(try decoder.decode(SessionScopedPayload.self, from: payload).session)
+        case "status":
+            return .status(try decoder.decode(StatusPayload.self, from: payload))
+        case "writer_changed":
+            return .writerChanged(try decoder.decode(WriterChangedPayload.self, from: payload))
+        case "resized":
+            return .resized(try decoder.decode(ResizedPayload.self, from: payload))
+        case "session_exited":
+            return .sessionExited(try decoder.decode(SessionExitedPayload.self, from: payload))
+        default:
+            return .unknown(tag.ev)
+        }
+    }
+
     // MARK: - Handshake and control channel
 
-    /// Sends `hello` and waits for `hello_ok`. An attach channel offers the
-    /// `snapshot` capability so a reattach bootstraps from the daemon's
-    /// authoritative VT (one clean `S` repaint) instead of ring replay; the
-    /// control channel negotiates nothing. `scrollback`/`grid_diff` stay
-    /// unoffered — a byte-stream surface can neither inject history above the
-    /// viewport nor consume dirty-row diffs (a deeper libghostty integration).
+    /// Everything one handshake settles. A connection is not just a pipe to a
+    /// machine: it is a pipe with an identity (`clientID`) and a contract
+    /// (`capabilities`), and both are needed to act correctly afterwards —
+    /// `writer_changed` names a client id, so a client that forgot its own
+    /// cannot tell whether the token is its.
+    struct Handshake: Sendable {
+        let device: TermiodDevice
+        /// This connection's daemon-assigned id. Per-connection: it changes on
+        /// every reattach and must never be persisted.
+        let clientID: String
+        /// What the daemon actually granted — always a subset of what was
+        /// offered, and empty on a daemon too old to answer. Check it before
+        /// waiting on a frame the host may never send.
+        let capabilities: Set<String>
+    }
+
+    /// Sends `hello` and waits for `hello_ok`. Callers pass the capabilities
+    /// they have consumers for — `attachCapabilities` for a session channel,
+    /// and whatever a later plane needs for its own (see that table).
     ///
-    /// Returns the **device** on the other end. This is the only moment a route's
-    /// destination is knowable: a handshake is what turns `ssh vps-wan` from a
-    /// string into a machine, and recording it here means every path that reaches
-    /// a daemon — attach, list, kill — teaches the registry for free.
+    /// The handshake is also the only moment a route's destination is knowable:
+    /// it is what turns `ssh vps-wan` from a string into a machine, and
+    /// recording it here means every path that reaches a daemon — attach, list,
+    /// kill — teaches the registry for free.
     @discardableResult
     static func performHello(_ transport: Transport, role: String,
-                             caps: [String] = []) throws -> TermiodDevice {
+                             caps: [String] = []) throws -> Handshake {
         let hello = HelloOperation(
             proto: protocolVersion,
             minProto: protocolVersion,
@@ -648,8 +835,20 @@ enum Termiod {
         guard reply.kind == .control else { throw TermiodClientError.malformedFrame }
         switch try decodeControl(reply.payload) {
         case .helloOk(let payload):
-            return TermiodDeviceRegistry.shared.record(
+            let device = TermiodDeviceRegistry.shared.record(
                 hostID: payload.hostId, daemonVersion: payload.host, route: transport.route)
+            // An offer the daemon dropped is not an error — negotiate, never
+            // lockstep — but it does change what this connection can expect, so
+            // it is worth saying out loud once per channel.
+            let refused = Set(caps).subtracting(payload.caps)
+            if !refused.isEmpty {
+                Log.termiod.info("""
+                \(role, privacy: .public) channel to \(device.id, privacy: .public) \
+                declined capabilities: \(refused.sorted().joined(separator: ", "), privacy: .public)
+                """)
+            }
+            return Handshake(
+                device: device, clientID: payload.clientId, capabilities: Set(payload.caps))
         case .helloError(let message):
             throw TermiodClientError.handshakeRejected(message)
         case .error(let payload):
@@ -661,14 +860,21 @@ enum Termiod {
 
     /// One-shot control request: connect, hello as `control`, run `body`,
     /// close. Used for `list` at startup and `kill` on Close Session.
-    private static func withControlChannel<Result>(
+    ///
+    /// `caps` is the seam for the planes that come next: a file tree opens this
+    /// with `["resources", "files"]`, a git pane adds `"git"`, and neither has
+    /// to touch the attach path to do it. `body` receives the handshake so it
+    /// can check what was actually granted before it asks for anything.
+    @discardableResult
+    static func withControlChannel<Result>(
         route: TermiodRoute = .local,
-        _ body: (Transport) throws -> Result
+        caps: [String] = controlCapabilities,
+        _ body: (Transport, Handshake) throws -> Result
     ) throws -> Result {
         let transport = try Transport.open(route)
         defer { transport.close() }
-        try performHello(transport, role: "control")
-        return try body(transport)
+        let handshake = try performHello(transport, role: "control", caps: caps)
+        return try body(transport, handshake)
     }
 
     /// Connect, shake hands, hang up: the cheapest question you can ask a route,
@@ -678,11 +884,16 @@ enum Termiod {
     static func probeDevice(route: TermiodRoute) throws -> TermiodDevice {
         let transport = try Transport.open(route)
         defer { transport.close() }
-        return try performHello(transport, role: "control")
+        return try performHello(transport, role: "control").device
     }
 
-    static func listSessions(route: TermiodRoute = .local) throws -> [SessionInformation] {
-        try withControlChannel(route: route) { transport in
+    /// The daemon's answer to "what is running?" — which, to be honest, has to
+    /// include what *was* running: a daemon that died takes every session with
+    /// it, and a live list alone would report that as "nothing". The tombstones
+    /// ride the same reply, so there is no second round trip and no window where
+    /// the two disagree.
+    static func roster(route: TermiodRoute = .local) throws -> SessionsPayload {
+        try withControlChannel(route: route) { transport, _ in
             try writeFrame(transport.writeDescriptor, kind: .control,
                            payload: encodeControl(ListOperation(seq: 1)))
             while true {
@@ -690,7 +901,7 @@ enum Termiod {
                 guard frame.kind == .control else { continue }
                 switch try decodeControl(frame.payload) {
                 case .sessions(let payload):
-                    return payload.sessions
+                    return payload
                 case .error(let payload):
                     throw TermiodClientError.requestFailed(payload.message)
                 default:
@@ -706,7 +917,7 @@ enum Termiod {
     static func killSession(target: String, route: TermiodRoute = .local) {
         DispatchQueue.global(qos: .utility).async {
             do {
-                try withControlChannel(route: route) { transport in
+                try withControlChannel(route: route) { transport, _ in
                     try writeFrame(transport.writeDescriptor, kind: .control,
                                    payload: encodeControl(KillOperation(id: target, seq: 1)))
                     // One reply either way; "no such session" just means the
@@ -771,6 +982,14 @@ enum TermiodClientError: LocalizedError {
     }
 }
 
+/// A terminal grid. A named pair rather than a tuple so "is the PTY already
+/// this size?" is one comparison the compiler checks, on a path where getting
+/// it wrong costs every viewer a repaint.
+struct TerminalGrid: Equatable, Sendable {
+    let rows: UInt16
+    let cols: UInt16
+}
+
 /// One session's attach channel: the termiod-backed stand-in for what
 /// `PTYProcess` is on the in-process path. Owns the socket, forwards surface
 /// input as `D` frames and grid changes as `R` frames, and delivers the
@@ -788,18 +1007,28 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// daemon, `.ssh(alias)` for another box. The framed protocol and every other
     /// field are identical either way; only how the pipe is opened differs.
     let route: TermiodRoute
-    private let initialRows: UInt16
-    private let initialCols: UInt16
     private let startedAt = Date()
 
     private var transport: Termiod.Transport?
     private var attached = false
     private var isWriter = false
+    /// This connection's daemon-assigned id, from `hello_ok`. Without it a
+    /// `writer_changed` naming `c_41` is unreadable — the whole point of the
+    /// event is telling *this* client whether the token is still its.
+    private var clientID: String?
     /// Keystrokes typed during the connect/attach window — flushed, in order,
     /// the moment the channel is writable so nothing the user typed is lost.
     private var pendingInput = Data()
-    /// The latest grid reported before attach completed; applied once writable.
-    private var pendingResize: (rows: UInt16, cols: UInt16)?
+    /// The grid this client wants the PTY to be, updated by every `resize`
+    /// whether or not it can be sent yet.
+    private var desiredGrid: TerminalGrid
+    /// The last grid actually written as an `R` frame, so a redundant resize
+    /// isn't re-sent while the daemon is still applying the first one.
+    private var sentGrid: TerminalGrid?
+    /// The PTY's real size, from `attached` and then every `E resized`. This is
+    /// the authority — §C.5: a client that parses at its own window size instead
+    /// of this one wraps the same bytes differently and diverges from the host.
+    private var authoritativeGrid: TerminalGrid?
     /// Set on any deliberate teardown so the reader's EOF is not misread as a
     /// daemon crash.
     private var closed = false
@@ -819,6 +1048,20 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// child's true runtime; elapsed-since-attach serves ghostty's
     /// abnormal-exit heuristic the same way).
     var onExit: ((Int32, UInt64) -> Void)?
+    /// The session's workstream status as the host reports it (`working`,
+    /// `needs_you`, …) with the workstream title when one rides along. Fired on
+    /// the main queue for every `E status`.
+    ///
+    /// This is the only status channel a *remote* agent has: hooks on a VPS
+    /// cannot reach this Mac's control socket, so they report to the daemon that
+    /// owns the session and it fans the event down every attachment. The host
+    /// names the state and nothing more — which dot, which words, and whether a
+    /// notification fires stay entirely on this side.
+    var onStatus: ((Termiod.StatusPayload) -> Void)?
+    /// Whether this client currently holds the write token, on the main queue,
+    /// on every genuine change. The link already gates its own `R` frames on
+    /// this; the callback is for the UI that has to say "read-only" out loud.
+    var onWriter: ((Bool) -> Void)?
 
     init(sessionName: String,
          specification: Termiod.CreateSpecification,
@@ -828,8 +1071,7 @@ final class TermiodSessionLink: @unchecked Sendable {
         self.sessionName = sessionName
         self.specification = specification
         self.route = route
-        initialRows = UInt16(clamping: rows)
-        initialCols = UInt16(clamping: cols)
+        desiredGrid = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
     }
 
     /// Kicks off connect → hello → attach in the background. The caller wires
@@ -839,13 +1081,17 @@ final class TermiodSessionLink: @unchecked Sendable {
             do {
                 let channel = try Termiod.Transport.open(route)
                 transport = channel
-                let device = try Termiod.performHello(channel, role: "attach", caps: ["snapshot"])
+                let handshake = try Termiod.performHello(
+                    channel, role: "attach", caps: Termiod.attachCapabilities)
+                clientID = handshake.clientID
+                let device = handshake.device
                 DispatchQueue.main.async { [self] in onDevice?(device) }
+                let requested = desiredGrid
                 let payload = try Termiod.attachPayload(
                     target: sessionName,
                     specification: specification,
-                    rows: pendingResize?.rows ?? initialRows,
-                    cols: pendingResize?.cols ?? initialCols
+                    rows: requested.rows,
+                    cols: requested.cols
                 )
                 try Termiod.writeFrame(channel.writeDescriptor, kind: .control, payload: payload)
                 let reply = try Termiod.readFrame(channel.readDescriptor)
@@ -856,18 +1102,22 @@ final class TermiodSessionLink: @unchecked Sendable {
                 }
                 attached = true
                 isWriter = attachedPayload.writer
+                // `attached` reports the session's size *before* this attach is
+                // applied; the daemon then resizes to what a writer asked for and
+                // announces it as `E resized`. Seeding from the reply means an
+                // observer — which never triggers that resize — still knows the
+                // grid its bytes are wrapped at.
+                authoritativeGrid = TerminalGrid(
+                    rows: attachedPayload.rows, cols: attachedPayload.cols)
+                if isWriter { sentGrid = requested }
                 Log.termiod.info("""
                 attached session=\(self.sessionName, privacy: .public) \
                 device=\(device.id, privacy: .public) \
                 route=\(self.route.description, privacy: .public) \
                 writer=\(attachedPayload.writer, privacy: .public) \
+                caps=\(handshake.capabilities.sorted().joined(separator: ","), privacy: .public) \
                 \(attachedPayload.rows, privacy: .public)x\(attachedPayload.cols, privacy: .public)
                 """)
-                if let resize = pendingResize, isWriter {
-                    try Termiod.writeFrame(channel.writeDescriptor, kind: .resize,
-                                           payload: Self.resizePayload(resize.rows, resize.cols))
-                }
-                pendingResize = nil
                 // Only a writer may inject the keystrokes buffered during connect;
                 // an observer's input would be rejected frame-by-frame by the
                 // daemon. (This client always attaches `interact` today, so it is
@@ -908,19 +1158,16 @@ final class TermiodSessionLink: @unchecked Sendable {
     }
 
     func resize(rows: Int, cols: Int) {
-        let size = (rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
+        let size = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
         workQueue.async { [self] in
             guard !closed else { return }
-            guard attached else {
-                pendingResize = size
-                return
-            }
+            desiredGrid = size
+            guard attached else { return }
             // Observers must not resize the shared PTY out from under the
             // writer; the daemon would reject the frame anyway.
-            guard isWriter, let transport else { return }
+            guard isWriter else { return }
             do {
-                try Termiod.writeFrame(transport.writeDescriptor, kind: .resize,
-                                       payload: Self.resizePayload(size.rows, size.cols))
+                try sendResizeLocked(size)
             } catch {
                 Log.termiod.error("""
                 resize of \(self.sessionName, privacy: .public) failed: \
@@ -928,6 +1175,23 @@ final class TermiodSessionLink: @unchecked Sendable {
                 """)
             }
         }
+    }
+
+    /// Writes one `R` frame, unless the PTY is already that size and nothing
+    /// else is in flight. The skip is not a micro-optimisation: a resize is a
+    /// **barrier** host-side (§C.5) — the session quiesces, resizes, and emits a
+    /// fresh `S` keyframe to every attachment — so re-asserting a size the PTY
+    /// already has costs a full repaint for every viewer.
+    ///
+    /// Must run on `workQueue`.
+    private func sendResizeLocked(_ size: TerminalGrid) throws {
+        guard let transport else { return }
+        // Confirmed at this size, and nothing else on the wire that would move
+        // it away: the frame would be a pure no-op with a repaint attached.
+        if authoritativeGrid == size, sentGrid == nil || sentGrid == size { return }
+        sentGrid = size
+        try Termiod.writeFrame(transport.writeDescriptor, kind: .resize,
+                               payload: Self.resizePayload(size.rows, size.cols))
     }
 
     /// Leaves the stream but keeps the session alive in the daemon — the
@@ -995,6 +1259,10 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// error, or the session's exit notice.
     private func startReader(_ socket: Int32) {
         let thread = Thread { [weak self] in
+            // A frame kind this client never negotiated is a host bug, not
+            // traffic — logged once per kind so a misbehaving daemon is visible
+            // without a stream of identical lines.
+            var reportedUnexpected = Set<Termiod.FrameKind>()
             while true {
                 let frame: (kind: Termiod.FrameKind, payload: Data)
                 do {
@@ -1025,11 +1293,20 @@ final class TermiodSessionLink: @unchecked Sendable {
                     }
                 case .control:
                     if self.handleControl(frame.payload) { return }
-                case .event, .resize, .history, .grid:
-                    // `ready` (an `E` event) marks snapshot-complete but needs no
-                    // action — serial ordering already sequences S then D. The
-                    // rest is unnegotiated in this slice and safe to skip.
-                    break
+                case .event:
+                    if self.handleEvent(frame.payload) { return }
+                case .resize, .history, .grid:
+                    // `R` is client-to-host only, and `H`/`G` require the
+                    // `scrollback`/`grid_diff` capabilities this client
+                    // deliberately does not offer (see `attachCapabilities`).
+                    // Receiving one means the host sent a frame nobody asked
+                    // for — say so instead of dropping it silently.
+                    if reportedUnexpected.insert(frame.kind).inserted {
+                        Log.termiod.error("""
+                        unnegotiated \(String(UnicodeScalar(frame.kind.rawValue)), privacy: .public) \
+                        frame on \(self.sessionName, privacy: .public) — ignored
+                        """)
+                    }
                 }
             }
         }
@@ -1056,6 +1333,9 @@ final class TermiodSessionLink: @unchecked Sendable {
                 deliverExitLocked(status: exit.status)
             }
             return true
+        case .resizeClaim(let claim):
+            applyWriter(claim.writer)
+            return false
         case .error(let failure):
             Log.termiod.error("""
             daemon error on \(self.sessionName, privacy: .public): \
@@ -1064,6 +1344,102 @@ final class TermiodSessionLink: @unchecked Sendable {
             return false
         default:
             return false
+        }
+    }
+
+    /// Routes one `E` frame. Returns true when the reader should stop.
+    ///
+    /// Unlocked by the `events` capability, and each arm is why it is offered:
+    /// `status` is the product's core signal (an agent on a VPS has no other way
+    /// to reach this Mac), `writer_changed` keeps write gating honest as the
+    /// token moves, and `resized` carries the authoritative dimensions §C.5
+    /// requires every client to know.
+    private func handleEvent(_ payload: Data) -> Bool {
+        let event: Termiod.IncomingEvent
+        do {
+            event = try Termiod.decodeEvent(payload)
+        } catch {
+            Log.termiod.error("""
+            undecodable event frame on \(self.sessionName, privacy: .public): \
+            \(error.localizedDescription, privacy: .public)
+            """)
+            return false
+        }
+        switch event {
+        case .status(let status):
+            DispatchQueue.main.async { [self] in onStatus?(status) }
+        case .writerChanged(let change):
+            applyWriter(change.writer)
+        case .resized(let size):
+            applyAuthoritativeGrid(TerminalGrid(rows: size.rows, cols: size.cols))
+        case .sessionExited(let exit):
+            // The `exited` control frame says the same thing and normally lands
+            // first; both funnel into the same idempotent delivery, so whichever
+            // arrives is enough and neither can double-report.
+            workQueue.async { [self] in
+                teardownLocked()
+                deliverExitLocked(status: exit.status)
+            }
+            return true
+        case .ready:
+            // Snapshot-complete. No action: this reader is serial, so `S` has
+            // already been rendered by the time this frame is read.
+            break
+        case .unknown(let name):
+            Log.termiod.debug("""
+            ignoring \(name, privacy: .public) event on \(self.sessionName, privacy: .public)
+            """)
+        }
+        return false
+    }
+
+    /// Applies a writer-token change. The daemon names the writer by client id,
+    /// so this is the one comparison that tells this connection whether its `D`
+    /// and `R` frames will be honoured or answered with `not_writer`.
+    ///
+    /// Promotion re-asserts the grid: a client that was demoted stopped sending
+    /// resizes, so the PTY can be any size by the time the token comes back.
+    private func applyWriter(_ writer: String?) {
+        workQueue.async { [self] in
+            guard !closed else { return }
+            let mine = writer != nil && writer == clientID
+            guard mine != isWriter else { return }
+            isWriter = mine
+            Log.termiod.info("""
+            write token on \(self.sessionName, privacy: .public) \
+            \(mine ? "claimed" : "lost", privacy: .public)
+            """)
+            if mine {
+                do {
+                    try sendResizeLocked(desiredGrid)
+                } catch {
+                    Log.termiod.error("""
+                    reclaiming size on \(self.sessionName, privacy: .public) failed: \
+                    \(error.localizedDescription, privacy: .public)
+                    """)
+                }
+            }
+            DispatchQueue.main.async { [self] in onWriter?(mine) }
+        }
+    }
+
+    /// Records the PTY's real size. Two things read it: `sendResizeLocked`, so a
+    /// size the PTY already has never costs a barrier repaint, and the check
+    /// below — the PTY only diverges from what this client asked for when
+    /// another client owns the token, and that is the §C.5 case where this
+    /// window is wrapping bytes at the wrong width. Letterboxing the viewport
+    /// against it is the client-side step this foundation leaves open.
+    private func applyAuthoritativeGrid(_ grid: TerminalGrid) {
+        workQueue.async { [self] in
+            guard authoritativeGrid != grid else { return }
+            authoritativeGrid = grid
+            guard grid != desiredGrid else { return }
+            Log.termiod.info("""
+            \(self.sessionName, privacy: .public) PTY is now \
+            \(grid.rows, privacy: .public)x\(grid.cols, privacy: .public); \
+            this client renders \
+            \(self.desiredGrid.rows, privacy: .public)x\(self.desiredGrid.cols, privacy: .public)
+            """)
         }
     }
 
