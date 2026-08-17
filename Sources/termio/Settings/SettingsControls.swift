@@ -49,48 +49,28 @@ struct SectionHeaderLabel: View {
     }
 }
 
-/// The standard settings-row label: an optional leading icon badge, a title, and
-/// an optional wrapping caption underneath (the Xcode/System Settings two-line
-/// idiom). Every explanatory row in the settings tabs uses this so titles, caption
-/// styling, and icon spacing stay identical across tabs instead of being
-/// hand-rolled per row. Primary rows read at `.headline`; pass `titleFont: .body`
-/// for a nested sub-option that should sit visually below its parent row.
+/// The standard settings-row label: a title with an optional wrapping caption
+/// underneath (the System Settings two-line idiom). Every explanatory row in the
+/// settings tabs uses this so titles and caption styling stay identical across
+/// tabs instead of being hand-rolled per row. Settings rows carry no leading
+/// glyph — an icon per row is decoration in a pane that is already labeled by its
+/// section header; badges stay on rows that stand for a *thing* (an agent, a
+/// host, a key). Primary rows read at `.headline`; the `.body` default is for a
+/// nested sub-option that should sit visually below its parent row.
 struct SettingsLabel: View {
-    var icon: AgentIcon?
     let title: String
     var subtext: String?
-    var titleFont: Font = .headline
-
-    /// Icon-led row (a system symbol or agent brand mark).
-    init(_ icon: AgentIcon, title: String, subtext: String? = nil, titleFont: Font = .headline) {
-        self.icon = icon
-        self.title = title
-        self.subtext = subtext
-        self.titleFont = titleFont
-    }
-
-    /// Icon-less row, for a nested sub-option that hangs under an icon-led row.
-    init(title: String, subtext: String? = nil, titleFont: Font = .body) {
-        self.icon = nil
-        self.title = title
-        self.subtext = subtext
-        self.titleFont = titleFont
-    }
+    var titleFont: Font = .body
 
     var body: some View {
-        HStack(spacing: icon == nil ? 0 : 10) {
-            if let icon {
-                IconBadge(icon)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(titleFont)
-                if let subtext {
-                    Text(subtext)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(titleFont)
+            if let subtext {
+                Text(subtext)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

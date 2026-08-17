@@ -96,9 +96,9 @@ struct SSHSettingsTab: View {
                 Button(localized("Edit")) { presentEditor(for: nil) }
             } label: {
                 SettingsLabel(
-                    .huge(.fileDoc),
                     title: "~/.ssh/config",
-                    subtext: localized("Reads ~/.ssh/config directly — Termio keeps no separate host list.")
+                    subtext: localized("Reads ~/.ssh/config directly — Termio keeps no separate host list."),
+                    titleFont: .headline
                 )
             }
         } header: {
@@ -110,7 +110,6 @@ struct SSHSettingsTab: View {
         Section {
             ForEach(publicKeys) { key in
                 HStack(spacing: 10) {
-                    IconBadge(.huge(.key))
                     VStack(alignment: .leading, spacing: 2) {
                         Text(key.name)
                         Text(key.comment.isEmpty ? key.algorithm : "\(key.algorithm) · \(key.comment)")
@@ -188,7 +187,6 @@ private struct SSHHostRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            IconBadge(.huge(.serverStack))
             VStack(alignment: .leading, spacing: 2) {
                 Text(host.alias).font(.headline)
                 Text(subtitle)

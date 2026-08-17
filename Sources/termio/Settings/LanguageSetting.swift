@@ -105,9 +105,9 @@ struct LanguageRow: View {
             }
         } label: {
             SettingsLabel(
-                .huge(.textFont),
                 title: localized("App language"),
-                subtext: localized("Takes effect after Termio relaunches.")
+                subtext: localized("Takes effect after Termio relaunches."),
+                titleFont: .headline
             )
         }
         .onChange(of: selection) { _, newValue in

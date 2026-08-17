@@ -25,9 +25,9 @@ struct GeneralSettingsTab: View {
             Section {
                 Toggle(isOn: $settings.sessionControlEnabled) {
                     SettingsLabel(
-                        .huge(.gitBranch),
                         title: localized("Session control"),
-                        subtext: localized("Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command. Installs the termio skill into each agent's skills folder.")
+                        subtext: localized("Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command. Installs the termio skill into each agent's skills folder."),
+                        titleFont: .headline
                     )
                 }
                 .toggleStyle(.switch)
@@ -43,9 +43,9 @@ struct GeneralSettingsTab: View {
             Section {
                 Toggle(isOn: $settings.agentHooksEnabled) {
                     SettingsLabel(
-                        .huge(.wireless),
                         title: localized("Live agent status"),
-                        subtext: localized("Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio’s hooks into each agent’s config.")
+                        subtext: localized("Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio’s hooks into each agent’s config."),
+                        titleFont: .headline
                     )
                 }
                 .toggleStyle(.switch)
@@ -63,9 +63,9 @@ struct GeneralSettingsTab: View {
             Section {
                 Toggle(isOn: $settings.notifyOnTaskCompletion) {
                     SettingsLabel(
-                        .huge(.checkCircle),
                         title: localized("Task completion"),
-                        subtext: localized("Posts a notification when an agent finishes or needs you while Termio is in the background.")
+                        subtext: localized("Posts a notification when an agent finishes or needs you while Termio is in the background."),
+                        titleFont: .headline
                     )
                 }
                 .toggleStyle(.switch)
@@ -79,9 +79,9 @@ struct GeneralSettingsTab: View {
             Section {
                 Toggle(isOn: $settings.githubIntegrationEnabled) {
                     SettingsLabel(
-                        .huge(.github),
                         title: localized("GitHub"),
-                        subtext: localized("Shows the Issues pane in the inspector for projects whose remote is on GitHub.")
+                        subtext: localized("Shows the Issues pane in the inspector for projects whose remote is on GitHub."),
+                        titleFont: .headline
                     )
                 }
                 .toggleStyle(.switch)
@@ -158,14 +158,13 @@ private struct CommandLineToolRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Toggle(isOn: Binding(get: { isOn }, set: { setEnabled($0) })) {
-                SettingsLabel(.huge(.terminal), title: localized("Command-line tool"), subtext: description)
+                SettingsLabel(
+                    title: localized("Command-line tool"), subtext: description, titleFont: .headline)
             }
             .toggleStyle(.switch)
             .disabled(!isSwitchable)
             if let feedback = state.feedback {
-                // Aligned under the caption, past the row's icon badge.
                 InstallFeedbackLabel(feedback: feedback)
-                    .padding(.leading, 32)
             }
         }
         .onAppear { status = CommandLineTool.audit() }

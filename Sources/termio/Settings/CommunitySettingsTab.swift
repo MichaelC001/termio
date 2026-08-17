@@ -7,14 +7,12 @@ struct CommunitySettingsTab: View {
         Form {
             Section {
                 CommunityLinkRow(
-                    icon: .bubbleChat,
                     title: localized("Discord"),
                     subtext: localized("Chat with the developer and other users."),
                     buttonTitle: localized("Join"),
                     url: "https://discord.gg/H9DKVwsE5f"
                 )
                 CommunityLinkRow(
-                    icon: .github,
                     title: localized("GitHub"),
                     subtext: localized("Termio is open source — star the repo, report bugs, and request features."),
                     buttonTitle: localized("Open"),
@@ -27,9 +25,9 @@ struct CommunitySettingsTab: View {
                 Section {
                     VStack(alignment: .leading, spacing: 12) {
                         SettingsLabel(
-                            .huge(.bubbleChatAdd),
                             title: localized("WeChat group"),
-                            subtext: localized("Scan the QR code with WeChat to join the Chinese community group.")
+                            subtext: localized("Scan the QR code with WeChat to join the Chinese community group."),
+                            titleFont: .headline
                         )
                         Image(nsImage: qrImage)
                             .resizable()
@@ -59,7 +57,6 @@ struct CommunitySettingsTab: View {
 /// One community destination: the standard two-line label with a trailing
 /// button that opens the link in the browser.
 private struct CommunityLinkRow: View {
-    let icon: HugeIcon
     let title: String
     let subtext: String
     let buttonTitle: String
@@ -67,7 +64,7 @@ private struct CommunityLinkRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            SettingsLabel(.huge(icon), title: title, subtext: subtext)
+            SettingsLabel(title: title, subtext: subtext, titleFont: .headline)
             Spacer()
             Button(buttonTitle) {
                 guard let destination = URL(string: url) else { return }

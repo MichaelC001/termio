@@ -439,9 +439,9 @@ private struct DefaultChatAgentRow: View {
             ForEach(chatAgents) { Text($0.displayName).tag($0.id) }
         } label: {
             SettingsLabel(
-                .huge(.bubbleChatAdd),
                 title: localized("Default agent"),
-                subtext: localized("The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.")
+                subtext: localized("The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with."),
+                titleFont: .headline
             )
         }
     }
