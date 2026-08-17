@@ -38,6 +38,7 @@ from the real front matter).
 | active | bug | [iOS libghostty "non-functional" panel + surface-teardown crash — fix journey](bug/ios-ghostty-renderer-panic-and-teardown-uaf.md) |
 | active | design | ["Issue tracker 集成：inspector Issues tab（GitHub / Linear，per-project provider）"](design/20260726-issue-tracker-integration.md) |
 | active | design | ["Remote-access design lessons: sleep reachability, stable domains, identity, monetization"](design/20260705-remote-access-lessons.md) |
+| active | design | [Handoff — collapsing the two session paths into termiod](handoff/20260817-one-path-refactor.md) |
 | active | design | [iOS libghostty "non-functional" panel + teardown UAF — root-cause findings](design/20260706-ios-ghostty-renderer-panic-investigation-findings.md) |
 | active | design | [iOS terminal input & attachments](design/20260703-ios-terminal-input.md) |
 | active | design | [iOS TestFlight runbook — build, upload, and drive ASC from the API](runbook/ios-testflight-runbook.md) |
@@ -103,11 +104,13 @@ from the real front matter).
 | draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](rfcs/fork-libghostty-spm.md) |
 | draft | rfc | [Loose terminals as first-class entities](design/20260713-loose-terminal-entity.md) |
 | draft | rfc | [Onboarding —— 首次启动体验设计](design/20260630-onboarding.md) |
+| draft | rfc | [Review — One path, local sessions run through termiod too](rfcs/one-path-local-through-termiod.review-claude.md) |
 | fixed | bug | [New terminal opens unfocused (hollow cursor, beeps until clicked)](bug/terminal-focus-loss-on-new-session-mount.md) |
 | fixed | bug | [Terminal loses focus after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
 | fixed | bug | [Terminal loses focus while the window stays key — sibling-render trigger](bug/terminal-focus-loss-on-sibling-render.md) |
 | in-progress | rfc | [可扩展 Agent —— 配置化定义 + 配置化 Hook](design/20260707-agent-extensibility.md) |
 | in-review | rfc | [Every machine is a device, every place you work is a project](rfcs/remote-to-device.md) |
+| in-review | rfc | [One path — local sessions run through termiod too](rfcs/one-path-local-through-termiod.md) |
 | in-review | rfc | [Split panes — Ghostty-style splits in the terminal column](rfcs/split-panes.md) |
 | resolved | bug | [iOS terminal fails "unauthorized" while the session list works (companion over tunnel)](bug/companion-terminal-unauthorized-over-tunnel.md) |
 <!-- END docs-index -->
