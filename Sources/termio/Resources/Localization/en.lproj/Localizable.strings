@@ -110,6 +110,8 @@
 	<string>Allow Keychain Access…</string>
 	<key>Allow Usage Access</key>
 	<string>Allow Usage Access</string>
+	<key>Also Running</key>
+	<string>Also Running</string>
 	<key>An older install points at %@. Update it to this version of Termio.</key>
 	<string>An older install points at %@. Update it to this version of Termio.</string>
 	<key>Anyone</key>
@@ -184,6 +186,8 @@
 	<string>Choose…</string>
 	<key>Clear</key>
 	<string>Clear</string>
+	<key>Clone to</key>
+	<string>Clone to</string>
 	<key>Close</key>
 	<string>Close</string>
 	<key>Close (Esc)</key>
@@ -232,6 +236,8 @@
 	<string>Connect GitHub</string>
 	<key>Connect iPhone</key>
 	<string>Connect iPhone</string>
+	<key>Connect to…</key>
+	<string>Connect to…</string>
 	<key>Connect your GitHub account to read this project’s issues and pull requests here.</key>
 	<string>Connect your GitHub account to read this project’s issues and pull requests here.</string>
 	<key>Connected</key>
@@ -364,6 +370,8 @@
 	<string>Enable</string>
 	<key>Enable Claude Code, Codex, Kimi, or Grok in the Agents tab to see their usage here.</key>
 	<string>Enable Claude Code, Codex, Kimi, or Grok in the Agents tab to see their usage here.</string>
+	<key>Ended</key>
+	<string>Ended</string>
 	<key>Enter Code on GitHub</key>
 	<string>Enter Code on GitHub</string>
 	<key>Enter a host from your ~/.ssh/config, or a user@host to connect to.</key>
@@ -558,6 +566,8 @@
 	<string>New SSH Connection</string>
 	<key>New SSH Connection…</key>
 	<string>New SSH Connection…</string>
+	<key>New Session</key>
+	<string>New Session</string>
 	<key>New Terminal</key>
 	<string>New Terminal</string>
 	<key>New Terminal at Home</key>
@@ -684,6 +694,8 @@
 	<string>Open in Editor</string>
 	<key>Open on GitHub</key>
 	<string>Open on GitHub</string>
+	<key>Opened outside Termio on this device</key>
+	<string>Opened outside Termio on this device</string>
 	<key>Padding: %lld pt</key>
 	<string>Padding: %lld pt</string>
 	<key>Pair your iPhone and remote access</key>
@@ -948,6 +960,8 @@
 	<string>Termio could not append to the repository’s .gitignore. Check its permissions and try again.</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio is open source — star the repo, report bugs, and request features.</string>
+	<key>Termio isn’t running sessions through termiod.</key>
+	<string>Termio isn’t running sessions through termiod.</string>
 	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Browse Themes installs one of 50 curated schemes, and any Ghostty-format file you drop into the Themes folder shows up here too.</key>
 	<string>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Browse Themes installs one of 50 curated schemes, and any Ghostty-format file you drop into the Themes folder shows up here too.</string>
 	<key>Test</key>
@@ -972,6 +986,10 @@
 	<string>The project and session list. Kept separate from the terminal font, and need not be monospaced.</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>
 	<string>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</string>
+	<key>The session host went away</key>
+	<string>The session host went away</string>
+	<key>The sidebar shows this device’s sessions</key>
+	<string>The sidebar shows this device’s sessions</string>
 	<key>The termio command-line tool, agent skill, and notifications</key>
 	<string>The termio command-line tool, agent skill, and notifications</string>
 	<key>The working tree is clean.</key>
@@ -984,6 +1002,8 @@
 	<string>Themes</string>
 	<key>Thicken glyphs</key>
 	<string>Thicken glyphs</string>
+	<key>This Mac</key>
+	<string>This Mac</string>
 	<key>This branch and the base branch share no commits.</key>
 	<string>This branch and the base branch share no commits.</string>
 	<key>This branch has no commits yet.</key>
@@ -996,6 +1016,8 @@
 	<string>This diff is too large to show here — open the file on GitHub.</string>
 	<key>This file is binary — open it on GitHub to view.</key>
 	<string>This file is binary — open it on GitHub to view.</string>
+	<key>This folder has no git “origin” remote to clone.</key>
+	<string>This folder has no git “origin” remote to clone.</string>
 	<key>This host sent a name the file tree can’t show.</key>
 	<string>This host sent a name the file tree can’t show.</string>
 	<key>This month</key>

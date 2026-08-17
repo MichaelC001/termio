@@ -110,6 +110,8 @@
 	<string>允许访问钥匙串…</string>
 	<key>Allow Usage Access</key>
 	<string>允许访问用量</string>
+	<key>Also Running</key>
+	<string>其他运行中</string>
 	<key>An older install points at %@. Update it to this version of Termio.</key>
 	<string>旧的安装指向 %@。请将其更新到此版本的 Termio。</string>
 	<key>Anyone</key>
@@ -184,6 +186,8 @@
 	<string>选取…</string>
 	<key>Clear</key>
 	<string>清除</string>
+	<key>Clone to</key>
+	<string>克隆到</string>
 	<key>Close</key>
 	<string>关闭</string>
 	<key>Close (Esc)</key>
@@ -232,6 +236,8 @@
 	<string>连接 GitHub</string>
 	<key>Connect iPhone</key>
 	<string>连接 iPhone</string>
+	<key>Connect to…</key>
+	<string>连接到…</string>
 	<key>Connect your GitHub account to read this project’s issues and pull requests here.</key>
 	<string>连接你的 GitHub 账户，即可在此查看该项目的 issues 和 PR。</string>
 	<key>Connected</key>
@@ -364,6 +370,8 @@
 	<string>启用</string>
 	<key>Enable Claude Code, Codex, Kimi, or Grok in the Agents tab to see their usage here.</key>
 	<string>在 Agents 标签页中启用 Claude Code、Codex、Kimi 或 Grok，即可在此查看其用量。</string>
+	<key>Ended</key>
+	<string>已结束</string>
 	<key>Enter Code on GitHub</key>
 	<string>在 GitHub 上输入代码</string>
 	<key>Enter a host from your ~/.ssh/config, or a user@host to connect to.</key>
@@ -558,6 +566,8 @@
 	<string>新建 SSH 连接</string>
 	<key>New SSH Connection…</key>
 	<string>新建 SSH 连接…</string>
+	<key>New Session</key>
+	<string>新建会话</string>
 	<key>New Terminal</key>
 	<string>新建终端</string>
 	<key>New Terminal at Home</key>
@@ -684,6 +694,8 @@
 	<string>在编辑器中打开</string>
 	<key>Open on GitHub</key>
 	<string>在 GitHub 上打开</string>
+	<key>Opened outside Termio on this device</key>
+	<string>在这台设备上由 Termio 之外打开</string>
 	<key>Padding: %lld pt</key>
 	<string>边距：%lld 点</string>
 	<key>Pair your iPhone and remote access</key>
@@ -948,6 +960,8 @@
 	<string>Termio 无法将内容追加到该仓库的 .gitignore。请检查其权限后重试。</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio 是开源软件：欢迎给仓库加星标、报告 bug 和提出功能请求。</string>
+	<key>Termio isn’t running sessions through termiod.</key>
+	<string>Termio 目前没有通过 termiod 运行会话。</string>
 	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Browse Themes installs one of 50 curated schemes, and any Ghostty-format file you drop into the Themes folder shows up here too.</key>
 	<string>Termio 会随 macOS 外观变化在两者间切换；将槽位留在默认值即可使用 Termio 自带的画布。“浏览主题”可以从 50 个精选配色中安装一个，你放进主题文件夹的 Ghostty 格式文件也会出现在这里。</string>
 	<key>Test</key>
@@ -972,6 +986,10 @@
 	<string>项目与会话列表。与终端字体分开设置，无需等宽字体。</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>
 	<string>~/.ssh 中的公钥。可拷贝一个粘贴到服务器的 authorized_keys——私钥永远不会被读取。</string>
+	<key>The session host went away</key>
+	<string>承载会话的进程消失了</string>
+	<key>The sidebar shows this device’s sessions</key>
+	<string>侧栏显示的是这台设备的会话</string>
 	<key>The termio command-line tool, agent skill, and notifications</key>
 	<string>termio 命令行工具、Agent 技能与通知</string>
 	<key>The working tree is clean.</key>
@@ -984,6 +1002,8 @@
 	<string>主题</string>
 	<key>Thicken glyphs</key>
 	<string>加粗字形</string>
+	<key>This Mac</key>
+	<string>本机</string>
 	<key>This branch and the base branch share no commits.</key>
 	<string>这个分支和基础分支没有共同的提交。</string>
 	<key>This branch has no commits yet.</key>
@@ -996,6 +1016,8 @@
 	<string>此差异太大，无法在此显示，请在 GitHub 上打开该文件。</string>
 	<key>This file is binary — open it on GitHub to view.</key>
 	<string>此文件为二进制文件，请在 GitHub 上打开查看。</string>
+	<key>This folder has no git “origin” remote to clone.</key>
+	<string>这个文件夹没有 git “origin” 远程，无法克隆。</string>
 	<key>This host sent a name the file tree can’t show.</key>
 	<string>该主机返回了文件树无法显示的名称。</string>
 	<key>This month</key>
