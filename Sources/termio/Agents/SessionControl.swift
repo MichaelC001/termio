@@ -43,9 +43,15 @@ struct ControlRequest: Decodable {
     /// sends false — the payload is itself the keypress a prompt is waiting on
     /// (a bare `t` at a trust gate), not a line to submit. Absent means submit.
     let enter: Bool?
+    /// `send`: named keys to press after the text, in order — `--key escape`,
+    /// `--key ctrl-c`. A key is not text: its bytes depend on the mode the program
+    /// negotiated (`ESC [ A` vs `ESC O A` for Up), so only Ghostty's key encoder can
+    /// produce them, and hand-writing them into `text` is right by luck at best.
+    /// See `SessionKeyPress`.
+    let keys: [String]?
 
     private enum CodingKeys: String, CodingKey {
-        case op, format, target, text, lines, agent, snapshot, wait, title, enter
+        case op, format, target, text, lines, agent, snapshot, wait, title, enter, keys
         case callerSession = "caller_session"
         case callerCwd = "caller_cwd"
         case timeoutMs = "timeout_ms"
@@ -53,7 +59,11 @@ struct ControlRequest: Decodable {
 
     var wantsJSON: Bool { format == "json" }
     var wantsWait: Bool { wait == true }
-    var wantsEnter: Bool { enter != false }
+    /// Naming a key suppresses the implicit Return as surely as `--no-enter` does:
+    /// the caller is being explicit about which keys to press, and appending one
+    /// they did not ask for would submit a menu they meant to escape.
+    var wantsEnter: Bool { enter != false && namedKeys.isEmpty }
+    var namedKeys: [String] { keys ?? [] }
 }
 
 /// Deadline-bounded reads and writes for the control connections.
