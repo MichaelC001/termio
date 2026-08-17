@@ -111,6 +111,18 @@ final class TunnelManager: ObservableObject {
             guard self != .custom else { return nil }
             return spec.map { "\($0.binaryName) \($0.arguments.joined(separator: " "))" }
         }
+
+        /// Where tunelo keeps the Ed25519 key its stable subdomain is derived from.
+        /// Channel-scoped, so the dev build cannot claim the release build's name.
+        /// tunelo creates the file (0600) and any missing parent directory itself.
+        ///
+        /// Deliberately not part of `spec.arguments`: the flag is only appended once
+        /// the resolved binary is known to understand it, and `reapPattern` stays the
+        /// short port-scoped prefix it was.
+        static var tuneloIdentityPath: String {
+            AppChannel.supportDirectory
+                .appendingPathComponent("tunelo-identity.key", isDirectory: false).path
+        }
     }
 
     /// One provider's full recipe. See `Provider.spec`.
@@ -240,15 +252,71 @@ final class TunnelManager: ObservableObject {
             }
             // The user may have flipped the picker while the download ran.
             guard self.provider == target, let binary else { return }
-            spawn(binary, for: target)
+            // Off the main actor: the probe execs the binary once per install.
+            let arguments = await Task.detached {
+                Self.launchArguments(for: target, binary: binary)
+            }.value
+            guard self.provider == target else { return }
+            spawn(binary, for: target, arguments: arguments)
         }
     }
 
-    private func spawn(_ binary: URL, for provider: Provider) {
+    /// A provider's argv, plus anything that depends on what the resolved binary
+    /// actually supports.
+    ///
+    /// tunelo only learned `--identity` (and the stable subdomain it implies) in
+    /// 0.3.0, and binary discovery deliberately prefers a user-managed install —
+    /// so a brew or cargo copy from before that release is a live possibility.
+    /// Handing an unknown flag to it would abort the tunnel at launch with a usage
+    /// error; asking first degrades to the old random-name behaviour instead.
+    nonisolated private static func launchArguments(for provider: Provider, binary: URL) -> [String] {
+        guard let spec = provider.spec else { return [] }
+        guard provider == .tunelo, supportsIdentityFlag(binary) else { return spec.arguments }
+        return spec.arguments + ["--identity", Provider.tuneloIdentityPath]
+    }
+
+    nonisolated private static let identityProbeLock = NSLock()
+    nonisolated(unsafe) private static var identityProbeCache: [String: Bool] = [:]
+
+    /// Does this binary accept `--identity`? Answered by its own `--help`, so a
+    /// version-string format change can't silently turn the flag off. Cached per
+    /// path: a tunnel restart loop must not exec the probe every time.
+    nonisolated private static func supportsIdentityFlag(_ binary: URL) -> Bool {
+        let key = binary.path
+        identityProbeLock.lock()
+        let cached = identityProbeCache[key]
+        identityProbeLock.unlock()
+        if let cached { return cached }
+
+        var supported = false
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = ["port", "--help"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+            let output = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            supported = String(decoding: output, as: UTF8.self).contains("--identity")
+        } catch {
+            Log.tunnel.notice("couldn't probe \(binary.lastPathComponent, privacy: .public) for --identity: \(error.localizedDescription, privacy: .public)")
+        }
+        identityProbeLock.lock()
+        identityProbeCache[key] = supported
+        identityProbeLock.unlock()
+        if !supported {
+            Log.tunnel.notice("\(binary.path, privacy: .public) predates --identity — the tunnel URL will change on every restart")
+        }
+        return supported
+    }
+
+    private func spawn(_ binary: URL, for provider: Provider, arguments: [String]) {
         guard let spec = provider.spec else { return }
         let process = Process()
         process.executableURL = binary
-        process.arguments = spec.arguments
+        process.arguments = arguments
         // CLIs print their public URL to the console (tunelo on stdout,
         // cloudflared/ngrok inside a stderr/stdout banner); one merged pipe
         // catches either.
