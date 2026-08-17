@@ -39,9 +39,13 @@ struct ControlRequest: Decodable {
     /// Optional banner title for the `notify` op; defaults to the calling agent's
     /// name when absent.
     let title: String?
+    /// `send`/`answer`: whether to submit the text with a Return. `--no-enter`
+    /// sends false — the payload is itself the keypress a prompt is waiting on
+    /// (a bare `t` at a trust gate), not a line to submit. Absent means submit.
+    let enter: Bool?
 
     private enum CodingKeys: String, CodingKey {
-        case op, format, target, text, lines, agent, snapshot, wait, title
+        case op, format, target, text, lines, agent, snapshot, wait, title, enter
         case callerSession = "caller_session"
         case callerCwd = "caller_cwd"
         case timeoutMs = "timeout_ms"
@@ -49,6 +53,7 @@ struct ControlRequest: Decodable {
 
     var wantsJSON: Bool { format == "json" }
     var wantsWait: Bool { wait == true }
+    var wantsEnter: Bool { enter != false }
 }
 
 /// A local Unix-domain socket the `termio sessions` CLI connects to. Unlike
