@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import TermioShared
 import UIKit
 
@@ -39,6 +40,9 @@ final class CompanionTransport: NSObject {
     private var isConnected = false
     private var policy = ReconnectPolicy()
     private var foregroundObserver: NSObjectProtocol?
+    private var pathMonitor: NWPathMonitor?
+    private var lastPathStatus: NWPath.Status?
+    private var pingTimer: Timer?
     /// Only touched on the delegate queue (see `didOpen`).
     private var everConnected = false
     /// Last grid the terminal reported, re-sent on every (re)connect and on
@@ -88,6 +92,8 @@ final class CompanionTransport: NSObject {
         policy.reset()
         notify(.connecting)
         connect()
+        startPathMonitor()
+        startPingTimer()
         if foregroundObserver == nil {
             foregroundObserver = NotificationCenter.default.addObserver(
                 forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
@@ -161,10 +167,61 @@ final class CompanionTransport: NSObject {
         isConnected = false
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        lastPathStatus = nil
+        pingTimer?.invalidate()
+        pingTimer = nil
         if let observer = foregroundObserver {
             NotificationCenter.default.removeObserver(observer)
             foregroundObserver = nil
         }
+    }
+
+    /// Reconnect the instant the network path comes back (Wi-Fi rejoin, cellular
+    /// handoff, VPN toggle) instead of sitting out a scheduled backoff. Without
+    /// this the terminal stays dead for up to the 30s heartbeat after a network
+    /// switch that the phone itself already knows about.
+    private func startPathMonitor() {
+        guard pathMonitor == nil else { return }
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self, !stopped else { return }
+            let cameUp = path.status == .satisfied
+                && lastPathStatus != nil && lastPathStatus != .satisfied
+            lastPathStatus = path.status
+            guard cameUp, !isConnected else { return }
+            policy.reset()
+            connect()
+        }
+        monitor.start(queue: .main)
+        pathMonitor = monitor
+    }
+
+    /// A half-open socket (the Mac slept, the network switched under us, the
+    /// tunnel dropped the hop) never fails `receive` — the read just waits
+    /// forever on a connection nothing will ever answer, and the session looks
+    /// frozen rather than disconnected. A periodic ping is what notices, and
+    /// its failure forces the reconnect loop.
+    private func startPingTimer() {
+        pingTimer?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            guard let self, !stopped, isConnected, let task else { return }
+            task.sendPing { [weak self] error in
+                guard error != nil else { return }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !stopped, task === self.task, isConnected else { return }
+                    isConnected = false
+                    notify(.reconnecting)
+                    policy.reset()
+                    connect()
+                }
+            }
+        }
+        // Common mode, or scrolling the scrollback holds the probe off for as
+        // long as the finger is down.
+        RunLoop.main.add(timer, forMode: .common)
+        pingTimer = timer
     }
 
     private func connect() {

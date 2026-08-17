@@ -92,6 +92,69 @@ final class MobileAccess: ObservableObject {
     }
 }
 
+/// Which companion links are still answering, by the only signal that crosses
+/// the whole path: the pong to the server's own ping.
+///
+/// A phone that leaves coverage or sleeps mid-session never sends a FIN, so its
+/// socket stays on the books for minutes — and that is not a harmless ghost,
+/// because the bridge on it still owns the PTY's winsize, leaving the Mac's own
+/// window sized to a phone that is gone. Nothing underneath reports this in
+/// time: TCP keepalive only proves the *next hop* answers, which over a tunnel
+/// is a daemon on this very machine.
+///
+/// A pure value with an injected clock, because this arithmetic is the whole
+/// decision to tear down a live session's bridge and deserves to be tested
+/// without a socket.
+struct LinkLiveness {
+    /// Two and a half missed pings. Under this a phone on a slow cellular hop
+    /// gets reaped mid-session; far over it, a dead phone keeps the winsize.
+    static let silenceLimit: TimeInterval = 50
+    /// A sweep this far behind the previous one means nobody was *reading*
+    /// pongs for the gap: the receive handlers hop through the main queue, so a
+    /// block there leaves proof of life sitting in a backlog rather than
+    /// missing. The silence is ours, not the phones'.
+    ///
+    /// Measured sweep-to-sweep, which makes `silentLinks` a per-tick call by
+    /// contract — sweep it on a cadence slower than this and every round looks
+    /// like a stall, so nothing is ever reaped.
+    static let stallGrace: TimeInterval = 5
+
+    private var lastHeard: [ObjectIdentifier: TimeInterval] = [:]
+    private var sweptAt: TimeInterval?
+
+    /// Any frame is proof of life, and a pong counts: an attached phone that is
+    /// only reading sends nothing else for minutes at a stretch.
+    mutating func heard(_ id: ObjectIdentifier, at now: TimeInterval) {
+        lastHeard[id] = now
+    }
+
+    mutating func forget(_ id: ObjectIdentifier) {
+        lastHeard[id] = nil
+    }
+
+    mutating func forgetAll() {
+        lastHeard.removeAll()
+        sweptAt = nil
+    }
+
+    /// The links that have answered nothing for `silenceLimit`, and how long
+    /// each has been silent. Uses a monotonic clock (`systemUptime`), so a
+    /// clock change can never reap a healthy phone.
+    mutating func silentLinks(at now: TimeInterval) -> [(id: ObjectIdentifier, silence: TimeInterval)] {
+        defer { sweptAt = now }
+        // A late sweep — the main runloop was blocked — means the pongs went
+        // unheard rather than unanswered. Forgive the gap and restart every
+        // clock, or one beachball reaps every phone at once.
+        if let sweptAt, now - sweptAt > Self.stallGrace {
+            for id in lastHeard.keys { lastHeard[id] = now }
+            return []
+        }
+        return lastHeard.compactMap { id, heard in
+            now - heard > Self.silenceLimit ? (id, now - heard) : nil
+        }
+    }
+}
+
 /// Serves the iOS companion app over WebSockets on one port: every connection
 /// starts as a roster subscriber (the same project/session tree the sidebar
 /// shows, pushed on connect and on change); a connection that sends an
@@ -133,6 +196,7 @@ final class CompanionServer {
     private var lastRoster: CompanionRoster?
     private var pollTimer: Timer?
     private var ticks = 0
+    private var liveness = LinkLiveness()
 
     /// The one port everything agrees on: the app serves here, dev-run.sh
     /// points the phone here, and the Settings ▸ Mobile QR encodes it. A dev-channel
@@ -207,13 +271,18 @@ final class CompanionServer {
         broadcastIfChanged()
         ticks += 1
         // Active pings (autoReplyPing only answers the peer's): keeps NAT /
-        // proxy mappings warm and surfaces half-dead links within ~20s.
+        // proxy mappings warm, and the pong that answers is the proof of life
+        // the sweep below reads.
         if ticks % 20 == 0 {
             let meta = NWProtocolWebSocket.Metadata(opcode: .ping)
             let context = NWConnection.ContentContext(identifier: "ping", metadata: [meta])
             for connection in connectionByID.values {
                 connection.send(content: Data("hb".utf8), contentContext: context, completion: .idempotent)
             }
+        }
+        for (id, silence) in liveness.silentLinks(at: ProcessInfo.processInfo.systemUptime) {
+            Log.companion.notice("reaping silent phone link after \(Int(silence), privacy: .public)s")
+            drop(id)
         }
     }
 
@@ -229,12 +298,14 @@ final class CompanionServer {
         connectionByID.removeAll()
         connections.removeAll()
         authenticatedWireByConnection.removeAll()
+        liveness.forgetAll()
     }
 
     private func accept(_ connection: NWConnection) {
         let id = ObjectIdentifier(connection)
         connections.insert(id)
         connectionByID[id] = connection
+        liveness.heard(id, at: ProcessInfo.processInfo.systemUptime)
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .cancelled, .failed:
@@ -272,6 +343,7 @@ final class CompanionServer {
         connectionByID[id] = nil
         connections.remove(id)
         authenticatedWireByConnection[id] = nil
+        liveness.forget(id)
     }
 
     private func receive(on connection: NWConnection) {
@@ -279,6 +351,10 @@ final class CompanionServer {
             if error != nil {
                 Task { @MainActor in self?.drop(ObjectIdentifier(connection)) }
                 return
+            }
+            let heardAt = ProcessInfo.processInfo.systemUptime
+            Task { @MainActor in
+                self?.liveness.heard(ObjectIdentifier(connection), at: heardAt)
             }
             let meta = context?.protocolMetadata(definition: NWProtocolWebSocket.definition)
                 as? NWProtocolWebSocket.Metadata
