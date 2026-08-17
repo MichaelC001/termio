@@ -44,9 +44,21 @@ id-prefix works too).
   single-line payload arrives verbatim, exactly as typed; a multi-line one is
   wrapped in bracketed paste so a TUI takes it as one block instead of
   submitting each line as its own turn. Add `--no-enter` when a gate wants a
-  bare keypress and no Return — a lone `t` to trust a folder, or `$'\e'` to
-  back out. `$'…'` is bash/zsh ANSI-C quoting and does nothing in plain `sh`;
-  from a POSIX shell use `"$(printf '\033')"` instead.
+  bare keypress and no Return — the lone `t` that trusts a folder.
+- `termio sessions send <link> --key <name>` — press a named key in that
+  session: `--key escape` to back out of a menu, `--key up --key enter` to
+  rerun its last entry, `--key ctrl-c` to interrupt. Repeatable and pressed
+  in the order named, after any text. Never hand-write escape bytes into the
+  text instead: a key's bytes depend on the mode the program negotiated (Up
+  is `ESC[A` in normal mode, `ESC O A` in application mode), and only the
+  terminal's key encoder knows which. Any `--key` suppresses the implicit
+  Return — name `--key enter` when you want one. Names follow kitty and tmux,
+  both spellings accepted: `enter`, `escape`, `tab`, `space`, `backspace`,
+  `delete`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`,
+  `pagedown`, `f1`–`f12`, single characters, and chords prefixed
+  `ctrl-`/`c-` or `shift-`/`s-`. Those two are the modifiers a program sees;
+  for a meta chord press ESC first (`--key escape --key b`). An unknown name
+  fails with the list; it is never sent as text.
 - `termio sessions read <link> [--lines N]` — the session's current
   screen. The result channel for `run` sessions (a plain command has no
   transcript; its screen is the result) — for agent replies keep using the

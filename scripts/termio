@@ -48,6 +48,9 @@ options:
   --timeout <ms>   cap for --wait (default 300000, clamped 1000–600000); implies --wait
   --no-enter       for `send`: deliver the text as-is, with no Return after it —
                    the way to answer a gate that wants a bare keypress
+  --key <name>     for `send`: press a named key (escape, up, tab, ctrl-c, f2, …)
+                   after the text; repeatable, in order. Any --key suppresses the
+                   implicit Return
   --lines <n>      for `read`: keep only the last n screen rows
   --state <s,…>    for `watch`: comma-separated states to report (working, idle, done,
                    needs-you, stalled; default done,needs-you)
@@ -144,7 +147,8 @@ the last N rows. Scrollback is not included.
 EOF
             ;;
         send|answer) cat <<'EOF'
-usage: termio sessions send <session> "<text>" [--no-enter] [--wait [--timeout <ms>]] [--json]
+usage: termio sessions send <session> "<text>" [--key <name>]... [--no-enter]
+                            [--wait [--timeout <ms>]] [--json]
 
 Type text into an existing session and submit it with a real Return
 keypress — a prompt to drive it, or a menu choice ("1", "yes") to answer a
@@ -152,8 +156,24 @@ permission prompt. Addresses come from `termio sessions list` or a `spawn`
 reply — a termio://session link or bare id, copied verbatim.
 
 The text reaches the terminal verbatim, so --no-enter (no Return after it)
-delivers a bare keypress: the lone `t` a trust gate waits for, or an escape
-sequence written by the shell, e.g. `send <session> $'\e' --no-enter`.
+delivers a bare keypress: the lone `t` a trust gate waits for.
+
+--key presses a NAMED key, repeatable and in order, after the text:
+`send <session> --key escape` to back out of a menu, `--key up --key enter`
+to rerun the last entry. Use it instead of writing escape bytes yourself —
+a key's bytes depend on the mode the program negotiated (Up is ESC[A in
+normal mode, ESC O A in application mode), so only the terminal's own key
+encoder can get them right. Any --key suppresses the implicit Return; name
+`--key enter` when you want one. An unknown name is an error, never text.
+
+Key names follow kitty and tmux, both spellings accepted: enter, escape,
+tab, space, backspace, delete, insert, up, down, left, right, home, end,
+pageup, pagedown, f1–f12, and single characters — prefixed with ctrl-/c-
+or shift-/s- for chords (ctrl-c, c-c, shift-tab). Ctrl and Shift are the
+modifiers a program sees: macOS spends Option composing text (option-b is
+∫, not meta-b) and Command drives the app, so those chords are refused
+rather than silently dropped. A meta chord is ESC then the key:
+`--key escape --key b`.
 
 --wait holds the reply until the turn the text kicked off settles (or
 --timeout ms elapse; default 300000, clamped 1000–600000). The reply then
@@ -326,6 +346,7 @@ sessions() {
     states=""
     no_snapshot=0
     no_enter=0
+    keys_json=""
     wait=false
     timeout_ms=""
     lines=""
@@ -335,6 +356,13 @@ sessions() {
             --json) format=json ;;
             --no-snapshot) no_snapshot=1 ;;
             --no-enter) no_enter=1 ;;
+            --key)
+                [ $# -ge 2 ] || { echo "termio: --key needs a key name (e.g. escape, ctrl-c)" >&2; exit 1; }
+                # Order matters — the app presses them in the order named — so they
+                # accumulate into a JSON array rather than a set. The name itself is
+                # validated by the app, the one place that knows the vocabulary.
+                keys_json="${keys_json:+$keys_json,}\"$(json_escape "$2")\""
+                shift ;;
             --wait) wait=true ;;
             --timeout)
                 [ $# -ge 2 ] || { echo "termio: --timeout needs a value in ms" >&2; exit 1; }
@@ -441,6 +469,16 @@ sessions() {
             *) echo "termio: --no-enter applies to send only" >&2; exit 1 ;;
         esac
         extra_json="${extra_json:+$extra_json,}\"enter\":false"
+    fi
+
+    # --key, like --no-enter, only reads on a send to an existing session: a key is
+    # pressed against a TUI that is already drawn, and a booting agent has none.
+    if [ -n "$keys_json" ]; then
+        case "$op" in
+            send|answer) [ -n "$targets" ] || { echo "termio: --key needs a session to press it in" >&2; exit 1; } ;;
+            *) echo "termio: --key applies to send only" >&2; exit 1 ;;
+        esac
+        extra_json="${extra_json:+$extra_json,}\"keys\":[$keys_json]"
     fi
 
     if [ "$op" = watch ]; then

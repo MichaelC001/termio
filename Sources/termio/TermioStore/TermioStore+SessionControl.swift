@@ -219,11 +219,37 @@ extension TermioStore {
     }
 
     private func sendText(_ request: ControlRequest, in project: Project) async -> Data {
-        guard let payload = request.text, !payload.isEmpty else {
-            return controlError(request, "no_text", "\(request.op) needs text to send.")
+        let payload = request.text ?? ""
+        // Named keys resolve before anything is typed: a bad name must cost the
+        // caller an error, never half a delivery. An unknown name is never sent as
+        // literal text — silently typing "escpae" into an agent is the failure mode
+        // this whole option exists to remove.
+        var keys: [SessionKeyPress] = []
+        for name in request.namedKeys {
+            guard let press = SessionKeyPress.parse(name) else {
+                return controlError(request, "bad_key",
+                    "Unknown key '\(name)'. Valid keys: \(SessionKeyPress.vocabulary).")
+            }
+            // A key this terminal cannot actually send is refused for the same
+            // reason a misspelled one is: the alternative is a call that reports
+            // success and delivers nothing.
+            if let reason = press.undeliverableReason {
+                return controlError(request, "bad_key", "'\(name)' can't be pressed. \(reason)")
+            }
+            keys.append(press)
+        }
+        guard !payload.isEmpty || !keys.isEmpty else {
+            return controlError(request, "no_text", "\(request.op) needs text or a --key to send.")
         }
         let token = request.target?.trimmingCharacters(in: .whitespaces) ?? ""
         if token.isEmpty {
+            // A spawn types its prompt into an agent that is still booting; there is
+            // no menu there to answer, and no way to time a keypress against a TUI
+            // that hasn't drawn yet. Keys address a session that already exists.
+            guard keys.isEmpty else {
+                return controlError(request, "no_target",
+                    "--key needs a session to press it in — run `termio sessions list`.")
+            }
             // A bare `send` addresses nobody: it starts a fresh agent session for
             // the prompt. `answer` has no such reading — a menu choice without its
             // session is a mistake, never a spawn.
@@ -236,7 +262,7 @@ extension TermioStore {
         switch resolveTarget(token, in: project) {
         case .found(let session):
             let state = surface(for: session, in: project)
-            return await deliver(payload, to: session, state: state, request: request)
+            return await deliver(payload, keys: keys, to: session, state: state, request: request)
         case .notFound:
             return controlError(request, "not_found", targetNotFoundMessage(request.target))
         case .ambiguous:
@@ -354,10 +380,10 @@ extension TermioStore {
     /// + a cursor to read the response from); with it, the call blocks until the
     /// turn settles and reports the outcome plus the transcript range it landed in.
     private func deliver(
-        _ payload: String, to session: Session, state: TerminalViewState,
-        request: ControlRequest
+        _ payload: String, keys: [SessionKeyPress] = [], to session: Session,
+        state: TerminalViewState, request: ControlRequest
     ) async -> Data {
-        guard await performDelivery(payload, to: session, state: state,
+        guard await performDelivery(payload, keys: keys, to: session, state: state,
                                     submit: request.wantsEnter) else {
             return controlError(request, "not_live",
                 "\(displayTitle(for: session)) has no live terminal yet — open it once in Termio.")
@@ -375,9 +401,12 @@ extension TermioStore {
     /// the existing-sibling reply path and the fresh-spawn detached delivery.
     /// `submit` is false for `--no-enter`, where the payload *is* the keypress a
     /// prompt is waiting on and a Return would answer a second question.
+    /// `keys` are the `--key` presses, fired after the text in the order named;
+    /// naming any of them also turns `submit` off, so nothing is pressed that the
+    /// caller did not ask for.
     private func performDelivery(
-        _ payload: String, to session: Session, state: TerminalViewState,
-        submit: Bool = true
+        _ payload: String, keys: [SessionKeyPress] = [], to session: Session,
+        state: TerminalViewState, submit: Bool = true
     ) async -> Bool {
         // The libghostty surface attaches lazily on the pane's first render, so a
         // session never shown in the UI has no surface yet. A background mount adds
@@ -402,7 +431,15 @@ extension TermioStore {
         // submit). `ghostty_surface_key` drives the surface directly, with no focus
         // or first-responder needed; this is exactly how Ghostty's own AppleScript
         // `send key` submits Enter.
-        Self.writeRaw(payload, to: state)
+        if !payload.isEmpty { Self.writeRaw(payload, to: state) }
+        // Named keys ride the same encoder as the Return above, for the same reason:
+        // only Ghostty knows whether this program wants `ESC [ A` or `ESC O A`. They
+        // fire in the order named, each after the same settle the submit takes, so a
+        // TUI that redraws between keystrokes keeps up.
+        for press in keys {
+            try? await Task.sleep(for: .milliseconds(40))
+            Self.pressKey(press, on: surfaceHandle)
+        }
         guard submit else { return true }
         try? await Task.sleep(for: .milliseconds(40))
         Self.pressReturn(on: surfaceHandle)
@@ -697,21 +734,53 @@ extension TermioStore {
     }
 
     /// Sends a Return key press (and release) to the surface — the submit a user makes
-    /// by pressing Enter. `keycode` is the native macOS virtual key for Return
-    /// (`kVK_Return`, 0x24) and `text` is left nil so Ghostty's own key encoder emits
-    /// the correct bytes for whatever keyboard mode the program negotiated.
+    /// by pressing Enter, and the shape every `--key` press takes.
     private static func pressReturn(on surface: ghostty_surface_t) {
+        pressKey(.return, on: surface)
+    }
+
+    /// Sends one key press (and release) to the surface. `keycode` is the native
+    /// macOS virtual key, exactly what an `NSEvent` would carry, and `text` is nil
+    /// for every special key and chord so Ghostty's own key encoder emits the
+    /// correct bytes for whatever keyboard mode the program negotiated — the whole
+    /// point of naming a key instead of hand-writing its escape sequence.
+    /// `ghostty_surface_key` drives the surface directly, with no focus or
+    /// first-responder needed.
+    private static func pressKey(_ press: SessionKeyPress, on surface: ghostty_surface_t) {
+        var mods = GHOSTTY_MODS_NONE.rawValue
+        if press.modifiers.contains(.shift) { mods |= GHOSTTY_MODS_SHIFT.rawValue }
+        if press.modifiers.contains(.control) { mods |= GHOSTTY_MODS_CTRL.rawValue }
+        if press.modifiers.contains(.option) { mods |= GHOSTTY_MODS_ALT.rawValue }
+        if press.modifiers.contains(.command) { mods |= GHOSTTY_MODS_SUPER.rawValue }
+
         var event = ghostty_input_key_s()
         event.action = GHOSTTY_ACTION_PRESS
-        event.mods = GHOSTTY_MODS_NONE
-        event.consumed_mods = GHOSTTY_MODS_NONE
-        event.keycode = 0x24
-        event.text = nil
-        event.unshifted_codepoint = 0
+        event.mods = ghostty_input_mods_e(mods)
+        // Consumed modifiers are the ones the *keyboard layout* already spent
+        // producing text, which the encoder must then not encode a second time. A
+        // real NSEvent learns them from macOS; a synthetic press knows them exactly,
+        // because it decided the text itself: Shift, when it shifted a character,
+        // and nothing else. Marking Alt consumed here would eat the ESC prefix that
+        // makes `--key alt-b` a meta chord at all.
+        event.consumed_mods = ghostty_input_mods_e(
+            press.text == nil ? GHOSTTY_MODS_NONE.rawValue : (mods & GHOSTTY_MODS_SHIFT.rawValue))
+        event.keycode = press.keycode
+        event.unshifted_codepoint = press.unshiftedCodepoint
         event.composing = false
-        _ = ghostty_surface_key(surface, event)
-        event.action = GHOSTTY_ACTION_RELEASE
-        _ = ghostty_surface_key(surface, event)
+        // `text` must stay alive for the duration of the C call, so the press and
+        // release both happen inside the borrow.
+        let send: (UnsafePointer<CChar>?) -> Void = { text in
+            event.text = text
+            event.action = GHOSTTY_ACTION_PRESS
+            _ = ghostty_surface_key(surface, event)
+            event.action = GHOSTTY_ACTION_RELEASE
+            _ = ghostty_surface_key(surface, event)
+        }
+        if let text = press.text {
+            text.withCString { send($0) }
+        } else {
+            send(nil)
+        }
     }
 
     /// The success reply for a send/answer. Beyond confirming delivery, it hands back
