@@ -85,7 +85,9 @@ enum PiSession {
         // Pi derives the folder from its *process* cwd, whose symlinks the kernel
         // resolved at chdir — canonicalize the same way (`/tmp` → `/private/tmp`).
         var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
-        let resolved = realpath(cwd, &buffer) != nil ? String(cString: buffer) : cwd
+        let resolved = realpath(cwd, &buffer) != nil
+            ? String(decoding: buffer.prefix { $0 != 0 }.map(UInt8.init(bitPattern:)), as: UTF8.self)
+            : cwd
         var encoded = resolved
         if encoded.hasPrefix("/") { encoded.removeFirst() }
         encoded = "--\(String(encoded.map { "/\\:".contains($0) ? "-" : $0 }))--"

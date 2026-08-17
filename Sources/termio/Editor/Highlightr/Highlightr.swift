@@ -15,6 +15,12 @@
 //   - startup theme "pojoaque" → "xcode" (only the two xcode themes ship)
 //   - Swift 6: `safeMainSync` boxes its closure to cross onto the main queue —
 //     the call is synchronous, so the captures never outlive the caller
+//   - two never-read initializations discarded with `_ =` to quiet the build
+//
+//  The `NSScanner` deprecations in `processHTMLString` are left as upstream
+//  wrote them: `scanLocation` is a UTF-16 offset the parser does arithmetic on,
+//  and the modern `String.Index` API is not a mechanical swap. Silent
+//  mistranslation there corrupts highlighting for no user-visible gain.
 //
 
 import Foundation
@@ -61,7 +67,7 @@ open class Highlightr
     public init?(highlightPath: String? = nil)
     {
         guard let jsContext = JSContext() else { return nil }
-        let window = JSValue(newObjectIn: jsContext)
+        _ = JSValue(newObjectIn: jsContext)
 
         let bundle = Bundle.termioResources
         self.bundle = bundle
@@ -71,7 +77,7 @@ open class Highlightr
         }
         
         guard let hgJs = try? String.init(contentsOfFile: hgPath) else { return nil }
-        let value = jsContext.evaluateScript(hgJs)
+        _ = jsContext.evaluateScript(hgJs)
         guard let hljs = jsContext.objectForKeyedSubscript("hljs") else { return nil }
 
         self.hljs = hljs

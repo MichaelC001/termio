@@ -207,9 +207,10 @@ final class PTYProcess: @unchecked Sendable {
         pid = childPID
 
         // Reap the child asynchronously to fire onExit + observers.
+        let reapPID = childPID
         DispatchQueue.global().async { [weak self] in
             var status: Int32 = 0
-            waitpid(childPID, &status, 0)
+            waitpid(reapPID, &status, 0)
             self?.markChildExited()
             let code = (status & 0x7F) == 0 ? (status >> 8) & 0xFF : 128 + (status & 0x7F)
             DispatchQueue.main.async {
@@ -336,11 +337,12 @@ final class PTYProcess: @unchecked Sendable {
             // mouse reporting, or its scroll input goes nowhere.
             var replay = replayCap.map { Data(replayBuffer.suffix($0)) } ?? replayBuffer
             replay.append(modeCatchUpPreambleLocked())
-            if !replay.isEmpty {
+            let payload = replay
+            if !payload.isEmpty {
                 if let queue {
-                    queue.async { handler(replay) }
+                    queue.async { handler(payload) }
                 } else {
-                    handler(replay)
+                    handler(payload)
                 }
             }
         }
@@ -829,9 +831,9 @@ final class PTYProcess: @unchecked Sendable {
         let skip = childExited || childExecutable != nil
         lock.unlock()
         guard !skip, pid > 0 else { return }
-        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        var buffer = [UInt8](repeating: 0, count: 4 * Int(MAXPATHLEN))
         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return }
-        let path = String(cString: buffer)
+        let path = String(decoding: buffer.prefix { $0 != 0 }, as: UTF8.self)
         guard path != spawnExecutablePath else { return }
         var info = stat()
         let inode: ino_t? = stat(path, &info) == 0 ? info.st_ino : nil

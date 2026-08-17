@@ -354,6 +354,7 @@ private struct NativeSearchField: NSViewRepresentable {
         }
     }
 
+    @MainActor
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: NativeSearchField
         var lastFocusRequest = -1
