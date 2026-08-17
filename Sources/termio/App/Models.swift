@@ -113,10 +113,10 @@ struct Project: Identifiable, Hashable, Codable {
     /// Where this project lives on each **device** it has been cloned to, keyed
     /// by that device's `host_id` → absolute remote path.
     ///
-    /// This is what makes "New Remote Terminal" from a *project* row mean "this
-    /// repo, over there" rather than "a shell in the remote `$HOME`". The local
-    /// `path` is meaningless on the remote box, so the correspondence has to be
-    /// recorded when `Clone on Remote…` establishes it.
+    /// This is what makes "New Terminal ▸ <device>" from a *project* row mean "this
+    /// repo, over there" rather than "a shell in that device's `$HOME`". The local
+    /// `path` is meaningless on the other box, so the correspondence has to be
+    /// recorded when `Clone to <device>…` establishes it.
     ///
     /// Keyed by device rather than by SSH alias because one machine commonly
     /// answers to several aliases (`vps-lan`, `vps-wan`, a tailnet name): keyed by
@@ -321,7 +321,7 @@ struct Session: Identifiable, Hashable, Codable {
     var deviceID: String?
 
     /// The remote working directory a `termiodRemoteHost` session spawns its shell
-    /// in — set by "Clone on Remote…" to the freshly cloned directory (`~/<repo>`)
+    /// in — set by "Clone to <device>…" to the freshly cloned directory (`~/<repo>`)
     /// so the terminal opens straight inside it. `nil` (the common case) lets the
     /// remote login shell start at its own `$HOME`. Ignored when `termiodRemoteHost`
     /// is nil.

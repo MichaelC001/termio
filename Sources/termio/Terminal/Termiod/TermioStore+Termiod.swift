@@ -336,7 +336,7 @@ extension TermioStore {
     /// otherwise the first `termiod stdio` over SSH would fail and the pane would
     /// sit dead.
     ///
-    /// `cwd` (used by "Clone on Remote…") is the remote directory the shell spawns
+    /// `cwd` (used by "Clone to <device>…") is the remote directory the shell spawns
     /// in; `title` overrides the sidebar label (the host alias by default, or a
     /// repo name for a clone).
     func addRemoteTerminal(
@@ -367,7 +367,7 @@ extension TermioStore {
                 var title = title
                 // Opened from a project row: the user means "this repo, on that
                 // machine". The local path doesn't exist over there, so the only
-                // honest answer is the checkout `Clone on Remote…` recorded.
+                // honest answer is the checkout `Clone to <device>…` recorded.
                 // Without one, say so rather than silently dropping a `$HOME`
                 // shell into the Terminals bucket — that mismatch between where
                 // you clicked and what you got is exactly the confusion this
@@ -388,14 +388,14 @@ extension TermioStore {
         }
     }
 
-    /// The project has never been cloned to this host, so there is nothing to
+    /// The project has never been cloned to this device, so there is nothing to
     /// `cd` into. Name the action that would fix it.
     private func presentRemoteCheckoutMissing(host: String, project: String) {
         let alert = NSAlert()
         alert.messageText = "\(project) isn't on \(host) yet"
         alert.informativeText =
-            "Use \"Clone on Remote… ▸ \(host)\" first. termio then remembers where the "
-            + "clone lives and opens future remote terminals inside it."
+            "Use \"Clone to \(host)…\" first. Termio then remembers where the "
+            + "clone lives and opens future terminals on \(host) inside it."
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.runModal()
@@ -605,7 +605,7 @@ extension TermioStore {
         alert.runModal()
     }
 
-    // MARK: - Clone on Remote
+    // MARK: - Clone to a device
 
     /// Clones a project's `origin` **onto** `host` (git clone runs on the remote,
     /// not an rsync from the Mac — decided with the user), then opens a remote

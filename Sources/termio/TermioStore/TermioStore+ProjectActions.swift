@@ -399,7 +399,7 @@ extension TermioStore {
     /// survives a rename and two sessions on the same box always land together.
     ///
     /// `remoteRoot` records where on that box the sessions work; the first caller to
-    /// name a real directory wins (a `Clone on Remote…` knows the checkout path, a
+    /// name a real directory wins (a `Clone to <device>…` knows the checkout path, a
     /// bare terminal only knows `~`), so opening a shell later never demotes a host
     /// that already points at a repo.
     @discardableResult

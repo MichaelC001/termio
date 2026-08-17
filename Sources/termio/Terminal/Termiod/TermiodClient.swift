@@ -48,8 +48,8 @@ enum Termiod {
     /// A dev/diagnostic host: which daemon `logTermiodRoster` inspects.
     ///
     /// It deliberately does **not** decide where sessions run. Host selection is
-    /// per-session (`Session.termiodRemoteHost`, set by the New Remote Terminal
-    /// picker and "Clone on Remote…"); when this was also a fallback it turned
+    /// per-session (`Session.termiodRemoteHost`, set by the New Terminal device
+    /// picker and "Clone to <device>…"); when this was also a fallback it turned
     /// every ordinary local terminal into a remote one.
     static let remoteHost: String? = {
         let host = ProcessInfo.processInfo.environment["TERMIO_TERMIOD_REMOTE"]

@@ -109,7 +109,7 @@ struct SidebarView: View {
     @State private var pinnedCollapsed = false
     /// Whether the "Projects" section is folded shut.
     @State private var projectsCollapsed = false
-    /// Whether the "Remote" section (the machines) is folded shut.
+    /// Whether the "Devices" section (the other machines) is folded shut.
     @State private var hostsCollapsed = false
 
     // Chrome colors borrowed from the selected terminal theme; `nil` keeps the
@@ -165,135 +165,142 @@ struct SidebarView: View {
         let hasTerminals = terminals.contains { !$0.sessions.isEmpty }
         let hasChats = chats.contains { !$0.sessions.isEmpty }
         let hasHosts = !hosts.isEmpty
-        return List {
-            // Nudge when agents are running but the status hooks are off — without them
-            // the sidebar spinner stays dark. One tap enables (and reinstalls) them.
-            if !settings.agentHooksEnabled && store.isRunningAnyAgent {
-                AgentHooksOffBanner { settings.agentHooksEnabled = true }
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-            }
-            // The top "Pinned" working set, under its own section header: pinned projects
-            // as full blocks, then pinned worktrees as mini-blocks (header + their
-            // sessions), then pinned sessions as shortcut rows — each nested entry tagged
-            // with its origin breadcrumb. Nested items stay in the tree below too; only
-            // whole projects move up here. This curated working set sits at the very top —
-            // above the ephemeral Terminals/Chats funnels — because it's the items the user
-            // deliberately elevated (mirroring the iOS "Needs You" strip at the home top).
-            if hasPinned {
-                SidebarSectionHeader(
-                    title: localized("Pinned"),
-                    chrome: chrome,
-                    isCollapsed: pinnedCollapsed,
-                    isFirstSection: true,
-                    toggleCollapsed: {
-                        withAnimation(.easeInOut(duration: 0.18)) { pinnedCollapsed.toggle() }
+        return VStack(spacing: 0) {
+            List {
+                // Nudge when agents are running but the status hooks are off — without them
+                // the sidebar spinner stays dark. One tap enables (and reinstalls) them.
+                if !settings.agentHooksEnabled && store.isRunningAnyAgent {
+                    AgentHooksOffBanner { settings.agentHooksEnabled = true }
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
+                // The top "Pinned" working set, under its own section header: pinned projects
+                // as full blocks, then pinned worktrees as mini-blocks (header + their
+                // sessions), then pinned sessions as shortcut rows — each nested entry tagged
+                // with its origin breadcrumb. Nested items stay in the tree below too; only
+                // whole projects move up here. This curated working set sits at the very top —
+                // above the ephemeral Terminals/Chats funnels — because it's the items the user
+                // deliberately elevated (mirroring the iOS "Needs You" strip at the home top).
+                if hasPinned {
+                    SidebarSectionHeader(
+                        title: localized("Pinned"),
+                        chrome: chrome,
+                        isCollapsed: pinnedCollapsed,
+                        isFirstSection: true,
+                        toggleCollapsed: {
+                            withAnimation(.easeInOut(duration: 0.18)) { pinnedCollapsed.toggle() }
+                        }
+                    )
+                    if !pinnedCollapsed {
+                        ForEach(pinnedProjects) { projectBlock($0) }
+                        ForEach(pinnedWorktrees) { entry in
+                            pinnedWorktreeBlock(project: entry.project, worktree: entry.worktree)
+                        }
+                        ForEach(pinnedSessions) { entry in
+                            SessionRow(session: entry.session, chrome: chrome, leadingIndent: 16,
+                                       breadcrumb: breadcrumb(for: entry.session, in: entry.project))
+                        }
                     }
-                )
-                if !pinnedCollapsed {
-                    ForEach(pinnedProjects) { projectBlock($0) }
-                    ForEach(pinnedWorktrees) { entry in
-                        pinnedWorktreeBlock(project: entry.project, worktree: entry.worktree)
+                }
+                // The loose-terminals funnel, as a section (not a project folder): its
+                // header carries the New/Close actions; its sessions render below. Hidden
+                // entirely while it holds no terminals — an empty section label is just
+                // noise (a new loose terminal reappears the section, via the + / File menu).
+                ForEach(terminals.filter { !$0.sessions.isEmpty }) { term in
+                    SidebarSectionHeader(
+                        title: localized("Terminals"),
+                        chrome: chrome,
+                        isCollapsed: collapsedProjects.contains(term.id),
+                        isFirstSection: !hasPinned,
+                        toggleCollapsed: { toggleCollapsed(term.id) },
+                        menuItems: [
+                            newTerminalMenuItem(store: store) {
+                                store.addSession(to: term.id, agent: .terminal)
+                            },
+                            .separator,
+                            .action(localized("Close All Terminals")) { store.removeProject(term.id) },
+                        ]
+                    )
+                    if !collapsedProjects.contains(term.id) {
+                        let sessions = primarySessions(for: term)
+                        let marks = splitLinkMarks(for: sessions)
+                        ForEach(sessions) { session in
+                            SessionRow(session: session, chrome: chrome, splitLink: marks[session.id])
+                        }
                     }
-                    ForEach(pinnedSessions) { entry in
-                        SessionRow(session: entry.session, chrome: chrome, leadingIndent: 16,
-                                   breadcrumb: breadcrumb(for: entry.session, in: entry.project))
+                }
+                // The loose-agents funnel — the agent-side twin of Terminals, paired
+                // directly above Projects (the "Chats vs Projects" split: one-off agent
+                // sessions vs. real folder-scoped work). Every scratch agent shares one
+                // `.chats` container rooted at `~/.termio/chats`; its header offers a single
+                // "New Chat" (the default agent — see `addDefaultChat`) plus a Close All,
+                // mirroring the Terminals header's "New Terminal". Hidden while empty.
+                ForEach(chats.filter { !$0.sessions.isEmpty }) { chat in
+                    SidebarSectionHeader(
+                        title: localized("Chats"),
+                        chrome: chrome,
+                        isCollapsed: collapsedProjects.contains(chat.id),
+                        isFirstSection: !hasPinned && !hasTerminals,
+                        toggleCollapsed: { toggleCollapsed(chat.id) },
+                        menuItems: [
+                            .action(localized("New Chat")) { store.addDefaultChat() },
+                            .separator,
+                            .action(localized("Close All Chats")) { store.removeProject(chat.id) },
+                        ]
+                    )
+                    if !collapsedProjects.contains(chat.id) {
+                        let sessions = primarySessions(for: chat)
+                        let marks = splitLinkMarks(for: sessions)
+                        ForEach(sessions) { session in
+                            SessionRow(session: session, chrome: chrome, splitLink: marks[session.id])
+                        }
+                    }
+                }
+                // The other machines, under their own section — one block per device,
+                // each with its sessions nested. A device is a *place* you work, peer to
+                // a project rather than a variant of one, so it gets a container of its
+                // own instead of being filed among this Mac's loose terminals.
+                if hasHosts {
+                    SidebarSectionHeader(
+                        title: localized("Devices"),
+                        chrome: chrome,
+                        isCollapsed: hostsCollapsed,
+                        isFirstSection: !hasPinned && !hasTerminals && !hasChats,
+                        toggleCollapsed: {
+                            withAnimation(.easeInOut(duration: 0.18)) { hostsCollapsed.toggle() }
+                        }
+                    )
+                    if !hostsCollapsed {
+                        ForEach(hosts) { hostBlock($0) }
+                    }
+                }
+                // The user's opened projects, under their own section header — the same
+                // section treatment as Terminals and Pinned, one tier above the folder rows.
+                if !others.isEmpty {
+                    SidebarSectionHeader(
+                        title: localized("Projects"),
+                        chrome: chrome,
+                        isCollapsed: projectsCollapsed,
+                        isFirstSection: !hasPinned && !hasTerminals && !hasChats && !hasHosts,
+                        toggleCollapsed: {
+                            withAnimation(.easeInOut(duration: 0.18)) { projectsCollapsed.toggle() }
+                        }
+                    )
+                    if !projectsCollapsed {
+                        ForEach(others) { projectBlock($0) }
                     }
                 }
             }
-            // The loose-terminals funnel, as a section (not a project folder): its
-            // header carries the New/Close actions; its sessions render below. Hidden
-            // entirely while it holds no terminals — an empty section label is just
-            // noise (a new loose terminal reappears the section, via the + / File menu).
-            ForEach(terminals.filter { !$0.sessions.isEmpty }) { term in
-                SidebarSectionHeader(
-                    title: localized("Terminals"),
-                    chrome: chrome,
-                    isCollapsed: collapsedProjects.contains(term.id),
-                    isFirstSection: !hasPinned,
-                    toggleCollapsed: { toggleCollapsed(term.id) },
-                    menuItems: [
-                        .action(localized("New Terminal")) { store.addSession(to: term.id, agent: .terminal) },
-                        remoteTerminalMenuItem(store: store),
-                        .separator,
-                        .action(localized("Close All Terminals")) { store.removeProject(term.id) },
-                    ]
-                )
-                if !collapsedProjects.contains(term.id) {
-                    let sessions = primarySessions(for: term)
-                    let marks = splitLinkMarks(for: sessions)
-                    ForEach(sessions) { session in
-                        SessionRow(session: session, chrome: chrome, splitLink: marks[session.id])
-                    }
-                }
-            }
-            // The loose-agents funnel — the agent-side twin of Terminals, paired
-            // directly above Projects (the "Chats vs Projects" split: one-off agent
-            // sessions vs. real folder-scoped work). Every scratch agent shares one
-            // `.chats` container rooted at `~/.termio/chats`; its header offers a single
-            // "New Chat" (the default agent — see `addDefaultChat`) plus a Close All,
-            // mirroring the Terminals header's "New Terminal". Hidden while empty.
-            ForEach(chats.filter { !$0.sessions.isEmpty }) { chat in
-                SidebarSectionHeader(
-                    title: localized("Chats"),
-                    chrome: chrome,
-                    isCollapsed: collapsedProjects.contains(chat.id),
-                    isFirstSection: !hasPinned && !hasTerminals,
-                    toggleCollapsed: { toggleCollapsed(chat.id) },
-                    menuItems: [
-                        .action(localized("New Chat")) { store.addDefaultChat() },
-                        .separator,
-                        .action(localized("Close All Chats")) { store.removeProject(chat.id) },
-                    ]
-                )
-                if !collapsedProjects.contains(chat.id) {
-                    let sessions = primarySessions(for: chat)
-                    let marks = splitLinkMarks(for: sessions)
-                    ForEach(sessions) { session in
-                        SessionRow(session: session, chrome: chrome, splitLink: marks[session.id])
-                    }
-                }
-            }
-            // The machines, under their own section — one block per host, each with
-            // its sessions nested. A remote box is a *place* you work, peer to a
-            // project rather than a variant of one, so it gets a container of its own
-            // instead of being filed among loose local terminals.
-            if hasHosts {
-                SidebarSectionHeader(
-                    title: "Remote",
-                    chrome: chrome,
-                    isCollapsed: hostsCollapsed,
-                    isFirstSection: !hasPinned && !hasTerminals && !hasChats,
-                    toggleCollapsed: {
-                        withAnimation(.easeInOut(duration: 0.18)) { hostsCollapsed.toggle() }
-                    }
-                )
-                if !hostsCollapsed {
-                    ForEach(hosts) { hostBlock($0) }
-                }
-            }
-            // The user's opened projects, under their own section header — the same
-            // section treatment as Terminals and Pinned, one tier above the folder rows.
-            if !others.isEmpty {
-                SidebarSectionHeader(
-                    title: localized("Projects"),
-                    chrome: chrome,
-                    isCollapsed: projectsCollapsed,
-                    isFirstSection: !hasPinned && !hasTerminals && !hasChats && !hasHosts,
-                    toggleCollapsed: {
-                        withAnimation(.easeInOut(duration: 0.18)) { projectsCollapsed.toggle() }
-                    }
-                )
-                if !projectsCollapsed {
-                    ForEach(others) { projectBlock($0) }
-                }
-            }
+            // The native macOS `.sidebar` source list — its own Liquid Glass material, full-height
+            // behind the traffic lights. (We previously painted the column ourselves to dodge a macOS 26
+            // full-screen round-trip bug, but per the design call we're back to the stock sidebar.)
+            .listStyle(.sidebar)
+            .environment(\.defaultMinListRowHeight, 1)
+            // Which machine new terminals land on, pinned under the tree — the one
+            // piece of chrome that has to stay legible while the list scrolls. It
+            // draws nothing at all while this Mac is the only known device.
+            DeviceIndicator()
         }
-        // The native macOS `.sidebar` source list — its own Liquid Glass material, full-height
-        // behind the traffic lights. (We previously painted the column ourselves to dodge a macOS 26
-        // full-screen round-trip bug, but per the design call we're back to the stock sidebar.)
-        .listStyle(.sidebar)
-        .environment(\.defaultMinListRowHeight, 1)
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
     }
 
@@ -596,8 +603,9 @@ private struct ProjectHeader: View {
     private var menuItems: [SidebarMenuItem] {
         if isTerminalsHeader {
             return [
-                .action(localized("New Terminal")) { store.addSession(to: project.id, agent: .terminal) },
-                remoteTerminalMenuItem(store: store),
+                newTerminalMenuItem(store: store) {
+                    store.addSession(to: project.id, agent: .terminal)
+                },
                 .separator,
                 .action(localized("Close All Terminals")) { store.removeProject(project.id) },
             ]
@@ -607,7 +615,7 @@ private struct ProjectHeader: View {
         // worktree/Finder/git rows — none of them mean anything for a box over there.
         if isHostHeader, let alias = project.sshHost {
             return [
-                .action("New Remote Terminal") {
+                .action(localized("New Terminal")) {
                     store.addRemoteTerminal(host: alias, cwd: project.path == "~" ? nil : project.path)
                 },
                 .action("New SSH Shell") { store.addSSHSession(host: alias) },
@@ -616,16 +624,17 @@ private struct ProjectHeader: View {
             ]
         }
         var items: [SidebarMenuItem] = [
-            .action(localized("New Terminal")) { addSession(.terminal) },
-            remoteTerminalMenuItem(store: store, project: project),
+            newTerminalMenuItem(store: store, project: project) { addSession(.terminal) },
             .submenu(localized("New Agent Session"), enabledAgentPresets(settings)
                 .filter { $0 != .terminal }
                 .map { preset in .agent(preset) { addSession(preset) } }),
         ]
         if let worktree {
-            items.append(.separator)
-            items.append(
-                cloneOnRemoteMenuItem(store: store, folder: worktree.path, project: project.id))
+            if let cloneTo = cloneToDeviceMenuItem(
+                store: store, folder: worktree.path, project: project.id) {
+                items.append(.separator)
+                items.append(cloneTo)
+            }
             items.append(.separator)
             items.append(.action(worktree.pinned ? localized("Unpin") : localized("Pin")) {
                 store.toggleWorktreePinned(worktree.id)
@@ -644,8 +653,10 @@ private struct ProjectHeader: View {
         // Only for git repositories (a worktree needs one; "—" marks a non-repo folder).
         if project.branch != "—" {
             items.append(.action(localized("New Worktree")) { store.addWorktree(from: project.id) })
-            items.append(
-                cloneOnRemoteMenuItem(store: store, folder: project.path, project: project.id))
+            if let cloneTo = cloneToDeviceMenuItem(
+                store: store, folder: project.path, project: project.id) {
+                items.append(cloneTo)
+            }
         }
         items.append(.separator)
         items.append(.action(project.pinned ? localized("Unpin") : localized("Pin to Top")) {
@@ -776,74 +787,6 @@ private struct ProjectHeader: View {
 @MainActor
 func enabledAgentPresets(_ settings: AppSettings) -> [AgentPreset] {
     settings.orderedAgents(AgentPreset.allCases.filter(settings.isAgentEnabled))
-}
-
-/// The "New Remote Terminal ▸" submenu: one row per `~/.ssh/config` alias (the
-/// single source of truth for hosts), each opening a durable termiod session on
-/// that host. An empty config shows a disabled explainer instead of a dead
-/// submenu.
-///
-/// Scope follows the row it hangs off. From a **project** row it means "this
-/// repo, over there": the session opens in the checkout `Clone on Remote…`
-/// recorded for that host and appears under that project. From the Terminals
-/// section (`project == nil`) it is host-scoped and starts at the remote
-/// `$HOME`. Hosts the project hasn't been cloned to are shown but explain
-/// themselves on click, rather than being hidden — the fix (`Clone on Remote…`)
-/// is one menu away and hiding the row would just look broken.
-@MainActor
-func remoteTerminalMenuItem(store: TermioStore, project: Project? = nil) -> SidebarMenuItem {
-    let hosts = SSHConfigFile.hosts()
-    guard !hosts.isEmpty else {
-        return .submenu("New Remote Terminal", [.disabled("No SSH hosts in ~/.ssh/config")])
-    }
-    let projectID = project?.id
-    return .submenu("New Remote Terminal", hosts.map { host in
-        // Checkouts are keyed by device, but a menu is built synchronously and has
-        // no connection to spend resolving the alias — so ask the registry for a
-        // device learned earlier, and let the lookup fall back to the alias when
-        // this box has never been reached.
-        let deviceID = TermiodDeviceRegistry.shared.deviceID(for: .ssh(host.alias))
-        let cloned = project?.remoteCheckout(device: deviceID, alias: host.alias) != nil
-        // A project row shows which hosts already hold this repo, so the menu
-        // answers "where does this exist?" before you click.
-        let label = project == nil || cloned ? host.alias : "\(host.alias) — not cloned yet"
-        return .action(label) {
-            store.addRemoteTerminal(host: host.alias, project: projectID)
-        }
-    })
-}
-
-/// The "Clone on Remote… ▸" submenu: pick an ssh-config host, and the project's
-/// `origin` is `git clone`d **on** that host, then a remote terminal opens inside
-/// the clone. Only meaningful for a git checkout with a remote — origin presence
-/// is resolved at click time (async), because the menu is built synchronously and
-/// a git call per right-click would stall the sidebar; a folder with no origin
-/// alerts instead of silently doing nothing. An empty ssh config disables it.
-@MainActor
-func cloneOnRemoteMenuItem(
-    store: TermioStore,
-    folder: String,
-    project projectID: UUID? = nil
-) -> SidebarMenuItem {
-    let hosts = SSHConfigFile.hosts()
-    guard !hosts.isEmpty else {
-        return .submenu("Clone on Remote", [.disabled("No SSH hosts in ~/.ssh/config")])
-    }
-    return .submenu("Clone on Remote", hosts.map { host in
-        .action(host.alias) {
-            // Resolve origin/unpushed off-main, then hand off to the store action;
-            // no origin means nothing to clone, so say so rather than no-op.
-            Task { @MainActor in
-                guard let info = await GitService.cloneInfo(in: folder) else {
-                    store.presentRemoteSetupFailure(
-                        host: host.alias,
-                        message: "This folder has no git \"origin\" remote to clone.")
-                    return
-                }
-                store.cloneOnRemote(host: host.alias, info: info, project: projectID)
-            }
-        }
-    })
 }
 
 /// A project-like header always offers a shell, followed by each coding agent the

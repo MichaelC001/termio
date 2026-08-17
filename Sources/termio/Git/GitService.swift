@@ -814,7 +814,7 @@ enum GitService {
         }
     }
 
-    /// What "Clone on Remote…" needs to know about a checkout: the `origin`
+    /// What "Clone to <device>…" needs to know about a checkout: the `origin`
     /// URL to hand `git clone` on the remote, a repo name derived from it (the
     /// clone's directory), and how many local commits are ahead of the upstream
     /// (they live only on this Mac and won't travel with a fresh clone — the
