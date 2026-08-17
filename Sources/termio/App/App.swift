@@ -587,6 +587,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         let folder = store.session(id)?.worktreePath ?? project.path
         window.title = abbreviatingHome(folder)
+        // Deliberately no machine here. `subtitle` renders beside the title in
+        // the titlebar, so naming the device put it in two places at once — the
+        // sidebar already says which machine you are on, and repeating it above
+        // the terminal read as clutter rather than as reassurance.
         window.subtitle = ""
     }
 
@@ -2139,6 +2143,7 @@ private struct BranchPickerToolbarView: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 7) {
+            DeviceBadge()
             VStack(alignment: .leading, spacing: 0) {
                 Text(title)
                     .font(.headline)
@@ -2161,6 +2166,69 @@ private struct BranchPickerToolbarView: View {
         // measured view without shrinking or moving the Text glyphs, allowing them to paint past the
         // toolbar item's trailing edge. Default centering preserves the existing short-title position.
         .frame(minWidth: Self.titleWidthFloor, maxWidth: Self.titleWidthCeiling)
+    }
+}
+
+/// Which machine this window is on, in the window's own chrome.
+///
+/// The one thing a user must never have to work out. A terminal looks the same
+/// wherever its process runs, so without a persistent statement of the device the
+/// only cue is memory — and memory is what fails right before someone runs a
+/// destructive command on the wrong box. VS Code and Zed both spend a permanent
+/// corner of the window on this for the same reason.
+///
+/// It names the **selected session's** device when there is one, and the current
+/// device otherwise, because the question it answers is "where do my keystrokes
+/// go", not "what did I last pick from a menu". The two only differ while a row
+/// from another machine is still on screen.
+///
+/// Hidden while this Mac is the only machine known: there is no other answer for
+/// it to distinguish, and a chip that always reads the same is furniture.
+private struct DeviceBadge: View {
+    @EnvironmentObject var store: TermioStore
+    @Environment(\.controlActiveState) private var controlActive
+
+    private var device: KnownDevice {
+        let session = store.selectedSessionID.flatMap(store.session)
+        guard let session, let host = session.termiodRemoteHost ?? session.sshHost else {
+            return store.currentDevice
+        }
+        return KnownDevice(alias: host, deviceID: session.deviceID)
+    }
+
+    var body: some View {
+        let known = DeviceRoster.known(in: store)
+        if known.count > 1 {
+            let device = device
+            Menu {
+                DeviceSwitcherMenuContent()
+            } label: {
+                HStack(spacing: 4) {
+                    HugeIconView(icon: .serverStack, size: 12,
+                                 color: device.isLocal ? .secondary : .primary)
+                    Text(device.name)
+                        .font(.subheadline)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        // Another machine is the state worth noticing, so it is
+                        // the one that gets ink. This Mac stays quiet.
+                        .fill(device.isLocal
+                              ? Color.secondary.opacity(0.12)
+                              : Color.accentColor.opacity(0.22))
+                )
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .opacity(controlActive == .inactive ? 0.6 : 1)
+            .help(localized("Sessions here run on \(device.name)"))
+        }
     }
 }
 
