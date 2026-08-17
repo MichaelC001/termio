@@ -66,6 +66,71 @@ struct ControlRequest: Decodable {
     var namedKeys: [String] { keys ?? [] }
 }
 
+/// Deadline-bounded reads and writes for the control connections.
+///
+/// Every one of these descriptors is non-blocking: on Darwin `accept(2)` hands
+/// back a copy of the listening socket's `O_NONBLOCK`, which `bindAndListen` sets.
+/// So `read` and `write` here answer -1/`EAGAIN` the moment the kernel has nothing
+/// to give or nowhere left to put it — and a Unix stream socket's send buffer is
+/// only 8 KiB. Both are *retry* answers, as is `EINTR`; only EOF, a hard errno, or
+/// a blown deadline actually ends a transfer. Mistaking a retry for a failure is
+/// what truncated every reply past 8192 bytes mid-token and what answered
+/// "malformed request" to a well-formed request whose bytes had not landed yet.
+///
+/// Internal rather than file-private so the tests can drive it over a `socketpair`
+/// with a deliberately small send buffer: the listener itself can only be exercised
+/// by binding this channel's real control socket.
+enum SocketIO {
+    /// Writes all of `data`, waiting out a reader that has not drained the send
+    /// buffer yet. False means the peer is gone, the socket errored, or `timeout`
+    /// elapsed — never "the kernel was momentarily full".
+    static func writeAll(_ descriptor: Int32, _ data: Data, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        return data.withUnsafeBytes { raw -> Bool in
+            guard let base = raw.baseAddress else { return true }
+            var offset = 0
+            while offset < data.count {
+                let written = write(descriptor, base + offset, data.count - offset)
+                if written > 0 {
+                    offset += written
+                    continue
+                }
+                if written == 0 { return false }
+                switch errno {
+                case EINTR: continue
+                case EAGAIN, EWOULDBLOCK:
+                    guard wait(descriptor, for: Int16(POLLOUT), until: deadline) else { return false }
+                default: return false
+                }
+            }
+            return true
+        }
+    }
+
+    /// Blocks until the socket has something to read (or hangs up, which the next
+    /// `read` reports as EOF). False means the deadline passed or the socket
+    /// errored — the cases that really do end the exchange.
+    static func waitReadable(_ descriptor: Int32, until deadline: Date) -> Bool {
+        wait(descriptor, for: Int16(POLLIN), until: deadline)
+    }
+
+    /// One `poll` against `deadline`, retried across `EINTR`. A ready descriptor
+    /// returns true even when the readiness is an error condition: the following
+    /// `read`/`write` reports the real errno, so there is exactly one place that
+    /// decides what an errno means.
+    private static func wait(_ descriptor: Int32, for events: Int16, until deadline: Date) -> Bool {
+        while true {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { return false }
+            var descriptors = pollfd(fd: descriptor, events: events, revents: 0)
+            let ready = poll(&descriptors, 1, Int32((remaining * 1000).rounded(.up)))
+            if ready > 0 { return true }
+            if ready == 0 { return false }
+            guard errno == EINTR else { return false }
+        }
+    }
+}
+
 /// A local Unix-domain socket the `termio sessions` CLI connects to. Unlike
 /// `HookListener` (which only receives), this is request/response: it decodes one
 /// `ControlRequest`, runs the handler on the main actor, and writes the handler's
@@ -245,7 +310,12 @@ final class SessionControlListener: @unchecked Sendable {
     private func acceptPending() {
         while true {
             let client = accept(listenDescriptor, nil, nil)
-            if client < 0 { break }
+            if client < 0 {
+                // EINTR is a signal, not an empty queue: retry rather than leaving a
+                // pending connection unaccepted until the next source event.
+                if errno == EINTR { continue }
+                break
+            }
             // A client connection must not leak into spawned PTY children: forkpty
             // duplicates every open descriptor, and an inherited copy keeps the
             // socket alive after our close — the CLI then never sees EOF and hangs
@@ -253,22 +323,51 @@ final class SessionControlListener: @unchecked Sendable {
             // (Measured: a spawn burst held every in-flight reply open for the
             // CLI's full 15s timeout; see sessions-cli-v2.md §4.2 verification.)
             _ = fcntl(client, F_SETFD, FD_CLOEXEC)
+            // A reply written to a client that hung up must not signal the whole app:
+            // the write now retries past a full send buffer, so it can outlive a CLI
+            // that Ctrl-C'd mid-transfer and would otherwise raise SIGPIPE.
+            var on: Int32 = 1
+            setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
             handle(client)
         }
     }
 
+    /// How long a client has to finish sending its request. Enforced with `poll`,
+    /// not `SO_RCVTIMEO`: these descriptors are non-blocking (see `SocketIO`), so a
+    /// receive timeout would never arm — `read` answers EAGAIN long before it.
+    private static let requestTimeout: TimeInterval = 3
+    /// How long a reply may take to drain into a client that is reading slowly.
+    /// Comfortably under the CLI's own 15s bound, so a wedged transfer surfaces as
+    /// this side hanging up rather than as the client timing out.
+    private static let replyTimeout: TimeInterval = 10
+
     private func handle(_ descriptor: Int32) {
-        var timeout = timeval(tv_sec: 3, tv_usec: 0)
-        setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout,
-                   socklen_t(MemoryLayout<timeval>.size))
         var data = Data()
         var buffer = [UInt8](repeating: 0, count: 4096)
         var request: ControlRequest?
-        while data.count < 256 * 1024 {
+        let deadline = Date().addingTimeInterval(Self.requestTimeout)
+        readLoop: while data.count < 256 * 1024 {
             let count = read(descriptor, &buffer, buffer.count)
-            guard count > 0 else { break }
-            data.append(contentsOf: buffer[0..<count])
-            if let decoded = Self.decode(data) { request = decoded; break }
+            if count > 0 {
+                data.append(contentsOf: buffer[0..<count])
+                if let decoded = Self.decode(data) { request = decoded; break }
+                continue
+            }
+            // Zero is the one answer that really means "no more is coming": the peer
+            // closed its write side. Everything else needs the errno to tell a
+            // finished request from an unfinished one.
+            if count == 0 { break }
+            switch errno {
+            case EINTR: continue
+            case EAGAIN, EWOULDBLOCK:
+                // Nothing has arrived *yet*. `accept` returns the instant the connect
+                // lands — routinely before the client's write does — so this is the
+                // normal state of the very first read, not an empty request. Treating
+                // it as EOF is what answered "malformed request" to perfectly good
+                // requests whenever the app was busy enough to win that race.
+                guard SocketIO.waitReadable(descriptor, until: deadline) else { break readLoop }
+            default: break readLoop
+            }
         }
         let decoded = request ?? Self.decode(data)
         guard let decoded else {
@@ -326,16 +425,9 @@ final class SessionControlListener: @unchecked Sendable {
             .filter { !$0.isEmpty })
     }
 
-    private static func writeAll(_ descriptor: Int32, _ data: Data) {
-        data.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            var offset = 0
-            while offset < data.count {
-                let written = write(descriptor, base + offset, data.count - offset)
-                if written <= 0 { break }
-                offset += written
-            }
-        }
+    @discardableResult
+    private static func writeAll(_ descriptor: Int32, _ data: Data) -> Bool {
+        SocketIO.writeAll(descriptor, data, timeout: replyTimeout)
     }
 
     private static func decode(_ data: Data) -> ControlRequest? {
@@ -490,19 +582,18 @@ final class SessionWatchHub: @unchecked Sendable {
         }
     }
 
-    /// Best-effort full write; returns false when the reader is gone (so the caller
-    /// reaps the subscriber).
+    /// How long a watcher may leave a pushed line undrained before the hub gives up
+    /// on it. Shorter than the request/response bound: a live `watch` client reads
+    /// continuously, so silence this long is a client that stopped consuming.
+    private static let writeTimeout: TimeInterval = 5
+
+    /// Full write; returns false when the reader is gone or has stopped draining
+    /// for `writeTimeout` (so the caller reaps the subscriber). A momentarily full
+    /// send buffer is neither: the snapshot a large project emits on attach runs
+    /// past 8 KiB, and treating that as a dead reader dropped the subscriber
+    /// mid-roster.
     private static func write(_ fd: Int32, _ data: Data) -> Bool {
-        data.withUnsafeBytes { raw -> Bool in
-            guard let base = raw.baseAddress else { return true }
-            var offset = 0
-            while offset < data.count {
-                let n = Darwin.write(fd, base + offset, data.count - offset)
-                if n <= 0 { return false }
-                offset += n
-            }
-            return true
-        }
+        SocketIO.writeAll(fd, data, timeout: writeTimeout)
     }
 }
 
