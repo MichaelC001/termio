@@ -130,14 +130,17 @@ struct TraceView: View {
         }
     }
 
+    /// The web view is mounted immediately, empty, rather than after the document is
+    /// ready: WebKit spends most of a second launching its content process the first time
+    /// this session opens one, and mounting late made the user wait for that *after* the
+    /// render instead of during it. The spinner sits on top until the page lands.
     @ViewBuilder private var content: some View {
         Group {
-            if let html {
-                TraceWebView(html: html)
-            } else if let loadError {
-                PaneEmptyState("Couldn’t build the trace", icon: .bot, message: loadError)
+            if let loadError {
+                PaneEmptyState("Couldn’t build the trajectory", icon: .bot, message: loadError)
             } else {
-                ProgressView()
+                TraceWebView(html: html ?? "")
+                    .overlay { if html == nil { ProgressView() } }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -145,12 +148,22 @@ struct TraceView: View {
 
     private func build() async {
         let theme = TraceTheme.resolve(settings: settings, colorScheme: colorScheme)
+        let request = request
         do {
+            // Rendering a long session is close to a second of pure string work — reading
+            // the transcript, folding it into rows, and running every message through the
+            // Markdown pipeline. On the main actor that is a full second of frozen app, so
+            // it runs off it; the theme is resolved above because only that part needs
+            // `AppSettings`. `MarkdownScripting`'s one shared JavaScript context is already
+            // built for this — the companion server renders on its own queue.
+            //
             // The Mac overlay draws its own native header (see `header`), so the HTML
             // document omits its `<header>`; the phone (companion) keeps the default.
-            let document = try SessionTraceRenderer.html(
-                jsonlPath: request.jsonlPath, title: request.title, theme: theme,
-                includeHeader: false)
+            let document = try await Task.detached(priority: .userInitiated) {
+                try SessionTraceRenderer.html(
+                    jsonlPath: request.jsonlPath, title: request.title, theme: theme,
+                    includeHeader: false)
+            }.value
             // An agent that drew a diagram gets it drawn: the fences are swapped for SVG
             // before the page is handed to the web view, so nothing runs mermaid here.
             let sources = MermaidRenderer.sources(in: document)
@@ -193,7 +206,9 @@ private struct TraceWebView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(lastHTML: html) }
 
     /// Markdown in agent messages can contain links; open them in the browser
-    /// instead of letting them navigate the trace page away.
+    /// instead of letting them navigate the trace page away. A fragment link is the
+    /// document's own — the timeline jumping to its row — and resolves against the
+    /// `about:blank` base `loadHTMLString` gives the page, so it stays here.
     final class Coordinator: NSObject, WKNavigationDelegate {
         var lastHTML: String
         init(lastHTML: String) { self.lastHTML = lastHTML }
@@ -201,7 +216,7 @@ private struct TraceWebView: NSViewRepresentable {
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             if navigationAction.navigationType == .linkActivated,
-               let url = navigationAction.request.url {
+               let url = navigationAction.request.url, url.scheme != "about" {
                 NSWorkspace.shared.open(url)
                 decisionHandler(.cancel)
             } else {

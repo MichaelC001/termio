@@ -1038,8 +1038,8 @@
 	<string>Uses %@</string>
 	<key>View</key>
 	<string>View</string>
-	<key>View Trace</key>
-	<string>View Trace</string>
+	<key>View Trajectory</key>
+	<string>View Trajectory</string>
 	<key>View on %@</key>
 	<string>View on %@</string>
 	<key>Waiting for the agent’s first status report.</key>
