@@ -203,7 +203,7 @@ final class TermioStore: ObservableObject {
 
     /// The agent trace currently shown over the terminal, or `nil` when none is. The
     /// third content overlay alongside `openFileURL` and `openDiff`: the Info pane's
-    /// "View Trace" sets it, and `TerminalPane` covers itself with `TraceView` while
+    /// "View Trajectory" sets it, and `TerminalPane` covers itself with `TraceView` while
     /// it is non-nil. Mutually exclusive with the other two.
     @Published var openTrace: TraceRequest? {
         didSet { if openTrace != nil { openFileURL = nil; openDiff = nil; openIssueDetail = nil; noteDetailOpened() }; refreshDetailPresentation() }

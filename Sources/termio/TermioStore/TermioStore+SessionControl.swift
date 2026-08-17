@@ -357,7 +357,8 @@ extension TermioStore {
         _ payload: String, to session: Session, state: TerminalViewState,
         request: ControlRequest
     ) async -> Data {
-        guard await performDelivery(payload, to: session, state: state) else {
+        guard await performDelivery(payload, to: session, state: state,
+                                    submit: request.wantsEnter) else {
             return controlError(request, "not_live",
                 "\(displayTitle(for: session)) has no live terminal yet — open it once in Termio.")
         }
@@ -372,8 +373,11 @@ extension TermioStore {
 
     /// Types `payload` into a session's live surface and submits it. Shared by
     /// the existing-sibling reply path and the fresh-spawn detached delivery.
+    /// `submit` is false for `--no-enter`, where the payload *is* the keypress a
+    /// prompt is waiting on and a Return would answer a second question.
     private func performDelivery(
-        _ payload: String, to session: Session, state: TerminalViewState
+        _ payload: String, to session: Session, state: TerminalViewState,
+        submit: Bool = true
     ) async -> Bool {
         // The libghostty surface attaches lazily on the pane's first render, so a
         // session never shown in the UI has no surface yet. A background mount adds
@@ -391,16 +395,45 @@ extension TermioStore {
         }
         guard let surfaceHandle = Self.rawSurface(from: state) else { return false }
 
-        // Type the prompt through the text path (fine for the body), then submit
-        // with a real Return *key event*. A trailing "\r" in the text is delivered
-        // as a bracketed paste, which an agent TUI (Claude Code) reads as a newline
-        // — never a submit. `ghostty_surface_key` drives the surface directly, with
-        // no focus or first-responder needed; this is exactly how Ghostty's own
-        // AppleScript `send key` submits Enter.
-        _ = state.send(payload)
+        // Write the payload as raw PTY bytes, then submit with a real Return *key
+        // event* — `pressReturn` leaves the encoding to Ghostty, which emits what
+        // the program's keyboard mode expects, and a "\r" appended to the payload
+        // cannot (an agent TUI reads one inside a paste as a newline, never a
+        // submit). `ghostty_surface_key` drives the surface directly, with no focus
+        // or first-responder needed; this is exactly how Ghostty's own AppleScript
+        // `send key` submits Enter.
+        Self.writeRaw(payload, to: state)
+        guard submit else { return true }
         try? await Task.sleep(for: .milliseconds(40))
         Self.pressReturn(on: surfaceHandle)
         return true
+    }
+
+    /// Puts `payload` into the session's PTY as raw bytes, NOT through
+    /// `state.send`: that routes into `ghostty_surface_text`, whose input encoder
+    /// re-encodes a hand-written ESC as an escape KEYPRESS (CSI 27u under the
+    /// kitty keyboard protocol agents enable) and frames everything as a paste.
+    /// A `send` could therefore only ever deliver *text* — never the bare `t` a
+    /// Codex trust gate is waiting on, never an `esc` to back out of a menu. Raw
+    /// input is the same path the file tree's "Add to Chat" takes
+    /// (`addSnippetToSelectedSessionPrompt`), for the same reason.
+    ///
+    /// A payload carrying newlines keeps its bracketed-paste framing — added here,
+    /// in the PTY bytes, where it means what it says — so a multi-line prompt still
+    /// lands as one pasted block instead of submitting line by line. A single-line
+    /// payload goes verbatim, which is what makes a lone keypress possible.
+    ///
+    /// Anything but the in-memory backend (no host-managed PTY to write to) falls
+    /// back to the surface, which is better than dropping the send.
+    private static func writeRaw(_ payload: String, to state: TerminalViewState) {
+        guard case let .inMemory(backend) = state.configuration.backend else {
+            _ = state.send(payload)
+            return
+        }
+        let bytes = payload.contains("\n")
+            ? "\u{1B}[200~" + payload + "\u{1B}[201~"
+            : payload
+        backend.sendInput(Data(bytes.utf8))
     }
 
     /// Blocks until the session the prompt was sent to finishes its turn — or stops

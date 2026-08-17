@@ -36,12 +36,12 @@
 	<string>%@, %@ and %@</string>
 	<key>%lld %@</key>
 	<string>%lld %@</string>
-	<key>%lld custom</key>
-	<string>%lld custom</string>
 	<key>%lld file</key>
 	<string>%lld file</string>
 	<key>%lld files</key>
 	<string>%lld files</string>
+	<key>%lld installed</key>
+	<string>%lld installed</string>
 	<key>%lld of %lld</key>
 	<string>%lld of %lld</string>
 	<key>%lld pt</key>
@@ -62,6 +62,8 @@
 	<string>1 result</string>
 	<key>A different `%@` already exists at %@. Remove it first — Termio won’t overwrite a file it didn’t create.</key>
 	<string>A different `%@` already exists at %@. Remove it first — Termio won’t overwrite a file it didn’t create.</string>
+	<key>A file at %@ already uses that name. Replacing it discards what is in it.</key>
+	<string>A file at %@ already uses that name. Replacing it discards what is in it.</string>
 	<key>Activity</key>
 	<string>Activity</string>
 	<key>Add</key>
@@ -94,10 +96,6 @@
 	<string>Alias → %@</string>
 	<key>All</key>
 	<string>All</string>
-	<key>All Dark Themes</key>
-	<string>All Dark Themes</string>
-	<key>All Light Themes</key>
-	<string>All Light Themes</string>
 	<key>All caught up</key>
 	<string>All caught up</string>
 	<key>All changes to these %lld files will be lost. This cannot be undone.
@@ -152,6 +150,8 @@
 	<string>Branch</string>
 	<key>Bring All to Front</key>
 	<string>Bring All to Front</string>
+	<key>Browse Themes…</key>
+	<string>Browse Themes…</string>
 	<key>Cancel</key>
 	<string>Cancel</string>
 	<key>Can’t browse %@</key>
@@ -268,6 +268,8 @@
 	<string>Copy on select</string>
 	<key>Copy ssh Command</key>
 	<string>Copy ssh Command</string>
+	<key>Couldn’t change the Themes folder</key>
+	<string>Couldn’t change the Themes folder</string>
 	<key>Couldn’t create the worktrees folder: %@</key>
 	<string>Couldn’t create the worktrees folder: %@</string>
 	<key>Couldn’t create worktree session</key>
@@ -280,6 +282,8 @@
 	<string>Couldn’t load</string>
 	<key>Couldn’t open a pull request page</key>
 	<string>Couldn’t open a pull request page</string>
+	<key>Couldn’t open the Themes folder</key>
+	<string>Couldn’t open the Themes folder</string>
 	<key>Couldn’t remove %@.</key>
 	<string>Couldn’t remove %@.</string>
 	<key>Couldn’t remove worktree</key>
@@ -440,8 +444,12 @@
 	<string>Inspector</string>
 	<key>Inspector Pane</key>
 	<string>Inspector Pane</string>
+	<key>Install</key>
+	<string>Install</string>
 	<key>Install %@</key>
 	<string>Install %@</string>
+	<key>Installed</key>
+	<string>Installed</string>
 	<key>Installed.</key>
 	<string>Installed.</string>
 	<key>Installing %@…</key>
@@ -602,6 +610,8 @@
 	<string>No file changes</string>
 	<key>No hosts yet — add one, or write a Host block in ~/.ssh/config.</key>
 	<string>No hosts yet — add one, or write a Host block in ~/.ssh/config.</string>
+	<key>No installed theme matches “%@”</key>
+	<string>No installed theme matches “%@”</string>
 	<key>No issues found.</key>
 	<string>No issues found.</string>
 	<key>No local usage yet — run `%@` once, then Refresh.</key>
@@ -702,8 +712,6 @@
 	<string>Plan limits come from %@'s OAuth login; no passwords are stored. Revoking stops all reading of %@'s data.</string>
 	<key>Play sound</key>
 	<string>Play sound</string>
-	<key>Popular</key>
-	<string>Popular</string>
 	<key>Port</key>
 	<string>Port</string>
 	<key>Posts a notification when an agent finishes or needs you while Termio is in the background.</key>
@@ -770,6 +778,8 @@
 	<string>Remove Worktree</string>
 	<key>Remove from List</key>
 	<string>Remove from List</string>
+	<key>Remove “%@”?</key>
+	<string>Remove “%@”?</string>
 	<key>Removed from PATH.</key>
 	<string>Removed from PATH.</string>
 	<key>Removes this custom agent and its configuration file. Existing sessions keep running.</key>
@@ -782,6 +792,10 @@
 	<string>Rename “%@”</string>
 	<key>Rename…</key>
 	<string>Rename…</string>
+	<key>Replace</key>
+	<string>Replace</string>
+	<key>Replace the theme file for “%@”?</key>
+	<string>Replace the theme file for “%@”?</string>
 	<key>Request Permission</key>
 	<string>Request Permission</string>
 	<key>Reset Font Size</key>
@@ -934,8 +948,8 @@
 	<string>Termio could not append to the repository’s .gitignore. Check its permissions and try again.</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio is open source — star the repo, report bugs, and request features.</string>
-	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”</key>
-	<string>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”</string>
+	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Browse Themes installs one of 50 curated schemes, and any Ghostty-format file you drop into the Themes folder shows up here too.</key>
+	<string>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Browse Themes installs one of 50 curated schemes, and any Ghostty-format file you drop into the Themes folder shows up here too.</string>
 	<key>Test</key>
 	<string>Test</string>
 	<key>Test Connection</key>
@@ -948,6 +962,8 @@
 	<string>The base branch has commits this branch doesn’t have, as of the last fetch.</string>
 	<key>The coding agents offered when you start a session</key>
 	<string>The coding agents offered when you start a session</string>
+	<key>The file at %@ has been edited since it was installed. Removing it deletes those edits.</key>
+	<string>The file at %@ has been edited since it was installed. Removing it deletes those edits.</string>
 	<key>The folder was removed, but git couldn’t prune its stale worktree metadata.</key>
 	<string>The folder was removed, but git couldn’t prune its stale worktree metadata.</string>
 	<key>The ignore rule couldn’t be added.</key>
@@ -1038,8 +1054,8 @@
 	<string>Uses %@</string>
 	<key>View</key>
 	<string>View</string>
-	<key>View Trace</key>
-	<string>View Trace</string>
+	<key>View Trajectory</key>
+	<string>View Trajectory</string>
 	<key>View on %@</key>
 	<string>View on %@</string>
 	<key>Waiting for the agent’s first status report.</key>

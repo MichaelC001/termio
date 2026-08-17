@@ -871,11 +871,14 @@ final class MacDetailViewController: UITableViewController {
 
 // MARK: - Theme picker
 
-/// Full-catalog picker for one slot of the theme pair: the curated popular
-/// shortlist up top (same names the Mac picker leads with — dark schemes for
-/// the Dark slot, light for Light), the whole Ghostty catalog underneath,
-/// and a search field over all of it. Picking a row applies immediately —
-/// no confirm step, matching the Mac's live-preview behavior.
+/// Picker for one slot of the theme pair: the slot's own default, then the
+/// store's curated set for that brightness (the same names the Mac's Browse
+/// Themes offers), with a search field over both. Picking a row applies
+/// immediately — no confirm step, matching the Mac's live-preview behavior.
+///
+/// The phone has no theme store: it resolves these names out of the compiled
+/// catalog to render them and never writes a file. Themes the user installed on
+/// the Mac stay on the Mac.
 final class ThemePickerViewController: UITableViewController {
     enum Slot {
         case light, dark
@@ -884,41 +887,11 @@ final class ThemePickerViewController: UITableViewController {
     private let slot: Slot
     private let settings = MobileSettings.shared
 
-    /// The Mac picker's popular shortlists, filtered against the catalog so
-    /// a package rename drops a stale entry instead of showing a dead row.
-    private static let popularDarkNames: [String] = [
-        "Dracula",
-        "Catppuccin Mocha",
-        "TokyoNight Storm",
-        "Nord",
-        "Gruvbox Dark",
-        "Atom One Dark",
-        "Monokai Pro",
-        "Rose Pine",
-        "Ayu Mirage",
-        "Night Owl",
-        "Kanagawa Wave",
-        "Everforest Dark Hard",
-        "GitHub Dark Default",
-        "iTerm2 Solarized Dark",
-    ].filter { GhosttyThemeCatalog.theme(named: $0) != nil }
-
-    private static let popularLightNames: [String] = [
-        "Catppuccin Latte",
-        "Rose Pine Dawn",
-        "Gruvbox Light",
-        "Ayu Light",
-        "Atom One Light",
-        "GitHub Light Default",
-        "TokyoNight Day",
-        "Everforest Light Med",
-        "iTerm2 Solarized Light",
-    ].filter { GhosttyThemeCatalog.theme(named: $0) != nil }
-
-    private let popular: [GhosttyThemeDefinition]
-    private let all = GhosttyThemeCatalog.allThemes.sorted {
-        $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-    }
+    /// The slot's default plus the store's half for this brightness, resolved
+    /// against the catalog so a package rename drops a stale entry instead of
+    /// showing a dead row. Brightness is each theme's own `isDark`, so a slot can
+    /// never offer a theme that would render the wrong way.
+    private let themes: [GhosttyThemeDefinition]
     private var query = ""
     private var matches: [GhosttyThemeDefinition] = []
 
@@ -935,8 +908,14 @@ final class ThemePickerViewController: UITableViewController {
 
     init(slot: Slot) {
         self.slot = slot
-        popular = (slot == .light ? Self.popularLightNames : Self.popularDarkNames)
+        let names = [
+            MobileSettings.defaultLightThemeName,
+            MobileSettings.defaultDarkThemeName,
+        ] + ThemeStoreCatalog.names
+        var seen: Set<String> = []
+        themes = names
             .compactMap { GhosttyThemeCatalog.theme(named: $0) }
+            .filter { $0.isDark == (slot == .dark) && seen.insert($0.name).inserted }
         super.init(style: .insetGrouped)
     }
 
@@ -957,30 +936,21 @@ final class ThemePickerViewController: UITableViewController {
 
     private var isSearching: Bool { !query.isEmpty }
 
-    private func theme(at indexPath: IndexPath) -> GhosttyThemeDefinition {
-        if isSearching { return matches[indexPath.row] }
-        return indexPath.section == 0 ? popular[indexPath.row] : all[indexPath.row]
-    }
+    private var rows: [GhosttyThemeDefinition] { isSearching ? matches : themes }
 
     // MARK: - Table
 
-    override func numberOfSections(in tableView: UITableView) -> Int {
-        isSearching ? 1 : 2
-    }
-
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        if isSearching { return matches.count }
-        return section == 0 ? popular.count : all.count
+        rows.count
     }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        if isSearching { return nil }
-        return section == 0 ? localized("Popular") : localized("All Themes")
+        isSearching ? nil : localized("Themes")
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "theme", for: indexPath)
-        let theme = theme(at: indexPath)
+        let theme = rows[indexPath.row]
         cell.contentConfiguration = UIHostingConfiguration {
             ThemeRow(theme: theme, isSelected: theme.name == selectedName)
         }
@@ -989,8 +959,7 @@ final class ThemePickerViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        selectedName = theme(at: indexPath).name
-        // The pick shows up in every visible copy of the row (popular + all).
+        selectedName = rows[indexPath.row].name
         tableView.reloadData()
     }
 }
@@ -998,11 +967,9 @@ final class ThemePickerViewController: UITableViewController {
 extension ThemePickerViewController: UISearchResultsUpdating {
     func updateSearchResults(for searchController: UISearchController) {
         query = searchController.searchBar.text?.trimmingCharacters(in: .whitespaces) ?? ""
-        if !query.isEmpty {
-            matches = GhosttyThemeCatalog.search(query).sorted {
-                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-            }
-        }
+        // Search stays inside the offered set: a hit the picker would refuse to
+        // list is a row that cannot be picked.
+        matches = themes.filter { $0.name.localizedCaseInsensitiveContains(query) }
         tableView.reloadData()
     }
 }

@@ -4,8 +4,8 @@ import SwiftUI
 /// The inspector's Info pane — the third tab beside Files and Changes. At-a-glance
 /// facts about the selected session plus quick actions on its working directory and,
 /// for an agent session, its conversation transcript: copy the path, reveal it in
-/// Finder, open the folder in an installed editor, or open a rendered HTML trace of
-/// the agent's conversation in the browser.
+/// Finder, open the folder in an installed editor, or open the session's rendered
+/// trajectory over the terminal.
 struct SessionInfoView: View {
     @EnvironmentObject var store: TermioStore
 
@@ -162,7 +162,7 @@ struct SessionInfoView: View {
 
             if let transcriptPath {
                 VStack(alignment: .leading, spacing: 1) {
-                    InfoRow(huge: .listView, title: localized("View Trace")) { viewTrace(transcriptPath, session: session) }
+                    InfoRow(huge: .listView, title: localized("View Trajectory")) { viewTrace(transcriptPath, session: session) }
                     InfoRow(huge: .copy, title: localized("Copy Path")) { copy(transcriptPath) }
                     InfoRow(huge: .folder, title: localized("Reveal in Finder")) { revealInFinder(transcriptPath) }
                 }
@@ -217,7 +217,7 @@ struct SessionInfoView: View {
 /// A single action row in the Info pane: a leading glyph, a label, and a hover
 /// highlight — the same calm, borderless look as the actions in the reference Info
 /// panel. The leading glyph is either a muted Hugeicons mark (for termio's own
-/// actions — Copy Path, Reveal, View Trace) or an editor's real app icon (for
+/// actions — Copy Path, Reveal, View Trajectory) or an editor's real app icon (for
 /// "Open in …"), so an editor row is unmistakably that app. `.buttonStyle(.plain)`
 /// keeps it flat; the highlight is drawn on hover.
 private struct InfoRow: View {

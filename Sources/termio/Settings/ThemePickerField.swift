@@ -3,22 +3,28 @@ import GhosttyTheme
 
 /// A searchable theme picker with live color swatches.
 ///
-/// termio bundles ~485 terminal color schemes (the iTerm2-Color-Schemes catalog),
-/// plus the user's own custom files. A flat SwiftUI `Picker` of that size is
-/// unusable — you scroll forever and can't see a theme before choosing it. This
-/// trades the dropdown for a macOS-native pop-up button that opens a popover with a
-/// search field and a real `List`, so hover, keyboard navigation, selection
-/// highlighting, and section headers all come from the system rather than being
-/// hand-rolled. Selecting applies live: the terminal recolors as you browse.
+/// The list is termio's default plus the themes installed in the `Themes` folder
+/// — what the user actually has, not a warehouse. Browsing the curated 50 is the
+/// store's job (**Browse Themes…**), and an uninstalled name is deliberately
+/// absent here: a slot resolves against the library only, so listing a name the
+/// picker could not paint would be a dead row.
+///
+/// A macOS-native pop-up button opening a popover with a search field and a real
+/// `List`, rather than a flat `Picker`, so hover, keyboard navigation, selection
+/// highlighting, and section headers all come from the system. Selecting applies
+/// live: the terminal recolors as you browse.
 struct ThemePickerField: View {
     let title: String
     /// Whether this slot renders in dark appearance. Explicit rather than read
     /// from the localized title, which is display-only.
     let prefersDark: Bool
     @Binding var selection: String
-    /// The user's own theme names, passed in so the parent's reload state stays the
+    /// The installed theme names, passed in so the parent's reload state stays the
     /// single source of truth for what lives in the Themes folder.
     let userThemeNames: [String]
+    /// Opens the store, carrying whatever the user had typed here — an empty
+    /// search for a name they haven't installed is exactly when they want it.
+    let onBrowseStore: (String) -> Void
 
     @State private var isPresented = false
     @State private var query = ""
@@ -94,18 +100,12 @@ struct ThemePickerField: View {
                 List(selection: $highlighted) {
                     if query.isEmpty {
                         themeRow(name: "", display: localized("Terminal default"), definition: nil)
-                    }
-                    if !filteredCustom.isEmpty {
-                        Section(localized("Custom")) { themeRows(filteredCustom) }
-                    }
-                    if query.isEmpty {
                         // Only the slot's own brightness: the Dark slot lists dark
                         // themes, the Light slot lists light ones, so a slot can never
                         // offer a theme that would render the wrong way.
-                        Section(localized("Popular")) { themeRows(slotPopularNames) }
-                        Section(allLabel) { themeRows(slotBundledNames) }
+                        Section(localized("Installed")) { themeRows(slotInstalledNames) }
                     } else {
-                        Section(resultsLabel) { themeRows(filteredBundled) }
+                        Section(resultsLabel) { themeRows(filteredInstalled) }
                     }
                 }
                 .listStyle(.inset)
@@ -135,6 +135,10 @@ struct ThemePickerField: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
+            Button(localized("Browse Themes…")) {
+                isPresented = false
+                onBrowseStore(query)
+            }
             Button(localized("Done")) { isPresented = false }
                 .keyboardShortcut(.defaultAction)
         }
@@ -155,8 +159,12 @@ struct ThemePickerField: View {
             Image(systemName: "paintpalette")
                 .font(.system(size: 28))
                 .foregroundStyle(.tertiary)
-            Text(localized("No themes match “\(query)”"))
+            Text(localized("No installed theme matches “\(query)”"))
                 .foregroundStyle(.secondary)
+            Button(localized("Browse Themes…")) {
+                isPresented = false
+                onBrowseStore(query)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -187,28 +195,16 @@ struct ThemePickerField: View {
         query.isEmpty || name.localizedCaseInsensitiveContains(query)
     }
 
-    /// The catalog half this slot draws from — dark themes for the Dark slot, light
-    /// for the Light slot.
-    private var slotBundledNames: [String] {
-        prefersDark ? ThemeLibrary.darkBundledThemeNames : ThemeLibrary.lightBundledThemeNames
-    }
-    private var slotPopularNames: [String] {
-        prefersDark ? ThemeLibrary.popularDarkThemeNames : ThemeLibrary.popularLightThemeNames
-    }
-    /// Custom themes are kept too, but only those matching the slot's brightness, so
-    /// the same "wrong way" rule holds for user-dropped files.
-    private var slotCustomNames: [String] {
+    /// The installed themes this slot can offer — only those matching the slot's
+    /// brightness, so a slot can never apply one that renders the wrong way.
+    private var slotInstalledNames: [String] {
         userThemeNames.filter { ThemeLibrary.theme(named: $0)?.isDark == prefersDark }
     }
-    private var allLabel: String { prefersDark ? localized("All Dark Themes") : localized("All Light Themes") }
 
-    private var filteredCustom: [String] { slotCustomNames.filter(matches) }
-    private var filteredBundled: [String] { slotBundledNames.filter(matches) }
-    private var hasResults: Bool {
-        query.isEmpty || !filteredCustom.isEmpty || !filteredBundled.isEmpty
-    }
+    private var filteredInstalled: [String] { slotInstalledNames.filter(matches) }
+    private var hasResults: Bool { query.isEmpty || !filteredInstalled.isEmpty }
     private var resultsLabel: String {
-        let count = filteredCustom.count + filteredBundled.count
+        let count = filteredInstalled.count
         return count == 1 ? localized("1 result") : localized("\(count) results")
     }
 }

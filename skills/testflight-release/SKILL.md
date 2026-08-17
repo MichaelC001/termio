@@ -107,9 +107,13 @@ Run from a clean worktree on the commit you want to ship (normally `main`).
      "Cannot add internal group to a build." Confirm instead:
      `asc testflight distribution view --build-id "BUILD_ID"` → `Internal State:
      IN_BETA_TESTING`.
-   - *Public Beta* is external: the build sits at `READY_FOR_BETA_SUBMISSION`
-     until it passes Beta App Review. **Ask the user before submitting it** —
-     that ships to real testers on a public link.
+   - *Public Beta* is external and gated on Beta App Review. Read
+     `externalBuildState` before doing anything: `READY_FOR_BETA_SUBMISSION`
+     means it still needs submitting, `WAITING_FOR_BETA_REVIEW` means it is
+     already in Apple's queue and there is nothing to do but wait, and
+     `BETA_TESTING` means it is live on the public link. **Ask the user before
+     submitting** — that ships to real testers. A build of a marketing version
+     that has already cleared review skips this step entirely (see below).
 
 7. **Revert** the pbxproj bump and delete `ios/.asc/` (untracked build
    artifacts, ~10 MB IPA plus the archive).
@@ -147,8 +151,49 @@ affects every machine that signs this app, so confirm with the user first.
 
 ## Notes
 
-- The iOS app version is `1.0` and stays there; TestFlight builds move only the
-  build number. Bumping the marketing version is an App Store release decision —
-  see `docs/RELEASING.md` and the `asc` skill's release-flow reference.
 - `ios/dev-run.sh` is the device-install loop for development; it has nothing to
   do with this path and never touches signing for distribution.
+
+## Bumping `MARKETING_VERSION` vs reusing it
+
+Two different numbers move for two different reasons, and only one of them is
+free:
+
+| | `CURRENT_PROJECT_VERSION` (build) | `MARKETING_VERSION` |
+| --- | --- | --- |
+| Moves | every upload | rarely, deliberately |
+| Committed? | **never** (resolved against ASC, reverted after) | yes, its own commit |
+| Cost | none | **a Beta App Review round-trip** |
+
+**The rule: reuse the marketing version for iterative betas; bump it only when
+you are starting a new version train.**
+
+Bumping is not free. The *first* build of a new marketing version has to clear
+Apple's Beta App Review before any external tester can install it — it sits at
+`externalBuildState: WAITING_FOR_BETA_REVIEW`, typically hours. Every later
+build of that same version skips review and reaches external testers as soon as
+it finishes processing. Internal testers are never affected either way; they get
+every processed build immediately (`internalBuildState: IN_BETA_TESTING`).
+
+So a bump costs one review wait and buys nothing on its own. Bump when the
+version is about to mean something — an App Store submission, or a batch of work
+you want to name — and take the review hit once, up front, so the builds that
+follow it ship instantly.
+
+Consequences worth knowing before you reach for it:
+
+- **Pushing another build will not shorten a pending review.** A rebuild of the
+  same commit is identical code queued behind the same review. If external
+  access is what you are waiting for, waiting *is* the action.
+- **Check state before building anything:**
+  `asc testflight distribution view --build-id "BUILD_ID"`. If external already
+  reads `WAITING_FOR_BETA_REVIEW`, there is nothing useful to upload.
+- Review needs the Beta App Review contact, review notes, and What to Test in
+  every locale you ship. Missing any of them turns the wait into a rejection.
+
+Observed 2026-08-13 on 1.1 (build 947): internal `IN_BETA_TESTING` within
+minutes, external `WAITING_FOR_BETA_REVIEW` — the one-time cost of the 1.0 → 1.1
+bump, paid so later 1.1 builds go straight out.
+
+An App Store *release* (as opposed to a beta train) is a separate decision — see
+`docs/RELEASING.md` and the `asc` skill's release-flow reference.

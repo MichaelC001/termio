@@ -40,7 +40,9 @@ id-prefix works too).
   be able to see and take over the process.
 - `termio sessions send <link> "<text>"` — type text into that existing
   sibling and submit it with a real Return keypress. Send a prompt to drive
-  it, or a menu choice (`"1"`, `"yes"`) to answer a permission prompt.
+  it, or a menu choice (`"1"`, `"yes"`) to answer a permission prompt. Add
+  `--no-enter` when the gate wants a bare keypress and no Return — a lone
+  `t` to trust a folder, or `$'\e'` to back out.
 - `termio sessions read <link> [--lines N]` — the session's current
   screen. The result channel for `run` sessions (a plain command has no
   transcript; its screen is the result) — for agent replies keep using the

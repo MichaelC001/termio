@@ -2672,7 +2672,7 @@
         }
       }
     },
-    "View Trace": {
+    "View Trajectory": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -3772,16 +3772,6 @@
         }
       }
     },
-    "%lld custom": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld 个自定义"
-          }
-        }
-      }
-    },
     "Reload": {
       "localizations": {
         "zh-Hans": {
@@ -3798,16 +3788,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "主题"
-          }
-        }
-      }
-    },
-    "Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Drop Ghostty-format theme files into the Themes folder to add your own — they appear under “Custom.”": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Termio 会随 macOS 外观变化在两者间切换；将槽位留在默认值即可使用 Termio 自带的画布。将 Ghostty 格式的主题文件放入主题文件夹即可添加自己的主题，它们会显示在“自定义”下。"
           }
         }
       }
@@ -4642,36 +4622,6 @@
         }
       }
     },
-    "Popular": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "热门"
-          }
-        }
-      }
-    },
-    "All Dark Themes": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "所有深色主题"
-          }
-        }
-      }
-    },
-    "All Light Themes": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "所有浅色主题"
-          }
-        }
-      }
-    },
     "1 result": {
       "localizations": {
         "zh-Hans": {
@@ -5331,6 +5281,136 @@
           "stringUnit": {
             "state": "translated",
             "value": "该主机返回了文件树无法显示的名称。"
+          }
+        }
+      }
+    },
+    "Browse Themes…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "浏览主题…"
+          }
+        }
+      }
+    },
+    "Installed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已安装"
+          }
+        }
+      }
+    },
+    "No installed theme matches “%@”": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有已安装的主题与“%@”匹配"
+          }
+        }
+      }
+    },
+    "%lld installed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已安装 %lld 个"
+          }
+        }
+      }
+    },
+    "Couldn’t open the Themes folder": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法打开主题文件夹"
+          }
+        }
+      }
+    },
+    "Couldn’t change the Themes folder": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法修改主题文件夹"
+          }
+        }
+      }
+    },
+    "Replace the theme file for “%@”?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "替换“%@”的主题文件？"
+          }
+        }
+      }
+    },
+    "A file at %@ already uses that name. Replacing it discards what is in it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 已经用了这个名称。替换会丢弃这个文件里的内容。"
+          }
+        }
+      }
+    },
+    "Remove “%@”?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除“%@”？"
+          }
+        }
+      }
+    },
+    "The file at %@ has been edited since it was installed. Removing it deletes those edits.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 在安装之后被改过。移除会连同这些改动一起删除。"
+          }
+        }
+      }
+    },
+    "Replace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "替换"
+          }
+        }
+      }
+    },
+    "Install": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装"
+          }
+        }
+      }
+    },
+    "Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Browse Themes installs one of 50 curated schemes, and any Ghostty-format file you drop into the Themes folder shows up here too.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Termio 会随 macOS 外观变化在两者间切换；将槽位留在默认值即可使用 Termio 自带的画布。“浏览主题”可以从 50 个精选配色中安装一个，你放进主题文件夹的 Ghostty 格式文件也会出现在这里。"
           }
         }
       }

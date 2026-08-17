@@ -287,7 +287,7 @@ final class TerminalViewController: UIViewController {
             self?.goBack()
         }, for: .touchUpInside)
         // The right slot balances the back chevron (keeping the title centered)
-        // and holds an overflow menu of per-session actions — View Trace and
+        // and holds an overflow menu of per-session actions — View Trajectory and
         // Copy Path for a companion session. With nothing to offer (the demo
         // shell has no Mac transcript or path) it stays an invisible spacer.
         let overflow = UIButton(type: .system)
@@ -317,7 +317,7 @@ final class TerminalViewController: UIViewController {
         ])
     }
 
-    /// The header overflow menu. View Trace and Copy Path appear only for a
+    /// The header overflow menu. View Trajectory and Copy Path appear only for a
     /// companion session, where there is a Mac transcript and project path to
     /// reach; the demo shell has neither, so the menu comes back empty and the
     /// button hides itself.
@@ -325,7 +325,7 @@ final class TerminalViewController: UIViewController {
         var items: [UIMenuElement] = []
         if case .companion = backend {
             items.append(UIAction(
-                title: localized("View Trace"), image: UIImage(systemName: "list.bullet.rectangle")
+                title: localized("View Trajectory"), image: UIImage(systemName: "list.bullet.rectangle")
             ) { [weak self] _ in self?.showTrace() })
         }
         if let path = session.projectPath, !path.isEmpty {
@@ -337,7 +337,7 @@ final class TerminalViewController: UIViewController {
     }
 
     /// Present the session's agent transcript as an in-app HTML trace — the
-    /// phone counterpart of the desktop Info pane's "View Trace". The Mac
+    /// phone counterpart of the desktop Info pane's "View Trajectory". The Mac
     /// renders it (reusing `SessionTraceRenderer`) and returns the document
     /// over the companion socket; the sheet shows a spinner until it lands.
     private func showTrace() {

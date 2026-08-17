@@ -71,16 +71,6 @@
         }
       }
     },
-    "All Themes": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "所有主题"
-          }
-        }
-      }
-    },
     "Allow microphone access in Settings": {
       "localizations": {
         "zh-Hans": {
@@ -981,16 +971,6 @@
         }
       }
     },
-    "Popular": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "热门"
-          }
-        }
-      }
-    },
     "Privacy Policy": {
       "localizations": {
         "zh-Hans": {
@@ -1361,7 +1341,7 @@
         }
       }
     },
-    "Trace": {
+    "Trajectory": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -1451,7 +1431,7 @@
         }
       }
     },
-    "View Trace": {
+    "View Trajectory": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -1707,6 +1687,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "重新连接时需要再次扫描它的二维码。"
+          }
+        }
+      }
+    },
+    "Themes": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "主题"
           }
         }
       }
