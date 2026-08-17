@@ -287,6 +287,12 @@ final class AppSettings: ObservableObject {
         didSet { store.set(backgroundBlur, forKey: Key.backgroundBlur) }
     }
 
+    /// Whether the window and the surfaces in it must stay see-through. Opacity is the
+    /// only input: blur softens what shows through a transparent background, so reading
+    /// it here left a stored blur value holding the window transparent after opacity
+    /// went back to full — with the Blur stepper disabled at that point, unfixable.
+    var isBackgroundTranslucent: Bool { backgroundOpacity < 1.0 }
+
     // MARK: Terminal
 
     /// Scrollback buffer size in megabytes. Agents emit a lot of output, so the

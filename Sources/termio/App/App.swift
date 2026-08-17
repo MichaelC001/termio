@@ -639,14 +639,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// terminal's own background so the transparent title bar sits flush with the
     /// terminal instead of showing the system window grey. Re-run on every settings
     /// change, so the title bar tracks the terminal theme live.
-    ///
-    /// Blur is deliberately excluded from the predicate: it only softens what shows
-    /// through a transparent background, so at full opacity it is a no-op and must
-    /// not keep the window translucent. Including it left the title bar stuck
-    /// transparent when a leftover blur value survived an Opacity return to 100%.
     private func applyWindowTransparency() {
         guard let window else { return }
-        let translucent = settings.backgroundOpacity < 1.0
+        let translucent = settings.isBackgroundTranslucent
         window.isOpaque = !translucent
         // Resolve the terminal background to a *static* color for the window's current
         // appearance, rather than handing the window the dynamic (appearance-resolving) color.
