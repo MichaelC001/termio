@@ -67,15 +67,78 @@ enum Termiod {
         return "\(base)/termiod-\(getuid())/termiod.sock"
     }
 
-    /// The daemon binary used for autostart: `TERMIO_TERMIOD_BIN` when set,
-    /// else the dev build inside the working tree the app was launched from.
-    /// One resolution point so autostart and diagnostics can never disagree.
+    /// The daemon's name inside the bundle. Unlike the `termio` CLI it is not
+    /// renamed per channel: the CLI is symlinked onto PATH, where a dev copy
+    /// would clobber the release one, while the daemon is only ever executed by
+    /// absolute path out of the bundle that ships it. (Keeping the two channels'
+    /// *sessions* apart is `TERMIOD_SOCK`, a separate axis.)
+    static let daemonBinaryName = "termiod"
+
+    /// The daemon binary used for autostart. One resolution point so autostart
+    /// and diagnostics can never disagree, in this order:
+    ///
+    /// 1. `TERMIO_TERMIOD_BIN` — the development override, unchanged.
+    /// 2. `Contents/Resources/termiod` in the running `.app` — what a shipped
+    ///    build uses. `Bundle.main`, never `Bundle.module`: SwiftPM bakes the
+    ///    latter with the build machine's path and it does not survive into a
+    ///    shipped bundle.
+    /// 3. `termiod/target/{release,debug}/termiod` in the checkout the running
+    ///    binary lives in, so a bare `swift build` binary — which has no bundle
+    ///    at all, the case `CommandLineTool.bundledURL` answers `nil` for —
+    ///    still finds the daemon a developer just built.
+    ///
+    /// The checkout fallback is anchored at the *binary*, not at
+    /// `currentDirectoryPath`. A Finder-launched app has cwd `/`, which is how
+    /// the previous fallback resolved `/termiod/target/debug/termiod` and why no
+    /// released build could ever start a daemon.
     static func daemonBinaryPath() -> String {
         let environment = ProcessInfo.processInfo.environment
         if let explicit = environment["TERMIO_TERMIOD_BIN"], !explicit.isEmpty {
             return explicit
         }
-        return FileManager.default.currentDirectoryPath + "/termiod/target/debug/termiod"
+        var candidates: [String] = []
+        if let bundled = Bundle.main.url(forResource: daemonBinaryName, withExtension: nil) {
+            candidates.append(bundled.path)
+        }
+        let executableDirectory = (Bundle.main.executableURL ?? Bundle.main.bundleURL)
+            .deletingLastPathComponent()
+        candidates += developmentDaemonCandidates(near: executableDirectory)
+        let fileManager = FileManager.default
+        if let usable = candidates.first(where: { fileManager.isExecutableFile(atPath: $0) }) {
+            return usable
+        }
+        // Nothing exists yet: name the bundle location a shipped build should
+        // have had, so `daemonBinaryMissing` reports the path worth fixing.
+        return candidates.first
+            ?? Bundle.main.bundleURL
+                .appendingPathComponent("Contents/Resources/\(daemonBinaryName)").path
+    }
+
+    /// `termiod` builds inside the checkout the running binary sits in, nearest
+    /// first, release before debug. The search walks up from `directory` looking
+    /// for the marker that identifies the repo root — `termiod/Cargo.toml` —
+    /// which places it correctly for both `.build/<triple>/debug/termio` and an
+    /// `.app` assembled at the repo root. Empty when there is no checkout above
+    /// the binary, which is the shipped case.
+    ///
+    /// Separate from `daemonBinaryPath()` so it can be tested without a bundle.
+    static func developmentDaemonCandidates(near directory: URL) -> [String] {
+        let fileManager = FileManager.default
+        var current = directory.standardizedFileURL
+        // Deep enough for `.build/<triple>/debug/` and for an `.app`'s
+        // `Contents/MacOS/`, shallow enough never to walk to `/`.
+        for _ in 0 ..< 8 {
+            let root = current.appendingPathComponent("termiod")
+            if fileManager.isReadableFile(atPath: root.appendingPathComponent("Cargo.toml").path) {
+                return ["release", "debug"].map {
+                    root.appendingPathComponent("target/\($0)/\(daemonBinaryName)").path
+                }
+            }
+            let parent = current.deletingLastPathComponent().standardizedFileURL
+            if parent.path == current.path { break }
+            current = parent
+        }
+        return []
     }
 
     // MARK: - Socket

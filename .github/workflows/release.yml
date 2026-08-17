@@ -23,6 +23,11 @@ env:
   # inset — the window title lands flush against the sidebar divider. Keep this in
   # step with the local dev toolchain until the toolbar is adapted to the 26.5 chrome.
   DEVELOPER_DIR: /Applications/Xcode_26.4.app/Contents/Developer
+  # build-app.sh builds termiod into the bundle, and its VT engine is compiled by
+  # Zig from our libghostty fork. Pinned with its published checksum, exactly as
+  # .github/workflows/termiod.yml pins it — keep the two in step.
+  ZIG_VERSION: "0.16.0"
+  ZIG_SHA256_AARCH64_MACOS: "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
   # The DMG lives at $DOWNLOAD_BASE_URL/v<version>/termio.dmg (immutable) with a
   # stable $DOWNLOAD_BASE_URL/termio.dmg copy; the appcast at $DOWNLOAD_BASE_URL/
   # appcast.xml (matches SUFeedURL in packaging/Info.plist).
@@ -77,8 +82,23 @@ jobs:
             -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
 
-      # build-app.sh embeds + signs Sparkle and Developer-ID-signs the bundle with
-      # the hardened runtime, so the output is ready to notarize.
+      # `libghostty-vt-sys` invokes `zig` by name and honours no env override, so
+      # the toolchain has to land on PATH under exactly that name. build-app.sh
+      # points the daemon's build at the Command Line Tools SDK itself — Xcode 26's
+      # libSystem.tbd is arm64e-only and Zig cannot link against it — and leaves
+      # DEVELOPER_DIR above intact for the Swift build.
+      - name: Install Zig (for termiod's VT engine)
+        run: |
+          url="https://ziglang.org/download/${ZIG_VERSION}/zig-aarch64-macos-${ZIG_VERSION}.tar.xz"
+          curl -fsSL "$url" -o "$RUNNER_TEMP/zig.tar.xz"
+          echo "${ZIG_SHA256_AARCH64_MACOS}  $RUNNER_TEMP/zig.tar.xz" | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/zig"
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP/zig" --strip-components=1
+          echo "$RUNNER_TEMP/zig" >> "$GITHUB_PATH"
+
+      # build-app.sh embeds + signs Sparkle, builds and signs termiod into
+      # Contents/Resources, and Developer-ID-signs the bundle with the hardened
+      # runtime, so the output is ready to notarize.
       - name: Build signed app bundle
         env:
           SIGN_IDENTITY: "Developer ID Application"
