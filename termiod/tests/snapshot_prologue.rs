@@ -156,6 +156,33 @@ fn an_alt_screen_host_still_lands_on_the_alternate_screen() {
     }
 }
 
+/// A cursor parked at the right margin carries pending wrap: the next
+/// printable character wraps to the following row instead of overwriting the
+/// last cell. The formatter used to land that cursor with CUP, which clears the
+/// flag, so a client that applied the payload and then received one more byte
+/// painted a different screen than the host. Whatever the payload does to place
+/// the cursor, the client has to keep printing where the host would.
+#[test]
+fn a_cursor_at_the_right_margin_keeps_its_pending_wrap() {
+    let mut host = VtTerminal::new(ROWS, COLS).expect("host terminal");
+    host.vt_write("w".repeat(usize::from(COLS)).as_bytes());
+    let payload = host.format_vt().expect("format_vt");
+
+    let mut client = VtTerminal::new(ROWS, COLS).expect("client terminal");
+    client.vt_write(&payload);
+
+    // The byte that tells the two screens apart. Both terminals are at the same
+    // point in the same stream, so they owe the same result.
+    host.vt_write(b"!");
+    client.vt_write(b"!");
+
+    let expected = host.snapshot().expect("host snapshot");
+    let actual = client.snapshot().expect("client snapshot");
+    if let Some(difference) = first_difference(&expected, &actual) {
+        panic!("the client diverged after one more byte at the right margin: {difference}");
+    }
+}
+
 #[test]
 fn snapshot_applies_identically_to_a_dirty_screen() {
     let payload = host_payload();

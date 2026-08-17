@@ -227,16 +227,31 @@ impl VtTerminal {
         // row with CHA/HTS and leaves it wherever the last stop was, and
         // DECSTBM homes it. Re-assert the real position last so the client
         // lands where the session actually is.
-        let cursor_x = check(self.terminal.cursor_x(), "Terminal::cursor_x")?;
-        let cursor_y = check(self.terminal.cursor_y(), "Terminal::cursor_y")?;
-        formatted.extend_from_slice(
-            format!(
-                "\x1b[{};{}H",
-                cursor_y.saturating_add(1),
-                cursor_x.saturating_add(1)
-            )
-            .as_bytes(),
-        );
+        //
+        // Except when the cursor is holding pending wrap. A cursor at the right
+        // margin has not wrapped yet: the next printable character belongs on
+        // the following row, and CUP is exactly what clears that. ghostty#13876
+        // taught the formatter to restore the flag by reprinting the final cell,
+        // and re-asserting a position on top of that throws the restore away —
+        // the client then overwrites the last cell instead of wrapping, and its
+        // screen diverges from the host's on the very next byte. The formatter's
+        // own restore already leaves the cursor in the right place, so this owes
+        // nothing further.
+        if !check(
+            self.terminal.is_cursor_pending_wrap(),
+            "Terminal::is_cursor_pending_wrap",
+        )? {
+            let cursor_x = check(self.terminal.cursor_x(), "Terminal::cursor_x")?;
+            let cursor_y = check(self.terminal.cursor_y(), "Terminal::cursor_y")?;
+            formatted.extend_from_slice(
+                format!(
+                    "\x1b[{};{}H",
+                    cursor_y.saturating_add(1),
+                    cursor_x.saturating_add(1)
+                )
+                .as_bytes(),
+            );
+        }
         Ok(formatted)
     }
 
