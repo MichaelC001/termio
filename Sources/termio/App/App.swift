@@ -824,7 +824,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// view is rebuilt each call so the requested tab takes effect even when the
     /// window is reused — harmless because every control binds straight to
     /// `AppSettings`, so there is no transient UI state to preserve.
-    func openSettings(initialTab: SettingsTab) {
+    /// Opens Settings ▸ Appearance with the theme store already up — the command
+    /// palette's **Browse Themes…**. Reached via the responder chain like the
+    /// other app actions.
+    @objc func browseThemes(_ sender: Any?) {
+        openSettings(initialTab: .appearance, opensThemeStore: true)
+    }
+
+    func openSettings(initialTab: SettingsTab, opensThemeStore: Bool = false) {
         if settingsWindow == nil {
             let window = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 720, height: 540),
@@ -863,6 +870,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             settings: settings,
             usage: usageMonitor,
             initialTab: initialTab,
+            opensThemeStore: opensThemeStore,
             onSSHConnect: { [weak self] host in
                 guard let self else { return }
                 self.store.addSSHSession(host: host)

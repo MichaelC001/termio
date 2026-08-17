@@ -12,6 +12,9 @@ Termio uses Ghostty-format themes, so anything from the wider Ghostty theme
 ecosystem works. Pick a light and a dark theme from **Settings ▸ Appearance** and
 Termio follows the system between them.
 
+The two slots list the themes you have — Termio's own canvas plus whatever is in
+your Themes folder — not a catalog of hundreds you never chose.
+
 <DocsImage
   src="/screenshots/docs/15-appearance-settings.png"
   alt="Termio Appearance settings with System, Light, and Dark modes and separate light and dark terminal theme slots"
@@ -23,9 +26,22 @@ If you already use Ghostty, there's nothing to pick on a fresh install: Termio
 reads your `~/.config/ghostty/config` on first launch and starts with the font and
 theme you chose there.
 
-To browse the catalog with your terminals as the preview, open the Command Palette
-(`⇧⌘P`) and pick **Change Theme…** — arrowing through the list restyles your open
-terminals live, Return keeps the theme, Escape puts it back.
+## Getting more themes
+
+**Browse Themes…** opens a store of 50 well-known schemes — Dracula, Catppuccin,
+Gruvbox, Rose Pine, Solarized, and the rest — one variant per family, each one
+picked to stay readable through a working day. **Install** writes that theme into
+your Themes folder and selects it in the light or dark slot it belongs to.
+Nothing is downloaded: the schemes ship inside Termio.
+
+If a file of the same name is already in your Themes folder, Install stops and
+asks before replacing it — a theme you dropped in yourself is yours. **Remove**
+deletes the file, and asks first if you have edited it.
+
+To switch between the themes you have with your terminals as the preview, open
+the Command Palette (`⇧⌘P`) and pick **Change Theme…** — arrowing through the
+list restyles your open terminals live, Return keeps the theme, Escape puts it
+back.
 
 <DocsImage
   src="/screenshots/docs/14-change-theme.png"
@@ -34,7 +50,7 @@ terminals live, Return keeps the theme, Escape puts it back.
   height={1664}
 />
 
-To add your own, drop a Ghostty `.toml` theme file into:
+To add a theme the store doesn't carry, drop a Ghostty-format theme file into:
 
 ```
 ~/Library/Application Support/termio/Themes/

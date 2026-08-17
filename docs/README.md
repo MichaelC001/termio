@@ -52,6 +52,7 @@ from the real front matter).
 | approved | design | [Git worktree creation & lifecycle (Codex-aligned)](design/20260706-worktree-creation-lifecycle.md) |
 | approved | design | [Refresh session identity when Claude Code /clear rotates the conversation](design/20260720-clear-conversation-rotation.md) |
 | approved | design | [Worktree information architecture](design/20260628-worktree-information-architecture.md) |
+| approved | rfc | [Theme store — browse 50, install on demand, library is truth](rfcs/theme-store.md) |
 | archived | design | [iOS scroll-draw coalescing (vsync-capped surface draws)](design/20260706-ios-scroll-renderer-health.md) |
 | archived | design | [Sandbox VM —— 原生 per-project 容器（Apple Containerization）](design/20260629-sandbox-vm.md) |
 | archived | essay | ["From IDE to ADE: Sixty Years of Development Environments, and Why the Era Is Ending"](essays/from-ide-to-ade.md) |

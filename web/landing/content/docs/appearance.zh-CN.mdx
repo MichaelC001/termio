@@ -3,7 +3,7 @@ title: 外观
 description: 设置终端主题与字体、调整光标和窗口，并找到 Termio 其余的设置项——全都在一个熟悉的 macOS 设置窗口里。
 x-i18n:
   source_path: appearance.mdx
-  source_hash: 4d950cf23eea003c895983442da834003925a0c1f643eaa463f20b70294485c6
+  source_hash: e8eb9019cf1010d0c4013610aa7653b3cfff28f4016b544cac295f70ff5cf40b
   generated_at: 2026-08-16
 ---
 
@@ -15,6 +15,9 @@ x-i18n:
 Termio 使用 Ghostty 格式的主题，所以 Ghostty 主题生态里的东西都能用。在
 **设置 ▸ 外观** 里各选一个浅色和深色主题，Termio 会跟随系统在两者之间切换。
 
+两个槽位列出的是你手上有的主题——Termio 自带的画布，加上你主题文件夹里的东西——
+而不是几百个你从没挑过的配色。
+
 <DocsImage
   src="/screenshots/docs/15-appearance-settings.png"
   alt="Termio 外观设置显示「系统」「浅色」「深色」模式，以及独立的浅色和深色终端主题槽位"
@@ -25,8 +28,18 @@ Termio 使用 Ghostty 格式的主题，所以 Ghostty 主题生态里的东西�
 如果你本来就在用 Ghostty，全新安装时其实不用挑：Termio 首次启动会读取你的
 `~/.config/ghostty/config`，直接沿用你在那里选好的字体和主题。
 
-想以你自己的终端为预览来浏览整个目录，打开命令面板（`⇧⌘P`）并选择 **更改主题…**——
-在列表里上下移动会实时给你打开的终端重新上色，回车保留，Esc 还原。
+## 获取更多主题 [#getting-more-themes]
+
+**浏览主题…** 会打开一个收录 50 款知名配色的商店——Dracula、Catppuccin、Gruvbox、
+Rose Pine、Solarized 等等——每个系列只留一个变体，每一款都挑得住一整天的阅读。
+**安装** 会把那款主题写进你的主题文件夹，并放进它该在的浅色或深色槽位。全程不联网：
+这些配色本来就在 Termio 里面。
+
+如果主题文件夹里已经有同名文件，安装会先停下来问你要不要替换——你自己放进去的主题是
+你的东西。**移除** 会删掉那个文件；如果你改过它，也会先问一句。
+
+想以你自己的终端为预览，在已有的主题之间切换，打开命令面板（`⇧⌘P`）并选择
+**更改主题…**——在列表里上下移动会实时给你打开的终端重新上色，回车保留，Esc 还原。
 
 <DocsImage
   src="/screenshots/docs/14-change-theme.png"
@@ -35,7 +48,7 @@ Termio 使用 Ghostty 格式的主题，所以 Ghostty 主题生态里的东西�
   height={1664}
 />
 
-要加入你自己的主题，把 Ghostty 的 `.toml` 主题文件放进：
+要加入商店里没有的主题，把 Ghostty 格式的主题文件放进：
 
 ```
 ~/Library/Application Support/termio/Themes/
