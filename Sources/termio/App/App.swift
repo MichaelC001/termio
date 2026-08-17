@@ -936,6 +936,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.addRemoteTerminal(host: alias)
     }
 
+    /// A row of the Device submenu — the machine the sidebar lists and new work goes
+    /// to. An empty represented alias is this Mac, which is the one device with no
+    /// alias to name it.
+    @objc func switchToDevice(_ sender: NSMenuItem) {
+        guard let alias = sender.representedObject as? String else { return }
+        store.switchToDevice(KnownDevice(alias: alias.isEmpty ? nil : alias, deviceID: nil))
+    }
+
     /// A row of the Connect to… submenu — first contact with a machine from
     /// `~/.ssh/config`. Opening a terminal on it is the connection: `termiod` is
     /// installed there if missing, the handshake records which device the alias
@@ -1080,9 +1088,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// when the sidebar is collapsed — matching Finder/Xcode, which drop their sidebar buttons with
     /// the sidebar, and freeing the horizontal room that otherwise forces NSToolbar's `»` overflow.
     /// The paired flexible space (which right-aligns the two against the sidebar divider) is inserted
-    /// and removed *with* them, as is the device switcher that leads the region. When open the region
-    /// reads `toggleNavigator, deviceSwitcher, flex, sortProjects, newTerminal |
-    /// sidebarTrackingSeparator`. Mirrors `setInspectorSwitchVisible`.
+    /// and removed *with* them. When open the region reads `toggleNavigator, deviceSwitcher, flex,
+    /// sortProjects, newTerminal | sidebarTrackingSeparator`. Mirrors `setInspectorSwitchVisible`.
+    ///
+    /// The device switcher is the exception: it does not leave with the sidebar, it *moves* across the
+    /// tracking separator to the head of the content region. A collapsed sidebar is exactly when the
+    /// window is only a terminal, and a terminal looks the same on every machine — dropping the one
+    /// control that says which machine would remove the answer at the moment it is least guessable.
+    /// (Dia does the same with its profile indicator: one mount in the sidebar, another in the tab
+    /// dock for when the sidebar is away.)
     private func setNavigatorItemsVisible(_ visible: Bool) {
         guard let toolbar = window?.toolbar else { return }
         func index(of id: NSToolbarItem.Identifier) -> Int? {
@@ -1094,20 +1108,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSAnimationContext.current.duration = 0
         defer { NSAnimationContext.endGrouping() }
         if visible {
-            guard index(of: .sortProjects) == nil, let sep = index(of: .sidebarTrackingSeparator) else { return }
-            // Insert in reverse at the separator's index so the final order is deviceSwitcher, flex,
-            // sortProjects, newTerminal.
+            guard index(of: .sortProjects) == nil else { return }
+            // Take the switcher off the content side first. It sits after the separator there, so
+            // removing it leaves the separator's index — the anchor every insert below uses — valid.
+            if let content = index(of: .deviceSwitcher) { toolbar.removeItem(at: content) }
+            guard let sep = index(of: .sidebarTrackingSeparator) else { return }
+            // Insert in reverse at that one index so the final order is deviceSwitcher, flex,
+            // sortProjects, newTerminal. Re-reading the separator's index between inserts would walk
+            // it past the items just added and land the switcher against the `+` instead.
             toolbar.insertItem(withItemIdentifier: .newTerminal, at: sep)
             toolbar.insertItem(withItemIdentifier: .sortProjects, at: sep)
             toolbar.insertItem(withItemIdentifier: .flexibleSpace, at: sep)
             toolbar.insertItem(withItemIdentifier: .deviceSwitcher, at: sep)
         } else {
+            // Move the switcher to the content side of the separator — ahead of the window's title,
+            // where it is still on screen with the sidebar away. Done before the guard below, because
+            // at launch with the sidebar already collapsed there are no sidebar buttons to remove and
+            // the switcher still has to land. Skipped when it is already there, so the repeated
+            // collapse callbacks the KVO observer sends don't rebuild it.
+            if let sep = index(of: .sidebarTrackingSeparator),
+               index(of: .deviceSwitcher).map({ $0 < sep }) ?? true {
+                if let i = index(of: .deviceSwitcher) { toolbar.removeItem(at: i) }
+                if let sep = index(of: .sidebarTrackingSeparator) {
+                    toolbar.insertItem(withItemIdentifier: .deviceSwitcher, at: sep + 1)
+                }
+            }
             // Only clean up when the buttons are actually present (nothing to remove at launch with
             // the sidebar already collapsed). Re-find each id after every removal — indices shift.
             guard let sortIdx = index(of: .sortProjects) else { return }
             toolbar.removeItem(at: sortIdx)
             if let i = index(of: .newTerminal) { toolbar.removeItem(at: i) }
-            if let i = index(of: .deviceSwitcher) { toolbar.removeItem(at: i) }
             // Drop the flexible space that right-aligned them (the one just before the sidebar separator).
             if let sep = index(of: .sidebarTrackingSeparator), sep > 0,
                toolbar.items[sep - 1].itemIdentifier == .flexibleSpace {
@@ -1487,6 +1517,24 @@ enum DeviceMenuTag {
     static let newTerminal = 7301
     static let newTerminalAtHome = 7302
     static let connectTo = 7303
+    static let device = 7304
+}
+
+/// The "Device ▸" item — the roster, with the current machine checked, and where the
+/// switch gets a keyboard chord. The toolbar switcher is the same menu in the chrome;
+/// this one exists because a key equivalent only fires from the main menu, and because
+/// a chord nobody can find is a chord nobody presses.
+///
+/// Hidden while this Mac is the only machine (see `refreshDeviceItems`), so the menu
+/// grows the row at the same moment the toolbar grows the control.
+@MainActor
+private func makeDeviceItem() -> NSMenuItem {
+    let item = NSMenuItem(title: localized("Device"), action: nil, keyEquivalent: "")
+    item.tag = DeviceMenuTag.device
+    let submenu = NSMenu(title: localized("Device"))
+    submenu.delegate = NSApp.delegate as? AppDelegate
+    item.submenu = submenu
+    return item
 }
 
 /// The "Connect to… ▸" parent item — the verb that reaches a machine used before,
@@ -1540,6 +1588,8 @@ extension AppDelegate: NSMenuDelegate {
             fillNewSSHMenu(menu)
         case localized("Connect to…"):
             fillConnectToMenu(menu)
+        case localized("Device"):
+            fillDeviceMenu(menu)
         default:
             fillNewChatMenu(menu)
         }
@@ -1561,6 +1611,8 @@ extension AppDelegate: NSMenuDelegate {
                 refreshNewTerminalItem(item, known: known, atHome: true, command: nil)
             case DeviceMenuTag.connectTo:
                 item.isHidden = DeviceRoster.unusedAliases(known: known).isEmpty
+            case DeviceMenuTag.device:
+                item.isHidden = known.count < 2
             default:
                 continue
             }
@@ -1755,6 +1807,28 @@ extension AppDelegate: NSMenuDelegate {
     /// opens a terminal there, which installs `termiod` on the way
     /// (`ensureRemoteReady`) and teaches the app which machine the alias reaches —
     /// after which it is a device and moves out of this menu.
+    /// The Device submenu: one row per known machine, this Mac first, the current one
+    /// checked. The first nine take ⌃⌥⌘1…9 — positional, so they are not in
+    /// `KeyCommandCatalog` with the rebindable commands: what row 2 means changes with
+    /// the roster, and a binding whose target moves is not a binding a user can keep.
+    /// The modifier trio is the one no terminal program can want (Cmd is off-limits to
+    /// a TUI) and that nothing else in termio takes.
+    private func fillDeviceMenu(_ menu: NSMenu) {
+        let known = DeviceRoster.known(in: store)
+        let current = DeviceRoster.current(store, known: known)
+        for (index, device) in known.enumerated() {
+            let item = menu.addItem(
+                withTitle: device.name,
+                action: #selector(switchToDevice(_:)),
+                keyEquivalent: index < 9 ? String(index + 1) : ""
+            )
+            item.keyEquivalentModifierMask = [.control, .option, .command]
+            item.target = self
+            item.representedObject = device.alias ?? ""
+            item.state = device.id == current.id ? .on : .off
+        }
+    }
+
     private func fillConnectToMenu(_ menu: NSMenu) {
         let known = DeviceRoster.known(in: store)
         for alias in DeviceRoster.unusedAliases(known: known) {
@@ -2262,6 +2336,11 @@ private func buildMainMenu() -> NSMenu {
     // knows *about* a machine belongs in Settings. Hidden while there is nothing
     // left to reach.
     fileMenu.addItem(makeConnectToItem())
+    fileMenu.addItem(.separator())
+    // Device ▸ the roster, with ⌃⌥⌘1…9 on the first nine rows. It sits with the other
+    // device verbs rather than in View, because which machine you are on decides where
+    // the next terminal opens as much as what the sidebar lists.
+    fileMenu.addItem(makeDeviceItem())
     fileMenu.addItem(.separator())
     fileMenu.addItem(
         withTitle: localized("Open Project…"),
