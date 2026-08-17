@@ -1034,7 +1034,7 @@ private struct IssueWebView: NSViewRepresentable {
         init(lastHTML: String) { self.lastHTML = lastHTML }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
-                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                     decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
             if navigationAction.navigationType == .linkActivated,
                let url = navigationAction.request.url {
                 NSWorkspace.shared.open(url)
@@ -1105,7 +1105,9 @@ private final class IssueDetailWKWebView: WKWebView {
 /// on the cross-origin redirect to the signed CDN URL, matching `curl -L`'s default,
 /// so the presigned download isn't rejected.)
 final class GitHubAssetSchemeHandler: NSObject, WKURLSchemeHandler {
-    static let scheme = "x-termio-ghasset"
+    // nonisolated so the HTML rewriter, which runs off the main actor, can name
+    // the scheme it rewrites to. The value is an immutable string.
+    nonisolated static let scheme = "x-termio-ghasset"
 
     private var live = Set<ObjectIdentifier>()
     /// The one asset a media element is currently reading, held whole. WebKit walks a video

@@ -51,6 +51,7 @@ enum DebugWindowSnapshot {
         }
     }
 
+    @MainActor
     private static func dump(_ view: NSView, depth: Int, into lines: inout [String]) {
         let indent = String(repeating: "  ", count: depth)
         var bits = "\(indent)\(type(of: view)) frame=\(view.frame)"

@@ -380,7 +380,9 @@ final class CompanionServer {
                     break
                 }
             }
-            self?.receive(on: connection)
+            // Re-arm on the main actor like every other branch above: the callback
+            // itself runs on the network queue, and `receive` reads main-actor state.
+            Task { @MainActor in self?.receive(on: connection) }
         }
     }
 

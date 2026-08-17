@@ -68,6 +68,7 @@ enum LanguageOverride {
     /// Relaunches the bundled app by handing the reopen to a detached `open`
     /// that outlives the process; unbundled (`swift run`) there is nothing to
     /// reopen, so it just terminates.
+    @MainActor
     static func relaunch() {
         let bundleURL = Bundle.main.bundleURL
         if bundleURL.pathExtension == "app" {

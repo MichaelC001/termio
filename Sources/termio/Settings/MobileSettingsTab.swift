@@ -320,7 +320,7 @@ struct MobileSettingsTab: View {
                 addr, socklen_t(addr.pointee.sa_len),
                 &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST
             ) == 0 else { continue }
-            let ip = String(cString: host)
+            let ip = String(decoding: host.prefix { $0 != 0 }.map(UInt8.init(bitPattern:)), as: UTF8.self)
             if !ip.hasPrefix("169.254."), !addresses.contains(ip) {
                 addresses.append(ip)
             }

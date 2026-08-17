@@ -214,7 +214,7 @@ private struct TraceWebView: NSViewRepresentable {
         init(lastHTML: String) { self.lastHTML = lastHTML }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
-                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                     decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
             if navigationAction.navigationType == .linkActivated,
                let url = navigationAction.request.url, url.scheme != "about" {
                 NSWorkspace.shared.open(url)
