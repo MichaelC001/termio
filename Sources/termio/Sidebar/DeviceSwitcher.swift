@@ -171,8 +171,12 @@ struct DeviceSwitcherToolbarView: View {
         }
     }
 
+    // Matched to the sidebar toolbar's native glyphs (the `+` new-terminal item, the
+    // sort pull-down): those are bordered `NSToolbarItem`s, which tint their template
+    // symbol at full-strength `labelColor`, so the device name sits at `.primary` to
+    // read as one control band with them rather than a dimmer `.secondary` label.
     private var color: Color {
-        controlActive == .inactive ? Color(nsColor: .disabledControlTextColor) : .secondary
+        controlActive == .inactive ? Color(nsColor: .disabledControlTextColor) : .primary
     }
 }
 
