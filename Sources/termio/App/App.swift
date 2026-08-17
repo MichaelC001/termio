@@ -1571,39 +1571,17 @@ extension AppDelegate: NSMenuDelegate {
         atHome: Bool,
         command: KeyCommandID?
     ) {
-        let localAction = atHome
+        // Always a plain verb, however many machines are known. New Terminal
+        // opens on the device you are looking at — the switcher already made
+        // that choice, and asking again turns one decision into two. It also
+        // kept the count of known machines visible in a menu that is about
+        // starting a shell, not about picking a computer.
+        item.submenu = nil
+        item.action = atHome
             ? #selector(newScratchTerminal(_:))
             : #selector(newTerminalHere(_:))
-        guard known.count > 1 else {
-            item.submenu = nil
-            item.action = localAction
-            item.target = self
-            if let command { item.applyShortcut(for: command) }
-            return
-        }
-        item.action = nil
-        item.target = nil
-        item.keyEquivalent = ""
-        item.keyEquivalentModifierMask = []
-        let current = DeviceRoster.current(settings, known: known)
-        let submenu = NSMenu(title: item.title)
-        for device in known {
-            let row: NSMenuItem
-            if let alias = device.alias {
-                row = submenu.addItem(
-                    withTitle: device.name,
-                    action: #selector(newRemoteTerminalHost(_:)),
-                    keyEquivalent: ""
-                )
-                row.representedObject = alias
-            } else {
-                row = submenu.addItem(
-                    withTitle: device.name, action: localAction, keyEquivalent: "")
-            }
-            row.target = self
-            if let command, device.id == current.id { row.applyShortcut(for: command) }
-        }
-        item.submenu = submenu
+        item.target = self
+        if let command { item.applyShortcut(for: command) }
     }
 
     /// Fills the Session menu: the cycling and close verbs, then a live jump

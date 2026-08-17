@@ -58,19 +58,70 @@ enum DeviceRoster {
             + unusedAliases(known: known).map { KnownDevice(alias: $0, deviceID: nil) }
     }
 
-    /// The device new work lands on, resolved against the machines that actually
+    /// The device the app is on, resolved against the machines that actually
     /// exist. A stored alias that no longer matches anything (the user deleted the
     /// `Host` block, or closed the last session on it) falls back to this Mac
     /// rather than silently aiming at nothing.
-    static func current(_ settings: AppSettings, known: [KnownDevice]) -> KnownDevice {
-        known.first { $0.alias == settings.currentDeviceAlias } ?? known[0]
+    static func current(_ store: TermioStore, known: [KnownDevice]) -> KnownDevice {
+        known.first { $0.alias == store.currentDeviceAlias } ?? .thisMac
     }
 }
 
-/// The sidebar's device indicator: which machine new work lands on, and the
-/// switcher that changes it. Quiet by design — it names the device and nothing
-/// else — and absent entirely while this Mac is the only one, so a user who never
-/// leaves their laptop never sees it.
+/// The rows every device switcher shows, wherever it is mounted — the sidebar's
+/// indicator and the window's own device badge are two openings onto the same
+/// menu, because there is one current device and it would be a bug for two
+/// controls to disagree about it.
+struct DeviceSwitcherMenuContent: View {
+    @EnvironmentObject var store: TermioStore
+
+    var body: some View {
+        let known = DeviceRoster.known(in: store)
+        let unused = DeviceRoster.unusedAliases(known: known)
+        // An inline Picker is what draws the checkmark on the current device; a
+        // row of Buttons would leave the switcher unable to say which machine is
+        // selected.
+        Picker("", selection: selection) {
+            ForEach(known) { device in
+                Text(device.name).tag(device.id)
+            }
+        }
+        .pickerStyle(.inline)
+        .labelsHidden()
+        Divider()
+        Button(localized("Refresh")) { store.refreshDeviceSessions() }
+        if !unused.isEmpty {
+            Divider()
+            Menu(localized("Connect to…")) {
+                ForEach(unused, id: \.self) { alias in
+                    Button(alias) { connect(to: alias) }
+                }
+            }
+        }
+    }
+
+    private var selection: Binding<String> {
+        Binding(
+            get: { store.currentDeviceAlias ?? "" },
+            set: { alias in
+                store.switchToDevice(
+                    KnownDevice(alias: alias.isEmpty ? nil : alias, deviceID: nil))
+            }
+        )
+    }
+
+    /// First contact with a machine from `~/.ssh/config`: enter it, then open a
+    /// terminal on it — which is what installs `termiod` there if it is missing.
+    /// Reaching for a box is also saying that is where you are about to work.
+    private func connect(to alias: String) {
+        store.switchToDevice(KnownDevice(alias: alias, deviceID: nil))
+        store.addRemoteTerminal(host: alias)
+    }
+}
+
+/// The sidebar's device indicator: which machine you are on, and the switcher
+/// that changes it. Quiet by design — it names the device and nothing else — and
+/// absent entirely while this Mac is the only one, so a user who never leaves
+/// their laptop never sees it.
 struct DeviceIndicator: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
@@ -81,28 +132,10 @@ struct DeviceIndicator: View {
         // there is no switch to make, and a row that always reads "This Mac" is a
         // label for a decision the user never took.
         if known.count > 1 {
-            let current = DeviceRoster.current(settings, known: known)
-            let unused = DeviceRoster.unusedAliases(known: known)
+            let current = DeviceRoster.current(store, known: known)
             Divider()
             Menu {
-                // An inline Picker is what draws the checkmark on the current
-                // device; a row of Buttons would leave the switcher unable to say
-                // which machine is selected.
-                Picker("", selection: selection) {
-                    ForEach(known) { device in
-                        Text(device.name).tag(device.id)
-                    }
-                }
-                .pickerStyle(.inline)
-                .labelsHidden()
-                if !unused.isEmpty {
-                    Divider()
-                    Menu(localized("Connect to…")) {
-                        ForEach(unused, id: \.self) { alias in
-                            Button(alias) { connect(to: alias) }
-                        }
-                    }
-                }
+                DeviceSwitcherMenuContent()
             } label: {
                 HStack(spacing: 6) {
                     HugeIconView(icon: .serverStack, size: 13, color: .secondary)
@@ -122,24 +155,8 @@ struct DeviceIndicator: View {
             .menuIndicator(.hidden)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .help(localized("New terminals open on this device"))
+            .help(localized("The sidebar shows this device’s sessions"))
         }
-    }
-
-    private var selection: Binding<String> {
-        Binding(
-            get: { settings.currentDeviceAlias ?? "" },
-            set: { settings.currentDeviceAlias = $0.isEmpty ? nil : $0 }
-        )
-    }
-
-    /// First contact with a machine from `~/.ssh/config`: open a terminal on it
-    /// (which installs `termiod` there if it is missing) and make it the current
-    /// device, so the connection the user just asked for is also where their next
-    /// terminal goes.
-    private func connect(to alias: String) {
-        settings.currentDeviceAlias = alias
-        store.addRemoteTerminal(host: alias)
     }
 }
 
