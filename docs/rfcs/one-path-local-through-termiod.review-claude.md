@@ -30,7 +30,13 @@ every dirty count and every ahead-of-`origin/main` count and they all match, the
 1,415-lines-across-13-files figure is exact, and `DeviceSwitcher.swift` really is
 byte-identical between two worktrees (`c51f8eca…`).
 
-Four things must be fixed before anyone builds from it:
+> **Editor's note, 2026-08-17.** F4 is **struck**: issue #311 closed the same day
+> this review was written, `swift test --filter TermiodStatusTests` runs locally
+> (10 tests, 0 failures) and CI's `Test` step is green on `main` at `7206463`, so
+> both criteria F4 called unrunnable are executable. The rest of the review
+> stands; the RFC's revision addresses it. Three blockers, not four.
+
+~~Four~~ **Three** things must be fixed before anyone builds from it:
 
 1. **Stage 2's central criterion asks the daemon for something it cannot do.**
    Sessions do not survive a daemon restart — `tombstone.rs:178-211` buries every
@@ -45,10 +51,11 @@ Four things must be fixed before anyone builds from it:
    the largest single item.** Two open PRs touch `CompanionServer.swift`, and a
    third change to it sits committed-but-unpushed in a `/private/tmp` worktree.
    **(F3)**
-4. **Stage 0's first criterion cannot be run** (Swift tests do not run — issue
+4. ~~**Stage 0's first criterion cannot be run** (Swift tests do not run — issue
    #311 is open — and the "+51 lines of smoke" it cites do not exist), and neither
-   can Stage 5's. **(F4)** The genuinely unrecoverable step is Stage 0, not
-   Stage 5. **(F5)**
+   can Stage 5's.~~ **(F4 — struck, see the note above; the "+51 lines of smoke"
+   half was right and the RFC drops that phrase.)** The genuinely unrecoverable
+   step is Stage 0, not Stage 5. **(F5)**
 
 Fix those and the ladder is sound. §3, §4 and §7.2's boundary are the strongest
 parts and I found no design regression against the four invariants — the daemon
@@ -261,9 +268,20 @@ insertions across 13 files is exact. The `__pycache__` claim about PR #317 is
 exact (6 `.pyc` files). This finding is that the table stopped one `git worktree
 list` short, not that it is careless.
 
-### F4 — Stage 0's first criterion and Stage 5's criterion cannot be run
+### ~~F4 — Stage 0's first criterion and Stage 5's criterion cannot be run~~ (STRUCK)
 
-**属实 · high · issue #311 (open), `git show --stat`**
+**不属实 · struck 2026-08-17 · issue #311 is CLOSED**
+
+**This finding is wrong and is retained only as a record.** Issue #311 closed at
+12:19 on the day of this review; `swift test --filter TermiodStatusTests` runs
+locally (10 tests, 0 failures) and the `Test` step is green in the macOS workflow
+on `main`. Both criteria F4 called unrunnable are executable today and need no
+change. The one true half — that the "+51 lines of smoke" do not exist — survives
+in the citation audit above; the RFC drops the phrase.
+
+The original text follows.
+
+**~~属实~~ · high · issue #311 (open), `git show --stat`**
 
 The RFC opens §8 with "Each stage … carries a criterion that can be **run**. 'It
 compiles' is not a criterion anywhere below." Then:
@@ -623,7 +641,8 @@ non-negotiable), programmatic injection leaves the surface (right). `focus` and
   which is the one supervising agents actually rely on. Name the degrade, or
   resolve open question 3 before Stage 6 ships `send`.
 
-**Migration stages (§8).** F4 (two stages gate on a suite that does not compile),
+**Migration stages (§8).** ~~F4 (two stages gate on a suite that does not
+compile)~~ (struck),
 F5 (Stage 0 is the unrecoverable step, not Stage 5), F1 (Stage 2's criterion is
 unachievable), F13 (Stage 1's `codesign` line). The stages that *are* well
 specified: Stage 3's criteria are excellent — the "daemon built without the field
