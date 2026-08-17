@@ -487,6 +487,38 @@ that trade is acceptable.
    (`TermiodClient.swift:73-79`) — a dev-tree path relative to a cwd a
    Finder-launched app does not have. **A released build today cannot start a
    daemon at all.** This must be first.
+
+   **Copying the file in is the small half.** Inside the bundle the daemon is
+   the first nested Mach-O other than Sparkle, and each of three consequences is
+   work this item has been counting as free:
+
+   - **Inside-out signing.** `build-app.sh` seals Sparkle's four helpers, then
+     the framework, then the app (`:264-274`), because the comment at `:250-251`
+     records that codesign rejects the bundle in any other order. The daemon
+     needs the same identity and the same `--options runtime` (`:252-258`)
+     *before* the outer seal, or the `notarytool submit` in `release.yml:116-131`
+     rejects the submission. Note also that the verification line is `codesign
+     --verify --deep --strict` (`build-app.sh:275`): `--deep` is deprecated for
+     verification and does not check nested code the way its name suggests, so
+     adding nested code makes that line actively misleading. Stage 1's criterion
+     drops it.
+   - **Slicing.** The release app is `lipo`'d from an arm64 and an x86_64 slice
+     and refuses to ship if either is missing (`build-app.sh:122`, `:148-161`);
+     the dev channel builds the host arch alone (`:123`). Nothing builds a macOS
+     x86_64 `termiod`. `termiod.yml` runs `cargo build` host-native (`:98`) and
+     cross-compiles exactly one release target,
+     `aarch64-unknown-linux-musl` (`:122`); `release.yml` has no Rust step at
+     all. An arm64-only daemon inside a universal app is an Intel Mac that
+     cannot open a terminal — and after Stage 5 that is *every* terminal.
+   - **TCC responsibility.** Today the daemon is `posix_spawn`ed by the app
+     (`TermiodClient.swift:369-406`), so it and its PTY children run under the
+     identity the user already granted. Under launchd (item 4) it is its own
+     responsible process. This repo already reasons in exactly those terms —
+     `docs/design/20260713-loose-terminal-entity.md:143-146` forbids walking
+     down from `$HOME` because the resulting prompts are "attributed to Termio
+     as the responsible process" — and after Stage 7 it is the daemon, not the
+     app, doing the walking. **I did not test this**, so it is a risk row in §9
+     and a first-launch check in Stage 1, not an asserted regression.
 2. **Dev and release share a daemon.** Nothing sets `TERMIOD_SOCK` per channel,
    and both apps derive the socket from the same `TMPDIR`
    (`TermiodClient.swift:55-68`). Today that is harmless because the flag is off
@@ -494,6 +526,26 @@ that trade is acceptable.
    kill — the release app's sessions. Device architecture §9.1 assumes these are
    two devices; the code makes them one. *(Inferred from the path derivation, not
    yet observed; Stage 1's criteria test it.)*
+
+   **The socket is one axis; the launchd job is a second, and item 4 activates
+   it.** `service.rs` has a single `LABEL = "sh.termio.termiod"` (`:26`), which
+   is also the plist filename (`:44-47`) and the `gui/$UID/…` target
+   (`domain_target()` at `:116-118`, used at `:146`, `:162`, `:184`). Every
+   other per-machine artifact this app owns is channel-scoped off one bundle-id
+   read — support directory, `~/.termio[-dev]`, URL scheme, companion port, CLI
+   name (`AppChannel.swift:24`, `:46`, `:57`, `:69`, `:76`;
+   `SessionControl.swift:798`). The daemon's are not. Compose that with item 4
+   and the channels repair each other's job on every launch: `termio.app` points
+   `sh.termio.termiod` at its copy, `termio-dev.app` points it back, and
+   `KeepAlive` respawns whichever won. A per-channel `TERMIOD_SOCK` fixes the
+   rendezvous and leaves one job, one plist and one label for two apps to fight
+   over.
+
+   Not free either: `install()` takes no argument for *what* to install. It
+   plists whatever binary ran the command — `std::env::current_exe()`
+   (`resolved_binary()` at `service.rs:101-107`, called from `install()` at
+   `:135,140`). Installing a job for the app's bundled copy needs a new
+   `--binary`, and a per-channel job needs a `--label` beside it.
 3. **No systemd unit.** `termiod service` bails on non-macOS with a message
    naming what to do by hand (`service.rs:121-127`). A Linux user daemon without
    `loginctl enable-linger` is killed at logout, so sessions silently die between
@@ -564,6 +616,52 @@ that trade is acceptable.
      update or a move to another folder invalidates — and `KeepAlive` keeps
      respawning whatever is at that path. Installing the job is therefore also
      *repairing* it, on every launch.
+9. **A Sparkle update leaves the previous daemon running, and the only remedy
+   buries every session.** Item 8's second bullet is about the *path* an update
+   invalidates. This is about the *process*, and it is worse, because it is the
+   normal path rather than a corner.
+
+   Nothing stops the daemon on quit, deliberately: `terminateAllSessions`
+   detaches the termiod links and kills only the in-process PTYs, and the
+   comment says why — "surviving the quit is their whole point"
+   (`TermioStore.swift:756-761`). Nothing stops it on update either. Sparkle
+   swaps the `.app` under a running process (`App.swift:54-60`,
+   `release.yml:133-165`) and the daemon is a separate process in its own
+   session (`POSIX_SPAWN_SETSID`, `TermiodClient.swift:369-406`), so the state
+   after every auto-update is a new app talking to the old build's daemon —
+   and `serve()` refuses to start a second one while the socket still answers
+   (`daemon.rs:313-317`).
+
+   Both horns of that are bad, and today we sit on the quiet one:
+
+   - **No gate, so skew is silent.** The handshake already carries the daemon's
+     build string — `HelloOk.host` is `termiod/<version> <os>-<arch>`
+     (`daemon.rs:511-516`) — and the client records it and logs it
+     (`TermiodClient.swift:940`, `TermioStore+Termiod.swift:306-312`) and
+     compares it to nothing. Only `proto` is negotiated, and the client sends
+     `proto == min_proto == 1` (`TermiodClient.swift:928-929`). A *field* the
+     new app expects and the old daemon omits degrades correctly by §3.2's skew
+     rule. A changed *behaviour* on either side does not, and nothing reports it.
+   - **A gate, so the update is an outage.** The day the app raises `min_proto`
+     — open question 9 — `hello` hard-refuses, and every session on the Mac is
+     refused at once. The only way to clear it is restarting the daemon, and
+     item 7 prices that: every live session buried as `daemon_lost`
+     (`tombstone.rs:184`, burial loop `:194-201`).
+
+   Two otherwise-correct behaviours agreeing produce a shipped-product outage,
+   and it arrives the day the daemon ships inside the bundle, because that is
+   the day the version pair stops being a developer's checkout and becomes ours.
+   Stage 1 must pick one of three, and say which:
+
+   - **Drain and restart**, at a moment the app knows is quiet — which after
+     item 7 means "no live sessions", so it is not a mitigation, it is a wait.
+   - **A compatibility window**: accept an older daemon at the same `proto`,
+     surface it, and restart on the user's word rather than on launch. Cheapest,
+     and it is the option a `min_proto` gate forecloses.
+   - **Updates end sessions**, stated out loud — in which case the user is told
+     *before* Sparkle relaunches, the way the language switch already warns that
+     "Running terminal sessions will end" (`LanguageSetting.swift:127`), not
+     after.
 
 ### 5.3 Is a tombstone enough?
 
@@ -657,6 +755,15 @@ This is a separate axis from the PTY fork and deserves its own stage. It is not
 scripts/termio (shell)  →  session-control.sock  →  TermioStore+SessionControl.swift  (Swift, 927 lines)
 termiod        (Rust)   →  termiod.sock          →  termiod/src/                      (Rust)
 ```
+
+**Merging the two binaries — shipping `termiod` *as* `termio` — was proposed and
+rejected.** A hook does not name a binary: `reportCommand` bakes an absolute
+Application Support path plus a subcommand and up to four flags
+(`HookListener.swift:285-316`, path at `:289,330-331`), so a rename repairs
+nothing it is supposed to repair; and a daemon named `termio` copied into
+Application Support lands on `…/termio[-dev]/bin/termio`, the exact path the hook
+CLI already owns (`SessionControl.swift:798,828-830`). The fork this section is
+about is which *server* the CLI talks to, not what the binary is called.
 
 ### 7.1 What the client cannot supply at any price
 
@@ -890,12 +997,21 @@ parallel. The companion work cannot.
 Nothing below is safe until a released app can start a daemon.
 
 1. Build `termiod` in `release.yml` and copy it into the bundle
-   (`Contents/Resources/termiod` or `Contents/MacOS/`); sign and notarize it
-   with the app.
+   (`Contents/Resources/termiod` or `Contents/MacOS/`). Three parts, none of
+   them a line of `cp` (§5.2 item 1): a **universal** daemon, `lipo`'d from an
+   arm64 and an `x86_64-apple-darwin` slice and checked the way
+   `build-app.sh:152-161` already checks the app's own; **signed before the
+   outer seal** with the same identity and `--options runtime`, in the
+   inside-out order `build-app.sh:264-274` establishes; and carried through
+   notarization with the DMG.
 2. `daemonBinaryPath()` resolves the bundled binary first, then
    `TERMIO_TERMIOD_BIN`, and only then the dev tree.
-3. Derive `TERMIOD_SOCK` per channel so `termio-dev` and `termio` are two
-   devices, as device arch §9.1 already assumes.
+3. Make the daemon channel-scoped on **both** axes (§5.2 item 2): derive
+   `TERMIOD_SOCK` per channel so `termio-dev` and `termio` are two devices, as
+   device arch §9.1 already assumes, *and* give the launchd job a per-channel
+   label, since `service.rs:26` has exactly one. That needs `termiod service
+   install --label` and `--binary`, because `install()` today can only plist the
+   binary that invoked it (`service.rs:101-107,135,140`).
 4. **The app installs or repairs the launchd job on first launch**, instead of
    `posix_spawn`ing the daemon and hoping. Repair, not just install, because the
    plist pins an absolute path (`service.rs:101-107`) that an app update or a
@@ -904,21 +1020,53 @@ Nothing below is safe until a released app can start a daemon.
    bootstrapping the job fails.
 5. Ship the systemd `--user` unit + `enable-linger` guidance as
    `termiod service install` on Linux.
+6. **Answer what an update does to the running daemon** (§5.2 item 9) and
+   implement the answer here, not after the first release that ships one. The
+   recommendation is the compatibility window: the app compares `HelloOk.host`
+   (`daemon.rs:511-516`) against its own build, and an older same-`proto` daemon
+   is accepted with a visible "restart to finish updating" affordance rather
+   than refused. Whatever is chosen, `min_proto` must not be raised in the same
+   release that first bundles the daemon.
 
 **Criteria (run, not read):**
 - On a machine with no checkout: install the notarized `.app`, launch it from
   Finder, open a terminal, and `termiod service status` reports a live socket;
   `ps -o comm= -p <daemon pid>` resolves to a path inside the `.app` bundle.
-- `kill -9` the daemon; `launchctl print gui/$UID/sh.termio.termiod` shows it
-  respawned and `termiod list` answers. (This is the criterion that proves item 4
-  — the current build fails it, because nothing bootstraps the job.)
+- `kill -9` the daemon; `launchctl print gui/$UID/<this channel's label>` shows
+  it respawned and `termiod list` answers. (This is the criterion that proves
+  item 4 — the current build fails it, because nothing bootstraps the job.)
+- `lipo -archs termio.app/Contents/Resources/termiod` prints both `arm64` and
+  `x86_64` — the same check `build-app.sh:152-161` already runs on the app
+  binary, applied to the daemon. Runs on any checkout, no credentials.
 - `codesign --verify --strict --verbose=4 termio.app` passes with the daemon
-  inside, and `spctl -a -vvv -t exec termio.app` accepts the notarized build.
+  inside, `codesign -d --verbose=2 termio.app/Contents/Resources/termiod` reports
+  the same Developer ID authority as the app and `flags=…(runtime)`, and
+  `spctl -a -vvv -t exec termio.app` accepts the notarized build.
   Not `--deep`: Apple deprecated it for verification and it does not check nested
-  code the way the flag name suggests. **Maintainer- or CI-only** — the rest of
-  this stage's criteria need notarization credentials.
+  code the way the flag name suggests — which also means `build-app.sh:275` stops
+  being the thing that proves anything once there is nested code to miss.
+  **Maintainer- or CI-only**, along with the notarization criteria below: they
+  need the Developer ID identity and the App Store Connect key.
+- The `notarytool log` for the release submission lists **zero** issues against
+  `Contents/Resources/termiod`. A daemon signed after the outer seal, or without
+  the hardened runtime, fails here rather than on a user's DMG. **Maintainer- or
+  CI-only.**
+- First launch from a fresh user account with the launchd job installed: open a
+  session, `cd ~/Desktop`, `ls`. No TCC prompt attributed to `termiod` appears,
+  and `log show --predicate 'subsystem == "com.apple.TCC"' --last 5m` names no
+  denial. This is the check §5.2 item 1's third bullet refuses to assert an
+  answer to; if it fails, the daemon needs the app as its responsible process
+  and item 4's launchd job is wrong on macOS.
 - Launch `termio-dev` and `termio` together; each `termiod list` returns a
-  disjoint session set, and `hello_ok.host_id` differs between them.
+  disjoint session set, `hello_ok.host_id` differs between them, and
+  `ls ~/Library/LaunchAgents | grep termiod` shows **two** plists whose
+  `ProgramArguments` point into their own bundles. Relaunch each app three times
+  in alternation and both plists still do.
+- Install the previous release, open a session, then let Sparkle update in place
+  and relaunch. Sessions still open (the compatibility window of item 6), the app
+  says the daemon is behind, and taking the restart it offers is the *only* thing
+  that produces a `daemon_lost` tombstone. Nothing is buried by the update
+  itself.
 - On Linux: `termiod service install`, `loginctl terminate-user $USER`, log back
   in, `termiod list` still shows the session created before logout.
 
@@ -1126,7 +1274,11 @@ way the git pane will name its missing history verbs.
 | **The companion breaks silently** | `PTYBridge` is typed on the concrete class, uses twelve of its members, and no test covers the phone (§1.5) | Stage 4 gates Stage 5, with real-device criteria for the cold attach, the replay cap and the exit fan-out |
 | **Anti-100× regression** | Adding foreground sampling and a status source to the daemon puts new work near the read loop | Every new sampler runs on its own task; the criterion is the existing `bench_100x.py` staying within its current band, run in CI before and after Stage 3 |
 | **`termio sessions` breaks an agent's script** | It is a published contract with a documented JSON shape, and one field (`cwd`) changes meaning rather than shape | Per-verb routing with the legacy branch alive; Stage 6's compatibility criterion compares **values** on a session that has `cd`'d, not just field names |
-| **Dev and release fight over one session table** | Same socket derivation (§5.2 item 2) | Stage 1 item 3, with a criterion that checks `host_id` differs |
+| **Dev and release fight over one session table** | Same socket derivation, *and* a single launchd label, plist and target (`service.rs:26`, `:44-47`, `:116-118`) that item 4 then makes both apps rewrite on every launch (§5.2 item 2) | Stage 1 item 3 on both axes, with criteria that check `host_id` differs **and** that two plists survive alternating relaunches |
+| **The daemon ships but the bundle does not pass notarization** | It is the first nested Mach-O other than Sparkle; signing is inside-out and order-dependent, and `--deep` verification does not catch nested code (§5.2 item 1) | Stage 1 item 1 signs it before the outer seal with `--options runtime`; the criteria check the authority, the runtime flag, and a clean `notarytool log` |
+| **An arm64-only daemon inside a universal app** | The app `lipo`s two slices and fails loudly if one is missing (`build-app.sh:152-161`); nothing builds a macOS `x86_64` `termiod` at all (`termiod.yml:98,122`, no Rust step in `release.yml`) | Same check, applied to the daemon: `lipo -archs` in Stage 1's criteria, runnable without credentials |
+| **The daemon becomes its own TCC responsible process** | Under launchd it is, and this repo already writes rules keyed on that attribution (`docs/design/20260713-loose-terminal-entity.md:143-146`); after Stage 7 the daemon does the directory walking | Untested — Stage 1 carries a fresh-account first-launch check, and a failure means the launchd job is the wrong shape on macOS, not that the check was pessimistic |
+| **A Sparkle update takes every session down** | Nothing stops the daemon on quit or on update (`TermioStore.swift:756-761`), a second one refuses to start (`daemon.rs:313-317`), and the only remedy buries the roster (§5.2 items 7 and 9) | Stage 1 item 6 decides it before the daemon ever ships: a compatibility window, no `min_proto` raise in the bundling release, and a criterion that updates in place from the previous release |
 | **Panels regress for local projects** | Stage 7 replaces a working local path with a round trip | `fs.list` replies are `seq`-stamped and clients cache indefinitely (§C.12), so a visited directory is 0-RTT; the criterion measures the cold expansion, and the local socket makes it sub-millisecond |
 
 ---
@@ -1172,4 +1324,8 @@ way the git pane will name its missing history verbs.
    clients is listed as a human product call in the protocol doc's top five and
    is still open. It becomes load-bearing the day the daemon ships in the app,
    because then the version pair is *ours* and the skew window is a user's
-   upgrade lag rather than a developer's checkout.
+   upgrade lag rather than a developer's checkout. §5.2 item 9 narrows it to one
+   rule that has to hold whatever the policy turns out to be: do not raise
+   `min_proto` in the release that first bundles the daemon, because a running
+   old daemon is guaranteed on that upgrade and refusing it refuses every
+   session on the Mac.
