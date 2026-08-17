@@ -139,6 +139,7 @@ final class AppSettings: ObservableObject {
         static let recentProjects = "welcome.recentProjects"
         static let lastChatAgent = "chats.lastAgent"
         static let defaultChatAgent = "chats.defaultAgent"
+        static let currentDevice = "devices.current"
     }
 
     // MARK: Appearance
@@ -213,6 +214,18 @@ final class AppSettings: ObservableObject {
     /// which also falls back gracefully when the pinned agent is later disabled.
     @Published var defaultChatAgentID: String? {
         didSet { store.set(defaultChatAgentID, forKey: Key.defaultChatAgent) }
+    }
+
+    /// The device new terminals open on, held as the `~/.ssh/config` alias that
+    /// reaches it — `nil` for this Mac. It is a route, not an identity: the stable
+    /// one is the daemon's `host_id`, and only a handshake knows it, while this has
+    /// to answer the instant a menu is built.
+    ///
+    /// State rather than a preference (it is a place, not a taste), so it lives in
+    /// `defaults` and never reaches `settings.json`. An alias that no longer
+    /// matches a known machine resolves back to this Mac — see `DeviceRoster`.
+    @Published var currentDeviceAlias: String? {
+        didSet { defaults.set(currentDeviceAlias, forKey: Key.currentDevice) }
     }
 
     /// The most a project can be opened is capped so the Recent column stays a
@@ -605,6 +618,7 @@ final class AppSettings: ObservableObject {
             .flatMap { try? JSONDecoder().decode([RecentProject].self, from: $0) } ?? []
         lastChatAgentID = defaults.string(forKey: Key.lastChatAgent)
         defaultChatAgentID = store.string(Key.defaultChatAgent)
+        currentDeviceAlias = defaults.string(forKey: Key.currentDevice)
 
         materializeSelectedThemes()
     }

@@ -286,7 +286,17 @@ extension TermioStore {
     /// another `Terminal N` row there and selects it (the same grow-in-place a
     /// project's own header buttons do). The section persists like any project, so
     /// it reappears on relaunch (the shells themselves restart fresh).
-    func addScratchTerminal() { addScratchSession(agent: .terminal) }
+    func addScratchTerminal() {
+        // On the device you are looking at, not on whichever machine happens to
+        // run the app. Without this the verb silently means "on this Mac" while
+        // the sidebar shows another device's world — the same class of mismatch
+        // that let an environment variable turn local terminals remote.
+        if let alias = currentDevice.alias {
+            addRemoteTerminal(host: alias)
+            return
+        }
+        addScratchSession(agent: .terminal)
+    }
 
     /// Opens a terminal where the user already is — New Terminal (⌘T). The shell
     /// starts in the focused session's working directory and the row lands beside it:
@@ -300,6 +310,13 @@ extension TermioStore {
     /// to the session's own anchor — and to `$HOME` with nothing focused, which is
     /// what New Terminal at Home does on purpose.
     func addTerminalHere() {
+        // "Here" is a directory on this Mac and does not exist on another
+        // machine, so on a remote device the verb degrades to that device's
+        // `$HOME` rather than pointing at a path that isn't there.
+        if let alias = currentDevice.alias {
+            addRemoteTerminal(host: alias)
+            return
+        }
         guard let id = selectedSessionID,
               let project = project(for: id),
               let session = session(id) else {
@@ -399,7 +416,7 @@ extension TermioStore {
     /// survives a rename and two sessions on the same box always land together.
     ///
     /// `remoteRoot` records where on that box the sessions work; the first caller to
-    /// name a real directory wins (a `Clone on Remote…` knows the checkout path, a
+    /// name a real directory wins (a `Clone to <device>…` knows the checkout path, a
     /// bare terminal only knows `~`), so opening a shell later never demotes a host
     /// that already points at a repo.
     @discardableResult

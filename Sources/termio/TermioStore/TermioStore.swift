@@ -37,6 +37,12 @@ final class TermioStore: ObservableObject {
                 applyInspectorState(selectedSessionID.flatMap { inspectorStates[$0] } ?? InspectorState())
             }
             if let id = selectedSessionID {
+                // Looking at a session is being on its machine. Every path that
+                // moves the selection — a deep link, the palette, a notification,
+                // a split, a freshly opened remote terminal — lands here, so this
+                // is the one place the context has to follow, and the window can
+                // never name one device while showing another's terminal.
+                enterDevice(of: id)
                 // A mid-turn `.working` keeps its spinner; only the resting
                 // "your turn" states are answered by looking.
                 markSeen(id)
@@ -709,6 +715,37 @@ final class TermioStore: ObservableObject {
     /// session's attach channel into the local termiod daemon, which owns the
     /// PTY so the session outlives this app instance.
     var termiodLinks: [Session.ID: TermiodSessionLink] = [:]
+    /// Why a termiod session died, keyed by the daemon's session name — which,
+    /// for sessions this app created, is the `Session.ID` uuid string. Learned
+    /// from the roster reply (`Termiod.roster`), which carries the daemon's
+    /// graveyard alongside the live list.
+    ///
+    /// A session that is simply *missing* is indistinguishable from one that
+    /// never existed; a tombstone is the difference between "gone" and "the
+    /// daemon died under it while your agent was mid-turn". Read it with
+    /// `termiodEndReason(for:)`.
+    var termiodTombstones: [String: Termiod.SessionTombstone] = [:]
+
+    /// Which device the app is looking at, as the alias that reaches it (`nil` is
+    /// this Mac). **The** context: the sidebar, the window chrome, and every panel
+    /// added later read `currentDevice` rather than deciding for themselves.
+    ///
+    /// It lives here and not in `AppSettings` because it is live state with
+    /// consequences, not a preference — settings keeps a copy purely so the next
+    /// launch starts where this one ended. Written only through
+    /// `switchToDevice(_:)`, which moves the selection and the roster with it.
+    @Published var currentDeviceAlias: String?
+
+    /// What the current device last said is running on it. `unavailable` until a
+    /// device has been asked, which is also the resting state with the daemon
+    /// backend off.
+    @Published var deviceSessions: DeviceSessionsState = .unavailable
+
+    /// Guards against a slow reply from a device the user has already left: every
+    /// request stamps this counter and a reply that no longer matches is dropped.
+    /// Without it, switching away during an SSH round trip repaints the sidebar
+    /// with the previous machine's sessions.
+    var deviceSessionsGeneration = 0
 
     /// App-quit teardown: without this, session children outlive the app — the
     /// closing PTY's SIGHUP is swallowed by agent TUIs, and they pile up as
@@ -879,6 +916,20 @@ final class TermioStore: ObservableObject {
         self.settings = settings
         self.projects = projects
         self.selectedSessionID = projects.first?.sessions.first?.id
+        // The machine the app opens on: the one the session it is about to show
+        // runs on, and the device the last run ended on when it shows nothing.
+        //
+        // The session outranks the stored alias because it is a fact about
+        // something running, while the alias is only where the user last was, and
+        // the two can disagree — a state file older than the alias beside it, a
+        // device dropped from `~/.ssh/config` since. A window that opens naming
+        // one machine while showing another's terminal is the confusion the
+        // device badge exists to prevent. (A later selection realigns the context
+        // through the selection's `didSet`; this covers the first one, which is
+        // assigned before that `didSet` is armed.)
+        let opening = projects.first?.sessions.first
+        self.currentDeviceAlias = opening.map { $0.termiodRemoteHost ?? $0.sshHost }
+            ?? settings.currentDeviceAlias
         let storedColumns = UserDefaults.standard.integer(forKey: Self.hostGridColumnsKey)
         let storedRows = UserDefaults.standard.integer(forKey: Self.hostGridRowsKey)
         self.lastHostGridColumns = storedColumns > 0 ? storedColumns : 80

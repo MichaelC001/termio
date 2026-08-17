@@ -113,10 +113,10 @@ struct Project: Identifiable, Hashable, Codable {
     /// Where this project lives on each **device** it has been cloned to, keyed
     /// by that device's `host_id` → absolute remote path.
     ///
-    /// This is what makes "New Remote Terminal" from a *project* row mean "this
-    /// repo, over there" rather than "a shell in the remote `$HOME`". The local
-    /// `path` is meaningless on the remote box, so the correspondence has to be
-    /// recorded when `Clone on Remote…` establishes it.
+    /// This is what makes "New Terminal ▸ <device>" from a *project* row mean "this
+    /// repo, over there" rather than "a shell in that device's `$HOME`". The local
+    /// `path` is meaningless on the other box, so the correspondence has to be
+    /// recorded when `Clone to <device>…` establishes it.
     ///
     /// Keyed by device rather than by SSH alias because one machine commonly
     /// answers to several aliases (`vps-lan`, `vps-wan`, a tailnet name): keyed by
@@ -321,11 +321,25 @@ struct Session: Identifiable, Hashable, Codable {
     var deviceID: String?
 
     /// The remote working directory a `termiodRemoteHost` session spawns its shell
-    /// in — set by "Clone on Remote…" to the freshly cloned directory (`~/<repo>`)
+    /// in — set by "Clone to <device>…" to the freshly cloned directory (`~/<repo>`)
     /// so the terminal opens straight inside it. `nil` (the common case) lets the
     /// remote login shell start at its own `$HOME`. Ignored when `termiodRemoteHost`
     /// is nil.
     var termiodRemoteCwd: String?
+
+    /// The name this session answers to **inside its device's daemon**, when that
+    /// is not this session's own uuid.
+    ///
+    /// Sessions Termio opens are named with their uuid, which is what makes
+    /// reattach-after-relaunch work: `attach` resolves the name first, so the row
+    /// finds the same process. A session Termio did **not** open already had a
+    /// name before this app ever saw it — started from the `termiod` CLI, or by a
+    /// phone — and adopting it means keeping that name, because the name is how
+    /// the daemon is asked for that exact PTY. Renaming it to a fresh uuid would
+    /// spawn a second session beside the one the user was pointing at.
+    ///
+    /// `nil` for every session this app created, which is nearly all of them.
+    var termiodSessionName: String?
 
     /// Adopt another session's machine — both halves of it.
     ///
@@ -385,7 +399,7 @@ struct Session: Identifiable, Hashable, Codable {
     private enum CodingKeys: String, CodingKey {
         case id, title, agent, createdAt, worktreePath, resumeID, launched, launchedAt,
              liveTitle, lastWorkingDirectory, spawnDirectory, sshHost, pinned,
-             termiodRemoteHost, termiodRemoteCwd, deviceID
+             termiodRemoteHost, termiodRemoteCwd, deviceID, termiodSessionName
     }
 
     /// Custom decoding so state files written before the resume fields existed still
@@ -410,6 +424,8 @@ struct Session: Identifiable, Hashable, Codable {
         termiodRemoteHost = try container.decodeIfPresent(String.self, forKey: .termiodRemoteHost)
         termiodRemoteCwd = try container.decodeIfPresent(String.self, forKey: .termiodRemoteCwd)
         deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
+        termiodSessionName = try container.decodeIfPresent(
+            String.self, forKey: .termiodSessionName)
     }
 }
 
