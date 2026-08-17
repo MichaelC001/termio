@@ -112,9 +112,13 @@ final class SessionControlListener: @unchecked Sendable {
         // a bare SwiftPM binary — no bundle id means `AppChannel.suffix` is empty,
         // so `swift run` during development lands on the *release* channel.
         if Self.isLive(path) {
+            // Name `dev`, not `<name>`: a placeholder reads as "any name works",
+            // and the reader's next move is usually TERMIO_CHANNEL=<name>
+            // ./scripts/build-app.sh — which builds no such channel.
             Self.log("""
                 another termio already answers at \(path) — leaving session control \
-                to it (set TERMIO_CHANNEL=<name> for a channel of your own)
+                to it (relaunch this process with TERMIO_CHANNEL=dev for a channel of \
+                its own; that steers this run, not how a bundle was built)
                 """)
             return
         }

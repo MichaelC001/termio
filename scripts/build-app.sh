@@ -14,10 +14,12 @@
 #   open ./termio.app                 # launch it
 #
 # Environment overrides (used by the release workflow; all optional):
-#   TERMIO_CHANNEL   "dev" builds a side-by-side termio-dev.app (bundle id ….dev,
-#                    its own ~/.termio-dev state + companion port 8788, Sparkle
-#                    stripped) so it runs beside an installed release build. Default
-#                    is the release channel (./termio.app).
+#   TERMIO_CHANNEL   which identity to build; only two values exist. Unset (or
+#                    "release") builds ./termio.app. "dev" builds a side-by-side
+#                    termio-dev.app (bundle id ….dev, its own ~/.termio-dev state +
+#                    companion port 8788, Sparkle stripped) so it runs beside an
+#                    installed release build. Any other value is rejected — see
+#                    the channel check below for why.
 #   TERMIO_VERSION   CFBundleShortVersionString to stamp (default: keep Info.plist's)
 #   TERMIO_BUILD     CFBundleVersion to stamp; must increase across shipped builds
 #                    because Sparkle compares it (default: keep Info.plist's)
@@ -37,7 +39,30 @@ configuration="release"
 product_name="termio"
 # TERMIO_CHANNEL=dev builds a side-by-side dev app (termio-dev.app, id ….dev, its
 # own state dir + port, Sparkle stripped) so it can run beside an installed release.
-channel="${TERMIO_CHANNEL:-release}"
+# Unset or "release" builds the shipped identity. Lower-cased the way AppChannel
+# lower-cases it at runtime, so the two agree on what a channel name is.
+channel="$(printf '%s' "${TERMIO_CHANNEL:-release}" | tr '[:upper:]' '[:lower:]')"
+# Anything else must NOT fall through to the release branch below. Arbitrary
+# channel names are a *runtime* feature — AppChannel.suffix turns any plain name
+# into its own state dir, socket and companion port — but no bundle identity has
+# ever been built for a third channel, so a typo (or session control's advice to
+# take a channel of your own, read as build advice) used to hand back a bundle
+# stamped sh.termio.app with a CLI stamped
+# SUPPORT_DIR_NAME="termio": a build that silently drives the app you use daily,
+# down to `sessions send` typing into a live session. Refuse instead.
+if [[ "$channel" != "release" && "$channel" != "dev" ]]; then
+    cat >&2 <<EOF
+error: TERMIO_CHANNEL="${TERMIO_CHANNEL:-}" is not a channel this script can build.
+       Supported values:
+         unset (or "release")  ->  ./termio.app      (sh.termio.app,     CLI "termio")
+         dev                   ->  ./termio-dev.app  (sh.termio.app.dev, CLI "termio-dev")
+       A name of your own works when *running* termio (it picks a state directory,
+       control socket and companion port), but there is no bundle to build for it —
+       so this build would have taken the RELEASE identity and driven your daily app.
+       Re-run with TERMIO_CHANNEL=dev, or leave TERMIO_CHANNEL unset for a release build.
+EOF
+    exit 1
+fi
 if [[ "$channel" == "dev" ]]; then
     app_name="termio-dev"
     source_icon="$repo_root/packaging/AppIcon-dev.png"
