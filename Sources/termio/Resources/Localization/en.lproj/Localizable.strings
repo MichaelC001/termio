@@ -182,6 +182,8 @@
 	<string>Choose another branch to compare with.</string>
 	<key>Choose how projects are ordered</key>
 	<string>Choose how projects are ordered</string>
+	<key>Choose which device the sidebar shows</key>
+	<string>Choose which device the sidebar shows</string>
 	<key>Choose…</key>
 	<string>Choose…</string>
 	<key>Clear</key>
@@ -334,6 +336,8 @@
 	<string>Delete…</string>
 	<key>Detached at %@</key>
 	<string>Detached at %@</string>
+	<key>Device</key>
+	<string>Device</string>
 	<key>Discard %lld Files…</key>
 	<string>Discard %lld Files…</string>
 	<key>Discard Changes</key>

@@ -68,7 +68,7 @@ enum DeviceRoster {
 }
 
 /// The rows every device switcher shows, wherever it is mounted. The sidebar's
-/// indicator is the only opening today; the rows live here rather than inside it
+/// toolbar control is the only opening today; the rows live here rather than in it
 /// because there is one current device, and it would be a bug for two controls to
 /// disagree about which one it is.
 struct DeviceSwitcherMenuContent: View {
@@ -118,45 +118,61 @@ struct DeviceSwitcherMenuContent: View {
     }
 }
 
-/// The sidebar's device indicator: which machine you are on, and the switcher
-/// that changes it. Quiet by design — it names the device and nothing else — and
-/// absent entirely while this Mac is the only one, so a user who never leaves
-/// their laptop never sees it.
-struct DeviceIndicator: View {
+/// The device switcher, in the sidebar's own toolbar region: which machine you
+/// are on, and the control that changes it. It sits in the strip above the list
+/// rather than in a row of its own, next to the navigator toggle and the sidebar's
+/// other actions — the band belongs to the column below it, and a first row that
+/// is not a session is a row the tree has to explain.
+///
+/// Quiet by design — it names the device and nothing else — and absent entirely
+/// while this Mac is the only one, so a user who never leaves their laptop never
+/// sees it.
+struct DeviceSwitcherToolbarView: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
+    @Environment(\.controlActiveState) private var controlActive
+
+    /// Long aliases truncate rather than push the sort and `+` buttons toward
+    /// NSToolbar's `»` overflow: the sidebar region has only the room the
+    /// navigator's minimum thickness gives it.
+    private static let nameWidthCeiling: CGFloat = 130
 
     var body: some View {
         let known = DeviceRoster.known(in: store)
         // The single-device collapse. Not "hidden but present": with one machine
-        // there is no switch to make, and a row that always reads "This Mac" is a
-        // label for a decision the user never took.
+        // there is no switch to make, and a control that always reads "This Mac"
+        // is a label for a decision the user never took.
         if known.count > 1 {
             let current = DeviceRoster.current(store, known: known)
-            Divider()
             Menu {
                 DeviceSwitcherMenuContent()
             } label: {
-                HStack(spacing: 6) {
-                    HugeIconView(icon: .serverStack, size: 13, color: .secondary)
+                HStack(spacing: 5) {
+                    // Sized against the toolbar's own glyphs (the navigator toggle, the
+                    // sort pull-down) rather than shrunk to fit beside them, and set in
+                    // the sidebar's interface font — this control belongs to that column.
+                    HugeIconView(icon: .serverStack, size: 15, color: color)
                     Text(current.name)
                         .font(settings.interfaceFont)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(color)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Spacer(minLength: 4)
-                    HugeIconView(icon: .chevronRight, size: 7.5, color: .secondary,
+                    HugeIconView(icon: .chevronRight, size: 8, color: color,
                                  lineWidthOverride: 1.75)
                         .rotationEffect(.degrees(90))
                 }
+                .frame(maxWidth: Self.nameWidthCeiling)
                 .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .fixedSize()
             .help(localized("The sidebar shows this device’s sessions"))
         }
+    }
+
+    private var color: Color {
+        controlActive == .inactive ? Color(nsColor: .disabledControlTextColor) : .secondary
     }
 }
 
