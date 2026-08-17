@@ -165,130 +165,123 @@ struct SidebarView: View {
         let hasPinned = !pinnedProjects.isEmpty || !pinnedWorktrees.isEmpty || !pinnedSessions.isEmpty
         let hasTerminals = terminals.contains { !$0.sessions.isEmpty }
         let hasChats = chats.contains { !$0.sessions.isEmpty }
-        return VStack(spacing: 0) {
-            // Which machine you are on, above everything it contains. The list
-            // below is that device's world, so the device has to be read first —
-            // pinned under the tree it was a footnote to state it should have
-            // been announcing. Draws nothing while this Mac is the only device.
-            DeviceIndicator()
-            List {
-                // Nudge when agents are running but the status hooks are off — without them
-                // the sidebar spinner stays dark. One tap enables (and reinstalls) them.
-                if !settings.agentHooksEnabled && store.isRunningAnyAgent {
-                    AgentHooksOffBanner { settings.agentHooksEnabled = true }
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
-                }
-                // The top "Pinned" working set, under its own section header: pinned projects
-                // as full blocks, then pinned worktrees as mini-blocks (header + their
-                // sessions), then pinned sessions as shortcut rows — each nested entry tagged
-                // with its origin breadcrumb. Nested items stay in the tree below too; only
-                // whole projects move up here. This curated working set sits at the very top —
-                // above the ephemeral Terminals/Chats funnels — because it's the items the user
-                // deliberately elevated (mirroring the iOS "Needs You" strip at the home top).
-                if hasPinned {
-                    SidebarSectionHeader(
-                        title: localized("Pinned"),
-                        chrome: chrome,
-                        isCollapsed: pinnedCollapsed,
-                        isFirstSection: true,
-                        toggleCollapsed: {
-                            withAnimation(.easeInOut(duration: 0.18)) { pinnedCollapsed.toggle() }
-                        }
-                    )
-                    if !pinnedCollapsed {
-                        ForEach(pinnedProjects) { projectBlock($0) }
-                        ForEach(pinnedWorktrees) { entry in
-                            pinnedWorktreeBlock(project: entry.project, worktree: entry.worktree)
-                        }
-                        ForEach(pinnedSessions) { entry in
-                            SessionRow(session: entry.session, chrome: chrome, leadingIndent: 16,
-                                       breadcrumb: breadcrumb(for: entry.session, in: entry.project))
-                        }
-                    }
-                }
-                // The loose-terminals funnel, as a section (not a project folder): its
-                // header carries the New/Close actions; its sessions render below. Hidden
-                // entirely while it holds no terminals — an empty section label is just
-                // noise (a new loose terminal reappears the section, via the + / File menu).
-                ForEach(terminals.filter { !$0.sessions.isEmpty }) { term in
-                    SidebarSectionHeader(
-                        title: localized("Terminals"),
-                        chrome: chrome,
-                        isCollapsed: collapsedProjects.contains(term.id),
-                        isFirstSection: !hasPinned,
-                        toggleCollapsed: { toggleCollapsed(term.id) },
-                        menuItems: [
-                            newTerminalMenuItem(store: store) {
-                                store.addSession(to: term.id, agent: .terminal)
-                            },
-                            .separator,
-                            .action(localized("Close All Terminals")) { store.removeProject(term.id) },
-                        ]
-                    )
-                    if !collapsedProjects.contains(term.id) {
-                        let sessions = primarySessions(for: term)
-                        let marks = splitLinkMarks(for: sessions)
-                        ForEach(sessions) { session in
-                            SessionRow(session: session, chrome: chrome, splitLink: marks[session.id])
-                        }
-                    }
-                }
-                // The loose-agents funnel — the agent-side twin of Terminals, paired
-                // directly above Projects (the "Chats vs Projects" split: one-off agent
-                // sessions vs. real folder-scoped work). Every scratch agent shares one
-                // `.chats` container rooted at `~/.termio/chats`; its header offers a single
-                // "New Chat" (the default agent — see `addDefaultChat`) plus a Close All,
-                // mirroring the Terminals header's "New Terminal". Hidden while empty.
-                ForEach(chats.filter { !$0.sessions.isEmpty }) { chat in
-                    SidebarSectionHeader(
-                        title: localized("Chats"),
-                        chrome: chrome,
-                        isCollapsed: collapsedProjects.contains(chat.id),
-                        isFirstSection: !hasPinned && !hasTerminals,
-                        toggleCollapsed: { toggleCollapsed(chat.id) },
-                        menuItems: [
-                            .action(localized("New Chat")) { store.addDefaultChat() },
-                            .separator,
-                            .action(localized("Close All Chats")) { store.removeProject(chat.id) },
-                        ]
-                    )
-                    if !collapsedProjects.contains(chat.id) {
-                        let sessions = primarySessions(for: chat)
-                        let marks = splitLinkMarks(for: sessions)
-                        ForEach(sessions) { session in
-                            SessionRow(session: session, chrome: chrome, splitLink: marks[session.id])
-                        }
-                    }
-                }
-                // The user's opened projects, under their own section header — the same
-                // section treatment as Terminals and Pinned, one tier above the folder rows.
-                if !others.isEmpty {
-                    SidebarSectionHeader(
-                        title: localized("Projects"),
-                        chrome: chrome,
-                        isCollapsed: projectsCollapsed,
-                        isFirstSection: !hasPinned && !hasTerminals && !hasChats,
-                        toggleCollapsed: {
-                            withAnimation(.easeInOut(duration: 0.18)) { projectsCollapsed.toggle() }
-                        }
-                    )
-                    if !projectsCollapsed {
-                        ForEach(others) { projectBlock($0) }
-                    }
-                }
-                // What the device itself says is running. On another machine this is
-                // the whole sidebar; on this Mac it is the sessions the daemon holds
-                // that no row above accounts for.
-                deviceWorldSection(isFirstSection: !hasPinned && !hasTerminals && !hasChats
-                    && others.isEmpty)
+        return List {
+            // Nudge when agents are running but the status hooks are off — without them
+            // the sidebar spinner stays dark. One tap enables (and reinstalls) them.
+            if !settings.agentHooksEnabled && store.isRunningAnyAgent {
+                AgentHooksOffBanner { settings.agentHooksEnabled = true }
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
             }
-            // The native macOS `.sidebar` source list — its own Liquid Glass material, full-height
-            // behind the traffic lights. (We previously painted the column ourselves to dodge a macOS 26
-            // full-screen round-trip bug, but per the design call we're back to the stock sidebar.)
-            .listStyle(.sidebar)
-            .environment(\.defaultMinListRowHeight, 1)
+            // The top "Pinned" working set, under its own section header: pinned projects
+            // as full blocks, then pinned worktrees as mini-blocks (header + their
+            // sessions), then pinned sessions as shortcut rows — each nested entry tagged
+            // with its origin breadcrumb. Nested items stay in the tree below too; only
+            // whole projects move up here. This curated working set sits at the very top —
+            // above the ephemeral Terminals/Chats funnels — because it's the items the user
+            // deliberately elevated (mirroring the iOS "Needs You" strip at the home top).
+            if hasPinned {
+                SidebarSectionHeader(
+                    title: localized("Pinned"),
+                    chrome: chrome,
+                    isCollapsed: pinnedCollapsed,
+                    isFirstSection: true,
+                    toggleCollapsed: {
+                        withAnimation(.easeInOut(duration: 0.18)) { pinnedCollapsed.toggle() }
+                    }
+                )
+                if !pinnedCollapsed {
+                    ForEach(pinnedProjects) { projectBlock($0) }
+                    ForEach(pinnedWorktrees) { entry in
+                        pinnedWorktreeBlock(project: entry.project, worktree: entry.worktree)
+                    }
+                    ForEach(pinnedSessions) { entry in
+                        SessionRow(session: entry.session, chrome: chrome, leadingIndent: 16,
+                                   breadcrumb: breadcrumb(for: entry.session, in: entry.project))
+                    }
+                }
+            }
+            // The loose-terminals funnel, as a section (not a project folder): its
+            // header carries the New/Close actions; its sessions render below. Hidden
+            // entirely while it holds no terminals — an empty section label is just
+            // noise (a new loose terminal reappears the section, via the + / File menu).
+            ForEach(terminals.filter { !$0.sessions.isEmpty }) { term in
+                SidebarSectionHeader(
+                    title: localized("Terminals"),
+                    chrome: chrome,
+                    isCollapsed: collapsedProjects.contains(term.id),
+                    isFirstSection: !hasPinned,
+                    toggleCollapsed: { toggleCollapsed(term.id) },
+                    menuItems: [
+                        newTerminalMenuItem(store: store) {
+                            store.addSession(to: term.id, agent: .terminal)
+                        },
+                        .separator,
+                        .action(localized("Close All Terminals")) { store.removeProject(term.id) },
+                    ]
+                )
+                if !collapsedProjects.contains(term.id) {
+                    let sessions = primarySessions(for: term)
+                    let marks = splitLinkMarks(for: sessions)
+                    ForEach(sessions) { session in
+                        SessionRow(session: session, chrome: chrome, splitLink: marks[session.id])
+                    }
+                }
+            }
+            // The loose-agents funnel — the agent-side twin of Terminals, paired
+            // directly above Projects (the "Chats vs Projects" split: one-off agent
+            // sessions vs. real folder-scoped work). Every scratch agent shares one
+            // `.chats` container rooted at `~/.termio/chats`; its header offers a single
+            // "New Chat" (the default agent — see `addDefaultChat`) plus a Close All,
+            // mirroring the Terminals header's "New Terminal". Hidden while empty.
+            ForEach(chats.filter { !$0.sessions.isEmpty }) { chat in
+                SidebarSectionHeader(
+                    title: localized("Chats"),
+                    chrome: chrome,
+                    isCollapsed: collapsedProjects.contains(chat.id),
+                    isFirstSection: !hasPinned && !hasTerminals,
+                    toggleCollapsed: { toggleCollapsed(chat.id) },
+                    menuItems: [
+                        .action(localized("New Chat")) { store.addDefaultChat() },
+                        .separator,
+                        .action(localized("Close All Chats")) { store.removeProject(chat.id) },
+                    ]
+                )
+                if !collapsedProjects.contains(chat.id) {
+                    let sessions = primarySessions(for: chat)
+                    let marks = splitLinkMarks(for: sessions)
+                    ForEach(sessions) { session in
+                        SessionRow(session: session, chrome: chrome, splitLink: marks[session.id])
+                    }
+                }
+            }
+            // The user's opened projects, under their own section header — the same
+            // section treatment as Terminals and Pinned, one tier above the folder rows.
+            if !others.isEmpty {
+                SidebarSectionHeader(
+                    title: localized("Projects"),
+                    chrome: chrome,
+                    isCollapsed: projectsCollapsed,
+                    isFirstSection: !hasPinned && !hasTerminals && !hasChats,
+                    toggleCollapsed: {
+                        withAnimation(.easeInOut(duration: 0.18)) { projectsCollapsed.toggle() }
+                    }
+                )
+                if !projectsCollapsed {
+                    ForEach(others) { projectBlock($0) }
+                }
+            }
+            // What the device itself says is running. On another machine this is
+            // the whole sidebar; on this Mac it is the sessions the daemon holds
+            // that no row above accounts for.
+            deviceWorldSection(isFirstSection: !hasPinned && !hasTerminals && !hasChats
+                && others.isEmpty)
         }
+        // The native macOS `.sidebar` source list — its own Liquid Glass material, full-height
+        // behind the traffic lights. (We previously painted the column ourselves to dodge a macOS 26
+        // full-screen round-trip bug, but per the design call we're back to the stock sidebar.)
+        .listStyle(.sidebar)
+        .environment(\.defaultMinListRowHeight, 1)
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
     }
 

@@ -11,6 +11,26 @@
         }
       }
     },
+    "Choose which device the sidebar shows": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择侧栏显示哪台设备"
+          }
+        }
+      }
+    },
+    "Device": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备"
+          }
+        }
+      }
+    },
     "Takes effect after Termio relaunches.": {
       "localizations": {
         "zh-Hans": {

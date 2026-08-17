@@ -1080,8 +1080,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// when the sidebar is collapsed — matching Finder/Xcode, which drop their sidebar buttons with
     /// the sidebar, and freeing the horizontal room that otherwise forces NSToolbar's `»` overflow.
     /// The paired flexible space (which right-aligns the two against the sidebar divider) is inserted
-    /// and removed *with* them. When open the region reads `toggleNavigator, flex, sortProjects,
-    /// newTerminal | sidebarTrackingSeparator`. Mirrors `setInspectorSwitchVisible`.
+    /// and removed *with* them, as is the device switcher that leads the region. When open the region
+    /// reads `toggleNavigator, deviceSwitcher, flex, sortProjects, newTerminal |
+    /// sidebarTrackingSeparator`. Mirrors `setInspectorSwitchVisible`.
     private func setNavigatorItemsVisible(_ visible: Bool) {
         guard let toolbar = window?.toolbar else { return }
         func index(of id: NSToolbarItem.Identifier) -> Int? {
@@ -1094,16 +1095,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         defer { NSAnimationContext.endGrouping() }
         if visible {
             guard index(of: .sortProjects) == nil, let sep = index(of: .sidebarTrackingSeparator) else { return }
-            // Insert in reverse at the separator's index so the final order is flex, sortProjects, newTerminal.
+            // Insert in reverse at the separator's index so the final order is deviceSwitcher, flex,
+            // sortProjects, newTerminal.
             toolbar.insertItem(withItemIdentifier: .newTerminal, at: sep)
             toolbar.insertItem(withItemIdentifier: .sortProjects, at: sep)
             toolbar.insertItem(withItemIdentifier: .flexibleSpace, at: sep)
+            toolbar.insertItem(withItemIdentifier: .deviceSwitcher, at: sep)
         } else {
             // Only clean up when the buttons are actually present (nothing to remove at launch with
             // the sidebar already collapsed). Re-find each id after every removal — indices shift.
             guard let sortIdx = index(of: .sortProjects) else { return }
             toolbar.removeItem(at: sortIdx)
             if let i = index(of: .newTerminal) { toolbar.removeItem(at: i) }
+            if let i = index(of: .deviceSwitcher) { toolbar.removeItem(at: i) }
             // Drop the flexible space that right-aligned them (the one just before the sidebar separator).
             if let sep = index(of: .sidebarTrackingSeparator), sep > 0,
                toolbar.items[sep - 1].itemIdentifier == .flexibleSpace {
@@ -1975,7 +1979,9 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        defaultIdentifiers + [.sortProjects, .newTerminal, .inspectorTrackingSeparator, .inspectorTabs]
+        defaultIdentifiers + [
+            .deviceSwitcher, .sortProjects, .newTerminal, .inspectorTrackingSeparator, .inspectorTabs,
+        ]
     }
 
     func toolbar(
@@ -1994,6 +2000,24 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             // the system animation. `nil` target routes up the responder chain to the split
             // controller (the window's content view controller), so no custom action is needed.
             item.action = #selector(NSSplitViewController.toggleSidebar(_:))
+            return item
+        case .deviceSwitcher:
+            // The machine the sidebar is listing, at the head of the sidebar's own toolbar region —
+            // the band above the column it scopes. Borderless SwiftUI rather than an
+            // `NSMenuToolbarItem` so the one device menu has one definition
+            // (`DeviceSwitcherMenuContent`) instead of an AppKit copy that can drift from it, and so
+            // the control can name the device: this toolbar is `.iconOnly`, which drops item titles.
+            // It draws nothing while this Mac is the only device, which is also when the sidebar
+            // region has the least room to spare.
+            let item = NSToolbarItem(itemIdentifier: .deviceSwitcher)
+            item.label = localized("Device")
+            item.toolTip = localized("Choose which device the sidebar shows")
+            let host = NSHostingView(rootView: DeviceSwitcherToolbarView()
+                .environmentObject(store)
+                .environmentObject(settings))
+            host.sizingOptions = [.intrinsicContentSize]
+            item.view = host
+            item.isBordered = false
             return item
         case .sortProjects:
             // A pull-down that sets how the sidebar orders projects (Recent Activity /
@@ -2097,6 +2121,7 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
 
 private extension NSToolbarItem.Identifier {
     static let toggleNavigator = NSToolbarItem.Identifier("TermioToggleNavigator")
+    static let deviceSwitcher = NSToolbarItem.Identifier("TermioDeviceSwitcher")
     static let sortProjects = NSToolbarItem.Identifier("TermioSortProjects")
     static let newTerminal = NSToolbarItem.Identifier("TermioNewTerminal")
     static let inspectorTabs = NSToolbarItem.Identifier("TermioInspectorTabs")

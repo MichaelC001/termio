@@ -182,6 +182,8 @@
 	<string>请另选一个用于对比的分支。</string>
 	<key>Choose how projects are ordered</key>
 	<string>选取项目的排序方式</string>
+	<key>Choose which device the sidebar shows</key>
+	<string>选择侧栏显示哪台设备</string>
 	<key>Choose…</key>
 	<string>选取…</string>
 	<key>Clear</key>
@@ -334,6 +336,8 @@
 	<string>删除…</string>
 	<key>Detached at %@</key>
 	<string>已分离于 %@</string>
+	<key>Device</key>
+	<string>设备</string>
 	<key>Discard %lld Files…</key>
 	<string>放弃 %lld 个文件的更改…</string>
 	<key>Discard Changes</key>
