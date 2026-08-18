@@ -36,6 +36,70 @@ struct KnownDevice: Identifiable, Hashable {
     var route: TermiodRoute { TermiodRoute(sshAlias: alias) }
 }
 
+/// The directory the inspector's panes read, and the machine it lives on.
+///
+/// The panes used to decide that by asking `session.sshHost`, which names *the
+/// road taken* rather than the machine at the end of it. A termiod session has no
+/// `sshHost`, so it matched no remote branch and fell through to the local
+/// project's path: a session running on another box showed this Mac's files, git
+/// status, search results, and issues with nothing on screen saying so.
+///
+/// A checkout is a repo on a machine — the pair the panes need. It is not the
+/// sidebar's `Workspace`, which is the scope the user chooses and can span
+/// machines; one workspace holds checkouts on several devices.
+///
+/// Identity is the device, not the alias it was reached by. The same machine
+/// answering to a LAN name, a WAN name, and a tailnet name is one checkout, not
+/// three — so `device` carries the `host_id` once a handshake has revealed one and
+/// falls back to the alias only until then, the same bootstrap/stable split
+/// `KnownDevice` and `isAuthored(_:for:)` already use.
+struct Checkout: Hashable {
+    /// The machine the root lives on. `KnownDevice.thisMac` for a local session.
+    let device: KnownDevice
+    /// The checkout root on that device — the project or worktree directory
+    /// locally, the recorded checkout or spawn directory on another device.
+    /// `nil` when the device is known but the root is not (a terminal opened on a
+    /// box outside any recorded checkout).
+    let root: String?
+    /// The `~/.ssh/config` alias whose files the shipped read-only SFTP tree can
+    /// still show, set only for a plain `ssh` session — a box reached without a
+    /// daemon. This is the SFTP adapter, not a route the panes may branch on:
+    /// deleting the SFTP client deletes this property with it.
+    let sftpAlias: String?
+
+    /// The path this Mac's `FileManager` may read for this checkout, and `nil`
+    /// for every checkout on another device — which is what stops the tree, the
+    /// watcher, the drop target, the git probe, and every mutation from running
+    /// against a session that is not on this machine.
+    ///
+    /// The direct-local adapter the one-source migration retires: when the panes
+    /// read a device's files through `fs.*`, each caller moves to that client and
+    /// this property goes away rather than becoming a permanent local special case.
+    var localRoot: String? { device.isLocal ? root : nil }
+
+    /// Whether this checkout lives on another machine, so a pane with no way to
+    /// read it must say which one instead of showing this Mac's.
+    var isOnAnotherDevice: Bool { !device.isLocal }
+
+    /// The machine, as an identity rather than a route: the `host_id` once a
+    /// handshake has revealed one, the alias until then, and the empty string for
+    /// this Mac.
+    var deviceIdentity: String { device.deviceID ?? device.alias ?? "" }
+
+    /// Two references name the same checkout when they name the same device and
+    /// the same root. Compared by identity, so one box reached by a LAN name, a WAN
+    /// name, and a tailnet name stays one checkout instead of forking into three —
+    /// and `sftpAlias` is left out entirely, being an adapter rather than identity.
+    static func == (lhs: Checkout, rhs: Checkout) -> Bool {
+        lhs.deviceIdentity == rhs.deviceIdentity && lhs.root == rhs.root
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(deviceIdentity)
+        hasher.combine(root)
+    }
+}
+
 /// What one device says is running on it, as of the last `list`.
 ///
 /// The device's reply is the authority for **which sessions exist**. Nothing in

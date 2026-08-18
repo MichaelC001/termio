@@ -358,10 +358,11 @@ final class TermioStore: ObservableObject {
 
     /// The Issues model for the currently selected session's repo, or `nil` when none has
     /// loaded yet — the detail overlay then falls back to the list rather than fetching an
-    /// issue against the wrong repo. Keyed on `inspectorProjectPath`, the exact string
-    /// `IssuesView` is created with (see `FileBrowserView.projectPath`).
+    /// issue against the wrong repo. Keyed on the checkout's local root, the exact
+    /// string `IssuesView` is created with (see `FileBrowserView`) — a checkout on
+    /// another device has none, and so has no model, because the pane never runs.
     var issuesModel: IssuesPanelModel? {
-        inspectorProjectPath.flatMap { issuesModels[$0] }
+        inspectorCheckout?.localRoot.flatMap { issuesModels[$0] }
     }
 
     /// The git pane's inner mode (Changes / History) per repo root — the same continuity
@@ -447,33 +448,82 @@ final class TermioStore: ObservableObject {
     /// changes" without the inspector being open.
     @Published var gitChangeCount = 0
 
-    /// The directory the inspector panes root at: the selected session's worktree if it
-    /// has one, otherwise its project folder. `nil` when nothing is selected or the
-    /// selected session is SSH — its filesystem is remote, not this Mac's.
-    /// A loose terminal roots at its *live* cwd instead (falling back to the cwd
-    /// persisted from the last run, then `$HOME`) — the session owns its path, so
-    /// the tree, search, and changes panes all follow a `cd`. Real projects keep
-    /// their stable root; the anchor is the point of a project.
-    /// A session on a remote host has no local root at all — its files live on the
-    /// other box — so it reports `nil` and the panes show their empty state rather
-    /// than a local directory that merely shares a name with the remote one.
-    var inspectorProjectPath: String? {
+    /// What the inspector panes read: the selected session's checkout — a root and
+    /// the device that root lives on. Derived here, once, so no pane has to ask a
+    /// session which road it was opened by (see `Checkout`).
+    ///
+    /// The machine is `termiodRemoteHost ?? sshHost`, the pair `DeviceContext`
+    /// already trusts. A durable termiod session names its box directly; a plain
+    /// `ssh` terminal runs its PTY here but exists to put the user on that box, so
+    /// it belongs to the same place.
+    ///
+    /// The candidate local root comes from the slot: a project session takes its
+    /// worktree if it has one and the project folder otherwise, a loose terminal
+    /// takes its *live* cwd (falling back to the cwd persisted from the last run,
+    /// then `$HOME`) so the tree, search, and changes panes follow a `cd`, and a
+    /// loose chat takes the scoped scratch directory. Whether that candidate is
+    /// this Mac's to read is the checkout's answer, not the slot's.
+    var inspectorCheckout: Checkout? {
         guard let id = selectedSessionID, let slot = locate(id) else { return nil }
         let session = self[slot]
-        // A session that runs on another machine has no *local* root: its files
-        // live over there, and pointing the panes at a local path that merely
-        // shares a name would be worse than showing nothing.
-        guard session.sshHost == nil, session.termiodRemoteHost == nil else { return nil }
+        let project: Project?
+        let localRoot: String?
         switch slot {
         case .project(let index, _):
-            return session.worktreePath ?? projects[index].path
+            project = projects[index]
+            localRoot = session.worktreePath ?? projects[index].path
         case .terminals:
-            return workingDirectory(for: id)
+            project = nil
+            localRoot = workingDirectory(for: id)
                 ?? session.lastWorkingDirectory
                 ?? Self.looseTerminalRoot
         case .chats:
-            return Self.looseChatRoot
+            project = nil
+            localRoot = Self.looseChatRoot
         }
+        let alias = session.termiodRemoteHost ?? session.sshHost
+        return Self.checkout(
+            for: session,
+            in: project,
+            localRoot: localRoot,
+            // The route's device, for a session that has never attached and so
+            // carries none of its own.
+            routeDeviceID: alias.flatMap {
+                TermiodDeviceRegistry.shared.deviceID(for: TermiodRoute(sshAlias: $0))
+            })
+    }
+
+    /// The checkout derivation itself, free of the store so the case that started
+    /// this — a session on another machine filed under a local project — can be
+    /// tested without a window.
+    ///
+    /// `localRoot` is the candidate the tree would have used, and is dropped whole
+    /// for a session on another box: a local path that merely shares a name with
+    /// the remote one is worse than showing nothing.
+    static func checkout(for session: Session, in project: Project?,
+                         localRoot: String?, routeDeviceID: String?) -> Checkout {
+        guard let alias = session.termiodRemoteHost ?? session.sshHost else {
+            return Checkout(device: .thisMac, root: localRoot, sftpAlias: nil)
+        }
+        // Identity first, route second: a session that has attached knows the
+        // `host_id` it reached, and the alias only stands in until it has.
+        let device = KnownDevice(alias: alias, deviceID: session.deviceID ?? routeDeviceID)
+        return Checkout(
+            device: device,
+            root: remoteRoot(for: session, in: project, on: device),
+            // Only a plain `ssh` terminal — a box reached without a daemon — has
+            // files the SFTP tree can still show.
+            sftpAlias: session.sshHost)
+    }
+
+    /// Where a session on another device is rooted, as far as this viewer can tell
+    /// without asking the device: the directory the session was spawned in, else
+    /// the checkout recorded for that device when the session sits under a project.
+    private static func remoteRoot(for session: Session, in project: Project?,
+                                   on device: KnownDevice) -> String? {
+        if let cwd = session.termiodRemoteCwd { return cwd }
+        guard let alias = device.alias, let project else { return nil }
+        return project.remoteCheckout(device: device.deviceID, alias: alias)
     }
 
     /// Whether the trailing inspector panel is expanded. Mirrored from the AppKit

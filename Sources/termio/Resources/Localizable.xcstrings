@@ -5245,22 +5245,12 @@
         }
       }
     },
-    "Remote session": {
+    "%@ isn’t available on this device yet.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "远程会话"
-          }
-        }
-      }
-    },
-    "%@ isn’t available for SSH sessions yet.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ 暂不支持 SSH 会话。"
+            "value": "%@ 暂不支持这台设备。"
           }
         }
       }

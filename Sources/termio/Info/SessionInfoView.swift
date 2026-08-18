@@ -17,11 +17,14 @@ struct SessionInfoView: View {
         store.selectedSessionID.flatMap { store.project(for: $0) }
     }
 
-    /// Where the session runs: its worktree if it has one, else the project root.
-    /// A loose terminal reports its live cwd (the session's own mutable path)
-    /// rather than the container's `$HOME` fallback.
+    /// Where the session runs *on this Mac*: its worktree if it has one, else the
+    /// project root. A loose terminal reports its live cwd (the session's own
+    /// mutable path) rather than the container's `$HOME` fallback. `nil` for a
+    /// session on another device — Copy Path, Reveal in Finder, and the forge
+    /// probe below all act on local disk, and `remoteLocation` names that case
+    /// instead.
     private var workingDirectory: String? {
-        store.inspectorProjectPath
+        store.inspectorCheckout?.localRoot
     }
 
     /// Where a remote session runs, as `host:path` — the remote counterpart of

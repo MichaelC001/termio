@@ -81,8 +81,8 @@ struct InspectorTabsToolbar: View {
             .onAppear { withAnimation(.easeOut(duration: 0.25)) { appeared = true } }
             // Re-probe when the selection moves or the General switch flips; keyed so
             // the check doesn't rerun on unrelated store churn.
-            .task(id: "\(settings.githubIntegrationEnabled)|\(store.inspectorProjectPath ?? "")") {
-                if let path = store.inspectorProjectPath, settings.githubIntegrationEnabled {
+            .task(id: "\(settings.githubIntegrationEnabled)|\(store.inspectorCheckout?.localRoot ?? "")") {
+                if let path = store.inspectorCheckout?.localRoot, settings.githubIntegrationEnabled {
                     hasGitHubRemote = await GitService.gitHubRepoSlug(in: path) != nil
                 } else {
                     hasGitHubRemote = false
