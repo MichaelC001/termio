@@ -67,37 +67,11 @@ enum DeviceRoster {
     }
 }
 
-/// The devices the interface offers as somewhere to *go*: each one opens that
-/// machine's own workspace, where the sessions it is running gather.
-///
-/// A device is not a place the sidebar can be pointed at any more — the scope is
-/// the workspace. What is left is the verb that reaches a machine, which is how a
-/// box in `~/.ssh/config` becomes something Termio has worked on: entering it
-/// opens a terminal there, and opening a terminal is what installs `termiod`.
-struct DeviceOpenMenuContent: View {
-    @EnvironmentObject var store: TermioStore
-
-    var body: some View {
-        let known = DeviceRoster.known(in: store).filter { !$0.isLocal }
-        let unused = DeviceRoster.unusedAliases(known: DeviceRoster.known(in: store))
-        ForEach(known) { device in
-            if let alias = device.alias {
-                Button(device.name) { open(alias) }
-            }
-        }
-        ForEach(unused, id: \.self) { alias in
-            Button(alias) { open(alias) }
-        }
-    }
-
-    /// First contact with a machine: enter its workspace, then open a terminal on
-    /// it — which is what installs `termiod` there if it is missing. Reaching for a
-    /// box is also saying that is where you are about to work.
-    private func open(_ alias: String) {
-        store.switchToWorkspace(store.deviceWorkspace(for: alias))
-        store.addRemoteTerminal(host: alias)
-    }
-}
+// A device has no "open" verb of its own. Reaching a machine is always the side
+// effect of putting something on it — New Terminal on that device, Clone to it,
+// or File ▸ Connect to… for a box in `~/.ssh/config` Termio has never worked on
+// — and each of those already lands the user in the right scope. A menu that
+// merely *travels* to a machine is the switcher the workspace replaced.
 
 // MARK: - The device mark
 

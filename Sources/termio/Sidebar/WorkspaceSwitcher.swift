@@ -251,8 +251,11 @@ struct WorkspaceSwitcherMenuContent: View {
                 store.confirmRemoveWorkspace(store.currentWorkspaceID)
             }
         }
-        Divider()
-        Menu(localized("Open Device")) { DeviceOpenMenuContent() }
+        // No device verb here, deliberately. A machine you can *go to* is the
+        // mode this scope replaced: it made the sidebar answer "which computer"
+        // when the question is "which work". A device is a place a new thing is
+        // put — New Terminal on it, Clone to it, File ▸ Connect to… for a box
+        // never reached — never a place the window travels to.
     }
 
     private var selection: Binding<Workspace.ID> {

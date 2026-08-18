@@ -692,8 +692,6 @@
 	<string>Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity.</string>
 	<key>Open</key>
 	<string>Open</string>
-	<key>Open Device</key>
-	<string>Open Device</string>
 	<key>Open Link</key>
 	<string>Open Link</string>
 	<key>Open Project…</key>

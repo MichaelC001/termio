@@ -692,8 +692,6 @@
 	<string>不透明度低于 100% 时会透出桌面，模糊可使其更柔和；完全不透明时窗口保持实色。</string>
 	<key>Open</key>
 	<string>打开</string>
-	<key>Open Device</key>
-	<string>打开设备</string>
 	<key>Open Link</key>
 	<string>打开链接</string>
 	<key>Open Project…</key>
