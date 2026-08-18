@@ -43,7 +43,10 @@ struct KnownDevice: Identifiable, Hashable {
 /// own session list by alias would encode "all sessions are really this Mac's,
 /// tagged with where they went", which is the model the device architecture
 /// exists to replace (§2.1 — the Mac may hold nothing a viewer needs).
-struct DeviceSessions: Sendable {
+/// `Equatable` because a device answering the same thing twice must cost
+/// nothing: the reply is published, and a publish rebuilds the sidebar whether
+/// or not a single row differs.
+struct DeviceSessions: Sendable, Equatable {
     /// Live sessions, in the order the device reported them.
     var live: [Termiod.SessionInformation]
     /// Sessions the device buried, newest first. The only answer to "where did my
