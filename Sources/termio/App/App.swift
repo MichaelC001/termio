@@ -942,9 +942,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// A row of the Workspace submenu — the scope the sidebar shows and the panes
     /// follow.
     @objc func switchToWorkspace(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let id = UUID(uuidString: raw)
+        guard let raw = sender.representedObject as? String, let id = UUID(uuidString: raw),
+              let workspace = store.workspaces.first(where: { $0.id == id })
         else { return }
-        store.switchToWorkspace(id)
+        WorkspaceSpaces.select(workspace, in: store)
     }
 
     /// The submenu's trailing "New Workspace…" row.

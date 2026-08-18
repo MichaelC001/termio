@@ -26,8 +26,15 @@ enum WorkspaceSpaces {
         return spaces[target]
     }
 
+    /// Every switcher goes through here, which is also what makes the switch
+    /// measurable in one place: the span covers the whole synchronous cost of
+    /// changing scope — the selection move, the device context, the sidebar
+    /// rebuild each one publishes — so a switch that feels slow has a number
+    /// next to it rather than an adjective.
     static func select(_ workspace: Workspace, in store: TermioStore) {
-        store.switchToWorkspace(workspace.id)
+        Trace.workspace.measure("workspace switch", "to=\(workspace.name)") {
+            store.switchToWorkspace(workspace.id)
+        }
     }
 
     /// The mark a workspace carries where its name won't fit. A machine's
@@ -261,7 +268,10 @@ struct WorkspaceSwitcherMenuContent: View {
     private var selection: Binding<Workspace.ID> {
         Binding(
             get: { store.currentWorkspaceID },
-            set: { store.switchToWorkspace($0) }
+            set: { id in
+                guard let workspace = store.workspaces.first(where: { $0.id == id }) else { return }
+                WorkspaceSpaces.select(workspace, in: store)
+            }
         )
     }
 }
