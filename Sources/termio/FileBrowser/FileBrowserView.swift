@@ -382,8 +382,24 @@ struct FileBrowserView: View {
         }
         let generation = refreshGeneration
         let rootURL = URL(fileURLWithPath: projectPath)
-        // What the outgoing tree had realized — re-listed off main so the swap
-        // keeps the outline's expanded subtree without a main-thread read.
+        // Returning to a root the cache still holds shows its tree at once, folders
+        // still open, instead of an empty outline for the length of a disk read.
+        // It also seeds `realized` below, which is the half that matters: without
+        // it a returning root is re-listed one level deep, so the rebuilt tree has
+        // nothing under the folders the user had open and the outline collapses
+        // them for want of children. Node identity is the URL, so the rebuilt tree
+        // that lands after the read keeps the expansion this one restored.
+        //
+        // What is shown immediately is last-known rather than authoritative — the
+        // same contract every refresh has, since the disk can change between the
+        // read and the swap either way.
+        if root?.url != rootURL, let cached = store.fileTrees.tree(for: rootURL) {
+            root = cached
+        }
+        // What the tree already has realized — re-listed off main so the swap keeps
+        // the outline's expanded subtree without a main-thread read. Read after the
+        // handoff above, so a restored tree is refreshed to its full depth instead
+        // of being flattened back to the root.
         let realized = root?.url == rootURL ? (root?.realizedDirectoryURLs() ?? []) : []
         Task {
             let listings = await Task.detached(priority: .userInitiated) {
@@ -391,7 +407,12 @@ struct FileBrowserView: View {
             }.value
             // The project moved, or a newer refresh superseded this one, while we read.
             guard generation == refreshGeneration else { return }
-            root = FileNode.preloaded(url: rootURL, isDirectory: true, listings: listings)
+            let fresh = FileNode.preloaded(url: rootURL, isDirectory: true, listings: listings)
+            root = fresh
+            // The cache holds the live node, never the one just replaced: the
+            // watcher mutates this tree in place from here on, and a stale copy
+            // would come back frozen at the moment it was cached.
+            store.fileTrees.store(fresh, for: rootURL)
         }
     }
 

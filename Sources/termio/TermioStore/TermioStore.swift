@@ -773,6 +773,12 @@ final class TermioStore: ObservableObject {
     /// from here, so a `git checkout` inside a session updates the UI on its own.
     let branchModel = BranchModel()
 
+    /// Realized file trees per root directory, so returning to a checkout hands the
+    /// outline its tree back instead of rebuilding it. Lives here, beside the
+    /// surface cache, for the same reason that one does: the model has to outlive
+    /// the view that shows it. See `FileTreeCache`.
+    let fileTrees = FileTreeCache()
+
     var surfaces: [Session.ID: TerminalViewState] = [:]
     var monitors: [Session.ID: [AnyCancellable]] = [:]
     /// The termio-owned PTY behind each host-managed session — the byte stream
