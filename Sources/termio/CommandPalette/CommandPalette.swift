@@ -195,14 +195,18 @@ struct CommandPaletteView: View {
 
     private var openQuicklyItems: [PaletteItem] {
         var items: [PaletteItem] = []
-        for project in store.orderedProjects {
-            for session in project.sessions {
+        // Every session in the app, not the workspace the sidebar is showing:
+        // Open Quickly is how you get *back* to something, and a scope you have
+        // to guess at first is the opposite of that.
+        let manyWorkspaces = store.hasMultipleWorkspaces
+        for group in store.sidebarSessionGroups {
+            for session in group.sessions {
                 items.append(.init(
                     id: "session-\(session.id.uuidString)",
                     kind: .session(session),
                     section: .sessions,
                     title: store.displayTitle(for: session),
-                    subtitle: project.name
+                    subtitle: manyWorkspaces ? "\(group.workspace) — \(group.name)" : group.name
                 ))
             }
         }
@@ -301,7 +305,7 @@ struct CommandPaletteView: View {
         // The branch verbs (File menu), listed only when the selected session
         // lives in a real git project — the menu bar's own enablement rule.
         if let sid = store.selectedSessionID, let project = store.project(for: sid),
-           project.kind == .folder, project.branch != "—" {
+           project.branch != "—" {
             actions.append(.init(id: "new-worktree", title: localized("New Worktree…"),
                                  icon: .gitBranch,
                                  shortcut: keys.display(for: .newWorktree)) { _ in

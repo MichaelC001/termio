@@ -1172,7 +1172,7 @@ extension TermioStore {
     /// phone wakes the same conversation instead of being told "no terminal".
     /// `wireID` is a full session UUID or the CLI's 8-char prefix.
     func companionPTY(for wireID: String) -> PTYProcess? {
-        guard let (project, session) = findCompanionSession(wireID) else { return nil }
+        guard let session = findCompanionSession(wireID) else { return nil }
         // Attaching from the phone is the mobile equivalent of selecting the
         // session in the desktop sidebar: the user is now looking at the prompt,
         // so a resting "needs you" / unseen "done" marker has been acknowledged.
@@ -1182,9 +1182,9 @@ extension TermioStore {
         // `markSeen` so the Mac's delivered task banner is withdrawn too.
         markSeen(session.id)
         // A deliberate attach from the phone, like desktop selection — float it now.
-        noteProjectActivity(project.id, force: true)
+        if let project = project(for: session.id) { noteProjectActivity(project.id, force: true) }
         if let pty = ptyProcesses[session.id] { return pty }
-        _ = surface(for: session, in: project)
+        _ = surface(for: session)
         return ptyProcesses[session.id]
     }
 
@@ -1211,16 +1211,27 @@ extension TermioStore {
             return (sessionID, preset.wireName)
         }
         let prefix = wireID.lowercased()
-        guard !prefix.isEmpty,
-              let project = projects.first(where: {
-                  $0.id.uuidString.lowercased().hasPrefix(prefix)
-              })
-        else { return nil }
+        guard !prefix.isEmpty else { return nil }
         // Reverse of `wireAgent`: resolve the phone's token back to a definition by
         // its wire name (so user agents, whose wire name is their id, resolve too);
         // an unknown token falls back to a plain terminal.
         let preset = AgentPreset.allCases.first { $0.wireName == wireAgent } ?? .terminal
-        addSession(to: project.id, agent: preset)
+        if let project = projects.first(where: { $0.id.uuidString.lowercased().hasPrefix(prefix) }) {
+            addSession(to: project.id, agent: preset)
+        } else if let workspace = workspaces.first(where: {
+            // A loose section's wire id is its workspace's uuid plus a suffix, and
+            // which of the two sections the row lands in follows from the agent —
+            // so only the workspace half has to match.
+            prefix.hasPrefix($0.id.uuidString.lowercased())
+        }) {
+            // A loose section, not a folder: the phone's ＋ on the Terminals or
+            // Chats card. Move into that workspace first so the row lands where
+            // the phone is looking rather than wherever the Mac was left.
+            switchToWorkspace(workspace.id)
+            addScratchSession(agent: preset)
+        } else {
+            return nil
+        }
         guard let sessionID = selectedSessionID?.uuidString else { return nil }
         return (sessionID, preset.wireName)
     }
@@ -1251,7 +1262,7 @@ extension TermioStore {
     /// Close a session for a phone `stop` request — the same `closeSession`
     /// the sidebar and CLI use. Returns false if the id matches nothing.
     func companionStopSession(sessionID wireID: String) -> Bool {
-        guard let (_, session) = findCompanionSession(wireID) else { return false }
+        guard let session = findCompanionSession(wireID) else { return false }
         closeSession(session.id)
         return true
     }
@@ -1262,55 +1273,83 @@ extension TermioStore {
     /// render a trace even for a session the Mac never opened. nil when the
     /// session is unknown or has no readable transcript.
     func companionTrace(for wireID: String) -> (path: String, title: String)? {
-        guard let (_, session) = findCompanionSession(wireID) else { return nil }
+        guard let session = findCompanionSession(wireID) else { return nil }
         guard let path = transcriptPaths[session.id] ?? resolveTranscriptPath(for: session.id)
         else { return nil }
         transcriptPaths[session.id] = path
         return (path, displayTitle(for: session))
     }
 
-    private func findCompanionSession(_ wireID: String) -> (Project, Session)? {
+    private func findCompanionSession(_ wireID: String) -> Session? {
         let prefix = wireID.lowercased()
         guard !prefix.isEmpty else { return nil }
-        for project in projects {
-            for session in project.sessions
-            where session.id.uuidString.lowercased().hasPrefix(prefix) {
-                return (project, session)
-            }
-        }
-        return nil
+        return allSessions.first { $0.id.uuidString.lowercased().hasPrefix(prefix) }
     }
 }
 
 // MARK: - Store → roster
 
 extension TermioStore {
+    /// One session on the wire, as the sidebar shows it: the display title, the
+    /// live agent status, and the tooltip's activity line — which doubles as the
+    /// phone's row preview, empty meaning "nothing to say".
+    private func rosterSession(_ session: Session) -> RosterSession {
+        let activity = statusDescription(for: session.id)
+        return RosterSession(
+            id: session.id.uuidString,
+            title: displayTitle(for: session),
+            agent: Self.wireAgent(session.agent),
+            status: Self.wireStatus(status(for: session.id)),
+            subtitle: activity.isEmpty ? nil : activity,
+            // Worktree sessions ride the project's flat roster, so the checkout's
+            // branch is the phone's only clue that a row lives off the main one.
+            branch: session.worktreePath.flatMap { branch(forFolder: $0) }
+        )
+    }
+
+    /// The wire id for a workspace's loose section. Derived from the workspace so
+    /// it is stable across launches — the phone sends it back to open a session
+    /// there — and suffixed because one workspace has two sections.
+    static func looseWireID(workspace: Workspace, chats: Bool) -> String {
+        "\(workspace.id.uuidString)-\(chats ? "chats" : "terminals")"
+    }
+
     /// Snapshot the current projects/sessions as a wire roster, mirroring what
     /// the sidebar renders (display titles, live agent status).
     func companionRoster() -> CompanionRoster {
-        let projects = self.projects.map { project in
+        // The phone still sees containers, one per section, because its roster is
+        // a flat list of cards and always has been. A workspace's Terminals and
+        // Chats each ride as one, tagged with the kind the phone already keys off
+        // (`RosterProject.kind`); telling the phone about workspaces themselves is
+        // an additive protocol change and belongs to its own RFC.
+        var projects: [RosterProject] = []
+        for workspace in workspaces {
+            let name = hasMultipleWorkspaces ? workspace.name : ""
+            if !workspace.terminals.isEmpty {
+                projects.append(RosterProject(
+                    id: Self.looseWireID(workspace: workspace, chats: false),
+                    name: name.isEmpty ? "Terminals" : "\(name) — Terminals",
+                    path: Self.looseTerminalRoot,
+                    kind: "terminals",
+                    sessions: workspace.terminals.map(rosterSession)))
+            }
+            if !workspace.chats.isEmpty {
+                projects.append(RosterProject(
+                    id: Self.looseWireID(workspace: workspace, chats: true),
+                    name: name.isEmpty ? "Chats" : "\(name) — Chats",
+                    path: Self.looseChatRoot,
+                    kind: "chats",
+                    sessions: workspace.chats.map(rosterSession)))
+            }
+        }
+        projects += self.projects.map { project in
             RosterProject(
                 id: project.id.uuidString,
                 name: project.name,
                 path: project.path,
                 branch: branchModel.branch(for: project.path) ?? project.branch,
-                kind: project.kind.rawValue,
-                sessions: project.sessions.map { session in
-                    // The sidebar tooltip's activity line doubles as the
-                    // phone's row preview; empty means "nothing to say".
-                    let activity = statusDescription(for: session.id)
-                    return RosterSession(
-                        id: session.id.uuidString,
-                        title: displayTitle(for: session),
-                        agent: Self.wireAgent(session.agent),
-                        status: Self.wireStatus(status(for: session.id)),
-                        subtitle: activity.isEmpty ? nil : activity,
-                        // Worktree sessions ride the project's flat roster, so
-                        // the checkout's branch is the phone's only clue that a
-                        // row lives off the main checkout.
-                        branch: session.worktreePath.flatMap { branch(forFolder: $0) }
-                    )
-                }
+                kind: "folder",
+                sessions: project.sessions.map(rosterSession)
             )
         }
         // The phone's new-session menu mirrors the desktop's enabled agents,

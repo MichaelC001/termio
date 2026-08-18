@@ -218,17 +218,23 @@ extension TermioStore {
                 projects[index].remoteCheckouts[device.id] = legacy
                 projects[index].remoteCheckouts[alias] = nil
             }
-            // The container keeps being matched by alias — that is B's contract and
-            // it is untouched here. This only records what the alias turned out to
-            // reach, which is what a later merge will read.
-            if projects[index].kind == .host, projects[index].sshHost == alias,
-               projects[index].deviceID != device.id {
-                projects[index].deviceID = device.id
-            }
             for sessionIndex in projects[index].sessions.indices
             where projects[index].sessions[sessionIndex].termiodRemoteHost == alias
                 && projects[index].sessions[sessionIndex].deviceID != device.id {
                 projects[index].sessions[sessionIndex].deviceID = device.id
+            }
+        }
+        for index in workspaces.indices {
+            // A machine's fallback workspace keeps being matched by alias — that
+            // is B's contract and it is untouched here. This only records what the
+            // alias turned out to reach, which is what a later merge will read.
+            if workspaces[index].deviceAlias == alias, workspaces[index].deviceID != device.id {
+                workspaces[index].deviceID = device.id
+            }
+            for sessionIndex in workspaces[index].terminals.indices
+            where workspaces[index].terminals[sessionIndex].termiodRemoteHost == alias
+                && workspaces[index].terminals[sessionIndex].deviceID != device.id {
+                workspaces[index].terminals[sessionIndex].deviceID = device.id
             }
         }
     }
@@ -395,34 +401,19 @@ extension TermioStore {
         session.termiodRemoteHost = device.alias
         session.deviceID = device.deviceID
         session.termiodRemoteCwd = information.cwd.isEmpty ? nil : information.cwd
-        // Filed where the device's other rows live: its own block for another
-        // machine, the loose funnel for this one. Both are viewer-side containers;
-        // the workspace a session really belongs to is the device's to say, and
-        // it cannot say it yet (device architecture §2.2).
-        let containerID: Project.ID
-        if let alias = device.alias {
-            containerID = hostContainer(for: alias, remoteRoot: session.termiodRemoteCwd)
-        } else if let terminals = projects.first(where: { $0.kind == .terminals }) {
-            containerID = terminals.id
-        } else {
-            let container = Project(
-                name: "Terminals",
-                path: FileManager.default.homeDirectoryForCurrentUser.path,
-                branch: "—",
-                sessions: [session],
-                kind: .terminals
-            )
-            projects.append(container)
-            selectedSessionID = session.id
-            return
-        }
-        guard let index = projects.firstIndex(where: { $0.id == containerID }) else {
+        // Filed in the machine's fallback workspace for another device, in the
+        // current workspace's Terminals for this Mac. Which workspace a session
+        // really belongs to is the device's to say, and it cannot say it yet
+        // (device architecture §2.2), so the viewer files it where it is reachable.
+        let workspaceID = device.alias.map { deviceWorkspace(for: $0, deviceID: device.deviceID) }
+            ?? currentWorkspace.id
+        guard let index = workspaces.firstIndex(where: { $0.id == workspaceID }) else {
             Log.termiod.error("""
-            adopting \(information.name, privacy: .public) found no container to file it under
+            adopting \(information.name, privacy: .public) found no workspace to file it under
             """)
             return
         }
-        projects[index].sessions.append(session)
+        workspaces[index].terminals.append(session)
         selectedSessionID = session.id
     }
 
@@ -506,8 +497,8 @@ extension TermioStore {
         alert.runModal()
     }
 
-    /// Creates the remote `.terminal` session under the machine it runs on — the
-    /// host's own `.host` container, same as `addSSHSession` — tagging it with the
+    /// Creates the remote `.terminal` session under the machine it runs on — that
+    /// machine's fallback workspace, same as `addSSHSession` — tagging it with the
     /// per-session remote host + cwd that `makeTermiodLink` threads through.
     private func createRemoteTerminalSession(
         host: String,
@@ -528,25 +519,26 @@ extension TermioStore {
         // the window is not showing.
 
         // A remote terminal opened from a project belongs to that project — the
-        // row you clicked is the row it appears under. Everything else belongs to
-        // the machine: `hostContainer` finds or creates that box's own block, so a
-        // remote session is never filed as a loose local terminal.
+        // row you clicked is the row it appears under, wherever it runs, and the
+        // row's device mark is what says it is elsewhere. Everything else belongs
+        // to the machine's own fallback workspace, so a remote session is never
+        // filed among the loose local shells.
         if let projectID, let index = projects.firstIndex(where: { $0.id == projectID }) {
             projects[index].sessions.append(session)
             selectedSessionID = session.id
             return
         }
 
-        let containerID = hostContainer(for: host, remoteRoot: cwd)
-        guard let index = projects.firstIndex(where: { $0.id == containerID }) else { return }
-        // Inside the host's own block the alias is already the header, so an
-        // unnamed session numbers itself like any project terminal instead of
-        // repeating the machine name down the column (`ukvps ▸ ukvps`).
+        let workspaceID = deviceWorkspace(for: host, deviceID: deviceID)
+        guard let index = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
+        // The workspace is already named for the machine, so an unnamed session
+        // numbers itself like any other terminal instead of repeating the machine
+        // name down the column (`ukvps ▸ ukvps`).
         if title == nil {
-            let count = projects[index].sessions.filter { $0.agent == .terminal }.count
+            let count = workspaces[index].terminals.filter { $0.agent == .terminal }.count
             session.title = "Terminal \(count + 1)"
         }
-        projects[index].sessions.append(session)
+        workspaces[index].terminals.append(session)
         selectedSessionID = session.id
     }
 

@@ -25,9 +25,17 @@ private struct PinnedWorktreeEntry: Identifiable {
 }
 
 /// One pinned session lifted into the sidebar's top working set, paired with its parent
-/// project for the origin breadcrumb.
+/// project for the origin breadcrumb. A loose session has no project, so it carries none.
 private struct PinnedSessionEntry: Identifiable {
-    let project: Project
+    let project: Project?
+    let session: Session
+    var id: Session.ID { session.id }
+}
+
+/// One session blocked on the user in a workspace the sidebar is not showing,
+/// lifted into the working set with the name of the scope it lives in.
+private struct WaitingElsewhereEntry: Identifiable {
+    let workspaceName: String
     let session: Session
     var id: Session.ID { session.id }
 }
@@ -109,8 +117,11 @@ struct SidebarView: View {
     @State private var pinnedCollapsed = false
     /// Whether the "Projects" section is folded shut.
     @State private var projectsCollapsed = false
+    /// Whether the workspace's loose Terminals and Chats sections are folded shut.
+    @State private var terminalsCollapsed = false
+    @State private var chatsCollapsed = false
     /// Whether the current device's own roster section is folded shut.
-    @State private var deviceWorldCollapsed = false
+    @State private var alsoRunningCollapsed = false
 
     // Chrome colors borrowed from the selected terminal theme; `nil` keeps the
     // default system look untouched.
@@ -129,22 +140,19 @@ struct SidebarView: View {
         // too — our own quiet "Pinned" label + a hairline — keeping folded rows tight.
         //
         // Row order: the "Pinned" working set first (above everything — the curated,
-        // deliberately-elevated items); then the loose Terminals and Chats funnels; then
+        // deliberately-elevated items); then the loose Terminals and Chats sections; then
         // the rest. A project's membership in the pinned group is itself the pin cue, so
         // pinned rows carry no per-row badge. Both groups keep the user's chosen sort
         // (already applied by `orderedProjects`, which we only partition here — never reorder).
-        // The sidebar shows one device's world, and `store.currentDevice` says
-        // which. On another machine none of this Mac's own containers apply —
-        // switching is not a filter over one list, it is a different machine's
-        // state — so they are not built at all and the device's own roster
-        // (`deviceWorldSection`) is the whole list.
-        let ordered = store.isShowingThisMac ? store.orderedProjects : []
-        let terminals = ordered.filter { $0.kind == .terminals }
-        let chats = ordered.filter { $0.kind == .chats }
-        // Only real `.folder` projects populate the Pinned working set and the Projects
-        // list; the two loose funnels (Terminals, Chats) render as their own sections.
-        let pinnedProjects = ordered.filter { $0.kind == .folder && $0.pinned }
-        let others = ordered.filter { $0.kind == .folder && !$0.pinned }
+        //
+        // The sidebar shows one WORKSPACE, and `store.currentWorkspace` says which.
+        // A workspace spans machines: a project row's session that runs on a VPS
+        // draws here, beside its siblings, wearing that machine's mark — the device
+        // is a property of the row now, not a filter over the column.
+        let workspace = store.currentWorkspace
+        let ordered = store.orderedProjects
+        let pinnedProjects = ordered.filter(\.pinned)
+        let others = ordered.filter { !$0.pinned }
         // Pinned worktrees are gathered only from *unpinned* projects: a pinned project
         // already renders the worktree inside its own block, so listing it again in the
         // working set would double it.
@@ -155,16 +163,27 @@ struct SidebarView: View {
         // Pinned sessions, minus any already shown inside a pinned ancestor (their
         // project — excluded above by iterating `others` — or a pinned worktree of it),
         // so the working set never shows the same session twice.
-        let pinnedSessions: [PinnedSessionEntry] = others.flatMap { project in
+        var pinnedSessions: [PinnedSessionEntry] = others.flatMap { project in
             project.sessions.filter { session in
-                guard session.pinned, store.isOnCurrentDevice(session) else { return false }
+                guard session.pinned else { return false }
                 if let wp = session.worktreePath, pinnedWorktreePaths.contains(wp) { return false }
                 return true
             }.map { PinnedSessionEntry(project: project, session: $0) }
         }
-        let hasPinned = !pinnedProjects.isEmpty || !pinnedWorktrees.isEmpty || !pinnedSessions.isEmpty
-        let hasTerminals = terminals.contains { !$0.sessions.isEmpty }
-        let hasChats = chats.contains { !$0.sessions.isEmpty }
+        pinnedSessions += (workspace.terminals + workspace.chats)
+            .filter(\.pinned)
+            .map { PinnedSessionEntry(project: nil, session: $0) }
+        // Agents blocked on the user in *other* workspaces, lifted into the working
+        // set. The scope bounds the panes — terminal, files, git, issues — and never
+        // the needs-you surface: an agent waiting on an answer that the user cannot
+        // see because they are in a different workspace is the one failure this
+        // feature must not introduce. They carry their workspace's name as the
+        // breadcrumb, so the row says where clicking will take you.
+        let waitingElsewhere = elsewhereNeedingYou(currentWorkspace: workspace.id)
+        let hasPinned = !pinnedProjects.isEmpty || !pinnedWorktrees.isEmpty
+            || !pinnedSessions.isEmpty || !waitingElsewhere.isEmpty
+        let hasTerminals = !workspace.terminals.isEmpty
+        let hasChats = !workspace.chats.isEmpty
         return List {
             // Nudge when agents are running but the status hooks are off — without them
             // the sidebar spinner stays dark. One tap enables (and reinstalls) them.
@@ -178,7 +197,7 @@ struct SidebarView: View {
             // sessions), then pinned sessions as shortcut rows — each nested entry tagged
             // with its origin breadcrumb. Nested items stay in the tree below too; only
             // whole projects move up here. This curated working set sits at the very top —
-            // above the ephemeral Terminals/Chats funnels — because it's the items the user
+            // above the ephemeral Terminals/Chats sections — because it's the items the user
             // deliberately elevated (mirroring the iOS "Needs You" strip at the home top).
             if hasPinned {
                 SidebarSectionHeader(
@@ -191,66 +210,74 @@ struct SidebarView: View {
                     }
                 )
                 if !pinnedCollapsed {
+                    ForEach(waitingElsewhere) { entry in
+                        SessionRow(session: entry.session, chrome: chrome, leadingIndent: 16,
+                                   breadcrumb: entry.workspaceName)
+                    }
                     ForEach(pinnedProjects) { projectBlock($0) }
                     ForEach(pinnedWorktrees) { entry in
                         pinnedWorktreeBlock(project: entry.project, worktree: entry.worktree)
                     }
                     ForEach(pinnedSessions) { entry in
                         SessionRow(session: entry.session, chrome: chrome, leadingIndent: 16,
-                                   breadcrumb: breadcrumb(for: entry.session, in: entry.project))
+                                   breadcrumb: entry.project.map { breadcrumb(for: entry.session, in: $0) })
                     }
                 }
             }
-            // The loose-terminals funnel, as a section (not a project folder): its
+            // The workspace's loose shells, as a section (not a project folder): its
             // header carries the New/Close actions; its sessions render below. Hidden
             // entirely while it holds no terminals — an empty section label is just
             // noise (a new loose terminal reappears the section, via the + / File menu).
-            ForEach(terminals.filter { !$0.sessions.isEmpty }) { term in
+            if hasTerminals {
                 SidebarSectionHeader(
                     title: localized("Terminals"),
                     chrome: chrome,
-                    isCollapsed: collapsedProjects.contains(term.id),
+                    isCollapsed: terminalsCollapsed,
                     isFirstSection: !hasPinned,
-                    toggleCollapsed: { toggleCollapsed(term.id) },
+                    toggleCollapsed: {
+                        withAnimation(.easeInOut(duration: 0.18)) { terminalsCollapsed.toggle() }
+                    },
                     menuItems: [
-                        newTerminalMenuItem(store: store) {
-                            store.addSession(to: term.id, agent: .terminal)
-                        },
+                        newTerminalMenuItem(store: store) { store.addScratchSession(agent: .terminal) },
                         .separator,
-                        .action(localized("Close All Terminals")) { store.removeProject(term.id) },
+                        .action(localized("Close All Terminals")) {
+                            store.closeLooseSessions(inWorkspace: workspace.id, chats: false)
+                        },
                     ]
                 )
-                if !collapsedProjects.contains(term.id) {
-                    let sessions = primarySessions(for: term)
-                    let marks = splitLinkMarks(for: sessions)
-                    ForEach(sessions) { session in
+                if !terminalsCollapsed {
+                    let marks = splitLinkMarks(for: workspace.terminals)
+                    ForEach(workspace.terminals) { session in
                         SessionRow(session: session, chrome: chrome, splitLink: marks[session.id])
                     }
                 }
             }
-            // The loose-agents funnel — the agent-side twin of Terminals, paired
-            // directly above Projects (the "Chats vs Projects" split: one-off agent
-            // sessions vs. real folder-scoped work). Every scratch agent shares one
-            // `.chats` container rooted at `~/.termio/chats`; its header offers a single
-            // "New Chat" (the default agent — see `addDefaultChat`) plus a Close All,
+            // The workspace's loose agent sessions — the agent-side twin of Terminals,
+            // paired directly above Projects (the "Chats vs Projects" split: one-off
+            // agent sessions vs. real folder-scoped work). They spawn in the scoped
+            // scratch directory (`~/.termio/chats`); the header offers a single "New
+            // Chat" (the default agent — see `addDefaultChat`) plus a Close All,
             // mirroring the Terminals header's "New Terminal". Hidden while empty.
-            ForEach(chats.filter { !$0.sessions.isEmpty }) { chat in
+            if hasChats {
                 SidebarSectionHeader(
                     title: localized("Chats"),
                     chrome: chrome,
-                    isCollapsed: collapsedProjects.contains(chat.id),
+                    isCollapsed: chatsCollapsed,
                     isFirstSection: !hasPinned && !hasTerminals,
-                    toggleCollapsed: { toggleCollapsed(chat.id) },
+                    toggleCollapsed: {
+                        withAnimation(.easeInOut(duration: 0.18)) { chatsCollapsed.toggle() }
+                    },
                     menuItems: [
                         .action(localized("New Chat")) { store.addDefaultChat() },
                         .separator,
-                        .action(localized("Close All Chats")) { store.removeProject(chat.id) },
+                        .action(localized("Close All Chats")) {
+                            store.closeLooseSessions(inWorkspace: workspace.id, chats: true)
+                        },
                     ]
                 )
-                if !collapsedProjects.contains(chat.id) {
-                    let sessions = primarySessions(for: chat)
-                    let marks = splitLinkMarks(for: sessions)
-                    ForEach(sessions) { session in
+                if !chatsCollapsed {
+                    let marks = splitLinkMarks(for: workspace.chats)
+                    ForEach(workspace.chats) { session in
                         SessionRow(session: session, chrome: chrome, splitLink: marks[session.id])
                     }
                 }
@@ -271,10 +298,8 @@ struct SidebarView: View {
                     ForEach(others) { projectBlock($0) }
                 }
             }
-            // What the device itself says is running. On another machine this is
-            // the whole sidebar; on this Mac it is the sessions the daemon holds
-            // that no row above accounts for.
-            deviceWorldSection(isFirstSection: !hasPinned && !hasTerminals && !hasChats
+            // What the device itself says is running that no row above accounts for.
+            alsoRunningSection(isFirstSection: !hasPinned && !hasTerminals && !hasChats
                 && others.isEmpty)
         }
         // The native macOS `.sidebar` source list — its own Liquid Glass material, full-height
@@ -283,18 +308,18 @@ struct SidebarView: View {
         .listStyle(.sidebar)
         .environment(\.defaultMinListRowHeight, 1)
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
-        // The device marks ride under the list rather than in it: a row that is
+        // The workspace marks ride under the list rather than in it: a row that is
         // not a session is a row the tree has to explain (the same reasoning that
-        // keeps the device *name* up in the toolbar band), and an inset keeps the
+        // keeps the workspace *name* up in the toolbar band), and an inset keeps the
         // list scrolling its full height behind them.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            DeviceSpaceDots(chrome: chrome)
+            WorkspaceDots(chrome: chrome)
         }
-        // A two-finger swipe over the column moves to the machine either side of
+        // A two-finger swipe over the column moves to the workspace either side of
         // this one. Mounted as a background so it takes no clicks from the rows.
-        .background(DeviceSpaceSwipe { step in
-            guard let device = DeviceSpaces.neighbor(step: step, in: store) else { return }
-            DeviceSpaces.select(device, in: store)
+        .background(WorkspaceSwipe { step in
+            guard let workspace = WorkspaceSpaces.neighbor(step: step, in: store) else { return }
+            WorkspaceSpaces.select(workspace, in: store)
         })
     }
 
@@ -310,56 +335,60 @@ struct SidebarView: View {
     /// sessions they do not account for are listed; on any other device this is
     /// the entire sidebar.
     @ViewBuilder
-    private func deviceWorldSection(isFirstSection: Bool) -> some View {
+    private func alsoRunningSection(isFirstSection: Bool) -> some View {
         let device = store.currentDevice
-        let showingThisMac = store.isShowingThisMac
+        // Only what the device reports that this app has no row for. Every session
+        // the app authored draws in its own workspace now — including the ones on
+        // other machines, which wear that machine's mark — so anything with a
+        // record here would be a duplicate.
         let rows = store.deviceWorld().filter { row in
-            guard showingThisMac else { return true }
-            // A row the local sections already drew would be a duplicate; what is
-            // left is what only the daemon knows about.
             if case .running(_, nil) = row { return true }
             return false
         }
-        // On this Mac an empty extra list is nothing to report — the sidebar above
-        // is already the answer. On another device the section is the sidebar, so
-        // it stays and says what it is waiting for.
-        if !showingThisMac || !rows.isEmpty {
+        // Deliberately not scoped by workspace: this is the machine's own claim
+        // about what is running, and it is the only place a session started
+        // outside Termio can appear at all.
+        if !rows.isEmpty {
             SidebarSectionHeader(
-                title: showingThisMac ? localized("Also Running") : device.name,
+                title: device.isLocal
+                    ? localized("Also Running")
+                    : localized("Also Running on \(device.name)"),
                 chrome: chrome,
-                isCollapsed: deviceWorldCollapsed,
+                isCollapsed: alsoRunningCollapsed,
                 isFirstSection: isFirstSection,
                 toggleCollapsed: {
-                    withAnimation(.easeInOut(duration: 0.18)) { deviceWorldCollapsed.toggle() }
+                    withAnimation(.easeInOut(duration: 0.18)) { alsoRunningCollapsed.toggle() }
                 },
-                menuItems: deviceWorldMenuItems(device)
+                menuItems: alsoRunningMenuItems(device)
             )
-            if !deviceWorldCollapsed {
-                if !showingThisMac, let note = deviceRosterNote() {
-                    DeviceNoteRow(text: note, chrome: chrome)
-                }
+            if !alsoRunningCollapsed {
                 ForEach(rows) { row in
-                    switch row {
-                    case .running(let information, let session):
-                        if let session {
-                            SessionRow(session: session, chrome: chrome)
-                        } else {
-                            // A session on this device with no row here. Opening it
-                            // is adoption, not creation: it keeps the name the
-                            // device gave it so the attach lands on that PTY.
-                            DeviceOnlySessionRow(information: information, chrome: chrome)
-                        }
-                    case .notStarted(let session):
-                        SessionRow(session: session, chrome: chrome)
-                    case .ended(let session, let tombstone):
-                        EndedSessionRow(session: session, tombstone: tombstone, chrome: chrome)
+                    // A session on this device with no row here. Opening it is
+                    // adoption, not creation: it keeps the name the device gave it
+                    // so the attach lands on that PTY.
+                    if case .running(let information, nil) = row {
+                        DeviceOnlySessionRow(information: information, chrome: chrome)
                     }
                 }
             }
         }
     }
 
-    private func deviceWorldMenuItems(_ device: KnownDevice) -> [SidebarMenuItem] {
+    /// Agents blocked on the user outside the workspace on screen. Sorted by the
+    /// order they appear in the tree so the list is stable between renders.
+    private func elsewhereNeedingYou(currentWorkspace: Workspace.ID) -> [WaitingElsewhereEntry] {
+        store.workspaces.filter { $0.id != currentWorkspace }.flatMap { workspace in
+            let loose = workspace.looseSessions
+            let filed = store.projects
+                .filter { $0.workspaceID == workspace.id }
+                .flatMap(\.sessions)
+            return (loose + filed)
+                .filter { store.status(for: $0.id) == .needsAttention }
+                .map { WaitingElsewhereEntry(workspaceName: workspace.name, session: $0) }
+        }
+    }
+
+    private func alsoRunningMenuItems(_ device: KnownDevice) -> [SidebarMenuItem] {
         var items: [SidebarMenuItem] = []
         if let alias = device.alias {
             items.append(.action(localized("New Terminal")) { store.addRemoteTerminal(host: alias) })
@@ -367,24 +396,6 @@ struct SidebarView: View {
         }
         items.append(.action(localized("Refresh")) { store.refreshDeviceSessions() })
         return items
-    }
-
-    /// What to say when the device has not produced a list: it is being asked, it
-    /// refused, or there is no session host to ask. Each is a different fact and
-    /// none of them is "no sessions".
-    private func deviceRosterNote() -> String? {
-        switch store.deviceSessions {
-        case .unavailable:
-            return localized("Termio isn’t running sessions through termiod.")
-        case .loading:
-            return localized("Asking \(store.currentDevice.name)…")
-        case .failed(let message):
-            return message
-        case .ready(let sessions):
-            return sessions.live.isEmpty && store.deviceWorld().isEmpty
-                ? localized("Nothing is running on \(store.currentDevice.name).")
-                : nil
-        }
     }
 
     /// One project's rows: its header, then (unless folded) its primary-checkout
@@ -447,9 +458,7 @@ struct SidebarView: View {
             breadcrumb: project.name
         )
         if !collapsedWorktrees.contains(worktree.id) {
-            let sessions = project.sessions.filter {
-                $0.worktreePath == worktree.path && store.isOnCurrentDevice($0)
-            }
+            let sessions = project.sessions.filter { $0.worktreePath == worktree.path }
             let splitMarks = splitLinkMarks(for: sessions)
             ForEach(sessions) { session in
                 SessionRow(session: session, chrome: chrome, leadingIndent: 16,
@@ -494,11 +503,10 @@ struct SidebarView: View {
     /// verbatim. Once the folder layer exists, only sessions anchored to the primary
     /// checkout remain shallow.
     private func primarySessions(for project: Project) -> [Session] {
-        // A project is a folder on one machine, but a session opened from its row
-        // can run on another ("New Terminal ▸ <device>"). That session belongs to
-        // the device it runs on and shows up in that device's world, so drawing it
-        // here as well would put one session in two machines' sidebars.
-        let sessions = project.sessions.filter(store.isOnCurrentDevice)
+        // Every session the project owns, whichever machine it runs on. A session
+        // opened from this row with "New Terminal ▸ <device>" belongs to the row
+        // that opened it; the device mark on the row is what says it is elsewhere.
+        let sessions = project.sessions
         guard !project.worktrees.isEmpty else { return sessions }
         return sessions.filter {
             $0.worktreePath == nil || $0.worktreePath == project.path
@@ -602,16 +610,6 @@ private struct ProjectHeader: View {
     /// lift marking it as the menu's target.
     @State private var isMenuOpen = false
 
-    private var isTerminalsHeader: Bool {
-        worktree == nil && project.kind == .terminals
-    }
-
-    /// A machine's header. Like the Terminals funnel it is not a folder — its path
-    /// is on the other box — so it offers no worktree, Finder, or git actions.
-    private var isHostHeader: Bool {
-        worktree == nil && project.kind == .host
-    }
-
     private var targetPath: String {
         worktree?.path ?? project.path
     }
@@ -624,11 +622,6 @@ private struct ProjectHeader: View {
     }
 
     private var headerHelp: String {
-        // A host's tooltip names the machine and where its sessions work on it —
-        // `targetPath` alone would read as a local directory.
-        if isHostHeader, let alias = project.sshHost {
-            return project.path == "~" ? alias : "\(alias):\(project.path)"
-        }
         guard let worktree,
               store.isDetachedHead(forFolder: worktree.path),
               let commit = store.branch(forFolder: worktree.path)
@@ -642,11 +635,7 @@ private struct ProjectHeader: View {
     /// distinct folder icon: a git node baked into the folder glyph was illegible at
     /// sidebar size, and a plain folder keeps the two header kinds visually one family.
     private var headerIcon: HugeIcon {
-        if isTerminalsHeader { return .terminal }
-        // A machine, not a directory: the server mark is what distinguishes a host
-        // block from a folder at a glance, which is the whole point of the section.
-        if isHostHeader { return .serverStack }
-        return isCollapsed ? .folder : .folderOpen
+        isCollapsed ? .folder : .folderOpen
     }
 
     private func addSession(_ preset: AgentPreset) {
@@ -655,9 +644,7 @@ private struct ProjectHeader: View {
 
     /// Width the trailing quick-add icons occupy (button frame 22 + 3 spacing each), so
     /// the hovered label can fade out exactly under them rather than guessing.
-    /// Zero for the Terminals section, which offers no agent quick-add cluster.
     private var quickAddClusterWidth: CGFloat {
-        guard !isTerminalsHeader, !isHostHeader else { return 0 }
         let count = headerSessionPresets(settings).count
         guard count > 0 else { return 0 }
         return CGFloat(count) * 22 + CGFloat(count - 1) * 3
@@ -671,28 +658,6 @@ private struct ProjectHeader: View {
     /// Finder actions are about a project's directory — so its menu is
     /// just the terminal action and Close All Terminals.
     private var menuItems: [SidebarMenuItem] {
-        if isTerminalsHeader {
-            return [
-                newTerminalMenuItem(store: store) {
-                    store.addSession(to: project.id, agent: .terminal)
-                },
-                .separator,
-                .action(localized("Close All Terminals")) { store.removeProject(project.id) },
-            ]
-        }
-        // A machine's menu names the machine: both terminal kinds it can host (the
-        // durable termiod session and the plain `ssh` shell), then Close All. No
-        // worktree/Finder/git rows — none of them mean anything for a box over there.
-        if isHostHeader, let alias = project.sshHost {
-            return [
-                .action(localized("New Terminal")) {
-                    store.addRemoteTerminal(host: alias, cwd: project.path == "~" ? nil : project.path)
-                },
-                .action("New SSH Shell") { store.addSSHSession(host: alias) },
-                .separator,
-                .action("Close All Sessions on \(alias)") { store.removeProject(project.id) },
-            ]
-        }
         var items: [SidebarMenuItem] = [
             newTerminalMenuItem(store: store, project: project) { addSession(.terminal) },
             .submenu(localized("New Agent Session"), enabledAgentPresets(settings)
@@ -732,6 +697,11 @@ private struct ProjectHeader: View {
         items.append(.action(project.pinned ? localized("Unpin") : localized("Pin to Top")) {
             store.togglePinned(project.id)
         })
+        // Filing is what a workspace is for, so a project can be moved into
+        // another one. Absent with a single workspace — there is nowhere to move to.
+        if let move = moveToWorkspaceMenuItem(store: store, project: project) {
+            items.append(move)
+        }
         items.append(.action(localized("Reveal in Finder")) {
             NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: project.path)
         })
@@ -814,21 +784,15 @@ private struct ProjectHeader: View {
         // icon per enabled session kind (including Terminal). The container's rarer
         // lifecycle actions live in the right-click menu rather than inline.
         .overlay(alignment: .trailing) {
-            // The Terminals section gets no agent cluster — an agent loose in `$HOME`
-            // is exactly what the scoped scratch workspace exists to prevent. A host
-            // gets none either: `addSession` builds a *local* session, so a quick-add
-            // there would silently start the agent on this Mac, not on the box.
-            if !isTerminalsHeader, !isHostHeader {
-                HStack(spacing: 3) {
-                    ForEach(headerSessionPresets(settings)) { preset in
-                        AgentQuickAddButton(preset: preset, chrome: chrome) {
-                            addSession(preset)
-                        }
+            HStack(spacing: 3) {
+                ForEach(headerSessionPresets(settings)) { preset in
+                    AgentQuickAddButton(preset: preset, chrome: chrome) {
+                        addSession(preset)
                     }
                 }
-                .opacity(isHovering ? 1 : 0)
-                .allowsHitTesting(isHovering)
             }
+            .opacity(isHovering ? 1 : 0)
+            .allowsHitTesting(isHovering)
         }
         .padding(.vertical, 3)
         .padding(.leading, leadingIndent)
@@ -1099,6 +1063,14 @@ private struct SessionRow: View {
 
     private var isSelected: Bool { store.selectedSessionID == session.id }
 
+    /// The machine this row runs on, or `nil` when it runs here. `termiodRemoteHost`
+    /// is the durable session's road and `sshHost` the plain `ssh` terminal's; both
+    /// mean "not this Mac", which is the only thing the mark says.
+    private var remoteDevice: KnownDevice? {
+        guard let alias = session.termiodRemoteHost ?? session.sshHost else { return nil }
+        return KnownDevice(alias: alias, deviceID: session.deviceID)
+    }
+
     /// The row's right-click menu. Rename/Pin/Close Session are always present; the two
     /// split "type switch" items appear conditionally — "Ungroup" only when the
     /// session is already in a group (联合 → 独立), and "Group with ▸" only when
@@ -1133,6 +1105,18 @@ private struct SessionRow: View {
     }
 
     var body: some View {
+        // A session whose process the device buried reads as what it is — a spent
+        // row with the reason it ended — in its own place in the tree, rather than
+        // being moved to a separate list. The tombstone is a fact about the row.
+        if let tombstone = store.termiodEndReason(for: session.id) {
+            EndedSessionRow(session: session, tombstone: tombstone, chrome: chrome,
+                            leadingIndent: leadingIndent)
+        } else {
+            liveBody
+        }
+    }
+
+    private var liveBody: some View {
         HStack(spacing: 6) {
             // While the agent is working, the leading mark becomes a small rotating
             // nine-dot grid — the row's own "thinking" spinner — and reverts to the
@@ -1193,6 +1177,17 @@ private struct SessionRow: View {
             // layout width), so the title always spans the full row and truncates
             // only at the true trailing edge. The spacer just left-aligns the title.
             Spacer(minLength: 4)
+            // The machine the row runs on, when that is not this Mac. A workspace
+            // spans machines, so the device is a property of the row: a small
+            // tinted dot, the same hue the workspace switcher gives that machine,
+            // arriving before the mistake rather than after it. Local rows carry
+            // nothing — being on your own Mac is the absence of a mark.
+            if let device = remoteDevice {
+                Circle()
+                    .fill(DeviceTint.color(for: device, chrome: chrome))
+                    .frame(width: 6, height: 6)
+                    .help(localized("Runs on \(device.name)"))
+            }
         }
         // VSCode-style trailing edge, reserving zero flow width: the close button appears here on
         // hover only. Status no longer trails the title — it moved to the leading mark's ring (above)
@@ -1328,27 +1323,6 @@ private struct SessionRow: View {
     }
 }
 
-/// A quiet line under a device's header saying why there are no rows — reaching
-/// the machine, the reason it could not be reached, or that nothing runs there.
-/// A device is across a network, so "we do not know yet" is a real answer and
-/// gets said rather than being drawn as an empty list.
-private struct DeviceNoteRow: View {
-    @EnvironmentObject var settings: AppSettings
-    let text: String
-    let chrome: ChromeTheme?
-
-    var body: some View {
-        Text(text)
-            .font(settings.interfaceFont)
-            .foregroundStyle(.secondary)
-            .lineLimit(2)
-            .padding(.vertical, settings.interfaceRowPadding)
-            .padding(.leading, 16)
-            .listRowBackground(
-                SidebarRowHighlight(isSelected: false, isHovering: false, chrome: chrome))
-    }
-}
-
 /// A session the **device** reports that this app has no row for — started from
 /// the `termiod` CLI on that machine, or by another client.
 ///
@@ -1437,6 +1411,7 @@ private struct EndedSessionRow: View {
     let session: Session
     let tombstone: Termiod.SessionTombstone
     let chrome: ChromeTheme?
+    var leadingIndent: CGFloat = 16
     @State private var isHovering = false
 
     private var isSelected: Bool { store.selectedSessionID == session.id }
@@ -1471,7 +1446,7 @@ private struct EndedSessionRow: View {
             Spacer(minLength: 4)
         }
         .padding(.vertical, settings.interfaceRowPadding)
-        .padding(.leading, 16)
+        .padding(.leading, leadingIndent)
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .simultaneousGesture(TapGesture().onEnded { store.selectedSessionID = session.id })

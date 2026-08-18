@@ -125,8 +125,8 @@ extension TermioStore {
 
     /// Returns the cached terminal surface for a session, creating and starting
     /// it on first access. The surface launches `session.command` (or the login
-    /// shell) in the project's working directory via the real PTY (`.exec`).
-    func surface(for session: Session, in project: Project) -> TerminalViewState {
+    /// shell) in the session's working directory via the real PTY (`.exec`).
+    func surface(for session: Session) -> TerminalViewState {
         if let existing = surfaces[session.id] {
             return existing
         }
@@ -134,24 +134,34 @@ extension TermioStore {
         // An isolated worktree (if one was created for this session) wins over the
         // project's own directory, so the agent edits the branch in place.
         // A loose terminal instead respawns at the cwd it last reported over OSC 7
-        // (its path is the session's own mutable property, not the container's) —
+        // (its path is the session's own mutable property, not a container's) —
         // so a relaunch drops the user back where they `cd`'d, not at `$HOME`.
         // Ahead of the worktree/project anchor sits the directory the session was
         // opened in (⌘T): where the user asked *this* shell to start, even when the
         // session belongs to a project rooted elsewhere. Each rung must still exist —
         // a stale path falls through rather than dropping the shell at `/`.
-        let restoredCwd = project.kind == .terminals
+        let slot = locate(session.id)
+        let isLooseTerminal: Bool
+        if case .terminals? = slot { isLooseTerminal = true } else { isLooseTerminal = false }
+        let restoredCwd = isLooseTerminal
             ? Self.existingDirectory(session.lastWorkingDirectory)
             : nil
-        // A `.host` container's `path` is a path on *that box* (`~`, or a clone's
-        // directory) — handing it to the local PTY would `chdir` somewhere that
-        // doesn't exist here, or worse, somewhere that does. The remote cwd travels
+        // A session that runs on another machine works in a directory on *that*
+        // box — handing it to the local PTY would `chdir` somewhere that doesn't
+        // exist here, or worse, somewhere that does. The remote cwd travels
         // separately: `session.termiodRemoteCwd` for a termiod session, the remote
         // login shell's own default for a plain `ssh`. Locally these spawn at `$HOME`.
-        let localRoot = project.kind == .host
-            ? FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
-            : project.path
-        let workspacePath = restoredCwd
+        let localRoot: String
+        if session.sshHost != nil || session.termiodRemoteHost != nil {
+            localRoot = Self.looseTerminalRoot
+        } else if case .project(let index, _)? = slot {
+            localRoot = projects[index].path
+        } else if case .chats? = slot {
+            localRoot = ensureLooseChatRoot()
+        } else {
+            localRoot = Self.looseTerminalRoot
+        }
+        let spawnPath = restoredCwd
             ?? Self.existingDirectory(session.spawnDirectory)
             ?? session.worktreePath
             ?? localRoot
@@ -165,14 +175,14 @@ extension TermioStore {
         // resumes (a local-agent concept), so it short-circuits the agent launch
         // resolution below.
         let launch = session.sshHost.map { (command: Self.sshCommand(host: $0), resumeID: String?.none) }
-            ?? resolveLaunch(for: session, workspacePath: workspacePath)
+            ?? resolveLaunch(for: session, spawnPath: spawnPath)
         let agentCommand = launch.command
 
         // Pi checks the pinned `--session-id` against its session store at startup
         // and warns when no file exists yet; pre-creating it keeps the launch silent.
         // The manifest opts in via `resume.seed`, so no agent is named here.
         if session.agent.resumeSpec.seed == "session-file", let pinnedID = launch.resumeID {
-            PiSession.ensureExists(id: pinnedID, cwd: workspacePath)
+            PiSession.ensureExists(id: pinnedID, cwd: spawnPath)
         }
 
         let controller = TerminalController { [self] builder in
@@ -218,7 +228,7 @@ extension TermioStore {
         // detaches instead of killing. Flag off, the in-process PTY below is
         // created exactly as before.
         let termiodLink: TermiodSessionLink? = Termiod.isEnabled
-            ? makeTermiodLink(for: session, argv: argv, cwd: workspacePath, env: env)
+            ? makeTermiodLink(for: session, argv: argv, cwd: spawnPath, env: env)
             : nil
         // The PTY is created first so the surface's `@Sendable` write/resize
         // callbacks can capture it directly (it is thread-safe: fd writes and
@@ -229,7 +239,7 @@ extension TermioStore {
         // zsh's `PROMPT_SP` line into a stray `%` (see `lastHostGridColumns`).
         let pty: PTYProcess? = termiodLink != nil
             ? nil
-            : PTYProcess(argv: argv, cwd: workspacePath, env: env,
+            : PTYProcess(argv: argv, cwd: spawnPath, env: env,
                          cols: lastHostGridColumns, rows: lastHostGridRows)
         let inMemory = InMemoryTerminalSession(
             write: { data in
@@ -391,7 +401,7 @@ extension TermioStore {
             // its project, not where it wandered.
             if session.agent == .terminal {
                 let sessionID = session.id
-                let followCwd = project.kind == .terminals
+                let followCwd = isLooseTerminal
                 var pendingPoll: DispatchWorkItem?
                 pty.addSink { [weak self, weak pty] _ in
                     pendingPoll?.cancel()
@@ -583,7 +593,7 @@ extension TermioStore {
     /// The launch command for a session, with resume arguments folded in, plus the
     /// resume id that should be persisted for it (nil when the agent doesn't pin one).
     /// Pure — it reads session state but mutates nothing; `recordLaunch` does the write.
-    private func resolveLaunch(for session: Session, workspacePath: String)
+    private func resolveLaunch(for session: Session, spawnPath: String)
         -> (command: String?, resumeID: String?) {
         guard let base = settings.command(for: session.agent) else {
             return (nil, nil) // plain login shell — nothing to resume
@@ -598,7 +608,7 @@ extension TermioStore {
             // the agent's own session store — cached after the first successful discovery
             // so the scan happens at most once per session.
             resumeID = session.resumeID
-                ?? AgentSessionStore.discover(agent: agent, directory: workspacePath,
+                ?? AgentSessionStore.discover(agent: agent, directory: spawnPath,
                                               after: session.launchedAt)
         } else {
             resumeID = nil
@@ -627,8 +637,7 @@ extension TermioStore {
     /// was pinned to. Writes only when something actually changed, so re-opening an
     /// already-launched session doesn't churn the state file or re-sync watched folders.
     private func recordLaunch(_ id: Session.ID, resumeID: String?) {
-        guard let location = locate(id) else { return }
-        var session = projects[location.project].sessions[location.session]
+        guard var session = session(id) else { return }
         let firstLaunch = !session.launched
         let needsResumeID = resumeID != nil && session.resumeID == nil
         guard firstLaunch || needsResumeID else { return }
@@ -639,7 +648,7 @@ extension TermioStore {
             // session record back to this session by creation time (see `resolveLaunch`).
             session.launchedAt = Date()
         }
-        projects[location.project].sessions[location.session] = session
+        updateSession(id) { $0 = session }
     }
 
     /// Advances a session's pinned `resumeID` to the conversation it is *currently*
@@ -664,8 +673,8 @@ extension TermioStore {
     /// turn-boundary re-discovery). Returns whether the pin actually advanced.
     @discardableResult
     func adoptConversationID(_ conversationID: String, for id: Session.ID) -> Bool {
-        guard let location = locate(id) else { return false }
-        var session = projects[location.project].sessions[location.session]
+        guard let slot = locate(id) else { return false }
+        var session = self[slot]
         // Only a session whose declared agent participates in conversation identity
         // (a pinned, discovered, or resumable id) has a pin to keep honest. A plain
         // terminal that merely *runs* an agent relaunches as a shell, so adopting an
@@ -685,7 +694,7 @@ extension TermioStore {
             session.promptTitle = nil
         }
         session.resumeID = conversationID
-        projects[location.project].sessions[location.session] = session
+        self[slot] = session
         return true
     }
 
@@ -739,16 +748,6 @@ extension TermioStore {
             }
         }
         return true
-    }
-
-    /// The position of a session in the project tree, for an in-place edit.
-    func locate(_ id: Session.ID) -> (project: Int, session: Int)? {
-        for (p, project) in projects.enumerated() {
-            if let s = project.sessions.firstIndex(where: { $0.id == id }) {
-                return (p, s)
-            }
-        }
-        return nil
     }
 
     /// Pushes the current font and theme onto every live surface without tearing
@@ -1025,9 +1024,8 @@ extension TermioStore {
                 // belongs to the transient hand-started agent, so it lives in
                 // `liveTitles` and is cleared when that agent exits — persisting it
                 // would strand a stale topic on a bare shell across restarts.
-                if session.agent != .terminal, let location = self.locate(id) {
-                    self.projects[location.project].sessions[location.session]
-                        .liveTitle = cleaned
+                if session.agent != .terminal {
+                    self.updateSession(id) { $0.liveTitle = cleaned }
                 }
             },
             // The shell's OSC 7 cwd reports — the precise signal, when a shell
@@ -1045,11 +1043,9 @@ extension TermioStore {
     /// shell respawns there next launch; see docs/design/20260713-loose-terminal-entity.md).
     func noteWorkingDirectory(_ cwd: String, for id: Session.ID) {
         setWorkingDirectory(cwd, for: id)
-        guard let location = locate(id),
-              projects[location.project].kind == .terminals,
-              projects[location.project].sessions[location.session]
-                  .lastWorkingDirectory != cwd else { return }
-        projects[location.project].sessions[location.session].lastWorkingDirectory = cwd
+        guard let slot = locate(id), case .terminals = slot,
+              self[slot].lastWorkingDirectory != cwd else { return }
+        self[slot].lastWorkingDirectory = cwd
     }
 
     /// Whether a live terminal title is worth showing as the session's label, as

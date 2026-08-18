@@ -30,39 +30,38 @@ extension TermioStore {
         return session.id
     }
 
-    /// Whether `moved` may be drag-reordered next to `target`: both must live in the
-    /// same project and the same worktree bucket. Drives which rows light their
-    /// background as a legal drop target while a session is in flight, so a
-    /// cross-project or primary-over-worktree hover stays inert.
+    /// Whether `moved` may be drag-reordered next to `target`: both must sit in the
+    /// same roster — one project, or one workspace's Terminals or Chats — and the
+    /// same worktree bucket. Drives which rows light their background as a legal
+    /// drop target while a session is in flight, so a cross-section hover stays inert.
     func canReorder(_ moved: Session.ID, relativeTo target: Session.ID) -> Bool {
         guard moved != target,
-              let p = projects.firstIndex(where: { $0.sessions.contains { $0.id == moved } }),
-              let movedIndex = projects[p].sessions.firstIndex(where: { $0.id == moved }),
-              let targetIndex = projects[p].sessions.firstIndex(where: { $0.id == target })
+              let movedSlot = locate(moved), let targetSlot = locate(target),
+              movedSlot.sharesRoster(with: targetSlot)
         else { return false }
-        return sessionBucketKey(projects[p].sessions[movedIndex], in: projects[p])
-            == sessionBucketKey(projects[p].sessions[targetIndex], in: projects[p])
+        return sessionBucketKey(self[movedSlot], at: movedSlot)
+            == sessionBucketKey(self[targetSlot], at: targetSlot)
     }
 
-    /// Moves `moved` next to `target` within their shared bucket, committed on drop
-    /// (a cross-bucket move is a no-op via `canReorder`). The insert side follows the
+    /// Moves `moved` next to `target` within their shared roster, committed on drop
+    /// (a cross-roster move is a no-op via `canReorder`). The insert side follows the
     /// drag direction: dropping onto a row *below* lands `moved` just under the target,
     /// onto one *above* lands it just over — so the gesture reads as "move toward the
-    /// row you let go on". Persistence rides `projects.didSet` like every roster edit.
+    /// row you let go on". Persistence rides the tree's `didSet` like every roster edit.
     func reorderSession(_ moved: Session.ID, relativeTo target: Session.ID) {
         guard canReorder(moved, relativeTo: target),
-              let p = projects.firstIndex(where: { $0.sessions.contains { $0.id == moved } }),
-              let movedIndex = projects[p].sessions.firstIndex(where: { $0.id == moved }),
-              let targetIndex = projects[p].sessions.firstIndex(where: { $0.id == target })
+              let movedSlot = locate(moved), let targetSlot = locate(target)
         else { return }
 
-        let row = projects[p].sessions.remove(at: movedIndex)
+        var sessions = roster(at: movedSlot)
+        let movedIndex = movedSlot.sessionIndex
+        let targetIndex = targetSlot.sessionIndex
+        let row = sessions.remove(at: movedIndex)
         // Re-find the target after the removal so its index stays valid regardless of
         // which row came first; insert on the side `moved` was dragged from.
-        let newTarget = projects[p].sessions.firstIndex(where: { $0.id == target })
-            ?? projects[p].sessions.count - 1
-        let insertAt = movedIndex < targetIndex ? newTarget + 1 : newTarget
-        projects[p].sessions.insert(row, at: insertAt)
+        let newTarget = sessions.firstIndex(where: { $0.id == target }) ?? sessions.count - 1
+        sessions.insert(row, at: movedIndex < targetIndex ? newTarget + 1 : newTarget)
+        setRoster(sessions, at: movedSlot)
         // A drop that lands between a group's rows would split its bracket in two;
         // rows only join or leave a group through "Group with" / "Ungroup", so the
         // run closes back up around the dropped row (see `gatherSplitRuns`).
@@ -70,10 +69,11 @@ extension TermioStore {
     }
 
     /// The sidebar bucket a session sits in: `nil` for the primary checkout (a `nil`
-    /// or project-root `worktreePath`), else the worktree path. Reorder works only
-    /// within one bucket, matching how `primarySessions` splits the tree.
-    private func sessionBucketKey(_ session: Session, in project: Project) -> String? {
-        if session.worktreePath == nil || session.worktreePath == project.path { return nil }
+    /// or project-root `worktreePath`) and for every loose session, else the worktree
+    /// path. Reorder works only within one bucket, matching how the sidebar nests.
+    private func sessionBucketKey(_ session: Session, at slot: SessionSlot) -> String? {
+        guard case .project(let index, _) = slot else { return nil }
+        if session.worktreePath == nil || session.worktreePath == projects[index].path { return nil }
         return session.worktreePath
     }
 
@@ -281,17 +281,16 @@ extension TermioStore {
 
     /// Opens a fresh scratch terminal — a plain login shell in the user's home
     /// directory, the way launching a new iTerm2 window drops you at `~`. Loose
-    /// terminals aren't tied to a real project, so they're gathered under a single
-    /// home-rooted section that's created on first use; each later click just adds
-    /// another `Terminal N` row there and selects it (the same grow-in-place a
-    /// project's own header buttons do). The section persists like any project, so
-    /// it reappears on relaunch (the shells themselves restart fresh).
+    /// terminals aren't tied to a real project, so they belong to the workspace
+    /// itself; each later click adds another `Terminal N` row to its Terminals
+    /// section and selects it (the same grow-in-place a project's own header
+    /// buttons do). The rows persist with the workspace, so they reappear on
+    /// relaunch (the shells themselves restart fresh).
     func addScratchTerminal() {
-        // On the device you are looking at, not on whichever machine happens to
-        // run the app. Without this the verb silently means "on this Mac" while
-        // the sidebar shows another device's world — the same class of mismatch
-        // that let an environment variable turn local terminals remote.
-        if let alias = currentDevice.alias {
+        // A machine's fallback workspace *is* that machine, so a shell opened in
+        // it opens over there. Every other workspace is this Mac's unless the row
+        // that started the shell said otherwise.
+        if let alias = currentWorkspace.deviceAlias {
             addRemoteTerminal(host: alias)
             return
         }
@@ -310,30 +309,30 @@ extension TermioStore {
     /// to the session's own anchor — and to `$HOME` with nothing focused, which is
     /// what New Terminal at Home does on purpose.
     func addTerminalHere() {
-        // "Here" is a directory on this Mac and does not exist on another
-        // machine, so on a remote device the verb degrades to that device's
-        // `$HOME` rather than pointing at a path that isn't there.
-        if let alias = currentDevice.alias {
-            addRemoteTerminal(host: alias)
+        guard let id = selectedSessionID, let slot = locate(id) else {
+            addScratchTerminal()
             return
         }
-        guard let id = selectedSessionID,
-              let project = project(for: id),
-              let session = session(id) else {
-            addScratchTerminal()
+        let session = self[slot]
+        // "Here" is a directory on this Mac and does not exist on another
+        // machine, so a session that runs elsewhere degrades to that machine's
+        // `$HOME` rather than pointing at a path that isn't there.
+        if let alias = session.termiodRemoteHost ?? session.sshHost {
+            addRemoteTerminal(host: alias)
             return
         }
         let reported = Self.existingDirectory(
             workingDirectory(for: id) ?? session.lastWorkingDirectory)
-        let directory = reported
-            ?? session.spawnDirectory
-            ?? session.worktreePath
-            ?? project.path
-        guard project.kind == .folder else {
+        guard case .project(let index, _) = slot else {
+            let directory = reported ?? session.spawnDirectory
             addScratchSession(agent: .terminal, spawnDirectory: directory)
             return
         }
-        addSession(to: project.id, agent: .terminal,
+        let directory = reported
+            ?? session.spawnDirectory
+            ?? session.worktreePath
+            ?? projects[index].path
+        addSession(to: projects[index].id, agent: .terminal,
                    worktreePath: session.worktreePath, spawnDirectory: directory)
     }
 
@@ -370,94 +369,61 @@ extension TermioStore {
     /// expected and harmless. An **agent**, though, must never be handed `$HOME` as
     /// its working directory: an autonomous agent there can read and write the user's
     /// whole home (`~/.ssh`, `~/Documents`, …). So agents get a dedicated, scoped
-    /// scratch workspace at `~/.termio/chats/` (created on first use, sibling to
-    /// the existing `~/.termio/worktrees/`), a clean directory that's safe to let an
+    /// scratch directory at `~/.termio/chats/` (created on first use, sibling to
+    /// the existing `~/.termio/worktrees/`), a clean folder that's safe to let an
     /// agent loose in.
     ///
-    /// Each destination gathers its loose sessions under one persistent section — the
-    /// `.terminals` funnel for shells, the `.chats` funnel for agents — so a second
-    /// click just grows another row there and selects it, rather than piling up
-    /// duplicate sections.
+    /// The row lands in the current workspace's own collection — Terminals for a
+    /// shell, Chats for an agent — so a second click grows the section rather than
+    /// piling up duplicates.
     ///
     /// `spawnDirectory` overrides where a scratch *terminal* starts, so ⌘T from a
-    /// loose shell opens its sibling at the same cwd. Agents ignore it: being confined
-    /// to the scoped workspace is the point.
+    /// loose shell opens its sibling at the same cwd. Agents ignore it: being
+    /// confined to the scoped directory is the point.
     func addScratchSession(agent: AgentPreset = .terminal, spawnDirectory: String? = nil) {
-        // Both funnels are matched by kind, not path: the `.terminals` container's
-        // `path` is just the `$HOME` spawn fallback, and the single `.chats` container
-        // gathers every agent (Claude, Codex, …) that spawns in the scratch workspace.
-        let path = scratchWorkspacePath(for: agent)
+        // A machine's fallback workspace holds what runs on *that* machine, and this
+        // session runs here — filing it there would make the workspace say something
+        // untrue. It lands in the first workspace the user made instead, and the
+        // selection carries the scope over with it.
+        let home = currentWorkspace.isDeviceFallback
+            ? workspaces.first { !$0.isDeviceFallback } ?? currentWorkspace
+            : currentWorkspace
+        guard let index = workspaces.firstIndex(where: { $0.id == home.id }) else { return }
         // Remember the agent behind a bare "New Chat", so the single ⌘N / `+` / menu
         // action relaunches whatever you actually use (see `defaultChatAgent`).
         if agent != .terminal { settings.lastChatAgentID = agent.rawValue }
-        let containerKind: ProjectKind = agent == .terminal ? .terminals : .chats
-        let seededDirectory = agent == .terminal ? spawnDirectory : nil
-        if let existing = projects.first(where: { $0.kind == containerKind }) {
-            addSession(to: existing.id, agent: agent, spawnDirectory: seededDirectory)
-            return
+        var session = Session(title: "", agent: agent)
+        if agent == .terminal {
+            session.title = "Terminal \(workspaces[index].terminals.count + 1)"
+            session.spawnDirectory = spawnDirectory
+            workspaces[index].terminals.append(session)
+        } else {
+            // Creating the directory is what makes it safe to spawn in; the
+            // guidance files seeded alongside tell the agent what it is.
+            _ = ensureLooseChatRoot()
+            session.title = agent.displayName
+            workspaces[index].chats.append(session)
         }
-        let title = agent == .terminal ? "Terminal 1" : agent.displayName
-        var session = Session(title: title, agent: agent)
-        session.spawnDirectory = seededDirectory
-        let project = Project(
-            name: agent == .terminal ? "Terminals" : "Chats",
-            path: path,
-            branch: "—",
-            sessions: [session],
-            kind: containerKind
-        )
-        projects.append(project)
         selectedSessionID = session.id
-        resolveBranchLabel(for: project.id, at: path)
-    }
-
-    /// The `.host` container for `alias`, created on first use. One block per
-    /// machine, matched by `sshHost` rather than by name or path, so the container
-    /// survives a rename and two sessions on the same box always land together.
-    ///
-    /// `remoteRoot` records where on that box the sessions work; the first caller to
-    /// name a real directory wins (a `Clone to <device>…` knows the checkout path, a
-    /// bare terminal only knows `~`), so opening a shell later never demotes a host
-    /// that already points at a repo.
-    @discardableResult
-    func hostContainer(for alias: String, remoteRoot: String? = nil) -> Project.ID {
-        if let index = projects.firstIndex(where: { $0.sshHost == alias && $0.kind == .host }) {
-            if let remoteRoot, projects[index].path == "~" { projects[index].path = remoteRoot }
-            return projects[index].id
-        }
-        let project = Project(
-            name: alias,
-            // A remote root, never a local path — `localWorkspacePath(for:)` is what
-            // keeps this away from the local PTY's `chdir`.
-            path: remoteRoot ?? "~",
-            branch: "—",
-            sessions: [],
-            kind: .host,
-            sshHost: alias
-        )
-        projects.append(project)
-        return project.id
     }
 
     /// Opens an **SSH terminal** to `host` — a terminal that launches `ssh <host>`
-    /// in a local PTY instead of a local shell (see `Session.sshHost`). It gathers
-    /// under that machine's own `.host` container, so an `ssh` shell and a durable
-    /// termiod session on the same box sit in one block rather than scattering
-    /// among loose local terminals. `host` is a `~/.ssh/config` alias or a bare
-    /// `user@host`.
+    /// in a local PTY instead of a local shell (see `Session.sshHost`). It lands in
+    /// that machine's fallback workspace, so an `ssh` shell and a durable termiod
+    /// session on the same box sit together rather than scattering among loose
+    /// local terminals. `host` is a `~/.ssh/config` alias or a bare `user@host`.
     func addSSHSession(host: String) {
         let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { return }
-        // Named for what it is, not for the box — the block header already says
-        // which machine. The distinction matters inside a host block: an "SSH Shell"
-        // dies with the connection, while the numbered rows beside it are durable
-        // termiod sessions that survive a detach.
+        // Named for what it is, not for the box — the workspace already says which
+        // machine. The distinction matters beside the numbered rows: an "SSH Shell"
+        // dies with the connection, while a durable termiod session survives a detach.
         var session = Session(title: "SSH Shell", agent: .terminal)
         session.sshHost = host
 
-        let containerID = hostContainer(for: host)
-        guard let index = projects.firstIndex(where: { $0.id == containerID }) else { return }
-        projects[index].sessions.append(session)
+        let workspaceID = deviceWorkspace(for: host)
+        guard let index = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
+        workspaces[index].terminals.append(session)
         selectedSessionID = session.id
     }
 
@@ -484,29 +450,43 @@ extension TermioStore {
         addSSHSession(host: host)
     }
 
-    /// The working directory for a scratch session: `~` for a plain terminal, and the
-    /// scoped `~/.termio/chats/` workspace for any agent (created on demand). See
-    /// `addScratchSession` for why agents are kept out of `$HOME`.
-    private func scratchWorkspacePath(for agent: AgentPreset) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
-        guard agent != .terminal else { return home.path }
-        let workspace = home.appendingPathComponent(".termio/chats", isDirectory: true)
-        try? FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
-        seedScratchWorkspaceDocs(at: workspace)
-        return workspace.standardizedFileURL.path
+    /// Where a workspace's loose **shells** spawn: the user's home directory, the
+    /// way launching a new iTerm2 window drops you at `~`. Never
+    /// `currentDirectoryPath`, which is `/` when the app is launched from Finder
+    /// (that is what left the shell sitting at `/ %` on first launch).
+    static var looseTerminalRoot: String {
+        FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
     }
 
-    /// Drops a `CLAUDE.md` and an `AGENTS.md` into the scratch workspace so an
+    /// Where a workspace's loose **agent** sessions spawn: a scoped scratch
+    /// directory, never `$HOME`. See `addScratchSession` for why.
+    static var looseChatRoot: String {
+        FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+            .appendingPathComponent(".termio/chats", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
+    /// Creates the loose-chat directory and seeds its agent guidance, returning the
+    /// path. Called before an agent is turned loose in it, never on read.
+    @discardableResult
+    func ensureLooseChatRoot() -> String {
+        let root = URL(fileURLWithPath: Self.looseChatRoot, isDirectory: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        seedLooseChatDocs(at: root)
+        return root.path
+    }
+
+    /// Drops a `CLAUDE.md` and an `AGENTS.md` into the scratch directory so an
     /// agent that spawns here reads, up front, that this is a throwaway scratchpad —
     /// not a real project to explore or a place to put anything it should keep. Both
     /// filenames are seeded because agents split on the convention (`CLAUDE.md` for
     /// Claude Code, `AGENTS.md` for Codex/Cursor/Amp and the rest). Only written when
     /// absent, so anything the user later edits into them is preserved.
-    private func seedScratchWorkspaceDocs(at workspace: URL) {
+    private func seedLooseChatDocs(at root: URL) {
         let guidance = """
-        # termio scratch workspace
+        # termio scratch directory
 
-        This is termio's scratch workspace (`~/.termio/chats`) — an empty,
+        This is termio's scratch directory (`~/.termio/chats`) — an empty,
         throwaway space for quick one-off sessions that aren't tied to any project.
 
         - Treat it as a clean scratchpad: nothing important lives here, and files you
@@ -516,35 +496,9 @@ extension TermioStore {
           instead of working here.
         """
         for name in ["CLAUDE.md", "AGENTS.md"] {
-            let url = workspace.appendingPathComponent(name)
+            let url = root.appendingPathComponent(name)
             guard !FileManager.default.fileExists(atPath: url.path) else { continue }
             try? guidance.write(to: url, atomically: true, encoding: .utf8)
-        }
-    }
-
-    /// The projects in sidebar display order: pinned ones first, then the rest, each
-    /// group ordered by the user's chosen sort (`AppSettings.projectSortOrder`). A
-    /// computed view over `projects` — the stored array keeps its own insertion order,
-    /// so ordering is a presentation concern that never mutates (or persists) the tree.
-    var orderedProjects: [Project] {
-        let order = settings.projectSortOrder
-        return projects.sorted { a, b in
-            // The Terminals section is the entry funnel, so it sits above every
-            // project — ahead even of pinned ones, whichever sort is active.
-            if (a.kind == .terminals) != (b.kind == .terminals) { return a.kind == .terminals }
-            // Pinned projects always float to the top, whichever sort is active.
-            if a.pinned != b.pinned { return a.pinned }
-            switch order {
-            case .name:
-                return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
-            case .recentActivity:
-                let da = liveActivity[a.id] ?? .distantPast
-                let db = liveActivity[b.id] ?? .distantPast
-                // Newer activity first; equal timestamps keep the array's stable order
-                // (Swift's sort is stable), so untouched projects hold their positions.
-                if da != db { return da > db }
-                return false
-            }
         }
     }
 
@@ -556,15 +510,9 @@ extension TermioStore {
     }
 
     /// Pins or unpins a session into the sidebar's top "Pinned" working set. The row
-    /// stays in its normal tree spot; the pin adds a shortcut up top. Persists via
-    /// `projects`' `didSet`.
+    /// stays in its normal tree spot; the pin adds a shortcut up top.
     func toggleSessionPinned(_ id: Session.ID) {
-        for pi in projects.indices {
-            if let si = projects[pi].sessions.firstIndex(where: { $0.id == id }) {
-                projects[pi].sessions[si].pinned.toggle()
-                return
-            }
-        }
+        updateSession(id) { $0.pinned.toggle() }
     }
 
     /// Pins or unpins a worktree into the sidebar's top "Pinned" working set (as a
@@ -591,9 +539,10 @@ extension TermioStore {
         addProject(at: url)
     }
 
-    /// Adds the directory at `url` as a new project section seeded with a single
-    /// terminal session, which becomes the selection. A folder already open as a
-    /// project is not duplicated — its first session is selected instead.
+    /// Adds the directory at `url` as a new project section in the current
+    /// workspace, seeded with a single terminal session which becomes the
+    /// selection. A folder already open as a project is not duplicated — its
+    /// first session is selected instead, wherever it is filed.
     func addProject(at url: URL) {
         let path = url.standardizedFileURL.path
         settings.noteRecentProject(name: url.lastPathComponent, path: path)
@@ -603,6 +552,7 @@ extension TermioStore {
         }
         let session = Session(title: "Terminal 1")
         let project = Project(
+            workspaceID: currentWorkspace.id,
             name: url.lastPathComponent,
             path: path,
             branch: "—",
@@ -639,9 +589,9 @@ extension TermioStore {
         pruneSessionsFromSplit(removedSessionIDs)
 
         // If the active session lived in the removed project, fall back to the first
-        // session of whatever project remains (nil when the sidebar is now empty).
+        // session left in the same workspace (nil when the sidebar is now empty).
         if let selected = selectedSessionID, removedSessionIDs.contains(selected) {
-            selectedSessionID = projects.first(where: { !$0.sessions.isEmpty })?.sessions.first?.id
+            selectedSessionID = sessions(inWorkspace: currentWorkspace.id).first?.id
         }
     }
 
@@ -652,10 +602,7 @@ extension TermioStore {
     /// shows verbatim from then on; renaming an agent session back to its agent's
     /// plain name hands the label back to the live terminal title.
     func renameSession(_ id: Session.ID) {
-        guard let projectIndex = projects.firstIndex(where: { $0.sessions.contains { $0.id == id } }),
-              let sessionIndex = projects[projectIndex].sessions.firstIndex(where: { $0.id == id })
-        else { return }
-        let session = projects[projectIndex].sessions[sessionIndex]
+        guard let session = session(id) else { return }
 
         let alert = NSAlert()
         alert.messageText = localized("Rename Session")
@@ -669,7 +616,7 @@ extension TermioStore {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        projects[projectIndex].sessions[sessionIndex].title = name
+        updateSession(id) { $0.title = name }
     }
 
     /// The user-facing "Close Session": the same teardown as `closeSession`, but it
@@ -713,11 +660,9 @@ extension TermioStore {
     /// Any git worktree created for the session is deliberately left on disk — it
     /// may hold uncommitted agent work, so cleanup is the user's call, not ours.
     func closeSession(_ id: Session.ID) {
-        guard let projectIndex = projects.firstIndex(where: { $0.sessions.contains { $0.id == id } }),
-              let sessionIndex = projects[projectIndex].sessions.firstIndex(where: { $0.id == id })
-        else { return }
-
-        projects[projectIndex].sessions.remove(at: sessionIndex)
+        guard let slot = locate(id) else { return }
+        let sessionIndex = slot.sessionIndex
+        removeSession(at: slot)
         ptyProcesses[id]?.terminate()
         ptyProcesses[id] = nil
         // Close Session is the destroy verb, so a termiod-backed session is
@@ -737,12 +682,30 @@ extension TermioStore {
         pruneSessionsFromSplit([id])
 
         if selectedSessionID == id {
-            let remaining = projects[projectIndex].sessions
+            let remaining = roster(at: slot.atSession(0))
             if remaining.isEmpty {
-                selectedSessionID = projects.first(where: { !$0.sessions.isEmpty })?.sessions.first?.id
+                selectedSessionID = sessions(inWorkspace: currentWorkspace.id).first?.id
             } else {
                 selectedSessionID = remaining[min(sessionIndex, remaining.count - 1)].id
             }
+        }
+        // A machine's fallback workspace exists only to hold the sessions nothing
+        // else accounts for. Emptied, it is bookkeeping: it goes, and the switcher
+        // stops offering a scope with nothing in it. A workspace the user made
+        // stays — they made it on purpose.
+        pruneEmptyDeviceWorkspaces()
+    }
+
+    /// Drops any machine fallback workspace left holding nothing, except the one
+    /// the sidebar is currently showing — pulling the scope out from under the
+    /// user as they close the last row on a box is a jump they did not ask for.
+    private func pruneEmptyDeviceWorkspaces() {
+        let occupied = Set(projects.map(\.workspaceID))
+        workspaces.removeAll { workspace in
+            workspace.isDeviceFallback
+                && workspace.looseSessions.isEmpty
+                && !occupied.contains(workspace.id)
+                && workspace.id != currentWorkspaceID
         }
     }
 

@@ -1,7 +1,8 @@
 import XCTest
 @testable import termio
 
-/// The `.terminals` → `.host` lift (`TermioStore.liftingRemoteSessionsToHosts`).
+/// The `.terminals` → `.host` lift (`WorkspaceMigration.liftingRemoteSessionsToHosts`),
+/// which still runs ahead of the workspace upgrade on an old state file.
 /// It rewrites persisted user state on launch, so the cases that matter are the
 /// destructive ones: don't lose a session, don't move a local one, don't split a
 /// machine in two, and don't do anything at all on a second run.
@@ -23,15 +24,16 @@ final class RemoteHostContainerTests: XCTestCase {
         return session
     }
 
-    private func terminals(_ sessions: [Session]) -> Project {
-        Project(name: "Terminals", path: NSHomeDirectory(), branch: "—",
-                sessions: sessions, kind: .terminals)
+    private func terminals(_ sessions: [Session]) -> WorkspaceMigration.LegacyProject {
+        WorkspaceMigration.LegacyProject(
+            name: "Terminals", path: NSHomeDirectory(), branch: "—",
+            sessions: sessions, kind: .terminals)
     }
 
     /// Both remote transports leave the funnel for their machine's block; the
     /// local shell stays behind.
     func testLiftsBothRemoteTransportsOutOfTheTerminalsFunnel() {
-        let result = TermioStore.liftingRemoteSessionsToHosts([
+        let result = WorkspaceMigration.liftingRemoteSessionsToHosts([
             terminals([
                 local("Terminal 1"),
                 ssh("SSH Shell", host: "ukvps"),
@@ -53,7 +55,7 @@ final class RemoteHostContainerTests: XCTestCase {
     /// A row auto-named for its box renumbers inside that box's block (the header
     /// already says the name); anything the user or a clone named is left alone.
     func testRenamesOnlyTheAliasAutoTitles() {
-        let result = TermioStore.liftingRemoteSessionsToHosts([
+        let result = WorkspaceMigration.liftingRemoteSessionsToHosts([
             terminals([
                 termiod("ukvps", host: "ukvps"),
                 termiod("my-repo", host: "ukvps"),
@@ -69,7 +71,7 @@ final class RemoteHostContainerTests: XCTestCase {
 
     /// Renumbering never collides with a title already in the block.
     func testRenumberingSkipsTakenTitles() {
-        let result = TermioStore.liftingRemoteSessionsToHosts([
+        let result = WorkspaceMigration.liftingRemoteSessionsToHosts([
             terminals([termiod("ukvps", host: "ukvps"), termiod("Terminal 1", host: "ukvps")]),
         ])
 
@@ -81,7 +83,7 @@ final class RemoteHostContainerTests: XCTestCase {
 
     /// Two machines are two blocks — the alias is the container's identity.
     func testSeparateHostsGetSeparateContainers() {
-        let result = TermioStore.liftingRemoteSessionsToHosts([
+        let result = WorkspaceMigration.liftingRemoteSessionsToHosts([
             terminals([ssh("a", host: "ukvps"), termiod("b", host: "devbox")]),
         ])
 
@@ -94,10 +96,11 @@ final class RemoteHostContainerTests: XCTestCase {
     /// A half-migrated file (someone already has a `ukvps` block) merges into the
     /// existing container instead of growing a duplicate.
     func testMergesIntoAnExistingHostContainer() {
-        let existing = Project(name: "ukvps", path: "~", branch: "—",
-                               sessions: [termiod("Terminal 1", host: "ukvps")],
-                               kind: .host, sshHost: "ukvps")
-        let result = TermioStore.liftingRemoteSessionsToHosts([
+        let existing = WorkspaceMigration.LegacyProject(
+            name: "ukvps", path: "~", branch: "—",
+            sessions: [termiod("Terminal 1", host: "ukvps")],
+            kind: .host, sshHost: "ukvps")
+        let result = WorkspaceMigration.liftingRemoteSessionsToHosts([
             existing,
             terminals([ssh("SSH Shell", host: "ukvps")]),
         ])
@@ -109,10 +112,10 @@ final class RemoteHostContainerTests: XCTestCase {
 
     /// Running twice changes nothing — the funnel has no remote sessions left.
     func testIsIdempotent() {
-        let once = TermioStore.liftingRemoteSessionsToHosts([
+        let once = WorkspaceMigration.liftingRemoteSessionsToHosts([
             terminals([local("Terminal 1"), ssh("SSH Shell", host: "ukvps")]),
         ])
-        let twice = TermioStore.liftingRemoteSessionsToHosts(once)
+        let twice = WorkspaceMigration.liftingRemoteSessionsToHosts(once)
 
         XCTAssertEqual(once.map(\.id), twice.map(\.id))
         XCTAssertEqual(once.flatMap { $0.sessions.map(\.id) },
@@ -122,10 +125,10 @@ final class RemoteHostContainerTests: XCTestCase {
     /// A remote terminal opened from a project row belongs to that project — the
     /// lift drains the loose funnel only.
     func testLeavesProjectOwnedRemoteSessionsAlone() {
-        let project = Project(name: "termio", path: "/code/termio", branch: "main",
-                              sessions: [termiod("termio · ukvps", host: "ukvps")],
-                              kind: .folder)
-        let result = TermioStore.liftingRemoteSessionsToHosts([project])
+        let project = WorkspaceMigration.LegacyProject(
+            name: "termio", path: "/code/termio", branch: "main",
+            sessions: [termiod("termio · ukvps", host: "ukvps")])
+        let result = WorkspaceMigration.liftingRemoteSessionsToHosts([project])
 
         XCTAssertTrue(result.filter { $0.kind == .host }.isEmpty)
         XCTAssertEqual(result.first?.sessions.count, 1)
@@ -133,7 +136,7 @@ final class RemoteHostContainerTests: XCTestCase {
 
     /// An emptied funnel is dropped rather than persisting as a hidden section.
     func testDropsAFunnelEmptiedByTheLift() {
-        let result = TermioStore.liftingRemoteSessionsToHosts([
+        let result = WorkspaceMigration.liftingRemoteSessionsToHosts([
             terminals([ssh("SSH Shell", host: "ukvps")]),
         ])
 
@@ -145,10 +148,10 @@ final class RemoteHostContainerTests: XCTestCase {
     func testPreservesEverySession() {
         let input = [
             terminals([local("l1"), ssh("s1", host: "a"), termiod("t1", host: "b"), local("l2")]),
-            Project(name: "termio", path: "/code/termio", branch: "main",
-                    sessions: [local("p1")], kind: .folder),
+            WorkspaceMigration.LegacyProject(
+                name: "termio", path: "/code/termio", branch: "main", sessions: [local("p1")]),
         ]
-        let result = TermioStore.liftingRemoteSessionsToHosts(input)
+        let result = WorkspaceMigration.liftingRemoteSessionsToHosts(input)
 
         XCTAssertEqual(
             Set(result.flatMap { $0.sessions.map(\.id) }),

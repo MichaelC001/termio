@@ -140,6 +140,7 @@ final class AppSettings: ObservableObject {
         static let lastChatAgent = "chats.lastAgent"
         static let defaultChatAgent = "chats.defaultAgent"
         static let currentDevice = "devices.current"
+        static let currentWorkspace = "workspaces.current"
     }
 
     // MARK: Appearance
@@ -226,6 +227,14 @@ final class AppSettings: ObservableObject {
     /// matches a known machine resolves back to this Mac — see `DeviceRoster`.
     @Published var currentDeviceAlias: String? {
         didSet { defaults.set(currentDeviceAlias, forKey: Key.currentDevice) }
+    }
+
+    /// The workspace the sidebar was showing when the app last closed. State, not
+    /// a preference — the same reason `currentDeviceAlias` lives here. The state
+    /// file carries the authoritative copy; this one covers the launch before the
+    /// store has been built.
+    @Published var currentWorkspaceID: UUID? {
+        didSet { defaults.set(currentWorkspaceID?.uuidString, forKey: Key.currentWorkspace) }
     }
 
     /// The most a project can be opened is capped so the Recent column stays a
@@ -625,6 +634,7 @@ final class AppSettings: ObservableObject {
         lastChatAgentID = defaults.string(forKey: Key.lastChatAgent)
         defaultChatAgentID = store.string(Key.defaultChatAgent)
         currentDeviceAlias = defaults.string(forKey: Key.currentDevice)
+        currentWorkspaceID = defaults.string(forKey: Key.currentWorkspace).flatMap(UUID.init)
 
         materializeSelectedThemes()
     }

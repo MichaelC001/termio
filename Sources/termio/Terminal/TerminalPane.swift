@@ -153,7 +153,7 @@ struct TerminalPane: View {
                 // ungrouped session has no split geometry and fills the pane.
                 let rect = zoomed && isSelected ? bounds : (paneFrames[id] ?? bounds)
                 ManagedTerminalSurface(
-                    context: store.surface(for: item.session, in: item.project),
+                    context: store.surface(for: item.session),
                     isSelected: isSelected,
                     isVisible: isVisible,
                     onFocused: { selectFocusedSurface(id) },
@@ -240,9 +240,8 @@ struct TerminalPane: View {
     /// TerminalViewState delegate, retry with capped exponential backoff until it is
     /// windowed, and explicitly resign the previously focused surface before moving.
     private func requestTerminalFocus(for id: Session.ID, reason: TerminalFocusReason) {
-        guard let session = store.session(id),
-              let project = store.project(for: id) else { return }
-        let state = store.surface(for: session, in: project)
+        guard let session = store.session(id) else { return }
+        let state = store.surface(for: session)
         focusDriver.moveFocus(
             to: state,
             sessionID: id,
@@ -262,9 +261,8 @@ struct TerminalPane: View {
     private func injectTerminalFocusOrphan() {
         guard AppChannel.isDev,
               let id = store.selectedSessionID,
-              let session = store.session(id),
-              let project = store.project(for: id) else { return }
-        let state = store.surface(for: session, in: project)
+              let session = store.session(id) else { return }
+        let state = store.surface(for: session)
         focusDriver.injectOrphan(
             in: state,
             sessionID: id,
@@ -288,21 +286,20 @@ struct TerminalPane: View {
     /// once it has come up. Returns whether a drop was accepted at all.
     private func sendPaths(_ urls: [URL], to id: Session.ID) -> Bool {
         guard !urls.isEmpty,
-              let session = store.session(id),
-              let project = store.project(for: id) else { return false }
+              let session = store.session(id) else { return false }
         // The drop is also a selection: the path lands where the pointer released, so
         // that pane takes the write token before focus moves (`requestTerminalFocus`
         // only focuses the selected session).
         store.selectedSessionID = id
         requestTerminalFocus(for: id, reason: .fileDrop)
         let text = urls.map { TermioStore.promptToken(for: $0) }.joined(separator: " ") + " "
-        if store.surface(for: session, in: project).send(text) { return true }
+        if store.surface(for: session).send(text) { return true }
 
         // The shell may not be attached yet (a freshly opened session whose surface
         // hasn't mounted). Selecting it above mounts the surface; retry a moment later, once.
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(300))
-            if !store.surface(for: session, in: project).send(text) {
+            if !store.surface(for: session).send(text) {
                 Log.pty.error("dropped path could not be sent — \(session.title, privacy: .public) has no live terminal")
             }
         }
@@ -312,14 +309,12 @@ struct TerminalPane: View {
     private func dumpSelectedTerminalLayers() {
         guard AppChannel.isDev,
               let id = store.selectedSessionID,
-              let session = store.session(id),
-              let project = store.project(for: id) else { return }
-        let state = store.surface(for: session, in: project)
+              let session = store.session(id) else { return }
+        let state = store.surface(for: session)
         focusDriver.dumpLayers(of: state, sessionID: id)
     }
 
     private struct MountedSession {
-        let project: Project
         let session: Session
     }
 
@@ -327,8 +322,8 @@ struct TerminalPane: View {
     /// live session (closed sessions drop out, which unmounts their surface).
     private var mounted: [MountedSession] {
         activated.compactMap { id in
-            guard let session = store.session(id), let project = store.project(for: id) else { return nil }
-            return MountedSession(project: project, session: session)
+            guard let session = store.session(id) else { return nil }
+            return MountedSession(session: session)
         }
     }
 

@@ -936,12 +936,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.addRemoteTerminal(host: alias)
     }
 
-    /// A row of the Device submenu — the machine the sidebar lists and new work goes
-    /// to. An empty represented alias is this Mac, which is the one device with no
-    /// alias to name it.
-    @objc func switchToDevice(_ sender: NSMenuItem) {
-        guard let alias = sender.representedObject as? String else { return }
-        store.switchToDevice(KnownDevice(alias: alias.isEmpty ? nil : alias, deviceID: nil))
+    /// A row of the Workspace submenu — the scope the sidebar shows and the panes
+    /// follow.
+    @objc func switchToWorkspace(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let id = UUID(uuidString: raw)
+        else { return }
+        store.switchToWorkspace(id)
+    }
+
+    /// The submenu's trailing "New Workspace…" row.
+    @objc func newWorkspace(_ sender: Any?) {
+        store.presentNewWorkspacePanel()
     }
 
     /// A row of the Connect to… submenu — first contact with a machine from
@@ -951,7 +956,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// box is also saying that is where you are about to work.
     @objc func connectToDevice(_ sender: NSMenuItem) {
         guard let alias = sender.representedObject as? String else { return }
-        store.switchToDevice(KnownDevice(alias: alias, deviceID: nil))
+        store.switchToWorkspace(store.deviceWorkspace(for: alias))
         store.addRemoteTerminal(host: alias)
     }
 
@@ -1088,7 +1093,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// when the sidebar is collapsed — matching Finder/Xcode, which drop their sidebar buttons with
     /// the sidebar, and freeing the horizontal room that otherwise forces NSToolbar's `»` overflow.
     /// The paired flexible space (which right-aligns the two against the sidebar divider) is inserted
-    /// and removed *with* them. When open the region reads `toggleNavigator, deviceSwitcher, flex,
+    /// and removed *with* them. When open the region reads `toggleNavigator, workspaceSwitcher, flex,
     /// sortProjects, newTerminal | sidebarTrackingSeparator`. Mirrors `setInspectorSwitchVisible`.
     ///
     /// The device switcher is the exception: it does not leave with the sidebar, it *moves* across the
@@ -1111,15 +1116,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard index(of: .sortProjects) == nil else { return }
             // Take the switcher off the content side first. It sits after the separator there, so
             // removing it leaves the separator's index — the anchor every insert below uses — valid.
-            if let content = index(of: .deviceSwitcher) { toolbar.removeItem(at: content) }
+            if let content = index(of: .workspaceSwitcher) { toolbar.removeItem(at: content) }
             guard let sep = index(of: .sidebarTrackingSeparator) else { return }
-            // Insert in reverse at that one index so the final order is deviceSwitcher, flex,
+            // Insert in reverse at that one index so the final order is workspaceSwitcher, flex,
             // sortProjects, newTerminal. Re-reading the separator's index between inserts would walk
             // it past the items just added and land the switcher against the `+` instead.
             toolbar.insertItem(withItemIdentifier: .newTerminal, at: sep)
             toolbar.insertItem(withItemIdentifier: .sortProjects, at: sep)
             toolbar.insertItem(withItemIdentifier: .flexibleSpace, at: sep)
-            toolbar.insertItem(withItemIdentifier: .deviceSwitcher, at: sep)
+            toolbar.insertItem(withItemIdentifier: .workspaceSwitcher, at: sep)
         } else {
             // Move the switcher to the content side of the separator — ahead of the window's title,
             // where it is still on screen with the sidebar away. Done before the guard below, because
@@ -1127,10 +1132,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // the switcher still has to land. Skipped when it is already there, so the repeated
             // collapse callbacks the KVO observer sends don't rebuild it.
             if let sep = index(of: .sidebarTrackingSeparator),
-               index(of: .deviceSwitcher).map({ $0 < sep }) ?? true {
-                if let i = index(of: .deviceSwitcher) { toolbar.removeItem(at: i) }
+               index(of: .workspaceSwitcher).map({ $0 < sep }) ?? true {
+                if let i = index(of: .workspaceSwitcher) { toolbar.removeItem(at: i) }
                 if let sep = index(of: .sidebarTrackingSeparator) {
-                    toolbar.insertItem(withItemIdentifier: .deviceSwitcher, at: sep + 1)
+                    toolbar.insertItem(withItemIdentifier: .workspaceSwitcher, at: sep + 1)
                 }
             }
             // Only clean up when the buttons are actually present (nothing to remove at launch with
@@ -1454,13 +1459,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     /// The selected session's project when it's a real git folder — the target
-    /// of the Branch menu's verbs, GitHub Desktop's "current repository". The
-    /// loose Terminals/Chats funnels and non-repo folders ("—" branch) don't
-    /// qualify, so the Branch menu dims for them.
+    /// of the Branch menu's verbs, GitHub Desktop's "current repository". A loose
+    /// session (no project) and a non-repo folder ("—" branch) don't qualify, so
+    /// the Branch menu dims for them.
     private var currentBranchProject: Project? {
         guard let id = store.selectedSessionID,
               let project = store.project(for: id),
-              project.kind == .folder, project.branch != "—" else { return nil }
+              project.branch != "—" else { return nil }
         return project
     }
 
@@ -1517,21 +1522,21 @@ enum DeviceMenuTag {
     static let newTerminal = 7301
     static let newTerminalAtHome = 7302
     static let connectTo = 7303
-    static let device = 7304
+    static let workspace = 7304
 }
 
-/// The "Device ▸" item — the roster, with the current machine checked, and where the
+/// The "Workspace ▸" item — the scopes, with the current one checked, and where the
 /// switch gets a keyboard chord. The toolbar switcher is the same menu in the chrome;
 /// this one exists because a key equivalent only fires from the main menu, and because
 /// a chord nobody can find is a chord nobody presses.
 ///
-/// Hidden while this Mac is the only machine (see `refreshDeviceItems`), so the menu
+/// Hidden while there is only one workspace (see `refreshDeviceItems`), so the menu
 /// grows the row at the same moment the toolbar grows the control.
 @MainActor
-private func makeDeviceItem() -> NSMenuItem {
-    let item = NSMenuItem(title: localized("Device"), action: nil, keyEquivalent: "")
-    item.tag = DeviceMenuTag.device
-    let submenu = NSMenu(title: localized("Device"))
+private func makeWorkspaceItem() -> NSMenuItem {
+    let item = NSMenuItem(title: localized("Workspace"), action: nil, keyEquivalent: "")
+    item.tag = DeviceMenuTag.workspace
+    let submenu = NSMenu(title: localized("Workspace"))
     submenu.delegate = NSApp.delegate as? AppDelegate
     item.submenu = submenu
     return item
@@ -1588,8 +1593,8 @@ extension AppDelegate: NSMenuDelegate {
             fillNewSSHMenu(menu)
         case localized("Connect to…"):
             fillConnectToMenu(menu)
-        case localized("Device"):
-            fillDeviceMenu(menu)
+        case localized("Workspace"):
+            fillWorkspaceMenu(menu)
         default:
             fillNewChatMenu(menu)
         }
@@ -1611,8 +1616,8 @@ extension AppDelegate: NSMenuDelegate {
                 refreshNewTerminalItem(item, known: known, atHome: true, command: nil)
             case DeviceMenuTag.connectTo:
                 item.isHidden = DeviceRoster.unusedAliases(known: known).isEmpty
-            case DeviceMenuTag.device:
-                item.isHidden = known.count < 2
+            case DeviceMenuTag.workspace:
+                item.isHidden = !store.hasMultipleWorkspaces
             default:
                 continue
             }
@@ -1676,16 +1681,21 @@ extension AppDelegate: NSMenuDelegate {
         )
 
         let groups = store.sidebarSessionGroups
-        var previousKind: ProjectKind?
-        for (project, sessions) in groups {
-            // The loose Terminals/Chats funnels and the real projects are
-            // different sections, as in the sidebar — a divider at each kind
-            // change keeps them read apart (and the first one separates the
-            // whole list from the verbs above).
-            if project.kind != previousKind { menu.addItem(.separator()) }
-            previousKind = project.kind
-            let projectItem = NSMenuItem(title: project.name, action: nil, keyEquivalent: "")
-            let submenu = NSMenu(title: project.name)
+        // Once there is more than one workspace a bare "Terminals" says nothing
+        // about which scope it belongs to, so each header carries its own.
+        let manyWorkspaces = store.hasMultipleWorkspaces
+        var previousTier: SessionGroup.Tier?
+        for group in groups {
+            let sessions = group.sessions
+            // The loose Terminals/Chats sections and the real projects are
+            // different tiers, as in the sidebar — a divider at each tier change
+            // keeps them read apart (and the first one separates the whole list
+            // from the verbs above).
+            if group.tier != previousTier { menu.addItem(.separator()) }
+            previousTier = group.tier
+            let header = manyWorkspaces ? "\(group.workspace) — \(group.name)" : group.name
+            let projectItem = NSMenuItem(title: header, action: nil, keyEquivalent: "")
+            let submenu = NSMenu(title: header)
             for session in sessions {
                 let status = store.status(for: session.id)
                 let title = store.displayTitle(for: session)
@@ -1714,7 +1724,7 @@ extension AppDelegate: NSMenuDelegate {
             let rollup: SessionStatus = statuses.contains(.needsAttention) ? .needsAttention
                 : statuses.contains(.done) ? .done
                 : .idle
-            projectItem.attributedTitle = sessionMenuRowTitle(project.name, status: rollup)
+            projectItem.attributedTitle = sessionMenuRowTitle(header, status: rollup)
             if sessions.contains(where: { $0.id == store.selectedSessionID }) {
                 projectItem.state = .on
             }
@@ -1807,26 +1817,28 @@ extension AppDelegate: NSMenuDelegate {
     /// opens a terminal there, which installs `termiod` on the way
     /// (`ensureRemoteReady`) and teaches the app which machine the alias reaches —
     /// after which it is a device and moves out of this menu.
-    /// The Device submenu: one row per known machine, this Mac first, the current one
-    /// checked. The first nine take ⌃⌥⌘1…9 — positional, so they are not in
-    /// `KeyCommandCatalog` with the rebindable commands: what row 2 means changes with
-    /// the roster, and a binding whose target moves is not a binding a user can keep.
-    /// The modifier trio is the one no terminal program can want (Cmd is off-limits to
-    /// a TUI) and that nothing else in termio takes.
-    private func fillDeviceMenu(_ menu: NSMenu) {
-        let known = DeviceRoster.known(in: store)
-        let current = DeviceRoster.current(store, known: known)
-        for (index, device) in known.enumerated() {
+    /// The Workspace submenu: one row per workspace, the current one checked. The
+    /// first nine take ⌃⌥⌘1…9 — positional, so they are not in `KeyCommandCatalog`
+    /// with the rebindable commands: what row 2 means changes with the list, and a
+    /// binding whose target moves is not a binding a user can keep. The modifier trio
+    /// is the one no terminal program can want (Cmd is off-limits to a TUI) and that
+    /// nothing else in termio takes.
+    private func fillWorkspaceMenu(_ menu: NSMenu) {
+        for (index, workspace) in WorkspaceSpaces.ordered(in: store).enumerated() {
             let item = menu.addItem(
-                withTitle: device.name,
-                action: #selector(switchToDevice(_:)),
+                withTitle: workspace.name,
+                action: #selector(switchToWorkspace(_:)),
                 keyEquivalent: index < 9 ? String(index + 1) : ""
             )
             item.keyEquivalentModifierMask = [.control, .option, .command]
             item.target = self
-            item.representedObject = device.alias ?? ""
-            item.state = device.id == current.id ? .on : .off
+            item.representedObject = workspace.id.uuidString
+            item.state = workspace.id == store.currentWorkspaceID ? .on : .off
         }
+        menu.addItem(.separator())
+        let new = menu.addItem(withTitle: localized("New Workspace…"),
+                               action: #selector(newWorkspace(_:)), keyEquivalent: "")
+        new.target = self
     }
 
     private func fillConnectToMenu(_ menu: NSMenu) {
@@ -2054,7 +2066,7 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         defaultIdentifiers + [
-            .deviceSwitcher, .sortProjects, .newTerminal, .inspectorTrackingSeparator, .inspectorTabs,
+            .workspaceSwitcher, .sortProjects, .newTerminal, .inspectorTrackingSeparator, .inspectorTabs,
         ]
     }
 
@@ -2075,18 +2087,18 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             // controller (the window's content view controller), so no custom action is needed.
             item.action = #selector(NSSplitViewController.toggleSidebar(_:))
             return item
-        case .deviceSwitcher:
-            // The machine the sidebar is listing, at the head of the sidebar's own toolbar region —
-            // the band above the column it scopes. Borderless SwiftUI rather than an
-            // `NSMenuToolbarItem` so the one device menu has one definition
-            // (`DeviceSwitcherMenuContent`) instead of an AppKit copy that can drift from it, and so
-            // the control can name the device: this toolbar is `.iconOnly`, which drops item titles.
-            // It draws nothing while this Mac is the only device, which is also when the sidebar
-            // region has the least room to spare.
-            let item = NSToolbarItem(itemIdentifier: .deviceSwitcher)
-            item.label = localized("Device")
-            item.toolTip = localized("Choose which device the sidebar shows")
-            let host = NSHostingView(rootView: DeviceSwitcherToolbarView()
+        case .workspaceSwitcher:
+            // The workspace the sidebar is scoped to, at the head of the sidebar's own toolbar
+            // region — the band above the column it scopes. Borderless SwiftUI rather than an
+            // `NSMenuToolbarItem` so the one workspace menu has one definition
+            // (`WorkspaceSwitcherMenuContent`) instead of an AppKit copy that can drift from it,
+            // and so the control can name the workspace: this toolbar is `.iconOnly`, which drops
+            // item titles. It draws nothing while there is only one workspace, which is also when
+            // the sidebar region has the least room to spare.
+            let item = NSToolbarItem(itemIdentifier: .workspaceSwitcher)
+            item.label = localized("Workspace")
+            item.toolTip = localized("Choose which workspace the sidebar shows")
+            let host = NSHostingView(rootView: WorkspaceSwitcherToolbarView()
                 .environmentObject(store)
                 .environmentObject(settings))
             host.sizingOptions = [.intrinsicContentSize]
@@ -2195,7 +2207,7 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
 
 private extension NSToolbarItem.Identifier {
     static let toggleNavigator = NSToolbarItem.Identifier("TermioToggleNavigator")
-    static let deviceSwitcher = NSToolbarItem.Identifier("TermioDeviceSwitcher")
+    static let workspaceSwitcher = NSToolbarItem.Identifier("TermioWorkspaceSwitcher")
     static let sortProjects = NSToolbarItem.Identifier("TermioSortProjects")
     static let newTerminal = NSToolbarItem.Identifier("TermioNewTerminal")
     static let inspectorTabs = NSToolbarItem.Identifier("TermioInspectorTabs")
@@ -2337,10 +2349,10 @@ private func buildMainMenu() -> NSMenu {
     // left to reach.
     fileMenu.addItem(makeConnectToItem())
     fileMenu.addItem(.separator())
-    // Device ▸ the roster, with ⌃⌥⌘1…9 on the first nine rows. It sits with the other
-    // device verbs rather than in View, because which machine you are on decides where
-    // the next terminal opens as much as what the sidebar lists.
-    fileMenu.addItem(makeDeviceItem())
+    // Workspace ▸ the scopes, with ⌃⌥⌘1…9 on the first nine rows. It sits with the
+    // other place verbs rather than in View, because which workspace you are in
+    // decides what the sidebar lists and which repo the panes read.
+    fileMenu.addItem(makeWorkspaceItem())
     fileMenu.addItem(.separator())
     fileMenu.addItem(
         withTitle: localized("Open Project…"),

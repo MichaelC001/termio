@@ -132,7 +132,9 @@ Decided. A synonym is a bug, not a style choice.
 | Group with / Ungroup | Split / Unsplit |
 | Close Session | Close Pane |
 | session | tab, window (for a session) |
-| project | workspace, folder (in the sidebar) |
+| project | folder (for a checkout in the sidebar) |
+| workspace | space, group, profile (for the sidebar's scope) |
+| checkout | workspace (for a repo on a machine) |
 | agent | assistant, bot, AI |
 | needs you | blocked, waiting for input (as a status label) |
 

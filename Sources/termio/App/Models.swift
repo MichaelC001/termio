@@ -11,27 +11,97 @@ struct RecentProject: Identifiable, Hashable, Codable {
     var id: String { path }
 }
 
-/// What a sidebar section *is*. The kinds have differing ownership arrows
-/// (see docs/design/20260713-loose-terminal-entity.md): a `.folder` project's path is its
-/// identity and owns its sessions; the `.terminals` container is presentation
-/// only — each loose terminal session owns its *own* mutable path (the live cwd),
-/// and the container's `path` is just the spawn fallback (`$HOME`). The `.chats`
-/// container is the agent-side twin of `.terminals`: loose agent sessions that
-/// aren't tied to a real project, gathered under one section rooted at the scoped
-/// scratch workspace (`~/.termio/chats`) — agents can't be turned loose in `$HOME`,
-/// which is exactly why they get their own funnel rather than joining `.terminals`.
+/// The scope the sidebar shows: one Pinned working set, one Terminals section,
+/// one Chats section, and the projects filed under it. Everything the sidebar
+/// drew before is here; what changed is that a workspace bounds it, where a
+/// machine used to.
 ///
-/// `.host` is the fourth kind and the only one whose identity isn't a local path:
-/// it is a *machine* (a `~/.ssh/config` alias), peer to a folder rather than a
-/// variant of one. Every session that runs somewhere else — a plain `ssh` terminal
-/// or a durable termiod session — gathers under its host's container. Before it
-/// existed, remote sessions fell into `.terminals` for want of anywhere else to
-/// put them, which rendered a box you SSH into as if it were a loose local shell.
-enum ProjectKind: String, Codable {
-    case folder
-    case terminals
-    case chats
-    case host
+/// A workspace owns its loose sessions outright. They used to be modeled as
+/// projects with a `kind` — `.terminals`, `.chats`, `.host` — which is a funnel
+/// wearing a folder's clothes: a project's path is its identity and it owns its
+/// sessions, while a loose terminal owns its *own* mutable path (the live cwd)
+/// and the container's path was only the spawn fallback. Two arrays here say the
+/// same thing without the disguise, and a project is a folder again.
+///
+/// The two collections stay separate rather than being one array split by agent:
+/// a plain shell that a user turns into an agent by typing its command
+/// (`noteForegroundAgent`) must not jump sections underneath them.
+struct Workspace: Identifiable, Hashable, Codable {
+    var id = UUID()
+    var name: String
+
+    /// Loose shells — sessions that answer to no folder. They spawn at `$HOME`
+    /// and each one carries its own cwd from there
+    /// (see docs/design/20260713-loose-terminal-entity.md).
+    var terminals: [Session] = []
+
+    /// Loose agent sessions, the agent-side twin of `terminals`. They spawn in
+    /// the scoped scratch directory (`~/.termio/chats`) rather than `$HOME`: an
+    /// autonomous agent turned loose in a home directory can read and write
+    /// `~/.ssh` and everything beside it.
+    var chats: [Session] = []
+
+    /// The machine whose unfiled sessions land here — the `~/.ssh/config` alias
+    /// this fallback workspace was born from — or `nil` for one the user made.
+    ///
+    /// A session the `termiod` CLI or a phone started on a box has no project and
+    /// no workspace the user chose for it, and it must still be reachable. It
+    /// gathers here, in a workspace named for that machine. This is the alias, the
+    /// *bootstrap* identity: it exists before anything has connected, which is when
+    /// the workspace has to exist (device architecture §9.5).
+    var deviceAlias: String?
+
+    /// The `host_id` the alias turned out to reach, filled in by the first
+    /// `hello_ok` and `nil` until then. Two fallback workspaces sharing one of
+    /// these are two names for the same machine.
+    var deviceID: String?
+
+    /// Whether this workspace is a machine's fallback rather than one the user
+    /// made. Only these are named after a device, and only these are dropped when
+    /// they empty out.
+    var isDeviceFallback: Bool { deviceAlias != nil }
+
+    /// Every session the workspace owns directly. Its projects' sessions are not
+    /// here — they belong to the project.
+    var looseSessions: [Session] { terminals + chats }
+}
+
+extension Workspace {
+    private enum CodingKeys: String, CodingKey {
+        case id, name, terminals, chats, deviceAlias, deviceID
+    }
+
+    /// Missing collections take their empty defaults so a workspace written by an
+    /// older build still loads. In an extension so the memberwise initializer
+    /// survives for the call sites that build workspaces directly; encoding stays
+    /// synthesized.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        terminals = try c.decodeIfPresent([Session].self, forKey: .terminals) ?? []
+        chats = try c.decodeIfPresent([Session].self, forKey: .chats) ?? []
+        deviceAlias = try c.decodeIfPresent(String.self, forKey: .deviceAlias)
+        deviceID = try c.decodeIfPresent(String.self, forKey: .deviceID)
+    }
+
+    /// First-run state for a fresh install: one workspace holding one shell, so a
+    /// new user lands in a working terminal rather than an empty column. The
+    /// switcher stays out of sight until they make a second workspace.
+    static func firstRun() -> [Workspace] {
+        [Workspace(name: defaultName, terminals: [Session(title: "Terminal 1")])]
+    }
+
+    /// What the one workspace every user starts with is called. It is the only
+    /// workspace most people will ever have, so it is named for what it holds
+    /// rather than for the feature.
+    static let defaultName = "Sessions"
+
+    /// The owner a project decodes to when the state file predates workspaces —
+    /// "nobody has said yet". `WorkspaceMigration` replaces every one of these; a
+    /// project still carrying it after that is filed under the first workspace
+    /// rather than disappearing.
+    static let unfiledID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
 }
 
 /// A linked git checkout owned by a project. Sessions remain flat on the parent
@@ -66,6 +136,8 @@ extension Worktree {
 /// more agent/terminal sessions, mirroring the sidebar grouping in unpeel.
 struct Project: Identifiable, Hashable, Codable {
     var id = UUID()
+    /// The workspace this project is filed under — the scope the sidebar shows.
+    var workspaceID: Workspace.ID
     var name: String
     /// Absolute path used as the working directory for the project's sessions.
     var path: String
@@ -80,35 +152,6 @@ struct Project: Identifiable, Hashable, Codable {
     /// projects always sort ahead of the rest, regardless of the chosen sort order
     /// (see `TermioStore.orderedProjects`).
     var pinned: Bool = false
-
-    /// `.folder` for an opened directory, `.terminals` for the loose-terminals
-    /// container (at most one exists; it always sorts first in the sidebar),
-    /// `.host` for a remote machine's container.
-    var kind: ProjectKind = .folder
-
-    /// The `~/.ssh/config` alias (or `user@host`) this container was created for,
-    /// for `.host` containers only — `nil` for every local kind. `path` on a host
-    /// container is the remote root the box's sessions work in (`~` unless a clone
-    /// supplied one) and is **never** a local path: the local PTY spawns at `$HOME`
-    /// instead (see `surface(for:in:)`), and the local-disk panes (file tree, git,
-    /// Finder actions) are switched off for `.host`.
-    ///
-    /// **This is the container's bootstrap identity, not its stable one.** A
-    /// container has to exist the moment a session is created, synchronously,
-    /// before any handshake has run — and most aliases in a `~/.ssh/config` have
-    /// never been connected to at all. So a container is *born* from the alias, and
-    /// matched by it (`hostContainer(for:)`) until a first `hello_ok` supplies the
-    /// device it actually reaches. From then on `deviceID` is the identity and the
-    /// alias is demoted to **one route among several** — merging two aliases that
-    /// resolve to one device is a later step, specified in §9.5 of
-    /// docs/design/20260805-termiod-device-architecture.md and deliberately not performed yet.
-    var sshHost: String?
-
-    /// The device (`host_id`) this container's alias was found to lead to, filled in
-    /// after the first successful handshake and `nil` until then. Two containers
-    /// sharing a `deviceID` are two names for one machine — which is what makes the
-    /// merge in §9.5 possible without re-probing every alias.
-    var deviceID: String?
 
     /// Where this project lives on each **device** it has been cloned to, keyed
     /// by that device's `host_id` → absolute remote path.
@@ -130,8 +173,7 @@ struct Project: Identifiable, Hashable, Codable {
 
 extension Project {
     private enum CodingKeys: String, CodingKey {
-        case id, name, path, branch, sessions, worktrees, pinned, kind, remoteCheckouts, sshHost,
-             deviceID
+        case id, workspaceID, name, path, branch, sessions, worktrees, pinned, remoteCheckouts
     }
 
     /// Missing collection and flag keys take their pre-feature defaults so older
@@ -141,17 +183,20 @@ extension Project {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
+        // A project written before workspaces existed carries no owner. It is
+        // given one by `WorkspaceMigration`, which runs over the whole snapshot
+        // and knows which workspace every project lands in; the sentinel here is
+        // simply the value that migration overwrites.
+        workspaceID = try container.decodeIfPresent(UUID.self, forKey: .workspaceID)
+            ?? Workspace.unfiledID
         name = try container.decode(String.self, forKey: .name)
         path = try container.decode(String.self, forKey: .path)
         branch = try container.decode(String.self, forKey: .branch)
         sessions = try container.decode([Session].self, forKey: .sessions)
         worktrees = try container.decodeIfPresent([Worktree].self, forKey: .worktrees) ?? []
         pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
-        kind = try container.decodeIfPresent(ProjectKind.self, forKey: .kind) ?? .folder
         remoteCheckouts =
             try container.decodeIfPresent([String: String].self, forKey: .remoteCheckouts) ?? [:]
-        sshHost = try container.decodeIfPresent(String.self, forKey: .sshHost)
-        deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
     }
 
     /// The recorded checkout for one machine, addressed by device where the app
@@ -362,11 +407,11 @@ struct Session: Identifiable, Hashable, Codable {
         termiodRemoteCwd = origin.termiodRemoteCwd
     }
 
-    /// The last working directory the shell reported over OSC 7, persisted for
-    /// sessions in the loose-terminals container only: a loose terminal's identity
-    /// is the session, its path is this mutable property — so a relaunched shell
-    /// respawns where the user last `cd`'d, not back at `$HOME`. Sessions of a
-    /// real (`.folder`) project never set it; their anchor is the project path.
+    /// The last working directory the shell reported over OSC 7, persisted for a
+    /// workspace's loose terminals only: a loose terminal's identity is the
+    /// session, its path is this mutable property — so a relaunched shell respawns
+    /// where the user last `cd`'d, not back at `$HOME`. A project's sessions never
+    /// set it; their anchor is the project path.
     var lastWorkingDirectory: String?
 
     /// Where this session was opened, when that isn't its project's own anchor: ⌘T
@@ -436,29 +481,3 @@ struct Session: Identifiable, Hashable, Codable {
     }
 }
 
-extension Project {
-    /// First-run state for a fresh install: the loose-terminals container with one
-    /// shell session, so a new user lands in a working terminal instead of
-    /// dev-machine placeholders. The shell starts at `$HOME` (its `path`), but the
-    /// section is presented as "Terminals", not as a home *project* — the terminal
-    /// is the entity, its cwd just a property (see docs/design/20260713-loose-terminal-entity.md).
-    ///
-    /// The working directory must be the home directory — never
-    /// `currentDirectoryPath`, which is `/` when the app is launched from Finder
-    /// (that is what left the shell sitting at `/ %` on first launch).
-    static func firstRunProjects() -> [Project] {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-
-        return [
-            Project(
-                name: "Terminals",
-                path: home,
-                branch: "—",
-                sessions: [
-                    Session(title: "Terminal 1"),
-                ],
-                kind: .terminals
-            ),
-        ]
-    }
-}
