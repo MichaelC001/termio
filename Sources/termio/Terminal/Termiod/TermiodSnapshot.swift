@@ -8,23 +8,40 @@ import Foundation
 /// an idle TUI), the daemon's authoritative VT hands us the *current* grid and
 /// we redraw exactly that frame, then live `D` bytes resume on top.
 ///
-/// The wire cell already carries fully resolved colours — the host VT folds
-/// `inverse` into an fg/bg swap and `invisible` into a zero codepoint before it
-/// packs the cell (see `termiod/vt/src/lib.rs`), and the `attributes` field is
-/// reserved-zero in this format version. So the synthesiser only needs
-/// truecolour SGR plus text; bold/underline/italic are intentionally not
-/// carried yet (a later additive wire extension).
+/// The host VT folds `inverse` into an fg/bg swap and `invisible` into a zero
+/// codepoint before it packs the cell (see `termiod/vt/src/lib.rs`), and the
+/// `attributes` field is reserved-zero in this format version, so
+/// bold/underline/italic are intentionally not carried here (they ride the v2
+/// VT payload, and this format can gain them additively).
+///
+/// Colour is *not* resolved by the host. Each cell names a slot — default,
+/// palette index, or an exact RGB the program itself chose — and this
+/// synthesiser re-emits the slot rather than a colour, so libghostty applies
+/// this viewer's theme. That is the whole point: a payload rendered by a
+/// light-theme surface and a dark-theme surface must not look the same.
 enum TermiodSnapshot {
+    /// Mirrors `WireColor` in `termiod/src/protocol.rs`.
+    enum Color: Equatable {
+        case `default`
+        case palette(UInt8)
+        case rgb(UInt8, UInt8, UInt8)
+
+        /// SGR parameters selecting this colour, given the base code for the
+        /// layer (30 foreground / 40 background).
+        func sgr(base: Int) -> String {
+            switch self {
+            // 39 / 49 hand the choice back to the terminal's own default.
+            case .default: return "\(base + 9)"
+            case .palette(let index): return "\(base + 8);5;\(index)"
+            case .rgb(let r, let g, let b): return "\(base + 8);2;\(r);\(g);\(b)"
+            }
+        }
+    }
+
     struct Cell: Equatable {
         var codepoint: UInt32
-        var foreground: (UInt8, UInt8, UInt8)
-        var background: (UInt8, UInt8, UInt8)
-
-        static func == (lhs: Cell, rhs: Cell) -> Bool {
-            lhs.codepoint == rhs.codepoint
-                && lhs.foreground == rhs.foreground
-                && lhs.background == rhs.background
-        }
+        var foreground: Color
+        var background: Color
     }
 
     struct Frame {
@@ -40,17 +57,25 @@ enum TermiodSnapshot {
         var vt: Data?
     }
 
-    /// Snapshot payload v1 (see `encode_snapshot_payload` in `protocol.rs`):
+    /// Snapshot payload v3 (see `encode_snapshot_payload` in `protocol.rs`):
     /// version:u8, rows/cols/cursor_x/cursor_y:u16be, alt_screen:u8,
     /// title_len:u16be, UTF-8 title, then row-major 16-byte cells —
-    /// codepoint:u32be, fg RGB, bg RGB, attributes:u16be, 4 reserved bytes.
-    static let formatVersion: UInt8 = 1
+    /// codepoint:u32be, fg colour (4), bg colour (4), attributes:u16be,
+    /// 2 reserved bytes. Each colour is a tag byte then its value, zero-padded.
+    ///
+    /// v1 carried host-resolved RGB and is not accepted: it could not say
+    /// "the client's default" or "palette index N", so it overrode the viewer's
+    /// theme by construction.
+    static let formatVersion: UInt8 = 3
     /// Payload v2 carries VT sequences instead of packed cells. Preferred: the
     /// host describes screen *content* and this client's libghostty decides how
     /// it looks, so the local theme, the ANSI palette, and bold/underline/OSC 8
-    /// all survive. v1 resolved colour host-side and overrode the theme.
+    /// all survive. Packed cells remain the fallback when the host's formatter
+    /// fails, and the seed for a grid-diff client.
     static let vtFormatVersion: UInt8 = 2
     static let cellSize = 16
+    static let colorTagPalette: UInt8 = 1
+    static let colorTagRGB: UInt8 = 2
 
     static func decode(_ payload: Data) -> Frame? {
         let bytes = [UInt8](payload)
@@ -91,6 +116,16 @@ enum TermiodSnapshot {
         let cellCount = rows * cols
         guard bytes.count == cellsOffset + cellCount * cellSize else { return nil }
 
+        // An unrecognised tag falls back to the terminal's default colour
+        // rather than failing the frame, so the host can add tags additively.
+        func color(_ start: Int) -> Color {
+            switch bytes[start] {
+            case colorTagPalette: return .palette(bytes[start + 1])
+            case colorTagRGB: return .rgb(bytes[start + 1], bytes[start + 2], bytes[start + 3])
+            default: return .default
+            }
+        }
+
         var cells = [Cell]()
         cells.reserveCapacity(cellCount)
         var offset = cellsOffset
@@ -99,8 +134,8 @@ enum TermiodSnapshot {
                 | UInt32(bytes[offset + 2]) << 8 | UInt32(bytes[offset + 3])
             cells.append(Cell(
                 codepoint: codepoint,
-                foreground: (bytes[offset + 4], bytes[offset + 5], bytes[offset + 6]),
-                background: (bytes[offset + 7], bytes[offset + 8], bytes[offset + 9])
+                foreground: color(offset + 4),
+                background: color(offset + 8)
             ))
             offset += cellSize
         }
@@ -150,9 +185,7 @@ enum TermiodSnapshot {
                     }
                     runEnd += 1
                 }
-                let (fr, fg, fb) = cell.foreground
-                let (br, bg, bb) = cell.background
-                output += "\u{1b}[38;2;\(fr);\(fg);\(fb);48;2;\(br);\(bg);\(bb)m"
+                output += "\u{1b}[\(cell.foreground.sgr(base: 30));\(cell.background.sgr(base: 40))m"
                 for index in column..<runEnd {
                     let point = frame.cells[row * frame.cols + index].codepoint
                     output.unicodeScalars.append(Unicode.Scalar(point == 0 ? 32 : point)

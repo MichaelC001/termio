@@ -307,23 +307,37 @@ Superlogical's synced-viewport is the mirror image of the same judgement
 (**Announced**): shared scrolling ships as *additional opt-in frames*, never as
 the transport.
 
-**Known defect: the packed-cell path still ships resolved RGB.** The device doc
-§4 states the presentation boundary absolutely — "Host must not send: resolved
-RGB" — and the `S` v2 VT payload now honours it (`palette: false`). The packed
-cell encoding that seeds and updates a Mirror does not: snapshot payload v1 is
-`codepoint:u32be, foreground RGB, background RGB, attributes:u16be`
-(`protocol.rs`), so a Mirror is coloured by the *host's* palette and cannot
-apply the viewer's theme. The rule and the wire disagree, and the doc should not
-pretend otherwise.
+**Closed 2026-08-18: the packed-cell path shipped resolved RGB; it now ships
+tagged colour.** The device doc §4 states the presentation boundary absolutely —
+"Host must not send: resolved RGB" — and the `S` v2 VT payload honoured it
+(`palette: false`) while the packed cell that seeds and updates a Mirror did
+not: snapshot payload v1 was `codepoint:u32be, foreground RGB, background RGB,
+attributes:u16be`, so a Mirror was coloured by the *host's* palette and could
+not apply the viewer's theme.
 
-Priority is low precisely because §D.3 removed the pressure — no client is a
-Mirror by capability, so this only affects a Replica temporarily under pressure,
-where a wrong palette for a few seconds is the least of its problems. The fix
-when it comes is a tagged colour — `{0: default} | {1: palette index u8} |
-{2: rgb u24}` — which restores the boundary and shrinks the 16-byte cell at the
-same time, taking a bite out of the measured 8.6× as a side effect. Doing it
-before any client depends on Mirror keeps it additive; doing it after is a wire
-break.
+The fix is the tagged colour this section proposed — `{0: default} |
+{1: palette index u8} | {2: rgb}` — as `WireColor` in `protocol.rs` and
+`termiod_vt::Color` in `vt/src/lib.rs`, at snapshot payload **v3**, history
+**v2**, grid **v2**. Two findings from doing it:
+
+- **The loss was information, not just colour.** Resolved RGB cannot express
+  "the client's default" or "palette index N", so `Default` and `Palette(0)`
+  both packed as black and a themed red was indistinguishable from a program's
+  literal `#FF0000`. That is why v1 was retired rather than kept for
+  compatibility: every payload it produced had already discarded what a client
+  needs. Nothing consumed it — no client negotiates `grid_diff`, and a
+  `snapshot` client is served VT — so the break cost nothing.
+- **The viewport and the scrollback were extracting cells two different ways.**
+  `history_cell` read the unresolved style and applied `inverse`/`invisible`
+  itself; `viewport_cell` used the render state's flattened `fg_color`/
+  `bg_color`, which resolve palette indices through the host's palette. Both now
+  go through one `cell_from_parts`, so one screen cannot pack two ways.
+
+The cell stays 16 bytes; shrinking it (RLE spans, style split from text) remains
+the separate conditional item in §G PR 10. Regression tests: `vt/src/lib.rs`
+asserts each slot survives extraction and that `Default ≠ Palette(0)`;
+`protocol.rs` asserts the three tags round-trip distinctly and that an unknown
+tag degrades to `Default` rather than failing the frame.
 
 ### D.5 Writer and resize
 

@@ -70,10 +70,11 @@ def decode_snapshot(payload):
 
     Two formats share one header. v2 (raw-plane clients) carries VT sequences —
     the host describes content and the *client* decides colour, so there is no
-    cell grid to walk; the visible text is recovered by stripping escapes. v1
-    (grid_diff clients) carries packed cells and is walked directly.
+    cell grid to walk; the visible text is recovered by stripping escapes. v3
+    (grid_diff clients, and the formatter-failure fallback) carries packed cells
+    and is walked directly.
     """
-    if len(payload) < 12 or payload[0] not in (1, 2):
+    if len(payload) < 12 or payload[0] not in (2, 3):
         raise ValueError("invalid snapshot header")
     is_vt = payload[0] == 2
     rows, cols, cursor_x, cursor_y = struct.unpack(">HHHH", payload[1:9])
@@ -129,7 +130,7 @@ def decode_snapshot(payload):
 
 def decode_history(payload):
     """Decode the Phase 1d H payload into newest-first text rows."""
-    if len(payload) < 9 or payload[0] != 1:
+    if len(payload) < 9 or payload[0] != 2:
         raise ValueError("invalid history header")
     cols = struct.unpack(">H", payload[1:3])[0]
     first_offset = struct.unpack(">I", payload[3:7])[0]
@@ -206,7 +207,7 @@ def upload_credit_of_one(client, upload_id, body, chunk=64 * 1024 - 64, start=0)
 
 def decode_grid(payload):
     """Decode a Phase 1e G payload into its dirty full-width rows."""
-    if len(payload) < 16 or payload[0] != 1:
+    if len(payload) < 16 or payload[0] != 2:
         raise ValueError("invalid grid-diff header")
     frame_seq = struct.unpack(">I", payload[1:5])[0]
     rows, cols, cursor_x, cursor_y = struct.unpack(">HHHH", payload[5:13])

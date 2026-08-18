@@ -4,7 +4,7 @@
 
 use crate::protocol::{
     encode_grid_payload, encode_history_payload, Control, ErrorCode, Event, GridDiff, GridRow,
-    HistoryChunk, SessionInfo, Snapshot, WireCell, WorkstreamSpec, HISTORY_HEADER_SIZE,
+    HistoryChunk, SessionInfo, Snapshot, WireCell, WireColor, WorkstreamSpec, HISTORY_HEADER_SIZE,
     MAX_HISTORY_FRAME_SIZE, SNAPSHOT_CELL_SIZE,
 };
 use crate::pty::Pty;
@@ -910,12 +910,7 @@ impl Session {
             cells: engine
                 .cells
                 .into_iter()
-                .map(|cell| WireCell {
-                    codepoint: cell.codepoint,
-                    foreground: [cell.foreground.r, cell.foreground.g, cell.foreground.b],
-                    background: [cell.background.r, cell.background.g, cell.background.b],
-                    attributes: cell.attributes,
-                })
+                .map(wire_cell)
                 .collect(),
         }
     }
@@ -1111,11 +1106,19 @@ fn encode_scrollback_chunks(
     Ok(chunks)
 }
 
+fn wire_color(color: termiod_vt::Color) -> WireColor {
+    match color {
+        termiod_vt::Color::Default => WireColor::Default,
+        termiod_vt::Color::Palette(index) => WireColor::Palette(index),
+        termiod_vt::Color::Rgb(value) => WireColor::Rgb([value.r, value.g, value.b]),
+    }
+}
+
 fn wire_cell(cell: termiod_vt::Cell) -> WireCell {
     WireCell {
         codepoint: cell.codepoint,
-        foreground: [cell.foreground.r, cell.foreground.g, cell.foreground.b],
-        background: [cell.background.r, cell.background.g, cell.background.b],
+        foreground: wire_color(cell.foreground),
+        background: wire_color(cell.background),
         attributes: cell.attributes,
     }
 }
