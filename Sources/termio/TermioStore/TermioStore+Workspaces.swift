@@ -43,6 +43,47 @@ enum SessionSlot: Hashable {
     }
 }
 
+/// Every session's slot, keyed by id, so `locate(_:)` is one dictionary read
+/// instead of a walk of the whole tree.
+///
+/// Sessions live in three arrays now, and the sidebar asks where one lives
+/// several times per row per render — the title, the right-click menu, the
+/// tombstone check. A walk made that cost rows × sessions, and a workspace switch
+/// pays it in full because it rebuilds the list.
+///
+/// Precedence matches the walk it replaces: a workspace's terminals, then its
+/// chats, then the projects, first match wins. A value type holding no reference
+/// to the store, so its agreement with the walk is testable on its own — see
+/// `SessionSlotIndexTests`.
+struct SessionSlotIndex {
+    private var slots: [Session.ID: SessionSlot] = [:]
+
+    init() {}
+
+    init(workspaces: [Workspace], projects: [Project]) {
+        for (w, workspace) in workspaces.enumerated() {
+            for (s, session) in workspace.terminals.enumerated() where slots[session.id] == nil {
+                slots[session.id] = .terminals(workspace: w, session: s)
+            }
+            for (s, session) in workspace.chats.enumerated() where slots[session.id] == nil {
+                slots[session.id] = .chats(workspace: w, session: s)
+            }
+        }
+        for (p, project) in projects.enumerated() {
+            for (s, session) in project.sessions.enumerated() where slots[session.id] == nil {
+                slots[session.id] = .project(project: p, session: s)
+            }
+        }
+    }
+
+    subscript(id: Session.ID) -> SessionSlot? { slots[id] }
+
+    /// The ids the tree holds. Callers that want the live set (the runtime map's
+    /// reconcile) read this rather than flattening `allSessions`, which would copy
+    /// every session to answer a question about ids.
+    var sessionIDs: Dictionary<Session.ID, SessionSlot>.Keys { slots.keys }
+}
+
 extension TermioStore {
     // MARK: - Reading the roster
 
@@ -59,22 +100,11 @@ extension TermioStore {
         return sessions
     }
 
-    /// Where `id` lives, or `nil` when nothing holds it.
+    /// Where `id` lives, or `nil` when nothing holds it. Read straight out of
+    /// `sessionSlots`, which every change to the tree rebuilds before anything
+    /// else runs, so the slot this returns is the one the last mutation produced.
     func locate(_ id: Session.ID) -> SessionSlot? {
-        for (w, workspace) in workspaces.enumerated() {
-            if let s = workspace.terminals.firstIndex(where: { $0.id == id }) {
-                return .terminals(workspace: w, session: s)
-            }
-            if let s = workspace.chats.firstIndex(where: { $0.id == id }) {
-                return .chats(workspace: w, session: s)
-            }
-        }
-        for (p, project) in projects.enumerated() {
-            if let s = project.sessions.firstIndex(where: { $0.id == id }) {
-                return .project(project: p, session: s)
-            }
-        }
-        return nil
+        sessionSlots[id]
     }
 
     subscript(slot: SessionSlot) -> Session {
