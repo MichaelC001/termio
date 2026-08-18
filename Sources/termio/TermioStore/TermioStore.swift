@@ -56,6 +56,10 @@ final class TermioStore: ObservableObject {
         // "needs attention" (or unseen "done") is, by definition, answered.
         didSet {
             guard oldValue != selectedSessionID else { return }
+            // Half of what a workspace switch costs is here: the switch moves the
+            // selection, and everything below rides on that.
+            let span = Trace.workspace.begin("selection change")
+            defer { Trace.workspace.end(span) }
             // Save the inspector layout of the session we're leaving and restore the one
             // we're arriving at, so each terminal tab keeps its own right-side context
             // (issue #160). This replaces the blanket overlay-clear that used to live in
@@ -1267,6 +1271,8 @@ final class TermioStore: ObservableObject {
     }
 
     private func persist() {
+        let span = Trace.workspace.begin("persist")
+        defer { Trace.workspace.end(span) }
         // Fold the current selection's live inspector layout in — it isn't copied into
         // `inspectorStates` until the selection leaves it.
         var states = inspectorStates

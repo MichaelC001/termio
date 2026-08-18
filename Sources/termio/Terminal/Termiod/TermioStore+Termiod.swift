@@ -253,6 +253,8 @@ extension TermioStore {
     /// Runs off the main thread (an SSH round trip is 216–292 ms cold) and drops
     /// its reply if the user has moved on to another device meanwhile.
     func refreshDeviceSessions() {
+        let span = Trace.device.begin("roster request")
+        defer { Trace.device.end(span) }
         guard Termiod.isEnabled else {
             deviceSessions = .unavailable
             return
@@ -265,16 +267,26 @@ extension TermioStore {
         deviceSessionsGeneration += 1
         let generation = deviceSessionsGeneration
         deviceSessions = .loading
+        let requested = ContinuousClock.now
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let outcome: Result<Termiod.SessionsPayload, Error>
-            do {
-                outcome = .success(try Termiod.roster(route: route))
-            } catch {
-                outcome = .failure(error)
+            let outcome: Result<Termiod.SessionsPayload, Error> = Trace.device.measure(
+                "roster fetch", "route=\(route.description)"
+            ) {
+                do {
+                    return .success(try Termiod.roster(route: route))
+                } catch {
+                    return .failure(error)
+                }
             }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    guard let self, self.deviceSessionsGeneration == generation else { return }
+                    guard let self, self.deviceSessionsGeneration == generation else {
+                        Trace.device.report("roster dropped", "route=\(route.description)",
+                                            since: requested)
+                        return
+                    }
+                    Trace.device.report("roster round trip", "route=\(route.description)",
+                                        since: requested)
                     self.applyRoster(outcome, from: device, route: route,
                                      persisted: persistedNames)
                 }
@@ -288,6 +300,8 @@ extension TermioStore {
         route: TermiodRoute,
         persisted: Set<String>
     ) {
+        let span = Trace.device.begin("roster apply")
+        defer { Trace.device.end(span) }
         switch outcome {
         case .failure(let error):
             deviceSessions = .failed(error.localizedDescription)
