@@ -133,10 +133,14 @@ struct WorkspaceSwipe: NSViewRepresentable {
 
     @MainActor
     final class Coordinator {
-        /// How far the fingers must travel sideways to change scope. Roughly a
-        /// third of a comfortable swipe: far enough that a diagonal scroll never
-        /// reaches it, short enough that the gesture doesn't feel like dragging.
-        private static let commitDistance: CGFloat = 55
+        /// How far the fingers must travel sideways to change scope. Far enough
+        /// that a diagonal scroll never reaches it, short enough that the gesture
+        /// reads as a flick rather than a drag.
+        private static let commitDistance: CGFloat = 34
+        /// A fast flick commits before it has travelled that far: past this
+        /// per-event speed the intent is already unambiguous, and waiting for the
+        /// remaining distance is what makes a switcher feel heavy.
+        private static let flickSpeed: CGFloat = 12
         /// How much the horizontal travel must beat the vertical by. The sidebar
         /// is a tall scrolling list, so this is the guard that matters.
         private static let dominance: CGFloat = 2.5
@@ -174,6 +178,11 @@ struct WorkspaceSwipe: NSViewRepresentable {
             guard event.hasPreciseScrollingDeltas, let view, let window = view.window,
                   event.window === window
             else { return false }
+            // Momentum is the tail the system throws after the fingers leave. It
+            // used to keep feeding `travel`, so one flick could cross the commit
+            // distance a second time and skip two scopes — the overshoot that
+            // read as the gesture being unreliable.
+            guard event.momentumPhase == [] else { return committed }
             let point = view.convert(event.locationInWindow, from: nil)
             guard view.bounds.contains(point) else { return false }
 
@@ -196,8 +205,11 @@ struct WorkspaceSwipe: NSViewRepresentable {
             guard !committed else { return true }
             travel.width += event.scrollingDeltaX
             travel.height += event.scrollingDeltaY
-            guard abs(travel.width) > Self.commitDistance,
-                  abs(travel.width) > abs(travel.height) * Self.dominance
+            // Horizontal dominance is judged on the whole gesture; the distance
+            // is met either by travelling far or by moving fast.
+            guard abs(travel.width) > abs(travel.height) * Self.dominance,
+                  abs(travel.width) > Self.commitDistance
+                      || abs(event.scrollingDeltaX) > Self.flickSpeed
             else { return false }
 
             committed = true

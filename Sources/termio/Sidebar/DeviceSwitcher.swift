@@ -101,6 +101,29 @@ struct DeviceOpenMenuContent: View {
 
 // MARK: - The device mark
 
+extension KnownDevice {
+    /// The machine a session runs on, or `nil` when it runs on this Mac.
+    ///
+    /// The identity has to be the **machine**, never the road to it. A plain `ssh`
+    /// terminal never handshakes with a daemon, so it carries no `deviceID` of its
+    /// own; asked for a mark on the session alone it would hash to a different
+    /// colour than the durable termiod session sitting beside it on the same box.
+    /// The registry already knows where an alias leads, and remembers across
+    /// launches, so the alias is resolved before the identity is formed.
+    ///
+    /// `resolve` is the lookup, injectable so the invariant can be tested without
+    /// standing up the shared registry.
+    static func running(
+        _ session: Session,
+        resolvingAlias resolve: (String) -> String? = {
+            TermiodDeviceRegistry.shared.deviceID(for: TermiodRoute(sshAlias: $0))
+        }
+    ) -> KnownDevice? {
+        guard let alias = session.termiodRemoteHost ?? session.sshHost else { return nil }
+        return KnownDevice(alias: alias, deviceID: session.deviceID ?? resolve(alias))
+    }
+}
+
 /// The mark a device carries wherever it is drawn small enough that its name
 /// won't fit — today the footer dots.
 ///

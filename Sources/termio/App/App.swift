@@ -489,6 +489,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // Delivered banners would outlive the sessions they point at.
         TaskNotificationCenter.shared.withdrawAll()
+        // Tree edits are debounced (see `persistSoon`), so flush before the
+        // process goes away or the last selection change is lost.
+        store.persistNow()
         store.terminateAllSessions()
         SSHMux.cleanup()
         RemotePreviewStorage.cleanup()

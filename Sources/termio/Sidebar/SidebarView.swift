@@ -1063,12 +1063,13 @@ private struct SessionRow: View {
 
     private var isSelected: Bool { store.selectedSessionID == session.id }
 
-    /// The machine this row runs on, or `nil` when it runs here. `termiodRemoteHost`
-    /// is the durable session's road and `sshHost` the plain `ssh` terminal's; both
-    /// mean "not this Mac", which is the only thing the mark says.
+    /// The machine this row runs on, or `nil` when it runs here — or when the
+    /// workspace *is* that machine, since its name is already in the toolbar band
+    /// and its colour already in the footer. Marking every row of a machine's own
+    /// workspace repeats one fact down the whole column, which is noise, not a cue.
     private var remoteDevice: KnownDevice? {
-        guard let alias = session.termiodRemoteHost ?? session.sshHost else { return nil }
-        return KnownDevice(alias: alias, deviceID: session.deviceID)
+        guard !store.currentWorkspace.isDeviceFallback else { return nil }
+        return .running(session)
     }
 
     /// The row's right-click menu. Rename/Pin/Close Session are always present; the two

@@ -225,7 +225,12 @@ final class AppSettings: ObservableObject {
     /// State rather than a preference (it is a place, not a taste), so it lives in
     /// `defaults` and never reaches `settings.json`. An alias that no longer
     /// matches a known machine resolves back to this Mac — see `DeviceRoster`.
-    @Published var currentDeviceAlias: String? {
+    /// Deliberately NOT `@Published`: nothing renders from it (the store holds the
+    /// live copy), and every publish here wakes the store's settings observer,
+    /// which restyles every open terminal surface and re-checks the agent hook
+    /// files on disk. Paying that to write one string is what made moving between
+    /// machines hitch.
+    var currentDeviceAlias: String? {
         didSet { defaults.set(currentDeviceAlias, forKey: Key.currentDevice) }
     }
 
@@ -233,7 +238,8 @@ final class AppSettings: ObservableObject {
     /// a preference — the same reason `currentDeviceAlias` lives here. The state
     /// file carries the authoritative copy; this one covers the launch before the
     /// store has been built.
-    @Published var currentWorkspaceID: UUID? {
+    /// Not `@Published`, for the reason `currentDeviceAlias` above is not.
+    var currentWorkspaceID: UUID? {
         didSet { defaults.set(currentWorkspaceID?.uuidString, forKey: Key.currentWorkspace) }
     }
 

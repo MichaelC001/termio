@@ -73,7 +73,12 @@ final class TermioStore: ObservableObject {
                 // forced past the coalesce window since it's a deliberate user action.
                 if let pid = project(for: id)?.id { noteProjectActivity(pid, force: true) }
             }
-            persist()
+            // Debounced, not inline: moving the selection is the most frequent
+            // edit in the app — every row click, every ⌘⇧], every step of a
+            // workspace swipe — and a synchronous encode-and-write of the whole
+            // tree on each one is a hitch the user feels as the switch being
+            // slow. The quit path flushes whatever is still pending.
+            persistSoon()
         }
     }
 
@@ -512,10 +517,26 @@ final class TermioStore: ObservableObject {
     /// would lose it. Debounced so a burst of clicks writes once. Skipped during restore.
     private func persistInspectorSoon() {
         guard !isRestoringInspector else { return }
+        persistSoon()
+    }
+
+    /// Coalesces a burst of tree edits into one write a beat later. Every caller
+    /// that fires on a gesture or a click routes through here; only the paths
+    /// that must survive an immediate crash (`persistNow`) write inline.
+    func persistSoon() {
+        guard !isRestoringInspector else { return }
         persistDebounce?.cancel()
         let work = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.persist() } }
         persistDebounce = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
+    /// Writes any pending debounced save immediately. Called on quit, so a
+    /// selection or layout change made in the last beat before ⌘Q is not lost.
+    func persistNow() {
+        persistDebounce?.cancel()
+        persistDebounce = nil
+        persist()
     }
 
     /// Snapshots the inspector's current content into an `InspectorState`.
