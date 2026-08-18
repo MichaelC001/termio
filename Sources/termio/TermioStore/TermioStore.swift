@@ -14,6 +14,11 @@ final class TermioStore: ObservableObject {
         // edited) is written back to disk so the sidebar survives app restarts,
         // and the set of folders whose branch we track live is re-synced.
         didSet {
+            // First, before anything else reads the tree: `syncRuntimes` below and
+            // every observer this change wakes resolve sessions through the index,
+            // and a slot still describing the pre-mutation array is a wrong answer
+            // — the callers remove and insert at it — not merely a stale one.
+            rebuildSessionSlots()
             persist()
             syncWatchedFolders()
             syncRuntimes()
@@ -25,9 +30,20 @@ final class TermioStore: ObservableObject {
     /// switcher.
     @Published var workspaces: [Workspace] {
         didSet {
+            rebuildSessionSlots()
             persist()
             syncRuntimes()
         }
+    }
+
+    /// Where every session sits, so `locate(_:)` costs a dictionary read. Rebuilt
+    /// as the first act of both `didSet`s above and once in `init` (which assigns
+    /// the arrays before the observers are armed) — those three sites are the only
+    /// places the tree can change, so nothing else has to keep it honest.
+    private(set) var sessionSlots = SessionSlotIndex()
+
+    private func rebuildSessionSlots() {
+        sessionSlots = SessionSlotIndex(workspaces: workspaces, projects: projects)
     }
 
     /// Which workspace the sidebar is showing. Live state, like the selection —
@@ -618,8 +634,11 @@ final class TermioStore: ObservableObject {
     /// dependency and warn about mutating state mid-render) and drops runtimes for
     /// sessions that have closed. Called from `projects.didSet` and once after load, so
     /// every add/remove/restore keeps the map in step without per-site bookkeeping.
+    /// Reads the live set off `sessionSlots`, so it must run after
+    /// `rebuildSessionSlots` — and off the index rather than `allSessions`, which
+    /// would copy every session to answer a question about ids.
     func syncRuntimes() {
-        let live = Set(allSessions.map(\.id))
+        let live = Set(sessionSlots.sessionIDs)
         for id in live where runtimes[id] == nil { runtimes[id] = SessionRuntime() }
         for id in runtimes.keys where !live.contains(id) { runtimes.removeValue(forKey: id) }
         // A closed session's saved inspector layout goes with it.
@@ -996,8 +1015,10 @@ final class TermioStore: ObservableObject {
         self.lastHostGridColumns = storedColumns > 0 ? storedColumns : 80
         self.lastHostGridRows = storedRows > 0 ? storedRows : 24
         // The initial `projects` assignment above runs before `didSet` is armed, so
-        // seed the runtime map for the restored tree explicitly (later add/remove goes
-        // through `projects.didSet`).
+        // seed the slot index and the runtime map for the restored tree explicitly
+        // (later add/remove goes through `projects.didSet`). Index first —
+        // `syncRuntimes` reads it.
+        rebuildSessionSlots()
         syncRuntimes()
 
         // Re-style already-open terminals whenever appearance settings change.

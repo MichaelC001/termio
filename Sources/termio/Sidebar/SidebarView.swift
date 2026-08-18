@@ -91,7 +91,7 @@ private struct SidebarSectionHeader: View {
             // Only sections that offer actions (Terminals) get a right-click menu; the
             // Pinned label has none, so it stays a passive divider.
             if !menuItems.isEmpty {
-                SidebarRowContextMenu(items: menuItems) { isMenuOpen = $0 }
+                SidebarRowContextMenu(items: { menuItems }) { isMenuOpen = $0 }
             }
         }
         .background(OutlineViewFixups())
@@ -180,6 +180,11 @@ struct SidebarView: View {
         // feature must not introduce. They carry their workspace's name as the
         // breadcrumb, so the row says where clicking will take you.
         let waitingElsewhere = elsewhereNeedingYou(currentWorkspace: workspace.id)
+        // Whether any row in this column wears a machine mark. A machine's own
+        // workspace already says which machine it is — in the toolbar band and in
+        // the footer dot — so marking each of its rows repeats one fact down the
+        // whole column. Decided here, once, and handed to the rows.
+        let marksDevice = !workspace.isDeviceFallback
         let hasPinned = !pinnedProjects.isEmpty || !pinnedWorktrees.isEmpty
             || !pinnedSessions.isEmpty || !waitingElsewhere.isEmpty
         let hasTerminals = !workspace.terminals.isEmpty
@@ -212,15 +217,17 @@ struct SidebarView: View {
                 if !pinnedCollapsed {
                     ForEach(waitingElsewhere) { entry in
                         SessionRow(session: entry.session, chrome: chrome, leadingIndent: 16,
-                                   breadcrumb: entry.workspaceName)
+                                   breadcrumb: entry.workspaceName, marksDevice: marksDevice)
                     }
-                    ForEach(pinnedProjects) { projectBlock($0) }
+                    ForEach(pinnedProjects) { projectBlock($0, marksDevice: marksDevice) }
                     ForEach(pinnedWorktrees) { entry in
-                        pinnedWorktreeBlock(project: entry.project, worktree: entry.worktree)
+                        pinnedWorktreeBlock(project: entry.project, worktree: entry.worktree,
+                                            marksDevice: marksDevice)
                     }
                     ForEach(pinnedSessions) { entry in
                         SessionRow(session: entry.session, chrome: chrome, leadingIndent: 16,
-                                   breadcrumb: entry.project.map { breadcrumb(for: entry.session, in: $0) })
+                                   breadcrumb: entry.project.map { breadcrumb(for: entry.session, in: $0) },
+                                   marksDevice: marksDevice)
                     }
                 }
             }
@@ -248,7 +255,8 @@ struct SidebarView: View {
                 if !terminalsCollapsed {
                     let marks = splitLinkMarks(for: workspace.terminals)
                     ForEach(workspace.terminals) { session in
-                        SessionRow(session: session, chrome: chrome, splitLink: marks[session.id])
+                        SessionRow(session: session, chrome: chrome, splitLink: marks[session.id],
+                                   marksDevice: marksDevice)
                     }
                 }
             }
@@ -278,7 +286,8 @@ struct SidebarView: View {
                 if !chatsCollapsed {
                     let marks = splitLinkMarks(for: workspace.chats)
                     ForEach(workspace.chats) { session in
-                        SessionRow(session: session, chrome: chrome, splitLink: marks[session.id])
+                        SessionRow(session: session, chrome: chrome, splitLink: marks[session.id],
+                                   marksDevice: marksDevice)
                     }
                 }
             }
@@ -295,7 +304,7 @@ struct SidebarView: View {
                     }
                 )
                 if !projectsCollapsed {
-                    ForEach(others) { projectBlock($0) }
+                    ForEach(others) { projectBlock($0, marksDevice: marksDevice) }
                 }
             }
             // What the device itself says is running that no row above accounts for.
@@ -402,7 +411,7 @@ struct SidebarView: View {
     /// sessions and each worktree's nested header + sessions. Factored out of `body`
     /// so the pinned and unpinned groups render identical project blocks.
     @ViewBuilder
-    private func projectBlock(_ project: Project) -> some View {
+    private func projectBlock(_ project: Project, marksDevice: Bool) -> some View {
         ProjectHeader(
             project: project,
             isCollapsed: collapsedProjects.contains(project.id),
@@ -414,7 +423,7 @@ struct SidebarView: View {
             let primarySplitMarks = splitLinkMarks(for: primarySessions)
             ForEach(primarySessions) { session in
                 SessionRow(session: session, chrome: chrome,
-                           splitLink: primarySplitMarks[session.id])
+                           splitLink: primarySplitMarks[session.id], marksDevice: marksDevice)
             }
             ForEach(project.worktrees) { worktree in
                 ProjectHeader(
@@ -435,7 +444,8 @@ struct SidebarView: View {
                             session: session,
                             chrome: chrome,
                             leadingIndent: 32,
-                            splitLink: splitMarks[session.id]
+                            splitLink: splitMarks[session.id],
+                            marksDevice: marksDevice
                         )
                     }
                 }
@@ -447,7 +457,8 @@ struct SidebarView: View {
     /// parent project's name) plus, unless folded, its own sessions. Sits at the base
     /// indent since it's a top-level working-set entry, not nested under a project row.
     @ViewBuilder
-    private func pinnedWorktreeBlock(project: Project, worktree: Worktree) -> some View {
+    private func pinnedWorktreeBlock(project: Project, worktree: Worktree,
+                                     marksDevice: Bool) -> some View {
         ProjectHeader(
             project: project,
             worktree: worktree,
@@ -462,7 +473,7 @@ struct SidebarView: View {
             let splitMarks = splitLinkMarks(for: sessions)
             ForEach(sessions) { session in
                 SessionRow(session: session, chrome: chrome, leadingIndent: 16,
-                           splitLink: splitMarks[session.id])
+                           splitLink: splitMarks[session.id], marksDevice: marksDevice)
             }
         }
     }
@@ -804,7 +815,7 @@ private struct ProjectHeader: View {
         // SwiftUI's `.contextMenu`, which paints an un-styleable blue accent ring
         // around the targeted row. While the menu is up the row lifts to the hover
         // level (a step below session selection) so the target reads clearly.
-        .background(SidebarRowContextMenu(items: menuItems) { isMenuOpen = $0 })
+        .background(SidebarRowContextMenu(items: { menuItems }) { isMenuOpen = $0 })
         // Strip the source list's native blue accent (the ring/fill AppKit paints on a
         // right-clicked or selected row) at the NSOutlineView layer, so our own
         // highlights are the only selection cue — same treatment the file tree uses.
@@ -850,7 +861,12 @@ enum SidebarMenuItem {
 /// the row's own view pops the menu, so nothing emphasizes the row. Mirrors the file
 /// browser's `RowContextMenu`.
 private struct SidebarRowContextMenu: NSViewRepresentable {
-    let items: [SidebarMenuItem]
+    /// The menu's contents, built when it pops rather than when the row renders.
+    /// A session row's menu asks the store real questions — which sessions this
+    /// one could be grouped with, and what each of those is called — and a
+    /// right-click is rare where a render is not, so the spec stays a closure the
+    /// coordinator calls on demand.
+    let items: () -> [SidebarMenuItem]
     /// Reports the menu opening (`true`) and closing (`false`) so the row can paint a
     /// light lift while its menu is up — the feedback the blue ring used to give,
     /// minus the ring.
@@ -880,7 +896,7 @@ private struct SidebarRowContextMenu: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSMenuDelegate {
         weak var owner: NSView?
-        var items: [SidebarMenuItem] = []
+        var items: () -> [SidebarMenuItem] = { [] }
         var onMenuState: (Bool) -> Void = { _ in }
         private weak var hostView: NSView?
         private var recognizer: NSClickGestureRecognizer?
@@ -907,7 +923,7 @@ private struct SidebarRowContextMenu: NSViewRepresentable {
 
         @objc private func showMenu(_ recognizer: NSClickGestureRecognizer) {
             guard let hostView else { return }
-            let menu = build(items)
+            let menu = build(items())
             menu.delegate = self
             menu.popUp(positioning: nil, at: recognizer.location(in: hostView), in: hostView)
         }
@@ -1055,6 +1071,11 @@ private struct SessionRow: View {
     /// origin trail (e.g. "web-app" or "web-app/feat") that says where the real row
     /// lives. `nil` for a row in its normal tree spot.
     var breadcrumb: String? = nil
+    /// Whether rows in this column carry a device mark at all. Answered once per
+    /// render by the list (a machine's own workspace marks nothing), because the
+    /// question is about the workspace on screen, not about this row — asking it
+    /// per row scanned the workspaces once per row.
+    var marksDevice: Bool = true
     @State private var isHovering = false
     /// A same-bucket session is being dragged over this row: light its whole-row
     /// background (the hover lift) as the reorder drop target. Only set when the
@@ -1068,7 +1089,7 @@ private struct SessionRow: View {
     /// and its colour already in the footer. Marking every row of a machine's own
     /// workspace repeats one fact down the whole column, which is noise, not a cue.
     private var remoteDevice: KnownDevice? {
-        guard !store.currentWorkspace.isDeviceFallback else { return nil }
+        guard marksDevice else { return nil }
         return .running(session)
     }
 
@@ -1109,7 +1130,9 @@ private struct SessionRow: View {
         // A session whose process the device buried reads as what it is — a spent
         // row with the reason it ended — in its own place in the tree, rather than
         // being moved to a separate list. The tombstone is a fact about the row.
-        if let tombstone = store.termiodEndReason(for: session.id) {
+        // Asked with the session in hand, not its id: the id form would look the
+        // session back up to reach the daemon name this row already carries.
+        if let tombstone = store.termiodEndReason(for: session) {
             EndedSessionRow(session: session, tombstone: tombstone, chrome: chrome,
                             leadingIndent: leadingIndent)
         } else {
@@ -1118,7 +1141,10 @@ private struct SessionRow: View {
     }
 
     private var liveBody: some View {
-        HStack(spacing: 6) {
+        // Read once: the glyph, the ring and the tooltip all present the same
+        // status, and reading it three times is three lookups for one fact.
+        let status = store.status(for: session.id)
+        return HStack(spacing: 6) {
             // While the agent is working, the leading mark becomes a small rotating
             // nine-dot grid — the row's own "thinking" spinner — and reverts to the
             // brand mark when the turn ends. No ambient tint on the brand mark: it
@@ -1126,7 +1152,7 @@ private struct SessionRow: View {
             // settings page shows), and the plain terminal symbol carries its own
             // muted grey from AgentIconView.
             Group {
-                if session.isSSH, store.status(for: session.id) != .working {
+                if session.isSSH, status != .working {
                     // An SSH terminal is a machine, so it carries the same server
                     // glyph as its host row in Settings ▸ SSH (a globe reads as
                     // "web", not "that box") — except while a detected remote
@@ -1135,7 +1161,7 @@ private struct SessionRow: View {
                     // 16-wide column — HugeIconShape normalizes ink width, so
                     // equal size is what makes the glyphs read as one family.
                     HugeIconView(icon: .serverStack, size: 15, color: .secondary)
-                } else if store.status(for: session.id) == .working {
+                } else if status == .working {
                     // The spinner carries no status color — its motion already
                     // says "working", so color stays reserved for the states
                     // that need the user (the green done / orange attention
@@ -1155,7 +1181,7 @@ private struct SessionRow: View {
             // (spinner = working, ring = your turn, nothing = idle) reads from one place on the left
             // instead of being split with a trailing dot. An overlay, so the ring never shifts the
             // row's layout, and it sits *around* the brand glyph so the vendor color stays intact.
-            .overlay { StatusRing(status: store.status(for: session.id)) }
+            .overlay { StatusRing(status: status) }
             .help(store.statusDescription(for: session.id))
             Text(store.displayTitle(for: session))
                 .font(settings.interfaceFont)
@@ -1305,7 +1331,7 @@ private struct SessionRow: View {
         })
         // NSMenu rather than SwiftUI's `.contextMenu` so right-click leaves no blue
         // accent ring on the row (see `SidebarRowContextMenu`).
-        .background(SidebarRowContextMenu(items: menuItems))
+        .background(SidebarRowContextMenu(items: { menuItems }))
         // The reorder drop target (VS Code's `Over` effect) reuses the *hover* lift
         // verbatim — same frosted-grey fill, same row-sized region and insets — so the
         // drop cue never introduces a second background shape; it reads as a hover.
@@ -1391,9 +1417,9 @@ private struct DeviceOnlySessionRow: View {
               : localized("Opened outside Termio, in \(information.cwd)"))
         .onHover { isHovering = $0 }
         .simultaneousGesture(TapGesture().onEnded { store.adoptDeviceSession(information) })
-        .background(SidebarRowContextMenu(items: [
-            .action(localized("Open")) { store.adoptDeviceSession(information) },
-        ]))
+        .background(SidebarRowContextMenu(items: {
+            [.action(localized("Open")) { store.adoptDeviceSession(information) }]
+        }))
         .listRowBackground(
             SidebarRowHighlight(isSelected: false, isHovering: isHovering, chrome: chrome)
                 .animation(.easeInOut(duration: 0.12), value: isHovering))
@@ -1451,9 +1477,9 @@ private struct EndedSessionRow: View {
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .simultaneousGesture(TapGesture().onEnded { store.selectedSessionID = session.id })
-        .background(SidebarRowContextMenu(items: [
-            .action(localized("Close Session")) { store.requestCloseSession(session.id) },
-        ]))
+        .background(SidebarRowContextMenu(items: {
+            [.action(localized("Close Session")) { store.requestCloseSession(session.id) }]
+        }))
         .listRowBackground(
             SidebarRowHighlight(isSelected: isSelected, isHovering: isHovering, chrome: chrome)
                 .animation(.easeInOut(duration: 0.12), value: isHovering))
