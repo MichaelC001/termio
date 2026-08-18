@@ -46,6 +46,11 @@ final class TermioStore: ObservableObject {
         sessionSlots = SessionSlotIndex(workspaces: workspaces, projects: projects)
     }
 
+    /// Counts arrivals in a workspace, so the work a switch defers can tell
+    /// whether it is still wanted. A user mid-swipe passes through scopes they
+    /// never stop on; only the last arrival settles (see `finishArriving`).
+    var workspaceArrival: UInt64 = 0
+
     /// Which workspace the sidebar is showing. Live state, like the selection —
     /// `AppSettings` keeps a copy only so the next launch starts where this one
     /// ended. Written through `switchToWorkspace(_:)`, which moves the selection

@@ -219,8 +219,39 @@ extension TermioStore {
     func switchToWorkspace(_ id: Workspace.ID) {
         guard workspaces.contains(where: { $0.id == id }) else { return }
         guard currentWorkspaceID != id else { return }
+        // The switch itself, and nothing else: the column is the answer to
+        // "which workspace", and it can be drawn knowing only this. Timed
+        // separately from the settle below, because the two are what the user
+        // means by "the switch" and by "everything after it" — reporting them
+        // as one number is how a fast switch reads as a slow one.
+        let span = Trace.workspace.begin("workspace switch")
+        defer { Trace.workspace.end(span) }
         currentWorkspaceID = id
         settings.currentWorkspaceID = id
+        workspaceArrival &+= 1
+        let arrival = workspaceArrival
+        // Everything below is about the *session* the new scope lands on — its
+        // terminal becoming the visible surface, its saved inspector layout
+        // reopening a file, its machine being asked for a roster. None of it
+        // answers "which workspace", and all of it costs a layout pass, so it
+        // waits for the one that puts the new column on screen. Switching reads
+        // as instant because it is: the frame the user is waiting for no longer
+        // has this work in front of it.
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.workspaceArrival == arrival else { return }
+                self.finishArriving(in: id)
+            }
+        }
+    }
+
+    /// The half of a workspace switch that is about the session, run a turn after
+    /// the column is drawn. Guarded by `workspaceArrival`, so a user who keeps
+    /// swiping only ever settles the workspace they stopped on — the intermediate
+    /// ones never open a file or ask a machine anything.
+    private func finishArriving(in id: Workspace.ID) {
+        let span = Trace.workspace.begin("workspace settle")
+        defer { Trace.workspace.end(span) }
         // Clearing beats guessing: an empty workspace shows the welcome state,
         // which is the honest picture of a scope with nothing open in it.
         selectedSessionID = sessions(inWorkspace: id).first?.id
