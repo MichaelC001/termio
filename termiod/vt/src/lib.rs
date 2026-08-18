@@ -12,7 +12,7 @@ use std::rc::Rc;
 use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
 use libghostty_vt::render::{CellIterator, Dirty, RenderState, RowIterator};
 use libghostty_vt::screen::{CellContentTag, Screen};
-use libghostty_vt::style::{Palette, RgbColor, StyleColor};
+use libghostty_vt::style::{RgbColor, StyleColor};
 use libghostty_vt::terminal::{Point, PointCoordinate};
 use libghostty_vt::{Error, Terminal, TerminalOptions};
 
@@ -23,11 +23,40 @@ pub struct Rgb {
     pub b: u8,
 }
 
+/// A colour slot exactly as the program expressed it.
+///
+/// The host preserves *which* slot a cell asked for; the client decides what
+/// that slot looks like. Resolving here — looking a palette index up in the
+/// host's palette, or substituting the host's default foreground — bakes the
+/// host's theme into the wire and overrides the viewer's, which is the
+/// presentation boundary the whole design rests on (device architecture §4).
+///
+/// The three variants are not an encoding choice; they are the three things a
+/// terminal program can actually mean:
+///
+/// - `Default` — it named no colour, so the *client's* default applies.
+/// - `Palette` — it named a theme slot (`38;5;N`), so the *client's* palette
+///   resolves it. This is what lets one snapshot look right in a light theme
+///   and a dark one.
+/// - `Rgb` — it named an exact colour (`38;2;r;g;b`). That was the program's
+///   decision, not a theme's, and no client may reinterpret it.
+///
+/// Collapsing all three into RGB (what this type replaced) does not merely
+/// produce wrong colours: it destroys the distinction, so a client can no
+/// longer tell a themed red from a program's literal `#FF0000`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Color {
+    #[default]
+    Default,
+    Palette(u8),
+    Rgb(Rgb),
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Cell {
     pub codepoint: u32,
-    pub foreground: Rgb,
-    pub background: Rgb,
+    pub foreground: Color,
+    pub background: Color,
     pub attributes: u16,
 }
 
@@ -86,12 +115,12 @@ fn check<T>(result: std::result::Result<T, Error>, operation: &str) -> Result<T>
     result.map_err(|error| VtError(format!("{operation} failed: {error}")))
 }
 
-const DEFAULT_FOREGROUND: Rgb = Rgb {
-    r: 255,
-    g: 255,
-    b: 255,
-};
-const DEFAULT_BACKGROUND: Rgb = Rgb { r: 0, g: 0, b: 0 };
+/// `check` with a second label, joined **only when the call actually fails**.
+/// Per-cell code must not build the context string eagerly: these run once per
+/// cell per screen, so a `format!` argument is an allocation per cell.
+fn check_at<T>(result: std::result::Result<T, Error>, operation: &str, origin: &str) -> Result<T> {
+    result.map_err(|error| VtError(format!("{operation}({origin}) failed: {error}")))
+}
 
 /// What a snapshot payload must undo before it paints, so that applying it to a
 /// client screen in *any* prior state lands where applying it to a fresh
@@ -263,8 +292,6 @@ impl VtTerminal {
         let alt_screen =
             check(self.terminal.active_screen(), "Terminal::active_screen")? == Screen::Alternate;
         let title = self.title()?;
-        let foreground = self.default_foreground()?;
-        let background = self.default_background()?;
 
         let expected = usize::from(rows) * usize::from(cols);
         let mut cells = Vec::with_capacity(expected);
@@ -279,7 +306,7 @@ impl VtTerminal {
                 let mut cell_iteration =
                     check(self.row_cells.update(row), "CellIterator::update")?;
                 while let Some(cell) = cell_iteration.next() {
-                    cells.push(viewport_cell(cell, foreground, background)?);
+                    cells.push(viewport_cell(cell)?);
                 }
             }
             check(row.set_dirty(false), "RowIteration::set_dirty")?;
@@ -313,8 +340,6 @@ impl VtTerminal {
         let cursor_y = check(self.terminal.cursor_y(), "Terminal::cursor_y")?;
         let alt_screen =
             check(self.terminal.active_screen(), "Terminal::active_screen")? == Screen::Alternate;
-        let foreground = self.default_foreground()?;
-        let background = self.default_background()?;
 
         let mut dirty_rows = Vec::new();
         let mut row_index = 0u16;
@@ -332,7 +357,7 @@ impl VtTerminal {
                     let mut cell_iteration =
                         check(self.row_cells.update(row), "CellIterator::update")?;
                     while let Some(cell) = cell_iteration.next() {
-                        cells.push(viewport_cell(cell, foreground, background)?);
+                        cells.push(viewport_cell(cell)?);
                     }
                 }
                 if cells.len() != usize::from(cols) {
@@ -372,9 +397,6 @@ impl VtTerminal {
         }
 
         let cols = check(self.terminal.cols(), "Terminal::cols")?;
-        let default_fg = self.default_foreground()?;
-        let default_bg = self.default_background()?;
-        let palette = check(self.terminal.color_palette(), "Terminal::color_palette")?;
         let first_row = total_rows - capture_rows;
         let mut rows = Vec::with_capacity(capture_rows);
 
@@ -383,24 +405,12 @@ impl VtTerminal {
                 .map_err(|_| VtError("scrollback row exceeds u32 coordinate space".to_string()))?;
             let mut row = Vec::with_capacity(usize::from(cols));
             for x in 0..cols {
-                row.push(self.history_cell(x, y, default_fg, default_bg, &palette)?);
+                row.push(self.history_cell(x, y)?);
             }
             rows.push(row);
         }
 
         Ok(Scrollback { total_rows, rows })
-    }
-
-    fn default_foreground(&self) -> Result<Rgb> {
-        Ok(check(self.terminal.fg_color(), "Terminal::fg_color")?
-            .map(rgb)
-            .unwrap_or(DEFAULT_FOREGROUND))
-    }
-
-    fn default_background(&self) -> Result<Rgb> {
-        Ok(check(self.terminal.bg_color(), "Terminal::bg_color")?
-            .map(rgb)
-            .unwrap_or(DEFAULT_BACKGROUND))
     }
 
     fn title(&self) -> Result<Option<String>> {
@@ -412,81 +422,97 @@ impl VtTerminal {
         })
     }
 
-    fn history_cell(
-        &self,
-        x: u16,
-        y: u32,
-        default_fg: Rgb,
-        default_bg: Rgb,
-        palette: &Palette,
-    ) -> Result<Cell> {
+    fn history_cell(&self, x: u16, y: u32) -> Result<Cell> {
         let reference = check(
             self.terminal.grid_ref(Point::History(PointCoordinate { x, y })),
             "Terminal::grid_ref(history)",
         )?;
         let raw_cell = check(reference.cell(), "GridRef::cell(history)")?;
-        let style = check(reference.style(), "GridRef::style(history)")?;
-
-        let mut codepoint = check(raw_cell.codepoint(), "Cell::codepoint(history)")?;
-        let mut foreground = style_color(style.fg_color, default_fg, palette);
-        let mut background = style_color(style.bg_color, default_bg, palette);
-
-        // A bg-color-only cell carries its colour in the cell, not the style.
-        match check(raw_cell.content_tag(), "Cell::content_tag(history)")? {
-            CellContentTag::BgColorPalette => {
-                let index = check(
-                    raw_cell.bg_color_palette(),
-                    "Cell::bg_color_palette(history)",
-                )?;
-                background = rgb(palette.get(index));
-            }
-            CellContentTag::BgColorRgb => {
-                background = rgb(check(
-                    raw_cell.bg_color_rgb(),
-                    "Cell::bg_color_rgb(history)",
-                )?);
-            }
-            _ => {}
-        }
-        if style.inverse {
-            std::mem::swap(&mut foreground, &mut background);
-        }
-        if style.invisible {
-            codepoint = 0;
-        }
-
-        Ok(Cell {
-            codepoint,
-            foreground,
-            background,
-            // Attribute mapping is shared with viewport snapshots and remains
-            // reserved for a later additive wire-format extension.
-            attributes: 0,
-        })
+        let style = if check_at(raw_cell.has_styling(), "Cell::has_styling", "history")? {
+            Some(check(reference.style(), "GridRef::style(history)")?)
+        } else {
+            None
+        };
+        cell_from_parts(raw_cell, style, "history")
     }
 }
 
-/// Convert one cell of the live viewport. The engine has already flattened
-/// palette, RGB, and style sources into resolved colours here, so unlike
-/// `history_cell` this needs no content-tag dispatch.
-fn viewport_cell(
-    cell: &libghostty_vt::render::CellIteration<'_, '_>,
-    default_fg: Rgb,
-    default_bg: Rgb,
+/// Build one wire cell from the engine's raw cell plus its style, without
+/// resolving colour. Both the viewport and the scrollback go through here so
+/// the two cannot disagree — before this existed, history applied `inverse` and
+/// `invisible` itself while the viewport leaned on the render state's flattened
+/// accessors, so one screen could be packed two ways.
+///
+/// `style` is `None` for a cell that carries none, which is most of them.
+fn cell_from_parts(
+    raw_cell: libghostty_vt::screen::Cell,
+    style: Option<libghostty_vt::style::Style>,
+    origin: &str,
 ) -> Result<Cell> {
-    let raw_cell = check(cell.raw_cell(), "CellIteration::raw_cell")?;
+    let mut codepoint = check_at(raw_cell.codepoint(), "Cell::codepoint", origin)?;
+    // An unstyled cell names no colour, so both slots are the client's default
+    // and there is no inverse or invisible to apply.
+    let (mut foreground, mut background, inverse, invisible) = match style {
+        Some(style) => (
+            style_color(style.fg_color),
+            style_color(style.bg_color),
+            style.inverse,
+            style.invisible,
+        ),
+        None => (Color::Default, Color::Default, false, false),
+    };
+
+    // A bg-color-only cell carries its colour in the cell, not the style, so
+    // this dispatch is needed whether or not the cell is styled.
+    match check_at(raw_cell.content_tag(), "Cell::content_tag", origin)? {
+        CellContentTag::BgColorPalette => {
+            let index = check_at(raw_cell.bg_color_palette(), "Cell::bg_color_palette", origin)?;
+            background = Color::Palette(index.0);
+        }
+        CellContentTag::BgColorRgb => {
+            background = Color::Rgb(rgb(check_at(
+                raw_cell.bg_color_rgb(),
+                "Cell::bg_color_rgb",
+                origin,
+            )?));
+        }
+        _ => {}
+    }
+    if inverse {
+        std::mem::swap(&mut foreground, &mut background);
+    }
+    if invisible {
+        codepoint = 0;
+    }
+
     Ok(Cell {
-        codepoint: check(raw_cell.codepoint(), "Cell::codepoint")?,
-        foreground: check(cell.fg_color(), "CellIteration::fg_color")?
-            .map(rgb)
-            .unwrap_or(default_fg),
-        background: check(cell.bg_color(), "CellIteration::bg_color")?
-            .map(rgb)
-            .unwrap_or(default_bg),
-        // Phase 1a needs text and colors. Attribute mapping remains owned
-        // by this boundary and can fill these protocol bits additively.
+        codepoint,
+        foreground,
+        background,
+        // Bold, underline, italic and the rest still ride the `S` VT payload
+        // rather than these bits. The wire cell keeps reserved room for them so
+        // filling it in stays additive.
         attributes: 0,
     })
+}
+
+/// Convert one cell of the live viewport. Reads the *unresolved* style rather
+/// than the render state's `fg_color`/`bg_color`, which flatten palette indices
+/// through the host's palette and substitute the host's defaults — the exact
+/// resolution this boundary must not perform.
+fn viewport_cell(cell: &libghostty_vt::render::CellIteration<'_, '_>) -> Result<Cell> {
+    let raw_cell = check(cell.raw_cell(), "CellIteration::raw_cell")?;
+    // Materialising a `Style` copies three tagged colours plus nine flags across
+    // FFI and converts all of them, per cell. Most cells on a screen carry no
+    // style at all, and the engine exposes this predicate for exactly this
+    // reason: "avoids materializing the raw cell for renderers that only need
+    // to know whether fetching the full style is necessary."
+    let style = if check(cell.has_styling(), "CellIteration::has_styling")? {
+        Some(check(cell.style(), "CellIteration::style")?)
+    } else {
+        None
+    };
+    cell_from_parts(raw_cell, style, "viewport")
 }
 
 fn rgb(value: RgbColor) -> Rgb {
@@ -497,10 +523,67 @@ fn rgb(value: RgbColor) -> Rgb {
     }
 }
 
-fn style_color(color: StyleColor, fallback: Rgb, palette: &Palette) -> Rgb {
+fn style_color(color: StyleColor) -> Color {
     match color {
-        StyleColor::None => fallback,
-        StyleColor::Palette(index) => rgb(palette.get(index)),
-        StyleColor::Rgb(value) => rgb(value),
+        StyleColor::None => Color::Default,
+        StyleColor::Palette(index) => Color::Palette(index.0),
+        StyleColor::Rgb(value) => Color::Rgb(rgb(value)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Color, Rgb, VtTerminal};
+
+    fn screen(input: &str) -> Vec<super::Cell> {
+        let mut terminal = VtTerminal::new(1, 8).expect("terminal");
+        terminal.vt_write(input.as_bytes());
+        terminal.snapshot().expect("snapshot").cells
+    }
+
+    /// The boundary this type exists to hold: the host reports *which* colour
+    /// slot a cell asked for and never resolves it. Before the tagged colour,
+    /// all three of these packed as RGB — so a client could not tell an unstyled
+    /// cell from one explicitly painted with the host's palette, and applied the
+    /// host's theme either way.
+    #[test]
+    fn colors_are_reported_as_slots_not_resolved() {
+        // Unstyled: the client's own default foreground must apply.
+        assert_eq!(screen("a")[0].foreground, Color::Default);
+
+        // `31` is a theme slot, so the viewer's palette decides what red is.
+        assert_eq!(screen("\x1b[31ma")[0].foreground, Color::Palette(1));
+        assert_eq!(screen("\x1b[38;5;200ma")[0].foreground, Color::Palette(200));
+
+        // Truecolor is the program's own decision and stays exact.
+        assert_eq!(
+            screen("\x1b[38;2;9;8;7ma")[0].foreground,
+            Color::Rgb(Rgb { r: 9, g: 8, b: 7 })
+        );
+
+        // Background travels the same three roads.
+        assert_eq!(screen("a")[0].background, Color::Default);
+        assert_eq!(screen("\x1b[41ma")[0].background, Color::Palette(1));
+        assert_eq!(
+            screen("\x1b[48;2;1;2;3ma")[0].background,
+            Color::Rgb(Rgb { r: 1, g: 2, b: 3 })
+        );
+    }
+
+    /// Palette index 0 and "no colour named" are different instructions. The
+    /// resolved-RGB format collapsed both to black, which is what let a dark
+    /// theme's background silently become the client's foreground.
+    #[test]
+    fn default_is_distinct_from_palette_zero() {
+        assert_ne!(screen("a")[0].foreground, screen("\x1b[30ma")[0].foreground);
+    }
+
+    /// `inverse` is applied here, on slots, so it survives without either side
+    /// resolving a colour — and the viewport takes the same path as scrollback.
+    #[test]
+    fn inverse_swaps_slots() {
+        let cell = &screen("\x1b[31;7ma")[0];
+        assert_eq!(cell.background, Color::Palette(1));
+        assert_eq!(cell.foreground, Color::Default);
     }
 }

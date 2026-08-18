@@ -39,21 +39,30 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "upload",
     "git",
 ];
-pub const SNAPSHOT_FORMAT_VERSION: u8 = 1;
+/// Snapshot payload carrying packed cells.
+///
+/// v3 replaced v1's resolved-RGB cell with a tagged colour slot. v1 is gone
+/// rather than kept for compatibility: it could not express "the client's
+/// default" or "palette index N", so every payload it produced had already lost
+/// the information a client needs to apply its own theme. Nothing shipped
+/// consumed it — no client negotiates `grid_diff`, and a `snapshot` client is
+/// served VT (v2) — so retiring it costs nothing and carrying it would keep a
+/// format that is wrong by construction. Old clients hard-refuse on the version
+/// byte, which is the documented behaviour (§C.3: never limp).
+pub const SNAPSHOT_FORMAT_VERSION: u8 = 3;
 /// Snapshot payload carrying **VT sequences** instead of packed cells.
 ///
 /// This is the correct shape for the raw plane: the host says *what is on the
 /// screen* in the terminal's own language and the client's libghostty decides
-/// how it looks. Packed cells (v1) force the host to resolve colour, which
-/// overrides the viewer's theme and silently drops bold/underline/OSC 8. v1 is
-/// retained only for `grid_diff` clients, whose whole model is server-side
-/// state and which need cells to seed their grid.
+/// how it looks. Packed cells are retained only for `grid_diff` clients, whose
+/// whole model is server-side state and which need cells to seed their grid,
+/// and as the fallback when the formatter itself fails.
 pub const SNAPSHOT_FORMAT_VT: u8 = 2;
 pub const SNAPSHOT_CELL_SIZE: usize = 16;
-pub const HISTORY_FORMAT_VERSION: u8 = 1;
+pub const HISTORY_FORMAT_VERSION: u8 = 2;
 pub const HISTORY_HEADER_SIZE: usize = 9;
 pub const MAX_HISTORY_FRAME_SIZE: usize = 64 * 1024;
-pub const GRID_FORMAT_VERSION: u8 = 1;
+pub const GRID_FORMAT_VERSION: u8 = 2;
 pub const GRID_HEADER_SIZE: usize = 16;
 /// `F` chunk header: request id (u64be), offset (u64be), last flag (u8).
 pub const FILE_CHUNK_HEADER_SIZE: usize = 17;
@@ -103,12 +112,53 @@ pub struct FileChunk {
     pub data: Vec<u8>,
 }
 
-/// Engine-independent 16-byte cell representation used by snapshot v1.
+/// One cell's colour, as the program expressed it rather than as the host would
+/// paint it. Mirrors `termiod_vt::Color`; see that type for why the three
+/// variants are the whole point and not an encoding detail.
+///
+/// Wire form is 4 bytes: a tag byte then its value, zero-padded.
+/// `0` default (no value) · `1` palette (index in the first byte) · `2` rgb.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WireColor {
+    #[default]
+    Default,
+    Palette(u8),
+    Rgb([u8; 3]),
+}
+
+pub const COLOR_TAG_DEFAULT: u8 = 0;
+pub const COLOR_TAG_PALETTE: u8 = 1;
+pub const COLOR_TAG_RGB: u8 = 2;
+
+impl WireColor {
+    fn encode(self) -> [u8; 4] {
+        match self {
+            WireColor::Default => [COLOR_TAG_DEFAULT, 0, 0, 0],
+            WireColor::Palette(index) => [COLOR_TAG_PALETTE, index, 0, 0],
+            WireColor::Rgb([r, g, b]) => [COLOR_TAG_RGB, r, g, b],
+        }
+    }
+
+    /// An unknown tag decodes as `Default` rather than failing the frame: the
+    /// tag space is meant to grow (a future indexed-style tag, say), and a cell
+    /// that falls back to the client's default colour is a far better outcome
+    /// than dropping a whole screen.
+    fn decode(bytes: &[u8]) -> Self {
+        match bytes[0] {
+            COLOR_TAG_PALETTE => WireColor::Palette(bytes[1]),
+            COLOR_TAG_RGB => WireColor::Rgb([bytes[1], bytes[2], bytes[3]]),
+            _ => WireColor::Default,
+        }
+    }
+}
+
+/// Engine-independent 16-byte cell representation used by packed snapshots,
+/// scrollback, and grid diffs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WireCell {
     pub codepoint: u32,
-    pub foreground: [u8; 3],
-    pub background: [u8; 3],
+    pub foreground: WireColor,
+    pub background: WireColor,
     pub attributes: u16,
 }
 
@@ -989,11 +1039,11 @@ pub fn decode_file_chunk(payload: &[u8]) -> Result<FileChunk> {
     })
 }
 
-/// Snapshot payload v1:
+/// Snapshot payload v3:
 /// version:u8, rows/cols/cursor_x/cursor_y:u16be, alt_screen:u8,
 /// title_len:u16be, UTF-8 title, then row-major 16-byte cells. Each cell is
-/// codepoint:u32be, foreground RGB, background RGB, attributes:u16be, and
-/// four reserved zero bytes.
+/// codepoint:u32be, foreground colour (4), background colour (4),
+/// attributes:u16be, and two reserved zero bytes.
 pub fn encode_snapshot_payload(snapshot: &Snapshot) -> Result<Vec<u8>> {
     let vt = snapshot.vt.as_deref();
     let expected_cells = usize::from(snapshot.rows) * usize::from(snapshot.cols);
@@ -1297,13 +1347,17 @@ pub fn decode_grid_payload(payload: &[u8]) -> Result<GridDiff> {
     })
 }
 
+/// 16 bytes: codepoint u32be, foreground 4, background 4, attributes u16be,
+/// then 2 reserved. The cell stays 16 bytes wide so both decoders can keep
+/// indexing by offset; shrinking it (run-length spans, style split from text)
+/// is a separate, still-conditional optimisation.
 fn encode_cells(payload: &mut Vec<u8>, cells: &[WireCell]) {
     for cell in cells {
         payload.extend_from_slice(&cell.codepoint.to_be_bytes());
-        payload.extend_from_slice(&cell.foreground);
-        payload.extend_from_slice(&cell.background);
+        payload.extend_from_slice(&cell.foreground.encode());
+        payload.extend_from_slice(&cell.background.encode());
         payload.extend_from_slice(&cell.attributes.to_be_bytes());
-        payload.extend_from_slice(&[0; 4]);
+        payload.extend_from_slice(&[0; 2]);
     }
 }
 
@@ -1312,9 +1366,9 @@ fn decode_cells(payload: &[u8]) -> Vec<WireCell> {
         .chunks_exact(SNAPSHOT_CELL_SIZE)
         .map(|bytes| WireCell {
             codepoint: u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-            foreground: [bytes[4], bytes[5], bytes[6]],
-            background: [bytes[7], bytes[8], bytes[9]],
-            attributes: u16::from_be_bytes([bytes[10], bytes[11]]),
+            foreground: WireColor::decode(&bytes[4..8]),
+            background: WireColor::decode(&bytes[8..12]),
+            attributes: u16::from_be_bytes([bytes[12], bytes[13]]),
         })
         .collect()
 }
@@ -1400,10 +1454,11 @@ pub async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<Fra
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_file_chunk, decode_grid_payload, decode_history_payload, decode_snapshot_payload,
-        decode_upload_chunk, encode_file_chunk, encode_grid_payload, encode_history_payload,
-        encode_snapshot_payload, encode_upload_chunk, Control, FileChunk, GridDiff, GridRow,
-        HistoryChunk, Snapshot, UploadChunk, WireCell, FILE_CHUNK_HEADER_SIZE,
+        decode_cells, decode_file_chunk, decode_grid_payload, decode_history_payload,
+        decode_snapshot_payload, decode_upload_chunk, encode_cells, encode_file_chunk,
+        encode_grid_payload, encode_history_payload, encode_snapshot_payload, encode_upload_chunk,
+        Control, FileChunk, GridDiff, GridRow, HistoryChunk, Snapshot, UploadChunk, WireCell,
+        WireColor, COLOR_TAG_RGB, SNAPSHOT_CELL_SIZE, FILE_CHUNK_HEADER_SIZE,
         MAX_FILE_FRAME_SIZE, MAX_UPLOAD_FRAME_SIZE,
     };
 
@@ -1522,8 +1577,8 @@ mod tests {
             cells: vec![
                 WireCell {
                     codepoint: u32::from('A'),
-                    foreground: [1, 2, 3],
-                    background: [4, 5, 6],
+                    foreground: WireColor::Rgb([1, 2, 3]),
+                    background: WireColor::Palette(4),
                     attributes: 7,
                 },
                 WireCell::default(),
@@ -1532,6 +1587,55 @@ mod tests {
 
         let encoded = encode_snapshot_payload(&snapshot).unwrap();
         assert_eq!(decode_snapshot_payload(&encoded).unwrap(), snapshot);
+    }
+
+    /// The three colour slots must survive the round trip *as slots*. A cell
+    /// asking for the client's default and a cell asking for palette index 0
+    /// are different instructions, and the format that preceded this one
+    /// encoded both as black.
+    #[test]
+    fn wire_colors_round_trip_distinctly() {
+        let cells: Vec<WireCell> = [
+            WireColor::Default,
+            WireColor::Palette(0),
+            WireColor::Palette(255),
+            WireColor::Rgb([0, 0, 0]),
+            WireColor::Rgb([9, 8, 7]),
+        ]
+        .into_iter()
+        .map(|color| WireCell {
+            codepoint: u32::from('x'),
+            foreground: color,
+            background: color,
+            attributes: 0,
+        })
+        .collect();
+
+        let mut payload = Vec::new();
+        encode_cells(&mut payload, &cells);
+        assert_eq!(payload.len(), cells.len() * SNAPSHOT_CELL_SIZE);
+        assert_eq!(decode_cells(&payload), cells);
+
+        // Default and palette-0 must not collapse into one another.
+        assert_ne!(cells[0], cells[1]);
+        assert_ne!(
+            &payload[..SNAPSHOT_CELL_SIZE],
+            &payload[SNAPSHOT_CELL_SIZE..SNAPSHOT_CELL_SIZE * 2]
+        );
+    }
+
+    /// A tag this build does not know falls back to the client's default colour
+    /// rather than failing the frame, so the tag space can grow additively.
+    #[test]
+    fn unknown_color_tag_decodes_as_default() {
+        let mut payload = vec![0u8; SNAPSHOT_CELL_SIZE];
+        payload[4] = 200;
+        payload[8] = COLOR_TAG_RGB;
+        payload[9..12].copy_from_slice(&[1, 2, 3]);
+
+        let cells = decode_cells(&payload);
+        assert_eq!(cells[0].foreground, WireColor::Default);
+        assert_eq!(cells[0].background, WireColor::Rgb([1, 2, 3]));
     }
 
     #[test]
@@ -1565,8 +1669,8 @@ mod tests {
                     cells: vec![
                         WireCell {
                             codepoint: u32::from('A'),
-                            foreground: [1, 2, 3],
-                            background: [4, 5, 6],
+                            foreground: WireColor::Rgb([1, 2, 3]),
+                            background: WireColor::Palette(4),
                             attributes: 7,
                         },
                         WireCell::default(),

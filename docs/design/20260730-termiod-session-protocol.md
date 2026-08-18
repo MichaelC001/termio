@@ -416,8 +416,13 @@ screen). *(libghostty's own `DECSTR` was measured incomplete — SGR, charsets,
 origin mode and autowrap survive it — which is why the explicit resets follow
 it rather than trusting it.)*
 
-Format v1 survives **only** for `grid_diff` clients, whose model is explicitly
-server-side state and which need cells to seed their grid.
+Packed cells survive **only** for `grid_diff` clients, whose model is explicitly
+server-side state and which need cells to seed their grid, and as the fallback
+when the formatter itself fails. Their colour is a **tagged slot**, not resolved
+RGB (payload v3, 2026-08-18): `{0: default} | {1: palette index} | {2: rgb}`, so
+even that path leaves the viewer's theme in charge. Format v1, which resolved
+colour host-side, is retired — it could not express "default" or "palette index
+N" at all, so it discarded what a client needs before the bytes ever left.
 
 **v1.1 `G` diffs are the bad-network degrade, not a faster default.** They are
 capability-gated (`grid_diff` requires `snapshot`), phone-first, and are the

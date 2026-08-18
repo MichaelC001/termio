@@ -5,6 +5,13 @@ edition = "2021"
 description = "termiod — durable PTY session host (POC). Detach ≠ kill."
 license = "MIT"
 
+# `vt` is a workspace member, and a default one, so a bare `cargo test` — which
+# is what CI runs — covers the snapshot boundary's own tests. Without this it
+# silently tests only this package, and anything asserted inside `vt` never runs.
+[workspace]
+members = ["vt"]
+default-members = [".", "vt"]
+
 [[bin]]
 name = "termiod"
 path = "src/main.rs"
