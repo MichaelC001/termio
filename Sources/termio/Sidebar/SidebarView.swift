@@ -283,6 +283,19 @@ struct SidebarView: View {
         .listStyle(.sidebar)
         .environment(\.defaultMinListRowHeight, 1)
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
+        // The device marks ride under the list rather than in it: a row that is
+        // not a session is a row the tree has to explain (the same reasoning that
+        // keeps the device *name* up in the toolbar band), and an inset keeps the
+        // list scrolling its full height behind them.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            DeviceSpaceDots(chrome: chrome)
+        }
+        // A two-finger swipe over the column moves to the machine either side of
+        // this one. Mounted as a background so it takes no clicks from the rows.
+        .background(DeviceSpaceSwipe { step in
+            guard let device = DeviceSpaces.neighbor(step: step, in: store) else { return }
+            DeviceSpaces.select(device, in: store)
+        })
     }
 
     /// The current device's own roster: the sessions **that machine** reports,

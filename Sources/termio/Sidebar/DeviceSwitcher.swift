@@ -118,6 +118,248 @@ struct DeviceSwitcherMenuContent: View {
     }
 }
 
+// MARK: - Devices as spaces
+
+/// The mark a device carries wherever it is drawn small enough that its name
+/// won't fit — today the footer dots.
+///
+/// A color is not decoration here. The whole class of accident this app has to
+/// prevent is "I thought I was local, I was on the VPS": the panes now refuse to
+/// show the wrong machine's files, and the mark is the cue that arrives *before*
+/// the mistake, without the user reading a label.
+///
+/// The hue comes from the terminal theme (`ChromeTheme.deviceTints`), never from
+/// a palette of our own, and the index is derived from the device's identity so
+/// a machine keeps the same mark across launches, themes, and windows.
+enum DeviceTint {
+    static func color(for device: KnownDevice, chrome: ChromeTheme?) -> Color {
+        // This Mac is deliberately unhued. It is the machine you are on when you
+        // are not thinking about machines, so it reads as the absence of a mark
+        // and every tinted dot means "somewhere else".
+        guard !device.isLocal else { return .secondary }
+        guard let tints = chrome?.deviceTints, !tints.isEmpty else {
+            return Self.systemTints[index(for: device, count: Self.systemTints.count)]
+        }
+        return tints[index(for: device, count: tints.count)]
+    }
+
+    /// Used only when no terminal theme is selected, so the chrome is on the
+    /// system appearance and has no palette to borrow from.
+    private static let systemTints: [Color] = [.green, .yellow, .blue, .purple, .teal]
+
+    private static func index(for device: KnownDevice, count: Int) -> Int {
+        // The `host_id` once a handshake has revealed one, the alias until then —
+        // the same bootstrap/stable split `KnownDevice` carries. A device whose id
+        // arrives later therefore *can* change mark once, which is the honest
+        // outcome: before the handshake we did not know which machine it was.
+        let identity = device.deviceID ?? device.alias ?? ""
+        // FNV-1a rather than `hashValue`: Swift seeds its hasher per process, so a
+        // hashed index would repaint every device on every launch.
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in identity.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 0x100_0000_01b3
+        }
+        return Int(hash % UInt64(max(count, 1)))
+    }
+}
+
+/// One source of truth for moving between devices, so the header menu, the
+/// footer dots, and the trackpad swipe can never disagree about the order or
+/// about which machine is current.
+@MainActor
+enum DeviceSpaces {
+    /// The devices a user can move between, in the order every surface shows
+    /// them: this Mac first, then the machines it has worked on.
+    static func ordered(in store: TermioStore) -> [KnownDevice] {
+        DeviceRoster.known(in: store)
+    }
+
+    /// The device `step` places away from the current one, or `nil` at either
+    /// end. Deliberately not wrapping: a swipe that runs off the end should feel
+    /// like a wall, not teleport to the far side of the list.
+    static func neighbor(step: Int, in store: TermioStore) -> KnownDevice? {
+        let devices = ordered(in: store)
+        guard let current = devices.firstIndex(where: { $0.alias == store.currentDeviceAlias })
+        else { return nil }
+        let target = current + step
+        guard devices.indices.contains(target) else { return nil }
+        return devices[target]
+    }
+
+    static func select(_ device: KnownDevice, in store: TermioStore) {
+        store.switchToDevice(device)
+    }
+}
+
+/// The footer strip: one mark per device, the current one drawn as a capsule
+/// that slides between them. Arc's space dots, which is the interaction this
+/// borrows — a switcher small enough to live permanently at the bottom of the
+/// column, so moving between machines costs a click rather than a menu.
+///
+/// Absent entirely with one device, matching the header control: a single dot is
+/// a decoration for a decision the user never took.
+struct DeviceSpaceDots: View {
+    @EnvironmentObject var store: TermioStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let chrome: ChromeTheme?
+    /// Slides the current-device capsule between the dots — the same
+    /// matched-geometry pill the inspector's pane switch uses, so the two
+    /// switchers in this window move alike.
+    @Namespace private var markNamespace
+
+    var body: some View {
+        let devices = DeviceSpaces.ordered(in: store)
+        if devices.count > 1 {
+            HStack(spacing: 10) {
+                ForEach(devices) { device in
+                    Circle()
+                        .fill(Color.secondary.opacity(0.28))
+                        .frame(width: 5, height: 5)
+                        .matchedGeometryEffect(id: device.id, in: markNamespace)
+                        // A dot is a 5pt target; the row is 22pt tall, so take the
+                        // whole height as the hit area rather than asking for a
+                        // pixel-accurate click.
+                        .frame(width: 18, height: 22)
+                        .contentShape(Rectangle())
+                        .onTapGesture { DeviceSpaces.select(device, in: store) }
+                        .help(device.name)
+                }
+            }
+            .background(alignment: .leading) { currentMark(devices: devices) }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .animation(reduceMotion ? nil : .snappy(duration: 0.24, extraBounce: 0.12),
+                       value: store.currentDeviceAlias)
+        }
+    }
+
+    /// The tinted capsule riding the current device's dot. Non-source, so it
+    /// takes that dot's frame and animates across when the device changes.
+    @ViewBuilder
+    private func currentMark(devices: [KnownDevice]) -> some View {
+        let current = DeviceRoster.current(store, known: devices)
+        Capsule(style: .continuous)
+            .fill(DeviceTint.color(for: current, chrome: chrome))
+            .frame(width: 14, height: 5)
+            .matchedGeometryEffect(id: current.id, in: markNamespace, isSource: false)
+    }
+}
+
+/// Turns a horizontal two-finger swipe anywhere over the sidebar into a device
+/// change — the other half of Arc's spaces gesture, and the reason the dots can
+/// stay as small as they are.
+///
+/// Mounted as a background so it never takes part in hit testing: the sidebar's
+/// rows keep every click and drag they already had. The gesture is read from a
+/// local scroll monitor instead, filtered to events over this view's own bounds.
+///
+/// Three guards keep it from eating the list's vertical scrolling, which is the
+/// only way this could do damage:
+///
+/// 1. trackpad only (`hasPreciseScrollingDeltas`) — a mouse wheel never switches
+///    machines;
+/// 2. the horizontal travel must dominate the vertical by a wide margin;
+/// 3. an event is swallowed only once the gesture has already committed, so a
+///    scroll that merely drifts sideways still scrolls the list.
+struct DeviceSpaceSwipe: NSViewRepresentable {
+    /// `-1` for the device above the current one in the list, `+1` for below.
+    let onSwipe: (Int) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.observe(view)
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        context.coordinator.onSwipe = onSwipe
+    }
+
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
+        coordinator.stop()
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(onSwipe: onSwipe) }
+
+    @MainActor
+    final class Coordinator {
+        /// How far the fingers must travel sideways to change machine. Roughly a
+        /// third of a comfortable swipe: far enough that a diagonal scroll never
+        /// reaches it, short enough that the gesture doesn't feel like dragging.
+        private static let commitDistance: CGFloat = 55
+        /// How much the horizontal travel must beat the vertical by. The sidebar
+        /// is a tall scrolling list, so this is the guard that matters.
+        private static let dominance: CGFloat = 2.5
+
+        var onSwipe: (Int) -> Void
+        private weak var view: NSView?
+        private var monitor: Any?
+        private var travel = CGSize.zero
+        private var committed = false
+
+        init(onSwipe: @escaping (Int) -> Void) {
+            self.onSwipe = onSwipe
+        }
+
+        func observe(_ view: NSView) {
+            self.view = view
+            // The verdict crosses the isolation boundary, not the event: `NSEvent`
+            // is not `Sendable`, so it stays on this side and only a `Bool` comes
+            // back out.
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                guard let self else { return event }
+                let swallow = MainActor.assumeIsolated { self.swallows(event) }
+                return swallow ? nil : event
+            }
+        }
+
+        func stop() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+        }
+
+        /// Whether this event belongs to a device swipe and must not also reach
+        /// the list underneath.
+        private func swallows(_ event: NSEvent) -> Bool {
+            guard event.hasPreciseScrollingDeltas, let view, let window = view.window,
+                  event.window === window
+            else { return false }
+            let point = view.convert(event.locationInWindow, from: nil)
+            guard view.bounds.contains(point) else { return false }
+
+            switch event.phase {
+            case .began, .mayBegin:
+                travel = .zero
+                committed = false
+            case .ended, .cancelled:
+                // The tail of a committed gesture is swallowed too: letting it
+                // through is what would fling the list sideways-then-down after
+                // the machine had already changed.
+                let wasCommitted = committed
+                travel = .zero
+                committed = false
+                return wasCommitted
+            default:
+                break
+            }
+
+            guard !committed else { return true }
+            travel.width += event.scrollingDeltaX
+            travel.height += event.scrollingDeltaY
+            guard abs(travel.width) > Self.commitDistance,
+                  abs(travel.width) > abs(travel.height) * Self.dominance
+            else { return false }
+
+            committed = true
+            // Fingers left means "bring the next machine in from the right", the
+            // direction macOS uses for page-back/forward everywhere else.
+            onSwipe(travel.width < 0 ? 1 : -1)
+            return true
+        }
+    }
+}
+
 /// The device switcher, in the sidebar's own toolbar region: which machine you
 /// are on, and the control that changes it. It sits in the strip above the list
 /// rather than in a row of its own, next to the navigator toggle and the sidebar's

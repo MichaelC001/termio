@@ -24,6 +24,13 @@ struct ChromeTheme {
     /// Whether the theme reads as dark, so the window can match its system
     /// appearance (traffic lights, scrollbars) to the theme.
     let isDark: Bool
+    /// Hues a device can be marked with, in a fixed order (see `DeviceTint`).
+    ///
+    /// Drawn from the theme's own ANSI colors rather than a palette of our own,
+    /// for the reason this whole type exists: a second palette drifts from the
+    /// terminal's. Red is deliberately absent — it reads as an error everywhere
+    /// else in the app, and a machine is not one.
+    let deviceTints: [Color]
 
     /// Ink guaranteed to contrast a background: dimmed white over dark, dimmed black over light.
     /// The lesson this encodes (learned in the editor gutter): contrast must come from the
@@ -65,6 +72,15 @@ struct ChromeTheme {
             ?? definition.selectionBackground.flatMap(Color.init(hex:))
             ?? foreground
         self.isDark = dark
+        // Green, yellow, blue, magenta, cyan — the bright half (palette 10-14),
+        // which is the half that survives a dark background. A slot the theme
+        // leaves undefined drops out rather than becoming a default hue that
+        // belongs to no theme; if every one is missing, the accent stands in so a
+        // device always has a mark.
+        let tints = [10, 11, 12, 13, 14]
+            .compactMap { definition.palette[$0] }
+            .compactMap(Color.init(hex:))
+        self.deviceTints = tints.isEmpty ? [self.accent] : tints
     }
 
     /// WCAG contrast ratio between two opaque colors (1…21). Colors that can't be
