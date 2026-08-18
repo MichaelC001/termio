@@ -649,14 +649,37 @@ private struct ProjectHeader: View {
         isCollapsed ? .folder : .folderOpen
     }
 
+    /// The machine this project's checkout lives on, when that is not this Mac.
+    /// `nil` inside a machine's own fallback workspace for the same reason a
+    /// session row's mark is: the workspace already *is* that machine.
+    private var remoteDevice: KnownDevice? {
+        guard !store.currentWorkspace.isDeviceFallback else { return nil }
+        return project.device
+    }
+
+    /// Adding a session to a project on another machine means adding it *there*.
+    /// A remote session is a login shell on the far box (`makeTermiodLink` hands
+    /// the remote empty argv), so the terminal is the only verb this row offers —
+    /// see `headerPresets`, which is why no agent preset reaches this.
     private func addSession(_ preset: AgentPreset) {
+        if let alias = project.deviceAlias {
+            store.addRemoteTerminal(host: alias, project: project.id)
+            return
+        }
         store.addSession(to: project.id, agent: preset, worktreePath: worktree?.path)
+    }
+
+    /// What the hover cluster and the agents submenu offer. A project on another
+    /// machine offers a terminal only: Termio can't launch an agent over there,
+    /// and a row of agent buttons that silently open shells would claim otherwise.
+    private var headerPresets: [AgentPreset] {
+        project.isOnAnotherDevice ? [.terminal] : headerSessionPresets(settings)
     }
 
     /// Width the trailing quick-add icons occupy (button frame 22 + 3 spacing each), so
     /// the hovered label can fade out exactly under them rather than guessing.
     private var quickAddClusterWidth: CGFloat {
-        let count = headerSessionPresets(settings).count
+        let count = headerPresets.count
         guard count > 0 else { return 0 }
         return CGFloat(count) * 22 + CGFloat(count - 1) * 3
     }
@@ -669,6 +692,11 @@ private struct ProjectHeader: View {
     /// Finder actions are about a project's directory — so its menu is
     /// just the terminal action and Close All Terminals.
     private var menuItems: [SidebarMenuItem] {
+        // A project on another machine has one place its sessions can run, so the
+        // verb names it outright instead of offering a device submenu whose rows
+        // would all be wrong but one. The agents submenu is absent for the same
+        // reason `headerPresets` drops them: nothing launches an agent over there.
+        if project.isOnAnotherDevice { return remoteMenuItems }
         var items: [SidebarMenuItem] = [
             newTerminalMenuItem(store: store, project: project) { addSession(.terminal) },
             .submenu(localized("New Agent Session"), enabledAgentPresets(settings)
@@ -715,6 +743,31 @@ private struct ProjectHeader: View {
         }
         items.append(.action(localized("Reveal in Finder")) {
             NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: project.path)
+        })
+        items.append(.separator)
+        items.append(.action(localized("Remove Project")) { store.removeProject(project.id) })
+        return items
+    }
+
+    /// The menu for a project whose checkout is on another machine. Every verb
+    /// that reads this Mac's disk is absent rather than disabled — New Worktree,
+    /// Clone to (the folder to clone from isn't here), Reveal in Finder — because
+    /// there is nothing on this Mac for them to act on. Filing and removal are
+    /// bookkeeping about the row, so they stay.
+    private var remoteMenuItems: [SidebarMenuItem] {
+        var items: [SidebarMenuItem] = [
+            .action(localized("New Terminal")) { addSession(.terminal) },
+            .separator,
+            .action(project.pinned ? localized("Unpin") : localized("Pin to Top")) {
+                store.togglePinned(project.id)
+            },
+        ]
+        if let move = moveToWorkspaceMenuItem(store: store, project: project) {
+            items.append(move)
+        }
+        items.append(.action(localized("Copy Path")) {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(project.path, forType: .string)
         })
         items.append(.separator)
         items.append(.action(localized("Remove Project")) { store.removeProject(project.id) })
@@ -771,6 +824,16 @@ private struct ProjectHeader: View {
                 HugeIconView(icon: .gitBranch, size: 10, color: .secondary)
                     .help(localized("Git worktree"))
             }
+            // The machine the checkout lives on, when that is not this Mac — the
+            // same tinted dot in the same hue a session row carries, because it
+            // says the same thing about the same machine. A local project carries
+            // nothing: being on your own Mac is the absence of a mark.
+            if let device = remoteDevice {
+                Circle()
+                    .fill(DeviceTint.color(for: device, chrome: chrome))
+                    .frame(width: 6, height: 6)
+                    .help(localized("Checked out on \(device.name)"))
+            }
         }
         // On hover the trailing icons would otherwise sit on top of a long project
         // name (the label takes the whole row at rest), so the name's tail reads as a
@@ -796,7 +859,7 @@ private struct ProjectHeader: View {
         // lifecycle actions live in the right-click menu rather than inline.
         .overlay(alignment: .trailing) {
             HStack(spacing: 3) {
-                ForEach(headerSessionPresets(settings)) { preset in
+                ForEach(headerPresets) { preset in
                     AgentQuickAddButton(preset: preset, chrome: chrome) {
                         addSession(preset)
                     }

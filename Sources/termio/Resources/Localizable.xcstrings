@@ -251,6 +251,96 @@
         }
       }
     },
+    "Open Project": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开项目"
+          }
+        }
+      }
+    },
+    "This Mac…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机…"
+          }
+        }
+      }
+    },
+    "Open a Project on %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 %@ 上打开项目"
+          }
+        }
+      }
+    },
+    "Termio can’t browse another machine’s files. Clone a repository onto %@, or enter a folder that’s already there.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Termio 无法浏览另一台机器上的文件。把一个仓库克隆到 %@，或者输入一个已经在那里的文件夹。"
+          }
+        }
+      }
+    },
+    "Clone a Repository": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "克隆仓库"
+          }
+        }
+      }
+    },
+    "Open a Folder": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开文件夹"
+          }
+        }
+      }
+    },
+    "Enter an absolute path": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请输入绝对路径"
+          }
+        }
+      }
+    },
+    "Termio opens the folder on %@ exactly as typed, so the path has to start with “/”. “~” isn’t expanded.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Termio 会按你输入的原样打开 %@ 上的文件夹，所以路径必须以“/”开头，“~”不会展开。"
+          }
+        }
+      }
+    },
+    "Checked out on %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检出在 %@"
+          }
+        }
+      }
+    },
     "Inspector Pane": {
       "localizations": {
         "zh-Hans": {

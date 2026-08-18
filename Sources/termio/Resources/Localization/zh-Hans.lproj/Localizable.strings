@@ -176,6 +176,8 @@
 	<string>聊天</string>
 	<key>Check for Updates…</key>
 	<string>检查更新…</string>
+	<key>Checked out on %@</key>
+	<string>检出在 %@</string>
 	<key>Choose a different name.</key>
 	<string>请选取其他名称。</string>
 	<key>Choose a name for this workspace.</key>
@@ -192,6 +194,8 @@
 	<string>选取…</string>
 	<key>Clear</key>
 	<string>清除</string>
+	<key>Clone a Repository</key>
+	<string>克隆仓库</string>
 	<key>Clone to</key>
 	<string>克隆到</string>
 	<key>Close</key>
@@ -384,6 +388,8 @@
 	<string>在 GitHub 上输入代码</string>
 	<key>Enter a host from your ~/.ssh/config, or a user@host to connect to.</key>
 	<string>输入 ~/.ssh/config 中的主机，或要连接的 user@host。</string>
+	<key>Enter an absolute path</key>
+	<string>请输入绝对路径</string>
 	<key>Every paired iPhone is signed out and must re-scan the new QR to reconnect.</key>
 	<string>所有已配对的 iPhone 都会退出登录，需重新扫描新的二维码才能重新连接。</string>
 	<key>Expand Results</key>
@@ -694,6 +700,8 @@
 	<string>打开</string>
 	<key>Open Link</key>
 	<string>打开链接</string>
+	<key>Open Project</key>
+	<string>打开项目</string>
 	<key>Open Project…</key>
 	<string>打开项目…</string>
 	<key>Open Quickly…</key>
@@ -702,6 +710,10 @@
 	<string>打开“系统设置”</string>
 	<key>Open Themes Folder…</key>
 	<string>打开主题文件夹…</string>
+	<key>Open a Folder</key>
+	<string>打开文件夹</string>
+	<key>Open a Project on %@</key>
+	<string>在 %@ 上打开项目</string>
 	<key>Open in %@</key>
 	<string>在 %@ 中打开</string>
 	<key>Open in Browser</key>
@@ -980,10 +992,14 @@
 	<string>Termio 可通过读取 %@ 的本地会话日志及其 `credentials/kimi-code.json` 登录信息，显示其 token 用量和套餐限额。在你允许之前不会读取任何内容。</string>
 	<key>Termio can show %@'s token usage and plan limits by reading its local session logs and its sign-in from your login Keychain. Nothing is read until you allow it; macOS will ask once about the Keychain.</key>
 	<string>Termio 可通过读取 %@ 的本地会话日志及登录钥匙串中的登录信息，显示其 token 用量和套餐限额。在你允许之前不会读取任何内容；macOS 会就钥匙串询问一次。</string>
+	<key>Termio can’t browse another machine’s files. Clone a repository onto %@, or enter a folder that’s already there.</key>
+	<string>Termio 无法浏览另一台机器上的文件。把一个仓库克隆到 %@，或者输入一个已经在那里的文件夹。</string>
 	<key>Termio could not append to the repository’s .gitignore. Check its permissions and try again.</key>
 	<string>Termio 无法将内容追加到该仓库的 .gitignore。请检查其权限后重试。</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio 是开源软件：欢迎给仓库加星标、报告 bug 和提出功能请求。</string>
+	<key>Termio opens the folder on %@ exactly as typed, so the path has to start with “/”. “~” isn’t expanded.</key>
+	<string>Termio 会按你输入的原样打开 %@ 上的文件夹，所以路径必须以“/”开头，“~”不会展开。</string>
 	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Browse Themes installs one of 50 curated schemes, and any Ghostty-format file you drop into the Themes folder shows up here too.</key>
 	<string>Termio 会随 macOS 外观变化在两者间切换；将槽位留在默认值即可使用 Termio 自带的画布。“浏览主题”可以从 50 个精选配色中安装一个，你放进主题文件夹的 Ghostty 格式文件也会出现在这里。</string>
 	<key>Test</key>
@@ -1028,6 +1044,8 @@
 	<string>加粗字形</string>
 	<key>This Mac</key>
 	<string>本机</string>
+	<key>This Mac…</key>
+	<string>本机…</string>
 	<key>This branch and the base branch share no commits.</key>
 	<string>这个分支和基础分支没有共同的提交。</string>
 	<key>This branch has no commits yet.</key>

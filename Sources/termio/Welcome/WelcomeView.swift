@@ -106,7 +106,12 @@ struct WelcomeView: View {
     private var recentEntries: [RecentProject] {
         var seen = Set<String>()
         var out: [RecentProject] = []
-        for project in store.orderedProjects where seen.insert(project.path).inserted {
+        // Local projects only: a row here reopens its path with `addProject`,
+        // which is this Mac's folder picker's verb. A checkout on another machine
+        // has no local folder to reopen, and the path would land as a local
+        // project pointing at a directory that isn't here.
+        for project in store.orderedProjects
+        where !project.isOnAnotherDevice && seen.insert(project.path).inserted {
             out.append(RecentProject(name: project.name, path: project.path))
         }
         for recent in settings.recentProjects where seen.insert(recent.path).inserted {
