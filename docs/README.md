@@ -84,6 +84,7 @@ from the real front matter).
 | draft | design | [Browser Control over CDP](design/browser-cdp.md) |
 | draft | design | [Device Architecture — one server per device, every UI a client](design/20260805-termiod-device-architecture.md) |
 | draft | design | [Hot path, attach join point, and client classes](design/20260805-termiod-hot-path-and-client-classes.md) |
+| draft | design | [Instant view switching — prior art and technique](design/20260819-instant-view-switching.md) |
 | draft | design | [Issue Triage → 本地 agent（GitHub / Linear 事件驱动 Termio session）](design/20260723-issue-triage-local-agent.md) |
 | draft | design | [Mac retention analytics (no app changes)](design/20260715-mac-retention-analytics.md) |
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/20260708-remote-projects.md) |
