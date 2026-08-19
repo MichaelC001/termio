@@ -82,6 +82,7 @@ from the real front matter).
 | draft | design | ["Markdown preview — Apple-grade reading typography"](design/20260718-markdown-preview-reading-typography.md) |
 | draft | design | [Agent Plugins](design/agent-plugins.md) |
 | draft | design | [Browser Control over CDP](design/browser-cdp.md) |
+| draft | design | [Device → Workspace → Project](design/20260819-device-workspace-project.md) |
 | draft | design | [Device Architecture — one server per device, every UI a client](design/20260805-termiod-device-architecture.md) |
 | draft | design | [Hot path, attach join point, and client classes](design/20260805-termiod-hot-path-and-client-classes.md) |
 | draft | design | [Instant view switching — prior art and technique](design/20260819-instant-view-switching.md) |
