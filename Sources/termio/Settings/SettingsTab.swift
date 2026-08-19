@@ -7,7 +7,10 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case appearance
     case terminal
-    case ssh
+    /// The raw value stays `ssh` because it is the value persisted under
+    /// `lastOpenKey`; changing it would reopen Settings on another tab for
+    /// everyone who left this one showing.
+    case machines = "ssh"
     case keyboard
     case agents
     case usage
@@ -25,7 +28,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: return localized("General")
         case .appearance: return localized("Appearance")
         case .terminal: return localized("Terminal")
-        case .ssh: return localized("SSH")
+        case .machines: return localized("Machines")
         case .keyboard: return localized("Keyboard")
         case .agents: return localized("Agents")
         case .usage: return localized("Usage")
@@ -41,7 +44,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: return .settings
         case .appearance: return .paintBoard
         case .terminal: return .terminal
-        case .ssh: return .serverStack
+        case .machines: return .serverStack
         case .keyboard: return .keyboard
         case .agents: return .bot
         case .usage: return .chartColumn
@@ -57,7 +60,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: return localized("The termio command-line tool, agent skill, and notifications")
         case .appearance: return localized("Theme, fonts, cursor, and window")
         case .terminal: return localized("Scrollback history and text selection")
-        case .ssh: return localized("Your ~/.ssh/config hosts, one click away")
+        case .machines: return localized("The machines in your ~/.ssh/config, and the keys that reach them")
         case .keyboard: return localized("Keyboard shortcuts for every command")
         case .agents: return localized("The coding agents offered when you start a session")
         case .usage: return localized("Token usage for your connected agents")

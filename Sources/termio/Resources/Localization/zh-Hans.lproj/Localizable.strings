@@ -532,6 +532,8 @@
 	<string>本地</string>
 	<key>Login shell</key>
 	<string>登录 shell</string>
+	<key>Machines</key>
+	<string>机器</string>
 	<key>Match Case</key>
 	<string>区分大小写</string>
 	<key>Match Whole Word</key>
@@ -872,8 +874,6 @@
 	<string>以 `%@` 运行。Agent 在编辑文件或运行命令前将不再询问。</string>
 	<key>SF Symbol name</key>
 	<string>SF Symbol 名称</string>
-	<key>SSH</key>
-	<string>SSH</string>
 	<key>Save</key>
 	<string>存储</string>
 	<key>Save failed: %@</key>
@@ -1022,6 +1022,8 @@
 	<string>文件夹已移除，但 git 无法清理其残留的 worktree 元数据。</string>
 	<key>The ignore rule couldn’t be added.</key>
 	<string>无法添加忽略规则。</string>
+	<key>The machines in your ~/.ssh/config, and the keys that reach them</key>
+	<string>~/.ssh/config 里的机器，以及连上它们的密钥</string>
 	<key>The project and session list. Kept separate from the terminal font, and need not be monospaced.</key>
 	<string>项目与会话列表。与终端字体分开设置，无需等宽字体。</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>
@@ -1148,8 +1150,6 @@
 	<string>可以从废纸篓恢复它。</string>
 	<key>Your Host entries from ~/.ssh/config — the same aliases `ssh` resolves. Right-click a host to connect.</key>
 	<string>来自 ~/.ssh/config 的 Host 条目，与 `ssh` 解析的别名一致。右键点按主机即可连接。</string>
-	<key>Your ~/.ssh/config hosts, one click away</key>
-	<string>一键连接 ~/.ssh/config 中的主机</string>
 	<key>Zoom</key>
 	<string>缩放</string>
 	<key>Zoom Split</key>
