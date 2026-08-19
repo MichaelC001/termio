@@ -131,12 +131,26 @@ Salvaged and folded into this plan: ship the daemon in the bundle (§4 Stage 4),
 the launchd-job repair, and the observation that version negotiation is mostly
 already built (`daemon.rs:480-486`).
 
-### 1.5 Empty relative to `main`
+### 1.5 Already merged upstream
 
 `refactor/workspace-device`, `refactor/workspace-stage2`, `docs/workspace-model`,
-`feat/remote-project-picker` — all four produce no output from `git log
---oneline main..<branch>` and an empty `git diff --stat main...<branch>`.
-Confirmed; they can be deleted.
+`feat/remote-project-picker` look empty against a *stale* local `main` — and the
+first draft of this document read that as abandonment. They are not abandoned:
+all four merged into `origin/main` as PRs #354–#359, along with
+`chore/machines-tab` and `fix/workspace-menu-reachable`. The branches can be
+deleted; the work they carried is upstream and this plan is rebased onto it.
+
+What landed there and bears directly on this plan:
+
+| Commit | What it changes for us |
+| --- | --- |
+| `16bbf5b` | `refactor(workspaces): give every workspace one device` — the workspace/device pairing this plan assumed it would have to introduce |
+| `f078aef` | `docs(design): settle the device, workspace and project hierarchy` — the hierarchy §3 treats as open is settled here |
+| `315d7a5` | `feat(projects): complete the path when opening a project on another machine` — ships `TermiodDirectoryLister.swift`, a second `fs.list` caller (§4 Stage 1) |
+| `a720448` | `fix(app): gate notifications on Termio's own bundle, not any bundle` |
+
+The lesson is procedural and worth keeping: **a branch survey run against an
+unfetched `main` reports merged work as abandoned.** Fetch first.
 
 ### 1.6 The daemon's side of the workspace plane, verified
 
@@ -282,8 +296,20 @@ checkout on another *device* (the termiod case — the actual bug), and the loca
    `withControlChannel(caps: ["files"])`, mirroring `TermiodTransfer.swift`'s
    request/`readReply` shape and decoding the `F` chunk header
    (`re:u64be, offset:u64be, last:u8`, `protocol.rs:953-967`).
-2. Add `FsListedPayload` / `FsFilePayload` to `IncomingControl`
-   (`TermiodClient.swift:885-937`) — additive, `.unknown` stays the default.
+2. Add `FsFilePayload` to `IncomingControl` (`TermiodClient.swift`) — additive,
+   `.unknown` stays the default. `FsListedPayload` is **not** added: `315d7a5`
+   already put it there for the path picker (§1.5), and this stage reuses it
+   rather than declaring a second copy.
+3. **One `fs.list` client, not two.** `TermiodDirectoryLister.swift` (upstream,
+   for the path picker) and `TermiodFiles.swift` (this stage, for the tree) each
+   arrived with their own `FsListOperation`, `PathListingPayload` and
+   `FsListedPayload`. The call sites stay separate — the picker's round trip is
+   blocking and holds a channel for as long as a field is being typed in, the
+   tree's is async and per-pane — but the wire types are shared, and the picker's
+   private encoder is deleted in favour of the seq-stamped one. Upstream's
+   `PathListingPayload` wins: its `init(from:)` defaults a missing `entries` to
+   `[]`, where the version written here made it optional at every call site.
+   *Gate:* `grep -rc 'op = "fs_list"' Sources/` → exactly 1.
 3. Re-point `RemoteFileBrowserModel` at the new provider. It takes a `Checkout`
    instead of a `host: String`; `root()` becomes `checkout.root`.
 4. `FileBrowserView` renders the tree for **any** `isOnAnotherDevice` checkout;
