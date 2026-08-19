@@ -59,6 +59,45 @@ final class WorkspaceDeviceTests: XCTestCase {
 
         XCTAssertEqual(store.workspaceForThisMac.id, ukvps.id)
     }
+
+    /// Two workspaces can name one machine, so the fallback lookup picks rather
+    /// than assuming the first match is the right one. The shape is reachable from
+    /// a shipped state file: a workspace the user named, holding a checkout on a
+    /// box that already has a fallback, adopts that box on the next load. A session
+    /// the `termiod` CLI or the phone then starts over there is one nobody filed,
+    /// so it belongs in the workspace nobody asked for — not in the middle of the
+    /// user's own work.
+    func testAMachinesFallbackIsPreferredOverAWorkspaceThatAdoptedIt() {
+        let named = Workspace(name: "Work")
+        let fallback = Workspace(name: "ukvps", deviceAlias: "ukvps")
+        var checkout = Project(
+            workspaceID: named.id, name: "api", path: "/srv/api", branch: "—", sessions: [])
+        checkout.legacyDevice = KnownDevice(alias: "ukvps", deviceID: nil)
+
+        let (workspaces, projects) = WorkspaceMigration.reconcile(
+            workspaces: [named, fallback], projects: [checkout])
+        XCTAssertEqual(workspaces.filter { $0.deviceAlias == "ukvps" }.count, 2,
+                       "both are on that box — adoption is what states the truth")
+        XCTAssertEqual(projects.first?.workspaceID, named.id,
+                       "and the user keeps the workspace they named, checkout and all")
+
+        let store = makeStore(workspaces: workspaces, current: named)
+
+        XCTAssertEqual(store.deviceWorkspace(for: "ukvps"), fallback.id)
+        XCTAssertEqual(store.workspaces.count, 2, "and nothing is minted for a machine that has one")
+    }
+
+    /// The preference is among the workspaces that exist, not a requirement that a
+    /// fallback does: a machine whose only workspace is the user's still resolves
+    /// to it rather than growing a second one beside it.
+    func testAMachinesOnlyWorkspaceAnswersEvenWhenItIsTheUsers() {
+        let home = Workspace(name: "Sessions", isAutoCreated: false)
+        let named = Workspace(name: "Work", deviceAlias: "ukvps", isAutoCreated: false)
+        let store = makeStore(workspaces: [home, named], current: home)
+
+        XCTAssertEqual(store.deviceWorkspace(for: "ukvps"), named.id)
+        XCTAssertEqual(store.workspaces.count, 2)
+    }
 }
 
 /// Which workspaces Termio may sweep when they empty out.

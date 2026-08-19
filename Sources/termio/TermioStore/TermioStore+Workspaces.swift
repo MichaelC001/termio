@@ -563,17 +563,28 @@ extension TermioStore {
     // MARK: - The machine fallback
 
     /// The fallback workspace for `alias`, created on first use — "the sessions on
-    /// that box that nothing else accounts for". One per machine, matched by alias
-    /// rather than by name, so two sessions on the same box always land together.
+    /// that box that nothing else accounts for". Matched by alias rather than by
+    /// name, so two sessions on the same box always land together.
     ///
     /// It is a workspace like any other: the switcher lists it, the sidebar draws
     /// it with the same four sections. What makes it a fallback is only that
     /// nobody chose it — the `termiod` CLI and the phone start sessions on a
     /// machine without saying where they belong, and those sessions have to be
     /// reachable somewhere.
+    ///
+    /// More than one workspace can name the same machine, so this picks rather than
+    /// assumes: `WorkspaceMigration.reconcile` lets a workspace the user named and
+    /// filled with checkouts on one box adopt that box, and the box may already
+    /// have a fallback of its own. Termio's own comes first — a session nobody
+    /// filed belongs in the workspace nobody asked for, not in the middle of the
+    /// user's own work. (Adoption is not the alternative: the workspace really is
+    /// on that machine, and moving its projects out to say so would empty a
+    /// workspace the user named.)
     @discardableResult
     func deviceWorkspace(for alias: String, deviceID: String? = nil) -> Workspace.ID {
-        if let index = workspaces.firstIndex(where: { $0.deviceAlias == alias }) {
+        let onThatMachine = workspaces.indices.filter { workspaces[$0].deviceAlias == alias }
+        if let index = onThatMachine.first(where: { workspaces[$0].isAutoCreated == true })
+            ?? onThatMachine.first {
             if let deviceID, workspaces[index].deviceID == nil { workspaces[index].deviceID = deviceID }
             return workspaces[index].id
         }
