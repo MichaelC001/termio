@@ -218,6 +218,11 @@ extension TermioStore {
                 projects[index].remoteCheckouts[device.id] = legacy
                 projects[index].remoteCheckouts[alias] = nil
             }
+            // And what a project *on* this machine turned out to be sitting on,
+            // so two aliases for one box stop reading as two places.
+            if projects[index].deviceAlias == alias, projects[index].deviceID != device.id {
+                projects[index].deviceID = device.id
+            }
             for sessionIndex in projects[index].sessions.indices
             where projects[index].sessions[sessionIndex].termiodRemoteHost == alias
                 && projects[index].sessions[sessionIndex].deviceID != device.id {
@@ -770,7 +775,7 @@ extension TermioStore {
 
     /// The flag-off explainer: the remote feature is entirely the termiod backend,
     /// so without `TERMIO_TERMIOD=1` there's nothing to attach to.
-    private func presentTermiodDisabledAlert() {
+    func presentTermiodDisabledAlert() {
         let alert = NSAlert()
         alert.messageText = "Remote terminals need the termiod backend"
         alert.informativeText = "Set TERMIO_TERMIOD=1 and relaunch termio to open sessions on a remote host."
@@ -790,6 +795,22 @@ extension TermioStore {
 
     // MARK: - Clone to a device
 
+    /// Where a finished remote clone is filed.
+    ///
+    /// The two cases differ in *when* the project exists. `Clone to <device>…`
+    /// starts from a row that is already in the sidebar and only records the
+    /// correspondence; `Open Project ▸ <device> ▸ Clone…` has no row yet, and can't
+    /// make one up front — the clone's absolute path on the far machine is only
+    /// known once `git clone` has run and reported it, and a project row pointing
+    /// at a directory nobody has confirmed is the guess this avoids.
+    enum RemoteCloneDestination {
+        /// A project already in the tree: the clone is recorded as its checkout on
+        /// that machine.
+        case existing(Project.ID)
+        /// A project made from the clone itself, filed under `workspace`.
+        case new(name: String, workspace: Workspace.ID)
+    }
+
     /// Clones a project's `origin` **onto** `host` (git clone runs on the remote,
     /// not an rsync from the Mac — decided with the user), then opens a remote
     /// terminal inside the freshly cloned directory. The clone is `ssh <host> 'git
@@ -801,7 +822,11 @@ extension TermioStore {
     /// `info` comes from `GitService.cloneInfo` (origin URL, derived repo name,
     /// unpushed count). The whole feature is the termiod backend, so the flag-off
     /// case explains instead of opening a dead pane.
-    func cloneOnRemote(host: String, info: GitService.CloneInfo, project projectID: UUID? = nil) {
+    func cloneOnRemote(
+        host: String,
+        info: GitService.CloneInfo,
+        into destination: RemoteCloneDestination? = nil
+    ) {
         let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { return }
         guard Termiod.isEnabled else {
@@ -833,7 +858,7 @@ extension TermioStore {
                 self.presentRemoteSetupFailure(host: host, message: error.message)
             case .success(let device):
                 self.performRemoteClone(
-                    host: host, device: device.id, info: info, project: projectID)
+                    host: host, device: device.id, info: info, into: destination)
             }
         }
     }
@@ -844,7 +869,7 @@ extension TermioStore {
         host: String,
         device deviceID: String,
         info: GitService.CloneInfo,
-        project projectID: UUID? = nil
+        into destination: RemoteCloneDestination? = nil
     ) {
         let hud = RemoteSetupHUD(message: "Cloning \(info.repositoryName) on \(host)…")
         hud.show()
@@ -888,19 +913,44 @@ extension TermioStore {
                 let clonedPath = clone.standardOutput
                     .split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
                     .last(where: { !$0.isEmpty })
-                // Record the local↔remote correspondence this clone just
-                // established, so it is a lasting link rather than a one-shot
-                // action: later remote terminals for this project land here
-                // without cloning again. Keyed by the *machine*, so reaching it by
-                // a different alias tomorrow still finds the clone.
-                if let projectID, let path = clonedPath,
-                   let index = self.projects.firstIndex(where: { $0.id == projectID }) {
-                    self.projects[index].remoteCheckouts[deviceID] = path
-                }
+                let projectID = self.fileClone(
+                    at: clonedPath, on: host, device: deviceID, into: destination)
                 self.createRemoteTerminalSession(
                     host: host, device: deviceID, cwd: clonedPath, title: name, project: projectID
                 )
             }
+        }
+    }
+
+    /// Files a finished clone and returns the project its first terminal belongs
+    /// under, or `nil` when there is none — the session then lands in the
+    /// machine's own workspace, which is where a terminal with no project goes.
+    ///
+    /// Recording the checkout is what makes the clone a lasting link rather than a
+    /// one-shot action: later remote terminals for this project land there without
+    /// cloning again. Keyed by the *machine*, so reaching it by a different alias
+    /// tomorrow still finds the clone.
+    private func fileClone(
+        at clonedPath: String?,
+        on alias: String,
+        device deviceID: String,
+        into destination: RemoteCloneDestination?
+    ) -> Project.ID? {
+        guard let destination else { return nil }
+        switch destination {
+        case .existing(let id):
+            guard let path = clonedPath,
+                  let index = projects.firstIndex(where: { $0.id == id })
+            else { return id }
+            projects[index].remoteCheckouts[deviceID] = path
+            return id
+        case .new(let name, let workspace):
+            // No path means the clone landed somewhere we couldn't read back, and
+            // a project row whose directory is a guess is worse than no row: the
+            // terminal still opens on the machine, just without one.
+            guard let path = clonedPath else { return nil }
+            return addRemoteProject(
+                name: name, at: path, on: alias, device: deviceID, workspace: workspace)
         }
     }
 }

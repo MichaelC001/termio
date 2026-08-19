@@ -546,7 +546,9 @@ extension TermioStore {
     func addProject(at url: URL) {
         let path = url.standardizedFileURL.path
         settings.noteRecentProject(name: url.lastPathComponent, path: path)
-        if let existing = projects.first(where: { $0.path == path }) {
+        // Matched among this Mac's projects only: a checkout on another machine
+        // can carry the same path string and is not the same folder.
+        if let existing = projects.first(where: { !$0.isOnAnotherDevice && $0.path == path }) {
             selectedSessionID = existing.sessions.first?.id
             return
         }
@@ -561,6 +563,129 @@ extension TermioStore {
         projects.append(project)
         selectedSessionID = project.sessions.first?.id
         resolveBranchLabel(for: project.id, at: path)
+    }
+
+    // MARK: - A project on another machine
+
+    /// Opens a project that lives on `device`, which Termio cannot browse.
+    ///
+    /// There is no remote file picker, and this deliberately does not fake one:
+    /// `fs.list` is unbuilt on the client, and a panel that guesses at a directory
+    /// list would be a worse lie than a text field. So the two honest ways to name
+    /// a folder over there are to clone a repository onto the machine — which
+    /// creates the directory, so its path is known afterwards — or to type a path
+    /// that is already on it.
+    func presentRemoteProjectPanel(on device: KnownDevice) {
+        guard let alias = device.alias else {
+            presentOpenProjectPanel()
+            return
+        }
+        // Checked before the panel rather than after it: the whole feature is the
+        // termiod backend, so with the flag off there is nothing to ask about, and
+        // asking anyway would leave a project row for a checkout nothing can open.
+        guard Termiod.isEnabled else {
+            presentTermiodDisabledAlert()
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = localized("Open a Project on \(alias)")
+        alert.informativeText = localized(
+            "Termio can’t browse another machine’s files. Clone a repository onto \(alias), or enter a folder that’s already there.")
+        alert.addButton(withTitle: localized("Open"))
+        alert.addButton(withTitle: localized("Cancel"))
+
+        let fields = RemoteProjectFields()
+        alert.accessoryView = fields.view
+        alert.window.initialFirstResponder = fields.field
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let entry = fields.field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !entry.isEmpty else { return }
+        if fields.isCloning {
+            cloneProject(from: entry, on: alias)
+        } else {
+            openRemoteProject(at: entry, on: alias)
+        }
+    }
+
+    /// Clones `originURL` onto `alias` and files the result as a project in the
+    /// current workspace. Reuses the same clone `Clone to <device>…` runs — deploy
+    /// gate, HUD, verbatim remote stderr — rather than a second path that would
+    /// drift from it.
+    private func cloneProject(from originURL: String, on alias: String) {
+        let name = GitService.repositoryName(fromRemote: originURL)
+        // `unpushedCommits: nil` skips the divergence warning, correctly: the URL
+        // *is* the origin, so there is no local branch that could be ahead of it.
+        let info = GitService.CloneInfo(
+            originURL: originURL, repositoryName: name, unpushedCommits: nil)
+        cloneOnRemote(
+            host: alias, info: info,
+            into: .new(name: name, workspace: currentWorkspace.id))
+    }
+
+    /// Files a directory that is already on `alias` as a project, then opens its
+    /// first terminal. That terminal is also the check: the daemon fails visibly
+    /// if the path isn't there, rather than the row quietly pointing at nothing.
+    private func openRemoteProject(at entry: String, on alias: String) {
+        // termiod spawns the shell with a raw `chdir` and expands neither `~` nor a
+        // relative path (termiod/src/session.rs `Pty::spawn`), so anything else
+        // would start the shell somewhere the user did not name.
+        guard entry.hasPrefix("/") else {
+            let alert = NSAlert()
+            alert.messageText = localized("Enter an absolute path")
+            alert.informativeText = localized(
+                "Termio opens the folder on \(alias) exactly as typed, so the path has to start with “/”. “~” isn’t expanded.")
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: localized("OK"))
+            alert.runModal()
+            return
+        }
+        var path = entry
+        while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+        let name = (path as NSString).lastPathComponent
+        let id = addRemoteProject(
+            name: name.isEmpty ? alias : name,
+            at: path,
+            on: alias,
+            device: TermiodDeviceRegistry.shared.deviceID(for: TermiodRoute(sshAlias: alias)),
+            workspace: currentWorkspace.id)
+        addRemoteTerminal(host: alias, project: id)
+    }
+
+    /// Adds a project whose checkout is on another machine, in `workspace` — a
+    /// normal project row, marked with its device. Reopening the same directory on
+    /// the same machine selects the row that is already there.
+    ///
+    /// No branch probe and no recents entry: both read this Mac's disk, and this
+    /// project's folder is not on it.
+    @discardableResult
+    func addRemoteProject(
+        name: String, at path: String, on alias: String, device deviceID: String?,
+        workspace: Workspace.ID
+    ) -> Project.ID {
+        if let existing = projects.first(where: { $0.isCheckout(at: path, on: alias, device: deviceID) }) {
+            selectedSessionID = existing.sessions.first?.id
+            return existing.id
+        }
+        var project = Project(
+            workspaceID: workspace,
+            name: name,
+            path: path,
+            // No local git to ask, and the daemon reports no branch yet. The em
+            // dash is the same "not a repo we can read" mark a plain folder gets,
+            // and it is what keeps the worktree verbs off this row.
+            branch: "—",
+            sessions: []
+        )
+        project.deviceAlias = alias
+        project.deviceID = deviceID
+        // The checkout `New Terminal` reads. Keyed by device once a handshake has
+        // said which one this alias reaches, by alias until then —
+        // `remoteCheckout(device:alias:)` answers from either, and `adoptDevice`
+        // promotes the alias key when the machine finally identifies itself.
+        project.remoteCheckouts[deviceID ?? alias] = path
+        projects.append(project)
+        return project.id
     }
 
     /// Removes a project from the sidebar: tears down every session's live surface
@@ -800,5 +925,49 @@ extension TermioStore {
         let data = output.fileHandleForReading.readDataToEndOfFile()
         return String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+}
+
+/// The two ways to name a directory on a machine Termio cannot browse, as the
+/// accessory view of `presentRemoteProjectPanel`.
+///
+/// A class rather than a few locals because the segmented control needs a target
+/// that outlives the call that builds it — the alert runs modally and the switch
+/// has to keep answering while it is up.
+@MainActor
+private final class RemoteProjectFields: NSObject {
+    let view = NSStackView()
+    let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+    private let mode = NSSegmentedControl(
+        labels: [localized("Clone a Repository"), localized("Open a Folder")],
+        trackingMode: .selectOne, target: nil, action: nil)
+
+    /// Whether the entry is a repository to clone rather than a folder to open.
+    var isCloning: Bool { mode.selectedSegment == 0 }
+
+    override init() {
+        super.init()
+        mode.selectedSegment = 0
+        mode.target = self
+        mode.action = #selector(modeChanged)
+        view.orientation = .vertical
+        view.alignment = .leading
+        view.spacing = 8
+        view.addArrangedSubview(mode)
+        view.addArrangedSubview(field)
+        field.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        mode.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        // NSAlert lays its accessory out by frame, so the stack has to carry its
+        // own measured height rather than a number guessed here — a control that
+        // grows with the user's text size would otherwise be clipped.
+        view.frame = NSRect(origin: .zero, size: view.fittingSize)
+        modeChanged()
+    }
+
+    /// The placeholder is the only thing that changes: one field either way, so
+    /// switching never loses what was typed into the other one. Neither example is
+    /// localized — a URL and an absolute path read the same in every language.
+    @objc private func modeChanged() {
+        field.placeholderString = isCloning ? "https://github.com/owner/repo.git" : "/srv/api"
     }
 }

@@ -896,6 +896,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.presentOpenProjectPanel()
     }
 
+    /// A device row of the Open Project submenu — the machine's alias rides in
+    /// `representedObject`. Termio can't browse that box, so the panel asks for a
+    /// repository to clone onto it or a path already there.
+    @objc func openProjectOnDevice(_ sender: NSMenuItem) {
+        guard let alias = sender.representedObject as? String else { return }
+        store.presentRemoteProjectPanel(
+            on: KnownDevice(
+                alias: alias,
+                deviceID: TermiodDeviceRegistry.shared.deviceID(for: TermiodRoute(sshAlias: alias))))
+    }
+
     /// File ▸ New Terminal (⌘T) — a shell in the focused session's directory, beside
     /// that session (see `addTerminalHere`). Reached via the responder chain (the menu
     /// item targets `nil`), like the other app actions.
@@ -1526,6 +1537,7 @@ enum DeviceMenuTag {
     static let newTerminalAtHome = 7302
     static let connectTo = 7303
     static let workspace = 7304
+    static let openProject = 7305
 }
 
 /// The "Workspace ▸" item — the scopes, with the current one checked, and where the
@@ -1596,6 +1608,8 @@ extension AppDelegate: NSMenuDelegate {
             fillNewSSHMenu(menu)
         case localized("Connect to…"):
             fillConnectToMenu(menu)
+        case localized("Open Project"):
+            fillOpenProjectMenu(menu)
         case localized("Workspace"):
             fillWorkspaceMenu(menu)
         default:
@@ -1621,6 +1635,8 @@ extension AppDelegate: NSMenuDelegate {
                 item.isHidden = DeviceRoster.unusedAliases(known: known).isEmpty
             case DeviceMenuTag.workspace:
                 item.isHidden = !store.hasMultipleWorkspaces
+            case DeviceMenuTag.openProject:
+                refreshOpenProjectItem(item, known: known)
             default:
                 continue
             }
@@ -1658,6 +1674,71 @@ extension AppDelegate: NSMenuDelegate {
             : #selector(newTerminalHere(_:))
         item.target = self
         if let command { item.applyShortcut(for: command) }
+    }
+
+    /// The same single-device collapse applied to "Open Project…": a plain verb
+    /// while this Mac is the only machine, a device submenu once there is anywhere
+    /// else to put a project.
+    ///
+    /// Unlike New Terminal, this one *does* grow the submenu, because a project is
+    /// filed rather than entered: the workspace the row lands in has no device of
+    /// its own to inherit, so where the checkout lives is a choice only this menu
+    /// can carry. Picking This Mac is today's folder picker, unchanged.
+    ///
+    /// The shortcut travels to the This Mac row so ⌘O still opens a local folder
+    /// (AppKit's key-equivalent sweep descends submenus, the same behaviour the
+    /// New Chat menu relies on).
+    private func refreshOpenProjectItem(_ item: NSMenuItem, known: [KnownDevice]) {
+        guard !openProjectDevices(known: known).isEmpty else {
+            item.title = localized("Open Project…")
+            item.submenu = nil
+            item.action = #selector(openProject(_:))
+            item.target = self
+            item.applyShortcut(for: .openProject)
+            return
+        }
+        // The ellipsis moves to the rows: it is each of those that opens a panel,
+        // and a parent that only reveals a submenu never carries one. A submenu
+        // item's own key equivalent never fires, so ⌘O travels to the This Mac row
+        // (see `fillOpenProjectMenu`).
+        item.title = localized("Open Project")
+        item.action = nil
+        item.keyEquivalent = ""
+        item.keyEquivalentModifierMask = []
+        // Attached once and filled by the delegate on open, like the other device
+        // submenus. Replacing the menu object on every pass would swap it out from
+        // under AppKit's key-equivalent sweep, which is what finds ⌘O in there.
+        guard item.submenu?.title != localized("Open Project") else { return }
+        let submenu = NSMenu(title: localized("Open Project"))
+        submenu.delegate = self
+        item.submenu = submenu
+    }
+
+    /// The machines a project can be opened on: one worked on before, plus one from
+    /// `~/.ssh/config` never reached. Opening a project on a box is itself a first
+    /// contact — `ensureRemoteReady` installs termiod on the way — so the list is
+    /// the same one `Clone to <device>…` offers.
+    private func openProjectDevices(known: [KnownDevice]) -> [KnownDevice] {
+        known.filter { !$0.isLocal }
+            + DeviceRoster.unusedAliases(known: known).map { KnownDevice(alias: $0, deviceID: nil) }
+    }
+
+    private func fillOpenProjectMenu(_ menu: NSMenu) {
+        let local = menu.addItem(
+            withTitle: localized("This Mac…"), action: #selector(openProject(_:)), keyEquivalent: "")
+        local.target = self
+        local.applyShortcut(for: .openProject)
+        menu.addItem(.separator())
+        for device in openProjectDevices(known: DeviceRoster.known(in: store)) {
+            // The machine's own name, so nothing here is translated — it is the
+            // alias out of the user's `~/.ssh/config`.
+            let row = menu.addItem(
+                withTitle: "\(device.name)…",
+                action: #selector(openProjectOnDevice(_:)),
+                keyEquivalent: "")
+            row.target = self
+            row.representedObject = device.alias
+        }
     }
 
     /// Fills the Session menu: the cycling and close verbs, then a live jump
@@ -1997,13 +2078,17 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
         menu.addItem(terminal)
         menu.addItem(makeNewChatItem())
         menu.addItem(makeNewSSHItem())
-        let folder = NSMenuItem(title: localized("Open Project…"), action: #selector(openFolder(_:)), keyEquivalent: "")
-        folder.target = self
+        // Targets the AppDelegate, like the terminal row above, so the delegate can
+        // reshape it into a device submenu on open (`refreshOpenProjectItem`) —
+        // both this and the File menu's row then go through one builder.
+        let folder = NSMenuItem(title: localized("Open Project…"),
+                                action: #selector(AppDelegate.openProject(_:)),
+                                keyEquivalent: "")
+        folder.target = NSApp.delegate as? AppDelegate
+        folder.tag = DeviceMenuTag.openProject
         menu.addItem(folder)
         return menu
     }
-
-    @objc private func openFolder(_ sender: Any?) { store.presentOpenProjectPanel() }
 
     /// The `.inspectorTabs` item's menu form, shown in the toolbar's `»` overflow menu when the
     /// inspector section is too narrow to hold the glass cluster — the panes stay switchable
@@ -2357,11 +2442,13 @@ private func buildMainMenu() -> NSMenu {
     // decides what the sidebar lists and which repo the panes read.
     fileMenu.addItem(makeWorkspaceItem())
     fileMenu.addItem(.separator())
+    // Tagged so the delegate can grow it into a device submenu when there is
+    // somewhere other than this Mac to put a project (see `refreshOpenProjectItem`).
     fileMenu.addItem(
         withTitle: localized("Open Project…"),
         action: #selector(AppDelegate.openProject(_:)),
         command: .openProject
-    )
+    ).tag = DeviceMenuTag.openProject
     fileMenu.addItem(.separator())
     // The two branch verbs that fit termio's read-only git surface, with
     // GitHub Desktop's Branch-menu bindings: creating a worktree (termio's

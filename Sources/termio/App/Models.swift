@@ -169,11 +169,40 @@ struct Project: Identifiable, Hashable, Codable {
     /// `TermioStore.adoptDevice` promotes each one the first time its alias
     /// resolves to a device.
     var remoteCheckouts: [String: String] = [:]
+
+    /// The machine this project's checkout lives on — the `~/.ssh/config` alias —
+    /// or `nil` for a folder on this Mac.
+    ///
+    /// A project used to be a folder on this Mac by definition, so `path` was
+    /// always this Mac's to read. It no longer is: `Open Project ▸ <device>` files
+    /// a repo that exists only on another box, and `path` then names a directory
+    /// over there. Everything that reads local disk — the branch probe, Reveal in
+    /// Finder, worktrees, the recents list — is gated on this being `nil`.
+    ///
+    /// The alias is the *bootstrap* identity, the one that exists before anything
+    /// has connected (device architecture §9.5); `deviceID` is what it turns out
+    /// to be.
+    var deviceAlias: String?
+
+    /// The `host_id` the alias turned out to reach, learned by the first
+    /// handshake and `nil` until then.
+    var deviceID: String?
 }
 
 extension Project {
     private enum CodingKeys: String, CodingKey {
         case id, workspaceID, name, path, branch, sessions, worktrees, pinned, remoteCheckouts
+        case deviceAlias, deviceID
+    }
+
+    /// Whether this project's checkout is on another machine, so nothing here may
+    /// read `path` off local disk.
+    var isOnAnotherDevice: Bool { deviceAlias != nil }
+
+    /// The machine the checkout lives on, or `nil` for this Mac — what the row's
+    /// mark and the empty states name.
+    var device: KnownDevice? {
+        deviceAlias.map { KnownDevice(alias: $0, deviceID: deviceID) }
     }
 
     /// Missing collection and flag keys take their pre-feature defaults so older
@@ -197,6 +226,8 @@ extension Project {
         pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         remoteCheckouts =
             try container.decodeIfPresent([String: String].self, forKey: .remoteCheckouts) ?? [:]
+        deviceAlias = try container.decodeIfPresent(String.self, forKey: .deviceAlias)
+        deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
     }
 
     /// The recorded checkout for one machine, addressed by device where the app
@@ -210,6 +241,18 @@ extension Project {
     func remoteCheckout(device deviceID: String?, alias: String) -> String? {
         if let deviceID, let path = remoteCheckouts[deviceID] { return path }
         return remoteCheckouts[alias]
+    }
+
+    /// Whether this project *is* the directory `path` on that machine — the test
+    /// behind "opening the same folder twice reopens the row you already have".
+    ///
+    /// Matched by device identity once both ends know it, so a box reached by a
+    /// second alias doesn't open a duplicate row for the same checkout, and by
+    /// alias until the first handshake resolves one.
+    func isCheckout(at path: String, on alias: String, device deviceID: String?) -> Bool {
+        guard isOnAnotherDevice, self.path == path else { return false }
+        if let deviceID, let mine = self.deviceID { return deviceID == mine }
+        return deviceAlias == alias
     }
 }
 

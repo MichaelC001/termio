@@ -205,7 +205,9 @@ func cloneToDeviceMenuItem(
                         message: localized("This folder has no git “origin” remote to clone."))
                     return
                 }
-                store.cloneOnRemote(host: alias, info: info, project: projectID)
+                store.cloneOnRemote(
+                    host: alias, info: info,
+                    into: projectID.map(TermioStore.RemoteCloneDestination.existing))
             }
         }
     }
