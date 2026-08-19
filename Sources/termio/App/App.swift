@@ -963,6 +963,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.presentNewWorkspacePanel()
     }
 
+    /// The submenu's "Rename Workspace…" row. It acts on the workspace the window
+    /// is in, which is the one the rows above show checked.
+    @objc func renameWorkspace(_ sender: Any?) {
+        store.presentRenameWorkspacePanel(store.currentWorkspaceID)
+    }
+
+    /// The submenu's "Remove Workspace" row, acting on the current workspace like
+    /// the rename above. Disabled at one workspace (see `validateMenuItem`).
+    @objc func removeWorkspace(_ sender: Any?) {
+        store.confirmRemoveWorkspace(store.currentWorkspaceID)
+    }
+
     /// A row of the Connect to… submenu — first contact with a machine from
     /// `~/.ssh/config`. Opening a terminal on it is the connection: `termiod` is
     /// installed there if missing, the handshake records which device the alias
@@ -1536,7 +1548,6 @@ enum DeviceMenuTag {
     static let newTerminal = 7301
     static let newTerminalAtHome = 7302
     static let connectTo = 7303
-    static let workspace = 7304
     static let openProject = 7305
 }
 
@@ -1545,12 +1556,12 @@ enum DeviceMenuTag {
 /// this one exists because a key equivalent only fires from the main menu, and because
 /// a chord nobody can find is a chord nobody presses.
 ///
-/// Hidden while there is only one workspace (see `refreshDeviceItems`), so the menu
-/// grows the row at the same moment the toolbar grows the control.
+/// Always shown, including with a single workspace: the toolbar switcher collapses
+/// then — with one scope there is nothing to switch — so this is where creating,
+/// renaming and removing a workspace has to stay reachable.
 @MainActor
 private func makeWorkspaceItem() -> NSMenuItem {
     let item = NSMenuItem(title: localized("Workspace"), action: nil, keyEquivalent: "")
-    item.tag = DeviceMenuTag.workspace
     let submenu = NSMenu(title: localized("Workspace"))
     submenu.delegate = NSApp.delegate as? AppDelegate
     item.submenu = submenu
@@ -1633,8 +1644,6 @@ extension AppDelegate: NSMenuDelegate {
                 refreshNewTerminalItem(item, known: known, atHome: true, command: nil)
             case DeviceMenuTag.connectTo:
                 item.isHidden = DeviceRoster.unusedAliases(known: known).isEmpty
-            case DeviceMenuTag.workspace:
-                item.isHidden = !store.hasMultipleWorkspaces
             case DeviceMenuTag.openProject:
                 refreshOpenProjectItem(item, known: known)
             default:
@@ -1873,7 +1882,7 @@ extension AppDelegate: NSMenuDelegate {
     }
 
     /// Fills a New SSH Connection submenu with one row per `~/.ssh/config` host —
-    /// the same aliases Settings ▸ SSH lists — each connecting directly, plus a
+    /// the same aliases Settings ▸ Machines lists — each connecting directly, plus a
     /// trailing "Add Host…" opening the same form as Settings' Add Host button
     /// and connecting to the machine it adds (see `addSSHHost`). With an empty
     /// config only "Add Host…" remains — the first-run path.
@@ -1923,6 +1932,12 @@ extension AppDelegate: NSMenuDelegate {
         let new = menu.addItem(withTitle: localized("New Workspace…"),
                                action: #selector(newWorkspace(_:)), keyEquivalent: "")
         new.target = self
+        let rename = menu.addItem(withTitle: localized("Rename Workspace…"),
+                                  action: #selector(renameWorkspace(_:)), keyEquivalent: "")
+        rename.target = self
+        let remove = menu.addItem(withTitle: localized("Remove Workspace"),
+                                  action: #selector(removeWorkspace(_:)), keyEquivalent: "")
+        remove.target = self
     }
 
     private func fillConnectToMenu(_ menu: NSMenu) {
@@ -1950,6 +1965,11 @@ extension AppDelegate: NSMenuItemValidation {
             return !store.sidebarSessionGroups.isEmpty
         case #selector(newWorktree(_:)), #selector(newPullRequest(_:)):
             return currentBranchProject != nil
+        // The store refuses to remove the last workspace — the sidebar has to have
+        // a scope to show — so the row dims rather than answering a click with
+        // nothing.
+        case #selector(removeWorkspace(_:)):
+            return store.hasMultipleWorkspaces
         default:
             return true
         }

@@ -429,3 +429,38 @@ final class WorkspaceMigrationTests: XCTestCase {
         XCTAssertEqual(again.workspaces, reconciled.workspaces)
     }
 }
+
+/// The default name the New Workspace panel opens with. The panel treats an empty
+/// field as a cancel, so this default is what makes Return create a workspace at
+/// all — an off-by-one here hands the user a name that is already taken.
+final class WorkspaceDefaultNameTests: XCTestCase {
+    func testFirstWorkspaceTakesTheBareName() {
+        XCTAssertEqual(
+            TermioStore.nextFreeWorkspaceName(base: "Workspace", taken: []), "Workspace")
+        XCTAssertEqual(
+            TermioStore.nextFreeWorkspaceName(base: "Workspace", taken: ["Sessions"]), "Workspace")
+    }
+
+    func testTheCounterStartsAtTwoAndSkipsWhatIsTaken() {
+        XCTAssertEqual(
+            TermioStore.nextFreeWorkspaceName(base: "Workspace", taken: ["Workspace"]),
+            "Workspace 2")
+        XCTAssertEqual(
+            TermioStore.nextFreeWorkspaceName(
+                base: "Workspace", taken: ["Workspace", "Workspace 2"]),
+            "Workspace 3")
+        // A gap is not filled: the next free number wins, not the lowest missing
+        // one, so the name never collides with a workspace further down the list.
+        XCTAssertEqual(
+            TermioStore.nextFreeWorkspaceName(
+                base: "Workspace", taken: ["Workspace", "Workspace 3"]),
+            "Workspace 2")
+    }
+
+    /// The base is `localized("Workspace")`, so the rule has to hold for a
+    /// translated base too — zh-Hans ships 工作区.
+    func testTheRuleHoldsForALocalizedBase() {
+        XCTAssertEqual(
+            TermioStore.nextFreeWorkspaceName(base: "工作区", taken: ["工作区"]), "工作区 2")
+    }
+}

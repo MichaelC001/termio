@@ -1,11 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// Settings ▸ SSH: the connectable hosts from `~/.ssh/config`, each one click
+/// Settings ▸ Machines: the connectable hosts from `~/.ssh/config`, each one click
 /// away from a terminal. The config file stays the single source of truth —
 /// termio reads the same hosts `ssh` itself resolves and writes nothing behind
 /// the user's back: Add Host appends a plain block, Edit opens the raw file.
-struct SSHSettingsTab: View {
+struct MachinesSettingsTab: View {
     @ObservedObject var settings: AppSettings
     /// Opens an SSH terminal to the alias in the main window (wired to
     /// `TermioStore.addSSHSession` by the app delegate).
@@ -276,7 +276,7 @@ private extension SSHProbeResult {
 
 /// The Add Host sheet: the four fields a `Host` block actually needs, appended
 /// to `~/.ssh/config` as a block indistinguishable from a hand-written one.
-/// Shared by Settings ▸ SSH's Add Host button and the New SSH Connection ▸
+/// Shared by Settings ▸ Machines' Add Host button and the New SSH Connection ▸
 /// Add Host… menu row (which connects to the host right after adding it).
 struct AddSSHHostSheet: View {
     let existingAliases: Set<String>
