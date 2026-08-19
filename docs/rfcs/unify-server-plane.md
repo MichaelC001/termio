@@ -197,10 +197,11 @@ Ordered by how ready the daemon already is.
 
 | File | Lines | When | Gate |
 | --- | --- | --- | --- |
-| `Sources/termio/FileBrowser/SFTPClient.swift` | 878 | Stage 1 | `grep -rn 'SFTP' Sources/ \| wc -l` → 0 |
+| `Sources/termio/FileBrowser/SFTPClient.swift` | 878 | Stage 1 | the symbol gate below |
 | `Sources/termio/FileBrowser/SSHFileSystemProvider.swift` | 531 | Stage 1 | same |
 | `Tests/termioTests/SSHFileSystemProviderTests.swift` | 508 | Stage 1 | same |
 | `Checkout.sftpAlias` + its branch in `FileBrowserView.swift:77-80` | ~12 | Stage 1 | same |
+| `SSHMux` and the `ControlMaster` options injected into a plain `ssh` session's argv (`sshCommand(host:)`) | ~110 | Stage 1 | same — the master existed only so the SFTP tree could ride it |
 | `Termiod.isEnabled` and every branch on it | `TermiodClient.swift:46` | Stage 8 | `grep -rn 'TERMIO_TERMIOD\b' Sources/ \| wc -l` → 0 |
 | `PTYProcess(` construction | `TermioStore+TerminalSurface.swift:228-231` | Stage 8 | `grep -rn 'PTYProcess(' Sources/ \| wc -l` → 0 |
 
@@ -263,10 +264,12 @@ a tree that re-lists on every keystroke is not. Stage 1's criterion measures it.
 
 Each is independently shippable and carries a gate that runs.
 
-### Stage 1 — the Files pane reads a device through `fs.*`; SFTP is deleted
+### Stage 1 — the Files pane reads a device through `fs.*`; SFTP is deleted — **done**
 
 **The single best deletion-to-new-code ratio in this plan**, and it needs
-nothing from the blocker.
+nothing from the blocker. Landed as `68f5006` (the client, +7 integration tests)
+and `8e106ea` (the tree, the deletions): **+513 / −2,030** across 14 files, of
+which 141 of the additions are the new integration tests.
 
 Today the Files pane has three behaviours (`FileBrowserView.swift:76-88`): the
 SFTP tree for a `sftpAlias`, a dead `unavailable(pane:on:)` placeholder for a
@@ -293,8 +296,11 @@ checkout on another *device* (the termiod case — the actual bug), and the loca
    because `remote deploy` cannot run from a shipped app today (see §5).
 
 **Gates:**
-- `swift build` clean.
-- `grep -rn 'SFTP' Sources/ | wc -l` → 0.
+- `swift build` clean; `swift test` green.
+- `grep -rn 'SFTPClient\|SSHFileSystemProvider\|SSHMux\|SSHProviderError\|sftpAlias' Sources/ Tests/ | wc -l` → 0.
+  Not `grep -rn 'SFTP'`, which `one-workspace-source.md` §5 Stage 5 asks for:
+  two comments deliberately record what the files plane replaced, and a gate
+  that forbids naming the thing you deleted forbids explaining why.
 - A new `TermiodFilesIntegrationTests`, on the opt-in
   `TERMIO_TERMIOD_TEST_BIN` pattern `TermiodTransferIntegrationTests.swift`
   already establishes: spawn a real daemon on a private socket, list a temp
