@@ -440,6 +440,8 @@ enum AgentHookType: String, Hashable {
     case json
     case toml
     case plugin
+    /// A directory of executables named after the lifecycle event (Cline).
+    case scripts
 }
 
 struct AgentHookEvent: Hashable {
@@ -1085,6 +1087,8 @@ struct AgentManifest: Decodable {
             dialect = .claudeNested
         case (.json, "cursor"):
             dialect = .cursorFlat
+        case (.json, "copilot"):
+            dialect = .copilotFlat
         case (.toml, nil), (.toml, "kimi"):
             dialect = .kimiTOML
         case (.plugin, "opencode"):
@@ -1093,15 +1097,17 @@ struct AgentManifest: Decodable {
             dialect = .piPlugin
         case (.plugin, "amp"):
             dialect = .ampPlugin
+        case (.scripts, nil), (.scripts, "cline"):
+            dialect = .clineScripts
         default:
             throw ManifestError.invalid(
                 "\(id): hook dialect '\(dialectName ?? "")' does not match type '\(typeName)'")
         }
 
-        if type == .plugin, hooks.dir?.isEmpty != false {
-            throw ManifestError.invalid("\(id): plugin hooks require 'dir'")
+        if type == .plugin || type == .scripts, hooks.dir?.isEmpty != false {
+            throw ManifestError.invalid("\(id): \(typeName) hooks require 'dir'")
         }
-        if type != .plugin, hooks.file?.isEmpty != false {
+        if type != .plugin, type != .scripts, hooks.file?.isEmpty != false {
             throw ManifestError.invalid("\(id): \(typeName) hooks require 'file'")
         }
 
@@ -1118,7 +1124,7 @@ struct AgentManifest: Decodable {
         var conversation: String?
         if let raw = hooks.conversation?.trimmingCharacters(in: .whitespaces), !raw.isEmpty {
             switch dialect {
-            case .claudeNested, .cursorFlat:
+            case .claudeNested, .cursorFlat, .copilotFlat:
                 guard isIdentifier(raw[...]) else {
                     throw ManifestError.invalid(
                         "\(id): hook conversation must name a stdin JSON field, not '\(raw)'")
@@ -1134,7 +1140,7 @@ struct AgentManifest: Decodable {
                     throw ManifestError.invalid(
                         "\(id): hook conversation for this dialect must be 'context', not '\(raw)'")
                 }
-            case .kimiTOML, .ampPlugin:
+            case .kimiTOML, .ampPlugin, .clineScripts:
                 throw ManifestError.invalid(
                     "\(id): hook conversation is not supported for this dialect")
             }
@@ -1147,7 +1153,7 @@ struct AgentManifest: Decodable {
         var tool: String?
         if let raw = hooks.tool?.trimmingCharacters(in: .whitespaces), !raw.isEmpty {
             switch dialect {
-            case .claudeNested, .cursorFlat:
+            case .claudeNested, .cursorFlat, .copilotFlat:
                 guard isIdentifier(raw[...]) else {
                     throw ManifestError.invalid(
                         "\(id): hook tool must name a stdin JSON field, not '\(raw)'")
@@ -1165,7 +1171,7 @@ struct AgentManifest: Decodable {
         var promptTitle: String?
         if let raw = hooks.promptTitle?.trimmingCharacters(in: .whitespaces), !raw.isEmpty {
             switch dialect {
-            case .claudeNested, .cursorFlat:
+            case .claudeNested, .cursorFlat, .copilotFlat:
                 guard isIdentifier(raw[...]) else {
                     throw ManifestError.invalid(
                         "\(id): hook promptTitle must name a stdin JSON field, not '\(raw)'")
