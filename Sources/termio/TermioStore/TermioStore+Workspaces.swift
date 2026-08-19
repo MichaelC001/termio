@@ -206,11 +206,86 @@ extension TermioStore {
     /// for a decision nobody took.
     var hasMultipleWorkspaces: Bool { workspaces.count > 1 }
 
+    /// Where something that runs on **this Mac** is filed: the current workspace
+    /// when it belongs to this Mac, and the first one that does otherwise.
+    ///
+    /// A workspace belongs to one machine, so a local shell or a local folder put
+    /// into a workspace on a box would make that workspace say something untrue —
+    /// and the sidebar would draw a row nothing on that machine can account for.
+    /// The selection carries the scope across with it, so the user still lands on
+    /// what they just created.
+    var workspaceForThisMac: Workspace {
+        let current = currentWorkspace
+        guard !current.device.isThisMac else { return current }
+        return workspaces.first { $0.device.isThisMac } ?? current
+    }
+
     /// The workspaces a user can move between, in the order every surface shows
-    /// them: the ones they made first, then the machine fallbacks. A fallback is
-    /// where sessions land that nobody filed, so it sits after the filing.
+    /// them: the ones the user made first, then the ones Termio made for them. A
+    /// workspace nobody asked for is where sessions land that nobody filed, so it
+    /// sits after the filing.
+    ///
+    /// Ordered by who made it, not by which machine it is on. Every workspace
+    /// names a machine now, so sorting by the device would push a workspace the
+    /// user named and filled with checkouts on one box to the bottom of their own
+    /// list.
     var orderedWorkspaces: [Workspace] {
-        workspaces.filter { !$0.isDeviceFallback } + workspaces.filter(\.isDeviceFallback)
+        workspaces.filter { $0.isAutoCreated != true } + workspaces.filter { $0.isAutoCreated == true }
+    }
+
+    // MARK: - The machine a project is on
+
+    /// The workspace a project is filed under, or `nil` for a project whose owner
+    /// is gone. `WorkspaceMigration.reconcile` files every orphan under a real
+    /// workspace on load, so this answers for everything in the tree.
+    func workspace(owning project: Project) -> Workspace? {
+        workspaces.first { $0.id == project.workspaceID }
+    }
+
+    /// The machine a project's checkout lives on: the machine of the workspace
+    /// that owns it. A checkout records none of its own — a workspace belongs to
+    /// exactly one machine and everything filed under it is on that machine — so
+    /// this is the only reading of the question.
+    ///
+    /// `nil` means the owning workspace is missing and the machine is genuinely
+    /// unknown. Do not read that as this Mac: this is the gate on touching local
+    /// disk, and answering "here" for a checkout that may be on a box is how the
+    /// wrong machine's files get read.
+    func device(of project: Project) -> WorkspaceDevice? {
+        workspace(owning: project)?.device
+    }
+
+    /// Whether a project's checkout is on another machine, so nothing may read its
+    /// `path` off this Mac's disk. An unknown machine counts as another one, which
+    /// is the safe direction for a gate.
+    func isOnAnotherDevice(_ project: Project) -> Bool {
+        device(of: project) != .thisMac
+    }
+
+    /// The project that already *is* the directory `path` on that machine — what
+    /// "opening the same folder twice reopens the row you have" asks.
+    ///
+    /// The machine comes from the owning workspace, which is also what makes the
+    /// match by device identity work: a box reached by a second alias tomorrow
+    /// still resolves to the row that is already there.
+    func checkout(at path: String, on alias: String, device deviceID: String?) -> Project? {
+        projects.first { project in
+            project.path == path
+                && workspace(owning: project)?.isOn(alias: alias, device: deviceID) == true
+        }
+    }
+
+    /// Where a checkout on `alias` is filed: the current workspace when it is
+    /// already that machine's, and the machine's own workspace otherwise, created
+    /// on first use.
+    ///
+    /// The mirror of `workspaceForThisMac`, for the same reason — a checkout takes
+    /// its machine from its workspace, so filing one that lives on a box into a
+    /// workspace on this Mac would make the row claim to be here and let the panes
+    /// read this Mac's disk for a directory that is over there.
+    func workspace(forDevice alias: String, deviceID: String? = nil) -> Workspace.ID {
+        if currentWorkspace.device == .ssh(alias: alias) { return currentWorkspace.id }
+        return deviceWorkspace(for: alias, deviceID: deviceID)
     }
 
     /// Shows a different workspace. The selection moves with it, because a
@@ -380,9 +455,16 @@ extension TermioStore {
     /// Files a project under another workspace. The project's sessions travel with
     /// it — they are the project's, not the workspace's.
     func moveProject(_ projectID: Project.ID, toWorkspace workspaceID: Workspace.ID) {
-        guard workspaces.contains(where: { $0.id == workspaceID }),
+        guard let target = workspaces.first(where: { $0.id == workspaceID }),
               let index = projects.firstIndex(where: { $0.id == projectID }),
-              projects[index].workspaceID != workspaceID
+              projects[index].workspaceID != workspaceID,
+              // Refused across machines. A checkout is a directory on one box; the
+              // move would not move the directory, so the row would come to rest in
+              // a workspace whose machine has never had that path. Putting the repo
+              // on the other machine is a clone — a different verb, with a cost.
+              // `moveToWorkspaceMenuItem` offers only same-machine targets, so this
+              // is the backstop rather than the place the user learns it.
+              device(of: projects[index]) == target.device
         else { return }
         projects[index].workspaceID = workspaceID
     }
@@ -495,8 +577,11 @@ extension TermioStore {
             if let deviceID, workspaces[index].deviceID == nil { workspaces[index].deviceID = deviceID }
             return workspaces[index].id
         }
+        // Marked as Termio's own the moment it is made, which is the only place
+        // that fact is known for certain. Nobody asked for this workspace; a
+        // session arrived on a machine with nowhere to be filed.
         let workspace = Workspace(
-            name: alias, deviceAlias: alias, deviceID: deviceID)
+            name: alias, deviceAlias: alias, deviceID: deviceID, isAutoCreated: true)
         workspaces.append(workspace)
         return workspace.id
     }

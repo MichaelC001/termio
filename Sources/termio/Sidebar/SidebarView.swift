@@ -180,11 +180,14 @@ struct SidebarView: View {
         // feature must not introduce. They carry their workspace's name as the
         // breadcrumb, so the row says where clicking will take you.
         let waitingElsewhere = elsewhereNeedingYou(currentWorkspace: workspace.id)
-        // Whether any row in this column wears a machine mark. A machine's own
-        // workspace already says which machine it is, in the toolbar band above
-        // the column, so marking each of its rows repeats one fact down the whole
-        // column. Decided here, once, and handed to the rows.
-        let marksDevice = !workspace.isDeviceFallback
+        // Whether any row in this column wears a machine mark. Suppressed only
+        // where the band above the column already answers it: a workspace Termio
+        // named after a box repeats that one fact down every row. A workspace the
+        // *user* named keeps its marks however remote it is — "Ship auth" names no
+        // machine, so the rows are the only thing that can. Decided here, once,
+        // and handed to the rows.
+        let bandNamesTheMachine = workspace.isAutoCreated == true && !workspace.device.isThisMac
+        let marksDevice = !bandNamesTheMachine
         let hasPinned = !pinnedProjects.isEmpty || !pinnedWorktrees.isEmpty
             || !pinnedSessions.isEmpty || !waitingElsewhere.isEmpty
         let hasTerminals = !workspace.terminals.isEmpty
@@ -627,11 +630,15 @@ private struct ProjectHeader: View {
     }
 
     /// The machine this project's checkout lives on, when that is not this Mac.
-    /// `nil` inside a machine's own fallback workspace for the same reason a
-    /// session row's mark is: the workspace already *is* that machine.
+    /// It is the machine of the workspace the project is filed under — a checkout
+    /// records none of its own. `nil` in a workspace Termio named after a box, for
+    /// the same reason a session row's mark is: the name in the band above the
+    /// column already says it.
     private var remoteDevice: KnownDevice? {
-        guard !store.currentWorkspace.isDeviceFallback else { return nil }
-        return project.device
+        guard let workspace = store.workspace(owning: project),
+              workspace.isAutoCreated != true
+        else { return nil }
+        return workspace.knownDevice
     }
 
     /// Adding a session to a project on another machine means adding it *there*.
@@ -639,7 +646,7 @@ private struct ProjectHeader: View {
     /// the remote empty argv), so the terminal is the only verb this row offers —
     /// see `headerPresets`, which is why no agent preset reaches this.
     private func addSession(_ preset: AgentPreset) {
-        if let alias = project.deviceAlias {
+        if let alias = store.device(of: project)?.alias {
             store.addRemoteTerminal(host: alias, project: project.id)
             return
         }
@@ -650,7 +657,7 @@ private struct ProjectHeader: View {
     /// machine offers a terminal only: Termio can't launch an agent over there,
     /// and a row of agent buttons that silently open shells would claim otherwise.
     private var headerPresets: [AgentPreset] {
-        project.isOnAnotherDevice ? [.terminal] : headerSessionPresets(settings)
+        store.isOnAnotherDevice(project) ? [.terminal] : headerSessionPresets(settings)
     }
 
     /// Width the trailing quick-add icons occupy (button frame 22 + 3 spacing each), so
@@ -673,7 +680,7 @@ private struct ProjectHeader: View {
         // verb names it outright instead of offering a device submenu whose rows
         // would all be wrong but one. The agents submenu is absent for the same
         // reason `headerPresets` drops them: nothing launches an agent over there.
-        if project.isOnAnotherDevice { return remoteMenuItems }
+        if store.isOnAnotherDevice(project) { return remoteMenuItems }
         var items: [SidebarMenuItem] = [
             newTerminalMenuItem(store: store, project: project) { addSession(.terminal) },
             .submenu(localized("New Agent Session"), enabledAgentPresets(settings)

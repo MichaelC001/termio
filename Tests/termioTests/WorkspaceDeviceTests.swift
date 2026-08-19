@@ -1,0 +1,181 @@
+import XCTest
+@testable import termio
+
+/// Where work that runs on **this Mac** is filed once a workspace belongs to
+/// exactly one machine.
+///
+/// The rule already existed for loose sessions, phrased as "not a machine's
+/// fallback"; it is restated here as a claim about the machine, and it now covers
+/// `Open Project…` too — that path filed a local folder into whatever workspace
+/// was current, a box's included. Both callers read `workspaceForThisMac`, which
+/// is the decision; appending the row is not.
+@MainActor
+final class WorkspaceDeviceTests: XCTestCase {
+    private func makeStore(workspaces: [Workspace], current: Workspace) -> TermioStore {
+        let defaults = UserDefaults(suiteName: "workspace-device-\(UUID().uuidString)")
+            ?? UserDefaults.standard
+        let store = TermioStore(workspaces: workspaces, settings: AppSettings(defaults: defaults))
+        store.currentWorkspaceID = current.id
+        return store
+    }
+
+    /// A workspace states its machine outright, so an absent alias stops having to
+    /// mean both "this Mac" and "the user made it". Nothing is stored differently —
+    /// this reads the field that was always there.
+    func testAWorkspaceNamesItsMachine() {
+        XCTAssertEqual(Workspace(name: "Sessions").device, .thisMac)
+        XCTAssertEqual(Workspace(name: "ukvps", deviceAlias: "ukvps").device,
+                       .ssh(alias: "ukvps"))
+        XCTAssertNil(WorkspaceDevice.thisMac.alias, "this Mac has no alias to reach it by")
+    }
+
+    /// A local shell or a local folder opened while a box's workspace is current
+    /// lands on this Mac, not over there — the workspace would otherwise claim work
+    /// that machine knows nothing about.
+    func testLocalWorkGoesToAWorkspaceOnThisMac() {
+        let home = Workspace(name: "Sessions")
+        let ukvps = Workspace(name: "ukvps", deviceAlias: "ukvps")
+        let store = makeStore(workspaces: [home, ukvps], current: ukvps)
+
+        XCTAssertEqual(store.workspaceForThisMac.id, home.id)
+    }
+
+    /// A workspace already on this Mac keeps it: the redirect exists to correct a
+    /// machine mismatch, not to overrule which scope the user is working in.
+    func testTheCurrentWorkspaceIsKeptWhenItIsAlreadyOnThisMac() {
+        let home = Workspace(name: "Sessions")
+        let other = Workspace(name: "Side")
+        let store = makeStore(workspaces: [home, other], current: other)
+
+        XCTAssertEqual(store.workspaceForThisMac.id, other.id)
+    }
+
+    /// With no workspace on this Mac at all, the current one still takes it: a row
+    /// the user cannot see is worse than a workspace whose machine is briefly
+    /// wrong, and the next load's `reconcile` splits it back apart.
+    func testWithNoLocalWorkspaceTheCurrentOneStillTakesIt() {
+        let ukvps = Workspace(name: "ukvps", deviceAlias: "ukvps")
+        let store = makeStore(workspaces: [ukvps], current: ukvps)
+
+        XCTAssertEqual(store.workspaceForThisMac.id, ukvps.id)
+    }
+}
+
+/// Which workspaces Termio may sweep when they empty out.
+///
+/// The flag exists because the device pass made the old test unsafe: once every
+/// workspace names a machine, "named after a machine" no longer distinguishes one
+/// Termio invented from one the user made and filled with checkouts on that box.
+final class WorkspaceAutoCreatedTests: XCTestCase {
+    /// `autoCreated` defaults to **nil**, not `false`: nil is what a state file
+    /// written before the flag decodes to, which is the input the recovery pass
+    /// exists for. Defaulting it to `false` made these tests assert against a
+    /// value that had already been answered.
+    private func workspace(
+        _ name: String, alias: String? = nil, autoCreated: Bool? = nil
+    ) -> Workspace {
+        Workspace(name: name, deviceAlias: alias, isAutoCreated: autoCreated)
+    }
+
+    /// A file written before the flag: a fallback still looks exactly as
+    /// `deviceWorkspace(for:)` made it, so it is reclaimed as Termio's.
+    func testAnUntouchedFallbackIsRecoveredAsAutoCreated() {
+        let (result, _) = WorkspaceMigration.reconcile(
+            workspaces: [workspace("ukvps", alias: "ukvps")], projects: [])
+        XCTAssertEqual(result[0].isAutoCreated, true)
+    }
+
+    /// Renaming a fallback is how a user claims it, so the name no longer matching
+    /// the alias means it is theirs and must never be swept.
+    func testARenamedFallbackIsTheUsers() {
+        let (result, _) = WorkspaceMigration.reconcile(
+            workspaces: [workspace("Ship auth", alias: "ukvps")], projects: [])
+        XCTAssertEqual(result[0].isAutoCreated, false)
+    }
+
+    /// The regression this flag exists to stop: a workspace the user named, whose
+    /// projects all live on one box, adopts that box's alias in the device pass —
+    /// and must not become sweepable because of it.
+    func testAUserWorkspaceAdoptingADeviceStaysTheUsers() {
+        let named = workspace("Ship auth")
+        var checkout = Project(
+            workspaceID: named.id, name: "api", path: "/srv/api", branch: "—", sessions: [])
+        checkout.legacyDevice = KnownDevice(alias: "ukvps", deviceID: nil)
+        let (result, _) = WorkspaceMigration.reconcile(
+            workspaces: [named], projects: [checkout])
+
+        let adopted = result.first { $0.id == named.id }
+        XCTAssertEqual(adopted?.deviceAlias, "ukvps", "the device pass should still stamp it")
+        XCTAssertEqual(adopted?.isAutoCreated, false, "but it is still the user's workspace")
+    }
+
+    /// `reconcile` runs on every load, so the recovery must not change its answer
+    /// on the second pass — by then every workspace names a machine.
+    func testRecoveryIsIdempotent() {
+        let once = WorkspaceMigration.reconcile(
+            workspaces: [workspace("Ship auth"), workspace("ukvps", alias: "ukvps")],
+            projects: [])
+        let twice = WorkspaceMigration.reconcile(
+            workspaces: once.workspaces, projects: once.projects)
+        XCTAssertEqual(once.workspaces.map(\.isAutoCreated), twice.workspaces.map(\.isAutoCreated))
+        XCTAssertEqual(twice.workspaces.first { $0.name == "Ship auth" }?.isAutoCreated, false)
+    }
+}
+
+/// The two failures an adversarial review found in the first cut of the device
+/// pass. Both are launch-2 or loose-session shaped, which is why the original
+/// tests missed them.
+final class WorkspaceDeviceRegressionTests: XCTestCase {
+    private func checkout(_ name: String, in workspace: Workspace, on alias: String?) -> Project {
+        var project = Project(
+            workspaceID: workspace.id, name: name, path: "/srv/\(name)",
+            branch: "—", sessions: [])
+        project.legacyDevice = alias.map { KnownDevice(alias: $0, deviceID: nil) }
+        return project
+    }
+
+    /// A user names a workspace after the box its checkouts live on. Launch 1
+    /// stamps the alias; launch 2 must not then read that stamp back as "Termio
+    /// made this" and make the workspace sweepable.
+    func testAUserWorkspaceNamedAfterItsMachineSurvivesASecondLaunch() {
+        let named = Workspace(name: "ukvps")
+        let first = WorkspaceMigration.reconcile(
+            workspaces: [named], projects: [checkout("api", in: named, on: "ukvps")])
+        XCTAssertEqual(first.workspaces[0].deviceAlias, "ukvps", "launch 1 stamps the device")
+        XCTAssertEqual(first.workspaces[0].isAutoCreated, false, "and records that it is the user's")
+
+        let second = WorkspaceMigration.reconcile(
+            workspaces: first.workspaces, projects: first.projects)
+        XCTAssertEqual(
+            second.workspaces[0].isAutoCreated, false,
+            "launch 2 must not claim a workspace the user named")
+        XCTAssertEqual(second.workspaces, first.workspaces, "and must change nothing at all")
+    }
+
+    /// A workspace holding local shells and one remote checkout used to adopt the
+    /// remote box, because only projects were consulted — leaving a one-workspace
+    /// tree with nowhere on this Mac for local work to go.
+    func testLocalLooseShellsKeepAWorkspaceOffARemoteBox() {
+        let scope = Workspace(name: "Sessions", terminals: [Session(title: "Terminal 1")])
+        let (workspaces, _) = WorkspaceMigration.reconcile(
+            workspaces: [scope], projects: [checkout("api", in: scope, on: "ukvps")])
+
+        XCTAssertNotNil(
+            workspaces.first { $0.device.isThisMac },
+            "a local shell is a claim on this Mac, so somewhere must still be local")
+        let kept = workspaces.first { $0.id == scope.id }
+        XCTAssertEqual(kept?.device, .thisMac, "the shells' own workspace stays local")
+        XCTAssertEqual(kept?.terminals.count, 1, "and keeps them")
+    }
+
+    /// The same, for a loose shell that runs on a box: it claims that box, so a
+    /// workspace holding only those does not end up on this Mac by default.
+    func testARemoteLooseShellClaimsItsMachine() {
+        var shell = Session(title: "Terminal 1")
+        shell.termiodRemoteHost = "ukvps"
+        let scope = Workspace(name: "Sessions", terminals: [shell])
+
+        let (workspaces, _) = WorkspaceMigration.reconcile(workspaces: [scope], projects: [])
+        XCTAssertEqual(workspaces.first { $0.id == scope.id }?.device, .ssh(alias: "ukvps"))
+    }
+}

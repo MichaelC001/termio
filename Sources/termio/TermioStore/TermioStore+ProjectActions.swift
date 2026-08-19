@@ -381,13 +381,11 @@ extension TermioStore {
     /// loose shell opens its sibling at the same cwd. Agents ignore it: being
     /// confined to the scoped directory is the point.
     func addScratchSession(agent: AgentPreset = .terminal, spawnDirectory: String? = nil) {
-        // A machine's fallback workspace holds what runs on *that* machine, and this
-        // session runs here — filing it there would make the workspace say something
-        // untrue. It lands in the first workspace the user made instead, and the
+        // A workspace on another machine holds what runs over there, and this
+        // session runs here — filing it there would make the workspace say
+        // something untrue. It lands in a workspace on this Mac instead, and the
         // selection carries the scope over with it.
-        let home = currentWorkspace.isDeviceFallback
-            ? workspaces.first { !$0.isDeviceFallback } ?? currentWorkspace
-            : currentWorkspace
+        let home = workspaceForThisMac
         guard let index = workspaces.firstIndex(where: { $0.id == home.id }) else { return }
         // Remember the agent behind a bare "New Chat", so the single ⌘N / `+` / menu
         // action relaunches whatever you actually use (see `defaultChatAgent`).
@@ -548,13 +546,19 @@ extension TermioStore {
         settings.noteRecentProject(name: url.lastPathComponent, path: path)
         // Matched among this Mac's projects only: a checkout on another machine
         // can carry the same path string and is not the same folder.
-        if let existing = projects.first(where: { !$0.isOnAnotherDevice && $0.path == path }) {
+        if let existing = projects.first(where: { !isOnAnotherDevice($0) && $0.path == path }) {
             selectedSessionID = existing.sessions.first?.id
             return
         }
         let session = Session(title: "Terminal 1")
+        // The folder is on this Mac, so it is filed under a workspace on this Mac —
+        // ⌘O and the welcome page reach here with any workspace current, a box's
+        // included, and a local checkout in a workspace on a box is a row nothing
+        // over there can account for. Redirected rather than refused: the user
+        // picked a real folder, and a picker that closes having done nothing reads
+        // as a bug.
         let project = Project(
-            workspaceID: currentWorkspace.id,
+            workspaceID: workspaceForThisMac.id,
             name: url.lastPathComponent,
             path: path,
             branch: "—",
@@ -612,8 +616,8 @@ extension TermioStore {
         }
     }
 
-    /// Clones `originURL` onto `alias` and files the result as a project in the
-    /// current workspace. Reuses the same clone `Clone to <device>…` runs — deploy
+    /// Clones `originURL` onto `alias` and files the result as a project in a
+    /// workspace on `alias`. Reuses the same clone `Clone to <device>…` runs — deploy
     /// gate, HUD, verbatim remote stderr — rather than a second path that would
     /// drift from it.
     private func cloneProject(from originURL: String, on alias: String) {
@@ -622,9 +626,7 @@ extension TermioStore {
         // *is* the origin, so there is no local branch that could be ahead of it.
         let info = GitService.CloneInfo(
             originURL: originURL, repositoryName: name, unpushedCommits: nil)
-        cloneOnRemote(
-            host: alias, info: info,
-            into: .new(name: name, workspace: currentWorkspace.id))
+        cloneOnRemote(host: alias, info: info, into: .new(name: name))
     }
 
     /// Files a directory that is already on `alias` as a project, then opens its
@@ -652,28 +654,32 @@ extension TermioStore {
             name: name.isEmpty ? alias : name,
             at: path,
             on: alias,
-            device: TermiodDeviceRegistry.shared.deviceID(for: TermiodRoute(sshAlias: alias)),
-            workspace: currentWorkspace.id)
+            device: TermiodDeviceRegistry.shared.deviceID(for: TermiodRoute(sshAlias: alias)))
         addRemoteTerminal(host: alias, project: id)
     }
 
-    /// Adds a project whose checkout is on another machine, in `workspace` — a
-    /// normal project row, marked with its device. Reopening the same directory on
-    /// the same machine selects the row that is already there.
+    /// Adds a project whose checkout is on another machine — a normal project row,
+    /// filed in a workspace on that machine. Reopening the same directory on the
+    /// same machine selects the row that is already there.
+    ///
+    /// The workspace is not the caller's to choose: a checkout takes its machine
+    /// from the workspace that owns it, so one on `alias` goes to a workspace on
+    /// `alias` — the current one when it is already that machine's, and that
+    /// machine's own otherwise. The mirror of `addProject`, which redirects a local
+    /// folder to `workspaceForThisMac`.
     ///
     /// No branch probe and no recents entry: both read this Mac's disk, and this
     /// project's folder is not on it.
     @discardableResult
     func addRemoteProject(
-        name: String, at path: String, on alias: String, device deviceID: String?,
-        workspace: Workspace.ID
+        name: String, at path: String, on alias: String, device deviceID: String?
     ) -> Project.ID {
-        if let existing = projects.first(where: { $0.isCheckout(at: path, on: alias, device: deviceID) }) {
+        if let existing = checkout(at: path, on: alias, device: deviceID) {
             selectedSessionID = existing.sessions.first?.id
             return existing.id
         }
         var project = Project(
-            workspaceID: workspace,
+            workspaceID: workspace(forDevice: alias, deviceID: deviceID),
             name: name,
             path: path,
             // No local git to ask, and the daemon reports no branch yet. The em
@@ -682,14 +688,18 @@ extension TermioStore {
             branch: "—",
             sessions: []
         )
-        project.deviceAlias = alias
-        project.deviceID = deviceID
         // The checkout `New Terminal` reads. Keyed by device once a handshake has
         // said which one this alias reaches, by alias until then —
         // `remoteCheckout(device:alias:)` answers from either, and `adoptDevice`
         // promotes the alias key when the machine finally identifies itself.
         project.remoteCheckouts[deviceID ?? alias] = path
         projects.append(project)
+        // The row is filed on its machine, which need not be the workspace on
+        // screen, so the scope follows it there. Done here rather than left to the
+        // terminal that opens next: that terminal can fail — an unreachable box, a
+        // refused deploy — and a project the user just asked for must not land in a
+        // scope they are not looking at.
+        switchToWorkspace(project.workspaceID)
         return project.id
     }
 
@@ -826,13 +836,19 @@ extension TermioStore {
         pruneEmptyDeviceWorkspaces()
     }
 
-    /// Drops any machine fallback workspace left holding nothing, except the one
-    /// the sidebar is currently showing — pulling the scope out from under the
-    /// user as they close the last row on a box is a jump they did not ask for.
+    /// Drops any workspace Termio made itself that is left holding nothing, except
+    /// the one the sidebar is currently showing — pulling the scope out from under
+    /// the user as they close the last row on a box is a jump they did not ask for.
+    ///
+    /// Gated on `isAutoCreated`, not on the workspace naming a machine. Those were
+    /// the same set until `reconcile` began stamping a device onto every workspace;
+    /// after it, a workspace the user named and filled with checkouts on one box
+    /// also names that box, and sweeping it would delete something they made. A
+    /// name someone chose is not Termio's to reclaim.
     private func pruneEmptyDeviceWorkspaces() {
         let occupied = Set(projects.map(\.workspaceID))
         workspaces.removeAll { workspace in
-            workspace.isDeviceFallback
+            workspace.isAutoCreated == true
                 && workspace.looseSessions.isEmpty
                 && !occupied.contains(workspace.id)
                 && workspace.id != currentWorkspaceID

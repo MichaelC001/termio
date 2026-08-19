@@ -33,6 +33,18 @@ final class WorkspaceMigrationTests: XCTestCase {
         Legacy(name: name, path: "/code/\(name)", branch: "main", sessions: sessions)
     }
 
+    /// A checkout as an older state file wrote it: the machine recorded on the
+    /// checkout itself, which is what `reconcile` reads to give the workspace one.
+    /// No alias is that file's way of saying this Mac.
+    private func checkout(
+        _ name: String, in workspace: Workspace, on alias: String? = nil, device: String? = nil
+    ) -> Project {
+        var project = Project(workspaceID: workspace.id, name: name, path: "/code/\(name)",
+                              branch: "main", sessions: [])
+        project.legacyDevice = alias.map { KnownDevice(alias: $0, deviceID: device) }
+        return project
+    }
+
     /// The whole point of the upgrade: the user opens to the column they closed.
     /// Terminals, Chats and every folder project land in one workspace, so the
     /// switcher stays out of sight for someone who never asked for a second scope.
@@ -64,7 +76,7 @@ final class WorkspaceMigrationTests: XCTestCase {
 
         XCTAssertTrue(projects.isEmpty, "a machine is not a folder")
         XCTAssertEqual(workspaces.count, 2)
-        let fallback = workspaces.first { $0.isDeviceFallback }
+        let fallback = workspaces.first { !$0.device.isThisMac }
         XCTAssertEqual(fallback?.name, "ukvps")
         XCTAssertEqual(fallback?.deviceAlias, "ukvps")
         XCTAssertEqual(fallback?.deviceID, "h_aaaa", "the machine it resolved to is kept")
@@ -242,8 +254,156 @@ final class WorkspaceMigrationTests: XCTestCase {
         let (workspaces, projects) = WorkspaceMigration.reconcile(
             workspaces: [home], projects: [filed])
 
-        XCTAssertEqual(workspaces, [home])
+        // Everything but the ownership answer is untouched. That answer is
+        // recorded rather than left absent on purpose: an unrecorded one would be
+        // re-derived next launch, against a device this pass may have just stamped
+        // on, and could then claim a workspace the user named.
+        var settled = home
+        settled.isAutoCreated = false
+        XCTAssertEqual(workspaces, [settled])
         XCTAssertEqual(projects, [filed])
+
+        // And it is a fixed point from there — the property the churn would break.
+        let again = WorkspaceMigration.reconcile(workspaces: workspaces, projects: projects)
+        XCTAssertEqual(again.workspaces, workspaces)
+    }
+
+    // MARK: - Every workspace belongs to one machine
+
+    /// A workspace holding nothing but checkouts on one box *is* that box's,
+    /// whoever made it — so it says so, and the device it resolved to rides along.
+    func testAWorkspaceAdoptsTheMachineItsProjectsAreOn() {
+        let scope = Workspace(name: "Servers")
+        let (workspaces, projects) = WorkspaceMigration.reconcile(
+            workspaces: [scope],
+            projects: [checkout("api", in: scope, on: "ukvps", device: "h_aaaa"),
+                       checkout("web", in: scope, on: "ukvps")])
+
+        XCTAssertEqual(workspaces.count, 1, "one machine, so nothing to split")
+        XCTAssertEqual(workspaces.first?.device, .ssh(alias: "ukvps"))
+        XCTAssertEqual(workspaces.first?.deviceID, "h_aaaa")
+        XCTAssertEqual(workspaces.first?.id, scope.id, "adoption is not a new workspace")
+        XCTAssertEqual(Set(projects.map(\.workspaceID)), [scope.id])
+    }
+
+    /// Nothing filed under it and no machine named: this Mac, which is what an
+    /// absent alias already meant. Nothing is written, so the state file keeps its
+    /// shape.
+    func testAWorkspaceWithNoProjectsStaysOnThisMac() {
+        let scope = Workspace(name: "Sessions", terminals: [session("Terminal 1")])
+
+        let (workspaces, _) = WorkspaceMigration.reconcile(workspaces: [scope], projects: [])
+
+        var settled = scope
+        settled.isAutoCreated = false
+        XCTAssertEqual(workspaces, [settled])
+        XCTAssertEqual(workspaces.first?.device, .thisMac)
+        XCTAssertNil(workspaces.first?.deviceAlias, "no alias is written, so the file keeps its shape")
+    }
+
+    /// The lossy case, and a reachable one: `addProject` files a local folder into
+    /// whatever workspace is current and `addRemoteProject` files a checkout on a
+    /// box into the same place. A workspace cannot mean two machines, so it splits.
+    func testAWorkspaceWhoseProjectsSpanMachinesSplits() throws {
+        let scope = Workspace(name: "Work", terminals: [session("Terminal 1")])
+        let local = checkout("termio", in: scope)
+        let remote = checkout("api", in: scope, on: "ukvps")
+
+        let (workspaces, projects) = WorkspaceMigration.reconcile(
+            workspaces: [scope], projects: [local, remote])
+
+        XCTAssertEqual(workspaces.count, 2)
+        let here = try XCTUnwrap(workspaces.first { $0.device == .thisMac })
+        let there = try XCTUnwrap(workspaces.first { $0.device == .ssh(alias: "ukvps") })
+        XCTAssertEqual(there.name, "ukvps", "the new half is named after its machine")
+        XCTAssertEqual(projects.first { $0.id == local.id }?.workspaceID, here.id)
+        XCTAssertEqual(projects.first { $0.id == remote.id }?.workspaceID, there.id)
+    }
+
+    /// The original uuid survives the split, and on the half the user is still
+    /// looking at. Wire ids embed it — `looseWireID` builds `<uuid>-terminals` for
+    /// the phone to start a session by, and `ControlScope.id` keys the CLI's watch
+    /// streams — so reissuing it on both halves would break both.
+    func testTheOriginalWorkspaceKeepsItsIdAndItsLooseSessions() {
+        let scope = Workspace(name: "Work", terminals: [session("Terminal 1")],
+                              chats: [session("Claude Code", agent: .claudeCode)])
+
+        let (workspaces, _) = WorkspaceMigration.reconcile(
+            workspaces: [scope],
+            projects: [checkout("termio", in: scope), checkout("api", in: scope, on: "ukvps")])
+
+        let kept = workspaces.first { $0.id == scope.id }
+        XCTAssertEqual(kept?.device, .thisMac, "this Mac's half keeps the id")
+        XCTAssertEqual(kept?.name, "Work", "and the name the user gave it")
+        XCTAssertEqual(kept?.looseSessions.map(\.id), scope.looseSessions.map(\.id),
+                       "a loose session has no project to place it by")
+    }
+
+    /// A machine's own workspace keeps the id when it is the one that splits: its
+    /// loose sessions run on that box, and `deviceWorkspace(for:)` finds it by
+    /// alias. The stray local checkout is what moves.
+    func testAMachinesWorkspaceKeepsItsIdAndSheddsTheLocalCheckout() {
+        let ukvps = Workspace(name: "ukvps", terminals: [remote("Terminal 1", host: "ukvps")],
+                              deviceAlias: "ukvps")
+        let strayLocal = checkout("termio", in: ukvps)
+
+        let (workspaces, projects) = WorkspaceMigration.reconcile(
+            workspaces: [ukvps],
+            projects: [strayLocal, checkout("api", in: ukvps, on: "ukvps")])
+
+        let kept = workspaces.first { $0.id == ukvps.id }
+        XCTAssertEqual(kept?.device, .ssh(alias: "ukvps"))
+        XCTAssertEqual(kept?.terminals.count, 1, "the remote shells stay on their machine")
+        XCTAssertEqual(workspaces.count, 2)
+        let here = workspaces.first { $0.device == .thisMac }
+        XCTAssertEqual(projects.first { $0.id == strayLocal.id }?.workspaceID, here?.id)
+    }
+
+    /// A split files its checkouts into the workspace that machine already has,
+    /// rather than minting a second one for the same alias — `deviceWorkspace(for:)`
+    /// matches by alias and expects to find one.
+    func testASplitReusesTheMachinesExistingWorkspace() {
+        let ukvps = Workspace(name: "ukvps", deviceAlias: "ukvps")
+        let scope = Workspace(name: "Work")
+        let remote = checkout("api", in: scope, on: "ukvps")
+
+        let (workspaces, projects) = WorkspaceMigration.reconcile(
+            workspaces: [scope, ukvps], projects: [checkout("termio", in: scope), remote])
+
+        XCTAssertEqual(workspaces.count, 2, "no second workspace for a machine that has one")
+        XCTAssertEqual(projects.first { $0.id == remote.id }?.workspaceID, ukvps.id)
+    }
+
+    /// A local checkout shed by a machine's workspace goes to the workspace this
+    /// Mac already has, rather than adding a scope for a machine the user is
+    /// sitting in front of.
+    func testALocalCheckoutShedByASplitGoesToTheWorkspaceThisMacHas() {
+        let home = Workspace(name: "Sessions")
+        let ukvps = Workspace(name: "ukvps", deviceAlias: "ukvps")
+        let stray = checkout("termio", in: ukvps)
+
+        let (workspaces, projects) = WorkspaceMigration.reconcile(
+            workspaces: [home, ukvps], projects: [stray, checkout("api", in: ukvps, on: "ukvps")])
+
+        XCTAssertEqual(workspaces.count, 2)
+        XCTAssertEqual(projects.first { $0.id == stray.id }?.workspaceID, home.id)
+    }
+
+    /// `reconcile` runs on every load, so a tree it produced must come back
+    /// unchanged — otherwise the sidebar reshuffles itself on every launch.
+    func testReconcileIsIdempotentOverItsOwnOutput() {
+        let scope = Workspace(name: "Work", terminals: [session("Terminal 1")])
+        let once = WorkspaceMigration.reconcile(
+            workspaces: [scope, Workspace(name: "Servers")],
+            projects: [checkout("termio", in: scope),
+                       checkout("api", in: scope, on: "ukvps"),
+                       checkout("web", in: scope, on: "devbox")])
+
+        let twice = WorkspaceMigration.reconcile(
+            workspaces: once.workspaces, projects: once.projects)
+
+        XCTAssertEqual(twice.workspaces, once.workspaces)
+        XCTAssertEqual(twice.projects, once.projects)
     }
 
     /// The upgrade runs once. A state file that already carries workspaces is
@@ -257,8 +417,16 @@ final class WorkspaceMigrationTests: XCTestCase {
         let reconciled = WorkspaceMigration.reconcile(
             workspaces: once.workspaces, projects: once.projects)
 
-        XCTAssertEqual(reconciled.workspaces, once.workspaces)
+        // `migrate` does not answer the ownership question for the home workspace
+        // it mints, so the first `reconcile` records it; nothing else moves.
+        XCTAssertEqual(reconciled.workspaces.map(\.id), once.workspaces.map(\.id))
+        XCTAssertEqual(reconciled.workspaces.map(\.name), once.workspaces.map(\.name))
+        XCTAssertEqual(reconciled.workspaces.map(\.deviceAlias), once.workspaces.map(\.deviceAlias))
         XCTAssertEqual(reconciled.projects, once.projects)
+
+        let again = WorkspaceMigration.reconcile(
+            workspaces: reconciled.workspaces, projects: reconciled.projects)
+        XCTAssertEqual(again.workspaces, reconciled.workspaces)
     }
 }
 

@@ -218,11 +218,9 @@ extension TermioStore {
                 projects[index].remoteCheckouts[device.id] = legacy
                 projects[index].remoteCheckouts[alias] = nil
             }
-            // And what a project *on* this machine turned out to be sitting on,
-            // so two aliases for one box stop reading as two places.
-            if projects[index].deviceAlias == alias, projects[index].deviceID != device.id {
-                projects[index].deviceID = device.id
-            }
+            // What the checkout itself is sitting on is not recorded here: a
+            // project takes its machine from the workspace that owns it, and the
+            // workspace loop below is where that is written down.
             for sessionIndex in projects[index].sessions.indices
             where projects[index].sessions[sessionIndex].termiodRemoteHost == alias
                 && projects[index].sessions[sessionIndex].deviceID != device.id {
@@ -807,8 +805,11 @@ extension TermioStore {
         /// A project already in the tree: the clone is recorded as its checkout on
         /// that machine.
         case existing(Project.ID)
-        /// A project made from the clone itself, filed under `workspace`.
-        case new(name: String, workspace: Workspace.ID)
+        /// A project made from the clone itself. It is filed by `addRemoteProject`,
+        /// in a workspace on the machine the clone landed on — a checkout takes its
+        /// machine from its workspace, so the destination is not the caller's to
+        /// name.
+        case new(name: String)
     }
 
     /// Clones a project's `origin` **onto** `host` (git clone runs on the remote,
@@ -944,13 +945,12 @@ extension TermioStore {
             else { return id }
             projects[index].remoteCheckouts[deviceID] = path
             return id
-        case .new(let name, let workspace):
+        case .new(let name):
             // No path means the clone landed somewhere we couldn't read back, and
             // a project row whose directory is a guess is worse than no row: the
             // terminal still opens on the machine, just without one.
             guard let path = clonedPath else { return nil }
-            return addRemoteProject(
-                name: name, at: path, on: alias, device: deviceID, workspace: workspace)
+            return addRemoteProject(name: name, at: path, on: alias, device: deviceID)
         }
     }
 }
