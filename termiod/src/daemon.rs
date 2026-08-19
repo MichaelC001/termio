@@ -515,6 +515,7 @@ async fn handle_conn(stream: UnixStream, manager: Manager) -> Result<()> {
                         std::env::consts::ARCH
                     ),
                     client_id: client_id.clone(),
+                    home: std::env::var("HOME").unwrap_or_default(),
                 },
             )
             .await?;
