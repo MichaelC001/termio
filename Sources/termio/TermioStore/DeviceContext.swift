@@ -43,7 +43,10 @@ struct KnownDevice: Identifiable, Hashable {
 /// own session list by alias would encode "all sessions are really this Mac's,
 /// tagged with where they went", which is the model the device architecture
 /// exists to replace (§2.1 — the Mac may hold nothing a viewer needs).
-struct DeviceSessions: Sendable {
+/// `Equatable` because a device answering the same thing twice must cost
+/// nothing: the reply is published, and a publish rebuilds the sidebar whether
+/// or not a single row differs.
+struct DeviceSessions: Sendable, Equatable {
     /// Live sessions, in the order the device reported them.
     var live: [Termiod.SessionInformation]
     /// Sessions the device buried, newest first. The only answer to "where did my
@@ -140,10 +143,6 @@ extension TermioStore {
         // Persistence only. The live truth is the published property above; the
         // defaults entry exists so the next launch starts where this one ended.
         settings.currentDeviceAlias = device.alias
-        // Clearing beats guessing: with no session on the new device the detail
-        // pane shows the welcome state, which is the honest picture of a machine
-        // you have not opened anything on yet.
-        selectedSessionID = firstSession(onDevice: device)?.id
         refreshDeviceSessions()
     }
 
@@ -189,20 +188,13 @@ extension TermioStore {
         return rows
     }
 
-    /// Whether the sidebar should draw this Mac's own workspaces — its projects,
-    /// worktrees, and loose funnels. They are the local device's state, and they
-    /// belong to the local device's context only.
-    var isShowingThisMac: Bool { currentDevice.isLocal }
-
     /// The sessions this viewer authored **for** a device: its own records, which
     /// decorate the device's roster but never stand in for it. Reading this in
     /// place of `deviceSessions` is the mistake this comment exists to prevent —
     /// it cannot see a session another client started, and it believes in
     /// sessions whose process died while the app was closed.
     func sessions(authoredFor device: KnownDevice) -> [Session] {
-        projects.flatMap { project in
-            project.sessions.filter { isAuthored($0, for: device) }
-        }
+        allSessions.filter { isAuthored($0, for: device) }
     }
 
     /// Whether a session belongs to the device the app is on. Panels use this to
@@ -223,10 +215,6 @@ extension TermioStore {
             return deviceID == sessionDevice
         }
         return alias == device.alias
-    }
-
-    private func firstSession(onDevice device: KnownDevice) -> Session? {
-        sessions(authoredFor: device).first
     }
 
     /// The name this session carries inside a daemon. Sessions the app created are

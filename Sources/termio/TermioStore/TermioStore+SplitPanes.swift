@@ -30,13 +30,10 @@ extension TermioStore {
     /// Down, `.first` is Split Left / Split Up. Either way the new pane takes
     /// focus — the direction says where the pane lands, not where attention goes.
     func splitSelectedPane(_ direction: SplitDirection, slot: SplitSlot = .second) {
-        guard let focusedID = selectedSessionID,
-              let projectIndex = projects.firstIndex(where: { $0.sessions.contains { $0.id == focusedID } }),
-              let sessionIndex = projects[projectIndex].sessions.firstIndex(where: { $0.id == focusedID })
-        else { return }
+        guard let focusedID = selectedSessionID, let home = locate(focusedID) else { return }
 
-        let project = projects[projectIndex]
-        let terminalCount = project.sessions.filter { $0.agent == .terminal }.count
+        let siblings = roster(at: home)
+        let terminalCount = siblings.filter { $0.agent == .terminal }.count
         var newSession = Session(title: "Terminal \(terminalCount + 1)")
         // A worktree session runs somewhere other than the project root; the
         // companion shell should land where the focused session actually works.
@@ -50,7 +47,8 @@ extension TermioStore {
         // sidebar then reads the split group as adjacent rows, which is what lets
         // it draw the VS Code-style ┌/└ group bracket (see `splitLinkMarks`). The
         // row order follows the layout, so a leading split lists above its origin.
-        projects[projectIndex].sessions.insert(newSession, at: slot == .first ? sessionIndex : sessionIndex + 1)
+        let sessionIndex = home.sessionIndex
+        insertSession(newSession, at: home.atSession(slot == .first ? sessionIndex : sessionIndex + 1))
 
         if let group = groupIndex(containing: focusedID) {
             splitGroups[group] = splitGroups[group]
@@ -91,27 +89,26 @@ extension TermioStore {
     /// surface still attaches and can take a queued prompt.
     @discardableResult
     func addSplitSession(
-        to projectID: Project.ID, agent: AgentPreset = .terminal,
+        in scope: ControlScope, agent: AgentPreset = .terminal,
         anchor: Session.ID? = nil, takeFocus: Bool = true
     ) -> Session.ID? {
-        guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }) else { return nil }
+        let inScope = Set(scope.sessions.map(\.id))
+        let anchorID = anchor.flatMap { inScope.contains($0) ? $0 : nil }
+            ?? selectedSessionID.flatMap { inScope.contains($0) ? $0 : nil }
+            ?? scope.sessions.last?.id
 
-        let anchorID = anchor.flatMap { id in
-            projects[projectIndex].sessions.contains { $0.id == id } ? id : nil
-        } ?? selectedSessionID.flatMap { id in
-            projects[projectIndex].sessions.contains { $0.id == id } ? id : nil
-        } ?? projects[projectIndex].sessions.last?.id
-
-        guard let anchorID,
-              let anchorIndex = projects[projectIndex].sessions.firstIndex(where: { $0.id == anchorID })
-        else {
-            // Empty project — nothing to split against; behave like a normal add.
-            return addSession(to: projectID, agent: agent, takeFocus: takeFocus)
+        guard let anchorID, let anchorHome = locate(anchorID) else {
+            // Nothing to split against. A project still takes a normal add; a
+            // loose scope with no rows left falls back to a scratch session.
+            guard let project = scope.project else {
+                addScratchSession(agent: agent)
+                return selectedSessionID
+            }
+            return addSession(to: project.id, agent: agent, takeFocus: takeFocus)
         }
 
-        let project = projects[projectIndex]
         let title = agent == .terminal
-            ? "Terminal \(project.sessions.filter { $0.agent == .terminal }.count + 1)"
+            ? "Terminal \(scope.sessions.filter { $0.agent == .terminal }.count + 1)"
             : agent.displayName
         var newSession = Session(title: title, agent: agent)
         // Share the anchor's working directory so a worktree agent's sibling lands
@@ -122,7 +119,7 @@ extension TermioStore {
         newSession.inheritDevice(from: session(anchorID))
         // Adjacent to the anchor, so the sidebar reads the group as neighbouring
         // rows and draws its ┌/└ bracket (see `splitLinkMarks`).
-        projects[projectIndex].sessions.insert(newSession, at: anchorIndex + 1)
+        insertSession(newSession, at: anchorHome.atSession(anchorHome.sessionIndex + 1))
 
         // A lone anchor opens side by side; an anchor that already has a
         // neighbour keeps its full pane, with the newcomer stacked into the
@@ -162,10 +159,10 @@ extension TermioStore {
     /// already grouped with `id`. The bucket match is what keeps the resulting
     /// group a single adjacent run in the sidebar, so its ┌/└ bracket draws.
     func groupableTargets(for id: Session.ID) -> [Session] {
-        guard let project = projects.first(where: { $0.sessions.contains { $0.id == id } }),
-              let me = session(id) else { return [] }
+        guard let home = locate(id) else { return [] }
+        let me = self[home]
         let myGroup = groupIndex(containing: id)
-        return project.sessions.filter { other in
+        return roster(at: home).filter { other in
             other.id != id
                 && other.worktreePath == me.worktreePath
                 && !(myGroup != nil && groupIndex(containing: other.id) == myGroup)
@@ -199,8 +196,8 @@ extension TermioStore {
     /// `splitLinkMarks` draw its bracket over them.
     func groupSession(_ moved: Session.ID, with anchor: Session.ID) {
         guard moved != anchor,
-              let projectIndex = projects.firstIndex(where: { $0.sessions.contains { $0.id == anchor } }),
-              projects[projectIndex].sessions.contains(where: { $0.id == moved })
+              let anchorHome = locate(anchor), let movedHome = locate(moved),
+              anchorHome.sharesRoster(with: movedHome)
         else { return }
         // Already sharing the anchor's group — nothing to switch.
         if let anchorGroup = groupIndex(containing: anchor),
@@ -232,22 +229,21 @@ extension TermioStore {
 
         // 3. Sit `moved`'s row right after the anchor's so the sidebar reads the
         //    group as a contiguous run (see `splitLinkMarks`).
-        moveSessionRow(moved, besideAnchor: anchor, in: projectIndex)
+        moveSessionRow(moved, besideAnchor: anchor)
         selectedSessionID = moved
         isPaneZoomed = false
     }
 
-    /// Moves `moved`'s row to immediately follow the anchor's within the project,
-    /// keeping a split group's sidebar rows adjacent. The anchor index is read
-    /// *after* the removal so it stays valid regardless of which row came first.
-    private func moveSessionRow(_ moved: Session.ID, besideAnchor anchor: Session.ID,
-                                in projectIndex: Int) {
-        guard let from = projects[projectIndex].sessions.firstIndex(where: { $0.id == moved })
-        else { return }
-        let row = projects[projectIndex].sessions.remove(at: from)
-        let anchorIndex = projects[projectIndex].sessions.firstIndex { $0.id == anchor }
-            ?? projects[projectIndex].sessions.count - 1
-        projects[projectIndex].sessions.insert(row, at: anchorIndex + 1)
+    /// Moves `moved`'s row to immediately follow the anchor's within their shared
+    /// roster, keeping a split group's sidebar rows adjacent. The anchor index is
+    /// read *after* the removal so it stays valid regardless of which row came first.
+    private func moveSessionRow(_ moved: Session.ID, besideAnchor anchor: Session.ID) {
+        guard let home = locate(moved) else { return }
+        var sessions = roster(at: home)
+        let row = sessions.remove(at: home.sessionIndex)
+        let anchorIndex = sessions.firstIndex { $0.id == anchor } ?? sessions.count - 1
+        sessions.insert(row, at: anchorIndex + 1)
+        setRoster(sessions, at: home)
     }
 
     /// Ungroups the focused *pane* — the layout operation, not the session one.
@@ -357,13 +353,19 @@ extension TermioStore {
     /// two-row bracket while three panes are on screen.
     func gatherSplitRuns() {
         let groups = splitGroups.map(\.leafIDs)
-        for index in projects.indices {
-            let rows = projects[index].sessions.map(\.id)
+        func gather(_ sessions: [Session]) -> [Session]? {
+            let rows = sessions.map(\.id)
             let gathered = gatheringSplitRuns(rows, groups: groups)
-            guard gathered != rows else { continue }
-            let byID = Dictionary(projects[index].sessions.map { ($0.id, $0) },
-                                  uniquingKeysWith: { first, _ in first })
-            projects[index].sessions = gathered.compactMap { byID[$0] }
+            guard gathered != rows else { return nil }
+            let byID = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            return gathered.compactMap { byID[$0] }
+        }
+        for index in projects.indices {
+            if let gathered = gather(projects[index].sessions) { projects[index].sessions = gathered }
+        }
+        for index in workspaces.indices {
+            if let gathered = gather(workspaces[index].terminals) { workspaces[index].terminals = gathered }
+            if let gathered = gather(workspaces[index].chats) { workspaces[index].chats = gathered }
         }
     }
 

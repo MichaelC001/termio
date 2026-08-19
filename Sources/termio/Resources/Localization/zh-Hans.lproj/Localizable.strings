@@ -112,6 +112,8 @@
 	<string>允许访问用量</string>
 	<key>Also Running</key>
 	<string>其他运行中</string>
+	<key>Also Running on %@</key>
+	<string>%@ 上也在运行</string>
 	<key>An older install points at %@. Update it to this version of Termio.</key>
 	<string>旧的安装指向 %@。请将其更新到此版本的 Termio。</string>
 	<key>Anyone</key>
@@ -176,14 +178,16 @@
 	<string>检查更新…</string>
 	<key>Choose a different name.</key>
 	<string>请选取其他名称。</string>
+	<key>Choose a name for this workspace.</key>
+	<string>为这个工作区取个名字。</string>
 	<key>Choose a project folder to open in Termio.</key>
 	<string>选取要在 Termio 中打开的项目文件夹。</string>
 	<key>Choose another branch to compare with.</key>
 	<string>请另选一个用于对比的分支。</string>
 	<key>Choose how projects are ordered</key>
 	<string>选取项目的排序方式</string>
-	<key>Choose which device the sidebar shows</key>
-	<string>选择侧栏显示哪台设备</string>
+	<key>Choose which workspace the sidebar shows</key>
+	<string>选择侧栏显示哪个工作区</string>
 	<key>Choose…</key>
 	<string>选取…</string>
 	<key>Clear</key>
@@ -206,6 +210,8 @@
 	<string>关闭会话</string>
 	<key>Closed</key>
 	<string>已关闭</string>
+	<key>Closing it stops %lld session(s). The folders on disk are left alone.</key>
+	<string>关闭它会停止 %lld 个会话。磁盘上的文件夹不受影响。</string>
 	<key>Collapse All</key>
 	<string>全部折叠</string>
 	<key>Collapse Results</key>
@@ -336,8 +342,6 @@
 	<string>删除…</string>
 	<key>Detached at %@</key>
 	<string>已分离于 %@</string>
-	<key>Device</key>
-	<string>设备</string>
 	<key>Discard %lld Files…</key>
 	<string>放弃 %lld 个文件的更改…</string>
 	<key>Discard Changes</key>
@@ -536,12 +540,16 @@
 	<string>移动访问</string>
 	<key>Move to Trash</key>
 	<string>移到废纸篓</string>
+	<key>Move to Workspace</key>
+	<string>移到工作区</string>
 	<key>Move “%@” to the Trash?</key>
 	<string>要将“%@”移到废纸篓吗？</string>
 	<key>My Agent</key>
 	<string>我的 Agent</string>
 	<key>Name</key>
 	<string>名称</string>
+	<key>Name the workspace. It starts empty; sessions and projects you open from now on are filed under it.</key>
+	<string>为工作区取个名字。它一开始是空的，此后你打开的会话和项目都归入其中。</string>
 	<key>Name the worktree. A new branch of this name is created from HEAD and nested under this project.</key>
 	<string>为 worktree 命名。将从 HEAD 创建一个同名新分支，并嵌套在此项目下。</string>
 	<key>Navigation</key>
@@ -576,6 +584,10 @@
 	<string>新建终端</string>
 	<key>New Terminal at Home</key>
 	<string>在个人文件夹新建终端</string>
+	<key>New Workspace</key>
+	<string>新建工作区</string>
+	<key>New Workspace…</key>
+	<string>新建工作区…</string>
 	<key>New Worktree</key>
 	<string>新建 Worktree</string>
 	<key>New Worktree…</key>
@@ -790,6 +802,8 @@
 	<string>移除</string>
 	<key>Remove Project</key>
 	<string>移除项目</string>
+	<key>Remove Workspace</key>
+	<string>移除工作区</string>
 	<key>Remove Worktree</key>
 	<string>移除 Worktree</string>
 	<key>Remove from List</key>
@@ -804,6 +818,10 @@
 	<string>重命名</string>
 	<key>Rename Session</key>
 	<string>重命名会话</string>
+	<key>Rename Workspace</key>
+	<string>重命名工作区</string>
+	<key>Rename Workspace…</key>
+	<string>重命名工作区…</string>
 	<key>Rename “%@”</key>
 	<string>重命名“%@”</string>
 	<key>Rename…</key>
@@ -834,6 +852,8 @@
 	<string>运行命令…</string>
 	<key>Running terminal sessions will end. You can relaunch later instead.</key>
 	<string>正在运行的终端会话将会结束。你也可以稍后再重新启动。</string>
+	<key>Runs on %@</key>
+	<string>运行于 %@</string>
 	<key>Runs on this Mac with your privileges when Custom is selected — no shell, arguments split on spaces. Use {port} for the companion port; the URL pattern is a regex matching the public https URL your relay prints.</key>
 	<string>选择“自定义”后，该命令会以你的权限在这台 Mac 上运行——不经过 shell，参数按空格拆分。用 {port} 表示配套端口；URL 模式是用于匹配中继输出的公开 https URL 的正则表达式。</string>
 	<key>Runs with `%@`. The agent won’t ask before editing files or running commands.</key>
@@ -964,8 +984,6 @@
 	<string>Termio 无法将内容追加到该仓库的 .gitignore。请检查其权限后重试。</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio 是开源软件：欢迎给仓库加星标、报告 bug 和提出功能请求。</string>
-	<key>Termio isn’t running sessions through termiod.</key>
-	<string>Termio 目前没有通过 termiod 运行会话。</string>
 	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Browse Themes installs one of 50 curated schemes, and any Ghostty-format file you drop into the Themes folder shows up here too.</key>
 	<string>Termio 会随 macOS 外观变化在两者间切换；将槽位留在默认值即可使用 Termio 自带的画布。“浏览主题”可以从 50 个精选配色中安装一个，你放进主题文件夹的 Ghostty 格式文件也会出现在这里。</string>
 	<key>Test</key>
@@ -992,12 +1010,14 @@
 	<string>~/.ssh 中的公钥。可拷贝一个粘贴到服务器的 authorized_keys——私钥永远不会被读取。</string>
 	<key>The session host went away</key>
 	<string>承载会话的进程消失了</string>
-	<key>The sidebar shows this device’s sessions</key>
-	<string>侧栏显示的是这台设备的会话</string>
+	<key>The sidebar shows this workspace</key>
+	<string>侧栏显示的是这个工作区</string>
 	<key>The termio command-line tool, agent skill, and notifications</key>
 	<string>termio 命令行工具、Agent 技能与通知</string>
 	<key>The working tree is clean.</key>
 	<string>工作树中没有任何更改。</string>
+	<key>The workspace is empty. Projects and sessions you open later go to another workspace.</key>
+	<string>这个工作区是空的。之后打开的项目和会话会归入别的工作区。</string>
 	<key>Theme</key>
 	<string>主题</string>
 	<key>Theme, fonts, cursor, and window</key>
@@ -1096,6 +1116,8 @@
 	<string>窗口</string>
 	<key>Working Directory</key>
 	<string>工作目录</string>
+	<key>Workspace</key>
+	<string>工作区</string>
 	<key>Worktree has changes</key>
 	<string>Worktree 存在更改</string>
 	<key>Worktree removed</key>

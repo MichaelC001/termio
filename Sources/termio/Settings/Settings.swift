@@ -140,6 +140,7 @@ final class AppSettings: ObservableObject {
         static let lastChatAgent = "chats.lastAgent"
         static let defaultChatAgent = "chats.defaultAgent"
         static let currentDevice = "devices.current"
+        static let currentWorkspace = "workspaces.current"
     }
 
     // MARK: Appearance
@@ -224,8 +225,22 @@ final class AppSettings: ObservableObject {
     /// State rather than a preference (it is a place, not a taste), so it lives in
     /// `defaults` and never reaches `settings.json`. An alias that no longer
     /// matches a known machine resolves back to this Mac — see `DeviceRoster`.
-    @Published var currentDeviceAlias: String? {
+    /// Deliberately NOT `@Published`: nothing renders from it (the store holds the
+    /// live copy), and every publish here wakes the store's settings observer,
+    /// which restyles every open terminal surface and re-checks the agent hook
+    /// files on disk. Paying that to write one string is what made moving between
+    /// machines hitch.
+    var currentDeviceAlias: String? {
         didSet { defaults.set(currentDeviceAlias, forKey: Key.currentDevice) }
+    }
+
+    /// The workspace the sidebar was showing when the app last closed. State, not
+    /// a preference — the same reason `currentDeviceAlias` lives here. The state
+    /// file carries the authoritative copy; this one covers the launch before the
+    /// store has been built.
+    /// Not `@Published`, for the reason `currentDeviceAlias` above is not.
+    var currentWorkspaceID: UUID? {
+        didSet { defaults.set(currentWorkspaceID?.uuidString, forKey: Key.currentWorkspace) }
     }
 
     /// The most a project can be opened is capped so the Recent column stays a
@@ -625,6 +640,7 @@ final class AppSettings: ObservableObject {
         lastChatAgentID = defaults.string(forKey: Key.lastChatAgent)
         defaultChatAgentID = store.string(Key.defaultChatAgent)
         currentDeviceAlias = defaults.string(forKey: Key.currentDevice)
+        currentWorkspaceID = defaults.string(forKey: Key.currentWorkspace).flatMap(UUID.init)
 
         materializeSelectedThemes()
     }

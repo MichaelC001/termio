@@ -112,6 +112,8 @@
 	<string>Allow Usage Access</string>
 	<key>Also Running</key>
 	<string>Also Running</string>
+	<key>Also Running on %@</key>
+	<string>Also Running on %@</string>
 	<key>An older install points at %@. Update it to this version of Termio.</key>
 	<string>An older install points at %@. Update it to this version of Termio.</string>
 	<key>Anyone</key>
@@ -176,14 +178,16 @@
 	<string>Check for Updates…</string>
 	<key>Choose a different name.</key>
 	<string>Choose a different name.</string>
+	<key>Choose a name for this workspace.</key>
+	<string>Choose a name for this workspace.</string>
 	<key>Choose a project folder to open in Termio.</key>
 	<string>Choose a project folder to open in Termio.</string>
 	<key>Choose another branch to compare with.</key>
 	<string>Choose another branch to compare with.</string>
 	<key>Choose how projects are ordered</key>
 	<string>Choose how projects are ordered</string>
-	<key>Choose which device the sidebar shows</key>
-	<string>Choose which device the sidebar shows</string>
+	<key>Choose which workspace the sidebar shows</key>
+	<string>Choose which workspace the sidebar shows</string>
 	<key>Choose…</key>
 	<string>Choose…</string>
 	<key>Clear</key>
@@ -206,6 +210,8 @@
 	<string>Close session</string>
 	<key>Closed</key>
 	<string>Closed</string>
+	<key>Closing it stops %lld session(s). The folders on disk are left alone.</key>
+	<string>Closing it stops %lld session(s). The folders on disk are left alone.</string>
 	<key>Collapse All</key>
 	<string>Collapse All</string>
 	<key>Collapse Results</key>
@@ -336,8 +342,6 @@
 	<string>Delete…</string>
 	<key>Detached at %@</key>
 	<string>Detached at %@</string>
-	<key>Device</key>
-	<string>Device</string>
 	<key>Discard %lld Files…</key>
 	<string>Discard %lld Files…</string>
 	<key>Discard Changes</key>
@@ -536,12 +540,16 @@
 	<string>Mobile Access</string>
 	<key>Move to Trash</key>
 	<string>Move to Trash</string>
+	<key>Move to Workspace</key>
+	<string>Move to Workspace</string>
 	<key>Move “%@” to the Trash?</key>
 	<string>Move “%@” to the Trash?</string>
 	<key>My Agent</key>
 	<string>My Agent</string>
 	<key>Name</key>
 	<string>Name</string>
+	<key>Name the workspace. It starts empty; sessions and projects you open from now on are filed under it.</key>
+	<string>Name the workspace. It starts empty; sessions and projects you open from now on are filed under it.</string>
 	<key>Name the worktree. A new branch of this name is created from HEAD and nested under this project.</key>
 	<string>Name the worktree. A new branch of this name is created from HEAD and nested under this project.</string>
 	<key>Navigation</key>
@@ -576,6 +584,10 @@
 	<string>New Terminal</string>
 	<key>New Terminal at Home</key>
 	<string>New Terminal at Home</string>
+	<key>New Workspace</key>
+	<string>New Workspace</string>
+	<key>New Workspace…</key>
+	<string>New Workspace…</string>
 	<key>New Worktree</key>
 	<string>New Worktree</string>
 	<key>New Worktree…</key>
@@ -790,6 +802,8 @@
 	<string>Remove</string>
 	<key>Remove Project</key>
 	<string>Remove Project</string>
+	<key>Remove Workspace</key>
+	<string>Remove Workspace</string>
 	<key>Remove Worktree</key>
 	<string>Remove Worktree</string>
 	<key>Remove from List</key>
@@ -804,6 +818,10 @@
 	<string>Rename</string>
 	<key>Rename Session</key>
 	<string>Rename Session</string>
+	<key>Rename Workspace</key>
+	<string>Rename Workspace</string>
+	<key>Rename Workspace…</key>
+	<string>Rename Workspace…</string>
 	<key>Rename “%@”</key>
 	<string>Rename “%@”</string>
 	<key>Rename…</key>
@@ -834,6 +852,8 @@
 	<string>Run a command…</string>
 	<key>Running terminal sessions will end. You can relaunch later instead.</key>
 	<string>Running terminal sessions will end. You can relaunch later instead.</string>
+	<key>Runs on %@</key>
+	<string>Runs on %@</string>
 	<key>Runs on this Mac with your privileges when Custom is selected — no shell, arguments split on spaces. Use {port} for the companion port; the URL pattern is a regex matching the public https URL your relay prints.</key>
 	<string>Runs on this Mac with your privileges when Custom is selected — no shell, arguments split on spaces. Use {port} for the companion port; the URL pattern is a regex matching the public https URL your relay prints.</string>
 	<key>Runs with `%@`. The agent won’t ask before editing files or running commands.</key>
@@ -964,8 +984,6 @@
 	<string>Termio could not append to the repository’s .gitignore. Check its permissions and try again.</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio is open source — star the repo, report bugs, and request features.</string>
-	<key>Termio isn’t running sessions through termiod.</key>
-	<string>Termio isn’t running sessions through termiod.</string>
 	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Browse Themes installs one of 50 curated schemes, and any Ghostty-format file you drop into the Themes folder shows up here too.</key>
 	<string>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Browse Themes installs one of 50 curated schemes, and any Ghostty-format file you drop into the Themes folder shows up here too.</string>
 	<key>Test</key>
@@ -992,12 +1010,14 @@
 	<string>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</string>
 	<key>The session host went away</key>
 	<string>The session host went away</string>
-	<key>The sidebar shows this device’s sessions</key>
-	<string>The sidebar shows this device’s sessions</string>
+	<key>The sidebar shows this workspace</key>
+	<string>The sidebar shows this workspace</string>
 	<key>The termio command-line tool, agent skill, and notifications</key>
 	<string>The termio command-line tool, agent skill, and notifications</string>
 	<key>The working tree is clean.</key>
 	<string>The working tree is clean.</string>
+	<key>The workspace is empty. Projects and sessions you open later go to another workspace.</key>
+	<string>The workspace is empty. Projects and sessions you open later go to another workspace.</string>
 	<key>Theme</key>
 	<string>Theme</string>
 	<key>Theme, fonts, cursor, and window</key>
@@ -1096,6 +1116,8 @@
 	<string>Window</string>
 	<key>Working Directory</key>
 	<string>Working Directory</string>
+	<key>Workspace</key>
+	<string>Workspace</string>
 	<key>Worktree has changes</key>
 	<string>Worktree has changes</string>
 	<key>Worktree removed</key>

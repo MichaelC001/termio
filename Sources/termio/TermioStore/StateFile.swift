@@ -6,7 +6,18 @@ import Foundation
 /// shells restart fresh, so only the tree and the current selection persist.
 struct StateFile {
     struct Snapshot: Codable {
+        /// The workspaces the sidebar scopes by. Absent in every state file
+        /// written before workspaces existed, which is what `legacyProjects`
+        /// below is decoded for.
+        var workspaces: [Workspace]?
+        /// The workspace the sidebar was showing when the app closed.
+        var currentWorkspaceID: Workspace.ID?
         var projects: [Project]
+        /// The same `projects` key read through the pre-workspace shape, filled
+        /// in only when `workspaces` is missing. A project no longer carries the
+        /// funnel fields (`kind`, `sshHost`), so the upgrade has to read the file
+        /// the way it was written — see `WorkspaceMigration`.
+        var legacyProjects: [WorkspaceMigration.LegacyProject]?
         var selectedSessionID: Session.ID?
         /// The single split layout builds before split *groups* used to write.
         /// Never written anymore, only decoded — `TermioStore.restored` migrates
@@ -20,6 +31,60 @@ struct StateFile {
         /// trace is a snapshot of data that gets re-fetched (see `TermioStore.InspectorState`).
         /// Optional so older state files still decode.
         var inspectorLayouts: [String: InspectorLayout]?
+
+        init(
+            workspaces: [Workspace]?,
+            currentWorkspaceID: Workspace.ID?,
+            projects: [Project],
+            selectedSessionID: Session.ID?,
+            splitRoot: SplitNode? = nil,
+            splitGroups: [SplitNode]?,
+            inspectorLayouts: [String: InspectorLayout]?
+        ) {
+            self.workspaces = workspaces
+            self.currentWorkspaceID = currentWorkspaceID
+            self.projects = projects
+            self.selectedSessionID = selectedSessionID
+            self.splitRoot = splitRoot
+            self.splitGroups = splitGroups
+            self.inspectorLayouts = inspectorLayouts
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case workspaces, currentWorkspaceID, projects, selectedSessionID, splitRoot,
+                 splitGroups, inspectorLayouts
+        }
+
+        /// `projects` is decoded twice on an upgrade — once as the live shape, once
+        /// as the shape the file was written in — because one JSON key has to
+        /// answer to both until every user's state file has been rewritten. A file
+        /// that already has `workspaces` skips the second read.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            workspaces = try c.decodeIfPresent([Workspace].self, forKey: .workspaces)
+            currentWorkspaceID = try c.decodeIfPresent(UUID.self, forKey: .currentWorkspaceID)
+            projects = try c.decodeIfPresent([Project].self, forKey: .projects) ?? []
+            legacyProjects = workspaces == nil
+                ? try c.decodeIfPresent([WorkspaceMigration.LegacyProject].self, forKey: .projects)
+                : nil
+            selectedSessionID = try c.decodeIfPresent(UUID.self, forKey: .selectedSessionID)
+            splitRoot = try c.decodeIfPresent(SplitNode.self, forKey: .splitRoot)
+            splitGroups = try c.decodeIfPresent([SplitNode].self, forKey: .splitGroups)
+            inspectorLayouts = try c.decodeIfPresent(
+                [String: InspectorLayout].self, forKey: .inspectorLayouts)
+        }
+
+        /// `legacyProjects` never round-trips: it is the same `projects` array read
+        /// a second way, and writing it would leave a duplicate key in the file.
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encodeIfPresent(workspaces, forKey: .workspaces)
+            try c.encodeIfPresent(currentWorkspaceID, forKey: .currentWorkspaceID)
+            try c.encode(projects, forKey: .projects)
+            try c.encodeIfPresent(selectedSessionID, forKey: .selectedSessionID)
+            try c.encodeIfPresent(splitGroups, forKey: .splitGroups)
+            try c.encodeIfPresent(inspectorLayouts, forKey: .inspectorLayouts)
+        }
     }
 
     /// The persisted slice of a session's inspector layout: which tab, and the file it

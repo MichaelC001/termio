@@ -21,26 +21,15 @@ struct SessionInfoView: View {
     /// A loose terminal reports its live cwd (the session's own mutable path)
     /// rather than the container's `$HOME` fallback.
     private var workingDirectory: String? {
-        guard let project else { return nil }
-        // A session on a remote host has no *local* directory — Reveal in Finder and
-        // Open in <editor> would act on this Mac's filesystem. It reports its remote
-        // location separately (`remoteLocation`) instead.
-        if project.kind == .host { return nil }
-        if project.kind == .terminals, let id = store.selectedSessionID {
-            return store.workingDirectory(for: id)
-                ?? session?.lastWorkingDirectory
-                ?? project.path
-        }
-        return session?.worktreePath ?? project.path
+        store.inspectorProjectPath
     }
 
     /// Where a remote session runs, as `host:path` — the remote counterpart of
     /// `workingDirectory`, shown as plain copyable text because none of the local
     /// file actions apply to it. `nil` for every local session.
     private var remoteLocation: String? {
-        guard let project, project.kind == .host, let alias = project.sshHost else { return nil }
-        let path = session?.termiodRemoteCwd ?? (project.path == "~" ? nil : project.path)
-        guard let path else { return alias }
+        guard let session, let alias = session.termiodRemoteHost ?? session.sshHost else { return nil }
+        guard let path = session.termiodRemoteCwd else { return alias }
         return "\(alias):\(path)"
     }
 

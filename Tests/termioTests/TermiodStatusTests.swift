@@ -17,10 +17,11 @@ final class TermiodStatusTests: XCTestCase {
     }
 
     private func makeStore(with session: Session) -> TermioStore {
-        let project = Project(name: "termio", path: "/code/termio", branch: "main",
-                              sessions: [session], kind: .folder)
+        let workspace = Workspace(name: "Sessions")
+        let project = Project(workspaceID: workspace.id, name: "termio", path: "/code/termio",
+                              branch: "main", sessions: [session])
         let defaults = UserDefaults(suiteName: "termiod-status-\(UUID().uuidString)")
-        return TermioStore(projects: [project],
+        return TermioStore(workspaces: [workspace], projects: [project],
                            settings: AppSettings(defaults: defaults ?? .standard))
     }
 

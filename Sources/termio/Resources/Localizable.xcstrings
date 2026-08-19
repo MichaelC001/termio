@@ -11,26 +11,6 @@
         }
       }
     },
-    "Choose which device the sidebar shows": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "选择侧栏显示哪台设备"
-          }
-        }
-      }
-    },
-    "Device": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "设备"
-          }
-        }
-      }
-    },
     "Takes effect after Termio relaunches.": {
       "localizations": {
         "zh-Hans": {
@@ -5685,32 +5665,12 @@
         }
       }
     },
-    "Termio isn’t running sessions through termiod.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Termio 目前没有通过 termiod 运行会话。"
-          }
-        }
-      }
-    },
     "The session host went away": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "承载会话的进程消失了"
-          }
-        }
-      }
-    },
-    "The sidebar shows this device’s sessions": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "侧栏显示的是这台设备的会话"
           }
         }
       }
@@ -5731,6 +5691,156 @@
           "stringUnit": {
             "state": "translated",
             "value": "这个文件夹没有 git “origin” 远程，无法克隆。"
+          }
+        }
+      }
+    },
+    "Also Running on %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上也在运行"
+          }
+        }
+      }
+    },
+    "Choose a name for this workspace.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为这个工作区取个名字。"
+          }
+        }
+      }
+    },
+    "Choose which workspace the sidebar shows": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择侧栏显示哪个工作区"
+          }
+        }
+      }
+    },
+    "Closing it stops %lld session(s). The folders on disk are left alone.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭它会停止 %lld 个会话。磁盘上的文件夹不受影响。"
+          }
+        }
+      }
+    },
+    "Move to Workspace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移到工作区"
+          }
+        }
+      }
+    },
+    "Name the workspace. It starts empty; sessions and projects you open from now on are filed under it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为工作区取个名字。它一开始是空的，此后你打开的会话和项目都归入其中。"
+          }
+        }
+      }
+    },
+    "New Workspace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建工作区"
+          }
+        }
+      }
+    },
+    "New Workspace…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建工作区…"
+          }
+        }
+      }
+    },
+    "Remove Workspace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除工作区"
+          }
+        }
+      }
+    },
+    "Rename Workspace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重命名工作区"
+          }
+        }
+      }
+    },
+    "Rename Workspace…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重命名工作区…"
+          }
+        }
+      }
+    },
+    "Runs on %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行于 %@"
+          }
+        }
+      }
+    },
+    "The sidebar shows this workspace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "侧栏显示的是这个工作区"
+          }
+        }
+      }
+    },
+    "The workspace is empty. Projects and sessions you open later go to another workspace.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个工作区是空的。之后打开的项目和会话会归入别的工作区。"
+          }
+        }
+      }
+    },
+    "Workspace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工作区"
           }
         }
       }

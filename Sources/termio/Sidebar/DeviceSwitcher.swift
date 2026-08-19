@@ -67,116 +67,78 @@ enum DeviceRoster {
     }
 }
 
-/// The rows every device switcher shows, wherever it is mounted. The sidebar's
-/// toolbar control is the only opening today; the rows live here rather than in it
-/// because there is one current device, and it would be a bug for two controls to
-/// disagree about which one it is.
-struct DeviceSwitcherMenuContent: View {
-    @EnvironmentObject var store: TermioStore
+// A device has no "open" verb of its own. Reaching a machine is always the side
+// effect of putting something on it — New Terminal on that device, Clone to it,
+// or File ▸ Connect to… for a box in `~/.ssh/config` Termio has never worked on
+// — and each of those already lands the user in the right scope. A menu that
+// merely *travels* to a machine is the switcher the workspace replaced.
 
-    var body: some View {
-        let known = DeviceRoster.known(in: store)
-        let unused = DeviceRoster.unusedAliases(known: known)
-        // An inline Picker is what draws the checkmark on the current device; a
-        // row of Buttons would leave the switcher unable to say which machine is
-        // selected.
-        Picker("", selection: selection) {
-            ForEach(known) { device in
-                Text(device.name).tag(device.id)
-            }
+// MARK: - The device mark
+
+extension KnownDevice {
+    /// The machine a session runs on, or `nil` when it runs on this Mac.
+    ///
+    /// The identity has to be the **machine**, never the road to it. A plain `ssh`
+    /// terminal never handshakes with a daemon, so it carries no `deviceID` of its
+    /// own; asked for a mark on the session alone it would hash to a different
+    /// colour than the durable termiod session sitting beside it on the same box.
+    /// The registry already knows where an alias leads, and remembers across
+    /// launches, so the alias is resolved before the identity is formed.
+    ///
+    /// `resolve` is the lookup, injectable so the invariant can be tested without
+    /// standing up the shared registry.
+    static func running(
+        _ session: Session,
+        resolvingAlias resolve: (String) -> String? = {
+            TermiodDeviceRegistry.shared.deviceID(for: TermiodRoute(sshAlias: $0))
         }
-        .pickerStyle(.inline)
-        .labelsHidden()
-        Divider()
-        Button(localized("Refresh")) { store.refreshDeviceSessions() }
-        if !unused.isEmpty {
-            Divider()
-            Menu(localized("Connect to…")) {
-                ForEach(unused, id: \.self) { alias in
-                    Button(alias) { connect(to: alias) }
-                }
-            }
-        }
-    }
-
-    private var selection: Binding<String> {
-        Binding(
-            get: { store.currentDeviceAlias ?? "" },
-            set: { alias in
-                store.switchToDevice(
-                    KnownDevice(alias: alias.isEmpty ? nil : alias, deviceID: nil))
-            }
-        )
-    }
-
-    /// First contact with a machine from `~/.ssh/config`: enter it, then open a
-    /// terminal on it — which is what installs `termiod` there if it is missing.
-    /// Reaching for a box is also saying that is where you are about to work.
-    private func connect(to alias: String) {
-        store.switchToDevice(KnownDevice(alias: alias, deviceID: nil))
-        store.addRemoteTerminal(host: alias)
+    ) -> KnownDevice? {
+        guard let alias = session.termiodRemoteHost ?? session.sshHost else { return nil }
+        return KnownDevice(alias: alias, deviceID: session.deviceID ?? resolve(alias))
     }
 }
 
-/// The device switcher, in the sidebar's own toolbar region: which machine you
-/// are on, and the control that changes it. It sits in the strip above the list
-/// rather than in a row of its own, next to the navigator toggle and the sidebar's
-/// other actions — the band belongs to the column below it, and a first row that
-/// is not a session is a row the tree has to explain.
+/// The mark a device carries wherever it is drawn small enough that its name
+/// won't fit — today the footer dots.
 ///
-/// Quiet by design — it names the device and nothing else — and absent entirely
-/// while this Mac is the only one, so a user who never leaves their laptop never
-/// sees it.
-struct DeviceSwitcherToolbarView: View {
-    @EnvironmentObject var store: TermioStore
-    @EnvironmentObject var settings: AppSettings
-    @Environment(\.controlActiveState) private var controlActive
-
-    /// Long aliases truncate rather than push the sort and `+` buttons toward
-    /// NSToolbar's `»` overflow: the sidebar region has only the room the
-    /// navigator's minimum thickness gives it.
-    private static let nameWidthCeiling: CGFloat = 130
-
-    var body: some View {
-        let known = DeviceRoster.known(in: store)
-        // The single-device collapse. Not "hidden but present": with one machine
-        // there is no switch to make, and a control that always reads "This Mac"
-        // is a label for a decision the user never took.
-        if known.count > 1 {
-            let current = DeviceRoster.current(store, known: known)
-            Menu {
-                DeviceSwitcherMenuContent()
-            } label: {
-                HStack(spacing: 5) {
-                    // Sized against the toolbar's own glyphs (the navigator toggle, the
-                    // sort pull-down) rather than shrunk to fit beside them, and set in
-                    // the sidebar's interface font — this control belongs to that column.
-                    HugeIconView(icon: .serverStack, size: 15, color: color)
-                    Text(current.name)
-                        .font(settings.interfaceFont)
-                        .foregroundStyle(color)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    HugeIconView(icon: .chevronRight, size: 8, color: color,
-                                 lineWidthOverride: 1.75)
-                        .rotationEffect(.degrees(90))
-                }
-                .frame(maxWidth: Self.nameWidthCeiling)
-                .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help(localized("The sidebar shows this device’s sessions"))
+/// A color is not decoration here. The whole class of accident this app has to
+/// prevent is "I thought I was local, I was on the VPS": the panes now refuse to
+/// show the wrong machine's files, and the mark is the cue that arrives *before*
+/// the mistake, without the user reading a label.
+///
+/// The hue comes from the terminal theme (`ChromeTheme.deviceTints`), never from
+/// a palette of our own, and the index is derived from the device's identity so
+/// a machine keeps the same mark across launches, themes, and windows.
+enum DeviceTint {
+    static func color(for device: KnownDevice, chrome: ChromeTheme?) -> Color {
+        // This Mac is deliberately unhued. It is the machine you are on when you
+        // are not thinking about machines, so it reads as the absence of a mark
+        // and every tinted dot means "somewhere else".
+        guard !device.isLocal else { return .secondary }
+        guard let tints = chrome?.deviceTints, !tints.isEmpty else {
+            return Self.systemTints[index(for: device, count: Self.systemTints.count)]
         }
+        return tints[index(for: device, count: tints.count)]
     }
 
-    // Matched to the sidebar toolbar's native glyphs (the `+` new-terminal item, the
-    // sort pull-down): those are bordered `NSToolbarItem`s, which tint their template
-    // symbol at full-strength `labelColor`, so the device name sits at `.primary` to
-    // read as one control band with them rather than a dimmer `.secondary` label.
-    private var color: Color {
-        controlActive == .inactive ? Color(nsColor: .disabledControlTextColor) : .primary
+    /// Used only when no terminal theme is selected, so the chrome is on the
+    /// system appearance and has no palette to borrow from.
+    private static let systemTints: [Color] = [.green, .yellow, .blue, .purple, .teal]
+
+    private static func index(for device: KnownDevice, count: Int) -> Int {
+        // The `host_id` once a handshake has revealed one, the alias until then —
+        // the same bootstrap/stable split `KnownDevice` carries. A device whose id
+        // arrives later therefore *can* change mark once, which is the honest
+        // outcome: before the handshake we did not know which machine it was.
+        let identity = device.deviceID ?? device.alias ?? ""
+        // FNV-1a rather than `hashValue`: Swift seeds its hasher per process, so a
+        // hashed index would repaint every device on every launch.
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in identity.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 0x100_0000_01b3
+        }
+        return Int(hash % UInt64(max(count, 1)))
     }
 }
 
@@ -209,6 +171,18 @@ func newTerminalMenuItem(
         let cloned = project?.remoteCheckout(device: device.deviceID, alias: alias) != nil
         let label = project == nil || cloned ? device.name : "\(device.name) — not cloned yet"
         return .action(label) { store.addRemoteTerminal(host: alias, project: projectID) }
+    })
+}
+
+/// "Move to Workspace ▸": files a project under a different scope. `nil` with one
+/// workspace — there is nowhere to move to, and a submenu naming only the
+/// workspace the project is already in is a dead click.
+@MainActor
+func moveToWorkspaceMenuItem(store: TermioStore, project: Project) -> SidebarMenuItem? {
+    let targets = WorkspaceSpaces.ordered(in: store).filter { $0.id != project.workspaceID }
+    guard !targets.isEmpty else { return nil }
+    return .submenu(localized("Move to Workspace"), targets.map { workspace in
+        .action(workspace.name) { store.moveProject(project.id, toWorkspace: workspace.id) }
     })
 }
 

@@ -84,6 +84,7 @@ from the real front matter).
 | draft | design | [Browser Control over CDP](design/browser-cdp.md) |
 | draft | design | [Device Architecture — one server per device, every UI a client](design/20260805-termiod-device-architecture.md) |
 | draft | design | [Hot path, attach join point, and client classes](design/20260805-termiod-hot-path-and-client-classes.md) |
+| draft | design | [Instant view switching — prior art and technique](design/20260819-instant-view-switching.md) |
 | draft | design | [Issue Triage → 本地 agent（GitHub / Linear 事件驱动 Termio session）](design/20260723-issue-triage-local-agent.md) |
 | draft | design | [Mac retention analytics (no app changes)](design/20260715-mac-retention-analytics.md) |
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/20260708-remote-projects.md) |
@@ -110,6 +111,7 @@ from the real front matter).
 | fixed | bug | [Terminal loses focus after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
 | fixed | bug | [Terminal loses focus while the window stays key — sibling-render trigger](bug/terminal-focus-loss-on-sibling-render.md) |
 | in-progress | rfc | [可扩展 Agent —— 配置化定义 + 配置化 Hook](design/20260707-agent-extensibility.md) |
+| in-review | design | [Workspace switch latency](design/20260819-workspace-switch-latency.md) |
 | in-review | rfc | [Every machine is a device, every place you work is a project](rfcs/remote-to-device.md) |
 | in-review | rfc | [One path — local sessions run through termiod too](rfcs/one-path-local-through-termiod.md) |
 | in-review | rfc | [Split panes — Ghostty-style splits in the terminal column](rfcs/split-panes.md) |

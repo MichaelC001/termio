@@ -14,16 +14,57 @@ final class TermioStore: ObservableObject {
         // edited) is written back to disk so the sidebar survives app restarts,
         // and the set of folders whose branch we track live is re-synced.
         didSet {
+            // First, before anything else reads the tree: `syncRuntimes` below and
+            // every observer this change wakes resolve sessions through the index,
+            // and a slot still describing the pre-mutation array is a wrong answer
+            // — the callers remove and insert at it — not merely a stale one.
+            rebuildSessionSlots()
             persist()
             syncWatchedFolders()
             syncRuntimes()
         }
     }
+
+    /// The scopes the sidebar shows, and the loose sessions each one owns. There
+    /// is always at least one; a user who never makes a second never sees the
+    /// switcher.
+    @Published var workspaces: [Workspace] {
+        didSet {
+            rebuildSessionSlots()
+            persist()
+            syncRuntimes()
+        }
+    }
+
+    /// Where every session sits, so `locate(_:)` costs a dictionary read. Rebuilt
+    /// as the first act of both `didSet`s above and once in `init` (which assigns
+    /// the arrays before the observers are armed) — those three sites are the only
+    /// places the tree can change, so nothing else has to keep it honest.
+    private(set) var sessionSlots = SessionSlotIndex()
+
+    private func rebuildSessionSlots() {
+        sessionSlots = SessionSlotIndex(workspaces: workspaces, projects: projects)
+    }
+
+    /// Counts arrivals in a workspace, so the work a switch defers can tell
+    /// whether it is still wanted. A user mid-swipe passes through scopes they
+    /// never stop on; only the last arrival settles (see `finishArriving`).
+    var workspaceArrival: UInt64 = 0
+
+    /// Which workspace the sidebar is showing. Live state, like the selection —
+    /// `AppSettings` keeps a copy only so the next launch starts where this one
+    /// ended. Written through `switchToWorkspace(_:)`, which moves the selection
+    /// with it.
+    @Published var currentWorkspaceID: Workspace.ID
     @Published var selectedSessionID: Session.ID? {
         // Selecting a session means the user is now looking at it, so any pending
         // "needs attention" (or unseen "done") is, by definition, answered.
         didSet {
             guard oldValue != selectedSessionID else { return }
+            // Half of what a workspace switch costs is here: the switch moves the
+            // selection, and everything below rides on that.
+            let span = Trace.workspace.begin("selection change")
+            defer { Trace.workspace.end(span) }
             // Save the inspector layout of the session we're leaving and restore the one
             // we're arriving at, so each terminal tab keeps its own right-side context
             // (issue #160). This replaces the blanket overlay-clear that used to live in
@@ -37,6 +78,12 @@ final class TermioStore: ObservableObject {
                 applyInspectorState(selectedSessionID.flatMap { inspectorStates[$0] } ?? InspectorState())
             }
             if let id = selectedSessionID {
+                // Looking at a session is being in its workspace. A global verb —
+                // a deep link, the palette, a notification, an SSH shell filed
+                // under a machine's fallback — can put the selection anywhere, and
+                // a window showing one scope while the terminal belongs to another
+                // is the same confusion the device context exists to prevent.
+                enterWorkspace(of: id)
                 // Looking at a session is being on its machine. Every path that
                 // moves the selection — a deep link, the palette, a notification,
                 // a split, a freshly opened remote terminal — lands here, so this
@@ -51,7 +98,12 @@ final class TermioStore: ObservableObject {
                 // forced past the coalesce window since it's a deliberate user action.
                 if let pid = project(for: id)?.id { noteProjectActivity(pid, force: true) }
             }
-            persist()
+            // Debounced, not inline: moving the selection is the most frequent
+            // edit in the app — every row click, every ⌘⇧], every step of a
+            // workspace swipe — and a synchronous encode-and-write of the whole
+            // tree on each one is a hitch the user feels as the switch being
+            // slow. The quit path flushes whatever is still pending.
+            persistSoon()
         }
     }
 
@@ -351,9 +403,8 @@ final class TermioStore: ObservableObject {
     /// the row on the terminal (`TerminalPane.sendPaths`, which shares these tokens).
     @discardableResult
     func addPathToSelectedSessionPrompt(_ url: URL) -> Bool {
-        guard let id = selectedSessionID, let session = session(id),
-              let project = project(for: id) else { return false }
-        return surface(for: session, in: project).send(Self.promptToken(for: url) + " ")
+        guard let id = selectedSessionID, let session = session(id) else { return false }
+        return surface(for: session).send(Self.promptToken(for: url) + " ")
     }
 
     /// Pastes selected text into the selected session's prompt, wrapped in bracketed
@@ -370,9 +421,8 @@ final class TermioStore: ObservableObject {
     /// PTY input.
     @discardableResult
     func addSnippetToSelectedSessionPrompt(_ text: String) -> Bool {
-        guard let id = selectedSessionID, let session = session(id),
-              let project = project(for: id) else { return false }
-        let state = surface(for: session, in: project)
+        guard let id = selectedSessionID, let session = session(id) else { return false }
+        let state = surface(for: session)
         guard case let .inMemory(backend) = state.configuration.backend else { return false }
         backend.sendInput(Data(("\u{1B}[200~" + text + "\u{1B}[201~").utf8))
         return true
@@ -417,15 +467,22 @@ final class TermioStore: ObservableObject {
     /// other box — so it reports `nil` and the panes show their empty state rather
     /// than a local directory that merely shares a name with the remote one.
     var inspectorProjectPath: String? {
-        guard let id = selectedSessionID, let project = project(for: id) else { return nil }
-        if project.kind == .host { return nil }
-        guard session(id)?.sshHost == nil else { return nil }
-        if project.kind == .terminals {
+        guard let id = selectedSessionID, let slot = locate(id) else { return nil }
+        let session = self[slot]
+        // A session that runs on another machine has no *local* root: its files
+        // live over there, and pointing the panes at a local path that merely
+        // shares a name would be worse than showing nothing.
+        guard session.sshHost == nil, session.termiodRemoteHost == nil else { return nil }
+        switch slot {
+        case .project(let index, _):
+            return session.worktreePath ?? projects[index].path
+        case .terminals:
             return workingDirectory(for: id)
-                ?? session(id)?.lastWorkingDirectory
-                ?? project.path
+                ?? session.lastWorkingDirectory
+                ?? Self.looseTerminalRoot
+        case .chats:
+            return Self.looseChatRoot
         }
-        return session(id)?.worktreePath ?? project.path
     }
 
     /// Whether the trailing inspector panel is expanded. Mirrored from the AppKit
@@ -485,10 +542,26 @@ final class TermioStore: ObservableObject {
     /// would lose it. Debounced so a burst of clicks writes once. Skipped during restore.
     private func persistInspectorSoon() {
         guard !isRestoringInspector else { return }
+        persistSoon()
+    }
+
+    /// Coalesces a burst of tree edits into one write a beat later. Every caller
+    /// that fires on a gesture or a click routes through here; only the paths
+    /// that must survive an immediate crash (`persistNow`) write inline.
+    func persistSoon() {
+        guard !isRestoringInspector else { return }
         persistDebounce?.cancel()
         let work = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.persist() } }
         persistDebounce = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
+    /// Writes any pending debounced save immediately. Called on quit, so a
+    /// selection or layout change made in the last beat before ⌘Q is not lost.
+    func persistNow() {
+        persistDebounce?.cancel()
+        persistDebounce = nil
+        persist()
     }
 
     /// Snapshots the inspector's current content into an `InspectorState`.
@@ -570,8 +643,11 @@ final class TermioStore: ObservableObject {
     /// dependency and warn about mutating state mid-render) and drops runtimes for
     /// sessions that have closed. Called from `projects.didSet` and once after load, so
     /// every add/remove/restore keeps the map in step without per-site bookkeeping.
+    /// Reads the live set off `sessionSlots`, so it must run after
+    /// `rebuildSessionSlots` — and off the index rather than `allSessions`, which
+    /// would copy every session to answer a question about ids.
     func syncRuntimes() {
-        let live = Set(projects.flatMap(\.sessions).map(\.id))
+        let live = Set(sessionSlots.sessionIDs)
         for id in live where runtimes[id] == nil { runtimes[id] = SessionRuntime() }
         for id in runtimes.keys where !live.contains(id) { runtimes.removeValue(forKey: id) }
         // A closed session's saved inspector layout goes with it.
@@ -706,6 +782,12 @@ final class TermioStore: ObservableObject {
     /// from here, so a `git checkout` inside a session updates the UI on its own.
     let branchModel = BranchModel()
 
+    /// Realized file trees per root directory, so returning to a checkout hands the
+    /// outline its tree back instead of rebuilding it. Lives here, beside the
+    /// surface cache, for the same reason that one does: the model has to outlive
+    /// the view that shows it. See `FileTreeCache`.
+    let fileTrees = FileTreeCache()
+
     var surfaces: [Session.ID: TerminalViewState] = [:]
     var monitors: [Session.ID: [AnyCancellable]] = [:]
     /// The termio-owned PTY behind each host-managed session — the byte stream
@@ -746,6 +828,31 @@ final class TermioStore: ObservableObject {
     /// Without it, switching away during an SSH round trip repaints the sidebar
     /// with the previous machine's sessions.
     var deviceSessionsGeneration = 0
+
+    /// Which route the published `deviceSessions` describes. A roster is only
+    /// reusable for the machine it came from, so every decision to skip a fetch
+    /// or a publish has to check this first — without it, coalescing two
+    /// requests would leave one machine's sessions on screen under another
+    /// machine's name.
+    var deviceSessionsRoute: String?
+
+    /// What the roster path knows about one route between requests. Keyed by
+    /// `TermiodRoute.description` in `rosterFetches`.
+    struct RosterFetch {
+        /// A request is out and its reply is still coming.
+        var inFlight = false
+        /// When the last reply landed, so a repeat ask inside the coalescing
+        /// window can be answered with what is already on screen.
+        var settledAt: ContinuousClock.Instant?
+        /// What this route last answered, so an identical answer can be
+        /// recognised as one. Compared against the route's own last reply
+        /// rather than against what is published: after a switch away and back
+        /// the published answer belongs to a different machine, and comparing
+        /// with that would call every reply new.
+        var answer: DeviceSessions?
+    }
+
+    var rosterFetches: [String: RosterFetch] = [:]
 
     /// App-quit teardown: without this, session children outlive the app — the
     /// closing PTY's SIGHUP is swallowed by agent TUIs, and they pile up as
@@ -912,10 +1019,21 @@ final class TermioStore: ObservableObject {
         UserDefaults.standard.set(rows, forKey: Self.hostGridRowsKey)
     }
 
-    init(projects: [Project], settings: AppSettings) {
+    init(workspaces: [Workspace], projects: [Project] = [], settings: AppSettings) {
         self.settings = settings
-        self.projects = projects
-        self.selectedSessionID = projects.first?.sessions.first?.id
+        let reconciled = WorkspaceMigration.reconcile(workspaces: workspaces, projects: projects)
+        // The scope the app opens in: the one the last run ended in, or the first
+        // workspace when that id no longer names anything.
+        let opening = reconciled.workspaces.first { $0.id == settings.currentWorkspaceID }
+            ?? reconciled.workspaces.first
+            ?? Workspace(name: Workspace.defaultName)
+        self.workspaces = reconciled.workspaces.isEmpty ? [opening] : reconciled.workspaces
+        self.projects = reconciled.projects
+        self.currentWorkspaceID = opening.id
+        let openingSessions = opening.looseSessions
+            + reconciled.projects.filter { $0.workspaceID == opening.id }.flatMap(\.sessions)
+        let firstShown = openingSessions.first
+        self.selectedSessionID = firstShown?.id
         // The machine the app opens on: the one the session it is about to show
         // runs on, and the device the last run ended on when it shows nothing.
         //
@@ -927,16 +1045,20 @@ final class TermioStore: ObservableObject {
         // device badge exists to prevent. (A later selection realigns the context
         // through the selection's `didSet`; this covers the first one, which is
         // assigned before that `didSet` is armed.)
-        let opening = projects.first?.sessions.first
-        self.currentDeviceAlias = opening.map { $0.termiodRemoteHost ?? $0.sshHost }
+        self.currentDeviceAlias = firstShown.map { $0.termiodRemoteHost ?? $0.sshHost }
+            // A machine's fallback workspace *is* that machine, so opening in one
+            // is being on it even before a session is picked.
+            ?? opening.deviceAlias
             ?? settings.currentDeviceAlias
         let storedColumns = UserDefaults.standard.integer(forKey: Self.hostGridColumnsKey)
         let storedRows = UserDefaults.standard.integer(forKey: Self.hostGridRowsKey)
         self.lastHostGridColumns = storedColumns > 0 ? storedColumns : 80
         self.lastHostGridRows = storedRows > 0 ? storedRows : 24
         // The initial `projects` assignment above runs before `didSet` is armed, so
-        // seed the runtime map for the restored tree explicitly (later add/remove goes
-        // through `projects.didSet`).
+        // seed the slot index and the runtime map for the restored tree explicitly
+        // (later add/remove goes through `projects.didSet`). Index first —
+        // `syncRuntimes` reads it.
+        rebuildSessionSlots()
         syncRuntimes()
 
         // Re-style already-open terminals whenever appearance settings change.
@@ -1062,7 +1184,7 @@ final class TermioStore: ObservableObject {
     /// `limitedTo` scopes the pass to the projects owning those folders (a project
     /// path or one of its worktree paths); `nil` re-scans every folder project.
     func reconcileWorktrees(limitedTo folders: Set<String>? = nil) {
-        for project in projects where project.kind == .folder {
+        for project in projects {
             if let folders, !projectOwns(project, anyOf: folders) { continue }
             let id = project.id
             let path = project.path
@@ -1121,20 +1243,30 @@ final class TermioStore: ObservableObject {
     /// Live terminal surfaces are not persisted — each session's shell restarts
     /// fresh in its project directory the first time it is opened again.
     static func restored(settings: AppSettings) -> TermioStore {
-        guard let snapshot = StateFile().load(), !snapshot.projects.isEmpty else {
-            return TermioStore(projects: Project.firstRunProjects(), settings: settings)
+        guard let snapshot = StateFile().load(),
+              !(snapshot.workspaces ?? []).isEmpty || !snapshot.projects.isEmpty
+        else {
+            return TermioStore(workspaces: Workspace.firstRun(), settings: settings)
         }
 
-        let store = TermioStore(
-            projects: liftingRemoteSessionsToHosts(
-                migratingScratchProject(migratingHomeProject(normalizingAgentTitles(snapshot.projects)))),
-            settings: settings
-        )
+        // A file written before workspaces existed is upgraded here, once: every
+        // container it holds becomes a workspace or a project, and nothing it
+        // holds is dropped. A file that already has workspaces skips the upgrade.
+        let store: TermioStore
+        if let workspaces = snapshot.workspaces, !workspaces.isEmpty {
+            if let stored = snapshot.currentWorkspaceID { settings.currentWorkspaceID = stored }
+            store = TermioStore(
+                workspaces: workspaces, projects: snapshot.projects, settings: settings)
+        } else {
+            let migrated = WorkspaceMigration.migrate(snapshot.legacyProjects ?? [])
+            store = TermioStore(
+                workspaces: migrated.workspaces, projects: migrated.projects, settings: settings)
+        }
         // Seed each session's saved inspector layout (tab + open file). The file is
         // validated for existence — a file deleted, or a worktree removed, while the app
         // was closed silently falls back to no detail rather than an error overlay.
         if let layouts = snapshot.inspectorLayouts {
-            let live = Set(store.projects.flatMap(\.sessions).map(\.id))
+            let live = Set(store.allSessions.map(\.id))
             for (key, layout) in layouts {
                 guard let id = UUID(uuidString: key), live.contains(id) else { continue }
                 var state = InspectorState(tab: layout.tab)
@@ -1174,151 +1306,9 @@ final class TermioStore: ObservableObject {
         return store
     }
 
-    /// Earlier builds saved agent sessions with a lowercased label (`claude code`)
-    /// and plain terminals as `session N`. We now keep the agent's real name
-    /// (`Claude Code`, `Terminal N`), so upgrade any session whose title is still
-    /// one of those old auto-generated forms. A title the user changed to anything
-    /// else is left untouched.
-    private static func normalizingAgentTitles(_ projects: [Project]) -> [Project] {
-        projects.map { project in
-            var project = project
-            project.sessions = project.sessions.map { session in
-                var session = session
-                if session.agent == .terminal {
-                    let suffix = session.title.dropFirst("session ".count)
-                    if session.title.hasPrefix("session "), !suffix.isEmpty,
-                       suffix.allSatisfy(\.isNumber) {
-                        session.title = "Terminal \(suffix)"
-                    }
-                } else if session.title == session.agent.displayName.lowercased() {
-                    session.title = session.agent.displayName
-                }
-                return session
-            }
-            return project
-        }
-    }
-
-    /// State files from before the loose-terminals entity existed (see
-    /// docs/design/20260713-loose-terminal-entity.md) modeled scratch terminals as a plain
-    /// project rooted at `$HOME`. Re-tag that container as `.terminals` (with the
-    /// fixed section name) so it renders as the Terminals section rather than a
-    /// fake home project. Idempotent — an already-tagged container passes through
-    /// unchanged. The pre-entity seed also called its one shell "shell", which
-    /// isn't an auto `Terminal N` name and would block the cwd-basename label, so
-    /// it is re-numbered here.
-    private static func migratingHomeProject(_ projects: [Project]) -> [Project] {
-        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
-        return projects.map { project in
-            var project = project
-            // A host container's `path` is a *remote* path, and its default `~`
-            // tilde-expands to this Mac's home — without this guard the home rule
-            // below would swallow every host into the Terminals funnel on relaunch,
-            // undoing exactly what `liftingRemoteSessionsToHosts` just did.
-            guard project.kind != .host else { return project }
-            guard project.kind == .terminals
-                || (project.path as NSString).standardizingPath == home else { return project }
-            project.kind = .terminals
-            project.name = "Terminals"
-            project.sessions = project.sessions.enumerated().map { index, session in
-                var session = session
-                if session.title == "shell" { session.title = "Terminal \(index + 1)" }
-                return session
-            }
-            return project
-        }
-    }
-
-    /// State files from before the Chats funnel existed modeled scratch **agent**
-    /// sessions as a plain `.folder` project named "default" at `~/.termio/default`.
-    /// Re-tag that container as `.chats` (the fixed section name and the new
-    /// `~/.termio/chats` root) so it renders as the Chats section rather than a fake
-    /// "default" project folder. Matched by its old scratch path; idempotent — an
-    /// already-tagged `.chats` container, and any real project, pass through unchanged.
-    /// Sessions restart fresh on relaunch anyway, so repointing the spawn path is free.
-    private static func migratingScratchProject(_ projects: [Project]) -> [Project] {
-        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
-        let oldPath = home.appendingPathComponent(".termio/default").standardizedFileURL.path
-        let newPath = home.appendingPathComponent(".termio/chats").standardizedFileURL.path
-        return projects.map { project in
-            guard project.kind == .folder,
-                  (project.path as NSString).standardizingPath == oldPath else { return project }
-            var project = project
-            project.kind = .chats
-            project.name = "Chats"
-            project.path = newPath
-            return project
-        }
-    }
-
-    /// State files written before the `.host` container existed put every remote
-    /// session — plain `ssh` and durable termiod alike — in the `.terminals` funnel,
-    /// where a box you SSH into rendered as a loose local shell. Lift each one into
-    /// its machine's own container, keyed by alias, preserving session order within
-    /// each host. Only the loose funnel is drained: a remote terminal opened *from* a
-    /// project belongs to that project (the row you clicked is the row it appears
-    /// under), so `.folder` containers are left alone. Idempotent — a state file that
-    /// already has its hosts split out has nothing remote left in `.terminals`.
-    nonisolated static func liftingRemoteSessionsToHosts(_ projects: [Project]) -> [Project] {
-        func alias(_ session: Session) -> String? { session.termiodRemoteHost ?? session.sshHost }
-        guard projects.contains(where: { $0.kind == .terminals && $0.sessions.contains { alias($0) != nil } })
-        else { return projects }
-
-        var result: [Project] = []
-        // Host containers already in the file absorb the lifted sessions rather than
-        // being duplicated, so the merge survives a half-migrated state.
-        var hostIndex: [String: Int] = [:]
-        for (offset, project) in projects.enumerated() where project.kind == .host {
-            if let host = project.sshHost { hostIndex[host] = offset }
-        }
-
-        var lifted: [String: [Session]] = [:]
-        for var project in projects {
-            if project.kind == .terminals {
-                for session in project.sessions {
-                    guard let host = alias(session) else { continue }
-                    lifted[host, default: []].append(session)
-                }
-                project.sessions = project.sessions.filter { alias($0) == nil }
-            }
-            result.append(project)
-        }
-
-        for (host, sessions) in lifted.sorted(by: { $0.key < $1.key }) {
-            // In the funnel a remote session was auto-named for its box, since that
-            // was the only thing telling it apart from the local shells around it.
-            // Inside the box's own block that name is the header, so it renumbers —
-            // `ukvps ▸ ukvps` says the same word twice. Titles the user (or a clone)
-            // chose are left exactly as they are.
-            var taken = Set(hostIndex[host].map { result[$0].sessions.map(\.title) } ?? [])
-            taken.formUnion(sessions.map(\.title))
-            var counter = 0
-            let renamed = sessions.map { session -> Session in
-                guard session.title == host else { return session }
-                var session = session
-                repeat { counter += 1 } while taken.contains("Terminal \(counter)")
-                session.title = "Terminal \(counter)"
-                taken.insert(session.title)
-                return session
-            }
-            if let existing = hostIndex[host] {
-                result[existing].sessions.append(contentsOf: renamed)
-            } else {
-                // The remote cwd is the session's own property, so the container's
-                // root stays `~` unless a session already records one.
-                let root = renamed.compactMap(\.termiodRemoteCwd).first
-                result.append(Project(
-                    name: host, path: root ?? "~", branch: "—",
-                    sessions: renamed, kind: .host, sshHost: host
-                ))
-            }
-        }
-        // A funnel emptied by the lift is dropped: an empty Terminals section is
-        // hidden in the sidebar anyway, and keeping it would resurrect on next launch.
-        return result.filter { $0.kind != .terminals || !$0.sessions.isEmpty }
-    }
-
     private func persist() {
+        let span = Trace.workspace.begin("persist")
+        defer { Trace.workspace.end(span) }
         // Fold the current selection's live inspector layout in — it isn't copied into
         // `inspectorStates` until the selection leaves it.
         var states = inspectorStates
@@ -1335,6 +1325,8 @@ final class TermioStore: ObservableObject {
             )
         }
         stateFile.save(.init(
+            workspaces: workspaces,
+            currentWorkspaceID: currentWorkspaceID,
             projects: projects,
             selectedSessionID: selectedSessionID,
             splitGroups: splitGroups,
@@ -1447,7 +1439,7 @@ final class TermioStore: ObservableObject {
         // persisted from the last run, then to a bare `Terminal` before the
         // shell's first OSC 7 report. Project terminals keep the plain label —
         // their place is the project, not wherever they've wandered.
-        if project(for: session.id)?.kind == .terminals,
+        if isLooseTerminal(session.id),
            let cwd = runtimes[session.id]?.workingDirectory ?? session.lastWorkingDirectory {
             return Self.terminalLabel(forPath: cwd)
         }
@@ -1476,7 +1468,9 @@ final class TermioStore: ObservableObject {
     /// The single state the menu-bar pulse renders: any session waiting on the
     /// user wins, then any working session, then any just-finished one, else calm.
     var aggregateStatus: SessionStatus {
-        let all = projects.flatMap(\.sessions).map { status(for: $0.id) }
+        // Every session on the machine, never the current workspace's: a scope
+        // narrows which panes you see, never which agents are waiting on you.
+        let all = allSessions.map { status(for: $0.id) }
         if all.contains(.needsAttention) { return .needsAttention }
         if all.contains(.working) { return .working }
         if all.contains(.done) { return .done }
@@ -1487,22 +1481,20 @@ final class TermioStore: ObservableObject {
     /// blocked on the user. A finished (`.done`) session has nothing left to lose,
     /// so it doesn't count — the quit confirmation names these and only these.
     var busySessionTitles: [String] {
-        projects.flatMap(\.sessions)
+        allSessions
             .filter { [.working, .needsAttention].contains(status(for: $0.id)) }
             .map { displayTitle(for: $0) }
     }
 
     func session(_ id: Session.ID) -> Session? {
-        for project in projects {
-            if let session = project.sessions.first(where: { $0.id == id }) {
-                return session
-            }
-        }
-        return nil
+        locate(id).map { self[$0] }
     }
 
+    /// The project a session belongs to, or `nil` for a loose one — a workspace's
+    /// terminals and chats answer to no folder, which is what makes them loose.
     func project(for sessionID: Session.ID) -> Project? {
-        projects.first { $0.sessions.contains { $0.id == sessionID } }
+        guard case .project(let index, _)? = locate(sessionID) else { return nil }
+        return projects[index]
     }
 
     /// Opens a file in the editor overlay in its normal **editable** mode — the inspector's own
@@ -1538,7 +1530,7 @@ final class TermioStore: ObservableObject {
         }
 
         // No scheme: treat as a filesystem path, absolute or relative to where the surface is `cd`'d.
-        let base = surfaceWorkingDirectory ?? selectedSessionWorkspace
+        let base = surfaceWorkingDirectory ?? selectedSessionRoot
         let url: URL = (link as NSString).isAbsolutePath || base == nil
             ? URL(fileURLWithPath: link)
             : URL(fileURLWithPath: link, relativeTo: URL(fileURLWithPath: base!, isDirectory: true))
@@ -1583,10 +1575,9 @@ final class TermioStore: ObservableObject {
 
     /// The working directory of the selected session (its worktree, else the project root), used as
     /// the fall-back base for resolving a relative path when the surface hasn't reported an OSC 7 cwd.
-    private var selectedSessionWorkspace: String? {
-        guard let id = selectedSessionID, let session = session(id), let project = project(for: id)
-        else { return nil }
-        return session.worktreePath ?? project.path
+    private var selectedSessionRoot: String? {
+        guard let id = selectedSessionID, let session = session(id) else { return nil }
+        return session.worktreePath ?? project(for: id)?.path
     }
 }
 

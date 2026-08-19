@@ -427,7 +427,8 @@ final class RemotePreviewStagingTests: XCTestCase {
         let suite = "termio-tests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let store = TermioStore(projects: [], settings: AppSettings(defaults: defaults))
+        let store = TermioStore(workspaces: Workspace.firstRun(),
+                                settings: AppSettings(defaults: defaults))
 
         var staleLease: RemotePreviewLease? = try RemotePreviewStorage.stage(
             Data("stale".utf8), named: "stale.txt")

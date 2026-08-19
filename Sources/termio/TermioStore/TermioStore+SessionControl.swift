@@ -36,18 +36,18 @@ extension TermioStore {
             return controlError(request, "disabled",
                 "Session control is off. Enable it in Termio ▸ Settings ▸ Agents.")
         }
-        guard let project = callerProject(session: request.callerSession, cwd: request.callerCwd) else {
+        guard let scope = callerScope(session: request.callerSession, cwd: request.callerCwd) else {
             return controlError(request, "no_scope",
                 "Couldn’t tell which project you’re in. Run this from inside a Termio session.")
         }
 
         switch request.op {
-        case "list": return listSessions(in: project, request: request)
-        case "send", "answer": return await sendText(request, in: project)
-        case "close": return closeTab(request, in: project)
-        case "focus": return focusSession(request, in: project)
-        case "read": return readScreen(request, in: project)
-        case "notify": return notify(request, in: project)
+        case "list": return listSessions(in: scope, request: request)
+        case "send", "answer": return await sendText(request, in: scope)
+        case "close": return closeTab(request, in: scope)
+        case "focus": return focusSession(request, in: scope)
+        case "read": return readScreen(request, in: scope)
+        case "notify": return notify(request, in: scope)
         default:
             return controlError(request, "bad_op", "Unknown op '\(request.op)'.")
         }
@@ -59,7 +59,7 @@ extension TermioStore {
     /// not termio is frontmost and regardless of turn length. The calling session
     /// rides in the banner so a click focuses it, and the project supplies the
     /// subtitle. The body is the only required argument.
-    private func notify(_ request: ControlRequest, in project: Project) -> Data {
+    private func notify(_ request: ControlRequest, in scope: ControlScope) -> Data {
         let body = (request.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else {
             return controlError(request, "empty_body",
@@ -75,7 +75,7 @@ extension TermioStore {
             ? title!
             : caller.map { effectiveAgent(for: $0).displayName } ?? "Termio"
         TaskNotificationCenter.shared.postManual(
-            title: resolvedTitle, body: body, project: project, session: caller)
+            title: resolvedTitle, body: body, project: scope.project, session: caller)
         return control(request, ok: true, text: "notified",
                        json: ["notified": true, "title": resolvedTitle])
     }
@@ -90,14 +90,14 @@ extension TermioStore {
             return (nil, controlError(request, "disabled",
                 "Session control is off. Enable it in Termio ▸ Settings ▸ Agents."), [])
         }
-        guard let project = callerProject(session: request.callerSession, cwd: request.callerCwd) else {
+        guard let scope = callerScope(session: request.callerSession, cwd: request.callerCwd) else {
             return (nil, controlError(request, "no_scope",
                 "Couldn’t tell which project you’re in. Run this from inside a Termio session."), [])
         }
-        guard request.snapshot != false else { return (project.id, nil, []) }
-        let snapshot = project.sessions.map { session -> SessionWatchEvent in
+        guard request.snapshot != false else { return (scope.id, nil, []) }
+        let snapshot = scope.sessions.map { session -> SessionWatchEvent in
             var event = SessionWatchEvent(
-                projectID: project.id,
+                projectID: scope.id,
                 link: sessionLink(for: session),
                 status: Self.statusToken(status(for: session.id)),
                 title: displayTitle(for: session),
@@ -106,7 +106,7 @@ extension TermioStore {
             attachActionablePayload(to: &event, for: session.id)
             return event
         }
-        return (project.id, nil, snapshot)
+        return (scope.id, nil, snapshot)
     }
 
     /// Fills in what makes an event actionable without a second round-trip (design
@@ -159,15 +159,15 @@ extension TermioStore {
             }
             return
         }
-        let matches = projects.flatMap(\.sessions).filter {
+        let matches = allSessions.filter {
             $0.id.uuidString.lowercased().hasPrefix(idToken)
         }
         guard matches.count == 1, let session = matches.first else { return }
         revealSession(session.id)
     }
 
-    private func listSessions(in project: Project, request: ControlRequest) -> Data {
-        let entries = project.sessions.map { session -> [String: Any] in
+    private func listSessions(in scope: ControlScope, request: ControlRequest) -> Data {
+        let entries = scope.sessions.map { session -> [String: Any] in
             var entry: [String: Any] = [
                 "link": sessionLink(for: session),
                 "id": Self.shortID(session.id),
@@ -192,11 +192,11 @@ extension TermioStore {
         // anywhere), while agent and status are display state and must never
         // ride inside the address. The last column is unpadded so long titles
         // never push a ragged right edge into every row.
-        let header = "\(project.name) — \(project.sessions.count) session(s)"
+        let header = "\(scope.name) — \(scope.sessions.count) session(s)"
         var text = header
-        if !project.sessions.isEmpty {
+        if !scope.sessions.isEmpty {
             let titles = ["LINK", "AGENT", "STATUS", "TITLE"]
-            let rows = project.sessions.map { session -> [String] in
+            let rows = scope.sessions.map { session -> [String] in
                 let description = statusDescription(for: session.id)
                 let title = displayTitle(for: session)
                 return [
@@ -215,10 +215,10 @@ extension TermioStore {
             }
             text = ([header, render(titles)] + rows.map(render)).joined(separator: "\n")
         }
-        return control(request, ok: true, text: text, json: ["project": project.name, "sessions": entries])
+        return control(request, ok: true, text: text, json: ["project": scope.name, "sessions": entries])
     }
 
-    private func sendText(_ request: ControlRequest, in project: Project) async -> Data {
+    private func sendText(_ request: ControlRequest, in scope: ControlScope) async -> Data {
         let payload = request.text ?? ""
         // Named keys resolve before anything is typed: a bad name must cost the
         // caller an error, never half a delivery. An unknown name is never sent as
@@ -257,11 +257,11 @@ extension TermioStore {
                 return controlError(request, "no_target",
                     "answer needs a session address — run `termio sessions list`.")
             }
-            return await spawnAndSend(request, in: project, payload: payload)
+            return await spawnAndSend(request, in: scope, payload: payload)
         }
-        switch resolveTarget(token, in: project) {
+        switch resolveTarget(token, in: scope) {
         case .found(let session):
-            let state = surface(for: session, in: project)
+            let state = surface(for: session)
             return await deliver(payload, keys: keys, to: session, state: state, request: request)
         case .notFound:
             return controlError(request, "not_found", targetNotFoundMessage(request.target))
@@ -275,13 +275,13 @@ extension TermioStore {
     /// prompt. The agent defaults to the caller's own kind (a Claude asking for
     /// help gets a Claude), then to the user's preferred chat agent; `--agent`
     /// overrides both.
-    private func spawnAndSend(_ request: ControlRequest, in project: Project, payload: String) async -> Data {
+    private func spawnAndSend(_ request: ControlRequest, in scope: ControlScope, payload: String) async -> Data {
         // Who is asking, resolved against this project's roster: a sibling agent
         // spawning from inside termio, or nil for a spawn from an outside shell.
         // Drives both defaults below — the new agent's kind and where its pane lands.
         let caller = request.callerSession
             .flatMap(UUID.init(uuidString:))
-            .flatMap { id in project.sessions.first { $0.id == id } }
+            .flatMap { id in scope.sessions.first { $0.id == id } }
 
         let preset: AgentDefinition
         if let name = request.agent, !name.isEmpty {
@@ -308,12 +308,12 @@ extension TermioStore {
         // focus policy are documented on `addSplitSession`; the selection only
         // moves when the caller is the pane the user is already watching.
         let freshID = addSplitSession(
-            to: project.id, agent: preset, anchor: caller?.id,
+            in: scope, agent: preset, anchor: caller?.id,
             takeFocus: caller == nil || caller?.id == selectedSessionID)
         guard let freshID, let fresh = session(freshID) else {
             return controlError(request, "start_failed", "Couldn’t start the session.")
         }
-        let state = surface(for: fresh, in: project)
+        let state = surface(for: fresh)
         // The envelope is agent guidance — typed into a shell it would *execute*
         // as commands, so a `run` session gets the bare command line only.
         let delivered = preset.isShell
@@ -672,8 +672,8 @@ extension TermioStore {
     /// and a focus-free peek at any agent's live TUI. Viewport only (what a glance
     /// at the pane would show); scrollback needs a terminal-core buffer API this
     /// build doesn't have. `--lines` keeps just the tail.
-    private func readScreen(_ request: ControlRequest, in project: Project) -> Data {
-        switch resolveTarget(request.target, in: project) {
+    private func readScreen(_ request: ControlRequest, in scope: ControlScope) -> Data {
+        switch resolveTarget(request.target, in: scope) {
         case .found(let session):
             guard var lines = screenLines(for: session.id) else {
                 return controlError(request, "not_live",
@@ -833,8 +833,8 @@ extension TermioStore {
         return data.reduce(into: 0) { count, byte in if byte == 0x0A { count += 1 } }
     }
 
-    private func closeTab(_ request: ControlRequest, in project: Project) -> Data {
-        switch resolveTarget(request.target, in: project) {
+    private func closeTab(_ request: ControlRequest, in scope: ControlScope) -> Data {
+        switch resolveTarget(request.target, in: scope) {
         case .found(let session):
             let link = sessionLink(for: session)
             let title = displayTitle(for: session)
@@ -851,8 +851,8 @@ extension TermioStore {
 
     /// Selects the session in the sidebar and brings termio to the front — the
     /// "come look at this" verb, for jumping to an agent's live pane from any shell.
-    private func focusSession(_ request: ControlRequest, in project: Project) -> Data {
-        switch resolveTarget(request.target, in: project) {
+    private func focusSession(_ request: ControlRequest, in scope: ControlScope) -> Data {
+        switch resolveTarget(request.target, in: scope) {
         case .found(let session):
             let link = sessionLink(for: session)
             revealSession(session.id)
@@ -868,9 +868,9 @@ extension TermioStore {
     /// Resolves the calling agent to its project: by the `TERMIO_SESSION` the PTY
     /// carries (exact), else by a working directory that sits inside a project's
     /// directory or one of its session worktrees (the fallback for a plain shell).
-    private func callerProject(session id: String?, cwd: String?) -> Project? {
-        if let id, let uuid = UUID(uuidString: id), let project = project(for: uuid) {
-            return project
+    private func callerScope(session id: String?, cwd: String?) -> ControlScope? {
+        if let id, let uuid = UUID(uuidString: id), let home = locate(uuid) {
+            return scope(at: home)
         }
         guard let cwd else { return nil }
         let target = URL(fileURLWithPath: cwd).standardizedFileURL.path
@@ -879,12 +879,56 @@ extension TermioStore {
             return target == base || target.hasPrefix(base + "/")
         }
         // A session worktree is the most specific match, so prefer it.
-        for project in projects {
+        for (index, project) in projects.enumerated() {
             for session in project.sessions where session.worktreePath.map(contains) == true {
-                return project
+                return scope(at: .project(project: index, session: 0))
             }
         }
-        return projects.first { contains($0.path) }
+        if let index = projects.firstIndex(where: { contains($0.path) }) {
+            return scope(at: .project(project: index, session: 0))
+        }
+        // A shell started inside the loose-chat directory is one of the Chats
+        // rows, or something the user ran there by hand; either way its siblings
+        // are the current workspace's chats.
+        guard contains(Self.looseChatRoot),
+              let index = workspaces.firstIndex(where: { $0.id == currentWorkspace.id })
+        else { return nil }
+        return scope(at: .chats(workspace: index, session: 0))
+    }
+
+    /// The roster one slot belongs to, named the way `list` prints it.
+    private func scope(at home: SessionSlot) -> ControlScope {
+        switch home {
+        case .project(let index, _):
+            let project = projects[index]
+            return ControlScope(id: project.id, name: project.name,
+                                sessions: project.sessions, project: project)
+        case .terminals(let index, _):
+            let workspace = workspaces[index]
+            return ControlScope(id: workspace.id, name: "\(workspace.name) — Terminals",
+                                sessions: workspace.terminals, project: nil)
+        case .chats(let index, _):
+            let workspace = workspaces[index]
+            return ControlScope(id: workspace.id, name: "\(workspace.name) — Chats",
+                                sessions: workspace.chats, project: nil)
+        }
+    }
+
+    /// What one `termio sessions` call can see: the caller's own roster.
+    ///
+    /// A caller inside a project sees that project's sessions; a caller in a loose
+    /// shell or chat sees the other rows in its workspace's same section. Both are
+    /// "the siblings you can reach", which is the rule the CLI has always followed —
+    /// it just used to be spelled "the project", because a funnel was one.
+    struct ControlScope {
+        /// The project's id, or the workspace's for a loose caller. It is what a
+        /// `watch` stream is keyed by, so it only has to be stable and unique.
+        let id: UUID
+        let name: String
+        let sessions: [Session]
+        /// The folder a spawned sibling opens in. `nil` for a loose caller: a
+        /// scratch session has no project to open another one in.
+        let project: Project?
     }
 
     private enum TargetResolution {
@@ -897,7 +941,7 @@ extension TermioStore {
     /// (`termio://…/session/<id>`) reduces to its id (full UUID or prefix);
     /// a bare token keeps the plain forms — full id, id prefix, or display
     /// title (case-insensitive). Ambiguity is reported rather than guessed.
-    private func resolveTarget(_ token: String?, in project: Project) -> TargetResolution {
+    private func resolveTarget(_ token: String?, in scope: ControlScope) -> TargetResolution {
         guard let token = token?.trimmingCharacters(in: .whitespaces).lowercased(), !token.isEmpty else {
             return .notFound
         }
@@ -905,7 +949,7 @@ extension TermioStore {
             guard !idPart.isEmpty, idPart.allSatisfy({ $0.isHexDigit || $0 == "-" }) else {
                 return .notFound
             }
-            let matches = project.sessions.filter {
+            let matches = scope.sessions.filter {
                 $0.id.uuidString.lowercased().hasPrefix(idPart)
             }
             switch matches.count {
@@ -919,7 +963,7 @@ extension TermioStore {
         // references. The stored title is an internal worktree-slug seed and can
         // collide with another session's display title — matching it would make an
         // unambiguous name read as ambiguous.
-        let matches = project.sessions.filter { session in
+        let matches = scope.sessions.filter { session in
             let id = session.id.uuidString.lowercased()
             return id == token
                 || id.hasPrefix(token)

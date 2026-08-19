@@ -36,9 +36,7 @@ extension TermioStore {
     /// Whether any session is an agent (declared or detected via `effectiveAgent`). Gates
     /// the "status is off" reminder — a shell-only workspace has nothing to report.
     var isRunningAnyAgent: Bool {
-        projects.contains { project in
-            project.sessions.contains { effectiveAgent(for: $0) != .terminal }
-        }
+        allSessions.contains { effectiveAgent(for: $0) != .terminal }
     }
 
     /// Re-aligns the installed hooks when, and only when, the hooks setting itself
@@ -186,15 +184,13 @@ extension TermioStore {
     /// OSC title higher priority. Persisting it on `Session` keeps resumed tabs named
     /// before the agent emits any fresh terminal title.
     private func recordPromptTitle(_ raw: String, for id: Session.ID) {
-        guard let location = locate(id) else { return }
-        var session = projects[location.project].sessions[location.session]
-        guard session.promptTitle == nil,
+        guard let session = session(id),
+              session.promptTitle == nil,
               session.agent != .terminal,
               session.title == session.agent.displayName,
               let title = AgentPromptTitle.normalized(raw)
         else { return }
-        session.promptTitle = title
-        projects[location.project].sessions[location.session] = session
+        updateSession(id) { $0.promptTitle = title }
     }
 
     /// A reported conversation id, accepted only when it is a bare token — the ids
@@ -440,8 +436,8 @@ extension TermioStore {
     /// Idempotent per poll; an SSH terminal is never reclassified (its foreground is
     /// the local `ssh`, and the agents run remotely).
     func noteForegroundAgent(_ detected: AgentDefinition?, for id: Session.ID) {
-        guard let location = locate(id) else { return }
-        var session = projects[location.project].sessions[location.session]
+        guard let home = locate(id) else { return }
+        var session = self[home]
         guard !session.isSSH else { return }
         if let detected {
             // Promote a plain terminal only: an already-promoted row seeing its own
@@ -454,7 +450,7 @@ extension TermioStore {
                 session.title = detected.displayName
             }
             session.agent = detected
-            projects[location.project].sessions[location.session] = session
+            self[home] = session
         } else if session.agent != .terminal {
             demoteSessionToTerminal(id)
         }
@@ -468,21 +464,20 @@ extension TermioStore {
     /// hosted. Shared by the foreground poll (agent quit back to its shell) and the
     /// clean-exit revert of an exec'd agent session (`revertSessionToShell`).
     func demoteSessionToTerminal(_ id: Session.ID) {
-        guard let location = locate(id) else { return }
-        var session = projects[location.project].sessions[location.session]
+        guard let home = locate(id) else { return }
+        var session = self[home]
         guard session.agent != .terminal else { return }
         // Un-renamed rows fall back to the auto `Terminal N` convention (numbered
         // like `addSession`, counting this row itself), so display naming — cwd
         // basename for loose terminals — takes over again.
         if session.title == session.agent.displayName {
-            let terminalCount = projects[location.project].sessions
-                .filter { $0.agent == .terminal }.count
+            let terminalCount = roster(at: home).filter { $0.agent == .terminal }.count
             session.title = "Terminal \(terminalCount + 1)"
         }
         session.agent = .terminal
         session.liveTitle = nil
         session.promptTitle = nil
-        projects[location.project].sessions[location.session] = session
+        self[home] = session
         setLiveTitle(nil, for: id)
         lastTitleActivity[id] = nil
         lastProgressActivity[id] = nil
@@ -769,6 +764,15 @@ extension TermioStore {
         let matches = projects.flatMap { project in
             project.sessions.filter { session in
                 let directory = session.worktreePath ?? project.path
+                return URL(fileURLWithPath: directory).standardizedFileURL.path == target
+            }
+        } + workspaces.flatMap { workspace in
+            // A loose chat runs in the shared scratch directory, so a cwd match
+            // there names every one of them at once — ambiguous by construction,
+            // and the guard below leaves status alone. Only a loose *terminal*,
+            // which owns its own cwd, can be identified this way.
+            workspace.terminals.filter { session in
+                guard let directory = session.lastWorkingDirectory else { return false }
                 return URL(fileURLWithPath: directory).standardizedFileURL.path == target
             }
         }

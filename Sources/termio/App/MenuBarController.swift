@@ -168,8 +168,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // sidebar's orbiting-comet mark) plus the two resting states that want you —
         // done (green) or blocked on input (amber). Idle agents are getting on fine
         // on their own and plain terminals live in the window, so both stay out.
-        for project in store.projects {
-            let agentSessions = project.sessions
+        // Every group in the app, not the workspace the sidebar happens to show:
+        // an agent waiting on the user must never be hidden behind a scope.
+        for group in store.sidebarSessionGroups {
+            let agentSessions = group.sessions
                 .filter { $0.agent != .terminal && shouldList(store.status(for: $0.id)) }
                 // The states that want the user rise to the top of each project's
                 // rows — blocked first, then just-finished, then still working — so a
@@ -180,7 +182,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 }
             guard !agentSessions.isEmpty else { continue }
 
-            let header = NSMenuItem(title: project.name, action: nil, keyEquivalent: "")
+            let header = NSMenuItem(title: group.name, action: nil, keyEquivalent: "")
             header.isEnabled = false
             menu.addItem(header)
 
