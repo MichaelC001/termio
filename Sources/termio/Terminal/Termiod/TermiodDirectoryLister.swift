@@ -1,12 +1,6 @@
 import Foundation
 
 extension Termiod {
-    private struct FsListOperation: Encodable {
-        let op = "fs_list"
-        let root: String
-        let paths: [String]
-    }
-
     /// One `fs_list` round trip for a single directory. Blocking; the lister
     /// serialises the calls so a reply always belongs to the request in flight.
     ///
@@ -14,7 +8,7 @@ extension Termiod {
     /// error: a control channel may carry anything the daemon chooses to say,
     /// and a listing must not fail because something else arrived first.
     static func requestListing(_ transport: Transport, root: String) throws -> PathListingPayload {
-        let operation = FsListOperation(root: root, paths: [root])
+        let operation = FsListOperation(root: root, paths: [root], seq: 1)
         try writeFrame(
             transport.writeDescriptor, kind: .control, payload: encodeControl(operation))
         while true {
