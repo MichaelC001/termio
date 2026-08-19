@@ -1,20 +1,66 @@
-//! The `git:` resource kind (§C.13): status as a subscription, read-only.
+//! The `git:` resource kind (§C.13): status as a subscription, plus the read
+//! tier the History and Compare panes are made of.
 //!
-//! The second consumer of §C.10's one mechanism — id, cursor, ring, gap,
-//! linger — nothing new to learn. The host runs a debounced
+//! Status is the second consumer of §C.10's one mechanism — id, cursor, ring,
+//! gap, linger — nothing new to learn. The host runs a debounced
 //! `git status --porcelain=v2` when the workspace watcher reports change and
-//! publishes the *delta* against the previous run. Read-only by design: no
-//! stage/commit/push verbs, the user commits in the terminal, which is the
-//! same app. The whole kind is one event shape plus one verb (`git.diff`).
+//! publishes the *delta* against the previous run.
+//!
+//! Beside it sit four request/response verbs: `git.diff`, `git.log`,
+//! `git.show`, `git.branches`. All of them read; the mutation and network
+//! tiers are staged separately (`docs/rfcs/remote-git-plane.md` §5) because
+//! they need a design for prompts and for index-lock contention that reads do
+//! not. Every one of them runs the box's own `git` as a child process, so the
+//! box's config, hooks, and credential helper are the ones in force — nothing
+//! here reimplements git.
 
 use crate::protocol::{
-    Event, GitFileStatus, GitStatusCode, GitStatusEntry, GitUnmergedCode,
+    Event, GitBranchEntry, GitCommitEntry, GitCommitFile, GitFileStatus, GitStatusCode,
+    GitStatusEntry, GitUnmergedCode,
 };
 use anyhow::{bail, Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A `git.diff` reply is cut here — the same preview budget as `fs.read`.
 pub const DIFF_CAP: usize = 1024 * 1024;
+
+/// A `git.log` walk stops here however large `limit` was. A history pane
+/// scrolls; it does not need the whole repository in one frame.
+pub const LOG_CAP: u64 = 1000;
+
+/// A `git.show` file list stops here. A tree-wide commit (a vendor drop, a
+/// reformat) would otherwise put a megabyte of file rows on a control channel.
+pub const SHOW_FILE_CAP: usize = 5000;
+
+/// A `git.branches` reply stops here. Long-lived clones carry thousands of
+/// stale remote-tracking refs and the picker shows a handful.
+pub const BRANCH_CAP: usize = 2000;
+
+/// Field separator inside one commit record (US), and the fields themselves.
+/// Records are NUL-terminated by `-z` — `tformat:` and not `format:`, so the
+/// terminator is there even for the single record `git show` prints — which is
+/// what lets a subject holding a newline survive intact.
+const FIELD: char = '\u{1f}';
+const COMMIT_FORMAT: &str =
+    "--pretty=tformat:%H\u{1f}%h\u{1f}%s\u{1f}%an\u{1f}%ae\u{1f}%ad\u{1f}%at\u{1f}%D";
+
+/// Every git child starts here: the box's own git, the box's own config, and
+/// `--no-optional-locks` so a read can never contend with the agent committing
+/// in the terminal beside it.
+fn git_command(root: &str) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("git");
+    command.arg("--no-optional-locks").arg("-C").arg(root);
+    command
+}
+
+/// A revision reaches git as a positional argument, so one beginning with `-`
+/// would be read as an option. Refused rather than escaped.
+fn validate_revision(revision: &str) -> Result<()> {
+    if revision.is_empty() || revision.starts_with('-') {
+        bail!("not a usable revision: {revision:?}");
+    }
+    Ok(())
+}
 
 /// Everything one status run said. The live copy backs the synthetic
 /// full-state batch a gap subscriber receives — only the host can "rescan"
@@ -130,10 +176,7 @@ impl GitBatch {
 /// file, which the workspace watcher reports as `git_meta`, which would
 /// trigger this again — a feedback loop by construction.
 pub async fn run_status(root: &str) -> Result<GitSnapshot> {
-    let output = tokio::process::Command::new("git")
-        .arg("--no-optional-locks")
-        .arg("-C")
-        .arg(root)
+    let output = git_command(root)
         .arg("status")
         .arg("--porcelain=v2")
         .arg("-z")
@@ -287,12 +330,8 @@ fn unmerged_status(xy: &str) -> Option<GitFileStatus> {
 /// `git.diff` (§C.13): a unified diff for one path, worktree-vs-index by
 /// default, index-vs-HEAD with `staged`. Capped at [`DIFF_CAP`].
 pub async fn run_diff(root: &str, path: &str, staged: bool) -> Result<(String, bool)> {
-    let mut command = tokio::process::Command::new("git");
-    command
-        .arg("--no-optional-locks")
-        .arg("-C")
-        .arg(root)
-        .arg("diff");
+    let mut command = git_command(root);
+    command.arg("diff");
     if staged {
         command.arg("--cached");
     }
@@ -304,7 +343,13 @@ pub async fn run_diff(root: &str, path: &str, staged: bool) -> Result<(String, b
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    let mut diff = String::from_utf8_lossy(&output.stdout).into_owned();
+    Ok(cap_diff(String::from_utf8_lossy(&output.stdout).into_owned()))
+}
+
+/// Cut a diff at [`DIFF_CAP`] on a character boundary, reporting that it was
+/// cut. A client is told the text is partial; it is never handed a silently
+/// short diff.
+fn cap_diff(mut diff: String) -> (String, bool) {
     let truncated = diff.len() > DIFF_CAP;
     if truncated {
         let mut cut = DIFF_CAP;
@@ -313,12 +358,386 @@ pub async fn run_diff(root: &str, path: &str, staged: bool) -> Result<(String, b
         }
         diff.truncate(cut);
     }
-    Ok((diff, truncated))
+    (diff, truncated)
+}
+
+/// One `git.log` page: commits newest first, and whether the walk stopped at
+/// the limit rather than at the root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitLogPage {
+    pub commits: Vec<GitCommitEntry>,
+    pub truncated: bool,
+}
+
+/// `git.log` (§C.13 read tier): the commit list behind the History tab.
+/// `range` narrows the walk (`origin/main..HEAD` for a branch comparison).
+pub async fn run_log(root: &str, limit: u64, range: Option<&str>) -> Result<GitLogPage> {
+    if let Some(range) = range {
+        validate_revision(range)?;
+    }
+    let wanted = limit.clamp(1, LOG_CAP);
+    let mut command = git_command(root);
+    command
+        .arg("log")
+        .arg("-z")
+        .arg("-n")
+        .arg(wanted.to_string())
+        .arg("--date=relative")
+        .arg(COMMIT_FORMAT);
+    if let Some(range) = range {
+        command.arg(range);
+    }
+    let output = command.output().await.context("running git log")?;
+    if !output.status.success() {
+        // A repository whose first commit is still unwritten has no history,
+        // which is an empty list, not a failure. Asked of git rather than
+        // matched against its stderr, which is localized.
+        if !has_commits(root).await {
+            return Ok(GitLogPage {
+                commits: Vec::new(),
+                truncated: false,
+            });
+        }
+        bail!(
+            "git log failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let unpushed = unpushed_commits(root).await;
+    let commits = parse_commits(&output.stdout, &unpushed);
+    let truncated = commits.len() as u64 >= wanted;
+    Ok(GitLogPage { commits, truncated })
+}
+
+/// One commit as `git.show` reports it: what it is, what it touched, and the
+/// diff — the whole commit's, or one file's when the caller named a path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitCommitDetail {
+    pub commit: GitCommitEntry,
+    pub files: Vec<GitCommitFile>,
+    pub diff: String,
+    pub truncated: bool,
+    pub files_truncated: bool,
+}
+
+/// `git.show` (§C.13 read tier). `--first-parent` throughout: without it a
+/// merge commit's diff is a combined diff, which is empty for a clean merge,
+/// so every merged pull request in the history would read as touching nothing.
+pub async fn run_show(root: &str, commit: &str, path: Option<&str>) -> Result<GitCommitDetail> {
+    validate_revision(commit)?;
+    // Metadata and the file list in one child: `--raw` carries the status
+    // letter and `--numstat` the counts, already keyed by the same paths.
+    let described = git_command(root)
+        .arg("show")
+        .arg(COMMIT_FORMAT)
+        .arg("--date=relative")
+        .arg("--raw")
+        .arg("--numstat")
+        .arg("-z")
+        .arg("-M")
+        .arg("--first-parent")
+        .arg(commit)
+        .output()
+        .await
+        .context("running git show")?;
+    if !described.status.success() {
+        bail!(
+            "git show failed: {}",
+            String::from_utf8_lossy(&described.stderr).trim()
+        );
+    }
+    let unpushed = unpushed_commits(root).await;
+    let (mut entry, files, files_truncated) = parse_commit_detail(&described.stdout)?;
+    entry.unpushed = unpushed.contains(&entry.sha);
+
+    let mut command = git_command(root);
+    command
+        .arg("show")
+        .arg("--format=")
+        .arg("-M")
+        .arg("--first-parent")
+        .arg(commit);
+    if let Some(path) = path {
+        // A rename is limited to *both* paths: git applies the path limit
+        // before rename detection, so asking for the destination alone turns a
+        // pure rename into the whole file arriving as additions.
+        command.arg("--").arg(path);
+        if let Some(original) = files
+            .iter()
+            .find(|file| file.path == path)
+            .and_then(|file| file.original_path.as_deref())
+        {
+            command.arg(original);
+        }
+    }
+    let patch = command.output().await.context("running git show")?;
+    if !patch.status.success() {
+        bail!(
+            "git show failed: {}",
+            String::from_utf8_lossy(&patch.stderr).trim()
+        );
+    }
+    let (diff, truncated) = cap_diff(String::from_utf8_lossy(&patch.stdout).into_owned());
+    Ok(GitCommitDetail {
+        commit: entry,
+        files,
+        diff,
+        truncated,
+        files_truncated,
+    })
+}
+
+/// The refs a checkout can be compared against, plus where it stands.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitBranchList {
+    pub branches: Vec<GitBranchEntry>,
+    pub current: Option<String>,
+    pub default_branch: Option<String>,
+    pub truncated: bool,
+}
+
+/// `git.branches` (§C.13 read tier). One `for-each-ref` answers all of it:
+/// `%(HEAD)` marks the checkout's own branch and `%(symref)` resolves
+/// `origin/HEAD` to the default branch, so the picker costs one child process
+/// rather than one per field.
+pub async fn run_branches(root: &str) -> Result<GitBranchList> {
+    let output = git_command(root)
+        .arg("for-each-ref")
+        .arg("--format=%(HEAD) %(refname) %(symref)")
+        .arg("refs/heads")
+        .arg("refs/remotes")
+        .output()
+        .await
+        .context("running git for-each-ref")?;
+    if !output.status.success() {
+        bail!(
+            "git for-each-ref failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(parse_refs(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Commits the branch's upstream does not have. No upstream means a non-zero
+/// exit, which is an empty set — a purely local branch marks no rows rather
+/// than all of them.
+async fn unpushed_commits(root: &str) -> HashSet<String> {
+    let output = git_command(root)
+        .arg("rev-list")
+        .arg("@{upstream}..HEAD")
+        .output()
+        .await;
+    match output {
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .map(str::to_string)
+            .collect(),
+        _ => HashSet::new(),
+    }
+}
+
+/// Whether HEAD resolves to a commit at all.
+async fn has_commits(root: &str) -> bool {
+    git_command(root)
+        .arg("rev-parse")
+        .arg("--verify")
+        .arg("--quiet")
+        .arg("HEAD")
+        .output()
+        .await
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+/// Parse `git log -z` in [`COMMIT_FORMAT`]: records NUL-terminated,
+/// fields US-separated. A record with the wrong field count is dropped rather
+/// than guessed at.
+fn parse_commits(bytes: &[u8], unpushed: &HashSet<String>) -> Vec<GitCommitEntry> {
+    bytes
+        .split(|&byte| byte == 0)
+        .filter_map(|record| {
+            let record = String::from_utf8_lossy(record);
+            parse_commit_record(record.trim_start_matches('\n'), unpushed)
+        })
+        .collect()
+}
+
+fn parse_commit_record(record: &str, unpushed: &HashSet<String>) -> Option<GitCommitEntry> {
+    let fields: Vec<&str> = record.split(FIELD).collect();
+    if fields.len() != 8 || fields[0].is_empty() {
+        return None;
+    }
+    Some(GitCommitEntry {
+        sha: fields[0].to_string(),
+        short_sha: fields[1].to_string(),
+        subject: fields[2].to_string(),
+        author: fields[3].to_string(),
+        author_email: fields[4].to_string(),
+        relative_date: fields[5].to_string(),
+        timestamp: fields[6].parse().unwrap_or(0),
+        tags: fields[7]
+            .split(", ")
+            .filter_map(|decoration| decoration.strip_prefix("tag: "))
+            .map(str::to_string)
+            .collect(),
+        unpushed: unpushed.contains(fields[0]),
+    })
+}
+
+/// Parse `git show <COMMIT_FORMAT> --raw --numstat -z`: the
+/// commit record, then every `--raw` record, then every `--numstat` record.
+/// The two sections are told apart by their first byte — `:` opens a raw
+/// record — and merged by path, keeping git's own order.
+fn parse_commit_detail(bytes: &[u8]) -> Result<(GitCommitEntry, Vec<GitCommitFile>, bool)> {
+    let mut fields = bytes.split(|&byte| byte == 0).map(|field| {
+        String::from_utf8_lossy(field)
+            .trim_start_matches('\n')
+            .to_string()
+    });
+    let header = fields.next().unwrap_or_default();
+    let Some(entry) = parse_commit_record(&header, &HashSet::new()) else {
+        bail!("git show did not describe a commit");
+    };
+
+    let mut files: Vec<GitCommitFile> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut truncated = false;
+    while let Some(field) = fields.next() {
+        if field.is_empty() {
+            continue;
+        }
+        if let Some(raw) = field.strip_prefix(':') {
+            // :mode mode sha sha STATUS NUL path [NUL path] — a rename or a
+            // copy names both paths, everything else one.
+            let Some(code) = raw.split(' ').next_back().and_then(|token| {
+                token
+                    .as_bytes()
+                    .first()
+                    .copied()
+                    .and_then(commit_status_code)
+            }) else {
+                continue;
+            };
+            let renamed = matches!(code, GitStatusCode::Renamed | GitStatusCode::Copied);
+            let first = fields.next().unwrap_or_default();
+            let (path, original) = if renamed {
+                (fields.next().unwrap_or_default(), Some(first))
+            } else {
+                (first, None)
+            };
+            if path.is_empty() {
+                continue;
+            }
+            if files.len() >= SHOW_FILE_CAP {
+                truncated = true;
+                continue;
+            }
+            index.insert(path.clone(), files.len());
+            files.push(GitCommitFile {
+                path,
+                original_path: original,
+                status: code,
+                additions: 0,
+                deletions: 0,
+                binary: false,
+            });
+            continue;
+        }
+        // adds TAB dels TAB path, or adds TAB dels TAB NUL old NUL new for a
+        // rename. `-` for either count means git called the file binary.
+        let mut columns = field.splitn(3, '\t');
+        let (Some(additions), Some(deletions), Some(rest)) =
+            (columns.next(), columns.next(), columns.next())
+        else {
+            continue;
+        };
+        let path = if rest.is_empty() {
+            let _original = fields.next();
+            fields.next().unwrap_or_default()
+        } else {
+            rest.to_string()
+        };
+        let Some(position) = index.get(&path) else {
+            continue;
+        };
+        let file = &mut files[*position];
+        file.binary = additions == "-" || deletions == "-";
+        file.additions = additions.parse().unwrap_or(0);
+        file.deletions = deletions.parse().unwrap_or(0);
+    }
+    Ok((entry, files, truncated))
+}
+
+/// A commit's file carries one status letter, unlike a worktree file's two
+/// axes. `T` (type change) is folded into the modified axis exactly as the
+/// status kind folds it.
+fn commit_status_code(byte: u8) -> Option<GitStatusCode> {
+    match byte {
+        b'M' => Some(GitStatusCode::Modified),
+        b'T' => Some(GitStatusCode::TypeChanged),
+        b'A' => Some(GitStatusCode::Added),
+        b'D' => Some(GitStatusCode::Deleted),
+        b'R' => Some(GitStatusCode::Renamed),
+        b'C' => Some(GitStatusCode::Copied),
+        _ => None,
+    }
+}
+
+/// Parse `for-each-ref --format='%(HEAD) %(refname) %(symref)'`. `%(HEAD)` is
+/// one character — `*` for the checkout's own branch, a space for every other
+/// ref — and a refname can hold no whitespace, which is what makes a
+/// space-separated format unambiguous here.
+fn parse_refs(text: &str) -> GitBranchList {
+    let mut list = GitBranchList::default();
+    for line in text.lines() {
+        let Some(rest) = line.get(1..) else {
+            continue;
+        };
+        let checked_out = line.starts_with('*');
+        let mut columns = rest.split_whitespace();
+        let Some(refname) = columns.next() else {
+            continue;
+        };
+        let symref = columns.next().unwrap_or("");
+        if let Some(name) = refname.strip_prefix("refs/heads/") {
+            if checked_out {
+                list.current = Some(name.to_string());
+            }
+            if list.branches.len() < BRANCH_CAP {
+                list.branches.push(GitBranchEntry {
+                    name: name.to_string(),
+                    remote: false,
+                });
+            } else {
+                list.truncated = true;
+            }
+        } else if let Some(name) = refname.strip_prefix("refs/remotes/") {
+            // `origin/HEAD` is a symbolic pointer at the remote's default
+            // branch, not a branch of its own.
+            if name.ends_with("/HEAD") {
+                list.default_branch = symref
+                    .strip_prefix("refs/remotes/")
+                    .filter(|target| !target.is_empty())
+                    .map(str::to_string);
+                continue;
+            }
+            if list.branches.len() < BRANCH_CAP {
+                list.branches.push(GitBranchEntry {
+                    name: name.to_string(),
+                    remote: true,
+                });
+            } else {
+                list.truncated = true;
+            }
+        }
+    }
+    list
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
 
     fn joined(records: &[&str]) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -497,5 +916,356 @@ mod tests {
         );
         assert_eq!(json["updated_statuses"][1]["status"], "untracked");
         assert_eq!(json["ahead_behind"][0], 1);
+    }
+
+    // The read tier is tested against a real repository built here, not
+    // against captured fixtures: what it must stay compatible with is the git
+    // on the box, and a fixture cannot notice that changing.
+
+    fn run_git(dir: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            // Hermetic: the developer's own global config must not decide
+            // whether these commits can be made.
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_DATE", "2026-08-18T10:00:00+00:00")
+            .env("GIT_COMMITTER_DATE", "2026-08-18T10:00:00+00:00")
+            .args(args)
+            .output()
+            .expect("git is on PATH");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn scratch_repo(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "termiod-git-read-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        run_git(&dir, &["init", "-q", "-b", "main"]);
+        run_git(&dir, &["config", "user.email", "test@termio.sh"]);
+        run_git(&dir, &["config", "user.name", "termio test"]);
+        run_git(&dir, &["config", "commit.gpgsign", "false"]);
+        dir
+    }
+
+    fn write(dir: &Path, name: &str, body: &str) {
+        std::fs::write(dir.join(name), body).unwrap();
+    }
+
+    fn commit(dir: &Path, message: &str) -> String {
+        run_git(dir, &["add", "-A"]);
+        run_git(dir, &["commit", "-q", "-m", message]);
+        run_git(dir, &["rev-parse", "HEAD"])
+    }
+
+    #[tokio::test]
+    async fn log_reads_a_real_repository_newest_first() {
+        let dir = scratch_repo("log");
+        write(&dir, "a.txt", "one\n");
+        let first = commit(&dir, "first commit");
+        run_git(&dir, &["tag", "v0.1.0"]);
+        write(&dir, "a.txt", "one\ntwo\n");
+        let second = commit(&dir, "second commit: subject with spaces");
+
+        let root = dir.to_string_lossy().into_owned();
+        let page = run_log(&root, 50, None).await.unwrap();
+        assert_eq!(
+            page.commits
+                .iter()
+                .map(|entry| entry.sha.as_str())
+                .collect::<Vec<_>>(),
+            vec![second.as_str(), first.as_str()],
+            "newest first"
+        );
+        assert!(!page.truncated, "the walk reached the root commit");
+        let newest = &page.commits[0];
+        assert_eq!(newest.subject, "second commit: subject with spaces");
+        assert_eq!(newest.author, "termio test");
+        assert_eq!(newest.author_email, "test@termio.sh");
+        assert_eq!(newest.short_sha, second[..newest.short_sha.len()]);
+        assert!(newest.timestamp > 0, "an instant the client can format");
+        assert!(!newest.relative_date.is_empty());
+        assert!(newest.tags.is_empty(), "branch decorations are not tags");
+        assert_eq!(
+            page.commits[1].tags,
+            vec!["v0.1.0"],
+            "a tag pointing at the commit is kept"
+        );
+
+        let page = run_log(&root, 1, None).await.unwrap();
+        assert_eq!(page.commits.len(), 1);
+        assert!(page.truncated, "the walk stopped at the limit, and says so");
+
+        let ranged = run_log(&root, 50, Some(&format!("{first}..HEAD")))
+            .await
+            .unwrap();
+        assert_eq!(
+            ranged
+                .commits
+                .iter()
+                .map(|entry| entry.sha.as_str())
+                .collect::<Vec<_>>(),
+            vec![second.as_str()],
+            "a range narrows the walk — what the Compare tab is composed from"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn log_marks_what_the_upstream_does_not_have() {
+        let dir = scratch_repo("unpushed");
+        write(&dir, "a.txt", "one\n");
+        let first = commit(&dir, "pushed");
+        write(&dir, "a.txt", "one\ntwo\n");
+        let second = commit(&dir, "not pushed");
+        // A remote-tracking ref and a branch upstream, with no network: the
+        // upstream is one commit behind. `@{upstream}` resolves through the
+        // remote's fetch refspec, so the remote needs one.
+        run_git(&dir, &["update-ref", "refs/remotes/origin/main", &first]);
+        run_git(&dir, &["config", "remote.origin.url", "/dev/null"]);
+        run_git(
+            &dir,
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
+        );
+        run_git(&dir, &["config", "branch.main.remote", "origin"]);
+        run_git(&dir, &["config", "branch.main.merge", "refs/heads/main"]);
+
+        let root = dir.to_string_lossy().into_owned();
+        let page = run_log(&root, 50, None).await.unwrap();
+        let marked: Vec<&str> = page
+            .commits
+            .iter()
+            .filter(|entry| entry.unpushed)
+            .map(|entry| entry.sha.as_str())
+            .collect();
+        assert_eq!(marked, vec![second.as_str()]);
+
+        // Without an upstream the set is empty, not everything.
+        run_git(&dir, &["config", "--unset", "branch.main.remote"]);
+        run_git(&dir, &["config", "--unset", "branch.main.merge"]);
+        let page = run_log(&root, 50, None).await.unwrap();
+        assert!(page.commits.iter().all(|entry| !entry.unpushed));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn log_of_a_repository_with_no_commits_is_empty_not_an_error() {
+        let dir = scratch_repo("unborn");
+        let root = dir.to_string_lossy().into_owned();
+        let page = run_log(&root, 50, None).await.unwrap();
+        assert!(page.commits.is_empty());
+        assert!(!page.truncated);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn show_reads_a_commit_its_files_and_its_diff() {
+        let dir = scratch_repo("show");
+        write(&dir, "a.txt", "one\n");
+        commit(&dir, "first");
+        write(&dir, "a.txt", "one\ntwo\n");
+        write(&dir, "added.txt", "fresh\n");
+        std::fs::write(dir.join("blob.bin"), [0u8, 1, 2, 0, 3]).unwrap();
+        let sha = commit(&dir, "second");
+
+        let root = dir.to_string_lossy().into_owned();
+        let detail = run_show(&root, &sha, None).await.unwrap();
+        assert_eq!(detail.commit.sha, sha);
+        assert_eq!(detail.commit.subject, "second");
+        assert!(!detail.truncated && !detail.files_truncated);
+
+        let file = |path: &str| {
+            detail
+                .files
+                .iter()
+                .find(|file| file.path == path)
+                .unwrap_or_else(|| panic!("{path} missing from the commit"))
+        };
+        assert_eq!(file("a.txt").status, GitStatusCode::Modified);
+        assert_eq!(file("a.txt").additions, 1);
+        assert_eq!(file("a.txt").deletions, 0);
+        assert_eq!(file("added.txt").status, GitStatusCode::Added);
+        assert!(file("blob.bin").binary, "counting binary lines would lie");
+        assert_eq!(file("blob.bin").additions, 0);
+        assert!(detail.diff.contains("+two"));
+        assert!(detail.diff.contains("added.txt"));
+
+        let narrowed = run_show(&root, &sha, Some("a.txt")).await.unwrap();
+        assert!(narrowed.diff.contains("+two"));
+        assert!(
+            !narrowed.diff.contains("added.txt"),
+            "a path narrows the diff but not the file list"
+        );
+        assert_eq!(narrowed.files.len(), detail.files.len());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn show_keeps_a_rename_a_rename() {
+        let dir = scratch_repo("rename");
+        write(&dir, "before.txt", "one\ntwo\nthree\nfour\n");
+        commit(&dir, "first");
+        run_git(&dir, &["mv", "before.txt", "after.txt"]);
+        let sha = commit(&dir, "rename it");
+
+        let root = dir.to_string_lossy().into_owned();
+        let detail = run_show(&root, &sha, None).await.unwrap();
+        assert_eq!(detail.files.len(), 1);
+        assert_eq!(detail.files[0].path, "after.txt");
+        assert_eq!(detail.files[0].status, GitStatusCode::Renamed);
+        assert_eq!(
+            detail.files[0].original_path.as_deref(),
+            Some("before.txt")
+        );
+        assert_eq!(detail.files[0].additions, 0);
+
+        // Asking for the destination alone would make git limit the path
+        // before rename detection and re-emit the whole file as additions.
+        let narrowed = run_show(&root, &sha, Some("after.txt")).await.unwrap();
+        assert!(
+            narrowed.diff.contains("rename from before.txt"),
+            "the per-file diff of a rename is still a rename: {}",
+            narrowed.diff
+        );
+        assert!(!narrowed.diff.contains("+one"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn branches_report_locals_remotes_the_checkout_and_the_default() {
+        let dir = scratch_repo("branches");
+        write(&dir, "a.txt", "one\n");
+        let first = commit(&dir, "first");
+        run_git(&dir, &["branch", "feat/side"]);
+        run_git(&dir, &["update-ref", "refs/remotes/origin/main", &first]);
+        run_git(
+            &dir,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
+
+        let root = dir.to_string_lossy().into_owned();
+        let list = run_branches(&root).await.unwrap();
+        assert_eq!(list.current.as_deref(), Some("main"));
+        assert_eq!(list.default_branch.as_deref(), Some("origin/main"));
+        assert!(!list.truncated);
+        let locals: Vec<&str> = list
+            .branches
+            .iter()
+            .filter(|branch| !branch.remote)
+            .map(|branch| branch.name.as_str())
+            .collect();
+        let remotes: Vec<&str> = list
+            .branches
+            .iter()
+            .filter(|branch| branch.remote)
+            .map(|branch| branch.name.as_str())
+            .collect();
+        assert_eq!(locals, vec!["feat/side", "main"]);
+        assert_eq!(
+            remotes,
+            vec!["origin/main"],
+            "origin/HEAD is a pointer at the default, not a branch"
+        );
+
+        run_git(&dir, &["checkout", "-q", "--detach", &first]);
+        let detached = run_branches(&root).await.unwrap();
+        assert_eq!(
+            detached.current, None,
+            "a detached HEAD is on no branch, and says so rather than guessing"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_revision_that_would_read_as_an_option_is_refused() {
+        let dir = scratch_repo("revision");
+        write(&dir, "a.txt", "one\n");
+        commit(&dir, "first");
+        write(&dir, "a.txt", "one\ntwo\n");
+        commit(&dir, "second");
+        let root = dir.to_string_lossy().into_owned();
+
+        assert!(run_log(&root, 10, Some("--output=/tmp/pwned")).await.is_err());
+        assert!(run_show(&root, "-x", None).await.is_err());
+        assert!(
+            run_log(&root, 10, Some("HEAD~1..HEAD")).await.is_ok(),
+            "an ordinary range still runs"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn commit_records_drop_branch_decorations_and_survive_a_missing_field() {
+        let unpushed: HashSet<String> = ["aaaa".to_string()].into_iter().collect();
+        let record = |fields: &[&str]| fields.join("\u{1f}");
+        let bytes = [
+            record(&[
+                "aaaa", "aaa", "subject", "Ada", "ada@example.com", "2 hours ago", "1787165226",
+                "HEAD -> main, tag: v1.2.3, origin/main, tag: latest",
+            ]),
+            record(&["bbbb", "bbb", "too", "few", "fields"]),
+            record(&[
+                "cccc", "ccc", "plain", "Ada", "ada@example.com", "3 days ago", "1787165000", "",
+            ]),
+        ]
+        .join("\0");
+
+        let commits = parse_commits(bytes.as_bytes(), &unpushed);
+        assert_eq!(commits.len(), 2, "a malformed record is dropped, not guessed");
+        assert_eq!(commits[0].tags, vec!["v1.2.3", "latest"]);
+        assert_eq!(commits[0].timestamp, 1787165226);
+        assert!(commits[0].unpushed);
+        assert!(commits[1].tags.is_empty());
+        assert!(!commits[1].unpushed);
+    }
+
+    #[test]
+    fn a_commit_over_the_file_cap_is_cut_and_flagged() {
+        let mut records = vec![format!(
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            "aaaa", "aaa", "wide", "Ada", "ada@example.com", "now", "1", ""
+        )];
+        for index in 0..(SHOW_FILE_CAP + 5) {
+            records.push(":100644 100644 aaa bbb M".to_string());
+            records.push(format!("file{index}.rs"));
+        }
+        let (_, files, truncated) = parse_commit_detail(records.join("\0").as_bytes()).unwrap();
+        assert_eq!(files.len(), SHOW_FILE_CAP);
+        assert!(truncated, "the list is cut at the cap and says so");
+    }
+
+    #[test]
+    fn refs_over_the_cap_are_cut_and_flagged() {
+        let mut lines = String::new();
+        for index in 0..(BRANCH_CAP + 3) {
+            lines.push_str(&format!("  refs/heads/branch-{index} \n"));
+        }
+        let list = parse_refs(&lines);
+        assert_eq!(list.branches.len(), BRANCH_CAP);
+        assert!(list.truncated);
+        assert_eq!(list.current, None);
     }
 }

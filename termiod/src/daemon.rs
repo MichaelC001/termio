@@ -996,14 +996,8 @@ async fn process_control(
             staged,
             seq,
         } => {
-            if !connection.capabilities.contains("git") {
-                let response = error(
-                    seq,
-                    ErrorCode::Denied,
-                    "the git capability was not negotiated",
-                    false,
-                );
-                send_response(out, response_cache, seq, response);
+            if let Some(denied) = git_denied(connection, seq) {
+                send_response(out, response_cache, seq, denied);
             } else {
                 let out = out.clone();
                 tokio::spawn(async move {
@@ -1011,6 +1005,77 @@ async fn process_control(
                         Ok((diff, truncated)) => Control::GitDiffResult {
                             diff,
                             truncated,
+                            re: seq,
+                        },
+                        Err(e) => error(seq, ErrorCode::Denied, format!("{e:#}"), false),
+                    };
+                    let _ = out.send(Outbound::Control(response));
+                });
+            }
+        }
+        Control::GitLog {
+            root,
+            limit,
+            range,
+            seq,
+        } => {
+            if let Some(denied) = git_denied(connection, seq) {
+                send_response(out, response_cache, seq, denied);
+            } else {
+                let out = out.clone();
+                tokio::spawn(async move {
+                    let response =
+                        match crate::git::run_log(&root, limit, range.as_deref()).await {
+                            Ok(page) => Control::GitLogResult {
+                                commits: page.commits,
+                                truncated: page.truncated,
+                                re: seq,
+                            },
+                            Err(e) => error(seq, ErrorCode::Denied, format!("{e:#}"), false),
+                        };
+                    let _ = out.send(Outbound::Control(response));
+                });
+            }
+        }
+        Control::GitShow {
+            root,
+            commit,
+            path,
+            seq,
+        } => {
+            if let Some(denied) = git_denied(connection, seq) {
+                send_response(out, response_cache, seq, denied);
+            } else {
+                let out = out.clone();
+                tokio::spawn(async move {
+                    let response =
+                        match crate::git::run_show(&root, &commit, path.as_deref()).await {
+                            Ok(detail) => Control::GitShowResult {
+                                commit: detail.commit,
+                                files: detail.files,
+                                diff: detail.diff,
+                                truncated: detail.truncated,
+                                files_truncated: detail.files_truncated,
+                                re: seq,
+                            },
+                            Err(e) => error(seq, ErrorCode::Denied, format!("{e:#}"), false),
+                        };
+                    let _ = out.send(Outbound::Control(response));
+                });
+            }
+        }
+        Control::GitBranches { root, seq } => {
+            if let Some(denied) = git_denied(connection, seq) {
+                send_response(out, response_cache, seq, denied);
+            } else {
+                let out = out.clone();
+                tokio::spawn(async move {
+                    let response = match crate::git::run_branches(&root).await {
+                        Ok(list) => Control::GitBranchesResult {
+                            branches: list.branches,
+                            current: list.current,
+                            default_branch: list.default_branch,
+                            truncated: list.truncated,
                             re: seq,
                         },
                         Err(e) => error(seq, ErrorCode::Denied, format!("{e:#}"), false),
@@ -1304,6 +1369,9 @@ async fn process_control(
         | Control::FsMatched { .. }
         | Control::FsSearched { .. }
         | Control::GitDiffResult { .. }
+        | Control::GitLogResult { .. }
+        | Control::GitShowResult { .. }
+        | Control::GitBranchesResult { .. }
         | Control::UploadOpened { .. }
         | Control::UploadAck { .. }
         | Control::UploadCommitted { .. }
@@ -1777,6 +1845,20 @@ async fn run_attach(
     handle.send(SessionMsg::RemoveClient { id: client_id });
     bridge.abort();
     Ok(())
+}
+
+/// Every `git:` verb is behind the one capability (§C.13), so they share one
+/// gate: `Some(error)` when the channel never negotiated it.
+fn git_denied(connection: &Connection, seq: Option<u64>) -> Option<Control> {
+    if connection.capabilities.contains("git") {
+        return None;
+    }
+    Some(error(
+        seq,
+        ErrorCode::Denied,
+        "the git capability was not negotiated",
+        false,
+    ))
 }
 
 fn error(re: Option<u64>, code: ErrorCode, message: impl Into<String>, retryable: bool) -> Control {
