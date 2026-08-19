@@ -91,6 +91,7 @@ from the real front matter).
 | draft | design | [Remote Projects (open an SSH/VPS box like a local project)](design/20260708-remote-projects.md) |
 | draft | design | [Session Daemon Architecture (termiod — one model for local, remote, mobile)](design/20260708-session-daemon-architecture.md) |
 | draft | design | [Session deep links (termio:// addresses)](design/20260801-session-deep-link.md) |
+| draft | design | [Session guests — three deltas, not a sharing subsystem](design/20260818-session-guests.md) |
 | draft | design | [Sessions CLI v3 — command design (better than tmux)](design/20260808-sessions-cli-v3-command-design.md) |
 | draft | design | [Sidebar scroll performance — per-session runtime state](design/20260724-sidebar-scroll-performance.md) |
 | draft | design | [Superlogical research brief (Codex / competitive)](design/20260805-_research-superlogical-codex-brief.md) |
@@ -98,8 +99,10 @@ from the real front matter).
 | draft | design | [termiod Session Protocol](design/20260730-termiod-session-protocol.md) |
 | draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/20260705-remote-access-relay-strategy.md) |
 | draft | essay | ["How Claude Code Got the Mouse: Reverse-Engineering the Clickable Terminal"](essays/how-claude-code-got-the-mouse.md) |
+| draft | rfc | ["Adversarial review: One workspace source — the inspector reads the session's device"](rfcs/one-workspace-source.review-codex.md) |
 | draft | rfc | ["Adversarial review: Retire remote — every machine is a device"](rfcs/remote-to-device.review-codex.md) |
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/20260630-sandbox-seatbelt.md) |
+| draft | rfc | [A project carries its machine — delete the host container](rfcs/one-workspace-source.md) |
 | draft | rfc | [Adversarial review — Retire "remote", every machine is a device](rfcs/remote-to-device.review-claude.md) |
 | draft | rfc | [Automation — scheduled agent runs](rfcs/automation-scheduled-agent-runs.md) |
 | draft | rfc | [Companion Wire Protocol](design/companion-wire-protocol.md) |
@@ -107,7 +110,9 @@ from the real front matter).
 | draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](rfcs/fork-libghostty-spm.md) |
 | draft | rfc | [Loose terminals as first-class entities](design/20260713-loose-terminal-entity.md) |
 | draft | rfc | [Onboarding —— 首次启动体验设计](design/20260630-onboarding.md) |
+| draft | rfc | [Remote git — the pane's verbs run on the device](rfcs/remote-git-plane.md) |
 | draft | rfc | [Review — One path, local sessions run through termiod too](rfcs/one-path-local-through-termiod.review-claude.md) |
+| draft | rfc | [Termiod web client on official Ghostty WASM (Linux first)](design/20260818-termiod-web-client-ghostty-wasm.md) |
 | fixed | bug | [New terminal opens unfocused (hollow cursor, beeps until clicked)](bug/terminal-focus-loss-on-new-session-mount.md) |
 | fixed | bug | [Terminal loses focus after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
 | fixed | bug | [Terminal loses focus while the window stays key — sibling-render trigger](bug/terminal-focus-loss-on-sibling-render.md) |
