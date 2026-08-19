@@ -3,7 +3,7 @@ import { RootProvider } from "fumadocs-ui/provider/next";
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import { DocsHeader } from "@/components/docs/docs-header";
 import { source } from "@/lib/source";
-import { docsChrome } from "@/lib/docs-ui";
+import { docsChrome, docsLibraryChrome } from "@/lib/docs-ui";
 import { i18n, languageNames, type DocsLanguage } from "@/lib/i18n";
 import { githubUrl } from "@/lib/site";
 
@@ -45,6 +45,7 @@ export function DocsFrame({
             locale: language,
             name: languageNames[language] ?? language,
           })),
+          translations: docsLibraryChrome(lang),
         }}
       >
         <DocsHeader lang={lang} />

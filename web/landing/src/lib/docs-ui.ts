@@ -7,13 +7,10 @@ import type { DocsLanguage } from "@/lib/i18n";
 export type DocsChrome = {
   searchTrigger: string;
   searchPlaceholder: string;
-  searching: string;
-  searchUnavailable: string;
-  /** `{query}` is replaced with what the reader typed. A template, not a
-   * function: this object crosses into a client component, and functions can't. */
   noResults: string;
   menu: string;
   onThisPage: string;
+  noHeadings: string;
   previous: string;
   next: string;
   copyForLLM: string;
@@ -22,7 +19,6 @@ export type DocsChrome = {
   markdown: string;
   markdownAriaLabel: string;
   editPage: string;
-  skipToContent: string;
   language: string;
   docsLabel: string;
   download: string;
@@ -36,11 +32,10 @@ export type DocsChrome = {
 const en: DocsChrome = {
   searchTrigger: "Search docs",
   searchPlaceholder: "Search the docs…",
-  searching: "Searching…",
-  searchUnavailable: "Search isn’t available right now — try again in a moment.",
-  noResults: "No results for “{query}”.",
+  noResults: "No results.",
   menu: "Documentation menu",
   onThisPage: "On this page",
+  noHeadings: "No headings",
   previous: "Previous",
   next: "Next",
   copyForLLM: "Copy for LLM",
@@ -49,7 +44,6 @@ const en: DocsChrome = {
   markdown: "Markdown",
   markdownAriaLabel: "Open this page as raw Markdown",
   editPage: "Edit this page on GitHub",
-  skipToContent: "Skip to content",
   language: "Language",
   docsLabel: "Docs",
   download: "Download",
@@ -63,11 +57,10 @@ const en: DocsChrome = {
 const zhCN: DocsChrome = {
   searchTrigger: "搜索文档",
   searchPlaceholder: "搜索文档…",
-  searching: "搜索中…",
-  searchUnavailable: "搜索暂时不可用，请稍后再试。",
-  noResults: "没有与“{query}”匹配的结果。",
+  noResults: "没有匹配的结果。",
   menu: "文档目录",
   onThisPage: "本页内容",
+  noHeadings: "本页没有小标题",
   previous: "上一页",
   next: "下一页",
   copyForLLM: "拷贝给 LLM",
@@ -76,7 +69,6 @@ const zhCN: DocsChrome = {
   markdown: "Markdown",
   markdownAriaLabel: "以 Markdown 原文打开本页",
   editPage: "在 GitHub 上编辑本页",
-  skipToContent: "跳到正文",
   language: "语言",
   docsLabel: "文档",
   download: "下载",
@@ -91,4 +83,28 @@ const CHROME: Record<DocsLanguage, DocsChrome> = { en, "zh-CN": zhCN };
 
 export function docsChrome(lang: DocsLanguage): DocsChrome {
   return CHROME[lang] ?? en;
+}
+
+// The words fumadocs writes itself — the search field, the table of contents
+// heading, the pager, the edit link. Without this map the library falls back to
+// its English defaults, which is why a Chinese page carried an English "On this
+// page" above a Chinese outline. Its keys are the English string plus the context
+// it appears in; that is the library's own key format, not a convention of ours,
+// so they are quoted verbatim from `fumadocs-ui/dist/.translations`.
+export function docsLibraryChrome(lang: DocsLanguage): Record<string, string> {
+  const chrome = docsChrome(lang);
+  return {
+    "On this page(table of contents)": chrome.onThisPage,
+    "Table of Contents(inline table of contents)": chrome.onThisPage,
+    "No Headings(table of contents)": chrome.noHeadings,
+    "Search(search trigger)": chrome.searchTrigger,
+    "Search(search dialog)": chrome.searchPlaceholder,
+    "No results found(search dialog)": chrome.noResults,
+    "Previous Page(pagination)": chrome.previous,
+    "Next Page(pagination)": chrome.next,
+    "Edit on GitHub(edit page)": chrome.editPage,
+    "Toggle Menu(mobile menu)(aria-label)": chrome.menu,
+    "Choose a language(language switcher)": chrome.language,
+    "Choose a language(language switcher)(aria-label)": chrome.language,
+  };
 }
