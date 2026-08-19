@@ -13,7 +13,7 @@ struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var usage: UsageMonitor
     /// Opens an SSH terminal to a `~/.ssh/config` alias in the main window — the
-    /// SSH tab's Connect action, injected by the app delegate so the settings
+    /// Machines tab's Connect action, injected by the app delegate so the settings
     /// window doesn't hold the store.
     let onSSHConnect: (String) -> Void
     @State private var selection: SettingsTab
@@ -80,7 +80,7 @@ struct SettingsView: View {
         case .general: GeneralSettingsTab(settings: settings)
         case .appearance: AppearanceSettingsTab(settings: settings, isBrowsingStore: $isBrowsingThemeStore)
         case .terminal: TerminalSettingsTab(settings: settings)
-        case .ssh: SSHSettingsTab(settings: settings, onConnect: onSSHConnect)
+        case .machines: MachinesSettingsTab(settings: settings, onConnect: onSSHConnect)
         case .keyboard: KeybindingsSettingsTab()
         case .agents: AgentSettingsTab(settings: settings)
         case .usage: UsageSettingsTab(settings: settings, usage: usage)
