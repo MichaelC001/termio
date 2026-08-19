@@ -51,19 +51,6 @@ final class FileTreeCache {
         }
     }
 
-    /// Forgets one root — used when its directory is gone, so a stale tree can
-    /// never be handed back for a path that no longer exists.
-    func forget(_ url: URL) {
-        let key = Self.key(url)
-        roots[key] = nil
-        order.removeAll { $0 == key }
-    }
-
-    func removeAll() {
-        roots.removeAll()
-        order.removeAll()
-    }
-
     private func touch(_ key: String) {
         order.removeAll { $0 == key }
         order.append(key)

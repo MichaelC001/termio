@@ -2,91 +2,6 @@ import AppKit
 import SwiftUI
 import TermioShared
 
-/// One source of truth for moving between workspaces, so the header menu, the
-/// footer dots, and the trackpad swipe can never disagree about the order or
-/// about which scope is current.
-@MainActor
-enum WorkspaceSpaces {
-    /// The workspaces a user can move between, in the order every surface shows
-    /// them: the ones they made first, then the machine fallbacks. A fallback is
-    /// where sessions land that nobody filed, so it sits after the filing.
-    static func ordered(in store: TermioStore) -> [Workspace] {
-        store.workspaces.filter { !$0.isDeviceFallback } + store.workspaces.filter(\.isDeviceFallback)
-    }
-
-    /// The workspace `step` places away from the current one, or `nil` at either
-    /// end. Deliberately not wrapping: a swipe that runs off the end should feel
-    /// like a wall, not teleport to the far side of the list.
-    static func neighbor(step: Int, in store: TermioStore) -> Workspace? {
-        let spaces = ordered(in: store)
-        guard let current = spaces.firstIndex(where: { $0.id == store.currentWorkspaceID })
-        else { return nil }
-        let target = current + step
-        guard spaces.indices.contains(target) else { return nil }
-        return spaces[target]
-    }
-
-    /// Every switcher goes through here, which is also what makes the switch
-    /// measurable in one place: the span covers the whole synchronous cost of
-    /// changing scope — the selection move, the device context, the sidebar
-    /// rebuild each one publishes — so a switch that feels slow has a number
-    /// next to it rather than an adjective.
-    static func select(_ workspace: Workspace, in store: TermioStore) {
-        Trace.workspace.measure("workspace switch", "to=\(workspace.name)") {
-            store.switchToWorkspace(workspace.id)
-        }
-    }
-
-}
-
-/// The rows every workspace switcher shows, wherever it is mounted. The sidebar's
-/// toolbar control is the only opening today; the rows live here rather than in
-/// it because there is one current workspace, and it would be a bug for two
-/// controls to disagree about which one it is.
-struct WorkspaceSwitcherMenuContent: View {
-    @EnvironmentObject var store: TermioStore
-
-    var body: some View {
-        let spaces = WorkspaceSpaces.ordered(in: store)
-        // An inline Picker is what draws the checkmark on the current workspace; a
-        // row of Buttons would leave the switcher unable to say which one is showing.
-        Picker("", selection: selection) {
-            ForEach(spaces) { workspace in
-                Text(workspace.name).tag(workspace.id)
-            }
-        }
-        .pickerStyle(.inline)
-        .labelsHidden()
-        Divider()
-        Button(localized("New Workspace…")) { store.presentNewWorkspacePanel() }
-        Button(localized("Rename Workspace…")) {
-            store.presentRenameWorkspacePanel(store.currentWorkspaceID)
-        }
-        // The last workspace has nowhere to send its sessions, and the sidebar has
-        // to have a scope to show, so the verb is absent rather than disabled.
-        if store.hasMultipleWorkspaces {
-            Button(localized("Remove Workspace")) {
-                store.confirmRemoveWorkspace(store.currentWorkspaceID)
-            }
-        }
-        // No device verb here, deliberately. A machine you can *go to* is the
-        // mode this scope replaced: it made the sidebar answer "which computer"
-        // when the question is "which work". A device is a place a new thing is
-        // put — New Terminal on it, Clone to it, File ▸ Connect to… for a box
-        // never reached — never a place the window travels to.
-    }
-
-    private var selection: Binding<Workspace.ID> {
-        Binding(
-            get: { store.currentWorkspaceID },
-            set: { id in
-                guard let workspace = store.workspaces.first(where: { $0.id == id }) else { return }
-                WorkspaceSpaces.select(workspace, in: store)
-            }
-        )
-    }
-}
-
 /// The workspace switcher, in the sidebar's own toolbar region: which scope you
 /// are in, and the control that changes it. It sits in the strip above the list
 /// rather than in a row of its own, next to the navigator toggle and the
@@ -100,7 +15,6 @@ struct WorkspaceSwitcherToolbarView: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
     @Environment(\.controlActiveState) private var controlActive
-    @Environment(\.colorScheme) private var colorScheme
 
     /// Long names truncate rather than push the sort and `+` buttons toward
     /// NSToolbar's `»` overflow: the sidebar region has only the room the
@@ -114,7 +28,7 @@ struct WorkspaceSwitcherToolbarView: View {
         if store.hasMultipleWorkspaces {
             let current = store.currentWorkspace
             Menu {
-                WorkspaceSwitcherMenuContent()
+                menuRows
             } label: {
                 HStack(spacing: 5) {
                     // Sized against the toolbar's own glyphs (the navigator toggle, the
@@ -142,6 +56,42 @@ struct WorkspaceSwitcherToolbarView: View {
             .fixedSize()
             .help(localized("The sidebar shows this workspace"))
         }
+    }
+
+    @ViewBuilder
+    private var menuRows: some View {
+        // An inline Picker is what draws the checkmark on the current workspace; a
+        // row of Buttons would leave the switcher unable to say which one is showing.
+        Picker("", selection: selection) {
+            ForEach(store.orderedWorkspaces) { workspace in
+                Text(workspace.name).tag(workspace.id)
+            }
+        }
+        .pickerStyle(.inline)
+        .labelsHidden()
+        Divider()
+        Button(localized("New Workspace…")) { store.presentNewWorkspacePanel() }
+        Button(localized("Rename Workspace…")) {
+            store.presentRenameWorkspacePanel(store.currentWorkspaceID)
+        }
+        // Removing the last workspace is refused in the store — the sidebar has to
+        // have a scope to show — and this menu only opens while there is more than
+        // one, so the row is always live where it is drawn.
+        Button(localized("Remove Workspace")) {
+            store.confirmRemoveWorkspace(store.currentWorkspaceID)
+        }
+        // No device verb here, deliberately. A machine you can *go to* is the
+        // mode this scope replaced: it made the sidebar answer "which computer"
+        // when the question is "which work". A device is a place a new thing is
+        // put — New Terminal on it, Clone to it, File ▸ Connect to… for a box
+        // never reached — never a place the window travels to.
+    }
+
+    private var selection: Binding<Workspace.ID> {
+        Binding(
+            get: { store.currentWorkspaceID },
+            set: { store.switchToWorkspace($0) }
+        )
     }
 
     // Matched to the sidebar toolbar's native glyphs (the `+` new-terminal item, the

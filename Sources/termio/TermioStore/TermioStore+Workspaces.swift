@@ -178,13 +178,6 @@ extension TermioStore {
         return false
     }
 
-    /// Whether the session is one of a workspace's loose agent sessions — the
-    /// rows the Chats section draws.
-    func isLooseChat(_ id: Session.ID) -> Bool {
-        if case .chats? = locate(id) { return true }
-        return false
-    }
-
     /// The workspace a session belongs to: the one that owns it directly for a
     /// loose session, its project's owner otherwise.
     func workspace(for sessionID: Session.ID) -> Workspace? {
@@ -209,31 +202,39 @@ extension TermioStore {
     }
 
     /// Whether the switcher has anything to switch between. With one workspace it
-    /// stays out of sight — the same rule the device control follows: a control
-    /// that always reads the same thing is a label for a decision nobody took.
+    /// stays out of sight: a control that always reads the same thing is a label
+    /// for a decision nobody took.
     var hasMultipleWorkspaces: Bool { workspaces.count > 1 }
+
+    /// The workspaces a user can move between, in the order every surface shows
+    /// them: the ones they made first, then the machine fallbacks. A fallback is
+    /// where sessions land that nobody filed, so it sits after the filing.
+    var orderedWorkspaces: [Workspace] {
+        workspaces.filter { !$0.isDeviceFallback } + workspaces.filter(\.isDeviceFallback)
+    }
 
     /// Shows a different workspace. The selection moves with it, because a
     /// terminal from the scope you just left is precisely the thing the scope
     /// exists to stop showing — and the panes (files, git, issues) follow the
     /// selected session, so leaving it behind would leave them on the old repo.
     func switchToWorkspace(_ id: Workspace.ID) {
-        guard workspaces.contains(where: { $0.id == id }) else { return }
-        guard currentWorkspaceID != id else { return }
+        guard let target = workspaces.first(where: { $0.id == id }),
+              currentWorkspaceID != id
+        else { return }
         // The switch itself, and nothing else: the column is the answer to
         // "which workspace", and it can be drawn knowing only this. Timed
         // separately from the settle below, because the two are what the user
         // means by "the switch" and by "everything after it" — reporting them
         // as one number is how a fast switch reads as a slow one.
         let span = Trace.workspace.begin("workspace switch")
-        defer { Trace.workspace.end(span) }
+        defer { Trace.workspace.end(span, "to=\(target.name)") }
         // Explicitly un-animated. The column's rows are replaced wholesale by a
         // switch — nothing moves from one place to another — so there is no
-        // motion for an animation to describe, and an ambient one (the footer
-        // capsule's, a section's collapse) would still catch this change and
-        // drag the whole hosted tree through an animated relayout. A profile of
-        // the switch is mostly `NSHostingView.layout()` inside
-        // `NSAnimationContext.runAnimationGroup`; this is what takes it out.
+        // motion for an animation to describe, and an ambient one (a section's
+        // collapse) would still catch this change and drag the whole hosted tree
+        // through an animated relayout. A profile of the switch is mostly
+        // `NSHostingView.layout()` inside `NSAnimationContext.runAnimationGroup`;
+        // this is what takes it out.
         var instant = Transaction()
         instant.disablesAnimations = true
         withTransaction(instant) {
@@ -266,9 +267,9 @@ extension TermioStore {
     }
 
     /// The half of a workspace switch that is about the session, run a turn after
-    /// the column is drawn. Guarded by `workspaceArrival`, so a user who keeps
-    /// swiping only ever settles the workspace they stopped on — the intermediate
-    /// ones never open a file or ask a machine anything.
+    /// the column is drawn. Guarded by `workspaceArrival`, so a user stepping
+    /// through scopes (⌃⌥⌘1…9) only ever settles the one they stop on — the
+    /// intermediate ones never open a file or ask a machine anything.
     private func finishArriving(in id: Workspace.ID) {
         let span = Trace.workspace.begin("workspace settle")
         defer { Trace.workspace.end(span) }

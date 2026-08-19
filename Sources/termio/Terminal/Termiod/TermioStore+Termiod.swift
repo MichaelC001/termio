@@ -462,18 +462,6 @@ extension TermioStore {
         }
     }
 
-    /// How a session's termiod counterpart died, if it did. `nil` for a session
-    /// that is running, that never ran, or whose tombstone has aged out of the
-    /// daemon's capped graveyard.
-    ///
-    /// The reason is the host's word (`exited` · `killed` · `daemon_lost`);
-    /// turning it into something a person reads is the caller's job, because the
-    /// host describes state and never decides presentation.
-    func termiodEndReason(for id: Session.ID) -> Termiod.SessionTombstone? {
-        guard let session = session(id) else { return nil }
-        return termiodTombstones[daemonSessionName(for: session)]
-    }
-
     // MARK: - Adopting a session the device already had
 
     /// Takes a session the **device** reports but this app has no row for, and

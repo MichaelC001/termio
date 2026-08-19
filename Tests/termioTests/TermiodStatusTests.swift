@@ -140,7 +140,7 @@ final class TermiodStatusTests: XCTestCase {
     }
 
     /// The reason a row's session died is addressable from the row.
-    func testAnEndReasonIsFoundBySessionID() throws {
+    func testAnEndReasonIsFoundFromItsSession() throws {
         let session = Session(title: "agent", agent: .terminal)
         let store = makeStore(with: session)
         let name = session.id.uuidString
@@ -148,7 +148,7 @@ final class TermiodStatusTests: XCTestCase {
         store.recordTombstones(
             [try tombstone(name: name, reason: "daemon_lost")], live: [], persisted: [name])
 
-        XCTAssertEqual(store.termiodEndReason(for: session.id)?.reason, "daemon_lost")
+        XCTAssertEqual(store.termiodEndReason(for: session)?.reason, "daemon_lost")
     }
 
     /// A name that comes back alive buries its own grave. Tombstones merge rather
@@ -161,10 +161,10 @@ final class TermiodStatusTests: XCTestCase {
 
         store.recordTombstones(
             [try tombstone(name: name, reason: "daemon_lost")], live: [], persisted: [name])
-        XCTAssertNotNil(store.termiodEndReason(for: session.id))
+        XCTAssertNotNil(store.termiodEndReason(for: session))
 
         store.recordTombstones([], live: [try live(name: name)], persisted: [name])
-        XCTAssertNil(store.termiodEndReason(for: session.id))
+        XCTAssertNil(store.termiodEndReason(for: session))
     }
 
     /// Another client's sessions share the daemon but not the sidebar. Keeping
@@ -178,6 +178,6 @@ final class TermiodStatusTests: XCTestCase {
             live: [], persisted: [session.id.uuidString])
 
         XCTAssertTrue(store.termiodTombstones.isEmpty)
-        XCTAssertNil(store.termiodEndReason(for: session.id))
+        XCTAssertNil(store.termiodEndReason(for: session))
     }
 }

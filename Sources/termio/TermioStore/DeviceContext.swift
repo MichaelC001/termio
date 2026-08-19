@@ -73,42 +73,6 @@ enum DeviceSessionsState {
     }
 }
 
-/// One row of the current device's world.
-///
-/// The order of the cases is the order of authority. `running` comes from the
-/// device's `list` reply and is the only case that can assert a process exists;
-/// the other two describe rows this viewer authored whose process the device does
-/// not report, which is a different claim and is drawn differently.
-enum DeviceWorldRow: Identifiable {
-    /// A process the device says is running. The `Session` is this viewer's own
-    /// record of it — a title, a pin, an agent — and is `nil` for a session
-    /// started by the CLI or another client, which is exactly the case that
-    /// proves the list is not a local array.
-    case running(Termiod.SessionInformation, Session?)
-    /// A row this viewer authored that the device has no process for. Remote
-    /// sessions spawn on first attach (`create_if_missing`), so a session created
-    /// but never opened lives only here until it is clicked.
-    case notStarted(Session)
-    /// A row whose process the device buried, with the reason it gave.
-    case ended(Session, Termiod.SessionTombstone)
-
-    var id: String {
-        switch self {
-        case .running(let information, _): return "live:\(information.id)"
-        case .notStarted(let session): return "idle:\(session.id.uuidString)"
-        case .ended(let session, _): return "dead:\(session.id.uuidString)"
-        }
-    }
-
-    /// This viewer's record of the row, when it has one.
-    var session: Session? {
-        switch self {
-        case .running(_, let session): return session
-        case .notStarted(let session), .ended(let session, _): return session
-        }
-    }
-}
-
 extension TermioStore {
     /// The device the app is currently looking at. Every panel takes its data
     /// from here: switching is not a filter over one list, it is a different
@@ -157,35 +121,21 @@ extension TermioStore {
         refreshDeviceSessions()
     }
 
-    /// The current device's rows: what the device reports, then the rows this
-    /// viewer holds that it did not.
+    /// What the current device says is running that this app has no row for —
+    /// a session started from the `termiod` CLI on that machine, or by another
+    /// client. Every session this app authored already draws in its own
+    /// workspace, so anything with a record here would be a duplicate.
     ///
-    /// Running sessions lead and keep the device's own ordering — the device is
-    /// the authority for that list, so its order is the list's order. Everything
-    /// after is this app's own bookkeeping about rows the device did not mention.
-    func deviceWorld() -> [DeviceWorldRow] {
-        let device = currentDevice
-        let mine = sessions(authoredFor: device)
-        var rows: [DeviceWorldRow] = []
-        var claimed: Set<Session.ID> = []
-
-        for information in deviceSessions.sessions?.live ?? [] where information.alive {
-            let session = mine.first { daemonSessionName(for: $0) == information.name }
-            if let session { claimed.insert(session.id) }
-            rows.append(.running(information, session))
+    /// The device's own ordering is kept: it is the authority for this list, so
+    /// its order is the list's order. Its existence is also the proof the list is
+    /// the device's and not this Mac's — no amount of filtering a local array can
+    /// produce a row for a session this app never created.
+    func deviceOnlySessions() -> [Termiod.SessionInformation] {
+        let mine = sessions(authoredFor: currentDevice)
+        return (deviceSessions.sessions?.live ?? []).filter { information in
+            information.alive
+                && !mine.contains { daemonSessionName(for: $0) == information.name }
         }
-
-        // A session the device did not list is not automatically gone: it may
-        // never have been started. The tombstone is what tells the two apart, so
-        // it decides which row gets drawn.
-        for session in mine where !claimed.contains(session.id) {
-            if let tombstone = termiodEndReason(for: session) {
-                rows.append(.ended(session, tombstone))
-            } else {
-                rows.append(.notStarted(session))
-            }
-        }
-        return rows
     }
 
     /// The sessions this viewer authored **for** a device: its own records, which
@@ -224,6 +174,13 @@ extension TermioStore {
         session.termiodSessionName ?? session.id.uuidString
     }
 
+    /// How a session's termiod counterpart died, if it did. `nil` for a session
+    /// that is running, that never ran, or whose tombstone has aged out of the
+    /// daemon's capped graveyard.
+    ///
+    /// The reason is the host's word (`exited` · `killed` · `daemon_lost`);
+    /// turning it into something a person reads is the caller's job, because the
+    /// host describes state and never decides presentation.
     func termiodEndReason(for session: Session) -> Termiod.SessionTombstone? {
         termiodTombstones[daemonSessionName(for: session)]
     }

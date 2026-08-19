@@ -181,9 +181,9 @@ struct SidebarView: View {
         // breadcrumb, so the row says where clicking will take you.
         let waitingElsewhere = elsewhereNeedingYou(currentWorkspace: workspace.id)
         // Whether any row in this column wears a machine mark. A machine's own
-        // workspace already says which machine it is — in the toolbar band and in
-        // the footer dot — so marking each of its rows repeats one fact down the
-        // whole column. Decided here, once, and handed to the rows.
+        // workspace already says which machine it is, in the toolbar band above
+        // the column, so marking each of its rows repeats one fact down the whole
+        // column. Decided here, once, and handed to the rows.
         let marksDevice = !workspace.isDeviceFallback
         let hasPinned = !pinnedProjects.isEmpty || !pinnedWorktrees.isEmpty
             || !pinnedSessions.isEmpty || !waitingElsewhere.isEmpty
@@ -333,17 +333,10 @@ struct SidebarView: View {
     @ViewBuilder
     private func alsoRunningSection(isFirstSection: Bool) -> some View {
         let device = store.currentDevice
-        // Only what the device reports that this app has no row for. Every session
-        // the app authored draws in its own workspace now — including the ones on
-        // other machines, which wear that machine's mark — so anything with a
-        // record here would be a duplicate.
-        let rows = store.deviceWorld().filter { row in
-            if case .running(_, nil) = row { return true }
-            return false
-        }
         // Deliberately not scoped by workspace: this is the machine's own claim
         // about what is running, and it is the only place a session started
         // outside Termio can appear at all.
+        let rows = store.deviceOnlySessions()
         if !rows.isEmpty {
             SidebarSectionHeader(
                 title: device.isLocal
@@ -358,13 +351,10 @@ struct SidebarView: View {
                 menuItems: alsoRunningMenuItems(device)
             )
             if !alsoRunningCollapsed {
-                ForEach(rows) { row in
-                    // A session on this device with no row here. Opening it is
-                    // adoption, not creation: it keeps the name the device gave it
-                    // so the attach lands on that PTY.
-                    if case .running(let information, nil) = row {
-                        DeviceOnlySessionRow(information: information, chrome: chrome)
-                    }
+                // Opening one of these is adoption, not creation: it keeps the
+                // name the device gave it so the attach lands on that PTY.
+                ForEach(rows, id: \.id) { information in
+                    DeviceOnlySessionRow(information: information, chrome: chrome)
                 }
             }
         }
@@ -1072,9 +1062,9 @@ private struct SessionRow: View {
     private var isSelected: Bool { store.selectedSessionID == session.id }
 
     /// The machine this row runs on, or `nil` when it runs here — or when the
-    /// workspace *is* that machine, since its name is already in the toolbar band
-    /// and its colour already in the footer. Marking every row of a machine's own
-    /// workspace repeats one fact down the whole column, which is noise, not a cue.
+    /// workspace *is* that machine, since its name is already in the toolbar band.
+    /// Marking every row of a machine's own workspace repeats one fact down the
+    /// whole column, which is noise, not a cue.
     private var remoteDevice: KnownDevice? {
         guard marksDevice else { return nil }
         return .running(session)
@@ -1531,8 +1521,6 @@ struct SidebarRowHighlight: View {
     }
 }
 
-/// A small coloured dot mirroring the menu-bar pulse: hidden when idle, amber
-/// when the session wants attention, blue while working.
 /// The resting "your turn" status, drawn as a ring *around* the leading brand mark: green when the
 /// agent just finished, orange when it's blocked on you. Working is the leading spinner and idle is
 /// nothing, so only those two states light the ring. Sized well past the 16pt icon column so it
@@ -1553,9 +1541,6 @@ private struct StatusRing: View {
     }
 }
 
-/// The "agent is working" mark: a 3×3 grid of dots with a bright comet that orbits
-/// the eight perimeter cells, so the small nine-square grid reads as rotating. Sits
-/// in place of the session's brand icon while a turn is in flight (see `SessionRow`).
 extension Color {
     /// Pure ink for the sidebar's working spinner: `labelColor` keeps ~15%
     /// transparency and the sidebar's vibrancy lightens it again, which left even
