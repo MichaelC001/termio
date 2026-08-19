@@ -741,14 +741,226 @@ html[data-docs-theme="dark"]:has(.docs-surface) {
   [data-sidebar-panel] {
     display: none;
   }
+}
+
+/* The docs prose lives in `utilities`, not `components`, because that is where
+   fumadocs' typography plugin puts `.prose`. Layer order outranks specificity in
+   the cascade, so a `.docs-surface article .prose` rule one layer down loses to a bare
+   `.prose` — silently, and only for the properties the plugin happens to set. In
+   the same layer, specificity decides and these win. The same applies to the
+   library's chrome, which carries Tailwind utilities of its own. */
+@layer utilities {
+  /* ── Square corners, docs only ───────────────────────────────────────────
+     The docs are the one surface where the terminal aesthetic wins over the
+     Apple-HIG rounding the landing page uses: the reader is here to look at
+     code blocks and terminal screenshots, both of which are rectangles, and a
+     1rem radius on a 36px sidebar row rendered as a capsule — the shape macOS
+     reserves for a tag, not a list item.
+
+     Scoped to the docs *page* rather than the `.docs-surface` subtree: popovers
+     are portaled to `document.body`, so the language switcher and its rows sat
+     outside the subtree and kept their radius while everything around them went
+     square. The landing page never renders `.docs-surface`, so it is untouched —
+     the same `html:has()` test the scrollbar rule above uses. Two things opt out:
+     anything genuinely round (circles by nature, not rounded rectangles) and
+     inline code, whose small radius keeps a `code` chip legible as one object
+     inside a line of prose. */
+  html:has(.docs-surface) *:not([class*="rounded-full"]) {
+    border-radius: 0;
+  }
+  .docs-surface article .prose :not(pre) > code {
+    border-radius: 3px;
+  }
+
+  /* ── Docs prose typography ───────────────────────────────────────────────
+     fumadocs ships a Tailwind-typography `.prose` tuned for a column as wide as
+     the page. Here that was 836px of 16px text — about 104 characters a line,
+     where reading comfort tops out around 75. Everything below hangs off fixing
+     that: a reading measure, body copy a notch larger to suit it, and headings
+     that take their space from above rather than below.
+
+     Every rule is scoped through `article`, because `.prose` is not only the page
+     body — the library puts it on each table-of-contents link too, so that inline
+     code in a heading renders styled there. Matching `.prose` alone turned every
+     TOC entry into a flex column and sized it like body copy. */
+  .docs-surface article .prose {
+    --docs-measure: 40rem;
+    /* The gap between two elements of the same section. Space above a heading is
+       this plus the heading's own margin, because margins do not collapse in a
+       flex container — the two add, which is the point. */
+    --docs-prose-gap: 1.25rem;
+    font-size: 1.0625rem;
+    line-height: 1.7;
+
+    /* Vertical rhythm comes from one gap, not from margins meeting each other.
+       With margins, the space between two blocks is the larger of the pair, so
+       tightening the space under a heading meant reaching past it to style the
+       next sibling, and the first child needed its top margin reset by hand.
+       A flex column has neither problem: the gap is the gap, the first and last
+       children get no edge spacing, and a heading that wants more room above it
+       simply adds a margin on itself. */
+    display: flex;
+    flex-direction: column;
+    gap: var(--docs-prose-gap);
+  }
+  /* The plugin's own vertical margins would stack on top of the gap. */
+  .docs-surface article .prose > * {
+    margin-block: 0;
+  }
+
+  /* One measure for everything read as a sentence, expressed as a token rather
+     than an exception list: an element opts out by setting `--docs-measure` on
+     itself, and because custom properties inherit, a container can opt out its
+     whole subtree the same way. Three kinds of thing opt out here, and each is a
+     figure rather than prose — media (screenshots and video, which carry
+     `not-prose`), tables, whose width comes from their columns, and code blocks:
+     the longest line in these docs is 97 characters, so a block held to the text
+     measure would scroll horizontally on every CLI page. */
+  .docs-surface article .prose > * {
+    max-width: var(--docs-measure);
+  }
+  .docs-surface article .prose > :is(table, pre, figure, .not-prose),
+  .docs-surface article .prose > :has(> :is(table, pre)) {
+    --docs-measure: none;
+  }
+
+  /* A section head belongs to the text under it: the space above it is what
+     separates two sections, and it is several times the space below. */
+  .docs-surface article .prose :is(h2, h3, h4) {
+    letter-spacing: -0.018em;
+  }
+  .docs-surface article .prose h2 {
+    margin-top: 2.25rem;
+    line-height: 1.25;
+  }
+  .docs-surface article .prose h3 {
+    margin-top: 1.25rem;
+    line-height: 1.3;
+  }
+  .docs-surface article .prose h4 {
+    margin-top: 0.75rem;
+  }
+  /* A screenshot is a change of subject, not another paragraph, so it takes more
+     air than the prose rhythm gives it. */
+  .docs-surface article .prose > :is(figure, .not-prose) {
+    margin-block: 0.75rem;
+  }
+
+  /* The library's code block is a white card with a lift. This site already has a
+     token for the surface code sits on — `--code`, grey in light and near-black
+     in dark — and builds its panels from hairlines, so the card takes that colour
+     and drops the shadow. On a white page a white block reads as nothing at all. */
+  .docs-surface article .prose figure.shiki {
+    background: var(--code);
+    box-shadow: none;
+  }
+
+  /* Inline code sits inside a line of prose, so it is tuned against the sans
+     text around it rather than styled as its own object: the mono face runs
+     optically low next to SF, and `vertical-align` lifts it without changing the
+     line box the way a margin or a transform would. Long identifiers may break —
+     `termio://session/<uuid>` in a 40rem column would otherwise force the line
+     to overflow rather than wrap. */
+  .docs-surface article .prose :not(pre) > code {
+    vertical-align: 0.045em;
+    white-space: break-spaces;
+  }
+  /* In a heading, code is part of the heading: it takes its size and weight and
+     drops the chip, so `## The \`termio\` command-line tool` reads as one line of
+     type instead of a label with a badge in it. */
+  .docs-surface article .prose :is(h1, h2, h3, h4) code {
+    padding: 0;
+    border: none;
+    background: none;
+    font-size: inherit;
+    font-weight: inherit;
+    vertical-align: baseline;
+  }
+
+  /* The site's list mark: a hairline dash, as on the changelog and the legal
+     pages. Ordered lists keep their numerals — the contrast is the point on a
+     page that has both a set of things and a sequence of steps. */
+  .docs-surface article .prose ul {
+    list-style: none;
+    padding-inline-start: 0;
+  }
+  .docs-surface article .prose ul > li {
+    position: relative;
+    padding-inline-start: 1.375rem;
+  }
+  .docs-surface article .prose ul > li::before {
+    content: "";
+    position: absolute;
+    inset-inline-start: 0;
+    top: 0.85em;
+    width: 0.625rem;
+    height: 1px;
+    background: var(--muted-foreground);
+    opacity: 0.7;
+  }
+
+  /* Tables as hairline rows. The library's table is a rounded bordered card
+     with a filled header band and a rule between every cell; on a page built
+     from hairlines that reads as a spreadsheet pasted into the prose. These
+     tables are reference lists — the status model, the shortcut catalog — so
+     they get row rules only, and the mono uppercase column label the rest of
+     the site already uses for the same job. Selectors are deliberately
+     `table th` rather than `th`: the library's own rules are specific enough to
+     outrank the shorter form. */
+  .docs-surface article .prose table {
+    border: none;
+    border-radius: 0;
+    background: none;
+    border-collapse: collapse;
+    /* Content width, not full width. A two-column shortcut table stretched
+       across the page leaves the shortcut stranded a screen away from the
+       command it belongs to; tables with sentences in them still fill. */
+    width: auto;
+    max-width: 100%;
+    font-size: 0.9375rem;
+    line-height: 1.55;
+  }
+  .docs-surface article .prose table :is(th, td) {
+    border: none;
+    border-bottom: 1px solid var(--border);
+    background: none;
+    padding: 0.625rem 1.5rem 0.625rem 0;
+    text-align: start;
+    vertical-align: top;
+  }
+  .docs-surface article .prose table th {
+    font-family: var(--font-mono-stack);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+  }
+  .docs-surface article .prose table tbody tr:last-child td {
+    border-bottom: none;
+  }
+  /* A command or a shortcut is one token. Wrapped, `termio sessions spawn
+     "<prompt>"` reads as two. */
+  .docs-surface article .prose table code {
+    white-space: nowrap;
+  }
+
   /* CJK copy needs a little more air between lines than Latin at the same size,
      and Chinese punctuation shouldn't start a line. */
-  .docs-surface:lang(zh-CN) .prose,
-  .docs-surface:lang(zh-CN) .prose p,
-  .docs-surface:lang(zh-CN) .prose li {
+  .docs-surface:lang(zh-CN) article .prose,
+  .docs-surface:lang(zh-CN) article .prose p,
+  .docs-surface:lang(zh-CN) article .prose li {
     @apply leading-[1.85];
   }
-  .docs-surface:lang(zh-CN) .prose {
+  .docs-surface:lang(zh-CN) article .prose {
     line-break: strict;
+  }
+  /* The mono uppercase column label is a Latin device: `text-transform` does
+     nothing to Chinese, and 11px leaves a Han character unreadable. Translated
+     tables get the same quiet head at a legible size in the text face. */
+  .docs-surface:lang(zh-CN) article .prose table th {
+    font-family: inherit;
+    font-size: 0.8125rem;
+    letter-spacing: 0.02em;
   }
 }
