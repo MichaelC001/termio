@@ -3,7 +3,7 @@ title: termiod Session Protocol
 status: draft
 type: design
 created: 2026-07-30
-updated: 2026-08-16
+updated: 2026-08-19
 related:
   - 20260730-termiod-session-mux.md
   - 20260708-session-daemon-architecture.md
@@ -52,7 +52,12 @@ the `git:` kind is gated on a `git` capability, parallel to `fs_watch`.
 `20260805-termiod-hot-path-and-client-classes.md`) — the `S` payload carries its
 own scoped reset and clients apply it raw. Implemented in `VtTerminal::format_vt`
 with `termiod/tests/snapshot_prologue.rs` as the acceptance test; the reference
-client and the Mac client stopped synthesising preludes of their own. -->
+client and the Mac client stopped synthesising preludes of their own.
+2026-08-19: §C.13 gained the read tier — `git.log`, `git.show`, `git.branches`
+beside `git.diff` — so the History and Compare tabs can be served by the device
+that owns the checkout. Stage 1 of `../rfcs/remote-git-plane.md`; the section
+heading's "read-only" now means "this tier reads", not "the kind will never
+mutate". -->
 
 
 # Design: termiod Session Protocol
@@ -720,7 +725,7 @@ thumbnails, and any in-band TTY file transfer à la kitty's `kitten
 transfer` — the control plane exists precisely so the TTY never moonlights
 as a file channel.
 
-### C.13 `git:` resource kind — status as a subscription, read-only
+### C.13 `git:` resource kind — status as a subscription, plus a read tier
 
 The git tree is the second consumer of §C.10's one mechanism — id
 `git:<canonical repo root>`, cursor, ring, `gap` semantics, linger — nothing
@@ -741,13 +746,31 @@ unmerged{first_head, second_head}`, with the merge-conflict path set
 first-class. It is battle-tested and maps 1:1 onto the GitHub-Desktop-shaped
 changes pane.
 
-**Read-only by design.** No stage/commit/push verbs — the user commits in
-the terminal, which is the same app. This deletes the majority of Zed's git
-surface (mutation RPCs, optimistic-update reconciliation, a write-permission
-model) and is why the whole kind fits in one event shape plus one verb:
-`git.diff {path, staged?}` → unified diff, rendered client-side. Zed's proto
-carries deprecated `RepositoryEntry` debris from migrating git between two
-replication schemes; a single-mechanism resource plane cannot drift that way.
+**Reads only, and that is the whole kind today.** One event shape plus four
+request/response verbs, all of them reads:
+
+| Verb | Reply |
+| --- | --- |
+| `git.diff {root, path, staged?}` | `git_diff_result {diff, truncated}` |
+| `git.log {root, limit, range?}` | `git_log_result {commits, truncated}` |
+| `git.show {root, commit, path?}` | `git_show_result {commit, files, diff, truncated, files_truncated}` |
+| `git.branches {root}` | `git_branches_result {branches, current?, default_branch?, truncated}` |
+
+`git.log` and `git.show` fill the History tab; `git.branches` plus a
+`git.log` over a `base..HEAD` range fills Compare, which is why Compare needs
+no verb of its own. Every reply is capped and says so rather than being cut
+silently, and every one of them runs the box's own `git` as a child process
+with `--no-optional-locks` — nothing here reimplements git, and a read cannot
+contend with the agent committing in the terminal beside it.
+
+This still deletes the majority of Zed's git surface (mutation RPCs,
+optimistic-update reconciliation, a write-permission model). The mutation and
+network tiers are designed and staged in
+[remote-git-plane.md](../rfcs/remote-git-plane.md) §5, deliberately behind
+this one: they need answers for prompt forwarding and index-lock contention
+that reads do not. Zed's proto carries deprecated `RepositoryEntry` debris
+from migrating git between two replication schemes; a single-mechanism
+resource plane cannot drift that way.
 
 ## D. Transport bindings
 

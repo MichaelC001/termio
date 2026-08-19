@@ -1666,7 +1666,7 @@ def main():
     matcher.close()
     shutil.rmtree(matchdir, ignore_errors=True)
 
-    print("\n# 14. git: resource kind — status as a subscription, read-only (§C.13)")
+    print("\n# 14. git: status as a subscription, plus the read tier (§C.13)")
     gitproj = f"{SOCK_DIR}/gitproj"
     shutil.rmtree(gitproj, ignore_errors=True)
     os.makedirs(gitproj, exist_ok=True)
@@ -1830,6 +1830,104 @@ def main():
         and "+line two" in staged_diff[1]["diff"]
         and "+line three" not in staged_diff[1]["diff"],
     )
+
+    # The read tier: log, show, branches — the History and Compare panes.
+    git("add", "-A")
+    git("commit", "-q", "-m", "second commit")
+    git("tag", "v0.0.1")
+    git("branch", "feat/side")
+    head = git("rev-parse", "HEAD").stdout.strip()
+    first = git("rev-parse", "HEAD~1").stdout.strip()
+
+    def git_request(seq, message, reply):
+        gw.send_control({**message, "seq": seq})
+        got, _ = gw.recv_matching(
+            lambda kind, msg: kind == "C"
+            and msg.get("op") in (reply, "error")
+            and msg.get("re") == seq,
+            timeout=6.0,
+        )
+        return got[1] if got else None
+
+    log = git_request(146, {"op": "git_log", "root": gitproj, "limit": 50}, "git_log_result")
+    capped = git_request(147, {"op": "git_log", "root": gitproj, "limit": 1}, "git_log_result")
+    ranged = git_request(
+        148,
+        {"op": "git_log", "root": gitproj, "limit": 50, "range": f"{first}..HEAD"},
+        "git_log_result",
+    )
+    check(
+        "git.log: commits newest first, tags kept, a cut walk says it was cut",
+        log is not None
+        and [entry["sha"] for entry in log["commits"]] == [head, first]
+        and log["truncated"] is False
+        and log["commits"][0]["subject"] == "second commit"
+        and log["commits"][0]["tags"] == ["v0.0.1"]
+        and log["commits"][0]["timestamp"] > 0
+        and capped is not None
+        and len(capped["commits"]) == 1
+        and capped["truncated"] is True
+        and ranged is not None
+        and [entry["sha"] for entry in ranged["commits"]] == [head],
+    )
+
+    shown = git_request(
+        149, {"op": "git_show", "root": gitproj, "commit": head}, "git_show_result"
+    )
+    narrowed = git_request(
+        150,
+        {"op": "git_show", "root": gitproj, "commit": head, "path": "tracked.txt"},
+        "git_show_result",
+    )
+    check(
+        "git.show: the commit, the files it touched, and its diff",
+        shown is not None
+        and shown["commit"]["sha"] == head
+        and {file["path"] for file in shown["files"]} == {"tracked.txt", "fresh.txt"}
+        and next(f for f in shown["files"] if f["path"] == "fresh.txt")["status"] == "added"
+        and next(f for f in shown["files"] if f["path"] == "tracked.txt")["additions"] == 2
+        and "+line three" in shown["diff"]
+        and "fresh.txt" in shown["diff"]
+        and shown["truncated"] is False
+        and narrowed is not None
+        and "fresh.txt" not in narrowed["diff"]
+        and len(narrowed["files"]) == len(shown["files"]),
+    )
+
+    branches = git_request(151, {"op": "git_branches", "root": gitproj}, "git_branches_result")
+    check(
+        "git.branches: the refs to compare against and the branch we are on",
+        branches is not None
+        and branches.get("current") == "main"
+        and sorted(entry["name"] for entry in branches["branches"]) == ["feat/side", "main"]
+        and all(entry.get("remote", False) is False for entry in branches["branches"])
+        and "default_branch" not in branches,
+    )
+
+    refused = git_request(
+        152,
+        {"op": "git_log", "root": gitproj, "limit": 5, "range": "--output=/dev/null"},
+        "git_log_result",
+    )
+    check(
+        "git: a revision that would read as an option is refused, not run",
+        refused is not None and refused.get("op") == "error",
+    )
+
+    nogit_read = WireClient(caps=["events"])
+    nogit_read.send_control({"op": "git_log", "root": gitproj, "limit": 5, "seq": 153})
+    ungated_log, _ = nogit_read.recv_matching(
+        lambda kind, msg: kind == "C"
+        and msg.get("op") == "error"
+        and msg.get("code") == "denied"
+        and msg.get("re") == 153
+    )
+    check(
+        "git: the read tier is behind the same capability as git.diff",
+        ungated_log is not None,
+    )
+    nogit_read.close()
+
     gw.close()
     shutil.rmtree(gitproj, ignore_errors=True)
 
