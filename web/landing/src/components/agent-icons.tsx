@@ -3,7 +3,7 @@
 import {
   ClaudeCode,
   Codex,
-  Gemini,
+  Antigravity,
   Amp,
   OpenCode,
   GithubCopilot,
@@ -30,7 +30,7 @@ type BrandIcon = React.ComponentType<GlyphProps> & {
 const brandByAgent: Record<string, BrandIcon> = {
   "Claude Code": ClaudeCode,
   Codex: Codex,
-  Gemini: Gemini,
+  Antigravity: Antigravity,
   Amp: Amp,
   OpenCode: OpenCode,
   Copilot: GithubCopilot,

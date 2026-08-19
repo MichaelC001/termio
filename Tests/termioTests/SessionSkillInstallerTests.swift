@@ -101,6 +101,8 @@ final class SessionSkillInstallerTests: XCTestCase {
             "antigravity": "~/.gemini/antigravity/skills",
             "hermes": "~/.hermes/skills",
             "kimi": "~/.kimi-code/skills",
+            "qwen": "~/.qwen/skills",
+            "crush": "~/.config/crush/skills",
         ]
         for (id, directory) in expected {
             let definition = catalog.definition(for: id)
