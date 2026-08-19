@@ -396,9 +396,32 @@ extension TermioStore {
             title: localized("New Workspace"),
             message: localized("Name the workspace. It starts empty; sessions and projects you open from now on are filed under it."),
             confirm: localized("Create"),
-            defaultName: ""
+            defaultName: nextFreeWorkspaceName
         ) else { return }
         addWorkspace(named: name)
+    }
+
+    /// What the new-workspace field opens with: "Workspace", bumped past the names
+    /// already taken, the way `uniqueWorktreeDirName` bumps a worktree folder.
+    ///
+    /// The default is what makes the panel work at all. `promptForWorkspaceName`
+    /// treats an empty field as a cancel, so opening empty meant Return created
+    /// nothing and said nothing — a dead end at the first keystroke. Prefilled and
+    /// selected, Return creates and typing over it renames, which is what a new
+    /// item does everywhere else on macOS.
+    private var nextFreeWorkspaceName: String {
+        Self.nextFreeWorkspaceName(base: localized("Workspace"),
+                                   taken: Set(workspaces.map(\.name)))
+    }
+
+    /// The counter rule on its own, so it can be tested without standing up a
+    /// store: `base`, then `base 2`, `base 3`, skipping every name in use.
+    /// `nonisolated` because it reads nothing but its arguments.
+    nonisolated static func nextFreeWorkspaceName(base: String, taken: Set<String>) -> String {
+        guard taken.contains(base) else { return base }
+        var counter = 2
+        while taken.contains("\(base) \(counter)") { counter += 1 }
+        return "\(base) \(counter)"
     }
 
     /// Renames a workspace in place. A machine's fallback can be renamed like any
