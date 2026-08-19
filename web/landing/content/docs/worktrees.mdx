@@ -1,10 +1,10 @@
 ---
 title: Git worktrees
-description: Termio reads your repository's worktrees straight from git and shows them as a nested branch under the project, so parallel agent work stays isolated.
+description: Termio reads your repository’s worktrees straight from git and shows them as a nested branch under the project, so parallel agent work stays isolated.
 ---
 
-When you have several agents working a repository at once, you don't want them
-stepping on each other's files. Git worktrees give each line of work its own
+When you have several agents working a repository at once, you don’t want them
+stepping on each other’s files. Git worktrees give each line of work its own
 checkout on its own branch — and Termio surfaces them natively.
 
 ## How Termio sees worktrees
@@ -20,8 +20,8 @@ regains focus, and when the git directory changes.
 
 ## Working in a worktree
 
-Open a session inside a worktree and it starts in that worktree's directory on
-that worktree's branch. Point one agent at your `main` checkout and another at a
+Open a session inside a worktree and it starts in that worktree’s directory on
+that worktree’s branch. Point one agent at your `main` checkout and another at a
 `feat/…` worktree, and their edits never collide — each has its own working tree,
 its own index, its own branch.
 
@@ -37,7 +37,7 @@ An empty worktree still appears in the tree. Open its context menu and choose
 
 ## Reviewing the work
 
-The inspector's git pane is read-only by design: three tabs — **Changes**,
+The inspector’s git pane is read-only by design: three tabs — **Changes**,
 **Compare**, and **History** — let you read the diff, see what the branch would
 merge, and browse commits per worktree. Committing, pushing, and opening pull
 requests happen in the terminal, where you (or the agent) already are — see the

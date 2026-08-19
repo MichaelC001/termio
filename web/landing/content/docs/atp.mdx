@@ -1,17 +1,17 @@
 ---
 title: Agent Terminal Protocol
-description: ATP is how Termio hosts any agent CLI — one JSON manifest declaring how to launch it, how it reports status, and how to resume its exact conversation. The agent's own TUI stays in a real terminal.
+description: ATP is how Termio hosts any agent CLI — one JSON manifest declaring how to launch it, how it reports status, and how to resume its exact conversation. The agent’s own TUI stays in a real terminal.
 ---
 
 Editor protocols re-render your agent inside an editor pane. ATP takes the
-opposite bet: the agent's own TUI already is the interface, so it stays in a real
+opposite bet: the agent’s own TUI already is the interface, so it stays in a real
 terminal, and the protocol standardizes only the thin layer around it —
 **launch**, **live status**, and **exact resume**. Every agent Termio ships is
 defined by this same manifest; there is no privileged internal API.
 
 ## The manifest
 
-One JSON file per agent. This is Termio's bundled Grok manifest, verbatim:
+One JSON file per agent. This is Termio’s bundled Grok manifest, verbatim:
 
 ```json
 {
@@ -52,10 +52,10 @@ One JSON file per agent. This is Termio's bundled Grok manifest, verbatim:
 | --- | --- |
 | `id` | Stable identifier. Sessions persist it, so it never changes once shipped. |
 | `name` | Display name in the picker and sidebar. |
-| `command` | The CLI to launch, resolved on your login shell's `PATH`. |
-| `permissionBypassFlag` | The vendor's skip-permissions flag, wired to a one-click toggle. Optional. |
+| `command` | The CLI to launch, resolved on your login shell’s `PATH`. |
+| `permissionBypassFlag` | The vendor’s skip-permissions flag, wired to a one-click toggle. Optional. |
 | `icon` | `vector` (a built-in brand mark), `path` (your PNG/SVG file), or `symbol` (an SF Symbol), with an optional `tint`. |
-| `install` | The vendor's install page, offered when the command isn't found. Optional. |
+| `install` | The vendor’s install page, offered when the command isn’t found. Optional. |
 | `order` | Position in the agent picker. Optional; omitted manifests sort last. |
 
 ## Status
@@ -67,11 +67,11 @@ channels:
 
 | Channel | Role |
 | --- | --- |
-| `hooks` | The precise channel: Termio installs the agent's own hook configuration (JSON, TOML, or a plugin, per `dialect`) so the agent itself reports each `on → state` event. When hooks are declared they are the single source of truth. |
-| `titleStatus` | Regex rules over the agent's live terminal title (OSC 0/2) — the in-band signal some agents broadcast. Coexists with hooks and corrects a missed event the instant the title flips. |
+| `hooks` | The precise channel: Termio installs the agent’s own hook configuration (JSON, TOML, or a plugin, per `dialect`) so the agent itself reports each `on → state` event. When hooks are declared they are the single source of truth. |
+| `titleStatus` | Regex rules over the agent’s live terminal title (OSC 0/2) — the in-band signal some agents broadcast. Coexists with hooks and corrects a missed event the instant the title flips. |
 | `status` | Screen-classification regexes for agents with no hook system at all. Ignored when hooks are declared. |
 
-`hooks.conversation` names where the agent's own session id appears in its hook
+`hooks.conversation` names where the agent’s own session id appears in its hook
 payloads (a stdin JSON field for shell hooks, an event key path for plugins).
 With it, each status report also carries conversation *identity* — so when the
 agent rotates to a new conversation mid-session (`/new`, `/clear`), Termio
@@ -86,14 +86,15 @@ which fields are present:
 
 **Pinned id** — the CLI accepts a session id at launch. `create` starts a fresh
 conversation under a Termio-minted id and `resume` continues it; `storeRoot` +
-`storeMatch` describe the agent's on-disk session store so Termio can tell the
+`storeMatch` describe the agent’s on-disk session store so Termio can tell the
 two apart (creating a duplicate id errors, as does resuming a missing one).
 
 **Discovered id** — the agent mints the id itself. `discover` describes the
-mechanism, never an agent: where session records live, how a record is read
-(`jsonl` — the first line of a log that is itself the transcript, or `json` — a
-standalone metadata file), and key paths to the id and working directory.
-Termio recovers the id, binds it to the tab, and resumes exactly from then on.
+mechanism, never an agent: where session records live, how a record is read, and
+key paths to the id and working directory. A record is either `jsonl` (the first
+line of a log that is itself the transcript) or `json` (a standalone metadata
+file). Termio recovers the id, binds it to the tab, and resumes exactly from
+then on.
 
 ```json
 "resume": {

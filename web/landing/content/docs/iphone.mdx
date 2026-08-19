@@ -5,7 +5,7 @@ description: Pair the Termio iOS app with your Mac over a QR code and check in o
 
 Termio for iPhone is a companion, not a separate service. It connects to exactly
 one place: the Termio app on your own Mac, over your local network or a tunnel
-you configure. There's no relay in between.
+you configure. There’s no relay in between.
 
 ## Pairing
 
@@ -13,7 +13,7 @@ you configure. There's no relay in between.
 2. In the iOS app, scan it. The camera is used only to read the code — scanning
    happens on-device and nothing is stored or transmitted.
 
-Once paired, the phone can reach your Mac's sessions whenever the two can see
+Once paired, the phone can reach your Mac’s sessions whenever the two can see
 each other on the network.
 
 <DocsImage
@@ -26,8 +26,8 @@ each other on the network.
 ## What you can do from the phone
 
 - **See your projects and sessions**, with the same live statuses as on the Mac,
-  plus a cross-project "Needs You" strip for the sessions waiting on input.
-- **Type straight into a session.** The phone drives the real terminal — you're
+  plus a cross-project “Needs You” strip for the sessions waiting on input.
+- **Type straight into a session.** The phone drives the real terminal — you’re
   typing into the agent exactly as on the desktop, with a key-bar for scrollback
   and jump keys, and hold-to-talk voice dictation if you enable it.
 - **Preview files** read-only over the same connection.
@@ -64,7 +64,7 @@ behind a tunnel you control (for example a named `cloudflared` tunnel) and pair
 against that address. Termio never routes your traffic through servers of ours.
 
 <Callout type="warning">
-  A Mac that's asleep can't answer the phone. For always-reachable access, keep
-  the Mac awake (Termio has a "keep reachable" toggle) or wake it with a
+  A Mac that’s asleep can’t answer the phone. For always-reachable access, keep
+  the Mac awake (Termio has a “keep reachable” toggle) or wake it with a
   second always-on device on your LAN.
 </Callout>
