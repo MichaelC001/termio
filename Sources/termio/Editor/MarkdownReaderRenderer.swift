@@ -275,15 +275,35 @@ enum MarkdownReaderRenderer {
     /* Indented + muted, no accent bar or box. */
     .reader blockquote { margin: 1.3em 0; padding-left: 20px;
       border-left: 2px solid var(--line); color: var(--muted); }
-    .reader ul, .reader ol { margin: 0 0 1.2em; padding-left: 1.4em; }
-    .reader li { margin: 0.35em 0; padding-left: 0.2em; }
-    .reader li::marker { color: var(--muted); }
+    /* Markers hang in a gutter of their own so a list keeps the paragraph's left edge.
+       An outside `::marker` can't: WebKit right-aligns it into the list's padding, so
+       anything wider — "1." in a three-quarter mono, worse at "10." — hangs out past the
+       text column. Counters replace it for free; `MarkdownHTML` emits every `<ol>` at 1.
+       Each gutter holds its own marker plus about a word space (Quattro at 17px: "•"
+       0.6em, "1." 1.2em, "10." 1.8em, space 0.45em); sizing every list for "10." instead
+       stranded single digits from their text. A list that does reach double or triple
+       digits widens a digit at a time, whole-list, so its text column stays straight. */
+    .reader ul, .reader ol { --gutter: 1.3em;
+      margin: 0 0 1.2em; padding-left: var(--gutter); list-style: none; }
+    .reader ol { --gutter: 1.8em; counter-reset: reader-item; }
+    .reader ol:has(> li:nth-child(10)) { --gutter: 2.4em; }
+    .reader ol:has(> li:nth-child(100)) { --gutter: 3em; }
+    /* The checkbox is wider than a bullet and needs the room back. */
+    .reader ul:has(> li.task) { --gutter: 1.7em; }
+    .reader li { position: relative; margin: 0.35em 0; }
+    .reader li::before { position: absolute; left: calc(-1 * var(--gutter));
+      color: var(--muted); }
+    .reader ul > li::before { content: "•"; }
+    .reader ol > li { counter-increment: reader-item; }
+    .reader ol > li::before { content: counter(reader-item) "."; }
     .reader li > ul, .reader li > ol { margin: 0.35em 0; }
-    /* Task items: the Hugeicons box replaces the bullet, pulled into the marker gutter
-       (GitHub positions its checkbox the same way); checked picks up the accent. */
-    .reader li.task { list-style: none; }
+    /* Task items: the Hugeicons box replaces the bullet, pulled into the gutter the way
+       GitHub positions its checkbox; checked picks up the accent. The right margin gives
+       back what the box didn't use, so the text still starts on the gutter. */
+    .reader li.task::before { content: none; }
     .reader li.task .task-box { width: 1.05em; height: 1.05em; vertical-align: -0.16em;
-      margin: 0 0.5em 0 -1.6em; color: var(--muted); }
+      margin-left: calc(-1 * var(--gutter)); margin-right: calc(var(--gutter) - 1.05em);
+      color: var(--muted); }
     .reader li.task .task-box.checked { color: var(--accent); }
     /* Code stays in the terminal face, on a whisper of tint — no borders/pills. */
     .reader code { font: 0.82em var(--font-mono);
