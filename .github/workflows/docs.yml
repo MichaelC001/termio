@@ -1,9 +1,11 @@
 name: Docs
 
-# The docs site rots in two mechanical ways, so both are checked rather than
+# The docs site rots in mechanical ways, so each is checked rather than
 # remembered: the changelog falling behind the shipped releases (it once stopped
-# twelve releases back, which reads as an abandoned project), and a translation
-# drifting from the English page it was made from. The keyboard-shortcut table is
+# twelve releases back, which reads as an abandoned project), a translation
+# drifting from the English page it was made from, and an internal link or
+# `#anchor` pointing at a page or heading that has since been renamed — links are
+# just strings in MDX, so a build never notices. The keyboard-shortcut table is
 # generated from the app's own command catalog and checked here too — the docs
 # described a pane gesture for two releases after it was replaced.
 on:
@@ -48,6 +50,12 @@ jobs:
         working-directory: web/landing
         run: node scripts/sync-keybindings.mjs --check
 
-      - name: Check the changelog and the translations
+      - name: Check the changelog, the translations, and the internal links
         working-directory: web/landing
         run: node scripts/docs-check.mjs
+
+      # The link check is only as good as its slugifier: one that disagrees with
+      # the renderer rejects correct anchors, which teaches everyone to ignore it.
+      - name: Test the anchor rules
+        working-directory: web/landing
+        run: node --test "scripts/*.test.mjs"

@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const landingRoot = resolve(scriptDir, "..");
@@ -144,6 +144,112 @@ function headingOutline(text) {
 function frontmatter(text) {
   const match = text.match(/^---\n([\s\S]*?)\n---/);
   return match ? match[1] : "";
+}
+
+// ---------------------------------------------------------------------- links
+
+/**
+ * The anchor id of a heading, the way the docs pipeline assigns it: an explicit
+ * `## 状态 [#status]` wins, otherwise the text is slugified. Inline markup is
+ * stripped first, so `## The \`termio\` command-line tool` and `## **Panes**`
+ * anchor on their words rather than their backticks and asterisks.
+ */
+function headingAnchor(heading) {
+  const explicit = heading.match(/\[#([^\]]+)\]\s*$/);
+  if (explicit) return explicit[1];
+  return (
+    heading
+      .replace(/`([^`]*)`/g, "$1")
+      .replace(/\*\*?([^*]*)\*\*?/g, "$1")
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .trim()
+      .toLowerCase()
+      .replace(/[^\p{Letter}\p{Number}\s-]/gu, "")
+      // One hyphen per space, not one per run. `## Command Palette — ⇧⌘P` loses
+      // the dash and the glyphs but keeps the spaces that flanked them, so the id
+      // the site renders is `command-palette--p` — with the double hyphen. A
+      // slugifier that collapses runs here rejects the correct anchor.
+      .replace(/\s/g, "-")
+  );
+}
+
+/** Every heading's anchor id on a page, ignoring fenced code. */
+function pageAnchors(text) {
+  const anchors = new Set();
+  let fenced = false;
+  for (const line of text.split("\n")) {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced || !trimmed.startsWith("#")) continue;
+    const level = trimmed.match(/^#+/)[0].length;
+    if (level > 6 || trimmed[level] !== " ") continue;
+    anchors.add(headingAnchor(trimmed.slice(level + 1)));
+  }
+  return anchors;
+}
+
+/** The public URL a content file is served at. */
+function pageHref(name, defaultLanguage) {
+  const parts = name.replace(/\.mdx$/, "").split(".");
+  const slug = parts[0];
+  const locale = parts.length > 1 ? parts[1] : defaultLanguage;
+  const base = locale === defaultLanguage ? "/docs" : `/${locale}/docs`;
+  return slug === "index" ? base : `${base}/${slug}`;
+}
+
+/**
+ * Every internal link lands on a page that exists, and every `#anchor` on a
+ * heading that exists. Both rot silently: a renamed page leaves a 404 behind a
+ * link that still looks fine in the source, and a reworded heading breaks every
+ * anchor pointing at it — including the explicit `[#id]` a translation carries so
+ * its links survive. Neither shows up in a build, because MDX links are just
+ * strings until someone clicks one.
+ */
+function checkLinks() {
+  const { defaultLanguage } = configuredLocales();
+  const files = readdirSync(docsDir).filter((name) => name.endsWith(".mdx"));
+
+  const anchorsByHref = new Map();
+  for (const name of files) {
+    anchorsByHref.set(
+      pageHref(name, defaultLanguage),
+      pageAnchors(readFileSync(resolve(docsDir, name), "utf8")),
+    );
+  }
+
+  let checked = 0;
+  for (const name of files) {
+    const text = readFileSync(resolve(docsDir, name), "utf8");
+    const lines = text.split("\n");
+
+    for (const [index, line] of lines.entries()) {
+      // Markdown links and JSX `href` attributes, absolute paths only —
+      // external URLs are not this script's business.
+      const found = [
+        ...line.matchAll(/\]\((\/[^)\s]*)\)/g),
+        ...line.matchAll(/href="(\/[^"]*)"/g),
+      ];
+      for (const [, href] of found) {
+        checked += 1;
+        const [path, anchor] = href.split("#");
+        const target = path.replace(/\/$/, "") || "/docs";
+        if (!anchorsByHref.has(target)) {
+          fail(`links: ${name}:${index + 1} → ${href} (no such page)`);
+          continue;
+        }
+        if (anchor && !anchorsByHref.get(target).has(anchor)) {
+          fail(`links: ${name}:${index + 1} → ${href} (no heading anchors to #${anchor})`);
+        }
+      }
+    }
+  }
+
+  if (errors.length === 0) {
+    notes.push(`links: ${checked} internal links resolve to a page and an anchor`);
+  }
 }
 
 function sourceHash(text) {
@@ -298,27 +404,39 @@ function stampTranslations(dateISO) {
 
 // --------------------------------------------------------------------- main
 
-const only = process.argv.slice(2);
-const stampArg = only.find((arg) => arg === "--stamp" || arg.startsWith("--stamp="));
-const run = (flag) => only.length === 0 || only.includes(flag);
+// The anchor rules are exported so they can be tested directly: they encode how
+// the docs pipeline slugifies a heading, and a slugifier that disagrees with the
+// renderer rejects correct links. See docs-check.test.mjs.
+export { headingAnchor, pageAnchors };
 
-if (stampArg) {
-  // The date the translation was generated. Can be passed in rather than read from
-  // the clock so a re-run is reproducible: --stamp=2026-08-10.
-  const given = stampArg.startsWith("--stamp=")
-    ? stampArg.slice("--stamp=".length)
-    : undefined;
-  stampTranslations(given ?? new Date().toISOString().slice(0, 10));
+// The checks run only when this file is the command being executed. Importing it
+// from a test must not run them, or the test inherits its exit code.
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  const only = process.argv.slice(2);
+  const stampArg = only.find(
+    (arg) => arg === "--stamp" || arg.startsWith("--stamp="),
+  );
+  const run = (flag) => only.length === 0 || only.includes(flag);
+
+  if (stampArg) {
+    // The date the translation was generated. Can be passed in rather than read
+    // from the clock so a re-run is reproducible: --stamp=2026-08-10.
+    const given = stampArg.startsWith("--stamp=")
+      ? stampArg.slice("--stamp=".length)
+      : undefined;
+    stampTranslations(given ?? new Date().toISOString().slice(0, 10));
+  }
+
+  if (run("--changelog")) checkChangelog();
+  if (run("--i18n")) checkI18n();
+  if (run("--links")) checkLinks();
+
+  for (const note of notes) console.log(note);
+  if (errors.length > 0) {
+    console.error("");
+    for (const error of errors) console.error(`✗ ${error}`);
+    console.error(`\n${errors.length} problem(s) found.`);
+    process.exit(1);
+  }
+  console.log("docs-check: ok");
 }
-
-if (run("--changelog")) checkChangelog();
-if (run("--i18n")) checkI18n();
-
-for (const note of notes) console.log(note);
-if (errors.length > 0) {
-  console.error("");
-  for (const error of errors) console.error(`✗ ${error}`);
-  console.error(`\n${errors.length} problem(s) found.`);
-  process.exit(1);
-}
-console.log("docs-check: ok");
