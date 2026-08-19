@@ -1,0 +1,23 @@
+{
+  "id": "crush",
+  "order": 85,
+  "name": "Crush",
+  "wire": "crush",
+  "command": "crush",
+  "permissionBypassFlag": "--yolo",
+  "icon": { "asset": "crush-favicon" },
+  "install": "https://github.com/charmbracelet/crush",
+  "skills": { "dir": "~/.config/crush/skills" },
+  "progressStatus": true,
+  "status": {
+    "working": [
+      "Waiting for tool response",
+      "Brrrrr\\.\\.\\.",
+      "Prrrrrrrr\\.\\.\\.",
+      "Processing\\.\\.\\.",
+      "Thinking\\.\\.\\.",
+      "\\bWorking(\\.\\.\\.|!)"
+    ],
+    "attention": ["Permission Required", "Allow for Session"]
+  }
+}
