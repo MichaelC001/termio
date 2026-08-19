@@ -45,11 +45,25 @@ enum AppChannel {
     /// Registered in Info.plist; `build-app.sh` rewrites it for the dev bundle.
     static var urlScheme: String { "termio" + suffix }
 
-    /// True when running from a real `.app` bundle (either channel). A bare SwiftPM
-    /// binary (`swift run`, the test runner) has no bundle identifier, and
-    /// bundle-dependent frameworks — `UNUserNotificationCenter` aborts with
-    /// "bundleProxyForCurrentProcess is nil" — must not be touched without one.
-    static let isBundledApp = Bundle.main.bundleIdentifier != nil
+    /// The identifier a shipped termio carries. `build-app.sh` stamps this one for
+    /// the release channel and appends `.dev` for the side-by-side dev build, and
+    /// it refuses to build any other channel — so these two are the complete set.
+    private static let releaseBundleIdentifier = "sh.termio.app"
+
+    /// True when this process *is* one of termio's own `.app` bundles. It gates the
+    /// bundle-dependent frameworks: `UNUserNotificationCenter` aborts the process
+    /// with "bundleProxyForCurrentProcess is nil" unless the running bundle is one
+    /// LaunchServices knows.
+    ///
+    /// Asking the weaker question — "is there *a* bundle identifier?" — passed under
+    /// `swift test`, whose `xctest` host is bundled as Xcode's own tool and so
+    /// carries an identifier that buys the framework nothing. Every test that moved
+    /// the store's selection died on `SIGABRT` inside `markSeen`.
+    static let isTermioAppBundle: Bool = {
+        guard let identifier = Bundle.main.bundleIdentifier else { return false }
+        return identifier == releaseBundleIdentifier
+            || identifier == releaseBundleIdentifier + ".dev"
+    }()
 
     /// Internal state — control/status sockets, `state.json`, custom themes, and
     /// downloaded tunnel binaries: `~/Library/Application Support/termio[-dev]`.
