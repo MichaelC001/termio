@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import { cn } from "@/lib/utils";
 import type { DocsChrome } from "@/lib/docs-ui";
 
@@ -22,32 +22,37 @@ function apply(theme: DocsTheme) {
   }
 }
 
+// The `data-docs-theme` attribute on <html> is the state — not this component.
+// The shell renders one switch in the desktop sidebar and another inside the
+// mobile menu, and both have to agree, so they read the attribute rather than each
+// holding a copy. That makes it an external store: a subscribe, a snapshot, and no
+// local state to keep in sync.
+function subscribe(onChange: () => void) {
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-docs-theme"],
+  });
+  return () => observer.disconnect();
+}
+
+function readTheme(): DocsTheme {
+  const current = document.documentElement.dataset.docsTheme;
+  return current === "light" || current === "dark" ? current : "system";
+}
+
+// The server cannot know what the reader picked, so it renders no selection and
+// the client fills one in. React calls this for the server pass and for the
+// hydration pass, which is what keeps the two from disagreeing.
+function readThemeOnServer(): undefined {
+  return undefined;
+}
+
 // The docs' appearance switch: System, Light, Dark. Only the docs have it — the
 // landing page is a dark object by design — so the choice is stored under its own
 // key and applied to a `data-docs-theme` attribute the docs styles scope on.
 export function ThemeSwitch({ chrome }: { chrome: DocsChrome }) {
-  // Undefined until mounted: the server has no way to know what the reader
-  // picked, and rendering a guess would flip a button under them on hydration.
-  const [theme, setTheme] = useState<DocsTheme | undefined>(undefined);
-
-  // The attribute on <html> is the state, not this component — the shell renders
-  // one switch for the desktop sidebar and one inside the mobile menu, and
-  // watching the attribute keeps both honest instead of letting the hidden one go
-  // stale until a resize reveals it.
-  useEffect(() => {
-    const root = document.documentElement;
-    const read = () => {
-      const current = root.dataset.docsTheme;
-      setTheme(current === "light" || current === "dark" ? current : "system");
-    };
-    read();
-    const observer = new MutationObserver(read);
-    observer.observe(root, {
-      attributes: true,
-      attributeFilter: ["data-docs-theme"],
-    });
-    return () => observer.disconnect();
-  }, []);
+  const theme = useSyncExternalStore(subscribe, readTheme, readThemeOnServer);
 
   const options: { value: DocsTheme; label: string; icon: React.ReactNode }[] = [
     { value: "system", label: chrome.themeSystem, icon: <SystemIcon /> },

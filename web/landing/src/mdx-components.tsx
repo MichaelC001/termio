@@ -2,6 +2,7 @@ import Image from "next/image";
 import Link from "next/link";
 import type { ComponentProps, ReactNode } from "react";
 import type { MDXComponents } from "mdx/types";
+import defaultMdxComponents from "fumadocs-ui/mdx";
 import { Keybindings } from "@/components/docs/keybindings";
 import { cn } from "@/lib/utils";
 
@@ -194,11 +195,15 @@ function DocsLink({ href = "", ...props }: ComponentProps<"a">) {
   return <a href={href} target="_blank" rel="noreferrer" {...props} />;
 }
 
-// The component map handed to every compiled MDX page. Typography is carried by
-// fumadocs-ui's `DocsBody`; here we swap in behavior — smart
-// links — and register the custom components authors can use in MDX.
+// The component map handed to every compiled MDX page. It starts from the
+// library's defaults and overrides from there — replacing them outright meant a
+// fenced code block rendered as a bare <pre><code> with no `CodeBlock` around it,
+// so it had no surface of its own and the only thing painting it was the
+// inline-code chip repeating once per line. Ours win where we have a considered
+// version: smart links, and the Callout and Card set built for this site.
 export function getMDXComponents(extra?: MDXComponents): MDXComponents {
   return {
+    ...defaultMdxComponents,
     a: DocsLink as MDXComponents["a"],
     Callout,
     Cards,
@@ -208,7 +213,10 @@ export function getMDXComponents(extra?: MDXComponents): MDXComponents {
     DocsVideo,
     Keybindings,
     ...extra,
-  };
+    // `MDXComponents` declares every tag optional and also carries an index
+    // signature that rejects `undefined`, so spreading it into itself never
+    // satisfies its own type.
+  } as MDXComponents;
 }
 
 function InfoIcon({ className }: { className?: string }) {

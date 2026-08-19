@@ -1,7 +1,9 @@
 import Link from "next/link";
+import { SearchTrigger } from "fumadocs-ui/layouts/shared/slots/search-trigger";
 import { Logo } from "@/components/logo";
 import { GitHubMark } from "@/components/section-label";
 import { ThemeSwitch } from "@/components/docs/theme-switch";
+import { source } from "@/lib/source";
 import { docsChrome } from "@/lib/docs-ui";
 import type { DocsLanguage } from "@/lib/i18n";
 import { githubUrl, downloadUrl } from "@/lib/site";
@@ -17,6 +19,7 @@ export function DocsHeader({ lang }: { lang: DocsLanguage }) {
   // `/zh-CN` is not a page — it 404s. The locale lives on the Docs link below.
   const home = "/";
   const docsHome = lang === "en" ? "/docs" : `/${lang}/docs`;
+  const tree = source.getPageTree(lang);
 
   return (
     // Opaque, and no backdrop-filter. A translucent blurred header has to
@@ -25,7 +28,10 @@ export function DocsHeader({ lang }: { lang: DocsLanguage }) {
     // scroll. The landing's pill can afford the effect because it floats over a
     // hero; here there is nothing behind the bar worth seeing through it.
     <header className="sticky top-0 z-50 border-b border-border bg-background">
-      <div className="mx-auto flex h-14 w-full max-w-7xl items-center gap-3 px-5 sm:px-8">
+      {/* 97rem is the docs grid's `--fd-layout-width`, and 1.5rem − 1px is the
+          sidebar's row inset: sharing both puts the wordmark on the same vertical
+          line as the sidebar links. */}
+      <div className="mx-auto flex h-14 w-full max-w-[97rem] items-center gap-3 px-5 md:pe-8 md:ps-[calc(1.5rem-1px)]">
         <Link
           href={home}
           className="group flex shrink-0 items-center rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
@@ -43,6 +49,16 @@ export function DocsHeader({ lang }: { lang: DocsLanguage }) {
         </Link>
 
         <div className="ml-auto flex items-center gap-2">
+          {/* Below `md` the sidebar is not rendered at all, and it is what holds
+              the search field — so on a phone there was no way to search. The
+              trigger opens the library's own dialog, which lives in `RootProvider`
+              above this header. (Its sidebar trigger cannot be used here: that one
+              reads a context published inside `DocsLayout`, which this bar sits
+              outside of. The page tree is handled by the menu below instead.) */}
+          <SearchTrigger
+            aria-label={chrome.searchTrigger}
+            className="md:hidden"
+          />
           <ThemeSwitch chrome={chrome} />
           <span
             className="hidden h-5 w-px bg-border sm:block"
@@ -65,6 +81,58 @@ export function DocsHeader({ lang }: { lang: DocsLanguage }) {
           </a>
         </div>
       </div>
+
+      {/* The page tree, for the widths where the sidebar does not exist. A plain
+          disclosure rather than a drawer: it needs no client JS, no context from
+          the layout below, and it closes itself on navigation because the page
+          reloads. Above `md` the sidebar carries this and the menu is hidden. */}
+      <details className="group border-t border-border md:hidden">
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-2.5 text-[13px] text-muted-foreground [&::-webkit-details-marker]:hidden">
+          <MenuIcon className="h-4 w-4" />
+          {chrome.menu}
+          <ChevronIcon className="ml-auto h-4 w-4 transition-transform group-open:rotate-180" />
+        </summary>
+        <nav className="border-t border-border px-3 pb-3 pt-1">
+          {tree.children.map((node, index) => {
+            if (node.type === "separator") {
+              return (
+                <p
+                  key={`separator-${index}`}
+                  className="px-2 pb-1 pt-3 text-[12px] font-semibold text-foreground"
+                >
+                  {node.name}
+                </p>
+              );
+            }
+            if (node.type !== "page") return null;
+            return (
+              <Link
+                key={node.url}
+                href={node.url}
+                className="block px-2 py-1.5 text-[15px] text-muted-foreground no-underline transition-colors hover:text-foreground"
+              >
+                {node.name}
+              </Link>
+            );
+          })}
+        </nav>
+      </details>
     </header>
+  );
+}
+
+function ChevronIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
+
+function MenuIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true" className={className}>
+      <path d="M4 7h16M4 12h16M4 17h16" />
+    </svg>
   );
 }

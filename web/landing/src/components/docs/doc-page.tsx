@@ -65,6 +65,14 @@ export async function DocPage({
   const MDX = page.data.body;
   const raw = await page.data.getText("raw");
 
+  // The library's prev/next pager and a hand-authored `<Cards>` block answer the
+  // same question, so a page carrying both offered the reader two stacked rows of
+  // destination cards — and on Concepts they collided outright: the pager's
+  // *previous* page was "Your first session", which the Cards block was offering
+  // as a next step. Four pages curate their own next steps; the other eleven rely
+  // on the pager. So a page does one or the other, decided by what it contains.
+  const curatesNextSteps = raw.includes("<Cards>");
+
   // Structured data. `TechArticle` is what a documentation page is, and stating it
   // lets a search engine treat the page as documentation rather than guessing from
   // the markup; `BreadcrumbList` is what produces the "Termio › Docs › …" trail
@@ -121,6 +129,7 @@ export async function DocPage({
       toc={page.data.toc}
       full={page.data.full}
       tableOfContent={{ style: "clerk" }}
+      footer={{ enabled: !curatesNextSteps }}
       editOnGithub={{
         owner: "termio-sh",
         repo: "termio",
@@ -132,10 +141,22 @@ export async function DocPage({
       {/* Actions sit on the title's row, hard right: they are page-level tools,
           not part of the prose, and below the description they read as the first
           thing to do rather than something available throughout. */}
-      <div className="flex items-start justify-between gap-6">
+      {/* One row only where there is room for one. On a phone the two actions eat
+          most of the width, which left the title colliding with them and the
+          description wrapping one or two words at a time. */}
+      <div className="mb-8 flex flex-col items-start gap-3 sm:mb-0 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+        {/* The library sizes a page title at 1.75em — the same 28px its own h2
+            headings get, so a title read as the first section rather than the
+            name of the page. It is set here rather than in CSS because these are
+            Tailwind utilities on the library's components, and `cn` replaces a
+            conflicting one; a stylesheet rule in a lower layer would not. */}
         <div className="min-w-0">
-          <DocsTitle>{page.data.title}</DocsTitle>
-          <DocsDescription>{page.data.description}</DocsDescription>
+          <DocsTitle className="text-[2.125rem] leading-[1.15] tracking-[-0.021em]">
+            {page.data.title}
+          </DocsTitle>
+          <DocsDescription className="mb-0 mt-3 max-w-[40rem] text-[1.1875rem] leading-[1.55] sm:mb-9">
+            {page.data.description}
+          </DocsDescription>
         </div>
         <div className="mt-1 flex shrink-0 items-center gap-1">
           <CopyMarkdownButton

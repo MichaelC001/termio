@@ -4,7 +4,7 @@ description: Open a project, launch an agent in a real terminal, and split the w
 ---
 
 A *session* in Termio is a real terminal running one thing — an agent, a dev
-server, or a plain shell. Here's the path from a fresh launch to a working setup.
+server, or a plain shell. Here’s the path from a fresh launch to a working setup.
 
 ## Open a project
 
@@ -24,12 +24,12 @@ just a working directory — the agents you launch inside it start there.
 With a project selected, start a new session and pick an agent — Claude Code,
 Codex, Gemini, or any other CLI you have installed. Termio opens it in a real
 terminal at the project root. You type into it exactly as you would in any
-terminal; the agent's TUI renders natively.
+terminal; the agent’s TUI renders natively.
 
-The sidebar shows the session's live status — **working**, **idle**, **done**, or
+The sidebar shows the session’s live status — **working**, **idle**, **done**, or
 **needs you**. [Concepts](/docs/concepts#status) explains all four; the one to
 watch for is **needs you**, which means the agent is blocked on a prompt or a
-permission and can't continue without you.
+permission and can’t continue without you.
 
 <Callout type="tip">
   Kick off a long run in one session, switch to another, and let the sidebar tell
@@ -50,8 +50,8 @@ Most real work wants more than one pane. Split the current pane to the right wit
 agent in one, your dev server in another, a shell in a third. Panes tile as a
 tree, so you can nest splits into any layout.
 
-To rearrange a layout, hover a pane's header and drag the grab handle that
-appears. A highlight previews where the pane will land: drop on another pane's
+To rearrange a layout, hover a pane’s header and drag the grab handle that
+appears. A highlight previews where the pane will land: drop on another pane’s
 left, right, top, or bottom half to place it on that side, or on the center to
 swap the two panes.
 
@@ -71,7 +71,7 @@ rebindable — see [Keyboard shortcuts](/docs/keyboard).
 Sessions are live processes, not saved transcripts. When you quit Termio, the
 shells and agents exit — reopening the app starts fresh. The read-only session
 trace (see the **Info** pane) keeps a rendered record of what happened, but the
-running process itself doesn't survive a quit.
+running process itself doesn’t survive a quit.
 
 <DocsImage
   src="/screenshots/docs/24-info-trace.png"
@@ -81,7 +81,7 @@ running process itself doesn't survive a quit.
 />
 
 <Callout type="warning">
-  Quitting Termio ends every running agent and shell. Long agent runs don't
+  Quitting Termio ends every running agent and shell. Long agent runs don’t
   survive an app restart — leave Termio open while they work.
 </Callout>
 
