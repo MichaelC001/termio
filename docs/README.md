@@ -110,6 +110,7 @@ from the real front matter).
 | fixed | bug | [Terminal loses focus after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
 | fixed | bug | [Terminal loses focus while the window stays key — sibling-render trigger](bug/terminal-focus-loss-on-sibling-render.md) |
 | in-progress | rfc | [可扩展 Agent —— 配置化定义 + 配置化 Hook](design/20260707-agent-extensibility.md) |
+| in-review | design | [Workspace switch latency](design/20260819-workspace-switch-latency.md) |
 | in-review | rfc | [Every machine is a device, every place you work is a project](rfcs/remote-to-device.md) |
 | in-review | rfc | [One path — local sessions run through termiod too](rfcs/one-path-local-through-termiod.md) |
 | in-review | rfc | [Split panes — Ghostty-style splits in the terminal column](rfcs/split-panes.md) |
