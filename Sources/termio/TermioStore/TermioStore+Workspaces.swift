@@ -249,8 +249,16 @@ extension TermioStore {
         // waits for the one that puts the new column on screen. Switching reads
         // as instant because it is: the frame the user is waiting for no longer
         // has this work in front of it.
+        //
+        // The column span is the rest of this run-loop turn: SwiftUI applying
+        // `currentWorkspaceID`, the hosted sidebar laying out, the display
+        // cycle committing. The switch span above cannot see it — that work
+        // runs after this function returns — which is why a 0.7 ms switch
+        // still feels blocked. Measurement only; the settle is unchanged.
+        let column = Trace.workspace.begin("workspace column")
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated {
+                Trace.workspace.end(column)
                 guard let self, self.workspaceArrival == arrival else { return }
                 self.finishArriving(in: id)
             }
@@ -266,12 +274,16 @@ extension TermioStore {
         defer { Trace.workspace.end(span) }
         // Clearing beats guessing: an empty workspace shows the welcome state,
         // which is the honest picture of a scope with nothing open in it.
+        let selection = Trace.workspace.begin("workspace selection")
         selectedSessionID = sessions(inWorkspace: id).first?.id
+        Trace.workspace.end(selection)
         // A machine's fallback workspace is also the machine, so entering it asks
         // that device for its roster. A workspace the user made spans machines and
         // takes its device from whichever session is selected.
         if let workspace = workspaces.first(where: { $0.id == id }), let alias = workspace.deviceAlias {
+            let device = Trace.workspace.begin("workspace device")
             switchToDevice(KnownDevice(alias: alias, deviceID: workspace.deviceID))
+            Trace.workspace.end(device)
         }
     }
 
