@@ -74,10 +74,11 @@ struct FileBrowserView: View {
             // and loses the tree's disclosure state besides (#207). Same
             // always-mounted-under-an-opaque-overlay shape as `InspectorRoot`.
             Group {
-                if let host = checkout?.sftpAlias {
-                    // Fresh identity per host, so tree state never leaks between hosts.
-                    RemoteFileTreeView(host: host)
-                        .id(host)
+                if let deviceCheckout, let root = deviceCheckout.root {
+                    // Fresh identity per checkout, so tree state never leaks
+                    // between machines or between roots on one machine.
+                    RemoteFileTreeView(checkout: deviceCheckout, root: root)
+                        .id(deviceCheckout.deviceIdentity + "\u{1f}" + root)
                 } else if let deviceCheckout {
                     unavailable(pane: localized("Files"), on: deviceCheckout)
                 } else {

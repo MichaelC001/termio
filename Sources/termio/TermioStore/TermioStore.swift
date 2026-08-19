@@ -513,17 +513,14 @@ final class TermioStore: ObservableObject {
     static func checkout(for session: Session, in project: Project?,
                          localRoot: String?, routeDeviceID: String?) -> Checkout {
         guard let alias = session.termiodRemoteHost ?? session.sshHost else {
-            return Checkout(device: .thisMac, root: localRoot, sftpAlias: nil)
+            return Checkout(device: .thisMac, root: localRoot)
         }
         // Identity first, route second: a session that has attached knows the
         // `host_id` it reached, and the alias only stands in until it has.
         let device = KnownDevice(alias: alias, deviceID: session.deviceID ?? routeDeviceID)
         return Checkout(
             device: device,
-            root: remoteRoot(for: session, in: project, on: device),
-            // Only a plain `ssh` terminal — a box reached without a daemon — has
-            // files the SFTP tree can still show.
-            sftpAlias: session.sshHost)
+            root: remoteRoot(for: session, in: project, on: device))
     }
 
     /// Where a session on another device is rooted, as far as this viewer can tell

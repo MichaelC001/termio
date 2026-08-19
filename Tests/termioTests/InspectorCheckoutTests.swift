@@ -38,7 +38,6 @@ final class InspectorCheckoutTests: XCTestCase {
         XCTAssertTrue(checkout.isOnAnotherDevice)
         XCTAssertEqual(checkout.device.name, "ukvps", "the empty state names the machine")
         XCTAssertEqual(checkout.root, "/srv/api")
-        XCTAssertNil(checkout.sftpAlias, "a daemon session is not an SFTP one")
     }
 
     /// With no spawn directory recorded, the project's checkout for that device is
@@ -60,8 +59,9 @@ final class InspectorCheckoutTests: XCTestCase {
     }
 
     /// A plain `ssh` terminal runs its PTY here, but it exists to put the user on
-    /// that box: it is that machine's checkout, and only its Files pane still has
-    /// the read-only SFTP tree to show.
+    /// that box: it is that machine's checkout, and this Mac's files are never
+    /// what its panes show. With no recorded checkout on that device there is no
+    /// root either, so the pane names the machine instead of drawing a tree.
     func testPlainSSHSessionIsTheBoxItReaches() {
         var session = Session(title: "shell", agent: .terminal)
         session.sshHost = "ukvps"
@@ -69,7 +69,9 @@ final class InspectorCheckoutTests: XCTestCase {
         let checkout = derive(session, in: project("/Users/me/api"), localRoot: "/Users/me/api")
 
         XCTAssertNil(checkout.localRoot)
-        XCTAssertEqual(checkout.sftpAlias, "ukvps")
+        XCTAssertTrue(checkout.isOnAnotherDevice)
+        XCTAssertEqual(checkout.device.name, "ukvps")
+        XCTAssertNil(checkout.root)
     }
 
     /// A local session is untouched: whatever root its slot supplies is the root,

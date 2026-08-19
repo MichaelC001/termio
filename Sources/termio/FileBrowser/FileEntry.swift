@@ -1,8 +1,9 @@
 import Foundation
 
 /// One directory entry, however it was read. `FileNode` (local disk) and
-/// `RemoteFileNode` (an SSH host over SFTP) are both built from these, so the
-/// tree's ordering, icons, and selection logic stay the same on either side.
+/// `RemoteFileNode` (another machine, over that device's `fs.list`) are both
+/// built from these, so the tree's ordering, icons, and selection logic stay the
+/// same on either side.
 struct FileEntry: Sendable {
     enum Kind: Sendable, Equatable {
         case file
