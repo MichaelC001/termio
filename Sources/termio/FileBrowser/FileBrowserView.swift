@@ -47,15 +47,24 @@ struct FileBrowserView: View {
     /// parking pattern as `GitPanelModel`; replayed once when the pane is next visible.
     @State private var pendingWatcherRefresh = false
 
-    /// The host of the selected session when it is an SSH session. Non-nil means the
-    /// local disk isn't this session's disk: `inspectorProjectPath` resolves to nil,
-    /// so the watcher, the root read, and the drop target all stand down on their own.
-    private var sshHost: String? {
-        store.selectedSessionID.flatMap(store.session)?.sshHost
+    /// Where the selected session's files live, and on which machine — see
+    /// `TermioStore.inspectorCheckout`. Nothing in this pane may ask the session
+    /// how it was opened instead: that question named the road rather than the
+    /// machine, and answered "local" for a session running on another box.
+    private var checkout: Checkout? { store.inspectorCheckout }
+
+    /// The checkout when it is on another machine, which is every case this pane
+    /// has no way to read yet. Non-nil means every local read, watch, git probe,
+    /// and mutation below must stay off — `projectPath` is nil for the same
+    /// checkout, which is what holds them off.
+    private var deviceCheckout: Checkout? {
+        checkout.flatMap { $0.isOnAnotherDevice ? $0 : nil }
     }
 
-    /// The directory the tree is rooted at — see `TermioStore.inspectorProjectPath`.
-    private var projectPath: String? { store.inspectorProjectPath }
+    /// The directory the tree is rooted at *on this Mac*, and `nil` for a session on
+    /// any other machine — so the watcher, the root read, the git badge, the drop
+    /// target, and every create/rename/delete all stand down together.
+    private var projectPath: String? { checkout?.localRoot }
 
     var body: some View {
         ZStack {
@@ -65,10 +74,12 @@ struct FileBrowserView: View {
             // and loses the tree's disclosure state besides (#207). Same
             // always-mounted-under-an-opaque-overlay shape as `InspectorRoot`.
             Group {
-                if let host = sshHost {
+                if let host = checkout?.sftpAlias {
                     // Fresh identity per host, so tree state never leaks between hosts.
                     RemoteFileTreeView(host: host)
                         .id(host)
+                } else if let deviceCheckout {
+                    unavailable(pane: localized("Files"), on: deviceCheckout)
                 } else {
                     VStack(spacing: 0) {
                         if let root { header(root: root) }
@@ -106,6 +117,9 @@ struct FileBrowserView: View {
         // this only catches drops that miss every row. No panel-wide target ring —
         // dragging a row out is itself a `URL` drag, so a whole-panel highlight would
         // be a false positive; the folder rows light up individually instead.
+        // A checkout on another device has no local root, so the drop is refused:
+        // the alternative is landing a file on this Mac under a session that runs
+        // somewhere else, which is the whole defect this pane's checkout fixes.
         .dropDestination(for: URL.self) { urls, _ in
             guard let projectPath else { return false }
             return receive(urls, into: URL(fileURLWithPath: projectPath))
@@ -213,8 +227,8 @@ struct FileBrowserView: View {
         case .files:
             EmptyView()
         case .search:
-            if sshHost != nil {
-                remoteUnavailable(pane: localized("Search"))
+            if let deviceCheckout {
+                unavailable(pane: localized("Search"), on: deviceCheckout)
             } else if let root {
                 FileSearchView(
                     rootURL: root.url,
@@ -228,8 +242,8 @@ struct FileBrowserView: View {
                 noProject
             }
         case .changes:
-            if sshHost != nil {
-                remoteUnavailable(pane: localized("Changes"))
+            if let deviceCheckout {
+                unavailable(pane: localized("Changes"), on: deviceCheckout)
             } else if let repoRoot = projectPath {
                 // Fresh identity per repo, so the panel model (selection, draft message,
                 // PR status) resets cleanly when the selected project moves.
@@ -246,8 +260,8 @@ struct FileBrowserView: View {
                 noProject
             }
         case .issues:
-            if sshHost != nil {
-                remoteUnavailable(pane: localized("Issues"))
+            if let deviceCheckout {
+                unavailable(pane: localized("Issues"), on: deviceCheckout)
             } else if let repoRoot = projectPath {
                 // Fresh identity per repo, like Changes: the panel model (connection
                 // phase, binding, list, pushed-in detail) resets when the project moves.
@@ -290,13 +304,20 @@ struct FileBrowserView: View {
         }
     }
 
-    /// What a pane that only reads local disk shows for an SSH session. Honest about
-    /// the gap rather than showing the Mac's own files under a remote session.
-    private func remoteUnavailable(pane: String) -> some View {
-        PaneEmptyState(
-            localized("Remote session"),
+    /// What a pane that only reads local disk shows for a checkout on another
+    /// machine: the machine, named. Naming it is the whole point — the alternative
+    /// this replaces was the Mac's own files, git status, and search results shown
+    /// under a session running somewhere else, with nothing saying so. An empty
+    /// pane is allowed here; a wrong one is not.
+    private func unavailable(pane: String, on checkout: Checkout) -> some View {
+        // `host:/path` is how the same pair is written everywhere else a developer
+        // meets it (`scp`, `rsync`), so the root rides along when it is known.
+        let device = checkout.device.name
+        let title = checkout.root.map { "\(device):\($0)" } ?? device
+        return PaneEmptyState(
+            title,
             icon: .serverStack,
-            message: localized("\(pane) isn’t available for SSH sessions yet.")
+            message: localized("\(pane) isn’t available on this device yet.")
         )
     }
 

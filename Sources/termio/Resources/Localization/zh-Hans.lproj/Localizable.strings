@@ -16,8 +16,8 @@
 	<string>“%@”是浅色主题，与“%@”插槽不匹配。</string>
 	<key>%@ isn’t a UTF-8 text file.</key>
 	<string>%@ 不是 UTF-8 文本文件。</string>
-	<key>%@ isn’t available for SSH sessions yet.</key>
-	<string>%@ 暂不支持 SSH 会话。</string>
+	<key>%@ isn’t available on this device yet.</key>
+	<string>%@ 暂不支持这台设备。</string>
 	<key>%@ isn’t on your PATH</key>
 	<string>%@ 不在 PATH 中</string>
 	<key>%@ opened %@</key>
@@ -796,8 +796,6 @@
 	<string>重新载入</string>
 	<key>Remote</key>
 	<string>远程</string>
-	<key>Remote session</key>
-	<string>远程会话</string>
 	<key>Remove</key>
 	<string>移除</string>
 	<key>Remove Project</key>
