@@ -61,7 +61,7 @@ implementer down a dead path.
 | **The `(device, root)` workspace reference exists.** `Checkout` — `device: KnownDevice`, `root: String?`, plus `localRoot`, `isOnAnotherDevice`, `deviceIdentity`, and identity-based `==`/`hash` keyed on `host_id` before alias | `Sources/termio/TermioStore/DeviceContext.swift:56-101`, built by `TermioStore.checkout(for:in:localRoot:routeDeviceID:)` at `TermioStore.swift:513-526` | `one-workspace-source.md` §2 proposes `ProjectLocation`; `remote-git-plane.md` §8.1 says the decision "is unresolved … **This RFC is blocked on that decision**". Both are stale — `grep -rn ProjectLocation Sources/ Shared/` → **0**, and `Checkout` is the shipped answer under a different name |
 | **The panes stopped asking a session how it was opened.** `grep -rn 'sshHost' Sources/termio/FileBrowser/` → **0** | commit `58dc85e`, on `main` | `one-workspace-source.md` §5 marks Stage 0 "implemented" but attributes it to a branch and names a test class (`InspectorWorkspaceTests`) that does not exist. The real suite is `Tests/termioTests/InspectorCheckoutTests.swift`, 6 tests |
 | **SSH ControlMaster multiplexing on the app's own `ssh`.** `multiplexingArguments(host:)` probes `ssh -G`, refuses to override a user's `ControlMaster no`, caps `ControlPath` at 100 bytes, and is applied in `Transport.ssh` | `TermiodClient.swift:208-236`, applied at `:381` | `one-path-local-through-termiod.md` Stage 2 item `4a` asks for exactly this. It is done. Only `BatchMode`/`ConnectTimeout` are absent |
-| **`daemonBinaryPath()` no longer resolves a cwd-relative dev path.** Order is `TERMIO_TERMIOD_BIN` → `Bundle.main` resource → checkout walk anchored at the *binary*, not `currentDirectoryPath` | `TermiodClient.swift:94-146` | `one-path-local-through-termiod.md` §5.2 item 1 and `one-binary-and-a-daemon-that-ships.md` §1 both lead with the cwd bug. Fixed. What remains true is that **nothing copies the binary into the bundle** — `grep -n termiod scripts/build-app.sh .github/workflows/release.yml` → 0 |
+| **The daemon ships inside the `.app`, universal and signed.** commit `2199f35 feat(termiod): ship the daemon inside the app`. `build-app.sh:201-281` builds one Rust slice per architecture, `lipo`s them, and **fails the build if a required slice is missing** — the same check the app binary already had; `release.yml:90-99` installs the pinned Zig for the VT engine; the daemon is signed before the outer seal (observed: `Contents/Resources/termiod: replacing existing signature`, then the app). `daemonBinaryPath()` resolves `TERMIO_TERMIOD_BIN` → `Bundle.main` → a checkout walk anchored at the *binary*, not `currentDirectoryPath` (`TermiodClient.swift:94-146`) | `one-path-local-through-termiod.md` §5.2 item 1 and `one-binary-and-a-daemon-that-ships.md` §1 both lead with the cwd bug **and** with "the daemon does not ship". Both are fixed. Stage 4 below is what is *left* of that item, not the whole of it |
 | **Tombstones are decoded and cleared client-side.** | `TermioStore+Termiod.swift`, `DeviceSessions.tombstones` at `DeviceContext.swift:113-120` | closed by PR #324, correctly recorded in the one-path RFC's own revision |
 
 ### 1.2 `feat/termiod-wss` — 5 commits, 69 files, +18,791/−4
@@ -300,8 +300,12 @@ checkout on another *device* (the termiod case — the actual bug), and the loca
   already establishes: spawn a real daemon on a private socket, list a temp
   tree, read a file back byte-for-byte, and assert the confinement refusal for
   `../escape`. Runs under `swift test` when the env var is set, skips otherwise.
-- Unverified-from-code and stated as such until run: the pane renders. Rebuild
-  the dev app and capture it with `app-screenshot-debug`.
+- **Not yet verified on screen.** The dev bundle builds and the app launches with
+  a window, but the device branch of the pane cannot be exercised without a
+  second machine running `termiod`, and `screencapture` is unavailable in the
+  environment this was built in (no Screen Recording permission — every capture
+  answers `could not create image from display`). The tree's rendering on a real
+  device session is an open verification, not a claim.
 
 ### Stage 2 — Search and the diff view read a device
 
@@ -335,19 +339,34 @@ changes pane, `fs.match` coverage.
 - Replay inside the watcher's 300-second linger (`resource.rs:51`) is exact;
   past it, `gap: true` forces a full rescan.
 
-### Stage 4 — the daemon ships and is reachable
+### Stage 4 — the daemon is supervised, and the two channels stop sharing one
 
-Unchanged from `one-path-local-through-termiod.md` Stage 1 except that item 2
-(`daemonBinaryPath`) is **already done** (§1.1). What remains: build a universal
-`termiod` in `release.yml`, `lipo` it, sign it before the outer seal with
-`--options runtime`, carry it through notarization; per-channel `TERMIOD_SOCK`
-*and* a per-channel launchd label (`service.rs:26` has exactly one, and
-`install()` can only plist `current_exe()` at `:101-107`); install-or-repair the
-job on launch; a systemd `--user` unit; and a decision on what a Sparkle update
-does to a running daemon.
+`one-path-local-through-termiod.md` Stage 1 items 1 and 2 are **done** (§1.1):
+the daemon is built universal, `lipo`'d with a failing arch check, signed inside
+the outer seal, and resolved out of `Bundle.main`. Four items are left, and each
+is a release blocker on its own:
 
-**Gates:** verbatim from that RFC's Stage 1 criteria, which are already correct
-and runnable. `lipo -archs` and the two-plists check run on any checkout; the
+1. **Per-channel `TERMIOD_SOCK`.** `socketPath()` (`TermiodClient.swift:55-68`)
+   has no channel term, while every other per-machine artifact this app owns is
+   scoped off one bundle-id read (`AppChannel.swift`). `termio-dev` and `termio`
+   are one device today. Note the observed dev-build defect that lands nearby: a
+   failed `TERMIO_CHANNEL=dev ./scripts/build-app.sh` leaves a `.dev`-suffixed
+   `CFBundleIdentifier` in the assembled bundle, and the next run suffixes it
+   again — `sh.termio.app.dev.dev`. The suffix must be applied idempotently.
+2. **A per-channel launchd label.** `service.rs:26` has exactly one `LABEL`,
+   which is also the plist filename and the `gui/$UID` target, and `install()`
+   can only plist `std::env::current_exe()` (`:101-107`). Both need arguments.
+3. **The app installs or repairs the job on launch.** Nothing calls
+   `launchctl` — `grep -n 'launchctl' Sources/termio/Terminal/Termiod/*.swift`
+   → 0. Until it does, `KeepAlive` is a mitigation that does not exist and
+   `spawnDaemon` is the only path.
+4. **A systemd `--user` unit + `enable-linger`**, and a decision on what a
+   Sparkle update does to a running daemon (`one-path-local-through-termiod.md`
+   §5.2 item 9 — the recommendation there is a compatibility window).
+
+**Gates:** that RFC's Stage 1 criteria, minus the ones items 1 and 2 already
+satisfy. `lipo -archs termio.app/Contents/Resources/termiod` prints both slices
+today; the two-plists and `kill -9`-respawn checks are what remains, and the
 notarization checks are CI-only.
 
 ### Stage 5 — foreground parity
@@ -407,10 +426,13 @@ conformance exercise.
    plane is 1,409 lines; the tree that renders it is not part of it.
 
 5. **`one-path-local-through-termiod.md` §5.2 item 1 and
-   `one-binary-and-a-daemon-that-ships.md` §1 both lead with a bug that is
-   fixed.** `daemonBinaryPath()` (`TermiodClient.swift:94-146`) resolves
-   `Bundle.main` and then walks up from the *binary*. The remaining half — that
-   nothing puts the binary in the bundle — is true and is Stage 4.
+   `one-binary-and-a-daemon-that-ships.md` §1 both lead with a problem that is
+   solved.** "A released build today cannot start a daemon at all" was true when
+   written and is not now: commit `2199f35` builds, `lipo`s, arch-checks and
+   signs `termiod` into `Contents/Resources`, and `daemonBinaryPath()` resolves
+   it. Verified by building the bundle here. What is left is supervision and
+   channel scoping — Stage 4, and a much smaller item than either RFC prices it
+   at. Both should be edited rather than read as current.
 
 6. **`one-path-local-through-termiod.md` Stage 2 item `4a` is done.**
    `multiplexingArguments` ships (`TermiodClient.swift:208-236`, applied at
