@@ -698,6 +698,8 @@
 	<string>在编辑器中打开</string>
 	<key>Open on GitHub</key>
 	<string>在 GitHub 上打开</string>
+	<key>Open the invite on your iPhone to install it with TestFlight.</key>
+	<string>在 iPhone 上打开邀请链接，用 TestFlight 安装。</string>
 	<key>Opened outside Termio on this device</key>
 	<string>在这台设备上由 Termio 之外打开</string>
 	<key>Padding: %lld pt</key>
@@ -962,6 +964,8 @@
 	<string>Termio 可通过读取 %@ 的本地会话日志及登录钥匙串中的登录信息，显示其 token 用量和套餐限额。在你允许之前不会读取任何内容；macOS 会就钥匙串询问一次。</string>
 	<key>Termio could not append to the repository’s .gitignore. Check its permissions and try again.</key>
 	<string>Termio 无法将内容追加到该仓库的 .gitignore。请检查其权限后重试。</string>
+	<key>Termio for iPhone is in beta</key>
+	<string>Termio for iPhone 正在测试中</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio 是开源软件：欢迎给仓库加星标、报告 bug 和提出功能请求。</string>
 	<key>Termio isn’t running sessions through termiod.</key>

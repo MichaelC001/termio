@@ -698,6 +698,8 @@
 	<string>Open in Editor</string>
 	<key>Open on GitHub</key>
 	<string>Open on GitHub</string>
+	<key>Open the invite on your iPhone to install it with TestFlight.</key>
+	<string>Open the invite on your iPhone to install it with TestFlight.</string>
 	<key>Opened outside Termio on this device</key>
 	<string>Opened outside Termio on this device</string>
 	<key>Padding: %lld pt</key>
@@ -962,6 +964,8 @@
 	<string>Termio can show %@'s token usage and plan limits by reading its local session logs and its sign-in from your login Keychain. Nothing is read until you allow it; macOS will ask once about the Keychain.</string>
 	<key>Termio could not append to the repository’s .gitignore. Check its permissions and try again.</key>
 	<string>Termio could not append to the repository’s .gitignore. Check its permissions and try again.</string>
+	<key>Termio for iPhone is in beta</key>
+	<string>Termio for iPhone is in beta</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio is open source — star the repo, report bugs, and request features.</string>
 	<key>Termio isn’t running sessions through termiod.</key>

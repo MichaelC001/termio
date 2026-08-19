@@ -4112,6 +4112,36 @@
         }
       }
     },
+    "Termio for iPhone is in beta": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Termio for iPhone 正在测试中"
+          }
+        }
+      }
+    },
+    "Open the invite on your iPhone to install it with TestFlight.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 iPhone 上打开邀请链接，用 TestFlight 安装。"
+          }
+        }
+      }
+    },
+    "Copy Link": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝链接"
+          }
+        }
+      }
+    },
     "Rotate Pairing Token…": {
       "localizations": {
         "zh-Hans": {
