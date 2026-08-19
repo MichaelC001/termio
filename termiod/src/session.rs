@@ -29,6 +29,10 @@ const CLIENT_BACKLOG_CAP: usize = 4 * 1024 * 1024;
 const SIDECAR_QUEUE_CAP: usize = 16 * 1024 * 1024;
 pub const SCROLLBACK_STAGE_MAX_BYTES: usize = 1024 * 1024;
 pub const KEYFRAME_EVERY_FRAMES: u32 = 256;
+/// How often the session asks the kernel what is running in its terminal.
+/// Slow on purpose: this answers "which agent is in there", a question whose
+/// answer changes when a human starts or stops a program, not per frame.
+const FOREGROUND_POLL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// A payload admitted against a client's backlog. The epoch pins it to the
 /// reservation that let it through, so a forced resync can discard everything
@@ -316,6 +320,25 @@ struct Session {
     /// longer describes any boundary in the output stream, so it can never
     /// answer a snapshot again — attach and resync fall back to ring replay.
     vt_stale: Option<String>,
+    /// Last sample of who is in the tty's foreground and where the child is.
+    /// Refreshed by the poll tick only; `info()` reads the cache so a roster
+    /// request never turns into a burst of syscalls.
+    foreground: ForegroundSample,
+    /// The binary the child is running, pinned on the first sample that finds
+    /// it. One-shot on purpose: this is the *launch* baseline that
+    /// `was_replaced()` compares against, and resampling would paper over the
+    /// in-place upgrade it exists to notice.
+    child_executable: Option<crate::proc::ExecutableIdentity>,
+}
+
+/// What one foreground poll found. Compared whole so a tick that learns nothing
+/// new costs nothing beyond the syscalls.
+#[derive(Default, Clone, PartialEq, Eq)]
+struct ForegroundSample {
+    pgid: Option<i32>,
+    argv: Option<Vec<String>>,
+    job: bool,
+    cwd: Option<String>,
 }
 
 impl Session {
@@ -336,7 +359,54 @@ impl Session {
             title: self.title.clone(),
             attached_clients: self.clients.len(),
             writer_client_id: self.writer.clone(),
+            foreground_pid: self.foreground.pgid,
+            foreground_argv: self.foreground.argv.clone(),
+            foreground_job: self.foreground.job,
+            child_cwd: self.foreground.cwd.clone(),
+            child_executable: self
+                .child_executable
+                .as_ref()
+                .map(|identity| identity.path.clone()),
+            // Checked here rather than cached from the last tick: the record
+            // that matters most is the one built on the exit path, and a binary
+            // swapped during the seconds before the child quit is exactly the
+            // case this answers.
+            child_executable_replaced: self
+                .child_executable
+                .as_ref()
+                .is_some_and(|identity| identity.was_replaced()),
         }
+    }
+
+    /// Ask the kernel who holds the tty's foreground and where the child is
+    /// standing. Returns whether anything moved, so a quiet session emits no
+    /// roster traffic.
+    ///
+    /// Called from the poll tick only. These are a handful of cheap syscalls,
+    /// but they are still syscalls on the session actor's thread, and the
+    /// anti-100× invariant means byte delivery must never be the thing paying
+    /// for them — hence a fixed, slow cadence rather than a sample per frame.
+    fn sample_foreground(&mut self) -> bool {
+        if self.pid <= 0 {
+            return false;
+        }
+        let pgid = self.pty.foreground_pgid();
+        let sample = ForegroundSample {
+            pgid,
+            // The foreground group leader's pid *is* the pgid: the shell puts
+            // each job in a group named after its leader.
+            argv: pgid.and_then(crate::proc::process_arguments),
+            job: pgid.is_some_and(|pgid| pgid != self.pid),
+            cwd: crate::proc::working_directory(self.pid),
+        };
+        if self.child_executable.is_none() {
+            self.child_executable = crate::proc::executable_identity(self.pid);
+        }
+        if sample == self.foreground {
+            return false;
+        }
+        self.foreground = sample;
+        true
     }
 
     fn recompute_writer(&mut self) {
@@ -1226,6 +1296,8 @@ pub fn spawn(
         sidecar_tx: Some(sidecar.commands),
         sidecar_queue: sidecar.queue,
         vt_stale: None,
+        foreground: ForegroundSample::default(),
+        child_executable: None,
     };
 
     let waiter = tokio::task::spawn_blocking(move || {
@@ -1422,9 +1494,20 @@ async fn run(
     let mut sidecar_results_open = true;
     let mut history_stages = VecDeque::<ClientId>::new();
     let mut killed = false;
+    // The first tick is immediate, so a session answers "what is running in
+    // there" from its first roster request rather than after a cold two
+    // seconds. Missed ticks are skipped instead of queued: a busy actor should
+    // sample once when it catches up, not replay a backlog of polls.
+    let mut foreground_poll = tokio::time::interval(FOREGROUND_POLL);
+    foreground_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
+            _ = foreground_poll.tick() => {
+                if session.sample_foreground() {
+                    session.emit_roster();
+                }
+            }
             _ = tokio::task::yield_now(), if !history_stages.is_empty() => {
                 let client_id = history_stages
                     .pop_front()
@@ -1659,11 +1742,11 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
 mod tests {
     use super::{
         handle_msg, scrollback_row_limit, should_emit_keyframe, spawn_sidecar, ClientBacklog,
-        ClientDelivery, ClientEntry, ClientEvent, Session, SessionMsg, Sidecar, SidecarCommand,
-        SidecarQueue, SidecarResult, CLIENT_BACKLOG_CAP, SCROLLBACK_STAGE_MAX_BYTES,
-        SIDECAR_QUEUE_CAP, SNAPSHOT_CELL_SIZE,
+        ClientDelivery, ClientEntry, ClientEvent, Session, SessionHandle, SessionMsg, Sidecar,
+        SidecarCommand, SidecarQueue, SidecarResult, CLIENT_BACKLOG_CAP,
+        SCROLLBACK_STAGE_MAX_BYTES, SIDECAR_QUEUE_CAP, SNAPSHOT_CELL_SIZE,
     };
-    use crate::protocol::{Control, ErrorCode, Event};
+    use crate::protocol::{Control, ErrorCode, Event, SessionInfo};
     use crate::pty::Pty;
     use bytes::Bytes;
     use std::collections::{HashMap, VecDeque};
@@ -1840,6 +1923,8 @@ mod tests {
                 sidecar_tx: Some(sidecar_tx),
                 sidecar_queue,
                 vt_stale: None,
+                foreground: super::ForegroundSample::default(),
+                child_executable: None,
             },
             event_rx,
         )
@@ -2197,6 +2282,8 @@ mod tests {
             sidecar_tx: Some(sidecar_tx),
             sidecar_queue: Arc::new(SidecarQueue::new()),
             vt_stale: None,
+            foreground: super::ForegroundSample::default(),
+            child_executable: None,
         };
 
         assert!(!handle_msg(
@@ -2231,5 +2318,152 @@ mod tests {
             _ => panic!("failed resize did not return a typed control error"),
         }
         assert!(client_rx.try_recv().is_err());
+    }
+
+    /// Drive a real session until its sampled foreground satisfies `ready`, or
+    /// give up. The poll runs on a fixed cadence and the first tick can land
+    /// before the child has exec'd, so a test that reads once reads the wrong
+    /// process.
+    async fn settled_info(
+        handle: &SessionHandle,
+        ready: impl Fn(&SessionInfo) -> bool,
+    ) -> SessionInfo {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        let mut last = None;
+        while tokio::time::Instant::now() < deadline {
+            let (tx, rx) = oneshot::channel();
+            if !handle.send(SessionMsg::Info { reply: tx }) {
+                break;
+            }
+            let Ok(info) = rx.await else { break };
+            if ready(&info) {
+                return info;
+            }
+            last = Some(info);
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("the session never reported the expected foreground: {last:?}");
+    }
+
+    /// Both receivers are handed back rather than dropped here: a broadcast
+    /// channel with no receiver discards every send, and the roster assertion
+    /// reads one of them.
+    #[allow(clippy::type_complexity)]
+    fn start_session(
+        argv: Vec<String>,
+        cwd: &str,
+    ) -> (
+        SessionHandle,
+        broadcast::Receiver<Event>,
+        mpsc::UnboundedReceiver<super::SessionEnded>,
+    ) {
+        let (on_exit, on_exit_rx) = mpsc::unbounded_channel();
+        let (events, events_rx) = broadcast::channel(64);
+        let handle = super::spawn(
+            "foreground-session".to_string(),
+            "test".to_string(),
+            cwd.to_string(),
+            argv.join(" "),
+            argv,
+            Vec::new(),
+            24,
+            80,
+            None,
+            on_exit,
+            events,
+        )
+        .expect("spawning a real session");
+        (handle, events_rx, on_exit_rx)
+    }
+
+    /// The whole point: a live session can name the program in its terminal,
+    /// say where that program is standing, and pin the binary behind it —
+    /// against a real child, not a fixture.
+    #[tokio::test]
+    async fn a_session_names_the_program_running_in_its_terminal() {
+        let cat = ["/bin/cat", "/usr/bin/cat"]
+            .into_iter()
+            .find(|path| std::path::Path::new(path).exists())
+            .expect("no cat binary on this host");
+        let dir = std::fs::canonicalize(std::env::temp_dir()).expect("canonical temp dir");
+        let dir = dir.to_string_lossy().into_owned();
+        let (handle, mut events_rx, _on_exit) = start_session(vec![cat.to_string()], &dir);
+
+        let info = settled_info(&handle, |info| {
+            info.foreground_argv
+                .as_ref()
+                .and_then(|argv| argv.first())
+                .is_some_and(|arg| arg.ends_with("cat"))
+        })
+        .await;
+
+        assert_eq!(info.foreground_argv.as_deref(), Some(&[cat.to_string()][..]));
+        assert_eq!(
+            info.foreground_pid,
+            Some(info.pid),
+            "the session's own child is the foreground group leader"
+        );
+        assert!(
+            !info.foreground_job,
+            "the session child itself is not a job running *inside* the session"
+        );
+        assert_eq!(info.child_cwd.as_deref(), Some(dir.as_str()));
+        // Resolved, not spelled: on a busybox host /bin/cat is a symlink and the
+        // kernel correctly names /bin/busybox as what is running.
+        let expected = std::fs::canonicalize(cat).expect("canonical cat binary");
+        assert_eq!(
+            info.child_executable.as_deref().map(std::path::Path::new),
+            Some(expected.as_path())
+        );
+        assert!(
+            !info.child_executable_replaced,
+            "an untouched binary must not read as replaced"
+        );
+
+        // Learning who is in there is a roster change, so clients hear about it
+        // without polling.
+        let roster = loop {
+            match events_rx.try_recv() {
+                Ok(Event::Roster { info, .. }) => break info,
+                Ok(_) => continue,
+                Err(error) => panic!("no roster event for the first foreground sample: {error:?}"),
+            }
+        };
+        assert!(roster.is_some_and(|info| info.foreground_pid.is_some()));
+
+        handle.send(SessionMsg::Kill);
+    }
+
+    /// A command started *inside* the session takes the tty's foreground away
+    /// from the shell. This is the distinction between "a shell is sitting at a
+    /// prompt" and "something is running in there".
+    #[tokio::test]
+    async fn a_command_started_in_the_session_takes_the_foreground() {
+        let shell = ["/bin/sh", "/usr/bin/sh"]
+            .into_iter()
+            .find(|path| std::path::Path::new(path).exists())
+            .expect("no sh binary on this host");
+        let (handle, _events_rx, _on_exit) =
+            start_session(vec![shell.to_string(), "-i".to_string()], "/");
+
+        let idle = settled_info(&handle, |info| info.foreground_pid == Some(info.pid)).await;
+        assert!(!idle.foreground_job, "a bare prompt is not a running job");
+
+        handle.send(SessionMsg::Inject {
+            data: b"sleep 30\n".to_vec(),
+        });
+
+        let busy = settled_info(&handle, |info| info.foreground_job).await;
+        assert_ne!(busy.foreground_pid, Some(busy.pid));
+        assert!(
+            busy.foreground_argv
+                .as_ref()
+                .and_then(|argv| argv.first())
+                .is_some_and(|arg| arg.ends_with("sleep")),
+            "foreground argv was {:?}",
+            busy.foreground_argv
+        );
+
+        handle.send(SessionMsg::Kill);
     }
 }

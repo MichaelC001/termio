@@ -12,6 +12,7 @@ mod daemon;
 mod files;
 mod git;
 mod paths;
+mod proc;
 mod protocol;
 mod pty;
 mod remote;
