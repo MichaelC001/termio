@@ -60,7 +60,7 @@ final class TaskNotificationCenter: NSObject {
     /// any notification is clicked — including one whose click launches the app.
     func activate(store: TermioStore) {
         self.store = store
-        guard AppChannel.isBundledApp else { return }
+        guard AppChannel.isTermioAppBundle else { return }
         UNUserNotificationCenter.current().delegate = self
         // Ask for authorization eagerly, at launch, when the feature is on.
         // The lazy per-settle request (below) only ever fires while termio is
@@ -104,7 +104,7 @@ final class TaskNotificationCenter: NSObject {
     func sessionDidSettle(_ id: Session.ID, status: SessionStatus) {
         let turn = states[id]
         states[id]?.workingSince = nil
-        guard AppChannel.isBundledApp, let store, store.settings.notifyOnTaskCompletion else { return }
+        guard AppChannel.isTermioAppBundle, let store, store.settings.notifyOnTaskCompletion else { return }
         guard let session = store.session(id) else { return }
         let agent = store.effectiveAgent(for: session)
         // Only real agent turns notify; a plain terminal's bell/OSC noise doesn't.
@@ -164,7 +164,7 @@ final class TaskNotificationCenter: NSObject {
     /// gated on `notifyOnTaskCompletion`: that switch governs the *automatic*
     /// banners, whereas this is a direct, opt-in call.
     func postManual(title: String, body: String, project: Project?, session: Session?) {
-        guard AppChannel.isBundledApp else { return }
+        guard AppChannel.isTermioAppBundle else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         if let project { content.subtitle = project.name }
@@ -240,7 +240,7 @@ final class TaskNotificationCenter: NSObject {
     /// `withdrawAll`, and removing an absent identifier is a no-op.
     func withdraw(for id: Session.ID) {
         states[id, default: TurnState()].generation += 1
-        guard AppChannel.isBundledApp else { return }
+        guard AppChannel.isTermioAppBundle else { return }
         UNUserNotificationCenter.current()
             .removeDeliveredNotifications(withIdentifiers: [Self.identifier(for: id)])
     }
@@ -256,14 +256,15 @@ final class TaskNotificationCenter: NSObject {
     /// Quit takes the sessions with it, so any banners left behind would point
     /// at nothing.
     func withdrawAll() {
-        guard AppChannel.isBundledApp else { return }
+        guard AppChannel.isTermioAppBundle else { return }
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
     }
 
     /// The macOS-side authorization for termio's notifications, for the Settings
-    /// row. `nil` outside a bundled app (the framework can't be touched there).
+    /// row. `nil` outside termio's own app bundle (the framework can't be touched
+    /// there).
     static func authorizationStatus() async -> UNAuthorizationStatus? {
-        guard AppChannel.isBundledApp else { return nil }
+        guard AppChannel.isTermioAppBundle else { return nil }
         return await UNUserNotificationCenter.current().notificationSettings()
             .authorizationStatus
     }
@@ -272,7 +273,7 @@ final class TaskNotificationCenter: NSObject {
     /// the first notification makes, just user-initiated. Returns whether the
     /// user granted it.
     static func requestPermission() async -> Bool {
-        guard AppChannel.isBundledApp else { return false }
+        guard AppChannel.isTermioAppBundle else { return false }
         return (try? await UNUserNotificationCenter.current()
             .requestAuthorization(options: [.alert, .sound])) ?? false
     }

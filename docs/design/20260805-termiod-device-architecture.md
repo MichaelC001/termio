@@ -3,12 +3,13 @@ title: Device Architecture — one server per device, every UI a client
 status: draft
 type: design
 created: 2026-08-05
-updated: 2026-08-16
+updated: 2026-08-19
 related:
   - 20260730-termiod-session-protocol.md
   - 20260730-termiod-session-mux.md
   - 20260708-session-daemon-architecture.md
   - 20260708-remote-projects.md
+  - 20260819-device-workspace-project.md
 ---
 
 # Design: Device Architecture
@@ -162,6 +163,13 @@ tale". The phone becomes a client of *this* protocol, not a screen for another
 client.
 
 ### 2.2 Workspaces live on the device, not in a viewer
+
+> **Vocabulary superseded** (2026-08-19, `20260819-device-workspace-project.md`).
+> "Workspace" in this section means a *directory root* — what the shipped app
+> calls a **project**, or a **checkout** when the device matters. Since #345 the
+> name `Workspace` belongs to the sidebar scope that holds projects, which is a
+> different object. Read every "workspace" below as "project"; the rule about
+> where it lives is unaffected, only the word.
 
 A **workspace** is a directory root on a device — what the UI calls a project,
 and what `git worktree` extends. §B of the protocol spec introduced it as the

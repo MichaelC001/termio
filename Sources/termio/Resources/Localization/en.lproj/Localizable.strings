@@ -536,6 +536,8 @@
 	<string>Local</string>
 	<key>Login shell</key>
 	<string>Login shell</string>
+	<key>Machines</key>
+	<string>Machines</string>
 	<key>Match Case</key>
 	<string>Match Case</string>
 	<key>Match Whole Word</key>
@@ -876,8 +878,6 @@
 	<string>Runs with `%@`. The agent won’t ask before editing files or running commands.</string>
 	<key>SF Symbol name</key>
 	<string>SF Symbol name</string>
-	<key>SSH</key>
-	<string>SSH</string>
 	<key>Save</key>
 	<string>Save</string>
 	<key>Save failed: %@</key>
@@ -1024,6 +1024,8 @@
 	<string>The ignore rule couldn’t be added.</string>
 	<key>The machine answered with no listing for that folder.</key>
 	<string>The machine answered with no listing for that folder.</string>
+	<key>The machines in your ~/.ssh/config, and the keys that reach them</key>
+	<string>The machines in your ~/.ssh/config, and the keys that reach them</string>
 	<key>The project and session list. Kept separate from the terminal font, and need not be monospaced.</key>
 	<string>The project and session list. Kept separate from the terminal font, and need not be monospaced.</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>
@@ -1152,8 +1154,6 @@
 	<string>You can restore it from the Trash.</string>
 	<key>Your Host entries from ~/.ssh/config — the same aliases `ssh` resolves. Right-click a host to connect.</key>
 	<string>Your Host entries from ~/.ssh/config — the same aliases `ssh` resolves. Right-click a host to connect.</string>
-	<key>Your ~/.ssh/config hosts, one click away</key>
-	<string>Your ~/.ssh/config hosts, one click away</string>
 	<key>Zoom</key>
 	<string>Zoom</string>
 	<key>Zoom Split</key>

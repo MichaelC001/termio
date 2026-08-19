@@ -3582,12 +3582,12 @@
         }
       }
     },
-    "SSH": {
+    "Machines": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "SSH"
+            "value": "机器"
           }
         }
       }
@@ -3662,12 +3662,12 @@
         }
       }
     },
-    "Your ~/.ssh/config hosts, one click away": {
+    "The machines in your ~/.ssh/config, and the keys that reach them": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "一键连接 ~/.ssh/config 中的主机"
+            "value": "~/.ssh/config 里的机器，以及连上它们的密钥"
           }
         }
       }

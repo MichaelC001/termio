@@ -3,12 +3,13 @@ title: Every machine is a device, every place you work is a project
 status: in-review
 type: rfc
 created: 2026-08-14
-updated: 2026-08-16
+updated: 2026-08-19
 related:
   - 20260805-termiod-device-architecture.md
   - 20260730-termiod-session-protocol.md
   - 20260805-termiod-hot-path-and-client-classes.md
   - remote-to-device.decisions.md
+  - ../design/20260819-device-workspace-project.md
 ---
 
 # Every machine is a device, every place you work is a project
@@ -225,7 +226,8 @@ codebase disproves. Replace it with explicit authorities:
 | Readiness (reachable / version / daemon present) | runtime probe | memory only | Never persisted. Already true — `lastSeen` is deliberately excluded from `Codable` |
 | A typed `user@host` | the user | **ephemeral** | Used for the connection at hand and not persisted. If the user wants it back, `Add Host…` writes it to `~/.ssh/config`, which is the only place a route may live |
 | Display name of a machine | the viewer | client state | The host never supplies a display name (§4 presentation boundary) |
-| Sessions, workspaces, processes, workstream status | the device's `termiod` | on the device | Viewers cache, never own |
+| Sessions, processes, workstream status | the device's `termiod` | on the device | Viewers cache, never own |
+| Workspaces (the sidebar scope) | the viewer | the Mac's `state.json` | **Corrected 2026-08-19** — this row previously listed workspaces as device-owned, conflating the sidebar scope with a directory root. A workspace *belongs to* one device but its state is viewer-owned; see `design/20260819-device-workspace-project.md` §5 |
 
 Two corrections follow directly:
 
@@ -714,7 +716,7 @@ The pre-rewrite draft carried seven. None is silently dropped; two were settled 
 | Clone on Remote… | **Clone on \<machine\>…** — the preposition stays; nothing is copied from the Mac |
 | The `"Remote"` sidebar section | gone; projects and terminals carry a machine annotation |
 | "remote session", "remote host", "remote project" | "a session on \<machine\>", "a project on \<machine\>" |
-| "Remote Project" as a concept | a workspace, which lives on a machine, and this Mac is one |
+| "Remote Project" as a concept | a project in a workspace on \<machine\>, and this Mac is one. (Read "workspace" in the pre-2026-08-19 sense as *project* — see `design/20260819-device-workspace-project.md` §6) |
 
 **Scope of the retirement:** execution-topology nouns and verbs only. `git
 remote`, `remoteCheckouts` as a field name, Apple's Remote Management, and remote
