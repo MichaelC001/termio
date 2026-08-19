@@ -13,6 +13,7 @@ struct MobileSettingsTab: View {
     @State private var hosts: [String] = []
     @State private var selectedHost = ""
     @State private var copied = false
+    @State private var inviteCopied = false
     @State private var confirmRotate = false
     @State private var token = PairingToken.current
     @ObservedObject private var tunnel = TunnelManager.shared
@@ -98,6 +99,12 @@ struct MobileSettingsTab: View {
                     // party, Custom is one the user runs themselves.
                     footnote(tunnelFootnote)
                 }
+
+                // The QR is unscannable without the companion installed, so the
+                // one step that happens off this Mac gets its own card. The
+                // TestFlight icon does the explaining a sentence would: this
+                // link leaves for Apple's beta installer.
+                Section { betaRow }
 
                 Section {
                     // A rare, destructive maintenance action: it rests as a plain
@@ -206,6 +213,46 @@ struct MobileSettingsTab: View {
         customURLPattern = pattern
         if tunnel.provider == .custom { tunnel.reloadCustom() }
     }
+
+    /// Where the iPhone app comes from: Apple's beta installer, named by its own
+    /// icon so the destination is obvious before the click.
+    private var betaRow: some View {
+        HStack(spacing: 12) {
+            if let icon = Self.testFlightIcon {
+                Image(nsImage: icon)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 44, height: 44)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                SettingsLabel(
+                    title: localized("Termio for iPhone is in beta"),
+                    subtext: localized("Open the invite on your iPhone to install it with TestFlight."),
+                    titleFont: .headline
+                )
+                // The invite only installs anything on the phone, so opening it
+                // here would land on the wrong device — copying is the whole
+                // action: paste it into a message and open it on the iPhone.
+                Button(inviteCopied ? localized("Copied") : localized("Copy Link")) {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(Self.testFlightInvite, forType: .string)
+                    inviteCopied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { inviteCopied = false }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private static let testFlightInvite = "https://testflight.apple.com/join/1Arf1UKR"
+
+    /// TestFlight's own icon, bundled the way the agent favicons are. Missing
+    /// art drops the image and keeps the rest of the row, rather than leaving a
+    /// hole where the icon should be.
+    private static let testFlightIcon: NSImage? = Bundle.termioResources
+        .url(forResource: "testflight", withExtension: "png")
+        .flatMap { NSImage(contentsOf: $0) }
 
     private func footnote(_ text: String) -> some View {
         Text(text)
