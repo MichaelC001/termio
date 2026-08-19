@@ -4,7 +4,7 @@
 export const supportedAgents = [
   "Claude Code",
   "Codex",
-  "Gemini",
+  "Antigravity",
   "Amp",
   "Pi",
   "OpenCode",

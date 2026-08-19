@@ -165,7 +165,7 @@ Jump to any session, project, or action from one search box.
 
 ## Works with your agents
 
-Claude Code, Codex, Gemini CLI, Grok, Cursor Agent, Copilot, Amp, OpenCode,
+Claude Code, Codex, Antigravity, Grok, Cursor Agent, Copilot, Amp, OpenCode,
 Pi, Kimi — and any other CLI agent, because a session is just a real terminal.
 For the built-in agents, Termio installs each one's own hook or plugin
 automatically, so status detection works the first time you launch them.
