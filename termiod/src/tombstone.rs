@@ -307,6 +307,12 @@ mod tests {
             title: Some("fixing the parser".to_string()),
             attached_clients: 0,
             writer_client_id: None,
+            foreground_pid: None,
+            foreground_argv: None,
+            foreground_job: false,
+            child_cwd: None,
+            child_executable: None,
+            child_executable_replaced: false,
         }
     }
 
