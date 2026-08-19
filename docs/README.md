@@ -113,6 +113,7 @@ from the real front matter).
 | draft | rfc | [Remote git — the pane's verbs run on the device](rfcs/remote-git-plane.md) |
 | draft | rfc | [Review — One path, local sessions run through termiod too](rfcs/one-path-local-through-termiod.review-claude.md) |
 | draft | rfc | [Termiod web client on official Ghostty WASM (Linux first)](design/20260818-termiod-web-client-ghostty-wasm.md) |
+| draft | rfc | [Unify the server plane in Rust, reduce the Mac app to a viewer](rfcs/unify-server-plane.md) |
 | fixed | bug | [New terminal opens unfocused (hollow cursor, beeps until clicked)](bug/terminal-focus-loss-on-new-session-mount.md) |
 | fixed | bug | [Terminal loses focus after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
 | fixed | bug | [Terminal loses focus while the window stays key — sibling-render trigger](bug/terminal-focus-loss-on-sibling-render.md) |
