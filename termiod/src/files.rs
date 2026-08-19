@@ -343,28 +343,67 @@ impl NameIndex {
     }
 
     /// Best `limit` workspace-relative matches for `query`, plus coverage.
+    ///
+    /// Scored in two batched passes — basenames, then whole relative paths —
+    /// because that is where frizbee's SIMD earns anything: one `match_list`
+    /// over every candidate vectorizes, where a per-file call would not.
     pub fn matches(&self, query: &str, limit: usize) -> (Vec<String>, f32) {
         let inner = self.inner.lock().unwrap();
-        let mut scored: Vec<(i64, String)> = inner
-            .dirs
-            .iter()
-            .flat_map(|(dir, files)| {
-                let prefix = dir
-                    .strip_prefix(&self.root)
-                    .unwrap_or(dir)
-                    .to_string_lossy()
-                    .into_owned();
-                files.iter().filter_map(move |name| {
-                    let relative = if prefix.is_empty() {
-                        name.clone()
-                    } else {
-                        format!("{prefix}/{name}")
-                    };
-                    fuzzy_score(&relative, name, query).map(|score| (score, relative))
-                })
+        let mut relatives: Vec<String> = Vec::new();
+        let mut basenames: Vec<&str> = Vec::new();
+        for (dir, files) in inner.dirs.iter() {
+            let prefix = dir
+                .strip_prefix(&self.root)
+                .unwrap_or(dir)
+                .to_string_lossy()
+                .into_owned();
+            for name in files {
+                relatives.push(if prefix.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{prefix}/{name}")
+                });
+                basenames.push(name);
+            }
+        }
+
+        // An empty query is not a match at all — it is "show me the tree",
+        // shortest first, which is what the picker opens on.
+        if query.is_empty() {
+            let mut all: Vec<String> = relatives;
+            all.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+            all.truncate(limit);
+            drop(inner);
+            return (all, self.coverage());
+        }
+
+        let mut scores = vec![None::<i64>; relatives.len()];
+        // `Ignore`, not frizbee's default `Smart`: the scorer this replaced
+        // lowercased both sides, so smart-case would silently stop `Main` from
+        // finding `main.rs`. Smart-case is a product decision, not a side
+        // effect of changing matchers.
+        let config = frizbee::Config::default().casing(frizbee::CaseMatching::Ignore);
+        let mut matcher = frizbee::Matcher::new(query, &config);
+        // Path pass first, so a basename hit overwrites it: a name match must
+        // outrank any path match, which is the ordering the picker is judged on.
+        for hit in matcher.match_list(&relatives) {
+            scores[hit.index as usize] = Some(hit.score as i64);
+        }
+        for hit in matcher.match_list(&basenames) {
+            scores[hit.index as usize] = Some(BASENAME_BAND + hit.score as i64);
+        }
+        drop(inner);
+
+        let mut scored: Vec<(i64, String)> = relatives
+            .into_iter()
+            .zip(scores)
+            .filter_map(|(relative, score)| {
+                // Shorter paths win ties, as they did before frizbee: the band
+                // is far wider than any path length, so this can never demote a
+                // basename hit below a path hit.
+                score.map(|score| (score - relative.len() as i64, relative))
             })
             .collect();
-        drop(inner);
         scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
         scored.truncate(limit);
         (
@@ -430,35 +469,10 @@ fn list_index_dir(dir: &Path) -> (Vec<String>, Vec<PathBuf>) {
 /// Filename fuzzy score: higher is better, `None` is no match. Substring
 /// beats subsequence, the basename beats the full path, and shorter paths
 /// win ties — the ⌘⇧O ranking, kept simple enough to be deterministic.
-fn fuzzy_score(relative: &str, basename: &str, query: &str) -> Option<i64> {
-    if query.is_empty() {
-        return Some(-(relative.len() as i64));
-    }
-    let query = query.to_ascii_lowercase();
-    let basename_lower = basename.to_ascii_lowercase();
-    let relative_lower = relative.to_ascii_lowercase();
-    let length_penalty = relative.len() as i64;
-    if basename_lower.contains(&query) {
-        return Some(4000 - length_penalty);
-    }
-    if is_subsequence(&query, &basename_lower) {
-        return Some(3000 - length_penalty);
-    }
-    if relative_lower.contains(&query) {
-        return Some(2000 - length_penalty);
-    }
-    if is_subsequence(&query, &relative_lower) {
-        return Some(1000 - length_penalty);
-    }
-    None
-}
-
-fn is_subsequence(needle: &str, haystack: &str) -> bool {
-    let mut chars = haystack.chars();
-    needle
-        .chars()
-        .all(|wanted| chars.by_ref().any(|have| have == wanted))
-}
+/// Separates a basename hit from a path hit. frizbee scores are `u16`, and a
+/// path cannot exceed `PATH_MAX`, so this band is wide enough that no score
+/// plus no length penalty can ever carry a path match over a name match.
+const BASENAME_BAND: i64 = 1_000_000;
 
 /// Long minified lines would bloat a `search_results` event; the match is
 /// findable from far less.
@@ -931,25 +945,40 @@ mod tests {
         assert!(parse_grep_line("path:notanumber:text").is_none());
     }
 
-    #[test]
-    fn fuzzy_ranking_prefers_basename_and_substring() {
-        let hit = |relative: &str, query: &str| {
-            let basename = relative.rsplit('/').next().unwrap();
-            fuzzy_score(relative, basename, query)
-        };
-        assert!(hit("src/main.rs", "zzz").is_none());
-        let basename_substring = hit("src/main.rs", "main").unwrap();
-        let basename_subsequence = hit("src/main.rs", "mrs").unwrap();
-        let path_substring = hit("src/main.rs", "src/ma").unwrap();
-        let path_subsequence = hit("src/main.rs", "smain").unwrap();
-        assert!(basename_substring > basename_subsequence);
-        assert!(basename_subsequence > path_substring);
-        assert!(path_substring > path_subsequence);
+    /// The picker's ranking contract, asserted through the public entry point
+    /// rather than a private scorer: a name hit outranks a path hit, a shorter
+    /// path wins a tie, case does not matter, and a miss is a miss.
+    #[tokio::test]
+    async fn fuzzy_ranking_prefers_the_basename_over_the_path() {
+        let root = scratch("ranking");
+        std::fs::create_dir_all(root.join("main/other")).unwrap();
+        touch(&root.join("main/other/zebra.rs"), b"");
+        touch(&root.join("main.rs"), b"");
+        std::fs::create_dir_all(root.join("deeply/nested")).unwrap();
+        touch(&root.join("deeply/nested/main.rs"), b"");
+
+        let index = NameIndex::new(root.clone());
+        index.build().await;
+
+        // "main" hits three files: two by basename, one only by its directory.
+        // Both name hits must precede the path-only hit.
+        let (paths, _) = index.matches("main", 10);
+        let path_only = paths
+            .iter()
+            .position(|p| p == "main/other/zebra.rs")
+            .expect("a path-only match still matches");
+        assert_eq!(paths[0], "main.rs", "shortest basename hit ranks first");
         assert!(
-            hit("main.rs", "main").unwrap() > hit("deeply/nested/main.rs", "main").unwrap(),
-            "shorter paths win ties"
+            paths.iter().position(|p| p == "deeply/nested/main.rs") < Some(path_only),
+            "every basename hit outranks a path-only hit"
         );
-        assert!(hit("src/Main.RS", "main").is_some(), "case-insensitive");
+
+        assert!(index.matches("zzzqqq", 10).0.is_empty(), "a miss is a miss");
+        assert_eq!(
+            index.matches("MAIN.RS", 10).0.first().map(String::as_str),
+            Some("main.rs"),
+            "matching is case-insensitive"
+        );
     }
 
     #[tokio::test]
