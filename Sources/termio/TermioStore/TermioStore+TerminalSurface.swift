@@ -131,6 +131,17 @@ extension TermioStore {
             return existing
         }
 
+        // With the daemon off there is nothing to attach to, and falling through
+        // would spawn a *local* login shell in this Mac's `$HOME` under the remote
+        // host's name. `addRemoteTerminal` refuses at creation; this is the same
+        // refusal on re-select and on restore. Keyed on `termiodRemoteHost`, not
+        // `sshHost` — a plain SSH terminal is a local PTY running `ssh <host>`.
+        if let remoteHost = session.termiodRemoteHost, !Termiod.isEnabled {
+            let placeholder = termiodDisabledPlaceholder(host: remoteHost)
+            surfaces[session.id] = placeholder
+            return placeholder
+        }
+
         // An isolated worktree (if one was created for this session) wins over the
         // project's own directory, so the agent edits the branch in place.
         // A loose terminal instead respawns at the cwd it last reported over OSC 7
@@ -501,6 +512,26 @@ extension TermioStore {
         // is harmless. (`surfaces`/`monitors` are plain, non-`@Published` caches, so
         // writing them here is fine; only the `projects` write must be deferred.)
         DispatchQueue.main.async { [self] in recordLaunch(session.id, resumeID: launch.resumeID) }
+        return state
+    }
+
+    /// Stands in for the shell that would otherwise spawn locally. It carries no PTY
+    /// and no daemon link, so nothing runs behind it and nothing can be typed in, and
+    /// nothing is recorded as launched. Rendering is pumped by hand because this
+    /// embedding paints only on a wakeup and no process will ever produce one here.
+    private func termiodDisabledPlaceholder(host: String) -> TerminalViewState {
+        let controller = TerminalController { [self] builder in
+            applyAppearance(to: &builder)
+        }
+        let state = TerminalViewState(controller: controller)
+        state.controller.setTheme(makeTheme())
+        let inMemory = InMemoryTerminalSession(write: { _ in }, resize: { _ in })
+        state.configuration = TerminalSurfaceOptions(backend: .inMemory(inMemory))
+        // The sentence `presentTermiodDisabledAlert` shows, so both doors agree.
+        inMemory.receive(
+            "\r\n  This session runs on \(host) through termiod.\r\n"
+                + "  Set TERMIO_TERMIOD=1 and relaunch termio to open it.\r\n")
+        warmUpRendering(state)
         return state
     }
 
