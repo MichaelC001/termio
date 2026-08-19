@@ -219,33 +219,60 @@ enum WorkspaceMigration {
             if let alias = project.legacyDevice?.alias { return .ssh(alias: alias) }
             return recordsCheckoutDevices ? .thisMac : nil
         }
+        // Every machine a workspace has something on.
+        //
+        // A device the workspace already names counts as a claim in its own right:
+        // its loose sessions were filed there because they run there, and nothing
+        // else records that. A loose shell records its own machine and nothing else
+        // does, so it is a claim exactly like a checkout's. Leaving it out let a
+        // workspace holding local shells and one remote checkout adopt the remote
+        // box — and on a one-workspace tree that left nowhere on this Mac for local
+        // work to go, which is the violation this pass exists to prevent.
+        func devices(of workspace: Workspace, claims: [WorkspaceDevice]) -> Set<WorkspaceDevice> {
+            var devices = Set(claims)
+            for session in workspace.looseSessions {
+                devices.insert(WorkspaceDevice(alias: session.termiodRemoteHost ?? session.sshHost))
+            }
+            if !workspace.device.isThisMac { devices.insert(workspace.device) }
+            return devices
+        }
+        // The machine a workspace ends this pass on, decided from the workspace
+        // alone. It is the same three cases the loop below walks — adopt, stay,
+        // split — read for their answer rather than for their effect, which is what
+        // makes a home knowable before the pass has reached it.
+        func settledDevice(of workspace: Workspace) -> WorkspaceDevice {
+            let claims = projects.filter { $0.workspaceID == workspace.id }
+                .compactMap(claimedDevice)
+            let devices = devices(of: workspace, claims: claims)
+            if devices.count > 1 {
+                return keptDevice(of: workspace, among: devices, claims: claims)
+            }
+            guard let only = devices.first, workspace.deviceAlias == nil else {
+                return workspace.device
+            }
+            return only
+        }
         // Where a project split off a workspace goes when the tree already has a
-        // home for its machine: one workspace per alias is what `deviceWorkspace(for:)`
-        // assumes, so a split must not mint a second one. Aliases are safe to read
-        // ahead — this pass only ever adds one to a workspace that had none, so a
-        // workspace that already names a machine still names it at the end.
-        var deviceHomes: [String: Workspace.ID] = [:]
+        // home for its machine: an upgrade the user did not ask for must not also
+        // hand them a second scope for a box they already have one for.
+        //
+        // Computed over the whole input before anything moves, so the answer does
+        // not turn on the order `state.json` happens to list workspaces in.
+        // Reading it off the part already processed is what made this asymmetric:
+        // a machine's home was found wherever it sat, while this Mac's was found
+        // only when it came first — and a file listing the box's workspace ahead of
+        // the local one minted a second "This Mac" beside the perfectly good
+        // existing one.
+        var homes: [WorkspaceDevice: Workspace.ID] = [:]
         for workspace in workspaces {
-            guard let alias = workspace.deviceAlias, deviceHomes[alias] == nil else { continue }
-            deviceHomes[alias] = workspace.id
+            let device = settledDevice(of: workspace)
+            if homes[device] == nil { homes[device] = workspace.id }
         }
 
         for workspace in workspaces {
             let owned = projects.filter { $0.workspaceID == workspace.id }
             let claims = owned.compactMap(claimedDevice)
-            // A device the workspace already names counts as a claim in its own
-            // right: its loose sessions were filed there because they run there,
-            // and nothing else records that.
-            var devices = Set(claims)
-            // A loose shell records its own machine and nothing else does, so it
-            // is a claim exactly like a checkout's. Leaving it out let a workspace
-            // holding local shells and one remote checkout adopt the remote box —
-            // and on a one-workspace tree that left nowhere on this Mac for local
-            // work to go, which is the violation this pass exists to prevent.
-            for session in workspace.looseSessions {
-                devices.insert(WorkspaceDevice(alias: session.termiodRemoteHost ?? session.sshHost))
-            }
-            if !workspace.device.isThisMac { devices.insert(workspace.device) }
+            let devices = devices(of: workspace, claims: claims)
 
             guard devices.count > 1 else {
                 var workspace = workspace
@@ -256,9 +283,6 @@ enum WorkspaceMigration {
                     workspace.deviceID = owned.first {
                         claimedDevice($0) == only
                     }?.legacyDevice?.deviceID
-                }
-                if let alias = workspace.deviceAlias, deviceHomes[alias] == nil {
-                    deviceHomes[alias] = workspace.id
                 }
                 result.append(workspace)
                 continue
@@ -282,20 +306,12 @@ enum WorkspaceMigration {
                     claimedDevice($0) == keeper
                 }?.legacyDevice?.deviceID
             }
-            if let alias = kept.deviceAlias, deviceHomes[alias] == nil {
-                deviceHomes[alias] = kept.id
-            }
             result.append(kept)
 
             for device in devices.subtracting([keeper]).sorted(by: { ($0.alias ?? "") < ($1.alias ?? "") }) {
                 let home: Workspace.ID
-                if let alias = device.alias, let existing = deviceHomes[alias] {
+                if let existing = homes[device] {
                     home = existing
-                } else if device.isThisMac, let existing = result.first(where: \.device.isThisMac) {
-                    // Only a workspace this pass has already settled: one still
-                    // ahead of us may yet adopt a machine, and filing a local
-                    // checkout into it would re-break what we are here to fix.
-                    home = existing.id
                 } else {
                     // Named after the machine, which is the only thing this half is
                     // known to have in common.
@@ -309,7 +325,7 @@ enum WorkspaceMigration {
                     half.deviceID = owned.first {
                         claimedDevice($0) == device
                     }?.legacyDevice?.deviceID
-                    if let alias = device.alias { deviceHomes[alias] = half.id }
+                    homes[device] = half.id
                     result.append(half)
                     home = half.id
                 }

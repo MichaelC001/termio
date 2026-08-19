@@ -377,16 +377,46 @@ final class WorkspaceMigrationTests: XCTestCase {
     /// A local checkout shed by a machine's workspace goes to the workspace this
     /// Mac already has, rather than adding a scope for a machine the user is
     /// sitting in front of.
+    ///
+    /// Asserted for both orderings: which workspace `state.json` lists first is an
+    /// accident of when the user made them, and the sidebar they get back must not
+    /// turn on it. Listing the box's workspace first used to mint a third workspace
+    /// named "This Mac" beside the perfectly good local one.
     func testALocalCheckoutShedByASplitGoesToTheWorkspaceThisMacHas() {
         let home = Workspace(name: "Sessions")
         let ukvps = Workspace(name: "ukvps", deviceAlias: "ukvps")
         let stray = checkout("termio", in: ukvps)
+        let filed = [stray, checkout("api", in: ukvps, on: "ukvps")]
+
+        for order in [[home, ukvps], [ukvps, home]] {
+            let (workspaces, projects) = WorkspaceMigration.reconcile(
+                workspaces: order, projects: filed)
+
+            XCTAssertEqual(workspaces.count, 2, "the Mac in front of the user already has one")
+            XCTAssertEqual(projects.first { $0.id == stray.id }?.workspaceID, home.id)
+        }
+    }
+
+    /// Naming no machine is not the same as being on this Mac, which is what makes
+    /// the local home worth deciding up front rather than reading off the workspaces
+    /// already processed: a workspace whose checkouts all sit on a box adopts that
+    /// box in this very pass. The shed local checkout gets a workspace of its own
+    /// rather than being filed into a scope that is on its way to another machine.
+    func testAShedLocalCheckoutSkipsAWorkspaceThatIsAboutToAdoptAMachine() throws {
+        let ukvps = Workspace(name: "ukvps", deviceAlias: "ukvps")
+        let servers = Workspace(name: "Servers")
+        let stray = checkout("termio", in: ukvps)
 
         let (workspaces, projects) = WorkspaceMigration.reconcile(
-            workspaces: [home, ukvps], projects: [stray, checkout("api", in: ukvps, on: "ukvps")])
+            workspaces: [ukvps, servers],
+            projects: [stray, checkout("api", in: ukvps, on: "ukvps"),
+                       checkout("web", in: servers, on: "devbox")])
 
-        XCTAssertEqual(workspaces.count, 2)
-        XCTAssertEqual(projects.first { $0.id == stray.id }?.workspaceID, home.id)
+        XCTAssertEqual(workspaces.first { $0.id == servers.id }?.device, .ssh(alias: "devbox"),
+                       "it adopts the box its only checkout is on")
+        let here = try XCTUnwrap(workspaces.first { $0.device == .thisMac })
+        XCTAssertNotEqual(here.id, servers.id)
+        XCTAssertEqual(projects.first { $0.id == stray.id }?.workspaceID, here.id)
     }
 
     /// `reconcile` runs on every load, so a tree it produced must come back
