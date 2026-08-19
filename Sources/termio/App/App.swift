@@ -942,10 +942,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// A row of the Workspace submenu — the scope the sidebar shows and the panes
     /// follow.
     @objc func switchToWorkspace(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let id = UUID(uuidString: raw),
-              let workspace = store.workspaces.first(where: { $0.id == id })
+        guard let raw = sender.representedObject as? String, let id = UUID(uuidString: raw)
         else { return }
-        WorkspaceSpaces.select(workspace, in: store)
+        store.switchToWorkspace(id)
     }
 
     /// The submenu's trailing "New Workspace…" row.
@@ -1100,10 +1099,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// and removed *with* them. When open the region reads `toggleNavigator, workspaceSwitcher, flex,
     /// sortProjects, newTerminal | sidebarTrackingSeparator`. Mirrors `setInspectorSwitchVisible`.
     ///
-    /// The device switcher is the exception: it does not leave with the sidebar, it *moves* across the
-    /// tracking separator to the head of the content region. A collapsed sidebar is exactly when the
-    /// window is only a terminal, and a terminal looks the same on every machine — dropping the one
-    /// control that says which machine would remove the answer at the moment it is least guessable.
+    /// The workspace switcher is the exception: it does not leave with the sidebar, it *moves* across
+    /// the tracking separator to the head of the content region. A collapsed sidebar is exactly when
+    /// the window is only a terminal, and a terminal looks the same in every scope — dropping the one
+    /// control that says which workspace would remove the answer at the moment it is least guessable.
     /// (Dia does the same with its profile indicator: one mount in the sidebar, another in the tab
     /// dock for when the sidebar is away.)
     private func setNavigatorItemsVisible(_ visible: Bool) {
@@ -1828,7 +1827,7 @@ extension AppDelegate: NSMenuDelegate {
     /// is the one no terminal program can want (Cmd is off-limits to a TUI) and that
     /// nothing else in termio takes.
     private func fillWorkspaceMenu(_ menu: NSMenu) {
-        for (index, workspace) in WorkspaceSpaces.ordered(in: store).enumerated() {
+        for (index, workspace) in store.orderedWorkspaces.enumerated() {
             let item = menu.addItem(
                 withTitle: workspace.name,
                 action: #selector(switchToWorkspace(_:)),

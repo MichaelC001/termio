@@ -47,8 +47,9 @@ final class TermioStore: ObservableObject {
     }
 
     /// Counts arrivals in a workspace, so the work a switch defers can tell
-    /// whether it is still wanted. A user mid-swipe passes through scopes they
-    /// never stop on; only the last arrival settles (see `finishArriving`).
+    /// whether it is still wanted. A user stepping through scopes passes through
+    /// ones they never stop on; only the last arrival settles (see
+    /// `finishArriving`).
     var workspaceArrival: UInt64 = 0
 
     /// Which workspace the sidebar is showing. Live state, like the selection —
@@ -99,10 +100,10 @@ final class TermioStore: ObservableObject {
                 if let pid = project(for: id)?.id { noteProjectActivity(pid, force: true) }
             }
             // Debounced, not inline: moving the selection is the most frequent
-            // edit in the app — every row click, every ⌘⇧], every step of a
-            // workspace swipe — and a synchronous encode-and-write of the whole
-            // tree on each one is a hitch the user feels as the switch being
-            // slow. The quit path flushes whatever is still pending.
+            // edit in the app — every row click, every ⌘⇧], every workspace
+            // switch — and a synchronous encode-and-write of the whole tree on
+            // each one is a hitch the user feels as the switch being slow. The
+            // quit path flushes whatever is still pending.
             persistSoon()
         }
     }
@@ -1345,12 +1346,6 @@ final class TermioStore: ObservableObject {
         runtimes[sessionID]?.workingDirectory
     }
 
-    /// Acknowledge a resting "your turn" cue: a finished (`.done`) or blocked
-    /// (`.needsAttention`) session the user has now engaged with drops back to
-    /// `.idle`, clearing its sidebar/tray dot. A mid-turn `.working` is left
-    /// alone — its spinner isn't a cue to dismiss. Idempotent, and unlike the
-    /// `selectedSessionID` didSet it doesn't require the selection to *change*, so
-    /// re-clicking the session you're already on still clears the dot.
     /// Whether the user is plausibly looking at this session right now: termio is
     /// the active app and the session is selected. The status paths use it to pick
     /// between a quiet in-place settle and a "your turn" cue — with termio in the
@@ -1360,6 +1355,12 @@ final class TermioStore: ObservableObject {
         NSApp.isActive && selectedSessionID == id
     }
 
+    /// Acknowledge a resting "your turn" cue: a finished (`.done`) or blocked
+    /// (`.needsAttention`) session the user has now engaged with drops back to
+    /// `.idle`, clearing its sidebar/tray dot. A mid-turn `.working` is left
+    /// alone — its spinner isn't a cue to dismiss. Idempotent, and unlike the
+    /// `selectedSessionID` didSet it doesn't require the selection to *change*, so
+    /// re-clicking the session you're already on still clears the dot.
     func markSeen(_ id: Session.ID) {
         // Engaging with the session makes any delivered banner stale too.
         TaskNotificationCenter.shared.withdraw(for: id)

@@ -57,14 +57,6 @@ enum DeviceRoster {
         return known.filter { !$0.isLocal }
             + unusedAliases(known: known).map { KnownDevice(alias: $0, deviceID: nil) }
     }
-
-    /// The device the app is on, resolved against the machines that actually
-    /// exist. A stored alias that no longer matches anything (the user deleted the
-    /// `Host` block, or closed the last session on it) falls back to this Mac
-    /// rather than silently aiming at nothing.
-    static func current(_ store: TermioStore, known: [KnownDevice]) -> KnownDevice {
-        known.first { $0.alias == store.currentDeviceAlias } ?? .thisMac
-    }
 }
 
 // A device has no "open" verb of its own. Reaching a machine is always the side
@@ -99,7 +91,7 @@ extension KnownDevice {
 }
 
 /// The mark a device carries wherever it is drawn small enough that its name
-/// won't fit — today the footer dots.
+/// won't fit — today the dot on a session row that runs elsewhere.
 ///
 /// A color is not decoration here. The whole class of accident this app has to
 /// prevent is "I thought I was local, I was on the VPS": the panes now refuse to
@@ -179,7 +171,7 @@ func newTerminalMenuItem(
 /// workspace the project is already in is a dead click.
 @MainActor
 func moveToWorkspaceMenuItem(store: TermioStore, project: Project) -> SidebarMenuItem? {
-    let targets = WorkspaceSpaces.ordered(in: store).filter { $0.id != project.workspaceID }
+    let targets = store.orderedWorkspaces.filter { $0.id != project.workspaceID }
     guard !targets.isEmpty else { return nil }
     return .submenu(localized("Move to Workspace"), targets.map { workspace in
         .action(workspace.name) { store.moveProject(project.id, toWorkspace: workspace.id) }
