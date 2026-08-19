@@ -400,6 +400,14 @@ pub enum Control {
         host_id: String,
         host: String,
         client_id: String,
+        /// This account's home directory on the device, so a client that has
+        /// to name a path over here — a project picker, a `~`-prefixed entry —
+        /// starts where the user's work is instead of at `/`. Sent at the
+        /// handshake rather than fetched, because expanding `~` client-side
+        /// costs no round trip while someone is typing. Empty when the home
+        /// directory cannot be determined; clients fall back to `/`.
+        #[serde(default)]
+        home: String,
     },
     HelloErr {
         code: ErrorCode,

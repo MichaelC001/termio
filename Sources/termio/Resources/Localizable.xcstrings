@@ -281,12 +281,32 @@
         }
       }
     },
-    "Termio can’t browse another machine’s files. Clone a repository onto %@, or enter a folder that’s already there.": {
+    "Clone a repository onto %@, or open a folder that’s already there — the path completes as you type.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Termio 无法浏览另一台机器上的文件。把一个仓库克隆到 %@，或者输入一个已经在那里的文件夹。"
+            "value": "把一个仓库克隆到 %@，或者打开一个已经在那里的文件夹——路径会边输入边补全。"
+          }
+        }
+      }
+    },
+    "This machine’s termiod is too old to list folders.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台机器上的 termiod 版本太旧，列不出文件夹。"
+          }
+        }
+      }
+    },
+    "The machine answered with no listing for that folder.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台机器没有返回该文件夹的内容。"
           }
         }
       }
@@ -321,12 +341,12 @@
         }
       }
     },
-    "Termio opens the folder on %@ exactly as typed, so the path has to start with “/”. “~” isn’t expanded.": {
+    "Enter a path that starts with “/”. “~/” works too, once %@ has said where home is.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Termio 会按你输入的原样打开 %@ 上的文件夹，所以路径必须以“/”开头，“~”不会展开。"
+            "value": "请输入以“/”开头的路径。等 %@ 报出主目录之后，“~/”也可以用。"
           }
         }
       }

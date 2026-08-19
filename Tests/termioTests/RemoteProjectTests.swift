@@ -82,4 +82,45 @@ final class RemoteProjectTests: XCTestCase {
         let legacy = try JSONDecoder().decode(Project.self, from: Data(older.utf8))
         XCTAssertFalse(legacy.isOnAnotherDevice)
     }
+
+    // MARK: - The path field's two rules
+
+    /// What the field asks the machine for, and what it matches locally. The
+    /// directory keeps its trailing slash so re-listing the same directory is
+    /// recognised as the same request no matter how the user got there.
+    func testSplitNamesTheDirectoryToListAndTheNameToMatch() {
+        XCTAssertEqual(RemotePathEntry.split("/srv/ap").directory, "/srv/")
+        XCTAssertEqual(RemotePathEntry.split("/srv/ap").partial, "ap")
+
+        // Sitting on a slash lists that directory and matches everything in it.
+        XCTAssertEqual(RemotePathEntry.split("/srv/").directory, "/srv/")
+        XCTAssertEqual(RemotePathEntry.split("/srv/").partial, "")
+
+        // The root is a directory like any other.
+        XCTAssertEqual(RemotePathEntry.split("/").directory, "/")
+        XCTAssertEqual(RemotePathEntry.split("/").partial, "")
+
+        // No slash yet: nothing on that machine has been named, so nothing is
+        // listed — the empty directory is what stops a request going out.
+        XCTAssertEqual(RemotePathEntry.split("srv").directory, "")
+        XCTAssertEqual(RemotePathEntry.split("srv").partial, "srv")
+    }
+
+    /// `~` is expanded here because termiod expands nothing: it spawns the shell
+    /// with a raw `chdir`. A double slash would be harmless but reads as a typo
+    /// in the field, so the two shapes of `home` produce the same path.
+    func testTildeExpandsAgainstTheMachinesOwnHome() {
+        XCTAssertEqual(
+            RemotePathEntry.expandingTilde("~/code/api", home: "/home/me"), "/home/me/code/api")
+        XCTAssertEqual(
+            RemotePathEntry.expandingTilde("~/code/api", home: "/home/me/"), "/home/me/code/api")
+        XCTAssertEqual(RemotePathEntry.expandingTilde("~", home: "/home/me"), "/home/me")
+
+        // An absolute path is already an answer.
+        XCTAssertEqual(RemotePathEntry.expandingTilde("/srv/api", home: "/home/me"), "/srv/api")
+
+        // `~user` is *another* account's home. Termio cannot resolve it and must
+        // not quietly rewrite it into this one's.
+        XCTAssertEqual(RemotePathEntry.expandingTilde("~root/api", home: "/home/me"), "~root/api")
+    }
 }

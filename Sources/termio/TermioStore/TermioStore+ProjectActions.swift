@@ -590,17 +590,21 @@ extension TermioStore {
         let alert = NSAlert()
         alert.messageText = localized("Open a Project on \(alias)")
         alert.informativeText = localized(
-            "Termio can’t browse another machine’s files. Clone a repository onto \(alias), or enter a folder that’s already there.")
+            "Clone a repository onto \(alias), or open a folder that’s already there — the path completes as you type.")
         alert.addButton(withTitle: localized("Open"))
         alert.addButton(withTitle: localized("Cancel"))
 
-        let fields = RemoteProjectFields()
+        let fields = RemoteProjectFields(alias: alias)
         alert.accessoryView = fields.view
         alert.window.initialFirstResponder = fields.field
 
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let entry = fields.field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !entry.isEmpty else { return }
+        let response = alert.runModal()
+        // The listing channel is the panel's, so it goes when the panel does —
+        // including on Cancel, which would otherwise leak an SSH connection per
+        // dismissal.
+        fields.stop()
+        guard response == .alertFirstButtonReturn else { return }
+        let entry = fields.entry
         if fields.isCloning {
             cloneProject(from: entry, on: alias)
         } else {
@@ -628,13 +632,14 @@ extension TermioStore {
     /// if the path isn't there, rather than the row quietly pointing at nothing.
     private func openRemoteProject(at entry: String, on alias: String) {
         // termiod spawns the shell with a raw `chdir` and expands neither `~` nor a
-        // relative path (termiod/src/session.rs `Pty::spawn`), so anything else
-        // would start the shell somewhere the user did not name.
+        // relative path (termiod/src/session.rs `Pty::spawn`). The panel has already
+        // expanded `~` against the home the handshake reported, so anything still
+        // not absolute here is a path no machine could resolve.
         guard entry.hasPrefix("/") else {
             let alert = NSAlert()
             alert.messageText = localized("Enter an absolute path")
             alert.informativeText = localized(
-                "Termio opens the folder on \(alias) exactly as typed, so the path has to start with “/”. “~” isn’t expanded.")
+                "Enter a path that starts with “/”. “~/” works too, once \(alias) has said where home is.")
             alert.alertStyle = .informational
             alert.addButton(withTitle: localized("OK"))
             alert.runModal()
@@ -928,28 +933,87 @@ extension TermioStore {
     }
 }
 
-/// The two ways to name a directory on a machine Termio cannot browse, as the
-/// accessory view of `presentRemoteProjectPanel`.
+/// The two string rules the remote path field runs on, apart from the field so
+/// they can be tested without a window.
+enum RemotePathEntry {
+    /// `/srv/ap` → (`/srv/`, `ap`). The directory keeps its trailing slash: it is
+    /// what gets sent to `fs.list`, and a listing of `/srv` and of `/srv/` are the
+    /// same request. A path with no `/` at all names no directory, which is right —
+    /// it is not yet a place on that machine.
+    static func split(_ path: String) -> (directory: String, partial: String) {
+        guard let slash = path.lastIndex(of: "/") else { return ("", path) }
+        return (String(path[...slash]), String(path[path.index(after: slash)...]))
+    }
+
+    /// Expands a leading `~` against the machine's own home, which the handshake
+    /// reported. Only a leading one, and only when it stands alone or is followed
+    /// by `/`: `~user` names *another* account's home, which this cannot resolve
+    /// and must not silently rewrite into this one's.
+    static func expandingTilde(_ path: String, home: String) -> String {
+        if path == "~" { return home }
+        guard path.hasPrefix("~/") else { return path }
+        let tail = path.dropFirst(2)
+        return home.hasSuffix("/") ? home + tail : home + "/" + tail
+    }
+}
+
+/// The two ways to name a directory on another machine, as the accessory view of
+/// `presentRemoteProjectPanel`: clone a repository onto it, or open a folder
+/// already there.
 ///
-/// A class rather than a few locals because the segmented control needs a target
-/// that outlives the call that builds it — the alert runs modally and the switch
-/// has to keep answering while it is up.
+/// The folder field completes as it is typed. Each `/` asks the machine for one
+/// directory — never a tree — and the answer is cached under the directory it
+/// describes, so moving the cursor around inside a path costs nothing. That is
+/// the whole of the "remote file browser": `fs.list`, one directory deep, at the
+/// moment the user names a new one.
+///
+/// A class rather than a few locals because the controls need a target that
+/// outlives the call that builds it — the alert runs modally and both the switch
+/// and the field have to keep answering while it is up.
 @MainActor
-private final class RemoteProjectFields: NSObject {
+private final class RemoteProjectFields: NSObject, NSTextFieldDelegate {
     let view = NSStackView()
     let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
     private let mode = NSSegmentedControl(
         labels: [localized("Clone a Repository"), localized("Open a Folder")],
         trackingMode: .selectOne, target: nil, action: nil)
 
+    private let alias: String
+    private let lister: TermiodDirectoryLister
+    /// Where the machine says this account lives. `/` until the handshake
+    /// answers, so the field is usable before the connection is.
+    private var home = "/"
+    /// The last directory listed, and what was in it. One entry, not a cache of
+    /// many: a path field only ever completes inside the directory the cursor is
+    /// in, and holding older ones would just serve stale names after a rename.
+    private var listedDirectory: String?
+    private var listedNames: [String] = []
+    /// Guards the re-entrant `controlTextDidChange` that accepting a completion
+    /// fires, which would otherwise ask for completions of the text completion
+    /// just inserted.
+    private var isCompleting = false
+
     /// Whether the entry is a repository to clone rather than a folder to open.
     var isCloning: Bool { mode.selectedSegment == 0 }
 
-    override init() {
+    /// What the user named, with a leading `~` expanded against the machine's own
+    /// home. termiod spawns the shell with a raw `chdir` and expands nothing, so
+    /// this has to happen here — and it can, because the handshake already said
+    /// where home is.
+    var entry: String {
+        let typed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isCloning else { return typed }
+        return RemotePathEntry.expandingTilde(typed, home: home)
+    }
+
+    init(alias: String) {
+        self.alias = alias
+        lister = TermiodDirectoryLister(route: .ssh(alias))
         super.init()
         mode.selectedSegment = 0
         mode.target = self
         mode.action = #selector(modeChanged)
+        field.delegate = self
         view.orientation = .vertical
         view.alignment = .leading
         view.spacing = 8
@@ -962,6 +1026,30 @@ private final class RemoteProjectFields: NSObject {
         // grows with the user's text size would otherwise be clipped.
         view.frame = NSRect(origin: .zero, size: view.fittingSize)
         modeChanged()
+        connect()
+    }
+
+    /// Opens the listing channel in the background. The panel is already up by
+    /// then — a modal that blocked on an SSH handshake before showing anything
+    /// would read as a hang on exactly the machine that is slowest to reach.
+    private func connect() {
+        lister.connect { [weak self] result in
+            guard case .success(let home) = result else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.home = home
+                // Only seeds an untouched field: someone who started typing
+                // during the handshake keeps what they wrote.
+                if !self.isCloning, self.field.stringValue.isEmpty {
+                    self.field.stringValue = home.hasSuffix("/") ? home : home + "/"
+                    self.refreshCompletions()
+                }
+            }
+        }
+    }
+
+    func stop() {
+        lister.close()
     }
 
     /// The placeholder is the only thing that changes: one field either way, so
@@ -969,5 +1057,66 @@ private final class RemoteProjectFields: NSObject {
     /// localized — a URL and an absolute path read the same in every language.
     @objc private func modeChanged() {
         field.placeholderString = isCloning ? "https://github.com/owner/repo.git" : "/srv/api"
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        guard !isCompleting, !isCloning else { return }
+        refreshCompletions()
+    }
+
+    /// Splits what is typed at the last `/` into the directory to list and the
+    /// partial name to match inside it, then lists that directory if it is not
+    /// the one already held. Typing further into the same directory re-filters
+    /// what is in hand and never touches the network.
+    private func refreshCompletions() {
+        let (directory, _) = RemotePathEntry.split(entry)
+        guard directory != listedDirectory else {
+            showCompletions()
+            return
+        }
+        lister.list(directory) { [weak self] result in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // The user may have typed on while this was in flight; a reply
+                // for a directory they have already left is dropped rather than
+                // shown against the wrong path.
+                guard RemotePathEntry.split(self.entry).directory == directory else { return }
+                switch result {
+                case .success(let entries):
+                    self.listedDirectory = directory
+                    self.listedNames = entries.map(\.name)
+                    self.showCompletions()
+                case .failure:
+                    // An unreadable or missing directory completes to nothing.
+                    // It is not an error to report: the user is mid-path, and a
+                    // half-typed directory name is unreadable by definition.
+                    self.listedDirectory = directory
+                    self.listedNames = []
+                }
+            }
+        }
+    }
+
+    private func showCompletions() {
+        guard !listedNames.isEmpty, let editor = field.currentEditor() as? NSTextView else {
+            return
+        }
+        isCompleting = true
+        editor.complete(nil)
+        isCompleting = false
+    }
+
+    func control(
+        _ control: NSControl,
+        textView: NSTextView,
+        completions words: [String],
+        forPartialWordRange charRange: NSRange,
+        indexOfSelectedItem index: UnsafeMutablePointer<Int>
+    ) -> [String] {
+        let (_, partial) = RemotePathEntry.split(entry)
+        guard !partial.isEmpty else { return listedNames }
+        return listedNames.filter {
+            $0.range(of: partial, options: [.caseInsensitive, .anchored]) != nil
+        }
     }
 }

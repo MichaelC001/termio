@@ -196,6 +196,8 @@
 	<string>Clear</string>
 	<key>Clone a Repository</key>
 	<string>Clone a Repository</string>
+	<key>Clone a repository onto %@, or open a folder that’s already there — the path completes as you type.</key>
+	<string>Clone a repository onto %@, or open a folder that’s already there — the path completes as you type.</string>
 	<key>Clone to</key>
 	<string>Clone to</string>
 	<key>Close</key>
@@ -388,6 +390,8 @@
 	<string>Enter Code on GitHub</string>
 	<key>Enter a host from your ~/.ssh/config, or a user@host to connect to.</key>
 	<string>Enter a host from your ~/.ssh/config, or a user@host to connect to.</string>
+	<key>Enter a path that starts with “/”. “~/” works too, once %@ has said where home is.</key>
+	<string>Enter a path that starts with “/”. “~/” works too, once %@ has said where home is.</string>
 	<key>Enter an absolute path</key>
 	<string>Enter an absolute path</string>
 	<key>Every paired iPhone is signed out and must re-scan the new QR to reconnect.</key>
@@ -992,16 +996,12 @@
 	<string>Termio can show %@'s token usage and plan limits by reading its local session logs and its `credentials/kimi-code.json` sign-in. Nothing is read until you allow it.</string>
 	<key>Termio can show %@'s token usage and plan limits by reading its local session logs and its sign-in from your login Keychain. Nothing is read until you allow it; macOS will ask once about the Keychain.</key>
 	<string>Termio can show %@'s token usage and plan limits by reading its local session logs and its sign-in from your login Keychain. Nothing is read until you allow it; macOS will ask once about the Keychain.</string>
-	<key>Termio can’t browse another machine’s files. Clone a repository onto %@, or enter a folder that’s already there.</key>
-	<string>Termio can’t browse another machine’s files. Clone a repository onto %@, or enter a folder that’s already there.</string>
 	<key>Termio could not append to the repository’s .gitignore. Check its permissions and try again.</key>
 	<string>Termio could not append to the repository’s .gitignore. Check its permissions and try again.</string>
 	<key>Termio for iPhone is in beta</key>
 	<string>Termio for iPhone is in beta</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio is open source — star the repo, report bugs, and request features.</string>
-	<key>Termio opens the folder on %@ exactly as typed, so the path has to start with “/”. “~” isn’t expanded.</key>
-	<string>Termio opens the folder on %@ exactly as typed, so the path has to start with “/”. “~” isn’t expanded.</string>
 	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Browse Themes installs one of 50 curated schemes, and any Ghostty-format file you drop into the Themes folder shows up here too.</key>
 	<string>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Browse Themes installs one of 50 curated schemes, and any Ghostty-format file you drop into the Themes folder shows up here too.</string>
 	<key>Test</key>
@@ -1022,6 +1022,8 @@
 	<string>The folder was removed, but git couldn’t prune its stale worktree metadata.</string>
 	<key>The ignore rule couldn’t be added.</key>
 	<string>The ignore rule couldn’t be added.</string>
+	<key>The machine answered with no listing for that folder.</key>
+	<string>The machine answered with no listing for that folder.</string>
 	<key>The project and session list. Kept separate from the terminal font, and need not be monospaced.</key>
 	<string>The project and session list. Kept separate from the terminal font, and need not be monospaced.</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>
@@ -1064,6 +1066,8 @@
 	<string>This folder has no git “origin” remote to clone.</string>
 	<key>This host sent a name the file tree can’t show.</key>
 	<string>This host sent a name the file tree can’t show.</string>
+	<key>This machine’s termiod is too old to list folders.</key>
+	<string>This machine’s termiod is too old to list folders.</string>
 	<key>This month</key>
 	<string>This month</string>
 	<key>This project’s origin remote doesn’t point at github.com, so there is no issue tracker to show.</key>

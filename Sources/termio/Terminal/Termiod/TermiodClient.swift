@@ -641,9 +641,13 @@ enum Termiod {
         /// Capabilities the daemon accepted. Absent on an older daemon, so it
         /// defaults rather than failing the handshake — negotiate, never lockstep.
         let caps: [String]
+        /// The account's home directory over there, for the pickers that have to
+        /// name a path on that machine. Empty on a daemon too old to send it, and
+        /// on one that could not read `HOME`; callers fall back to `/`.
+        let home: String
 
         private enum CodingKeys: String, CodingKey {
-            case hostId, host, clientId, caps
+            case hostId, host, clientId, caps, home
         }
 
         init(from decoder: Decoder) throws {
@@ -652,7 +656,46 @@ enum Termiod {
             host = try container.decode(String.self, forKey: .host)
             clientId = try container.decode(String.self, forKey: .clientId)
             caps = try container.decodeIfPresent([String].self, forKey: .caps) ?? []
+            home = try container.decodeIfPresent(String.self, forKey: .home) ?? ""
         }
+    }
+
+    /// One row of an `fs_listed` page (§C.12). `kind` is left as the daemon's
+    /// own word rather than an enum: a kind this build has never heard of must
+    /// decode and sort as "not a directory", not fail the whole listing.
+    struct DirEntryPayload: Decodable {
+        let name: String
+        let kind: String
+
+        /// Whether this entry can be descended into. `unloaded_dir` counts —
+        /// it is a directory the host declines to *walk* (VCS internals), not
+        /// one it refuses to list when asked directly. Compared against the
+        /// daemon's snake_case wire value: `convertFromSnakeCase` rewrites
+        /// keys, never values.
+        var isDirectory: Bool { kind == "dir" || kind == "unloaded_dir" }
+    }
+
+    /// One requested path's listing. A path that vanished or escaped the root
+    /// carries `error` and fails alone, so a batch never sinks whole.
+    struct PathListingPayload: Decodable {
+        let path: String
+        let entries: [DirEntryPayload]
+        let error: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case path, entries, error
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            path = try container.decode(String.self, forKey: .path)
+            entries = try container.decodeIfPresent([DirEntryPayload].self, forKey: .entries) ?? []
+            error = try container.decodeIfPresent(String.self, forKey: .error)
+        }
+    }
+
+    struct FsListedPayload: Decodable {
+        let listings: [PathListingPayload]
     }
 
     struct AttachedPayload: Decodable {
@@ -891,6 +934,7 @@ enum Termiod {
         case uploadOpened(UploadOpenedPayload)
         case uploadAck(UploadAckPayload)
         case uploadCommitted(UploadCommittedPayload)
+        case fsListed(FsListedPayload)
         /// The addressed half of `writer_changed`: sent to one client to tell it
         /// who owns size now (§C.5). Same payload shape, so it feeds the same
         /// handler — a client that only listened to the broadcast would still be
@@ -927,6 +971,8 @@ enum Termiod {
             return .uploadAck(try decoder.decode(UploadAckPayload.self, from: payload))
         case "upload_committed":
             return .uploadCommitted(try decoder.decode(UploadCommittedPayload.self, from: payload))
+        case "fs_listed":
+            return .fsListed(try decoder.decode(FsListedPayload.self, from: payload))
         case "resize_claim":
             return .resizeClaim(try decoder.decode(WriterChangedPayload.self, from: payload))
         case "error":
@@ -974,6 +1020,10 @@ enum Termiod {
         /// offered, and empty on a daemon too old to answer. Check it before
         /// waiting on a frame the host may never send.
         let capabilities: Set<String>
+        /// The account's home directory on that machine, or `/` when the daemon
+        /// did not say — old enough not to send it, or unable to read `HOME`.
+        /// Never empty, so a picker always has somewhere to start.
+        let home: String
     }
 
     /// Sends `hello` and waits for `hello_ok`. Callers pass the capabilities
@@ -1012,7 +1062,8 @@ enum Termiod {
                 """)
             }
             return Handshake(
-                device: device, clientID: payload.clientId, capabilities: Set(payload.caps))
+                device: device, clientID: payload.clientId, capabilities: Set(payload.caps),
+                home: payload.home.hasPrefix("/") ? payload.home : "/")
         case .helloError(let message):
             throw TermiodClientError.handshakeRejected(message)
         case .error(let payload):
