@@ -282,6 +282,7 @@ enum AgentStatusHooks {
         case .json: return JSONHookFile.manifest(id: id, spec: spec)
         case .toml: return TOMLHookBlock.manifest(id: id, spec: spec)
         case .plugin: return PluginFile.manifest(id: id, spec: spec)
+        case .scripts: return ScriptHookDirectory.manifest(id: id, spec: spec)
         }
     }
 
@@ -385,6 +386,13 @@ enum HookDialect: Hashable {
     /// required top-level `version`, flat one-key entries, and the hook's stdout is
     /// read back as its JSON reply (so the report prints a clean empty object).
     case cursorFlat
+    /// Copilot CLI: Cursor's flat shape plus a `type` on each entry —
+    /// `{ "version": 1, "hooks": { "<Event>": [ { "type": "command", "command" } ] } }`.
+    /// Its config lives in a file termio owns under `~/.copilot/hooks/`, and it reads
+    /// hook stdout as free text (its own examples print banners), so the report stays
+    /// on the silent form. PascalCase event names select the payload whose fields are
+    /// snake_case — the same `session_id` / `tool_name` the other agents supply.
+    case copilotFlat
     /// Kimi's marker-delimited TOML array-of-tables block.
     case kimiTOML
     /// Shipped plugin templates. Each names a closed host API; manifests provide
@@ -392,6 +400,9 @@ enum HookDialect: Hashable {
     case openCodePlugin
     case piPlugin
     case ampPlugin
+    /// Cline: a directory of executables named after the lifecycle event
+    /// (`~/.cline/hooks/TaskStart`), with no host config to merge.
+    case clineScripts
 }
 
 /// Installs hooks for agents whose config is a JSON file with the Claude-Code
@@ -466,9 +477,11 @@ private struct JSONHookFile: AgentStatusInstaller {
         }
 
         var settings = root
-        // Cursor requires a top-level schema version; add it only when the user's
-        // file doesn't already carry one, so we never overwrite their choice.
-        if dialect == .cursorFlat, settings["version"] == nil { settings["version"] = 1 }
+        // Cursor and Copilot require a top-level schema version; add it only when the
+        // user's file doesn't already carry one, so we never overwrite their choice.
+        if dialect == .cursorFlat || dialect == .copilotFlat, settings["version"] == nil {
+            settings["version"] = 1
+        }
         var hooks = settings["hooks"] as? [String: Any] ?? [:]
         // Strip every prior termio entry first — across all events, not just the
         // ones we're about to re-add — so an event we no longer manage (e.g. a
@@ -486,6 +499,8 @@ private struct JSONHookFile: AgentStatusInstaller {
             let group: [String: Any]
             if dialect == .cursorFlat {
                 group = ["command": command]
+            } else if dialect == .copilotFlat {
+                group = ["type": "command", "command": command]
             } else {
                 var nested: [String: Any] = ["hooks": [["type": "command", "command": command]]]
                 if let matcher = event.matcher { nested["matcher"] = matcher }
@@ -614,6 +629,91 @@ private struct JSONHookFile: AgentStatusInstaller {
             AgentStatusHooks.log("could not write \(destinationURL.path): \(error)")
             return false
         }
+    }
+}
+
+/// Installs agents whose hook contract is a *directory of executables* named after
+/// the lifecycle event rather than a config file to merge: Cline runs
+/// `~/.cline/hooks/TaskStart` and friends, matching by filename. Each script is a
+/// two-line shell wrapper around the same public report contract every other dialect
+/// invokes, so nothing agent-specific runs. A file is written or removed only when it
+/// carries termio's marker, so a user's own hook of that name is never claimed, and an
+/// event termio no longer manages has its old script swept on the next install.
+private struct ScriptHookDirectory: AgentStatusInstaller {
+    let directory: URL
+    let events: [AgentHookEvent]
+
+    static func manifest(id: String, spec: AgentHookSpec) -> ScriptHookDirectory? {
+        guard spec.type == .scripts, let directory = spec.directory else {
+            AgentStatusHooks.log("\(id): incomplete script hook manifest")
+            return nil
+        }
+        guard spec.dialect == .clineScripts else {
+            AgentStatusHooks.log("\(id): hook dialect is not a script directory")
+            return nil
+        }
+        let expanded = (directory as NSString).expandingTildeInPath
+        return ScriptHookDirectory(
+            directory: URL(fileURLWithPath: expanded, isDirectory: true), events: spec.events)
+    }
+
+    func install() -> Bool {
+        do {
+            try FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: true)
+        } catch {
+            AgentStatusHooks.log("could not create \(directory.path): \(error)")
+            return false
+        }
+        sweepOwnedScripts(keeping: Set(events.map(\.name)))
+        var installed = true
+        for event in events {
+            let url = directory.appendingPathComponent(event.name)
+            let contents = script(for: event)
+            if let existing = try? String(contentsOf: url, encoding: .utf8),
+               existing != contents, !isOwned(existing) {
+                AgentStatusHooks.log("refusing to overwrite non-termio hook \(url.path)")
+                installed = false
+                continue
+            }
+            do {
+                try Data(contents.utf8).write(to: url, options: .atomic)
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o755], ofItemAtPath: url.path)
+            } catch {
+                AgentStatusHooks.log("could not write \(url.path): \(error)")
+                installed = false
+            }
+        }
+        return installed
+    }
+
+    func uninstall() {
+        sweepOwnedScripts(keeping: [])
+    }
+
+    /// Removes every script in the directory that is ours and not in `keeping`.
+    private func sweepOwnedScripts(keeping: Set<String>) {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil) else { return }
+        for url in entries where !keeping.contains(url.lastPathComponent) {
+            guard let existing = try? String(contentsOf: url, encoding: .utf8),
+                  isOwned(existing) else { continue }
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                AgentStatusHooks.log("could not remove \(url.path): \(error)")
+            }
+        }
+    }
+
+    private func script(for event: AgentHookEvent) -> String {
+        let command = AgentStatusHooks.reportCommand(state: event.state)
+        return "#!/bin/sh\n\(command)\n"
+    }
+
+    private func isOwned(_ source: String) -> Bool {
+        source.contains(AgentStatusHooks.marker) || source.contains(AgentStatusHooks.cliMarker)
     }
 }
 
