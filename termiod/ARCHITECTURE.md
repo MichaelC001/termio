@@ -103,13 +103,34 @@ open for multiplexed requests, roster/status subscriptions, and asynchronous
 wait results. Session records carry optional workstream metadata and live
 `status`, `title`, `attached_clients`, and `writer_client_id` fields.
 
-## Remote
+## Devices
+
+There is no "remote". There are **devices**, each running one `termiod`, and every
+UI is a client that attaches to the device owning the session. Local is not a
+special case — it is the device whose route is a Unix socket.
 
 ```
-Mac client ── ssh ──► Linux termiod ── PTY ──► agent
+  web     ─WSS──┐
+  iPhone  ─WSS──┼─► termiod (Mac)    ─► PTY ─► shell / agent
+  Mac app ─unix─┘
+
+  web     ─WSS──┐
+  iPhone  ─WSS──┼─► termiod (Linux)  ─► PTY ─► shell / agent
+  Mac app ─ssh──┘
 ```
 
-Same protocol as local. Daemon on the VPS auto-starts (or runs under systemd `--user`). SSH disconnect detaches the client; it does not kill the session.
+**A client never reaches a session through another client.** The rule is what
+keeps one attach path instead of four, and it is why the phone is not a satellite
+of the Mac: iOS and the browser are clients of the same kind as `termio.app`.
+
+Same protocol on every leg — only the pipe changes. A daemon on a VPS auto-starts
+or runs under systemd `--user`; SSH disconnect detaches the client and never kills
+the session.
+
+**Shipped: `unix` and `ssh`. Planned: `WSS`** — the binding is designed in
+[the web-client RFC](../docs/design/20260818-termiod-web-client-ghostty-wasm.md)
+and not yet built. Until it lands the phone still reaches sessions through the
+Mac's companion wire, which is the shape this diagram replaces.
 
 ## Map to source
 

@@ -10,6 +10,7 @@ related:
   - 20260708-session-daemon-architecture.md
   - 20260708-remote-projects.md
   - 20260819-device-workspace-project.md
+  - 20260818-termiod-web-client-ghostty-wasm.md
 ---
 
 # Design: Device Architecture
@@ -83,6 +84,40 @@ not perceptible. The real cost is a new failure mode (§6), not latency.
 Device  (host_id — the machine's identity)
   └──< Route   unix socket · ssh <alias> · later QUIC / relay
 ```
+
+The topology that falls out of §0, stated once so no later doc has to redraw it:
+
+```
+  web     ─WSS──┐
+  iPhone  ─WSS──┼─► termiod (Mac)    ─► PTY ─► shell / agent
+  Mac app ─unix─┘
+
+  web     ─WSS──┐
+  iPhone  ─WSS──┼─► termiod (Linux)  ─► PTY ─► shell / agent
+  Mac app ─ssh──┘
+```
+
+Read the columns, not the rows: **the client set is the same on every device, and
+only the pipe changes.** That is §0.6 drawn — a viewer connects to the device it
+is showing and never through another viewer, so the browser and the phone are
+clients of the same kind as `termio.app` rather than satellites of it.
+
+Two consequences worth stating before they are rediscovered:
+
+- **The web client is what retires the companion wire.** `CompanionServer` +
+  `WireProtocol` (2,092 lines) exist only because the Mac holds a `PTYProcess` the
+  phone can tap. Once a browser attaches to `termiod` directly, the phone takes
+  the same path and that wire has no remaining caller — §H #9's "no second
+  protocol for the phone", finally collectable.
+- **Sharing is a credential question, not a transport one.** A colleague's browser
+  is another Client in `mode:"observe"`; single-writer-newest-claim, the
+  `writer_changed` fan-out, and `attached_clients` already carry the semantics.
+  What sharing adds is a guest credential, reachability for someone on neither the
+  tailnet nor `~/.ssh/config`, and consent — not a new leg on this diagram.
+
+**Shipped: `unix`, `ssh`. Planned: `WSS`**, designed in
+[the web-client RFC](20260818-termiod-web-client-ghostty-wasm.md). The diagram is
+the target; today the phone still reaches sessions through the Mac.
 
 | Concept | What it is | Source of truth |
 | --- | --- | --- |
