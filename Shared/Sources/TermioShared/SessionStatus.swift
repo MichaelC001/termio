@@ -104,33 +104,53 @@ public struct WorkingIndicator: View {
         }
     }
 
+    /// Drawn, not built. Each tick used to hand `TimelineView` a fresh subtree —
+    /// a `ZStack` over nine shaped `Circle`s, each carrying a frame, an offset, a
+    /// scale and an opacity — and SwiftUI had to diff and lay all ten out again.
+    /// A fixed outer frame stops the *size* escaping, but not the layout pass
+    /// itself: the hosting view still had work scheduled, so one working row
+    /// drove an `NSHostingView.layout()` of the whole sidebar column at 30 Hz
+    /// (measured at 33-100 ms a turn — see
+    /// docs/design/20260819-workspace-switch-latency.md).
+    ///
+    /// A `Canvas` is one leaf. Ticking it re-runs this closure and nothing else:
+    /// no subtree to diff, no children to place, no invalidation to propagate.
+    /// The geometry and both ramps below are unchanged, so the mark looks
+    /// exactly as it did.
     private func grid(phase: Double) -> some View {
-        ZStack {
+        Canvas(opaque: false, rendersAsynchronously: false) { context, size in
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            let shading = GraphicsContext.Shading.color(tint)
             // A steady center anchors the spinning ring, matching the tail so
             // the grid reads as one solid mark with a swell running around it.
-            dot(opacity: 0.5, scale: 1)
-            ForEach(Array(Self.ring.enumerated()), id: \.offset) { index, cell in
+            draw(in: &context, at: center, opacity: 0.5, scale: 1, shading: shading)
+            for (index, cell) in Self.ring.enumerated() {
                 let distance = ringDistance(at: index, phase: phase)
-                dot(opacity: opacity(distance: distance), scale: scale(distance: distance))
-                    .offset(
-                        x: CGFloat(cell.0 - 1) * spacing,
-                        y: CGFloat(cell.1 - 1) * spacing
-                    )
+                let point = CGPoint(
+                    x: center.x + CGFloat(cell.0 - 1) * spacing,
+                    y: center.y + CGFloat(cell.1 - 1) * spacing
+                )
+                draw(in: &context, at: point,
+                     opacity: opacity(distance: distance),
+                     scale: scale(distance: distance),
+                     shading: shading)
             }
         }
         .frame(width: 13, height: 13)
     }
 
-    private func dot(opacity: Double, scale: Double) -> some View {
-        // scaleEffect, not a phase-dependent frame: a .frame change is a
-        // layout invalidation, which cascaded through the hosting view into
-        // a full AppKit constraint pass on every animation tick. scaleEffect
-        // stays in the render pass and keeps the swell layout-free.
-        Circle()
-            .fill(tint)
-            .frame(width: dotSize, height: dotSize)
-            .scaleEffect(scale)
-            .opacity(opacity)
+    /// One dot, centred on `point`. The swell is a radius, not a transform:
+    /// inside a `Canvas` there is no layout for a size change to invalidate, so
+    /// the reason the old code reached for `scaleEffect` is gone.
+    private func draw(
+        in context: inout GraphicsContext, at point: CGPoint,
+        opacity: Double, scale: Double, shading: GraphicsContext.Shading
+    ) {
+        let radius = dotSize / 2 * scale
+        let box = CGRect(x: point.x - radius, y: point.y - radius,
+                         width: radius * 2, height: radius * 2)
+        context.opacity = opacity
+        context.fill(Path(ellipseIn: box), with: shading)
     }
 
     /// A perimeter cell's distance from the comet's head, measured the shorter
