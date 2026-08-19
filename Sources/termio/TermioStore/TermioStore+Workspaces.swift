@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 
 /// Where a session sits in the tree: inside a project's roster, or inside one of
 /// a workspace's own loose collections.
@@ -226,7 +227,18 @@ extension TermioStore {
         // as one number is how a fast switch reads as a slow one.
         let span = Trace.workspace.begin("workspace switch")
         defer { Trace.workspace.end(span) }
-        currentWorkspaceID = id
+        // Explicitly un-animated. The column's rows are replaced wholesale by a
+        // switch — nothing moves from one place to another — so there is no
+        // motion for an animation to describe, and an ambient one (the footer
+        // capsule's, a section's collapse) would still catch this change and
+        // drag the whole hosted tree through an animated relayout. A profile of
+        // the switch is mostly `NSHostingView.layout()` inside
+        // `NSAnimationContext.runAnimationGroup`; this is what takes it out.
+        var instant = Transaction()
+        instant.disablesAnimations = true
+        withTransaction(instant) {
+            currentWorkspaceID = id
+        }
         settings.currentWorkspaceID = id
         workspaceArrival &+= 1
         let arrival = workspaceArrival
