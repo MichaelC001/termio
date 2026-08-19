@@ -34,10 +34,10 @@ struct WorkspaceSwitcherToolbarView: View {
                     // Sized against the toolbar's own glyphs (the navigator toggle, the
                     // sort pull-down) rather than shrunk to fit beside them, and set in
                     // the sidebar's interface font — this control belongs to that column.
-                    // A machine's fallback is a machine, and says so with the same
-                    // server mark its rows carry; a workspace the user made is a
-                    // place they put things, so it takes the folder mark.
-                    HugeIconView(icon: current.isDeviceFallback ? .serverStack : .folderOpen,
+                    // A workspace on another machine says so with the same server
+                    // mark its rows carry; one on this Mac is a place you put
+                    // things, so it takes the folder mark.
+                    HugeIconView(icon: current.device.isThisMac ? .folderOpen : .serverStack,
                                  size: 15, color: color)
                     Text(current.name)
                         .font(settings.interfaceFont)

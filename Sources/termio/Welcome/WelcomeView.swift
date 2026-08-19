@@ -111,7 +111,7 @@ struct WelcomeView: View {
         // has no local folder to reopen, and the path would land as a local
         // project pointing at a directory that isn't here.
         for project in store.orderedProjects
-        where !project.isOnAnotherDevice && seen.insert(project.path).inserted {
+        where !store.isOnAnotherDevice(project) && seen.insert(project.path).inserted {
             out.append(RecentProject(name: project.name, path: project.path))
         }
         for recent in settings.recentProjects where seen.insert(recent.path).inserted {

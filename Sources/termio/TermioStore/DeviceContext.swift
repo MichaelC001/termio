@@ -45,8 +45,9 @@ struct KnownDevice: Identifiable, Hashable {
 /// status, search results, and issues with nothing on screen saying so.
 ///
 /// A checkout is a repo on a machine — the pair the panes need. It is not the
-/// sidebar's `Workspace`, which is the scope the user chooses and can span
-/// machines; one workspace holds checkouts on several devices.
+/// sidebar's `Workspace`, which is the scope the user chooses: a workspace
+/// belongs to one machine and holds many checkouts on it, and the checkout is
+/// where the root comes from.
 ///
 /// Identity is the device, not the alias it was reached by. The same machine
 /// answering to a LAN name, a WAN name, and a tailnet name is one checkout, not

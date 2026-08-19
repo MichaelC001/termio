@@ -3,83 +3,139 @@ import XCTest
 
 /// A project whose checkout is on another machine.
 ///
-/// The identity question is the one worth pinning: a box commonly answers to a
-/// LAN name, a WAN name, and a tailnet name, so matching a checkout by the alias
-/// it was reached through would open a second row for the same directory the day
-/// the user changes networks.
+/// The machine is the workspace's now — a checkout inherits it from the scope it
+/// is filed under — so these ask the store rather than the project. The identity
+/// question is the one worth pinning: a box commonly answers to a LAN name, a WAN
+/// name, and a tailnet name, so matching a checkout by the alias it was reached
+/// through would open a second row for the same directory the day the user
+/// changes networks.
 @MainActor
 final class RemoteProjectTests: XCTestCase {
-    private func remote(_ path: String, alias: String, device: String? = nil) -> Project {
+    private func makeStore(workspace: Workspace, projects: [Project]) -> TermioStore {
+        let defaults = UserDefaults(suiteName: "remote-project-\(UUID().uuidString)")
+            ?? UserDefaults.standard
+        return TermioStore(
+            workspaces: [workspace], projects: projects,
+            settings: AppSettings(defaults: defaults))
+    }
+
+    private func checkout(_ path: String, in workspace: Workspace) -> Project {
         var project = Project(
-            workspaceID: UUID(), name: "api", path: path, branch: "—", sessions: [])
-        project.deviceAlias = alias
-        project.deviceID = device
-        project.remoteCheckouts[device ?? alias] = path
+            workspaceID: workspace.id, name: "api", path: path, branch: "—", sessions: [])
+        project.remoteCheckouts[workspace.deviceID ?? workspace.deviceAlias ?? ""] = path
         return project
     }
 
     func testSameDirectoryOnTheSameDeviceIsTheSameCheckout() {
-        let project = remote("/srv/api", alias: "vps-lan", device: "device-a")
+        let vps = Workspace(name: "vps-lan", deviceAlias: "vps-lan", deviceID: "device-a")
+        let project = checkout("/srv/api", in: vps)
+        let store = makeStore(workspace: vps, projects: [project])
 
-        XCTAssertTrue(project.isCheckout(at: "/srv/api", on: "vps-lan", device: "device-a"))
-        XCTAssertTrue(project.isCheckout(at: "/srv/api", on: "vps-tailnet", device: "device-a"),
-                      "one machine reached by a second alias is still one checkout")
-        XCTAssertFalse(project.isCheckout(at: "/srv/web", on: "vps-lan", device: "device-a"),
-                       "a different directory on the same machine is a different checkout")
-        XCTAssertFalse(project.isCheckout(at: "/srv/api", on: "other", device: "device-b"))
+        XCTAssertEqual(store.checkout(at: "/srv/api", on: "vps-lan", device: "device-a")?.id,
+                       project.id)
+        XCTAssertEqual(store.checkout(at: "/srv/api", on: "vps-tailnet", device: "device-a")?.id,
+                       project.id, "one machine reached by a second alias is still one checkout")
+        XCTAssertNil(store.checkout(at: "/srv/web", on: "vps-lan", device: "device-a"),
+                     "a different directory on the same machine is a different checkout")
+        XCTAssertNil(store.checkout(at: "/srv/api", on: "other", device: "device-b"))
     }
 
     /// Until a handshake resolves a `host_id` the alias is all there is — the same
     /// bootstrap/stable split `KnownDevice` carries.
     func testAliasMatchesUntilADeviceResolvesIt() {
-        let project = remote("/srv/api", alias: "vps-lan")
+        let vps = Workspace(name: "vps-lan", deviceAlias: "vps-lan")
+        let project = checkout("/srv/api", in: vps)
+        let store = makeStore(workspace: vps, projects: [project])
 
-        XCTAssertTrue(project.isCheckout(at: "/srv/api", on: "vps-lan", device: nil))
-        XCTAssertTrue(project.isCheckout(at: "/srv/api", on: "vps-lan", device: "device-a"),
-                      "a device this row hasn’t learned yet can’t disprove the alias")
-        XCTAssertFalse(project.isCheckout(at: "/srv/api", on: "vps-wan", device: nil))
+        XCTAssertEqual(store.checkout(at: "/srv/api", on: "vps-lan", device: nil)?.id, project.id)
+        XCTAssertEqual(store.checkout(at: "/srv/api", on: "vps-lan", device: "device-a")?.id,
+                       project.id,
+                       "a device this workspace hasn’t learned yet can’t disprove the alias")
+        XCTAssertNil(store.checkout(at: "/srv/api", on: "vps-wan", device: nil))
     }
 
     /// A folder on this Mac is never a remote checkout, however the paths line up —
     /// the local project row and a same-named directory on a VPS are two places.
     func testALocalProjectIsNeverARemoteCheckout() {
-        let local = Project(
-            workspaceID: UUID(), name: "api", path: "/srv/api", branch: "main", sessions: [])
+        let home = Workspace(name: "Sessions")
+        let project = Project(
+            workspaceID: home.id, name: "api", path: "/srv/api", branch: "main", sessions: [])
+        let store = makeStore(workspace: home, projects: [project])
 
-        XCTAssertFalse(local.isOnAnotherDevice)
-        XCTAssertNil(local.device)
-        XCTAssertFalse(local.isCheckout(at: "/srv/api", on: "vps-lan", device: "device-a"))
+        XCTAssertEqual(store.device(of: project), .thisMac)
+        XCTAssertFalse(store.isOnAnotherDevice(project))
+        XCTAssertNil(store.checkout(at: "/srv/api", on: "vps-lan", device: "device-a"))
+    }
+
+    /// The local-disk gate is the store's answer, not the project's: a checkout
+    /// filed in a workspace on a box is over there, and nothing may read its path
+    /// off this Mac.
+    func testACheckoutInAMachinesWorkspaceIsOnThatMachine() {
+        let vps = Workspace(name: "ukvps", deviceAlias: "ukvps")
+        let project = checkout("/srv/api", in: vps)
+        let store = makeStore(workspace: vps, projects: [project])
+
+        XCTAssertEqual(store.device(of: project), .ssh(alias: "ukvps"))
+        XCTAssertTrue(store.isOnAnotherDevice(project))
+    }
+
+    /// A project whose workspace is gone: the machine is unknown, and unknown must
+    /// not read as this Mac — the gate would open on a directory that may be on a
+    /// box. Unreachable through the tree, since `reconcile` files every orphan on
+    /// load, which is why the gate is what has to be safe.
+    func testAProjectWithNoWorkspaceIsNotTreatedAsLocal() {
+        let home = Workspace(name: "Sessions")
+        let orphan = Project(
+            workspaceID: UUID(), name: "api", path: "/srv/api", branch: "—", sessions: [])
+        let store = makeStore(workspace: home, projects: [])
+
+        XCTAssertNil(store.device(of: orphan))
+        XCTAssertTrue(store.isOnAnotherDevice(orphan))
     }
 
     /// The checkout a remote terminal opens in resolves through the device key when
     /// one is known and the alias key until then, so the row works before and after
     /// the machine identifies itself.
     func testTheSeededCheckoutResolvesBothWays() {
-        let known = remote("/srv/api", alias: "vps-lan", device: "device-a")
+        var known = Project(
+            workspaceID: UUID(), name: "api", path: "/srv/api", branch: "—", sessions: [])
+        known.remoteCheckouts["device-a"] = "/srv/api"
         XCTAssertEqual(known.remoteCheckout(device: "device-a", alias: "vps-lan"), "/srv/api")
 
-        let unresolved = remote("/srv/api", alias: "vps-lan")
+        var unresolved = known
+        unresolved.remoteCheckouts = ["vps-lan": "/srv/api"]
         XCTAssertEqual(unresolved.remoteCheckout(device: nil, alias: "vps-lan"), "/srv/api")
         XCTAssertEqual(unresolved.remoteCheckout(device: "device-a", alias: "vps-lan"), "/srv/api",
                        "a device key that isn’t recorded yet falls back to the alias")
     }
 
-    /// The device fields survive a round trip, and a project written before them
-    /// still decodes as a folder on this Mac.
-    func testDeviceSurvivesEncodingAndOlderStateFilesStayLocal() throws {
-        let project = remote("/srv/api", alias: "vps-lan", device: "device-a")
-        let decoded = try JSONDecoder().decode(
-            Project.self, from: try JSONEncoder().encode(project))
+    /// A state file written before the hierarchy recorded the machine on each
+    /// checkout. Those keys are still read, because they are the only thing that
+    /// says a workspace's checkouts span two machines — and they are not written
+    /// back, so the load after the upgrade reads a tree that inherits instead.
+    func testOlderStateFilesStillCarryTheirCheckoutsMachine() throws {
+        let older = """
+        {"id":"\(UUID().uuidString)","name":"api","path":"/srv/api","branch":"—",
+         "sessions":[],"deviceAlias":"vps-lan","deviceID":"device-a"}
+        """
+        let legacy = try JSONDecoder().decode(Project.self, from: Data(older.utf8))
+        XCTAssertEqual(legacy.legacyDevice?.alias, "vps-lan")
+        XCTAssertEqual(legacy.legacyDevice?.deviceID, "device-a")
 
-        XCTAssertEqual(decoded.deviceAlias, "vps-lan")
-        XCTAssertEqual(decoded.deviceID, "device-a")
-        XCTAssertTrue(decoded.isOnAnotherDevice)
+        let rewritten = try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(legacy)) as? [String: Any]
+        XCTAssertNil(rewritten?["deviceAlias"], "the machine is the workspace's to record")
+        XCTAssertNil(rewritten?["deviceID"])
+    }
 
+    /// A project written before either key existed decodes to one that inherits,
+    /// which is what every project this build writes does.
+    func testAProjectThatNamesNoMachineInheritsOne() throws {
         let older = """
         {"id":"\(UUID().uuidString)","name":"api","path":"/Users/me/api",
          "branch":"main","sessions":[]}
         """
         let legacy = try JSONDecoder().decode(Project.self, from: Data(older.utf8))
-        XCTAssertFalse(legacy.isOnAnotherDevice)
+        XCTAssertNil(legacy.legacyDevice)
     }
 }

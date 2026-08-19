@@ -94,7 +94,7 @@ final class TermiodDeviceAdoptionTests: XCTestCase {
         XCTAssertEqual(store.workspaces[0].deviceID, "h_aaaa")
         XCTAssertEqual(store.workspaces[0].deviceAlias, "vps",
                        "the alias stays the bootstrap identity")
-        XCTAssertTrue(store.workspaces[0].isDeviceFallback)
+        XCTAssertEqual(store.workspaces[0].device, .ssh(alias: "vps"))
     }
 
     /// Two aliases for one machine are recorded as one device but are **not**

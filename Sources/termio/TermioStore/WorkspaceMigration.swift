@@ -106,7 +106,8 @@ enum WorkspaceMigration {
                     name: container.sshHost ?? container.name,
                     terminals: container.sessions,
                     deviceAlias: container.sshHost ?? container.name,
-                    deviceID: container.deviceID
+                    deviceID: container.deviceID,
+                    isAutoCreated: true
                 ))
             case .folder:
                 projects.append(Project(
@@ -127,25 +128,216 @@ enum WorkspaceMigration {
 
     /// Files any project whose owner no longer exists — a workspace deleted while
     /// the app was closed, or a project written before workspaces — under the
-    /// first workspace, and guarantees there is a first workspace to file it
-    /// under. Runs on every load, not just the upgrade: losing the sidebar to a
-    /// dangling id is the failure this rules out.
+    /// first workspace, guarantees there is a first workspace to file it under,
+    /// and leaves every workspace naming exactly one machine. Runs on every load,
+    /// not just the upgrade: losing the sidebar to a dangling id is the failure
+    /// this rules out, and a workspace that spans two machines is the one this
+    /// stage adds.
+    ///
+    /// This is where the device invariant is established, rather than in the
+    /// decoder, because a throwing decode is swallowed (`StateFile.load`) and
+    /// comes back as a first-run tree — a stricter `Workspace` decoder would
+    /// silently replace the user's whole sidebar. Nothing here changes the on-disk
+    /// shape: `deviceAlias` is still the stored field and `nil` is still this Mac.
     static func reconcile(
         workspaces: [Workspace], projects: [Project]
     ) -> (workspaces: [Workspace], projects: [Project]) {
         var workspaces = workspaces
         if workspaces.isEmpty { workspaces = [Workspace(name: Workspace.defaultName)] }
-        // A user workspace, not a machine's fallback: an orphan is the user's
-        // work, and burying it under a box they may never open again hides it.
-        let fallbackID = (workspaces.first { !$0.isDeviceFallback } ?? workspaces[0]).id
+        // Recover "Termio made this" for files written before the flag existed,
+        // and do it *before* the device pass below, which is the only moment the
+        // answer is still knowable: until then a named machine can only have come
+        // from `deviceWorkspace(for:)` or the pre-workspace migration, both of
+        // which create a workspace nobody asked for. Afterwards every workspace
+        // names a machine and the two are indistinguishable.
+        //
+        // Idempotent: a workspace already carrying the flag keeps it, and one the
+        // user renamed away from its alias is left alone — renaming it is how they
+        // claimed it.
+        for index in workspaces.indices where workspaces[index].isAutoCreated == nil {
+            // Only a workspace that names a machine *and* holds nothing can be one
+            // `deviceWorkspace(for:)` minted: it files loose sessions and is created
+            // empty, whereas a workspace the user filled is theirs however it was
+            // named. Recording the answer — including `false` — is what stops this
+            // running again next launch against a device this pass is about to
+            // stamp on.
+            let workspace = workspaces[index]
+            let unclaimed = workspace.deviceAlias.map { $0 == workspace.name } ?? false
+            workspaces[index].isAutoCreated =
+                unclaimed && projects.allSatisfy { $0.workspaceID != workspace.id }
+        }
+        // A workspace on this Mac: an orphan is the user's work, and burying it
+        // under a box they may never open again hides it. An orphan that turns out
+        // to be a checkout over there is moved on by the device pass below.
+        let fallbackID = (workspaces.first { $0.device.isThisMac } ?? workspaces[0]).id
         let known = Set(workspaces.map(\.id))
-        let projects = projects.map { project -> Project in
+        let filed = projects.map { project -> Project in
             guard !known.contains(project.workspaceID) else { return project }
             var project = project
             project.workspaceID = fallbackID
             return project
         }
-        return (workspaces, projects)
+        return stampingDevices(workspaces: workspaces, projects: filed)
+    }
+
+    /// Leaves every workspace belonging to exactly one machine — the rule the whole
+    /// Device → Workspace → Project hierarchy rests on.
+    ///
+    /// Three cases, and only the last one is lossy:
+    ///
+    /// - Every project on one machine: the workspace adopts it. A workspace holding
+    ///   nothing but checkouts on a box *is* that box's, whoever made it.
+    /// - No projects and no device: this Mac, which is what `nil` already meant.
+    /// - Projects on two machines: the workspace **splits**, one per machine. This
+    ///   is reachable in shipped state files — `addRemoteProject` used to file a
+    ///   checkout on a box into whatever workspace was current, and `addProject` a
+    ///   local folder into it just the same, including when that workspace was a
+    ///   box's. Both now file by machine, so the split is an upgrade path.
+    ///
+    /// Idempotent: run over its own output, every workspace already names one
+    /// machine and nothing moves.
+    private static func stampingDevices(
+        workspaces: [Workspace], projects: [Project]
+    ) -> (workspaces: [Workspace], projects: [Project]) {
+        var projects = projects
+        var result: [Workspace] = []
+        // What a checkout that names no machine means, which is not the same thing
+        // in the two shapes a state file comes in. Before the hierarchy every
+        // checkout recorded its own machine, so silence there meant this Mac; now a
+        // checkout inherits its workspace's machine, and silence means exactly
+        // that — a remote checkout in a box's workspace records nothing at all. One
+        // file is written whole by one build, so a single project still carrying a
+        // record dates the tree it came from.
+        //
+        // Reading it the other way is what would break: taking silence for this Mac
+        // in a file this build wrote would tear every remote checkout off its
+        // workspace on the next launch, and taking it for inheritance in an older
+        // file would let a workspace holding local *and* remote checkouts adopt the
+        // box and carry the local ones with it.
+        let recordsCheckoutDevices = projects.contains { $0.legacyDevice != nil }
+        func claimedDevice(_ project: Project) -> WorkspaceDevice? {
+            if let alias = project.legacyDevice?.alias { return .ssh(alias: alias) }
+            return recordsCheckoutDevices ? .thisMac : nil
+        }
+        // Where a project split off a workspace goes when the tree already has a
+        // home for its machine: one workspace per alias is what `deviceWorkspace(for:)`
+        // assumes, so a split must not mint a second one. Aliases are safe to read
+        // ahead — this pass only ever adds one to a workspace that had none, so a
+        // workspace that already names a machine still names it at the end.
+        var deviceHomes: [String: Workspace.ID] = [:]
+        for workspace in workspaces {
+            guard let alias = workspace.deviceAlias, deviceHomes[alias] == nil else { continue }
+            deviceHomes[alias] = workspace.id
+        }
+
+        for workspace in workspaces {
+            let owned = projects.filter { $0.workspaceID == workspace.id }
+            let claims = owned.compactMap(claimedDevice)
+            // A device the workspace already names counts as a claim in its own
+            // right: its loose sessions were filed there because they run there,
+            // and nothing else records that.
+            var devices = Set(claims)
+            // A loose shell records its own machine and nothing else does, so it
+            // is a claim exactly like a checkout's. Leaving it out let a workspace
+            // holding local shells and one remote checkout adopt the remote box —
+            // and on a one-workspace tree that left nowhere on this Mac for local
+            // work to go, which is the violation this pass exists to prevent.
+            for session in workspace.looseSessions {
+                devices.insert(WorkspaceDevice(alias: session.termiodRemoteHost ?? session.sshHost))
+            }
+            if !workspace.device.isThisMac { devices.insert(workspace.device) }
+
+            guard devices.count > 1 else {
+                var workspace = workspace
+                // Adoption only ever writes an alias onto a workspace that had
+                // none. This Mac stays `nil`, so the file keeps its shape.
+                if let only = devices.first, workspace.deviceAlias == nil {
+                    workspace.deviceAlias = only.alias
+                    workspace.deviceID = owned.first {
+                        claimedDevice($0) == only
+                    }?.legacyDevice?.deviceID
+                }
+                if let alias = workspace.deviceAlias, deviceHomes[alias] == nil {
+                    deviceHomes[alias] = workspace.id
+                }
+                result.append(workspace)
+                continue
+            }
+
+            // The half that keeps the workspace's id, and with it the name and the
+            // loose sessions. Wire ids embed this uuid — `looseWireID` builds
+            // `<uuid>-terminals` for the phone to start a session by, and
+            // `ControlScope.id` keys the CLI's watch streams — so it has to survive
+            // on one half rather than being reissued on both.
+            //
+            // A workspace that already named a machine keeps that half: its loose
+            // sessions run over there, and `deviceWorkspace(for:)` finds it by
+            // alias. Otherwise this Mac's half keeps it, and failing that the half
+            // holding the most projects (ties by alias, so the result is stable).
+            let keeper = keptDevice(of: workspace, among: devices, claims: claims)
+            var kept = workspace
+            kept.deviceAlias = keeper.alias
+            if kept.deviceID == nil {
+                kept.deviceID = owned.first {
+                    claimedDevice($0) == keeper
+                }?.legacyDevice?.deviceID
+            }
+            if let alias = kept.deviceAlias, deviceHomes[alias] == nil {
+                deviceHomes[alias] = kept.id
+            }
+            result.append(kept)
+
+            for device in devices.subtracting([keeper]).sorted(by: { ($0.alias ?? "") < ($1.alias ?? "") }) {
+                let home: Workspace.ID
+                if let alias = device.alias, let existing = deviceHomes[alias] {
+                    home = existing
+                } else if device.isThisMac, let existing = result.first(where: \.device.isThisMac) {
+                    // Only a workspace this pass has already settled: one still
+                    // ahead of us may yet adopt a machine, and filing a local
+                    // checkout into it would re-break what we are here to fix.
+                    home = existing.id
+                } else {
+                    // Named after the machine, which is the only thing this half is
+                    // known to have in common.
+                    // Termio's own: nobody asked for this half, it exists because
+                    // the workspace it came from held checkouts on two machines.
+                    // Set here rather than recovered later, so a second `reconcile`
+                    // over this output changes nothing.
+                    var half = Workspace(
+                        name: device.displayName, deviceAlias: device.alias,
+                        isAutoCreated: true)
+                    half.deviceID = owned.first {
+                        claimedDevice($0) == device
+                    }?.legacyDevice?.deviceID
+                    if let alias = device.alias { deviceHomes[alias] = half.id }
+                    result.append(half)
+                    home = half.id
+                }
+                for index in projects.indices
+                where projects[index].workspaceID == workspace.id
+                    && claimedDevice(projects[index]) == device {
+                    projects[index].workspaceID = home
+                }
+            }
+        }
+        return (result, projects)
+    }
+
+    /// Which machine's half keeps the original workspace — see the call site for
+    /// why that matters. `claims` is one entry per checkout that names a machine,
+    /// so the tie-break counts checkouts, the way it did when every checkout
+    /// carried its own device.
+    private static func keptDevice(
+        of workspace: Workspace, among devices: Set<WorkspaceDevice>, claims: [WorkspaceDevice]
+    ) -> WorkspaceDevice {
+        if !workspace.device.isThisMac { return workspace.device }
+        if devices.contains(.thisMac) { return .thisMac }
+        func count(_ device: WorkspaceDevice) -> Int {
+            claims.filter { $0 == device }.count
+        }
+        return devices.sorted {
+            count($0) == count($1) ? ($0.alias ?? "") < ($1.alias ?? "") : count($0) > count($1)
+        }.first ?? .thisMac
     }
 
     // MARK: - The container migrations that came before

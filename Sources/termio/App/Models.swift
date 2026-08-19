@@ -11,6 +11,50 @@ struct RecentProject: Identifiable, Hashable, Codable {
     var id: String { path }
 }
 
+/// The machine a workspace belongs to, said outright.
+///
+/// `Workspace.deviceAlias` is one optional carrying two different claims: `nil`
+/// means both "this Mac" and "a workspace the user made", and code that tests
+/// `deviceAlias != nil` gets an answer to whichever question it happened to be
+/// asking. Naming the machine on its own separates them — this says only which
+/// device owns the scope, and says it for every workspace, including the ones
+/// nobody ever named a device for.
+///
+/// Derived, never stored: `deviceAlias` remains the persisted field and `nil` on
+/// disk still decodes to this Mac, so no state file changes shape. A snapshot
+/// that fails to decode is swallowed into a fresh first-run tree (`StateFile`),
+/// which would replace the user's whole sidebar — the invariant is therefore
+/// established at load time by `WorkspaceMigration.reconcile`, never by a stricter
+/// decoder.
+///
+/// Distinct from `KnownDevice`, which pairs the alias with the `host_id` a
+/// handshake revealed. This is the filing key: what the workspace *claims*, known
+/// before anything has connected.
+enum WorkspaceDevice: Hashable {
+    case thisMac
+    case ssh(alias: String)
+
+    init(alias: String?) {
+        self = alias.map(WorkspaceDevice.ssh) ?? .thisMac
+    }
+
+    /// The `~/.ssh/config` alias this machine is reached by, `nil` for this Mac —
+    /// the shape the stored fields and every existing call site already speak.
+    var alias: String? {
+        switch self {
+        case .thisMac: nil
+        case .ssh(let alias): alias
+        }
+    }
+
+    var isThisMac: Bool { alias == nil }
+
+    /// What a workspace named after this machine is called. This Mac has no alias
+    /// to show and the host never supplies a display name, so the client picks one
+    /// (the same name `KnownDevice` shows in every device menu).
+    var displayName: String { alias ?? localized("This Mac") }
+}
+
 /// The scope the sidebar shows: one Pinned working set, one Terminals section,
 /// one Chats section, and the projects filed under it. Everything the sidebar
 /// drew before is here; what changed is that a workspace bounds it, where a
@@ -41,34 +85,77 @@ struct Workspace: Identifiable, Hashable, Codable {
     /// `~/.ssh` and everything beside it.
     var chats: [Session] = []
 
-    /// The machine whose unfiled sessions land here — the `~/.ssh/config` alias
-    /// this fallback workspace was born from — or `nil` for one the user made.
+    /// The machine this workspace belongs to — the `~/.ssh/config` alias it is
+    /// reached by — or `nil` for one on this Mac.
     ///
-    /// A session the `termiod` CLI or a phone started on a box has no project and
-    /// no workspace the user chose for it, and it must still be reachable. It
-    /// gathers here, in a workspace named for that machine. This is the alias, the
+    /// Every workspace has a machine, and everything filed under it is on that
+    /// machine: its projects' checkouts and the loose sessions that the `termiod`
+    /// CLI or a phone started with nowhere else to be. This is the alias, the
     /// *bootstrap* identity: it exists before anything has connected, which is when
     /// the workspace has to exist (device architecture §9.5).
     var deviceAlias: String?
 
     /// The `host_id` the alias turned out to reach, filled in by the first
-    /// `hello_ok` and `nil` until then. Two fallback workspaces sharing one of
-    /// these are two names for the same machine.
+    /// `hello_ok` and `nil` until then. Two workspaces sharing one of these are
+    /// two names for the same machine.
     var deviceID: String?
 
-    /// Whether this workspace is a machine's fallback rather than one the user
-    /// made. Only these are named after a device, and only these are dropped when
-    /// they empty out.
-    var isDeviceFallback: Bool { deviceAlias != nil }
+    /// The machine this workspace belongs to. Every workspace has one, and
+    /// `WorkspaceMigration.reconcile` guarantees it agrees with the projects filed
+    /// under it — so a caller asks the workspace which machine it is on instead of
+    /// re-deriving that from whichever field is nearest.
+    var device: WorkspaceDevice { WorkspaceDevice(alias: deviceAlias) }
+
+    /// Whether Termio created this workspace on the user's behalf, rather than the
+    /// user asking for it. Only these may be swept when they empty out.
+    ///
+    /// Declared at creation, never inferred. It used to be read off `deviceAlias`
+    /// — "named after a machine" standing in for "made automatically" — and the
+    /// device stamping in `WorkspaceMigration.reconcile` broke that proxy: a
+    /// workspace the user named and filled with checkouts on one box now carries
+    /// that box's alias too, and would have become sweepable. A workspace someone
+    /// named is theirs whichever machine it turned out to be on.
+    ///
+    /// Optional on purpose: **absent** means "written before this field existed,
+    /// so it is not yet known", and `false` means "asked and answered — this one
+    /// is the user's". Collapsing the two to `false` is what made an earlier
+    /// version of this wrong: `reconcile` recovers the answer for absent values,
+    /// so a stored `false` that decoded as absent would be re-derived on every
+    /// launch, and a workspace the user named after the box its checkouts sit on
+    /// would be claimed the second time the app opened. Recovery runs once and
+    /// then records what it decided.
+    ///
+    /// A missing value is never swept — `isAutoCreated == true` is the test, so
+    /// unknown stays safe.
+    var isAutoCreated: Bool?
 
     /// Every session the workspace owns directly. Its projects' sessions are not
     /// here — they belong to the project.
     var looseSessions: [Session] { terminals + chats }
+
+    /// The same machine as `device`, in the form the menus and row marks name it —
+    /// the alias paired with the `host_id` a handshake revealed — and `nil` for
+    /// this Mac, which is the machine nothing needs to be told about.
+    var knownDevice: KnownDevice? {
+        deviceAlias.map { KnownDevice(alias: $0, deviceID: deviceID) }
+    }
+
+    /// Whether `alias` reaches this workspace's machine.
+    ///
+    /// Matched by device identity once both ends know it, so a box reached by a
+    /// LAN name and a tailnet name is still one machine, and by alias until the
+    /// first handshake resolves one — the bootstrap/stable split `KnownDevice`
+    /// carries. This Mac matches no alias: it is not reached by one.
+    func isOn(alias: String, device deviceID: String?) -> Bool {
+        guard let mine = deviceAlias else { return false }
+        if let deviceID, let known = self.deviceID { return deviceID == known }
+        return mine == alias
+    }
 }
 
 extension Workspace {
     private enum CodingKeys: String, CodingKey {
-        case id, name, terminals, chats, deviceAlias, deviceID
+        case id, name, terminals, chats, deviceAlias, deviceID, isAutoCreated
     }
 
     /// Missing collections take their empty defaults so a workspace written by an
@@ -83,6 +170,7 @@ extension Workspace {
         chats = try c.decodeIfPresent([Session].self, forKey: .chats) ?? []
         deviceAlias = try c.decodeIfPresent(String.self, forKey: .deviceAlias)
         deviceID = try c.decodeIfPresent(String.self, forKey: .deviceID)
+        isAutoCreated = try c.decodeIfPresent(Bool.self, forKey: .isAutoCreated)
     }
 
     /// First-run state for a fresh install: one workspace holding one shell, so a
@@ -170,39 +258,27 @@ struct Project: Identifiable, Hashable, Codable {
     /// resolves to a device.
     var remoteCheckouts: [String: String] = [:]
 
-    /// The machine this project's checkout lives on — the `~/.ssh/config` alias —
-    /// or `nil` for a folder on this Mac.
+    /// The machine a state file written **before** the hierarchy recorded on the
+    /// checkout itself, and `nil` on every project this build writes.
     ///
-    /// A project used to be a folder on this Mac by definition, so `path` was
-    /// always this Mac's to read. It no longer is: `Open Project ▸ <device>` files
-    /// a repo that exists only on another box, and `path` then names a directory
-    /// over there. Everything that reads local disk — the branch probe, Reveal in
-    /// Finder, worktrees, the recents list — is gated on this being `nil`.
+    /// A checkout inherits its machine from the workspace that owns it — a
+    /// workspace belongs to exactly one — so the app asks the store
+    /// (`TermioStore.device(of:)`) and this field is not part of that answer.
+    /// It survives for `WorkspaceMigration`, the one place the two shapes meet:
+    /// a workspace whose checkouts turn out to span machines can only be
+    /// recognised from what the old file recorded per checkout.
     ///
-    /// The alias is the *bootstrap* identity, the one that exists before anything
-    /// has connected (device architecture §9.5); `deviceID` is what it turns out
-    /// to be.
-    var deviceAlias: String?
-
-    /// The `host_id` the alias turned out to reach, learned by the first
-    /// handshake and `nil` until then.
-    var deviceID: String?
+    /// Decoded, never encoded. Writing it back would make every later load read
+    /// the tree as the old shape again, and a project that records no machine
+    /// would go on meaning "this Mac" instead of "whichever machine my workspace
+    /// is on" — which is a remote checkout torn off its workspace on next launch.
+    var legacyDevice: KnownDevice?
 }
 
 extension Project {
     private enum CodingKeys: String, CodingKey {
         case id, workspaceID, name, path, branch, sessions, worktrees, pinned, remoteCheckouts
         case deviceAlias, deviceID
-    }
-
-    /// Whether this project's checkout is on another machine, so nothing here may
-    /// read `path` off local disk.
-    var isOnAnotherDevice: Bool { deviceAlias != nil }
-
-    /// The machine the checkout lives on, or `nil` for this Mac — what the row's
-    /// mark and the empty states name.
-    var device: KnownDevice? {
-        deviceAlias.map { KnownDevice(alias: $0, deviceID: deviceID) }
     }
 
     /// Missing collection and flag keys take their pre-feature defaults so older
@@ -226,8 +302,29 @@ extension Project {
         pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         remoteCheckouts =
             try container.decodeIfPresent([String: String].self, forKey: .remoteCheckouts) ?? [:]
-        deviceAlias = try container.decodeIfPresent(String.self, forKey: .deviceAlias)
-        deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
+        // Kept in the decoder after the live fields went: a file written before
+        // the hierarchy is the only thing that still says which machine each
+        // checkout is on, and dropping the keys here would lose the split that
+        // `WorkspaceMigration` needs them for.
+        let recordedAlias = try container.decodeIfPresent(String.self, forKey: .deviceAlias)
+        let recordedDeviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
+        legacyDevice = recordedAlias.map { KnownDevice(alias: $0, deviceID: recordedDeviceID) }
+    }
+
+    /// Written out by hand so `legacyDevice` does not round-trip — see the field.
+    /// Every other property is listed here, so a new one has to be added to this
+    /// and to `CodingKeys` to be persisted.
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(workspaceID, forKey: .workspaceID)
+        try container.encode(name, forKey: .name)
+        try container.encode(path, forKey: .path)
+        try container.encode(branch, forKey: .branch)
+        try container.encode(sessions, forKey: .sessions)
+        try container.encode(worktrees, forKey: .worktrees)
+        try container.encode(pinned, forKey: .pinned)
+        try container.encode(remoteCheckouts, forKey: .remoteCheckouts)
     }
 
     /// The recorded checkout for one machine, addressed by device where the app
@@ -241,18 +338,6 @@ extension Project {
     func remoteCheckout(device deviceID: String?, alias: String) -> String? {
         if let deviceID, let path = remoteCheckouts[deviceID] { return path }
         return remoteCheckouts[alias]
-    }
-
-    /// Whether this project *is* the directory `path` on that machine — the test
-    /// behind "opening the same folder twice reopens the row you already have".
-    ///
-    /// Matched by device identity once both ends know it, so a box reached by a
-    /// second alias doesn't open a duplicate row for the same checkout, and by
-    /// alias until the first handshake resolves one.
-    func isCheckout(at path: String, on alias: String, device deviceID: String?) -> Bool {
-        guard isOnAnotherDevice, self.path == path else { return false }
-        if let deviceID, let mine = self.deviceID { return deviceID == mine }
-        return deviceAlias == alias
     }
 }
 

@@ -166,12 +166,20 @@ func newTerminalMenuItem(
     })
 }
 
-/// "Move to Workspace ▸": files a project under a different scope. `nil` with one
-/// workspace — there is nowhere to move to, and a submenu naming only the
-/// workspace the project is already in is a dead click.
+/// "Move to Workspace ▸": files a project under a different scope on the same
+/// machine. `nil` when nothing is left to offer — a submenu naming only the
+/// workspace the project is already in is a dead click, and one naming a
+/// workspace the move would refuse is worse.
+///
+/// Same machine only, because `moveProject` refuses the rest: a checkout is a
+/// directory on one box, and the move would not move the directory. Putting the
+/// repo on another machine is a clone, which is `Clone to <device>…`.
 @MainActor
 func moveToWorkspaceMenuItem(store: TermioStore, project: Project) -> SidebarMenuItem? {
-    let targets = store.orderedWorkspaces.filter { $0.id != project.workspaceID }
+    guard let device = store.device(of: project) else { return nil }
+    let targets = store.orderedWorkspaces.filter {
+        $0.id != project.workspaceID && $0.device == device
+    }
     guard !targets.isEmpty else { return nil }
     return .submenu(localized("Move to Workspace"), targets.map { workspace in
         .action(workspace.name) { store.moveProject(project.id, toWorkspace: workspace.id) }
