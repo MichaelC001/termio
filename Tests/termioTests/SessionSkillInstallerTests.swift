@@ -103,6 +103,9 @@ final class SessionSkillInstallerTests: XCTestCase {
             "kimi": "~/.kimi-code/skills",
             "qwen": "~/.qwen/skills",
             "crush": "~/.config/crush/skills",
+            "droid": "~/.factory/skills",
+            "copilot": "~/.copilot/skills",
+            "cline": "~/.cline/skills",
         ]
         for (id, directory) in expected {
             let definition = catalog.definition(for: id)

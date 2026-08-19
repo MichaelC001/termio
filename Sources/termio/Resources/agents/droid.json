@@ -1,0 +1,26 @@
+{
+  "id": "droid",
+  "order": 55,
+  "name": "Droid",
+  "wire": "droid",
+  "command": "droid",
+  "permissionBypassFlag": "--skip-permissions-unsafe",
+  "icon": { "asset": "droid-favicon" },
+  "install": "https://docs.factory.ai/droid-cli/overview",
+  "skills": { "dir": "~/.factory/skills" },
+  "hooks": {
+    "type": "json",
+    "file": "~/.factory/settings.json",
+    "dialect": "claude",
+    "capturesTranscript": true,
+    "conversation": "session_id",
+    "tool": "tool_name",
+    "events": [
+      { "on": "SessionStart", "state": "idle" },
+      { "on": "UserPromptSubmit", "state": "working" },
+      { "on": "PreToolUse", "state": "working" },
+      { "on": "PostToolUse", "state": "working" },
+      { "on": "Stop", "state": "done" }
+    ]
+  }
+}
