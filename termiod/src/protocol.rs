@@ -887,10 +887,39 @@ pub struct SessionInfo {
     pub attached_clients: usize,
     #[serde(default)]
     pub writer_client_id: Option<String>,
+    /// The process group that owns the tty's foreground right now. This is the
+    /// program the user is talking to, which after the first minute of a
+    /// session is rarely the one in `command`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground_pid: Option<i32>,
+    /// Argv of that process group's leader — the agent's identity, read from
+    /// the kernel rather than scraped off the screen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground_argv: Option<Vec<String>>,
+    /// Whether something other than the session's own child holds the
+    /// foreground, i.e. a command is running rather than a shell idling at its
+    /// prompt. This is the signal a client keys "closing this loses work" off.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub foreground_job: bool,
+    /// The child's *current* directory, which `cd` moves and `cwd` (the
+    /// directory the session was created in) does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_cwd: Option<String>,
+    /// The binary the child is running, as the kernel resolved it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_executable: Option<String>,
+    /// Whether that binary has been replaced on disk since it was pinned — an
+    /// agent that updated itself and quit, told apart from one that just quit.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub child_executable_replaced: bool,
 }
 
 fn default_status() -> String {
     "unknown".to_string()
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 pub async fn write_frame<W: AsyncWriteExt + Unpin>(

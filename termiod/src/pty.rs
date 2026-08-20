@@ -178,6 +178,20 @@ impl Pty {
         })
     }
 
+    /// The process group that currently owns the tty's foreground — the program
+    /// the user is actually interacting with: the login shell until it runs a
+    /// command, then that command, then the shell again once it exits.
+    ///
+    /// `tcgetpgrp` on the *master* is deliberate and portable: both XNU and
+    /// Linux route TIOCGPGRP on a pty master to the slave's session, and the
+    /// master side is exempt from the "must be your controlling terminal" check
+    /// that would otherwise refuse the daemon. `None` when the slave has no
+    /// session (the child is gone, or has not exec'd yet).
+    pub fn foreground_pgid(&self) -> Option<i32> {
+        let pgid = unsafe { libc::tcgetpgrp(self.master.get_ref().as_raw_fd()) };
+        (pgid > 0).then_some(pgid)
+    }
+
     /// Push a new window size to the PTY (TIOCSWINSZ). The kernel delivers
     /// SIGWINCH to the foreground process group.
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
