@@ -676,8 +676,6 @@
 	<string>Not Now</string>
 	<key>Not a valid regular expression</key>
 	<string>Not a valid regular expression</string>
-	<key>Not connected</key>
-	<string>Not connected</string>
 	<key>Not pushed to upstream</key>
 	<string>Not pushed to upstream</string>
 	<key>Nothing to Compare</key>
@@ -698,6 +696,8 @@
 	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.</key>
 	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.</string>
+	<key>Only regular files can be previewed.</key>
+	<string>Only regular files can be previewed.</string>
 	<key>Opacity</key>
 	<string>Opacity</string>
 	<key>Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity.</key>
@@ -1008,8 +1008,6 @@
 	<string>Test</string>
 	<key>Test Connection</key>
 	<string>Test Connection</string>
-	<key>The SSH connection is closed. Reconnect in the terminal, then refresh.</key>
-	<string>The SSH connection is closed. Reconnect in the terminal, then refresh.</string>
 	<key>The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.</key>
 	<string>The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.</string>
 	<key>The base branch has commits this branch doesn’t have, as of the last fetch.</key>
@@ -1022,6 +1020,8 @@
 	<string>The folder was removed, but git couldn’t prune its stale worktree metadata.</string>
 	<key>The ignore rule couldn’t be added.</key>
 	<string>The ignore rule couldn’t be added.</string>
+	<key>The listing failed.</key>
+	<string>The listing failed.</string>
 	<key>The machine answered with no listing for that folder.</key>
 	<string>The machine answered with no listing for that folder.</string>
 	<key>The machines in your ~/.ssh/config, and the keys that reach them</key>
@@ -1060,14 +1060,16 @@
 	<string>This branch has nothing the base branch doesn’t already have.</string>
 	<key>This checkout has no other branch to compare with.</key>
 	<string>This checkout has no other branch to compare with.</string>
+	<key>This device sent a name the file tree can’t show.</key>
+	<string>This device sent a name the file tree can’t show.</string>
+	<key>This device’s termiod is too old to browse files.</key>
+	<string>This device’s termiod is too old to browse files.</string>
 	<key>This diff is too large to show here — open the file on GitHub.</key>
 	<string>This diff is too large to show here — open the file on GitHub.</string>
 	<key>This file is binary — open it on GitHub to view.</key>
 	<string>This file is binary — open it on GitHub to view.</string>
 	<key>This folder has no git “origin” remote to clone.</key>
 	<string>This folder has no git “origin” remote to clone.</string>
-	<key>This host sent a name the file tree can’t show.</key>
-	<string>This host sent a name the file tree can’t show.</string>
 	<key>This machine’s termiod is too old to list folders.</key>
 	<string>This machine’s termiod is too old to list folders.</string>
 	<key>This month</key>

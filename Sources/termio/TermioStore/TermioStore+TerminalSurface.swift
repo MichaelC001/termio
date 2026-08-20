@@ -588,16 +588,13 @@ extension TermioStore {
     /// remote command allocates a remote pty on its own, so the user lands at the
     /// remote shell — no `-t` needed.
     ///
-    /// The session doubles as an OpenSSH ControlMaster (see `SSHMux`): the user
-    /// authenticates once here, and the inspector's remote file tree rides the
-    /// same connection through the control socket — no second handshake.
+    /// No `ControlMaster` options are injected. The session used to double as a
+    /// master so the inspector's SFTP tree could ride it; the tree now reads the
+    /// device's own daemon, which brings its own multiplexing
+    /// (`Termiod.multiplexingArguments`) and, unlike this, only after checking
+    /// that the user's `~/.ssh/config` left the decision to us.
     static func sshCommand(host: String) -> String {
-        if let options = SSHMux.masterShellOptions {
-            return "ssh \(options) -- \(shellQuoted(host))"
-        }
-        // A failure to create the optional mux directory must not break the
-        // terminal itself. The remote browser will show its unavailable state.
-        return "ssh -- \(shellQuoted(host))"
+        "ssh -- \(shellQuoted(host))"
     }
 
     /// POSIX single-quote escaping: wraps `value` in `'…'`, splicing any embedded

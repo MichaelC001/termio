@@ -26,9 +26,9 @@ enum Termiod {
     /// | `scrollback` | no      | `H` carries packed cells to inject *above* the viewport; a byte-stream surface has nowhere to put them |
     /// | `grid_diff`  | no      | `G` would make the host resolve every cell's colour, which overrides the viewer's theme — the §A/§H regression this client exists not to repeat |
     /// | `send_wait`  | no      | `send`/`wait` are control-channel verbs; the app injects through its own attach channel |
-    /// | `resources`  | no      | `subscribe_resource` — the file tree and git panes are the consumers, on their own channel |
+    /// | `resources`  | no      | `subscribe_resource` — live tree and git updates, which need a channel that outlives one request |
     /// | `fs_watch`   | no      | ditto |
-    /// | `files`      | no      | ditto |
+    /// | `files`      | no      | `fs.list`/`fs.read` — the Files pane's consumer, on its own control channel (`TermiodFiles.swift`), never an attachment |
     /// | `upload`     | no      | remote paste; rides a control channel, not an attachment |
     /// | `git`        | no      | ditto |
     ///
@@ -935,6 +935,11 @@ enum Termiod {
         case uploadAck(UploadAckPayload)
         case uploadCommitted(UploadCommittedPayload)
         case fsListed(FsListedPayload)
+        /// The read half of the files plane (`TermiodFiles.swift`). `fs_listed`
+        /// above answers both the path picker and the tree; this one only the
+        /// tree. It rides the same decode table as everything else, so an
+        /// unexpected reply on any channel is ignored rather than fatal.
+        case fsFile(FsFilePayload)
         /// The addressed half of `writer_changed`: sent to one client to tell it
         /// who owns size now (§C.5). Same payload shape, so it feeds the same
         /// handler — a client that only listened to the broadcast would still be
@@ -973,6 +978,8 @@ enum Termiod {
             return .uploadCommitted(try decoder.decode(UploadCommittedPayload.self, from: payload))
         case "fs_listed":
             return .fsListed(try decoder.decode(FsListedPayload.self, from: payload))
+        case "fs_file":
+            return .fsFile(try decoder.decode(FsFilePayload.self, from: payload))
         case "resize_claim":
             return .resizeClaim(try decoder.decode(WriterChangedPayload.self, from: payload))
         case "error":

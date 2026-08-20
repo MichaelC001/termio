@@ -676,8 +676,6 @@
 	<string>以后再说</string>
 	<key>Not a valid regular expression</key>
 	<string>不是有效的正则表达式</string>
-	<key>Not connected</key>
-	<string>未连接</string>
 	<key>Not pushed to upstream</key>
 	<string>尚未推送到上游</string>
 	<key>Nothing to Compare</key>
@@ -698,6 +696,8 @@
 	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。隧道地址可在任意网络使用，并终结于服务商的服务器。若要改用自己的中继，请选择“自定义”。</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.</key>
 	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。流量经由你自己运行的中继，路径中没有第三方。</string>
+	<key>Only regular files can be previewed.</key>
+	<string>只能预览普通文件。</string>
 	<key>Opacity</key>
 	<string>不透明度</string>
 	<key>Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity.</key>
@@ -1008,8 +1008,6 @@
 	<string>测试</string>
 	<key>Test Connection</key>
 	<string>测试连接</string>
-	<key>The SSH connection is closed. Reconnect in the terminal, then refresh.</key>
-	<string>SSH 连接已关闭。请在终端中重新连接，然后刷新。</string>
 	<key>The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.</key>
 	<string>新建聊天（⌘N）启动的 Agent。“上次使用”跟随你最近一次聊天所用的 Agent。</string>
 	<key>The base branch has commits this branch doesn’t have, as of the last fetch.</key>
@@ -1022,6 +1020,8 @@
 	<string>文件夹已移除，但 git 无法清理其残留的 worktree 元数据。</string>
 	<key>The ignore rule couldn’t be added.</key>
 	<string>无法添加忽略规则。</string>
+	<key>The listing failed.</key>
+	<string>读取目录失败。</string>
 	<key>The machine answered with no listing for that folder.</key>
 	<string>这台机器没有返回该文件夹的内容。</string>
 	<key>The machines in your ~/.ssh/config, and the keys that reach them</key>
@@ -1060,14 +1060,16 @@
 	<string>这个分支没有基础分支尚未包含的内容。</string>
 	<key>This checkout has no other branch to compare with.</key>
 	<string>这个检出没有其他分支可以对比。</string>
+	<key>This device sent a name the file tree can’t show.</key>
+	<string>该设备返回了文件树无法显示的名称。</string>
+	<key>This device’s termiod is too old to browse files.</key>
+	<string>该设备上的 termiod 版本过旧，无法浏览文件。</string>
 	<key>This diff is too large to show here — open the file on GitHub.</key>
 	<string>此差异太大，无法在此显示，请在 GitHub 上打开该文件。</string>
 	<key>This file is binary — open it on GitHub to view.</key>
 	<string>此文件为二进制文件，请在 GitHub 上打开查看。</string>
 	<key>This folder has no git “origin” remote to clone.</key>
 	<string>这个文件夹没有 git “origin” 远程，无法克隆。</string>
-	<key>This host sent a name the file tree can’t show.</key>
-	<string>该主机返回了文件树无法显示的名称。</string>
 	<key>This machine’s termiod is too old to list folders.</key>
 	<string>这台机器上的 termiod 版本太旧，列不出文件夹。</string>
 	<key>This month</key>

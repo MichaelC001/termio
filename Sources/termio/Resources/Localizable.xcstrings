@@ -4222,16 +4222,6 @@
         }
       }
     },
-    "Copy Link": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "拷贝链接"
-          }
-        }
-      }
-    },
     "Rotate Pairing Token…": {
       "localizations": {
         "zh-Hans": {
@@ -5355,26 +5345,6 @@
         }
       }
     },
-    "Not connected": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "未连接"
-          }
-        }
-      }
-    },
-    "The SSH connection is closed. Reconnect in the terminal, then refresh.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "SSH 连接已关闭。请在终端中重新连接，然后刷新。"
-          }
-        }
-      }
-    },
     "Can’t browse %@": {
       "localizations": {
         "zh-Hans": {
@@ -5405,12 +5375,12 @@
         }
       }
     },
-    "This host sent a name the file tree can’t show.": {
+    "This device sent a name the file tree can’t show.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "该主机返回了文件树无法显示的名称。"
+            "value": "该设备返回了文件树无法显示的名称。"
           }
         }
       }
@@ -5971,6 +5941,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "工作区"
+          }
+        }
+      }
+    },
+    "This device’s termiod is too old to browse files.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备上的 termiod 版本过旧，无法浏览文件。"
+          }
+        }
+      }
+    },
+    "Only regular files can be previewed.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只能预览普通文件。"
+          }
+        }
+      }
+    },
+    "The listing failed.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "读取目录失败。"
           }
         }
       }

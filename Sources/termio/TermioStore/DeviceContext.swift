@@ -60,13 +60,9 @@ struct Checkout: Hashable {
     /// The checkout root on that device — the project or worktree directory
     /// locally, the recorded checkout or spawn directory on another device.
     /// `nil` when the device is known but the root is not (a terminal opened on a
-    /// box outside any recorded checkout).
+    /// box outside any recorded checkout). A pane with a device but no root says
+    /// so; it never falls back to this Mac's.
     let root: String?
-    /// The `~/.ssh/config` alias whose files the shipped read-only SFTP tree can
-    /// still show, set only for a plain `ssh` session — a box reached without a
-    /// daemon. This is the SFTP adapter, not a route the panes may branch on:
-    /// deleting the SFTP client deletes this property with it.
-    let sftpAlias: String?
 
     /// The path this Mac's `FileManager` may read for this checkout, and `nil`
     /// for every checkout on another device — which is what stops the tree, the
@@ -89,8 +85,7 @@ struct Checkout: Hashable {
 
     /// Two references name the same checkout when they name the same device and
     /// the same root. Compared by identity, so one box reached by a LAN name, a WAN
-    /// name, and a tailnet name stays one checkout instead of forking into three —
-    /// and `sftpAlias` is left out entirely, being an adapter rather than identity.
+    /// name, and a tailnet name stays one checkout instead of forking into three.
     static func == (lhs: Checkout, rhs: Checkout) -> Bool {
         lhs.deviceIdentity == rhs.deviceIdentity && lhs.root == rhs.root
     }

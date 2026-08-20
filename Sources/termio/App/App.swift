@@ -493,7 +493,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // process goes away or the last selection change is lost.
         store.persistNow()
         store.terminateAllSessions()
-        SSHMux.cleanup()
         RemotePreviewStorage.cleanup()
     }
 
