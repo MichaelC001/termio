@@ -70,7 +70,11 @@ struct WorkspaceSwitcherToolbarView: View {
         .pickerStyle(.inline)
         .labelsHidden()
         Divider()
-        Button(localized("New Workspace…")) { store.presentNewWorkspacePanel() }
+        // This Mac, without asking: the device submenu belongs to the menus that
+        // already carry one (File ▸ Workspace and the sidebar `+`), and growing a
+        // third here would put a machine list in the switcher, which is the "go to
+        // a computer" mode the workspace replaced.
+        Button(localized("New Workspace…")) { store.presentNewWorkspacePanel(on: .thisMac) }
         Button(localized("Rename Workspace…")) {
             store.presentRenameWorkspacePanel(store.currentWorkspaceID)
         }

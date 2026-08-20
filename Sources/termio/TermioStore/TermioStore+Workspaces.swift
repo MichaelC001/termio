@@ -405,11 +405,28 @@ extension TermioStore {
 
     // MARK: - Editing the set of workspaces
 
-    /// Creates a workspace and moves into it. Named by the user, so the prompt is
-    /// the caller's job; this is the state change.
+    /// Creates a workspace on `device` and moves into it. Named by the user, so
+    /// the prompt is the caller's job; this is the state change.
+    ///
+    /// The machine is the caller's too: every workspace is on one, and which one
+    /// is a decision the menu carries (`refreshNewWorkspaceItem`), so nothing is
+    /// guessed here from what the user happens to be looking at.
+    ///
+    /// Never `isAutoCreated`: that flag means Termio invented the workspace, and
+    /// it is what authorises sweeping an empty one away. A workspace someone asked
+    /// for is theirs even while it holds nothing.
     @discardableResult
-    func addWorkspace(named name: String) -> Workspace.ID {
-        let workspace = Workspace(name: name)
+    func addWorkspace(named name: String, on device: WorkspaceDevice) -> Workspace.ID {
+        let workspace = Workspace(
+            name: name,
+            deviceAlias: device.alias,
+            // Usually filled in by the first `hello_ok`, but if the alias has been
+            // reached before the answer is known now — and a workspace carrying it
+            // matches checkouts on that box without waiting for a connection.
+            deviceID: device.alias.flatMap {
+                TermiodDeviceRegistry.shared.deviceID(for: TermiodRoute(sshAlias: $0))
+            },
+            isAutoCreated: false)
         workspaces.append(workspace)
         currentWorkspaceID = workspace.id
         settings.currentWorkspaceID = workspace.id
@@ -471,16 +488,38 @@ extension TermioStore {
 
     // MARK: - Prompts
 
-    /// Asks for a name, then creates the workspace and moves into it. Bailing out
-    /// leaves the tree untouched.
-    func presentNewWorkspacePanel() {
+    /// Asks for a name, then creates the workspace on `device` and moves into it.
+    /// Bailing out leaves the tree untouched.
+    ///
+    /// The machine arrives already chosen, from the row that opened this panel, so
+    /// the panel names it rather than asking again — "New Workspace on ukvps"
+    /// beside "Open a Project on ukvps". Someone with one machine sees neither the
+    /// choice nor the name of it.
+    func presentNewWorkspacePanel(on device: WorkspaceDevice) {
+        // The machine is named in the body as well as the title, because the body
+        // is the line that makes the promise: what gets filed here will live on
+        // that box. "this Mac", said over a workspace being created on ukvps, is
+        // not vague — it is wrong about the one fact the sentence is for.
+        //
+        // Two whole sentences rather than one with the machine interpolated: this
+        // Mac has no alias to drop in, and "this Mac" as a fragment key is not
+        // something a translator can place inside a sentence they can't see.
+        let title: String
+        let message: String
+        if let alias = device.alias {
+            title = localized("New Workspace on \(alias)")
+            message = localized("Name the workspace. It starts empty; sessions and projects you open on \(alias) from now on are filed under it.")
+        } else {
+            title = localized("New Workspace")
+            message = localized("Name the workspace. It starts empty; sessions and projects you open on this Mac from now on are filed under it.")
+        }
         guard let name = promptForWorkspaceName(
-            title: localized("New Workspace"),
-            message: localized("Name the workspace. It starts empty; sessions and projects you open from now on are filed under it."),
+            title: title,
+            message: message,
             confirm: localized("Create"),
             defaultName: nextFreeWorkspaceName
         ) else { return }
-        addWorkspace(named: name)
+        addWorkspace(named: name, on: device)
     }
 
     /// What the new-workspace field opens with: "Workspace", bumped past the names
