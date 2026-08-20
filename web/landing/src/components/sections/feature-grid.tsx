@@ -1,45 +1,54 @@
-import Image from "next/image";
 import { Reveal } from "@/components/reveal";
 import { SectionLabel } from "@/components/section-label";
+import {
+  InspectorMock,
+  MarkdownMock,
+  PaletteMock,
+  RemoteMock,
+  SidebarMock,
+  WorktreeMock,
+} from "@/components/sections/feature-mocks";
 
-// One entry per capture in public/feature/ (native dimensions vary, so each
-// card carries its own intrinsic size and the row stretches to the taller one).
+// Six cards, each carrying a small animated mock of the surface it describes
+// (see feature-mocks.tsx) rather than a screenshot — the same DOM-drawn app
+// chrome the orchestration demo uses, so the whole page reads as one product
+// rather than a page about one.
 const features = [
   {
-    title: "Knows when an agent needs you",
+    title: "A fleet you can read",
     blurb:
-      "Session dots show working, idle, or needs-you, aggregated into a menu-bar tray — calm while agents work, ringing the moment one is blocked on you.",
-    src: "/feature/tray.png",
-    alt: "The Termio menu-bar tray listing sessions grouped by project",
-    width: 870,
-    height: 700,
+      "Every session reports a live status — working, finished, or blocked on you — and the same three states aggregate into the menu-bar tray.",
+    Mock: SidebarMock,
   },
   {
     title: "Command palette",
     blurb:
-      "Jump to any session, project, or action from one search box — themes too, previewed live as you browse, Enter to keep or Esc to revert.",
-    src: "/feature/pallette.png",
-    alt: "The Termio command palette over a terminal session",
-    width: 1120,
-    height: 800,
+      "⇧⌘P runs any action, and Open Quickly jumps to any session, project, or file. Themes preview live as you browse them — Enter keeps, Esc puts it back.",
+    Mock: PaletteMock,
   },
   {
-    title: "Usage at a glance",
+    title: "Files beside the terminal",
     blurb:
-      "Your Claude and Codex plan limits in Settings, read locally from your own credentials — no proxy, no account.",
-    src: "/feature/usage.png",
-    alt: "Claude and Codex usage meters in Termio's settings",
-    width: 1150,
-    height: 918,
+      "Browse the project, open files in a syntax-highlighted editor, read the git diff, search contents — a side panel that never pulls you out of the terminal.",
+    Mock: InspectorMock,
   },
   {
-    title: "Native appearance",
+    title: "Markdown you can actually read",
     blurb:
-      "Light, dark, and a glass look that follows the system, with hundreds of built-in terminal themes or your own. A real Mac app, down to the chrome.",
-    src: "/feature/appearance.png",
-    alt: "Termio's appearance settings with light, dark, and glass modes",
-    width: 1160,
-    height: 926,
+      "Open a README or a plan and Termio renders it — GFM tables, task lists, math, Mermaid diagrams — in your terminal theme, beside the agent writing it.",
+    Mock: MarkdownMock,
+  },
+  {
+    title: "Your other machines",
+    blurb:
+      "Termio runs sessions on the hosts in your own ~/.ssh/config, each wearing its machine's mark. System OpenSSH does the connecting — no embedded client, no relay.",
+    Mock: RemoteMock,
+  },
+  {
+    title: "A worktree per agent",
+    blurb:
+      "Worktrees are read straight from git and nested under the project, so two agents can work the same repo without ever touching each other's files.",
+    Mock: WorktreeMock,
   },
 ] as const;
 
@@ -51,7 +60,7 @@ export function FeatureGrid() {
         <Reveal className="flex flex-col items-center text-center">
           <SectionLabel accent="muted">What&apos;s inside</SectionLabel>
           <h2 className="mt-4 text-balance text-3xl font-medium leading-[1.1] tracking-tight text-foreground sm:text-[44px]">
-            Built for watching agents work
+            Built for agentic coding
           </h2>
           <p className="mt-5 max-w-lg text-balance text-base leading-relaxed text-muted-foreground">
             Several agents going at once, most of them fine without you, one of
@@ -59,33 +68,22 @@ export function FeatureGrid() {
           </p>
         </Reveal>
 
-        <div className="mt-12 grid gap-5 sm:grid-cols-2 sm:gap-6">
+        <div className="mt-12 grid gap-5 sm:grid-cols-2 sm:gap-6 lg:grid-cols-3">
           {features.map((feature, i) => (
             <Reveal
-              key={feature.src}
+              key={feature.title}
               as="article"
-              delayMs={(i % 2) * 80}
-              className="flex flex-col rounded-3xl bg-card p-6 sm:p-8"
+              delayMs={(i % 3) * 80}
+              className="flex flex-col rounded-3xl bg-card p-6"
             >
-              <h3 className="text-xl font-medium tracking-tight text-foreground">
+              <h3 className="text-lg font-medium tracking-tight text-foreground">
                 {feature.title}
               </h3>
-              <p className="mt-2 max-w-md text-pretty text-sm leading-relaxed text-muted-foreground">
+              <p className="mt-2 text-pretty text-sm leading-relaxed text-muted-foreground">
                 {feature.blurb}
               </p>
               <div className="mt-auto pt-6">
-                <Image
-                  src={feature.src}
-                  width={feature.width}
-                  height={feature.height}
-                  alt={feature.alt}
-                  loading="lazy"
-                  // The captures render inside a ~32rem card column; without
-                  // `sizes` the browser downloads the full-width rendition.
-                  sizes="(min-width: 40rem) 32rem, calc(100vw - 5.5rem)"
-                  draggable={false}
-                  className="w-full rounded-xl"
-                />
+                <feature.Mock />
               </div>
             </Reveal>
           ))}
@@ -93,9 +91,9 @@ export function FeatureGrid() {
 
         <Reveal delayMs={80}>
           <p className="mx-auto mt-10 max-w-3xl text-balance text-center text-sm leading-relaxed text-muted-foreground">
-            Also in the box: git worktrees nested under each project, a
-            read-only git pane with unified diffs, a click-to-edit file editor,
-            and Ghostty-style split panes.
+            Also in the box: your Claude and Codex plan limits read from your own
+            credentials, hundreds of terminal themes with light, dark, and glass
+            window looks, and Ghostty-style split panes.
           </p>
         </Reveal>
       </div>

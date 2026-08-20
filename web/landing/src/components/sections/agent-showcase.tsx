@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { useCallback, useEffect, useRef, useState } from "react";
 import useEmblaCarousel, {
   type UseEmblaCarouselType,
@@ -9,7 +8,9 @@ import Autoplay from "embla-carousel-autoplay";
 import { WheelGesturesPlugin } from "embla-carousel-wheel-gestures";
 import { Reveal } from "@/components/reveal";
 import { AgentIcon } from "@/components/agent-icons";
+import { AgentTui } from "@/components/sections/agent-tui";
 import { cn } from "@/lib/utils";
+import type { SupportedAgent } from "@/lib/site";
 import { useInView } from "@/lib/use-in-view";
 
 // The carousel API, named off the hook so the core package stays a transitive
@@ -62,40 +63,46 @@ function cylinderTransform(
   )}px)`;
 }
 
-// One entry per agent capture in public/agent/ (all 1280×1236 @2x).
+// One entry per agent that has a panel. The panel beside a name is drawn, not
+// captured — see agent-tui.tsx. `satisfies` ties every name back to
+// `supportedAgents`, so a name here that the marquee doesn't claim is a build
+// error rather than a discrepancy nobody notices.
 const agents = [
   {
     name: "Claude Code",
     blurb:
-      "Anthropic's agentic coding CLI. Session status flows into the sidebar as it works.",
-    src: "/agent/claude.png",
+      "Anthropic's agentic coding CLI. Termio ships it a skill, so it can list, spawn, and answer the sessions running beside it — the panel here is that skill running.",
   },
   {
     name: "Codex",
-    blurb: "OpenAI's coding agent, with your plan usage tracked in Settings.",
-    src: "/agent/codex.png",
+    blurb: "OpenAI's coding agent. Slash commands and pickers draw in a real PTY, so `/model` behaves exactly as it does anywhere else — and your plan usage shows in Settings.",
   },
   {
     name: "OpenCode",
-    blurb: "The open-source terminal agent — full TUI, rendered natively.",
-    src: "/agent/opencode.png",
+    blurb: "The open-source terminal agent. Its whole TUI renders natively, MCP servers and status bar included — nothing is re-implemented.",
   },
   {
     name: "Amp",
     blurb: "Sourcegraph's agent for big, multi-file changes.",
-    src: "/agent/amp.png",
   },
   {
     name: "Kimi",
     blurb: "Moonshot AI's Kimi CLI, launched in one tap.",
-    src: "/agent/kimi.png",
   },
   {
     name: "Pi",
-    blurb: "Pi Agent — tracked in the sidebar like everything else.",
-    src: "/agent/pi.png",
+    blurb: "Pi Agent, loading its own skills and extensions at launch and reporting status back like everything else.",
   },
-] as const;
+  {
+    name: "Crush",
+    blurb:
+      "Charm's terminal agent, which lists the LSPs, MCP servers and skills it loaded for the repo.",
+  },
+  {
+    name: "Grok",
+    blurb: "xAI's CLI, with its own worktree and session resume on launch.",
+  },
+] as const satisfies readonly { name: SupportedAgent; blurb: string }[];
 
 // Agent showcase: the sentence sits on its own line, and under it a drum of
 // agent names rolls on where the sentence left off — the focused name sharp,
@@ -111,9 +118,9 @@ export function AgentShowcase() {
   const [paused, setPaused] = useState(false);
   const [rolling, setRolling] = useState(false);
   const reducedMotion = useRef(false);
-  // The screenshot for each agent, positioned frame by frame from the same
+  // Each agent's terminal UI, positioned frame by frame from the same
   // measurement that drives the names.
-  const frames = useRef<(HTMLImageElement | null)[]>([]);
+  const frames = useRef<(HTMLDivElement | null)[]>([]);
   const { ref: viewRef, inView } = useInView<HTMLDivElement>();
 
   const [emblaRef, emblaApi] = useEmblaCarousel(
@@ -358,41 +365,36 @@ export function AgentShowcase() {
                 </div>
               </div>
 
-              {/* Right: the filmstrip. Every capture is mounted and stacked in
-                  the same window; `applyFalloff` puts each one a full frame
-                  from the last, so the strip runs past the window as the drum
-                  turns. The @container wrapper lets the corner radius scale
-                  with the rendered image width (cqw), like the hero carousel. */}
+              {/* Right: the filmstrip. Every agent's terminal UI is mounted and
+                  stacked in the same window; `applyFalloff` puts each one a
+                  full frame from the last, so the strip runs past the window as
+                  the drum turns. The @container wrapper is what the panels size
+                  themselves against — they scale in `cqw`, so a drawn TUI keeps
+                  a screenshot's one virtue of scaling as a single piece. */}
               <div className="@container">
                 <div
                   role="region"
                   aria-roledescription="carousel"
-                  aria-label="Agent screenshots"
+                  aria-label="Agent terminal UIs"
                   className={cn(
-                    "relative overflow-hidden rounded-[clamp(6px,1cqw,12px)] transition-opacity duration-500",
+                    "relative overflow-hidden rounded-[clamp(10px,2.2cqw,22px)] transition-opacity duration-500",
                     rolling ? "opacity-100" : "opacity-0",
                   )}
                   style={{ aspectRatio: "1280 / 1236" }}
                 >
                   {agents.map((agent, i) => (
-                    <Image
-                      key={agent.src}
+                    <div
+                      key={agent.name}
                       ref={(node) => {
                         frames.current[i] = node;
                       }}
-                      src={agent.src}
-                      width={1280}
-                      height={1236}
-                      alt={`${agent.name} running in Termio`}
-                      loading="lazy"
-                      // The captures are 1280px wide but render in the ~32rem
-                      // right column of the card; without `sizes` the browser
-                      // downloads the 3840px rendition.
-                      sizes="(min-width: 64rem) 32rem, calc(100vw - 5.5rem)"
-                      draggable={false}
+                      role="img"
+                      aria-label={`${agent.name} running in Termio`}
                       aria-hidden={i !== active}
-                      className="pointer-events-none absolute inset-0 h-full w-full object-cover will-change-[opacity,filter,transform] motion-reduce:transition-opacity motion-reduce:duration-300"
-                    />
+                      className="pointer-events-none absolute inset-0 h-full w-full will-change-[opacity,filter,transform] motion-reduce:transition-opacity motion-reduce:duration-300"
+                    >
+                      <AgentTui name={agent.name} />
+                    </div>
                   ))}
                 </div>
               </div>

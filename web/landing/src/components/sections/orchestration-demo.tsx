@@ -3,23 +3,41 @@
 import { useEffect, useRef, useState } from "react";
 import { useInView } from "@/lib/use-in-view";
 import { AgentIcon } from "@/components/agent-icons";
+import { cn } from "@/lib/utils";
 
-// The orchestration section's animated demo: a hub-and-spoke graph (claude
-// supervising five worker sessions) synced beat-for-beat to a terminal that
-// types itself. One state machine drives both — as each worker becomes active
-// the LEFT graph lights that node and pulses its beam, while the RIGHT terminal
-// types that worker's command and prints its result. Together they narrate one
-// ship-a-feature pipeline: plan → build → review → secure-tag → feedback. Falls
-// back to a static done-state summary for SSR, screen readers, and reduced
-// motion.
+// The orchestration section's demo is the app itself rather than a diagram of
+// it: a Termio window whose left pane is the real sidebar, and whose content
+// area is the layout the app actually gets used in (see the hero captures) —
+// the driver session's shell holding the left column, and a stack of the
+// agents it spawned filling the right one.
+//
+// One state machine runs all of it. The first `termio sessions spawn` splits
+// the content area in two; every spawn after that adds a pane to the right
+// column, so the fleet builds up on screen as the driver types. Each spawn
+// also lands a session row in the sidebar, and the row and its pane then carry
+// the same status (the app's rotating nine-dot working mark, a green ring when
+// the turn finishes, an orange ring when the agent stops to ask) until the
+// result prints back into the transcript.
+//
+// Chrome is the app's: traffic lights over the sidebar, the window's title
+// block (folder over branch) left-aligned atop the content, status on a row's
+// leading mark rather than a trailing dot (Sidebar/SidebarView.swift).
+//
+// One deliberate liberty: `termio sessions spawn` starts a session, it does not
+// group it into a split — grouping is a user action ("Group with"). The demo
+// shows them grouped because the whole point is watching an agent work while
+// another drives it.
+//
+// Falls back to a static done-state window for SSR, screen readers, and
+// reduced motion.
 
 type TranscriptLine = {
   text?: string;
   prompt?: boolean;
-  // Output color semantics: plain (undefined) = neutral status text,
-  // "done" = completion sky, matching the done dot on the left. needs-you
-  // moments stay neutral in the transcript — only the left status dot goes
-  // amber (colored text read as noise in the code pane).
+  // Output color semantics: plain (undefined) = neutral status text, "done" =
+  // the same green the sidebar's done ring uses, so one state reads the same
+  // everywhere. needs-you moments stay neutral in the transcript — only the
+  // ring and the agent pane go orange (colored text read as noise here).
   tone?: "done";
   blank?: boolean;
   id?: number; // stable key so a freshly-pushed line animates in exactly once
@@ -27,129 +45,163 @@ type TranscriptLine = {
 
 type Status = "idle" | "working" | "needs-you" | "done";
 
-type Pulse = {
-  id: number;
-  dir: "out" | "back";
-  color: string;
-  y: number;
-};
-
 type Frame = {
   lines: TranscriptLine[];
   typing: string | null;
-  statuses: Status[]; // index-aligned with WORKERS
-  pulse: Pulse | null;
+  statuses: Status[]; // index-aligned with SESSIONS
+  // The session whose pane is focused — the one just spawned. null before the
+  // first spawn, when the content area is a single, unsplit shell.
+  active: number | null;
 };
 
-// Section palette — three hue families and nothing else: slate for neutrals
-// (window ink, idle/working), sky for "done", amber for "needs-you"; the pill
-// bases are aurora-tinted blue-greys (#d8e4ee/#c8d7e5) so they sit between the
-// dark pane and the slate-900 labels. Each status hue has two steps: a bright
-// one for the dark pane (beam pulses, transcript text) and a solid -500 for
-// the dots on the light pills. No green anywhere.
-const ACTIVE = "#e2e8f0"; // slate-200 — packet traveling the beam
-const AMBER = "#fbbf24"; // amber-400 — needs-you on dark (beam)
-const SKY = "#7dd3fc"; // sky-300 — done on dark (beam + transcript text)
+// Status colors are the app's, not the section's: green done / orange needs-you
+// are the sidebar's only color channel, and this is that sidebar.
+const DONE = "#27c93f"; // brand-green — matches StatusRing's .green
+const NEEDS_YOU = "#ffb764"; // brand-amber — matches StatusRing's .orange
 
-// The five workers, in pipeline order (index = story order = top-to-bottom in
-// the graph). Each drives one stage of shipping a change; the middle worker
-// (y=170) gets the straight beam. `name` keys the real brand logo.
-// Sessions are addressed by termio://session/<uuid> links since 8b38709 (the
-// <agent>@<id> handle is gone); `id` is the first uuid segment of each demo
-// session's link — bare ids are valid CLI targets, and short enough that the
-// longest transcript line stays under ~70 chars (the right pane clips longer).
-type Worker = { name: string; id: string; y: number };
+// The driving session: the one whose shell holds the left column. It stays
+// working for the whole run — it is the thing typing.
+const DRIVER = { agent: "Claude Code", title: "ship v0.22.0" };
 
-const WORKERS: readonly Worker[] = [
-  { name: "Claude Code", id: "9b3e11d0", y: 40 },
-  { name: "Codex", id: "7c1f2a4e", y: 105 },
-  { name: "DeepSeek", id: "5a77c0e2", y: 170 },
-  { name: "Grok", id: "d4e6b209", y: 235 },
-  { name: "Kimi", id: "3f8a2c11", y: 300 },
-];
+// The four sessions it spawns, in pipeline order — top-to-bottom in both the
+// sidebar and the right column. A row's title is the prompt the CLI spawned it with, which is what
+// the app shows as a session's title, and `tools` is what that agent's own
+// pane shows itself doing. Output lines use the sessions-watch text shape:
+// link  [status]  detail; sessions are addressed by termio://session/<uuid>
+// since 8b38709 (the <agent>@<id> handle is gone). `interaction` (codex only)
+// shows a needs-you round trip: the agent asks, the driver answers, it resumes.
+type Tool = { verb: string; target: string; result: string };
 
-// One story beat per worker. `interaction` (codex only) shows a needs-you round
-// trip: the agent asks, claude answers, the agent resumes.
-type Beat = {
-  worker: number;
+type Session = {
+  agent: string;
+  /** The agent as you'd name it on the command line, shown in its own pane. */
+  cli: string;
+  title: string;
   cmd: string;
   started: string;
-  interaction?: { needsYou: string; answer: string; sent: string };
+  /** Present-tense verb for the agent pane's working line. */
+  activity: string;
+  elapsed: string;
+  tools: readonly Tool[];
+  /** Tool-call glyphs. Claude Code prints a filled bullet over a `⌊` result
+   *  line; the rest of the fleet uses the common `•` / `└` pair. */
+  bullet: string;
+  sub: string;
+  interaction?: {
+    needsYou: string;
+    answer: string;
+    sent: string;
+    /** The question as the agent's own pane puts it. */
+    question: string;
+    reply: string;
+  };
   done: string;
+  /** The agent pane's closing line once the turn settles. */
+  outcome: string;
 };
 
-// Output lines use the sessions-watch text shape: link  [status]  detail.
-const BEATS: readonly Beat[] = [
+const SESSIONS: readonly Session[] = [
   {
-    worker: 0,
+    agent: "Claude Code",
+    cli: "claude",
+    title: "plan the auth refactor",
     cmd: 'termio sessions spawn "plan the auth refactor" --agent claude',
     started: "termio://session/9b3e11d0  [working]  planning",
+    activity: "Planning",
+    elapsed: "0m 41s",
+    tools: [
+      { verb: "Read", target: "Auth/TokenStore.swift", result: "412 lines" },
+      { verb: "Grep", target: '"refreshToken"', result: "29 matches" },
+    ],
+    bullet: "●",
+    sub: "⌊",
     done: "termio://session/9b3e11d0  [done]  7 steps -> PLAN.md",
+    outcome: "7 steps -> PLAN.md",
   },
   {
-    worker: 1,
+    agent: "Codex",
+    cli: "codex",
+    title: "implement PLAN.md",
     cmd: 'termio sessions spawn "implement PLAN.md" --agent codex',
     started: "termio://session/7c1f2a4e  [working]  building",
+    activity: "Building",
+    elapsed: "1m 06s",
+    tools: [
+      { verb: "Edit", target: "TokenStore.swift", result: "+180 -52" },
+      { verb: "Shell", target: "swift build", result: "succeeded" },
+    ],
+    bullet: "•",
+    sub: "└",
     interaction: {
-      needsYou: "termio://session/7c1f2a4e  [needs-you]  Run pnpm test? (y/n)",
+      needsYou: "termio://session/7c1f2a4e  [needs-you]  Run swift test? (y/n)",
       answer: 'termio sessions send 7c1f2a4e "y"',
       sent: "sent to termio://session/7c1f2a4e",
+      question: "Run swift test? (y/n)",
+      reply: "y",
     },
     done: "termio://session/7c1f2a4e  [done]  +412 -128, tests pass",
+    outcome: "+412 -128, tests pass",
   },
   {
-    worker: 2,
+    agent: "DeepSeek",
+    cli: "deepseek",
+    title: "review the diff",
     cmd: 'termio sessions spawn "review the diff" --agent deepseek',
     started: "termio://session/5a77c0e2  [working]  reviewing",
+    activity: "Reviewing",
+    elapsed: "0m 28s",
+    tools: [
+      { verb: "Read", target: "PLAN.md", result: "7 steps" },
+      { verb: "Diff", target: "Sources/Auth", result: "12 files" },
+    ],
+    bullet: "•",
+    sub: "└",
     done: "termio://session/5a77c0e2  [done]  2 nits, 0 blockers",
+    outcome: "2 nits, 0 blockers",
   },
   {
-    worker: 3,
+    agent: "Grok",
+    cli: "grok",
+    title: "security scan, then tag v0.22.0",
     cmd: 'termio sessions spawn "security scan, then tag v0.22.0" --agent grok',
     started: "termio://session/d4e6b209  [working]  scanning",
+    activity: "Scanning",
+    elapsed: "0m 52s",
+    tools: [
+      { verb: "Scan", target: "Sources", result: "0 findings" },
+      { verb: "Shell", target: "git tag v0.22.0", result: "tagged" },
+    ],
+    bullet: "•",
+    sub: "└",
     done: "termio://session/d4e6b209  [done]  clean, tagged v0.22.0",
-  },
-  {
-    worker: 4,
-    cmd: 'termio sessions spawn "summarize the week\'s feedback" --agent kimi',
-    started: "termio://session/3f8a2c11  [working]  gathering",
-    done: "termio://session/3f8a2c11  [done]  5 themes -> FEEDBACK.md",
+    outcome: "clean, tagged v0.22.0",
   },
 ];
 
+// The project's worktrees, shown the way the sidebar shows them: quiet folder
+// rows under the session list, no status of their own.
+const WORKTREES = [
+  "feat/auth-refactor",
+  "fix/session-title",
+  "feat/remote-tree",
+  "chore/deps",
+] as const;
+
 // Static fallback / screen-reader copy: the whole pipeline in its done state.
-const DONE_SUMMARY: readonly TranscriptLine[] = BEATS.map((b) => ({
+const DONE_SUMMARY: readonly TranscriptLine[] = SESSIONS.map((s) => ({
   tone: "done" as const,
-  text: b.done,
+  text: s.done,
 }));
 
 const STATIC_FRAME: Frame = {
-  lines: [...DONE_SUMMARY],
+  lines: DONE_SUMMARY.slice(-3),
   typing: null,
-  statuses: WORKERS.map(() => "done"),
-  pulse: null,
+  statuses: SESSIONS.map(() => "done"),
+  active: SESSIONS.length - 1,
 };
 
-// Beam from the hub's right edge (104,170) to a worker's left edge (184,y), and
-// the reverse. The middle worker (y=170) gets a straight line.
-const beamPath = (y: number) =>
-  y === 170 ? "M104 170 L 184 170" : `M104 170 C 142 170, 142 ${y}, 184 ${y}`;
-const beamPathBack = (y: number) =>
-  y === 170 ? "M184 170 L 104 170" : `M184 ${y} C 142 ${y}, 142 170, 104 170`;
-
-// Per-status pill styling for the worker nodes.
-// Borderless light pills: status reads through a small colored dot inside the
-// pill (plus the idle dimming) — the same status language as Termio's own
-// sidebar. Glows/box-shadows around foreignObject content clip into hard
-// blocks in some browsers, so no halo at all.
-const STATUS_DOT: Record<Status, string> = {
-  idle: "#cbd5e1", // slate-300
-  working: "#64748b", // slate-500
-  "needs-you": "#f59e0b", // amber-500
-  done: "#0ea5e9", // sky-500
-};
-
-const MAX_LINES = 8; // rolling transcript window (fits the reserved height)
+// Rolling transcript window, sized to the shell's column at its tallest.
+const MAX_LINES = 8;
 
 function sleep(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -158,7 +210,6 @@ function sleep(ms: number) {
 export function OrchestrationDemo() {
   const { ref, inView } = useInView<HTMLDivElement>("80px");
   const [frame, setFrame] = useState<Frame>(STATIC_FRAME);
-  const pulseId = useRef(0);
 
   useEffect(() => {
     if (!inView) return;
@@ -167,8 +218,6 @@ export function OrchestrationDemo() {
     let cancelled = false;
     const patch = (p: Partial<Frame>) =>
       setFrame((f) => (cancelled ? f : { ...f, ...p }));
-    const pulse = (dir: Pulse["dir"], color: string, y: number) =>
-      patch({ pulse: { id: ++pulseId.current, dir, color, y } });
 
     const buf: TranscriptLine[] = [];
     let lineSeq = 0;
@@ -196,57 +245,51 @@ export function OrchestrationDemo() {
     const play = async () => {
       while (!cancelled) {
         buf.length = 0;
-        const statuses: Status[] = WORKERS.map(() => "idle");
-        patch({ lines: [], typing: null, statuses: [...statuses], pulse: null });
+        const statuses: Status[] = SESSIONS.map(() => "idle");
+        patch({ lines: [], typing: null, statuses: [...statuses], active: null });
         await sleep(700);
         if (cancelled) return;
 
-        for (let b = 0; b < BEATS.length; b++) {
-          const beat = BEATS[b];
-          const w = WORKERS[beat.worker];
-          const last = b === BEATS.length - 1;
+        for (let i = 0; i < SESSIONS.length; i++) {
+          const session = SESSIONS[i];
+          const last = i === SESSIONS.length - 1;
 
-          // The worker comes alive: left node lights, beam pulses hub → worker,
-          // right terminal types its command.
-          statuses[beat.worker] = "working";
-          patch({ statuses: [...statuses] });
-          pulse("out", ACTIVE, w.y);
-          await type(beat.cmd);
+          // Command first, then the session exists: its sidebar row arrives and
+          // its pane opens under the shell, both already working.
+          await type(session.cmd);
           if (cancelled) return;
+          statuses[i] = "working";
+          patch({ statuses: [...statuses], active: i });
           // The result arrives all at once (a whole line), after a short beat.
-          await sleep(360);
-          push({ text: beat.started });
-          await sleep(beat.interaction ? 850 : 1500);
+          await sleep(420);
+          push({ text: session.started });
+          await sleep(session.interaction ? 1400 : 2100);
           if (cancelled) return;
 
-          if (beat.interaction) {
-            push({ text: beat.interaction.needsYou });
-            statuses[beat.worker] = "needs-you";
+          if (session.interaction) {
+            push({ text: session.interaction.needsYou });
+            statuses[i] = "needs-you";
             patch({ statuses: [...statuses] });
-            pulse("back", AMBER, w.y);
-            await sleep(1600);
+            await sleep(1800);
             if (cancelled) return;
             // Blank separator so the answer command starts a fresh block, like
             // every other typed command.
             push({ blank: true });
-            await type(beat.interaction.answer);
+            await type(session.interaction.answer);
             if (cancelled) return;
             await sleep(320);
-            push({ text: beat.interaction.sent });
-            statuses[beat.worker] = "working";
+            push({ text: session.interaction.sent });
+            statuses[i] = "working";
             patch({ statuses: [...statuses] });
-            pulse("out", ACTIVE, w.y);
-            await sleep(1500);
+            await sleep(1700);
             if (cancelled) return;
           }
 
-          // Result streams back: node settles to done, beam pulses worker → hub.
-          push({ tone: "done", text: beat.done });
-          statuses[beat.worker] = "done";
+          push({ tone: "done", text: session.done });
+          statuses[i] = "done";
           patch({ statuses: [...statuses] });
-          pulse("back", SKY, w.y);
           push({ blank: true });
-          await sleep(last ? 4200 : 1250);
+          await sleep(last ? 4200 : 1600);
         }
       }
     };
@@ -257,167 +300,457 @@ export function OrchestrationDemo() {
     };
   }, [inView]);
 
-  const pulsePath = frame.pulse
-    ? frame.pulse.dir === "back"
-      ? beamPathBack(frame.pulse.y)
-      : beamPath(frame.pulse.y)
-    : null;
+  // Every session that exists yet, in spawn order — the right column's panes.
+  const spawned = SESSIONS.map((session, index) => ({ session, index })).filter(
+    ({ index }) => frame.statuses[index] !== "idle",
+  );
+  const split = spawned.length > 0;
 
   return (
-    // One surface with the section around it: the session graph (left) and the
-    // live CLI transcript (right) sit directly on the parent's bg-card, with
-    // only hairline dividers separating the panes.
-    <div ref={ref} className="relative overflow-hidden">
-      <div className="relative">
-        {/* minmax(0,…) everywhere: a plain implicit column would take the
-            transcript pre's min-content width (its longest unbreakable line),
-            blowing the column wider than the card on phones — the graph pane
-            then centers in that oversized column and clips at the card edge. */}
-        <div className="relative grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
-          {/* Left: the live session graph — claude code driving five workers,
-              each a real brand logo. The active node lights and its beam pulses
-              in sync with the command running on the right. */}
-          <div
-            aria-hidden="true"
-            className="relative flex items-center justify-center overflow-hidden border-b border-white/[0.12] p-5 sm:p-6 lg:border-b-0 lg:border-r"
-          >
-            <svg viewBox="0 0 340 340" className="relative w-full max-w-[380px]" fill="none">
-              {/* Static edges from the hub to each worker. */}
-              {WORKERS.map((w) => (
-                <path
-                  key={`edge-${w.id}`}
-                  d={beamPath(w.y)}
-                  stroke="rgba(255,255,255,0.18)"
-                  strokeWidth="1.5"
-                />
-              ))}
-              {frame.pulse && pulsePath && (
-                <path
-                  key={frame.pulse.id}
-                  d={pulsePath}
-                  pathLength={100}
-                  stroke={frame.pulse.color}
-                  strokeWidth="2"
-                  className="beam-pulse"
-                />
-              )}
-
-              {/* Hub: the supervising claude-code session (real logo). */}
-              <foreignObject x="0" y="148" width="120" height="44">
-                {/* Pill bases are blue-grey (not paper white) so they read as
-                    lit by the aurora rather than pasted over it; hub one step
-                    brighter than the workers. */}
-                <div className="flex h-11 items-center gap-2.5 rounded-full bg-[#d8e4ee] px-3.5">
-                  {/* Mono-only marks (Grok, Kimi) draw in currentColor, so the
-                      light pill needs a dark color context. */}
-                  <AgentIcon name="Claude Code" size={24} color className="text-slate-900" />
-                  <span className="font-sans text-[15px] font-medium text-slate-900">
-                    claude
-                  </span>
-                </div>
-              </foreignObject>
-
-              {/* Worker sessions: real color logos, status shown by border/glow
-                  as each lights up through the pipeline. */}
-              {WORKERS.map((w, i) => {
-                const status = frame.statuses[i] ?? "idle";
-                return (
-                  <foreignObject
-                    key={w.id}
-                    x="176"
-                    y={w.y - 20}
-                    width="164"
-                    height="40"
-                    style={{
-                      opacity: status === "idle" ? 0.72 : 1,
-                      transition: "opacity 0.5s ease",
-                    }}
-                  >
-                    <div className="flex h-10 items-center gap-2 rounded-full bg-[#c8d7e5] px-3">
-                      {/* Kimi's color mark is blue-on-white and washes out on
-                          the light pill, so it uses the mono (currentColor)
-                          variant instead. */}
-                      <AgentIcon
-                        name={w.name}
-                        size={20}
-                        color={w.name !== "Kimi"}
-                        className="text-slate-900"
-                      />
-                      <span className="truncate font-sans text-[12px] font-medium text-slate-900">
-                        {w.id}
-                      </span>
-                      <span
-                        className="ml-auto h-2 w-2 shrink-0 rounded-full"
-                        style={{
-                          backgroundColor: STATUS_DOT[status],
-                          transition: "background-color 0.4s ease",
-                        }}
-                      />
-                    </div>
-                  </foreignObject>
-                );
-              })}
-            </svg>
+    <div ref={ref} className="relative">
+      {/* The window. Sidebar tone sits a step above the terminal's near-black,
+          the way the app's source list sits above its surfaces; the inset top
+          hairline plus the cast shadow are what make it read as a real macOS
+          window rather than a flat panel. */}
+      <div className="flex h-[25rem] overflow-hidden rounded-2xl border border-white/10 bg-[#1b1b21] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.08),0_28px_60px_-24px_rgba(0,0,0,0.8)] md:h-[27rem] lg:h-[28rem]">
+        {/* The sidebar only opens once the window is wide enough for the
+            terminal beside it to hold a full command line unwrapped — below
+            that it folds away, which is the app's own collapsed-source-list
+            state rather than a web-only compromise. */}
+        <aside
+          aria-hidden="true"
+          className="hidden w-[34%] max-w-[16.5rem] shrink-0 flex-col lg:flex"
+        >
+          <div className="flex items-center gap-2 px-3.5 py-3">
+            <TrafficLights />
+            <SidebarToggleGlyph className="ml-1.5" />
+            <PlusGlyph className="ml-auto" />
           </div>
 
-          {/* Right: the CLI transcript, floating directly on the glow. */}
-          <div>
-            {/* Screen-reader copy of the pipeline's outcome; the animated pane
-                re-renders too often to be useful aloud. */}
-            <pre className="sr-only">
-              {DONE_SUMMARY.map((l) => `${l.text}\n`).join("")}
-            </pre>
+          <div className="min-h-0 flex-1 overflow-hidden px-2 pt-1">
+            <ProjectRow name="termio" />
+            <ul className="flex flex-col">
+              <SessionRow
+                agent={DRIVER.agent}
+                title={DRIVER.title}
+                status="working"
+              />
+              {SESSIONS.map((session, i) => {
+                const status = frame.statuses[i] ?? "idle";
+                if (status === "idle") return null;
+                return (
+                  <SessionRow
+                    key={session.title}
+                    agent={session.agent}
+                    title={session.title}
+                    status={status}
+                    // Selection follows the pane below: the app highlights the
+                    // session you are looking at, and that is the one whose
+                    // terminal just opened.
+                    selected={i === frame.active}
+                    // Rows arrive as the driver spawns them, so each one fades
+                    // in once — the same reveal the transcript lines use.
+                    className="line-in"
+                  />
+                );
+              })}
+            </ul>
+            <ul className="mt-1 flex flex-col">
+              {WORKTREES.map((branch) => (
+                <WorktreeRow key={branch} branch={branch} />
+              ))}
+            </ul>
+          </div>
+        </aside>
 
-            {/* min-height reserves the rolling window's space so the window does
-                not grow line by line while typing. Phones hard-wrap at the pane
-                edge exactly like a real terminal (the JSON lines have no soft
-                break points); from sm up lines stay unwrapped and can scroll. */}
-            <pre
-              aria-hidden="true"
-              className="min-h-[340px] whitespace-pre-wrap break-all p-5 font-mono text-[13px] leading-relaxed sm:min-h-[320px] sm:whitespace-pre sm:break-normal sm:overflow-x-auto sm:p-6 sm:text-[14px]"
+        {/* The content area: the driver session's shell on the left, and — once
+            something has been spawned — the split holding the agents' own
+            terminals on the right. The window's title block (the session's
+            folder over its branch) sits at the top, the way the app titles a
+            window. */}
+        <div className="flex min-w-0 flex-1 flex-col border-white/[0.07] bg-[#0b0b0d] lg:border-l">
+          <div className="flex items-start gap-3 px-4 pb-2 pt-3 sm:px-5">
+            <div className="flex lg:hidden">
+              <TrafficLights />
+            </div>
+            <div className="min-w-0 leading-tight">
+              <p className="truncate text-[12px] font-medium text-foreground/85">
+                termio
+              </p>
+              <p className="truncate text-[10.5px] text-muted-foreground">main</p>
+            </div>
+            <InspectorGlyph className="ml-auto shrink-0" />
+          </div>
+
+          {/* Screen-reader copy of the pipeline's outcome; the animated panes
+              re-render too often to be useful aloud. */}
+          <pre className="sr-only">
+            {DONE_SUMMARY.map((l) => `${l.text}\n`).join("")}
+          </pre>
+
+          <div
+            aria-hidden="true"
+            className="flex min-h-0 flex-1 px-4 pb-4 sm:px-5 sm:pb-5"
+          >
+            {/* The driver's shell. It keeps the left column once the split
+                opens, so it wraps its longer commands there exactly like a real
+                terminal in a narrow pane — the link lines have no soft break
+                points to fall on. */}
+            <div
+              className={cn(
+                "min-w-0",
+                split ? "w-full md:w-[55%] md:shrink-0" : "flex-1",
+              )}
             >
-              {frame.lines.map((line, i) =>
-                line.blank ? (
-                  <span key={line.id ?? i}>{"\n"}</span>
-                ) : (
-                  <span
-                    key={line.id ?? i}
-                    className={
-                      // Output lines fade in on arrival; typed prompt lines
-                      // are already animated by the typewriter, so they don't.
-                      // Whitespace behavior inherits from the pre (wrap on
-                      // phones, pre from sm up).
-                      line.prompt ? "block" : "line-in block"
-                    }
-                  >
-                    {line.prompt ? (
-                      <>
-                        <span className="select-none text-slate-400">$ </span>
-                        <span className="text-slate-50">{line.text}</span>
-                      </>
-                    ) : (
-                      <span
-                        className={
-                          line.tone === "done" ? "text-sky-300" : "text-slate-300"
-                        }
-                      >
-                        {line.text}
-                      </span>
-                    )}
+              <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.6] md:text-[11.5px] xl:text-[12px] xl:leading-[1.65]">
+                {frame.lines.map((line, i) =>
+                  line.blank ? (
+                    <span key={line.id ?? i}>{"\n"}</span>
+                  ) : (
+                    <span
+                      key={line.id ?? i}
+                      className={
+                        // Output lines fade in on arrival; typed prompt lines
+                        // are already animated by the typewriter, so they don't.
+                        line.prompt ? "block" : "line-in block"
+                      }
+                    >
+                      {line.prompt ? (
+                        <>
+                          <span className="select-none text-slate-400">$ </span>
+                          <span className="text-slate-50">{line.text}</span>
+                        </>
+                      ) : (
+                        <span
+                          style={
+                            line.tone === "done" ? { color: DONE } : undefined
+                          }
+                          className={line.tone === "done" ? "" : "text-slate-300"}
+                        >
+                          {line.text}
+                        </span>
+                      )}
+                    </span>
+                  ),
+                )}
+                {frame.typing !== null && (
+                  <span className="block">
+                    <span className="select-none text-slate-400">$ </span>
+                    <span className="text-slate-50">{frame.typing}</span>
+                    <span className="demo-cursor text-slate-50/80">▋</span>
                   </span>
-                ),
-              )}
-              {frame.typing !== null && (
-                <span className="block">
-                  <span className="select-none text-slate-400">$ </span>
-                  <span className="text-slate-50">{frame.typing}</span>
-                  <span className="demo-cursor text-slate-50/80">▋</span>
-                </span>
-              )}
-            </pre>
+                )}
+              </pre>
+            </div>
+
+            {/* The right column. It wipes open on the first spawn, then each
+                later spawn adds a pane under the last — the same beat as the
+                row arriving in the sidebar, and the layout the app is actually
+                used in. Every pane is keyed by its agent, so it mounts once and
+                plays its own open. Below md the window is too narrow to hold
+                two columns of terminal text, so the split waits for the room. */}
+            {split && (
+              <div className="split-in ml-3 hidden min-w-0 flex-1 flex-col border-l border-white/[0.07] pl-3 md:flex">
+                {spawned.map(({ session, index }, position) => (
+                  <div
+                    key={session.cli}
+                    className={cn(
+                      "pane-in min-h-0 flex-1",
+                      position > 0 && "mt-2 border-t border-white/[0.07] pt-2",
+                    )}
+                  >
+                    <AgentPane
+                      session={session}
+                      status={frame.statuses[index] ?? "idle"}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+/* ----------------------------------------------------------- agent pane --- */
+
+// One spawned agent working in its own pane. The shape is a stylized agent-CLI
+// session rather than any one vendor's exact chrome: who it is and what it was
+// asked, the tool calls it is making, and a closing line — held to four rows,
+// because four of these share the right column and each one still has to read.
+// The closing line carries the same working / needs-you / done language as the
+// sidebar row beside it.
+function AgentPane({
+  session,
+  status,
+}: {
+  session: Session;
+  status: Status;
+}) {
+  return (
+    <div className="min-h-0 font-mono text-[10px] leading-[1.6] lg:text-[10.5px]">
+      <p className="flex items-center gap-1.5 truncate">
+        <AgentIcon
+          name={session.agent}
+          size={11}
+          color={session.agent !== "Kimi"}
+          className="text-foreground/80"
+        />
+        <span className="shrink-0 text-foreground/80">{session.cli}</span>
+        <span className="truncate text-muted-foreground/70">
+          {session.title}
+        </span>
+      </p>
+      {/* Result inline after the call rather than on its own `└` row: at four
+          panes to a column there is no height to spend on a line each. */}
+      {session.tools.map((tool) => (
+        <p key={tool.verb + tool.target} className="truncate">
+          <span className="select-none text-slate-500">{session.bullet} </span>
+          <span className="text-slate-200">{tool.verb} </span>
+          <span className="text-slate-400">{tool.target}</span>
+          <span className="text-slate-500">
+            {" "}
+            {session.sub} {tool.result}
+          </span>
+        </p>
+      ))}
+
+      {status === "needs-you" && session.interaction && (
+        <p className="truncate" style={{ color: NEEDS_YOU }}>
+          <span className="select-none">? </span>
+          {session.interaction.question}
+          <span className="demo-cursor"> ▋</span>
+        </p>
+      )}
+      {status === "working" && (
+        <p className="flex items-center gap-1.5 truncate">
+          <WorkingIndicator />
+          <span className="text-slate-300">{session.activity}</span>
+          <span className="truncate text-slate-500">
+            ({session.elapsed} · esc to interrupt)
+          </span>
+        </p>
+      )}
+      {status === "done" && (
+        <p className="truncate" style={{ color: DONE }}>
+          <span className="select-none">✓ </span>
+          {session.outcome}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/* --------------------------------------------------------------- chrome --- */
+
+function TrafficLights() {
+  return (
+    <div className="flex shrink-0 items-center gap-[6px]">
+      <span className="size-[11px] rounded-full bg-brand-red" />
+      <span className="size-[11px] rounded-full bg-brand-amber" />
+      <span className="size-[11px] rounded-full bg-brand-green" />
+    </div>
+  );
+}
+
+function SidebarToggleGlyph({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.7}
+      className={cn("size-[15px] text-muted-foreground", className)}
+    >
+      <rect x="3" y="4" width="18" height="16" rx="3" />
+      <path d="M9.5 4v16" />
+    </svg>
+  );
+}
+
+function PlusGlyph({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.9}
+      strokeLinecap="round"
+      className={cn("size-[15px] text-muted-foreground", className)}
+    >
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function InspectorGlyph({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.7}
+      className={cn("size-[15px] text-muted-foreground", className)}
+    >
+      <rect x="3" y="4" width="18" height="16" rx="3" />
+      <path d="M14.5 4v16" />
+    </svg>
+  );
+}
+
+/* -------------------------------------------------------------- sidebar --- */
+
+function FolderGlyph({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.7}
+      strokeLinejoin="round"
+      className={cn("shrink-0", className)}
+    >
+      <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v7a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 17z" />
+    </svg>
+  );
+}
+
+function ProjectRow({ name }: { name: string }) {
+  return (
+    <div className="flex items-center gap-2 px-2 py-[5px] text-[12.5px] text-foreground/85">
+      <FolderGlyph className="size-[15px] text-muted-foreground" />
+      <span className="truncate">{name}</span>
+    </div>
+  );
+}
+
+function SessionRow({
+  agent,
+  title,
+  status,
+  selected = false,
+  className,
+}: {
+  agent: string;
+  title: string;
+  status: Status;
+  selected?: boolean;
+  className?: string;
+}) {
+  return (
+    <li
+      className={cn(
+        // Sessions indent under their project header, and selection is a soft
+        // full-width fill — no outline (SidebarRowHighlight).
+        "flex items-center gap-1.5 rounded-[7px] py-[5px] pl-6 pr-2",
+        selected && "bg-white/[0.09]",
+        className,
+      )}
+    >
+      <span className="relative grid size-4 shrink-0 place-items-center">
+        {status === "working" ? (
+          <WorkingIndicator />
+        ) : (
+          // Kimi's color mark is blue-on-white and washes out on the dark
+          // sidebar, so it uses the mono (currentColor) variant instead.
+          <AgentIcon
+            name={agent}
+            size={12}
+            color={agent !== "Kimi"}
+            className="text-foreground/80"
+          />
+        )}
+        {/* The resting status is a ring around the leading mark — green when the
+            turn just finished, orange when the agent is blocked on you — never a
+            trailing dot. Sized well past the icon so it reads as a halo rather
+            than an outline on the mark, and an overlay so it never shifts the
+            row. */}
+        <span
+          className="pointer-events-none absolute size-5 rounded-full border-[1.5px] transition-colors duration-300"
+          style={{
+            borderColor:
+              status === "done"
+                ? DONE
+                : status === "needs-you"
+                  ? NEEDS_YOU
+                  : "transparent",
+          }}
+        />
+      </span>
+      <span
+        className={cn(
+          "truncate text-[12.5px]",
+          selected ? "text-foreground" : "text-foreground/80",
+        )}
+      >
+        {title}
+      </span>
+    </li>
+  );
+}
+
+function WorktreeRow({ branch }: { branch: string }) {
+  return (
+    <li className="flex items-center gap-1.5 py-[5px] pl-6 pr-2 text-[12.5px] text-muted-foreground">
+      <FolderGlyph className="size-4" />
+      <span className="truncate">{branch}</span>
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        className="ml-auto size-3 shrink-0 opacity-60"
+      >
+        <line x1="6" y1="3" x2="6" y2="15" />
+        <circle cx="18" cy="6" r="3" />
+        <circle cx="6" cy="18" r="3" />
+        <path d="M18 9a9 9 0 0 1-9 9" />
+      </svg>
+    </li>
+  );
+}
+
+// The eight perimeter cells of a 3×3 grid in clockwise order, as (column, row)
+// with the center at (1,1) — the ring the comet travels, matching the app's
+// WorkingIndicator (Shared/TermioShared/SessionStatus.swift). Geometry is the
+// app's too: 2.5pt dots on a 3.6pt pitch, over a steady half-ink center.
+const RING: readonly (readonly [number, number])[] = [
+  [0, 0],
+  [1, 0],
+  [2, 0],
+  [2, 1],
+  [2, 2],
+  [1, 2],
+  [0, 2],
+  [0, 1],
+];
+const DOT = 2.5;
+const PITCH = 3.6;
+const PERIOD = 1.1;
+
+function WorkingIndicator() {
+  return (
+    <span className="relative block size-[13px] shrink-0 text-foreground">
+      {[[1, 1] as const, ...RING].map(([column, row], i) => (
+        <span
+          key={`${column}-${row}`}
+          className={cn(
+            "absolute rounded-full bg-current",
+            // The center dot is the steady anchor; only the ring animates.
+            i === 0 ? "opacity-50" : "working-dot",
+          )}
+          style={{
+            width: DOT,
+            height: DOT,
+            left: `calc(50% + ${(column - 1) * PITCH - DOT / 2}px)`,
+            top: `calc(50% + ${(row - 1) * PITCH - DOT / 2}px)`,
+            animationDelay: i === 0 ? undefined : `${-((i - 1) / 8) * PERIOD}s`,
+          }}
+        />
+      ))}
+    </span>
   );
 }

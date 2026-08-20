@@ -20,8 +20,11 @@ import { cn } from "@/lib/utils";
 // default so the logos stay legible on the near-black canvas), and `.Color` is
 // the full brand-color mark. Pass `color` to opt into `.Color`; brands with no
 // color variant (e.g. Grok — xAI's mark is monochrome by design) fall back to
-// the mono mark, which is already their brand look. Pi has no brand icon in the
-// set, so it falls back to a glyph.
+// the mono mark, which is already their brand look.
+//
+// Two agents have no icon in the set, and rather than draw a logo for someone
+// else's product they get the character each already prints for itself: Pi's π,
+// and the diagonal hatch Crush rules its banner with.
 type GlyphProps = { size?: number };
 type BrandIcon = React.ComponentType<GlyphProps> & {
   Color?: React.ComponentType<GlyphProps>;
@@ -40,14 +43,19 @@ const brandByAgent: Record<string, BrandIcon> = {
   DeepSeek: DeepSeek,
 };
 
-function PiGlyph({ size = 20 }: GlyphProps) {
+const glyphByAgent: Record<string, string> = {
+  Pi: "π",
+  Crush: "╱╱",
+};
+
+function TextGlyph({ size = 20, text }: GlyphProps & { text: string }) {
   return (
     <span
       aria-hidden="true"
       className="inline-flex items-center justify-center font-mono font-semibold leading-none"
       style={{ width: size, height: size, fontSize: size * 0.95 }}
     >
-      π
+      {text}
     </span>
   );
 }
@@ -65,10 +73,14 @@ export function AgentIcon({
   color?: boolean;
 }) {
   const Brand = brandByAgent[name];
-  const Glyph = Brand ? (color ? (Brand.Color ?? Brand) : Brand) : PiGlyph;
+  const Glyph = Brand && (color ? (Brand.Color ?? Brand) : Brand);
   return (
     <span className={cn("inline-flex shrink-0", className)} aria-hidden="true">
-      <Glyph size={size} />
+      {Glyph ? (
+        <Glyph size={size} />
+      ) : (
+        <TextGlyph size={size} text={glyphByAgent[name] ?? name.slice(0, 1)} />
+      )}
     </span>
   );
 }
