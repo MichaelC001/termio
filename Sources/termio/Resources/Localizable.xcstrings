@@ -2782,16 +2782,6 @@
         }
       }
     },
-    "View Trajectory": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "查看轨迹"
-          }
-        }
-      }
-    },
     "Waiting for the agent’s first status report.": {
       "localizations": {
         "zh-Hans": {

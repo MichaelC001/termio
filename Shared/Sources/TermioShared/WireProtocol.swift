@@ -80,8 +80,7 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     case fileList(path: String, entries: [WireFileEntry])
     /// The client asks for a file's contents. Answered with `.file` or `.error`.
     /// `dark` is the client's light/dark trait — the server bakes it into the
-    /// rendered Markdown preview (`WireFile.html`) so the page matches, the
-    /// same contract as `.trace`.
+    /// rendered Markdown preview (`WireFile.html`) so the page matches.
     case readFile(projectID: String, path: String, dark: Bool)
     /// File contents (server → client).
     case file(WireFile)
@@ -124,15 +123,6 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     /// One file's unified diff (server → client).
     case diff(WireDiff)
     /// The server rejected a request (unknown session, no live PTY).
-    /// Phone → Mac: render this session's agent transcript as an HTML trace
-    /// (the same dashboard-over-conversation the desktop Info pane shows). The
-    /// phone passes its own light/dark trait so the returned page matches.
-    case trace(sessionID: String, dark: Bool)
-
-    /// Mac → phone: the rendered trace document for `sessionID`. The phone drops
-    /// it into a `WKWebView` overlay. Large, so it rides the 8 MB-capped socket.
-    case traceHTML(sessionID: String, html: String)
-
     /// Phone → Mac: list the hosts in the Mac's `~/.ssh/config`. The phone is
     /// sandboxed and has no `~/.ssh`, so the Mac reads it and the phone imports
     /// the results into its own SSH manager.
@@ -236,10 +226,6 @@ public enum CompanionControl: Codable, Sendable, Equatable {
             return Self.json([
                 "t": "diff", "path": diff.path, "text": diff.text, "binary": diff.binary,
             ])
-        case .trace(let sessionID, let dark):
-            return Self.json(["t": "trace", "session": sessionID, "dark": dark])
-        case .traceHTML(let sessionID, let html):
-            return Self.json(["t": "traceHTML", "session": sessionID, "html": html])
         case .sshConfigHosts:
             return #"{"t":"sshConfigHosts"}"#
         case .sshConfigList(let hosts):
@@ -394,13 +380,6 @@ public enum CompanionControl: Codable, Sendable, Equatable {
                 path: path, text: text,
                 binary: obj["binary"] as? Bool ?? false
             ))
-        case "trace":
-            guard let sessionID = obj["session"] as? String else { return nil }
-            return .trace(sessionID: sessionID, dark: obj["dark"] as? Bool ?? false)
-        case "traceHTML":
-            guard let sessionID = obj["session"] as? String,
-                  let html = obj["html"] as? String else { return nil }
-            return .traceHTML(sessionID: sessionID, html: html)
         case "sshConfigHosts":
             return .sshConfigHosts
         case "sshConfigList":
@@ -543,7 +522,7 @@ public struct WireFile: Codable, Sendable, Equatable {
     public let mtime: Int
     /// A self-contained rendered preview document, only for Markdown files —
     /// the Mac renders with the same reader pipeline as its own Preview pane
-    /// and the phone drops it into a `WKWebView`, the trace pattern. nil for
+    /// and the phone drops it into a `WKWebView`. nil for
     /// every other file, and when the serving peer predates the field.
     public let html: String?
 

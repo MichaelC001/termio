@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 /// The right inspector's content: its list (file tree / search / changes / issues) beside any open
-/// detail — a file editor or preview, a git diff, a PR/issue, or an agent trace. Every one of these
+/// detail — a file editor or preview, a git diff, or a PR/issue. Every one of these
 /// is a natural master–detail pair (tree ‖ editor, issue list ‖ conversation, changes ‖ diff), so
 /// the list stays put in a narrow leading column and clicking an item only swaps the detail — no
 /// drill-in / back round-trip. Details used to cover the terminal; they live here now, so the
@@ -110,8 +110,8 @@ struct InspectorRoot: View {
     }
 }
 
-/// The detail's own window controls, drawn at the trailing edge of each detail's header (and as a
-/// top-trailing overlay on the header-less trace). All three act on the content area, so they live
+/// The detail's own window controls, drawn at the trailing edge of each detail's header. All three
+/// act on the content area, so they live
 /// *in* it rather than in the window toolbar — which also sidesteps the flaky
 /// `NSTrackingSeparatorToolbarItem` layout the toolbar-hosted versions destabilized. Hugeicons
 /// glyphs, matching the inspector's other pane-header buttons.
@@ -225,9 +225,6 @@ struct InspectorDetailContent: View {
                                onClose: close)
                     .id(url)
             }
-        } else if let request = store.openTrace {
-            TraceView(request: request, settings: settings, onClose: close)
-                .id(request)
         }
     }
 }

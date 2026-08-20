@@ -12,11 +12,11 @@ import WebKit
 ///
 /// That indirection is the point:
 ///
-/// - The reader, the trace and the Issues pane keep their no-script-from-content rule.
+/// - The reader and the Issues pane keep their no-script-from-content rule.
 ///   The reader page in particular can read local files through its `termio-md` scheme
 ///   handler, so script running *there* would be a real escalation; script running in this
 ///   harness, which has no scheme handler and loads nothing but a string, is not.
-/// - A transcript is untrusted agent output. Mermaid runs at its default `strict` security
+/// - A diagram's source is somebody else's text. Mermaid runs at its default `strict` security
 ///   level (labels sanitized, HTML labels off), and the SVG is checked again on the way
 ///   out, so a diagram can at worst paint pixels.
 /// - Nothing but the Mac ever needs the engine. The companion's own pages are still built
@@ -35,7 +35,7 @@ final class MermaidRenderer: NSObject {
         let muted: String
         let line: String
 
-        init(_ theme: TraceTheme) {
+        init(_ theme: DocumentTheme) {
             background = theme.background
             panel = theme.panel
             foreground = theme.foreground
@@ -60,9 +60,9 @@ final class MermaidRenderer: NSObject {
     // MARK: - Finding and replacing diagram fences
 
     /// The mermaid fences in a page `MarkdownHTML` produced. Working on the built HTML
-    /// rather than threading a parameter through every renderer is what lets the reader,
-    /// the trace and the Issues pane share one mechanism: each builds its page exactly as
-    /// before, then swaps the fences it finds.
+    /// rather than threading a parameter through every renderer is what lets the reader
+    /// and the Issues pane share one mechanism: each builds its page exactly as before,
+    /// then swaps the fences it finds.
     /// `nonisolated(unsafe)` because `Regex` isn't `Sendable`, though a compiled pattern
     /// is immutable and matching never touches the renderer's state.
     nonisolated(unsafe) private static let fence =

@@ -287,9 +287,9 @@ final class TerminalViewController: UIViewController {
             self?.goBack()
         }, for: .touchUpInside)
         // The right slot balances the back chevron (keeping the title centered)
-        // and holds an overflow menu of per-session actions — View Trajectory and
-        // Copy Path for a companion session. With nothing to offer (the demo
-        // shell has no Mac transcript or path) it stays an invisible spacer.
+        // and holds an overflow menu of per-session actions — Copy Path for a
+        // companion session. With nothing to offer (the demo shell has no Mac
+        // project path) it stays an invisible spacer.
         let overflow = UIButton(type: .system)
         overflow.applyGlassSymbol("ellipsis", pointSize: 16)
         overflow.accessibilityIdentifier = "terminal.overflow"
@@ -317,36 +317,17 @@ final class TerminalViewController: UIViewController {
         ])
     }
 
-    /// The header overflow menu. View Trajectory and Copy Path appear only for a
-    /// companion session, where there is a Mac transcript and project path to
-    /// reach; the demo shell has neither, so the menu comes back empty and the
-    /// button hides itself.
+    /// The header overflow menu. Copy Path appears only for a companion session,
+    /// where there is a Mac project path to reach; the demo shell has none, so the
+    /// menu comes back empty and the button hides itself.
     private func makeOverflowMenu() -> UIMenu {
         var items: [UIMenuElement] = []
-        if case .companion = backend {
-            items.append(UIAction(
-                title: localized("View Trajectory"), image: UIImage(systemName: "list.bullet.rectangle")
-            ) { [weak self] _ in self?.showTrace() })
-        }
         if let path = session.projectPath, !path.isEmpty {
             items.append(UIAction(
                 title: localized("Copy Path"), image: UIImage(systemName: "doc.on.doc")
             ) { _ in UIPasteboard.general.string = path })
         }
         return UIMenu(children: items)
-    }
-
-    /// Present the session's agent transcript as an in-app HTML trace — the
-    /// phone counterpart of the desktop Info pane's "View Trajectory". The Mac
-    /// renders it (reusing `SessionTraceRenderer`) and returns the document
-    /// over the companion socket; the sheet shows a spinner until it lands.
-    private func showTrace() {
-        guard case .companion = backend, let companion else { return }
-        let trace = TraceViewController()
-        companion.onTrace = { [weak trace] html in trace?.load(html: html) }
-        let nav = UINavigationController(rootViewController: trace)
-        present(nav, animated: true)
-        companion.requestTrace(dark: traitCollection.userInterfaceStyle == .dark)
     }
 
     /// Called by RootContainerViewController when this parked screen slides
@@ -1182,7 +1163,7 @@ extension TerminalViewController: UIEditMenuInteractionDelegate {
     /// Long-press → the system edit menu with a single Paste (Termius's
     /// hold-to-paste shape). Cross-app paste is the feature; in-terminal
     /// selection/copy was tried and cut as not worth its complexity — the
-    /// TUI's own copy affordances and the session trace cover reading.
+    /// TUI's own copy affordances cover reading.
     private func presentPasteMenu(at point: CGPoint) {
         let config = UIEditMenuConfiguration(
             identifier: "termio.terminal.paste", sourcePoint: point

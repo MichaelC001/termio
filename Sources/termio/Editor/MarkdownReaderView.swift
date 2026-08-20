@@ -5,12 +5,12 @@ import WebKit
 
 /// The Preview side of `FileEditorView` for Markdown: renders the file as a themed,
 /// document-grade reading view (the Apple-docs / iA-Writer register — narrow measure,
-/// generous rhythm), reusing the same `MarkdownHTML` parser the session trace uses but
-/// with its own reader stylesheet rather than the trace's dense dashboard skin.
+/// generous rhythm), reusing the same `MarkdownHTML` parser the Issues pane uses but
+/// with its own reader stylesheet.
 ///
 /// It renders the *live* editor buffer (`source`), not the file on disk, so flipping over
 /// from Edit shows unsaved keystrokes immediately. The page's colors come from termio's
-/// active chrome theme via `TraceTheme`, so Preview always matches the app.
+/// active chrome theme via `DocumentTheme`, so Preview always matches the app.
 struct MarkdownReaderView: View {
     let source: String
     let fileURL: URL
@@ -29,7 +29,7 @@ struct MarkdownReaderView: View {
     @State private var diagrams: [String: String] = [:]
 
     var body: some View {
-        let theme = TraceTheme.resolveReader(settings: settings, colorScheme: colorScheme)
+        let theme = DocumentTheme.resolveReader(settings: settings, colorScheme: colorScheme)
         let mermaidTheme = MermaidRenderer.Theme(theme)
         let document = MarkdownReaderRenderer.document(
             source, theme: theme, fontFamily: settings.fontFamily)

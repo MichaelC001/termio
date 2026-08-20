@@ -51,9 +51,9 @@ struct TerminalPane: View {
 
     var body: some View {
         GeometryReader { geo in
-            // The terminal group fills the whole pane. File editors, diffs, PR/issue details and
-            // agent traces now open in the right inspector (see `InspectorDetailHost`) rather than
-            // covering the terminal, so this pane is only ever terminal surfaces + split dividers.
+            // The terminal group fills the whole pane. File editors, diffs and PR/issue details
+            // now open in the right inspector (see `InspectorDetailHost`) rather than covering
+            // the terminal, so this pane is only ever terminal surfaces + split dividers.
             let bounds = CGRect(origin: .zero, size: geo.size)
             let layout = store.splitRoot?.layout(in: bounds)
             let zoomed = store.isPaneZoomed && layout != nil
@@ -105,7 +105,6 @@ struct TerminalPane: View {
                 store.openDiff = nil
             } else {
                 store.openFileURL = nil
-                store.openTrace = nil
                 store.openIssueDetail = nil
             }
             requestSelectedTerminalFocus(reason: .overlayClosed)
@@ -252,7 +251,6 @@ struct TerminalPane: View {
                     && store.visiblePaneIDs.contains(id)
                     && store.openFileURL == nil
                     && store.openDiff == nil
-                    && store.openTrace == nil
                     && store.paletteMode == nil
             }
         )
@@ -272,7 +270,6 @@ struct TerminalPane: View {
                     && store.visiblePaneIDs.contains(id)
                     && store.openFileURL == nil
                     && store.openDiff == nil
-                    && store.openTrace == nil
                     && store.paletteMode == nil
             },
             repair: { requestTerminalFocus(for: id, reason: .faultInjector) }

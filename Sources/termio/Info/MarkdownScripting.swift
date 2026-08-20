@@ -4,7 +4,7 @@ import JavaScriptCore
 /// The JavaScript the Markdown renderers borrow: highlight.js for fenced code, KaTeX for
 /// math. Both run *here*, in a context the app owns, and hand back finished markup — the
 /// rendered pages stay script-free, which is what lets the same HTML serve the file
-/// reader, the session trace (untrusted agent output), and the phone unchanged. It also
+/// reader, the Issues pane, and the phone unchanged. It also
 /// keeps the reader's `termio-md` scheme handler unreachable from document content.
 ///
 /// highlight.js is the copy Highlightr already bundles for the editor, so fenced code in

@@ -302,9 +302,8 @@ None in copy, anywhere — UI strings, commits, PRs, issues, docs, release notes
 
 This is a rule about tone, not about glyphs. An emoji standing in for a missing
 asset is an *icon* question, and termio answers those with Hugeicons — see the
-two `🖼` image placeholders in `MarkdownHTML.swift` and
-`SessionTraceRenderer.swift`, which are inconsistent with the icon set rather
-than with this guide. Don't read that distinction as a loophole: an emoji in a
+`🖼` image placeholder in `MarkdownHTML.swift`, which is inconsistent with the
+icon set rather than with this guide. Don't read that distinction as a loophole: an emoji in a
 sentence, a label, or a commit message is always wrong.
 
 ## Mechanics

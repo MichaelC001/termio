@@ -1120,8 +1120,6 @@
 	<string>使用 %@</string>
 	<key>View</key>
 	<string>显示</string>
-	<key>View Trajectory</key>
-	<string>查看轨迹</string>
 	<key>View on %@</key>
 	<string>在 %@ 上查看</string>
 	<key>Waiting for the agent’s first status report.</key>

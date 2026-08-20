@@ -59,7 +59,7 @@ struct ChromeTheme {
         // Dark themes already clear it, so only the light side is lifted.
         self.secondaryForeground = foreground.opacity(dark ? 0.6 : 0.75)
         // The active row reads as accent-tinted (VSCode's active list item) and the
-        // same color inks trace links, so a theme whose ANSI blue is deep enough to
+        // same color inks document links, so a theme whose ANSI blue is deep enough to
         // vanish on its own background (Melange Light 2.80, Cobalt2 2.64) must use
         // its bright blue instead: take whichever of palette 4 and 12 contrasts the
         // background more. Fall back through the quieter text-selection grey to the
@@ -104,6 +104,79 @@ struct ChromeTheme {
         return 0.2126 * linear(srgb.redComponent)
             + 0.7152 * linear(srgb.greenComponent)
             + 0.0722 * linear(srgb.blueComponent)
+    }
+}
+
+/// The colors termio injects into the HTML pages it renders in a web view — the
+/// Markdown reader, the preview it renders for the phone, and the Issues pane — so
+/// those pages match the app. Resolved from the chosen chrome theme, or termio's
+/// built-in light/dark defaults when no Ghostty theme is selected (mirrors
+/// `ChromeTheme.terminalBackgroundColor`'s fallbacks).
+struct DocumentTheme {
+    let background: String
+    let panel: String
+    let foreground: String
+    let secondary: String
+    let accent: String
+    let isDark: Bool
+
+    @MainActor
+    static func resolve(settings: AppSettings, colorScheme: ColorScheme) -> DocumentTheme {
+        if let chrome = settings.chromeTheme(for: colorScheme) { return from(chrome) }
+        return builtin(dark: colorScheme == .dark)
+    }
+
+    /// `resolve` for the Markdown reader: the same chrome-theme path, but the no-theme
+    /// fallback is the reader palette rather than `builtin`.
+    @MainActor
+    static func resolveReader(settings: AppSettings, colorScheme: ColorScheme) -> DocumentTheme {
+        if let chrome = settings.chromeTheme(for: colorScheme) { return from(chrome) }
+        return reader(dark: colorScheme == .dark)
+    }
+
+    private static func from(_ chrome: ChromeTheme) -> DocumentTheme {
+        DocumentTheme(
+            background: hex(chrome.background),
+            panel: hex(chrome.panelBackground),
+            foreground: hex(chrome.foreground),
+            secondary: hex(chrome.secondaryForeground),
+            accent: hex(chrome.accent),
+            isDark: chrome.isDark
+        )
+    }
+
+    /// termio's built-in light/dark defaults with no `AppSettings` dependency —
+    /// used to render a page for the phone, which sends only its light/dark trait
+    /// (not the Mac's chrome theme) over the companion wire. Tune the Markdown
+    /// reader in `reader(dark:)` instead.
+    static func builtin(dark: Bool) -> DocumentTheme {
+        dark
+            ? DocumentTheme(background: "#212121", panel: "#2a2a2c", foreground: "#e6e6e8",
+                            secondary: "#8a8a90", accent: "#7d8cff", isDark: true)
+            : DocumentTheme(background: "#ffffff", panel: "#f2f2f4", foreground: "#1d1d1f",
+                            secondary: "#6e6e73", accent: "#2f6fed", isDark: false)
+    }
+
+    /// The Markdown reader's fallback palette, deliberately decoupled from `builtin`.
+    /// Backgrounds mirror `terminalBackgroundColor`'s fallbacks (pure white in light,
+    /// Afterglow #212121 in dark) so the reading view matches the terminal it overlays
+    /// and the editor you flip from — seamless, not a differently-tinted page. The
+    /// accents are muted, print-like tints tuned for reading; warmth and beauty come
+    /// from typography, not a coloured canvas.
+    static func reader(dark: Bool) -> DocumentTheme {
+        dark
+            ? DocumentTheme(background: "#212121", panel: "#2a2a2c", foreground: "#e6e6e8",
+                            secondary: "#8a8a90", accent: "#6f9bd8", isDark: true)
+            : DocumentTheme(background: "#ffffff", panel: "#f7f6f3", foreground: "#1d1d1f",
+                            secondary: "#6e6e73", accent: "#205ea6", isDark: false)
+    }
+
+    private static func hex(_ color: Color) -> String {
+        let ns = NSColor(color).usingColorSpace(.sRGB) ?? .black
+        let r = Int((ns.redComponent * 255).rounded())
+        let g = Int((ns.greenComponent * 255).rounded())
+        let b = Int((ns.blueComponent * 255).rounded())
+        return String(format: "#%02x%02x%02x", r, g, b)
     }
 }
 

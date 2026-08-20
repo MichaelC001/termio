@@ -35,7 +35,7 @@ final class FileViewerController: UIViewController {
     private var rendered = false
 
     /// The Mac-rendered Markdown preview (`WireFile.html`), shown in a web
-    /// view over the text view — the TraceViewController pattern. Markdown
+    /// view over the text view. Markdown
     /// opens in preview; the pencil flips to source (and editing, when
     /// allowed). One-way per open: the preview HTML was rendered from the
     /// bytes as fetched, so after edits it would lie — reopening re-renders.
@@ -201,8 +201,8 @@ final class FileViewerController: UIViewController {
     }
 
     /// The Markdown preview layer, only when the Mac sent one. Sits over the
-    /// text view with the same frame; transparent like TraceViewController so
-    /// the themed page's own background shows through cleanly.
+    /// text view with the same frame, and transparent so the themed page's own
+    /// background shows through cleanly.
     private func configurePreview(below header: UIView, above footer: UIView) {
         guard let html = file.html else { return }
         let web = WKWebView()

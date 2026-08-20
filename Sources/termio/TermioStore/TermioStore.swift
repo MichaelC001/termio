@@ -211,7 +211,7 @@ final class TermioStore: ObservableObject {
                     openFileDisplayName = nil
                 }
             }
-            if openFileURL != nil { openDiff = nil; openTrace = nil; openIssueDetail = nil; noteDetailOpened() }
+            if openFileURL != nil { openDiff = nil; openIssueDetail = nil; noteDetailOpened() }
             // Closing always returns to the editable default; a read-only open re-asserts the flag
             // immediately before setting the URL (see `openTerminalLink`). The jump line clears too,
             // so a later plain open of the same file doesn't scroll to a stale hit.
@@ -251,27 +251,19 @@ final class TermioStore: ObservableObject {
     /// pane covers itself with `GitDiffView` while it is non-nil. Opening a diff dismisses any open
     /// file editor.
     @Published var openDiff: GitDiffRequest? {
-        didSet { if openDiff != nil { openFileURL = nil; openTrace = nil; noteDetailOpened() }; refreshDetailPresentation() }
-    }
-
-    /// The agent trace currently shown over the terminal, or `nil` when none is. The
-    /// third content overlay alongside `openFileURL` and `openDiff`: the Info pane's
-    /// "View Trajectory" sets it, and `TerminalPane` covers itself with `TraceView` while
-    /// it is non-nil. Mutually exclusive with the other two.
-    @Published var openTrace: TraceRequest? {
-        didSet { if openTrace != nil { openFileURL = nil; openDiff = nil; openIssueDetail = nil; noteDetailOpened() }; refreshDetailPresentation() }
+        didSet { if openDiff != nil { openFileURL = nil; noteDetailOpened() }; refreshDetailPresentation() }
     }
 
     /// The GitHub issue / pull request whose detail is shown, or `nil` when none is. The
-    /// fourth inspector detail: clicking a row in the Issues pane sets it, and the inspector
+    /// third inspector detail: clicking a row in the Issues pane sets it, and the inspector
     /// shows the conversation / PR files in place of its list (see `InspectorDetailHost`).
     /// Unlike the others it deliberately COEXISTS with `openDiff`: a PR's file diff stacks on
     /// top of the detail, so closing the diff returns to the PR rather than the list.
     @Published var openIssueDetail: IssueSummary? {
-        didSet { if openIssueDetail != nil { openFileURL = nil; openDiff = nil; openTrace = nil; noteDetailOpened() }; refreshDetailPresentation() }
+        didSet { if openIssueDetail != nil { openFileURL = nil; openDiff = nil; noteDetailOpened() }; refreshDetailPresentation() }
     }
 
-    /// True while any inspector detail (file, diff, trace, PR/issue) is open. A render
+    /// True while any inspector detail (file, diff, PR/issue) is open. A render
     /// predicate — "is there content to show" — read by the inspector, the terminal context
     /// menu and the pane drag, and by the app delegate to mount or tear down the full-window
     /// maximize host. It is deliberately *not* what reveals the inspector; see `detailDidOpen`.
@@ -279,7 +271,7 @@ final class TermioStore: ObservableObject {
     @Published private(set) var isDetailPresented = false
 
     /// Fires when a detail opens because the *user* opened one — a file or diff clicked in the
-    /// inspector, a trace, a PR row, a cmd-clicked path in the terminal. The app delegate
+    /// inspector, a PR row, a cmd-clicked path in the terminal. The app delegate
     /// un-collapses the inspector on it, and nothing else does. Deliberately silent while a
     /// detail is merely re-stated (see `isRestatingDetail`): what the inspector shows is
     /// per-session, but whether the panel is open is global, so a session switch (or a launch
@@ -320,10 +312,10 @@ final class TermioStore: ObservableObject {
     /// resets to `false` when the last detail closes, so the list is back for the next browse.
     @Published var inspectorListCollapsed = false
 
-    /// Recomputes `isDetailPresented` from the four detail properties and drops the maximize
+    /// Recomputes `isDetailPresented` from the three detail properties and drops the maximize
     /// state once nothing is left to show. Called from each detail setter's `didSet`.
     private func refreshDetailPresentation() {
-        let presented = openFileURL != nil || openDiff != nil || openTrace != nil || openIssueDetail != nil
+        let presented = openFileURL != nil || openDiff != nil || openIssueDetail != nil
         if isDetailPresented != presented { isDetailPresented = presented }
         if !presented {
             if inspectorMaximized { inspectorMaximized = false }
@@ -449,7 +441,6 @@ final class TermioStore: ObservableObject {
             guard inspectorTab != oldValue else { return }
             openFileURL = nil
             openDiff = nil
-            openTrace = nil
             openIssueDetail = nil
         }
     }
@@ -541,7 +532,7 @@ final class TermioStore: ObservableObject {
     @Published var inspectorVisible = false
 
     /// A per-session snapshot of the inspector's *content* — which tab is showing, which
-    /// detail (file / diff / trace / PR-issue) is open, and how that detail splits the
+    /// detail (file / diff / PR-issue) is open, and how that detail splits the
     /// panel between its list and itself. Switching terminal tabs restores each session's
     /// own right-side context instead of clearing it (issue #160): one session left on a
     /// file, another on a PR, another on the changes list.
@@ -558,15 +549,14 @@ final class TermioStore: ObservableObject {
         var openFileLine: Int?
         var openFileReadOnly = false
         var openDiff: GitDiffRequest?
-        var openTrace: TraceRequest?
         var openIssueDetail: IssueSummary?
         var listCollapsed = false
     }
 
     /// Each session's saved inspector layout, written when the selection leaves a
     /// session and read back when it returns (see `selectedSessionID`'s didSet). Seeded
-    /// from `state.json` on launch for the tab + open-file subset; the live diff / trace
-    /// / PR details are in-memory only — they're snapshots of data that gets re-fetched,
+    /// from `state.json` on launch for the tab + open-file subset; the live diff / PR
+    /// details are in-memory only — they're snapshots of data that gets re-fetched,
     /// so they don't survive a quit (matching VS Code's hot exit, which restores open
     /// files but not transient views). Keyed by session, so a dead session's entry is
     /// pruned alongside its runtime in `syncRuntimes`.
@@ -620,7 +610,6 @@ final class TermioStore: ObservableObject {
             openFileLine: openFileLine,
             openFileReadOnly: openFileReadOnly,
             openDiff: openDiff,
-            openTrace: openTrace,
             openIssueDetail: openIssueDetail,
             listCollapsed: inspectorListCollapsed
         )
@@ -635,8 +624,7 @@ final class TermioStore: ObservableObject {
         isRestatingDetail = true
         defer { isRestatingDetail = false }
         inspectorTab = state.tab
-        openFileURL = nil; openDiff = nil; openTrace = nil; openIssueDetail = nil
-        openTrace = state.openTrace
+        openFileURL = nil; openDiff = nil; openIssueDetail = nil
         openIssueDetail = state.openIssueDetail
         openFileReadOnly = state.openFileReadOnly
         openFileLine = state.openFileLine

@@ -153,8 +153,8 @@ private struct WebPreview: NSViewRepresentable {
     let url: URL
 
     func makeNSView(context: Context) -> WKWebView {
-        // PreviewWebView: right-click stripped to Copy, like the trace and the
-        // Markdown reader — a read-only preview has no use for WebKit's default menu.
+        // PreviewWebView: right-click stripped to Copy, like the Markdown reader —
+        // a read-only preview has no use for WebKit's default menu.
         let view = PreviewWebView()
         view.setValue(false, forKey: "drawsBackground")
         view.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())

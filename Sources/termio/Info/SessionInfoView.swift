@@ -4,17 +4,12 @@ import SwiftUI
 /// The inspector's Info pane — the third tab beside Files and Changes. At-a-glance
 /// facts about the selected session plus quick actions on its working directory and,
 /// for an agent session, its conversation transcript: copy the path, reveal it in
-/// Finder, open the folder in an installed editor, or open the session's rendered
-/// trajectory over the terminal.
+/// Finder, or open the folder in an installed editor.
 struct SessionInfoView: View {
     @EnvironmentObject var store: TermioStore
 
     private var session: Session? {
         store.selectedSessionID.flatMap { store.session($0) }
-    }
-
-    private var project: Project? {
-        store.selectedSessionID.flatMap { store.project(for: $0) }
     }
 
     /// Where the session runs *on this Mac*: its worktree if it has one, else the
@@ -50,7 +45,7 @@ struct SessionInfoView: View {
     var body: some View {
         content
             // Learn the transcript from disk when no hook has delivered it — so the
-            // trace is available even for a session that fired no termio hook (one
+            // path is available even for a session that fired no termio hook (one
             // started before the hook was installed). Runs once per selection, only
             // while the path is still unknown; a later hook value simply agrees.
             .task(id: store.selectedSessionID) {
@@ -154,7 +149,6 @@ struct SessionInfoView: View {
 
             if let transcriptPath {
                 VStack(alignment: .leading, spacing: 1) {
-                    InfoRow(huge: .listView, title: localized("View Trajectory")) { viewTrace(transcriptPath, session: session) }
                     InfoRow(huge: .copy, title: localized("Copy Path")) { copy(transcriptPath) }
                     InfoRow(huge: .folder, title: localized("Reveal in Finder")) { revealInFinder(transcriptPath) }
                 }
@@ -197,19 +191,12 @@ struct SessionInfoView: View {
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
         }
     }
-
-    /// Opens the session's rendered trace over the terminal (the `TraceView` overlay),
-    /// like clicking a file or a diff. Rendering — and any failure — is handled inside
-    /// the overlay, themed to match termio.
-    private func viewTrace(_ jsonlPath: String, session: Session) {
-        store.openTrace = TraceRequest(jsonlPath: jsonlPath, title: store.displayTitle(for: session))
-    }
 }
 
 /// A single action row in the Info pane: a leading glyph, a label, and a hover
 /// highlight — the same calm, borderless look as the actions in the reference Info
 /// panel. The leading glyph is either a muted Hugeicons mark (for termio's own
-/// actions — Copy Path, Reveal, View Trajectory) or an editor's real app icon (for
+/// actions — Copy Path, Reveal) or an editor's real app icon (for
 /// "Open in …"), so an editor row is unmistakably that app. `.buttonStyle(.plain)`
 /// keeps it flat; the highlight is drawn on hover.
 private struct InfoRow: View {

@@ -257,7 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 MainActor.assumeIsolated { self?.updateWindowTitle() }
             }
 
-        // The user opening a detail (a file, a diff, a trace, a PR row) is the only thing that
+        // The user opening a detail (a file, a diff, a PR row) is the only thing that
         // un-collapses the inspector — the store raises it as an event rather than the delegate
         // inferring it from `isDetailPresented`, which also goes true when a session switch or a
         // launch restore puts a saved detail back and must not move the panel (issue #272).
@@ -273,7 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
             }
 
-        // A detail (file editor, diff, trace, PR/issue) opens in the right inspector, beside the
+        // A detail (file editor, diff, PR/issue) opens in the right inspector, beside the
         // terminal. Its own window controls (hide list / maximize / close) live *in* the detail's
         // header now (see `InspectorDetailChromeButtons`), not the toolbar — so this observer only
         // mounts and tears down the full-window maximize host.
@@ -361,9 +361,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             },
             startSSHSession: { [weak store] host in
                 store?.companionStartSSHSession(host: host)
-            },
-            traceProvider: { [weak store] sessionID in
-                store?.companionTrace(for: sessionID)
             }
         )
         companionServer = companion

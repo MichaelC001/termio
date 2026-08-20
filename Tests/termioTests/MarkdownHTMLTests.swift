@@ -270,7 +270,7 @@ final class MarkdownFeatureSheetTests: XCTestCase {
     /// by the offscreen engine, swapped back in as SVG.
     @MainActor
     func testFeatureSheetDiagramsRenderToSVG() async throws {
-        let theme = MermaidRenderer.Theme(TraceTheme.builtin(dark: true))
+        let theme = MermaidRenderer.Theme(DocumentTheme.builtin(dark: true))
         let document = MarkdownHTML.html(
             try featureSheet(), softBreaksAsBreaks: false, documentMode: true)
         let sources = MermaidRenderer.sources(in: document)
@@ -295,7 +295,7 @@ final class MarkdownFeatureSheetTests: XCTestCase {
 /// paragraph, so the reader decides once per document from the source; these pin where the
 /// line falls.
 final class ReaderScriptDetectionTests: XCTestCase {
-    private let theme = TraceTheme.builtin(dark: true)
+    private let theme = DocumentTheme.builtin(dark: true)
 
     func testChineseProseIsCJK() {
         XCTAssertTrue(MarkdownReaderRenderer.isCJK(

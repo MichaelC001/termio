@@ -128,8 +128,7 @@ path an agent prints to preview it.
 ### The inspector
 
 Everything about the session at hand: git changes and history with unified
-diffs, project-wide content search, a readable trace of the agent's
-conversation, and working-directory actions.
+diffs, project-wide content search, and working-directory actions.
 
 </td>
 <td width="50%">
