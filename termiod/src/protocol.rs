@@ -288,6 +288,63 @@ pub struct GitStatusEntry {
     pub status: GitFileStatus,
 }
 
+/// One commit row (§C.13 read tier), as `git.log` and `git.show` report it.
+///
+/// Both a rendered `relative_date` and a `timestamp`: the box prints git's own
+/// "3 hours ago" in the box's language, and the client rendering the row may be
+/// in another one, so it needs the instant to format for itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCommitEntry {
+    pub sha: String,
+    pub short_sha: String,
+    pub subject: String,
+    pub author: String,
+    pub author_email: String,
+    pub relative_date: String,
+    /// Author date, Unix seconds.
+    pub timestamp: i64,
+    /// Tags pointing at this commit. Branch decorations are dropped — the
+    /// sidebar and the pane's own scope already say which branch this is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// The commit has not reached the branch's upstream (`@{upstream}..HEAD`).
+    /// False for every row when the branch has no upstream, so a purely local
+    /// branch does not mark all of them.
+    #[serde(default)]
+    pub unpushed: bool,
+}
+
+/// One file a commit touched (§C.13 read tier). `status` reuses the status
+/// vocabulary the `git:` kind already publishes; a commit's file carries one
+/// axis, not two.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCommitFile {
+    pub path: String,
+    /// For a rename or a copy, the path the file came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_path: Option<String>,
+    pub status: GitStatusCode,
+    #[serde(default)]
+    pub additions: u64,
+    #[serde(default)]
+    pub deletions: u64,
+    /// `--numstat` reported `-` for the counts, so `+`/`−` numbers would be a
+    /// lie rather than a zero.
+    #[serde(default)]
+    pub binary: bool,
+}
+
+/// One ref in a `git.branches` reply (§C.13 read tier).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitBranchEntry {
+    /// Short name: `main` for a local branch, `origin/main` for a
+    /// remote-tracking one. The two are told apart by `remote`, never by the
+    /// shape of the name.
+    pub name: String,
+    #[serde(default)]
+    pub remote: bool,
+}
+
 /// One `fs.search` hit (§C.12): workspace-relative path, 1-based line, the
 /// matching line's text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -536,15 +593,44 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
-    /// The `git:` kind's one verb (§C.13, capability `git`): a unified diff
-    /// for one path, rendered client-side. Read-only by design — no
-    /// stage/commit/push verbs; the user commits in the terminal, which is
-    /// the same app.
+    /// The `git:` kind's diff verb (§C.13, capability `git`): a unified diff
+    /// for one path, rendered client-side.
     GitDiff {
         root: String,
         path: String,
         #[serde(default)]
         staged: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    /// Commit list (§C.13 read tier, capability `git`) — what the History tab
+    /// shows. `limit` is clamped to the host's cap; `range` narrows the walk to
+    /// a revision range (`origin/main..HEAD`), which is what lets the Compare
+    /// tab be composed from this verb plus `git.diff` rather than a verb of its
+    /// own.
+    GitLog {
+        root: String,
+        limit: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        range: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    /// One commit's contents and its diff (§C.13 read tier, capability `git`).
+    /// `path` narrows the diff to a single file — the row a History entry
+    /// expands to — while the file list always describes the whole commit.
+    GitShow {
+        root: String,
+        commit: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    /// The checkout's refs (§C.13 read tier, capability `git`) — the Compare
+    /// tab's base picker in one hop, rather than a `git` per field.
+    GitBranches {
+        root: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
@@ -678,6 +764,47 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },
+    /// Reply to `git_log`, newest first. `truncated` means the walk stopped at
+    /// the limit and older commits exist — a client asks for more by raising
+    /// `limit`, never by assuming this was the whole history.
+    GitLogResult {
+        commits: Vec<GitCommitEntry>,
+        #[serde(default)]
+        truncated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
+    /// Reply to `git_show`. Two caps, two flags: `truncated` marks the diff cut
+    /// at the 1 MiB cap, `files_truncated` a file list cut at the host's file
+    /// cap. One flag for both would leave a client unable to say which half of
+    /// the reply it is missing.
+    GitShowResult {
+        commit: GitCommitEntry,
+        files: Vec<GitCommitFile>,
+        diff: String,
+        #[serde(default)]
+        truncated: bool,
+        #[serde(default)]
+        files_truncated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
+    /// Reply to `git_branches`. `current` is absent on a detached or unborn
+    /// HEAD, where "the branch this checkout is on" has no answer.
+    /// `default_branch` is the remote's own recorded default
+    /// (`refs/remotes/origin/HEAD`) as a remote-tracking name — the base a
+    /// forge would default a pull request to.
+    GitBranchesResult {
+        branches: Vec<GitBranchEntry>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        current: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        default_branch: Option<String>,
+        #[serde(default)]
+        truncated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
     /// Reply to `fs_match`: workspace-relative paths, best first. `coverage`
     /// is how much of the tree the index has walked (0.0–1.0); the index is
     /// evictable state, never correctness-bearing.
@@ -758,6 +885,9 @@ impl Control {
             | Control::FsSearch { seq, .. }
             | Control::Cancel { seq, .. }
             | Control::GitDiff { seq, .. }
+            | Control::GitLog { seq, .. }
+            | Control::GitShow { seq, .. }
+            | Control::GitBranches { seq, .. }
             | Control::UploadOpen { seq, .. }
             | Control::UploadCommit { seq, .. }
             | Control::UploadAbort { seq, .. }
