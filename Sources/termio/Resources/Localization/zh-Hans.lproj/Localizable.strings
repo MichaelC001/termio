@@ -40,8 +40,8 @@
 	<string>%lld 个文件</string>
 	<key>%lld files</key>
 	<string>%lld 个文件</string>
-	<key>%lld installed</key>
-	<string>已安装 %lld 个</string>
+	<key>%lld in your Themes folder</key>
+	<string>主题文件夹里有 %lld 个</string>
 	<key>%lld of %lld</key>
 	<string>第 %lld 项（共 %lld 项）</string>
 	<key>%lld pt</key>
@@ -62,8 +62,6 @@
 	<string>1 个结果</string>
 	<key>A different `%@` already exists at %@. Remove it first — Termio won’t overwrite a file it didn’t create.</key>
 	<string>另一个 `%@` 已存在于 %@。请先移除，Termio 不会覆盖并非自己创建的文件。</string>
-	<key>A file at %@ already uses that name. Replacing it discards what is in it.</key>
-	<string>%@ 已经用了这个名称。替换会丢弃这个文件里的内容。</string>
 	<key>Activity</key>
 	<string>活动</string>
 	<key>Add</key>
@@ -154,8 +152,8 @@
 	<string>分支</string>
 	<key>Bring All to Front</key>
 	<string>前置全部窗口</string>
-	<key>Browse Themes…</key>
-	<string>浏览主题…</string>
+	<key>Built-in</key>
+	<string>内置</string>
 	<key>Cancel</key>
 	<string>取消</string>
 	<key>Can’t browse %@</key>
@@ -302,8 +300,6 @@
 	<string>无法载入</string>
 	<key>Couldn’t open a pull request page</key>
 	<string>无法打开 Pull Request 页面</string>
-	<key>Couldn’t open the Themes folder</key>
-	<string>无法打开主题文件夹</string>
 	<key>Couldn’t remove %@.</key>
 	<string>无法移除 %@。</string>
 	<key>Couldn’t remove worktree</key>
@@ -370,6 +366,8 @@
 	<string>草稿</string>
 	<key>Drag the list to change the order agents appear in.</key>
 	<string>拖动列表可以调整 Agent 出现的顺序。</string>
+	<key>Duplicate to Themes Folder</key>
+	<string>复制到主题文件夹</string>
 	<key>Edit</key>
 	<string>编辑</string>
 	<key>Edit Manifest</key>
@@ -424,6 +422,8 @@
 	<string>字体</string>
 	<key>Font name</key>
 	<string>字体名称</string>
+	<key>From your Ghostty config</key>
+	<string>来自 Ghostty 配置</string>
 	<key>General</key>
 	<string>通用</string>
 	<key>Git ignore patterns cannot represent a filename containing a line break.</key>
@@ -470,12 +470,8 @@
 	<string>检查器</string>
 	<key>Inspector Pane</key>
 	<string>检查器窗格</string>
-	<key>Install</key>
-	<string>安装</string>
 	<key>Install %@</key>
 	<string>安装 %@</string>
-	<key>Installed</key>
-	<string>已安装</string>
 	<key>Installed.</key>
 	<string>已安装。</string>
 	<key>Installing %@…</key>
@@ -648,8 +644,6 @@
 	<string>没有文件更改</string>
 	<key>No hosts yet — add one, or write a Host block in ~/.ssh/config.</key>
 	<string>暂无主机——添加一个，或在 ~/.ssh/config 中写入 Host 块。</string>
-	<key>No installed theme matches “%@”</key>
-	<string>没有已安装的主题与“%@”匹配</string>
 	<key>No issues found.</key>
 	<string>未找到 issues。</string>
 	<key>No local usage yet — run `%@` once, then Refresh.</key>
@@ -670,8 +664,8 @@
 	<string>无法到达主机</string>
 	<key>No textual changes to show.</key>
 	<string>没有可显示的文本更改。</string>
-	<key>No themes match “%@”</key>
-	<string>没有与“%@”匹配的主题</string>
+	<key>No theme matches “%@”</key>
+	<string>没有主题与“%@”匹配</string>
 	<key>Not Now</key>
 	<string>以后再说</string>
 	<key>Not a valid regular expression</key>
@@ -844,10 +838,6 @@
 	<string>重命名“%@”</string>
 	<key>Rename…</key>
 	<string>重命名…</string>
-	<key>Replace</key>
-	<string>替换</string>
-	<key>Replace the theme file for “%@”?</key>
-	<string>替换“%@”的主题文件？</string>
 	<key>Request Permission</key>
 	<string>请求权限</string>
 	<key>Reset Font Size</key>
@@ -1002,8 +992,8 @@
 	<string>Termio for iPhone 正在测试中</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio 是开源软件：欢迎给仓库加星标、报告 bug 和提出功能请求。</string>
-	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Browse Themes installs one of 50 curated schemes, and any Ghostty-format file you drop into the Themes folder shows up here too.</key>
-	<string>Termio 会随 macOS 外观变化在两者间切换；将槽位留在默认值即可使用 Termio 自带的画布。“浏览主题”可以从 50 个精选配色中安装一个，你放进主题文件夹的 Ghostty 格式文件也会出现在这里。</string>
+	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Fifty schemes are built in, and any Ghostty-format file you drop into the Themes folder shows up here too.</key>
+	<string>Termio 会随 macOS 外观变化在两者间切换；将槽位留在默认值即可使用 Termio 自带的画布。内置 50 个精选配色，你放进主题文件夹的 Ghostty 格式文件也会出现在这里。</string>
 	<key>Test</key>
 	<string>测试</string>
 	<key>Test Connection</key>
@@ -1014,8 +1004,6 @@
 	<string>截至上次 fetch，基础分支上有当前分支还没有的提交。</string>
 	<key>The coding agents offered when you start a session</key>
 	<string>新建会话时可以选用的编程 Agent</string>
-	<key>The file at %@ has been edited since it was installed. Removing it deletes those edits.</key>
-	<string>%@ 在安装之后被改过。移除会连同这些改动一起删除。</string>
 	<key>The folder was removed, but git couldn’t prune its stale worktree metadata.</key>
 	<string>文件夹已移除，但 git 无法清理其残留的 worktree 元数据。</string>
 	<key>The ignore rule couldn’t be added.</key>
@@ -1156,6 +1144,8 @@
 	<string>可以从废纸篓恢复它。</string>
 	<key>Your Host entries from ~/.ssh/config — the same aliases `ssh` resolves. Right-click a host to connect.</key>
 	<string>来自 ~/.ssh/config 的 Host 条目，与 `ssh` 解析的别名一致。右键点按主机即可连接。</string>
+	<key>Your themes</key>
+	<string>你的主题</string>
 	<key>Zoom</key>
 	<string>缩放</string>
 	<key>Zoom Split</key>

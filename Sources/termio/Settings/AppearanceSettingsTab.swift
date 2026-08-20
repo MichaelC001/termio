@@ -3,18 +3,11 @@ import SwiftUI
 
 struct AppearanceSettingsTab: View {
     @ObservedObject var settings: AppSettings
-    /// Whether the theme store is up. Owned by `SettingsView` so a palette command
-    /// can open Settings straight onto the sheet, and so dismissing it consumes
-    /// that request instead of reopening on the next visit to this tab.
-    @Binding var isBrowsingStore: Bool
 
-    /// Names of the installed theme files, loaded from termio's `Themes` folder.
+    /// Names of the user's own theme files, loaded from termio's `Themes` folder.
     /// Held in state so dropping in (or editing) a file and hitting Reload — or just
     /// reopening this tab — refreshes the pickers without a relaunch.
     @State private var userThemeNames: [String] = ThemeLibrary.userThemeNames
-    /// The picker's search text at the moment it handed off to the store, so
-    /// "dracula" typed into an empty picker lands on Dracula in the store.
-    @State private var storeQuery = ""
     @State private var themesFolderError: String?
 
     var body: some View {
@@ -29,14 +22,13 @@ struct AppearanceSettingsTab: View {
                     .foregroundStyle(.secondary)
             }
             Section {
-                ThemePickerField(title: localized("Light"), prefersDark: false, selection: $settings.lightThemeName, userThemeNames: userThemeNames, onBrowseStore: browseStore)
-                ThemePickerField(title: localized("Dark"), prefersDark: true, selection: $settings.darkThemeName, userThemeNames: userThemeNames, onBrowseStore: browseStore)
+                ThemePickerField(title: localized("Light"), prefersDark: false, selection: $settings.lightThemeName, userThemeNames: userThemeNames, onDuplicate: duplicate)
+                ThemePickerField(title: localized("Dark"), prefersDark: true, selection: $settings.darkThemeName, userThemeNames: userThemeNames, onDuplicate: duplicate)
                 HStack {
-                    Button(localized("Browse Themes…")) { browseStore(query: "") }
                     Button(localized("Open Themes Folder…"), action: openThemesFolder)
                     Spacer()
                     if !userThemeNames.isEmpty {
-                        Text(localized("\(userThemeNames.count) installed"))
+                        Text(localized("\(userThemeNames.count) in your Themes folder"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -45,7 +37,7 @@ struct AppearanceSettingsTab: View {
             } header: {
                 SectionHeaderLabel(title: localized("Theme"))
             } footer: {
-                Text(localized("Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Browse Themes installs one of 50 curated schemes, and any Ghostty-format file you drop into the Themes folder shows up here too."))
+                Text(localized("Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Fifty schemes are built in, and any Ghostty-format file you drop into the Themes folder shows up here too."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -145,11 +137,8 @@ struct AppearanceSettingsTab: View {
         }
         .formStyle(.grouped)
         .onAppear(perform: reloadUserThemes)
-        .sheet(isPresented: $isBrowsingStore) {
-            ThemeStoreSheet(settings: settings, initialQuery: storeQuery, onLibraryChanged: reloadUserThemes)
-        }
         .alert(
-            localized("Couldn’t open the Themes folder"),
+            localized("Couldn’t change the Themes folder"),
             isPresented: Binding(get: { themesFolderError != nil }, set: { if !$0 { themesFolderError = nil } }),
             presenting: themesFolderError
         ) { _ in
@@ -159,9 +148,17 @@ struct AppearanceSettingsTab: View {
         }
     }
 
-    private func browseStore(query: String) {
-        storeQuery = query
-        isBrowsingStore = true
+    /// Copies a theme into the Themes folder and selects it in the Finder, so the
+    /// file the user asked for is in front of them rather than somewhere they now
+    /// have to go looking.
+    private func duplicate(_ name: String) {
+        do {
+            let url = try ThemeLibrary.duplicateToThemesFolder(named: name)
+            reloadUserThemes()
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            themesFolderError = error.localizedDescription
+        }
     }
 
     private func openThemesFolder() {

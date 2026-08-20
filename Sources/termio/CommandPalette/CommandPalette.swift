@@ -377,10 +377,6 @@ struct CommandPaletteView: View {
         actions.append(.init(id: "change-theme", title: localized("Change Theme…"),
                              icon: nil, symbol: "paintpalette", shortcut: nil,
                              switchesMode: .themes) { _ in })
-        actions.append(.init(id: "browse-themes", title: localized("Browse Themes…"),
-                             icon: nil, symbol: "square.grid.2x2", shortcut: nil) { _ in
-            NSApp.sendAction(#selector(AppDelegate.browseThemes(_:)), to: nil, from: nil)
-        })
         actions.append(.init(id: "settings", title: localized("Settings…"),
                              icon: .settings, shortcut: "⌘,") { _ in
             NSApp.sendAction(#selector(AppDelegate.showSettings(_:)), to: nil, from: nil)
@@ -426,11 +422,9 @@ struct CommandPaletteView: View {
 
     // MARK: - Themes
 
-    /// The theme selector's rows: a "Terminal default" reset plus the installed
-    /// themes matching the slot's brightness, so the palette can never apply one
-    /// that renders the wrong way — or one that isn't in the library, which would
-    /// leave the slot pointing at a name nothing can resolve. Browsing the store's
-    /// uninstalled 50 is the sheet's job.
+    /// The theme selector's rows: a "Terminal default" reset plus every theme
+    /// matching the slot's brightness — the user's own files and the built-in 50 —
+    /// so the palette can never apply one that renders the wrong way.
     private var themeItems: [PaletteItem] {
         let dark = slotIsDark
         // Return-to-default leads; the label names the slot being edited so
@@ -438,7 +432,8 @@ struct CommandPaletteView: View {
         var items: [PaletteItem] = [
             themeItem(name: "", title: dark ? localized("Default Dark Theme") : localized("Default Light Theme"))
         ]
-        items += ThemeLibrary.installedThemeNames(dark: dark).map { themeItem(name: $0) }
+        let selection = dark ? store.settings.darkThemeName : store.settings.lightThemeName
+        items += ThemeLibrary.selectableNames(dark: dark, selection: selection).map { themeItem(name: $0) }
         return items
     }
 
