@@ -4,7 +4,10 @@ import Image from "next/image";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Reveal } from "@/components/reveal";
+import { buttonVariants } from "@/components/ui/button";
+import { TestFlightMark } from "@/components/section-label";
 import { useInView } from "@/lib/use-in-view";
+import { testflightUrl } from "@/lib/site";
 
 const CYCLE_MS = 3200;
 
@@ -91,6 +94,18 @@ export function Companion() {
                 </div>
               ))}
             </dl>
+
+            <a
+              href={testflightUrl}
+              className={cn(
+                buttonVariants(),
+                "mt-9 h-12 gap-2 rounded-full px-7 text-base",
+                "shadow-[0_12px_32px_rgba(20,23,28,0.18),0_0_0_1px_rgba(0,211,199,0.14)]",
+              )}
+            >
+              <TestFlightMark />
+              Get the iOS beta
+            </a>
           </Reveal>
 
           <Reveal delayMs={120}>

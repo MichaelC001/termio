@@ -52,6 +52,22 @@ export function AppleMark({ className }: { className?: string }) {
   );
 }
 
+// TestFlight's two-tone paper plane, drawn in the current text color so it sits
+// in a pill the same way the Apple mark does.
+export function TestFlightMark({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      className={cn("h-[1.05em] w-[1.05em]", className)}
+      fill="currentColor"
+    >
+      <path d="M21.6 2.4 2.9 8.8 10.9 13.1Z" />
+      <path d="M21.6 2.4 10.9 13.1 15.2 21.1Z" opacity="0.55" />
+    </svg>
+  );
+}
+
 // GitHub's octocat glyph — the open-source cue, shared by the nav pill and the
 // hero's star button.
 export function GitHubMark({ className }: { className?: string }) {
