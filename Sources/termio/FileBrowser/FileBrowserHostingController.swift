@@ -19,7 +19,7 @@ final class FileBrowserHostingController: NSHostingController<AnyView>, @preconc
         self.state = state
         super.init(rootView: AnyView(
             // The inspector shows its list (tree / search / changes / issues) with any open detail
-            // — editor, diff, PR/issue, trace — layered on top of it (see `InspectorRoot`), so a
+            // — editor, diff, PR/issue — layered on top of it (see `InspectorRoot`), so a
             // click opens the file *here*, beside the terminal, rather than covering the terminal.
             InspectorRoot(list: AnyView(
                 FileBrowserView(

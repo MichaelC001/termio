@@ -380,8 +380,8 @@ extension InspectorViewController: RemoteFileBrowsing {
         setLoading(true)
         client?.send(.readFile(
             projectID: projectID, path: path,
-            // For the Mac-rendered Markdown preview — same trait contract as `.trace`,
-            // so the page matches this screen's appearance.
+            // For the Mac-rendered Markdown preview, so the page matches this
+            // screen's appearance.
             dark: traitCollection.userInterfaceStyle == .dark
         ))
     }

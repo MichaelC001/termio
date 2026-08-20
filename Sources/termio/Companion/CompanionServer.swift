@@ -182,9 +182,6 @@ final class CompanionServer {
     /// Opens an `ssh <host>` terminal for the phone's Terminals ＋ → SSH
     /// (`.startSSH`); returns the `.started` echo, or nil on failure.
     private let startSSHSession: (String) -> (sessionID: String, agentID: String)?
-    /// Resolves a session's transcript path and display title for a `trace`
-    /// request, or nil when the session has no readable transcript yet.
-    private let traceProvider: (String) -> (path: String, title: String)?
     private var listener: NWListener?
     private var connections: Set<ObjectIdentifier> = []
     private var connectionByID: [ObjectIdentifier: NWConnection] = [:]
@@ -210,8 +207,7 @@ final class CompanionServer {
         startSession: @escaping (String, String?) -> (sessionID: String, agentID: String)?,
         stopSession: @escaping (String) -> Bool,
         startScratchTerminal: @escaping () -> (sessionID: String, agentID: String)?,
-        startSSHSession: @escaping (String) -> (sessionID: String, agentID: String)?,
-        traceProvider: @escaping (String) -> (path: String, title: String)?
+        startSSHSession: @escaping (String) -> (sessionID: String, agentID: String)?
     ) {
         self.port = port
         self.rosterProvider = rosterProvider
@@ -220,7 +216,6 @@ final class CompanionServer {
         self.stopSession = stopSession
         self.startScratchTerminal = startScratchTerminal
         self.startSSHSession = startSSHSession
-        self.traceProvider = traceProvider
     }
 
     func start() {
@@ -487,8 +482,6 @@ final class CompanionServer {
             handleListChanges(projectID: projectID, on: connection)
         case .readDiff(let projectID, let path, let status):
             handleReadDiff(projectID: projectID, path: path, status: status, on: connection)
-        case .trace(let sessionID, let dark):
-            handleTrace(sessionID: sessionID, dark: dark, on: connection)
         case .sshConfigHosts:
             sendControl(.sshConfigList(hosts: Self.parseSSHConfigHosts()), to: connection)
         case .unsupported(let type):
@@ -501,7 +494,7 @@ final class CompanionServer {
                 "ignoring unsupported control \(Self.loggableTag(type), privacy: .public)"
             )
         case .auth, .exit, .error, .started, .fileList, .file, .written, .uploaded,
-             .searchResults, .traceHTML, .sshConfigList, .changes, .diff:
+             .searchResults, .sshConfigList, .changes, .diff:
             break
         }
     }
@@ -528,28 +521,6 @@ final class CompanionServer {
         SSHConfigFile.hosts().map {
             WireSSHHost(alias: $0.alias, hostName: $0.hostName, user: $0.user, port: $0.port)
         }
-    }
-
-    /// Render a session's agent transcript to the same HTML trace the desktop
-    /// Info pane shows, and hand it back over the socket. The heavy lifting is
-    /// `SessionTraceRenderer` (shared with the Mac UI); the phone supplies only
-    /// its light/dark trait so the page matches its appearance.
-    ///
-    /// Failures ride back as a `traceHTML` placeholder page, never a `.error`
-    /// frame: this connection is also the session's PTY bridge, and the phone
-    /// treats any `.error` there as a fatal drop of the live terminal.
-    private func handleTrace(sessionID: String, dark: Bool, on connection: NWConnection) {
-        let theme = TraceTheme.builtin(dark: dark)
-        let html: String
-        if let (path, title) = traceProvider(sessionID),
-           let rendered = try? SessionTraceRenderer.html(jsonlPath: path, title: title, theme: theme) {
-            html = rendered
-        } else {
-            html = SessionTraceRenderer.placeholder(
-                message: "No transcript yet for this session.", theme: theme
-            )
-        }
-        sendControl(.traceHTML(sessionID: sessionID, html: html), to: connection)
     }
 
     // MARK: - File plane (read-only)
@@ -936,7 +907,7 @@ final class CompanionServer {
     }
 
     /// The phone's Markdown preview, rendered Mac-side with the same reader
-    /// pipeline as the desktop editor's Preview pane (the trace pattern: one
+    /// pipeline as the desktop editor's Preview pane (one
     /// renderer, the phone only supplies its light/dark trait). Fonts are not
     /// embedded — the phone falls through to its system stack instead of
     /// paying ~230KB of woff2 CSS per file read. nil for anything that is not
@@ -949,7 +920,7 @@ final class CompanionServer {
               let source = String(data: data, encoding: .utf8)
         else { return nil }
         return MarkdownReaderRenderer.document(
-            source, theme: TraceTheme.builtin(dark: dark), fontFamily: "", embedFonts: false
+            source, theme: DocumentTheme.builtin(dark: dark), fontFamily: "", embedFonts: false
         )
     }
 
@@ -1265,19 +1236,6 @@ extension TermioStore {
         guard let session = findCompanionSession(wireID) else { return false }
         closeSession(session.id)
         return true
-    }
-
-    /// Resolve a session's transcript path and display title for a phone
-    /// `trace` request. Learns the path from disk when no hook has delivered it
-    /// yet — the same fallback the desktop Info pane uses — so the phone can
-    /// render a trace even for a session the Mac never opened. nil when the
-    /// session is unknown or has no readable transcript.
-    func companionTrace(for wireID: String) -> (path: String, title: String)? {
-        guard let session = findCompanionSession(wireID) else { return nil }
-        guard let path = transcriptPaths[session.id] ?? resolveTranscriptPath(for: session.id)
-        else { return nil }
-        transcriptPaths[session.id] = path
-        return (path, displayTitle(for: session))
     }
 
     private func findCompanionSession(_ wireID: String) -> Session? {

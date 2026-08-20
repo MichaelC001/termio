@@ -1,12 +1,12 @@
 import Foundation
 import Markdown
 
-/// Markdown → HTML, shared by the session trace (agent messages) and the file-preview
-/// Markdown reader. Built on Apple's swift-markdown (cmark-gfm underneath, so GFM tables /
-/// strikethrough / task lists parse correctly). We walk the AST and emit HTML ourselves
-/// instead of using a stock formatter so every piece of source text is escaped (transcripts
-/// carry untrusted tool output, so raw HTML in the markdown renders as text, never as
-/// markup). Soft-break handling differs per caller — see `softBreaksAsBreaks`.
+/// Markdown → HTML, shared by the file-preview Markdown reader and the Issues pane. Built
+/// on Apple's swift-markdown (cmark-gfm underneath, so GFM tables / strikethrough / task
+/// lists parse correctly). We walk the AST and emit HTML ourselves instead of using a stock
+/// formatter so every piece of source text is escaped (an issue body is somebody else's
+/// text, so raw HTML in the markdown renders as text, never as markup). Soft-break handling
+/// differs per caller — see `softBreaksAsBreaks`.
 ///
 /// GitHub-flavored constructs that cmark-gfm itself doesn't hand us are added around the
 /// parse: alerts and heading anchors come off the AST, bare-URL autolinks and `:emoji:`
@@ -14,15 +14,15 @@ import Markdown
 /// parsing (see `MarkdownPreprocessor`). Code fences and math are rendered to finished
 /// markup by `MarkdownScripting`, so the page still runs no script of its own.
 enum MarkdownHTML {
-    /// `softBreaksAsBreaks`: agent messages use single newlines for line-based content, so
-    /// the trace renders each as `<br>`. A *document* (README, design doc) hard-wraps its
+    /// `softBreaksAsBreaks`: line-based content uses single newlines, so each renders as a
+    /// `<br>` (what the Issues pane wants). A *document* (README, design doc) hard-wraps its
     /// source at ~80 columns and expects those newlines to collapse to spaces and reflow to
     /// the viewport — pass `false` there, or every source line break becomes a literal break
     /// (ragged short lines, big right-hand gap, and no reflow on resize).
     ///
-    /// `documentMode`: the GitHub-compatibility switch for the file reader. Transcripts are
-    /// untrusted tool output, so the default renders raw HTML as text and images as
-    /// placeholders. A file the user opened is a document: images become real `<img>` tags
+    /// `documentMode`: the GitHub-compatibility switch for the file reader. The default
+    /// renders raw HTML as text and images as placeholders, for markup termio didn't write.
+    /// A file the user opened is a document: images become real `<img>` tags
     /// (relative paths resolve against the reader's base URL), relative links work, and raw
     /// HTML passes through `HTMLSanitizer`'s whitelist (the README `<table>` screenshot
     /// grid renders as layout, while script/style/event handlers still die).
@@ -506,7 +506,7 @@ private struct HTMLVisitor: MarkupVisitor {
     /// "square" (path data mirrors `TermioShared.HugeIcon.square`), with the
     /// checkmark-02 tick added when checked — 24×24 viewBox, 1.5 round stroke.
     /// The width/height attributes are only a sane fallback; both host stylesheets
-    /// (trace, reader) size and color `.task-box` themselves.
+    /// (reader, Issues pane) size and color `.task-box` themselves.
     private func taskBox(checked: Bool) -> String {
         let square = "M2.5 12C2.5 7.52166 2.5 5.28249 3.89124 3.89124C5.28249 2.5 "
             + "7.52166 2.5 12 2.5C16.4783 2.5 18.7175 2.5 20.1088 3.89124C21.5 5.28249 "
@@ -622,7 +622,7 @@ private struct HTMLVisitor: MarkupVisitor {
 
     mutating func visitSoftBreak(_ br: SoftBreak) -> String {
         // A document collapses source line breaks to spaces (normal Markdown) so text
-        // reflows; the trace keeps them as `<br>` for line-based agent output.
+        // reflows; line-based content keeps them as `<br>`.
         softBreaksAsBreaks ? "<br>" : " "
     }
 
@@ -790,7 +790,7 @@ private struct HTMLVisitor: MarkupVisitor {
 /// http/https/mailto/relative protocols only. Tags are re-emitted from parsed parts —
 /// nothing from the source reaches the output verbatim — so `script`/`style`/`iframe`,
 /// inline `style`, `class`/`id`, and `on*` handlers can't survive. Non-whitelisted tags
-/// are escaped to visible text (the trace's honesty rule) rather than dropped.
+/// are escaped to visible text — an honesty rule — rather than dropped.
 enum HTMLSanitizer {
     /// GitHub's element whitelist, minus obscure/legacy entries termio never styles
     /// (`tt`, `strike`, `ruby`…). `figure`/`figcaption`/`picture` kept for READMEs.

@@ -2,16 +2,16 @@ import Foundation
 
 /// The styling that belongs to `MarkdownHTML`'s *markup* rather than to any one page.
 ///
-/// Three surfaces render that markup and each has its own register: the reader reads as a
-/// document, the session trace as a dashboard, the Issues pane as a conversation. Margins
-/// and type sizes should differ between them. What can't differ is the handful of rules
-/// the markup depends on to mean what it says — a punctuation span pulled back by exactly
+/// Each surface that renders that markup has its own register: the reader reads as a
+/// document, the Issues pane as a conversation. Margins and type sizes should differ
+/// between them. What can't differ is the handful of rules the markup depends on to mean
+/// what it says — a punctuation span pulled back by exactly
 /// the amount the compressor assumed, an alert's kind selecting its hue, a highlighted
 /// `<code>` giving up the hljs theme's own background. Those live here, once, beside the
 /// code that emits the classes, so a page can't be added that renders the markup wrong.
 enum MarkdownSkin {
     /// `scope` is the selector the host's markdown sits under — `".reader "` for the
-    /// reader, `".text.md "` for the trace, `""` for a page that is nothing else.
+    /// reader, `""` for a page that is nothing else.
     static func css(scope: String) -> String {
         """
         \(scope).alert-note { --alert-color: var(--alert-note); }

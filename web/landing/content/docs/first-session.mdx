@@ -69,16 +69,7 @@ rebindable — see [Keyboard shortcuts](/docs/keyboard).
 ## A note on session lifetime
 
 Sessions are live processes, not saved transcripts. When you quit Termio, the
-shells and agents exit — reopening the app starts fresh. The read-only session
-trace (see the **Info** pane) keeps a rendered record of what happened, but the
-running process itself doesn’t survive a quit.
-
-<DocsImage
-  src="/screenshots/docs/24-info-trace.png"
-  alt="The Termio Info inspector showing session metadata and a read-only trace beside the terminal"
-  width={2424}
-  height={1664}
-/>
+shells and agents exit — reopening the app starts fresh.
 
 <Callout type="warning">
   Quitting Termio ends every running agent and shell. Long agent runs don’t

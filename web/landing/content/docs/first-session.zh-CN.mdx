@@ -3,8 +3,8 @@ title: 你的第一个会话
 description: 打开项目，在真实终端里启动 Agent，再拆分窗口，让开发服务器和一个 shell 并排待在旁边。
 x-i18n:
   source_path: first-session.mdx
-  source_hash: 0b64f2850ca2b844fba1b153182b8a85a3a7f25aeaba057d1d074ec8c334f25d
-  generated_at: 2026-08-19
+  source_hash: 7c26ec08a580b2917a727ab04bcea19c25fc1e1b7ec837bd886e4a3ae1b6e938
+  generated_at: 2026-08-20
 ---
 
 Termio 里的*会话*就是一个真实终端，跑着一件事——一个 Agent、一个开发服务器，或者
@@ -65,15 +65,7 @@ Termio 里的*会话*就是一个真实终端，跑着一件事——一个 Agen
 ## 关于会话的生命周期
 
 会话是活着的进程，不是保存下来的记录。你退出 Termio 时，shell 和 Agent 都会随之退出
-——重新打开应用是全新开始。只读的会话轨迹（见 **信息** 面板）会保留一份渲染后的记录，
-但正在运行的进程本身撑不过一次退出。
-
-<DocsImage
-  src="/screenshots/docs/24-info-trace.png"
-  alt="Termio 信息检查器在终端旁显示会话元数据和只读轨迹"
-  width={2424}
-  height={1664}
-/>
+——重新打开应用是全新开始。
 
 <Callout type="warning">
   退出 Termio 会结束所有正在运行的 Agent 和 shell。长任务无法在应用重启后存活——它们

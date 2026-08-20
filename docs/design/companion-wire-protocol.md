@@ -101,7 +101,6 @@ ends read it with plain `as? String` casts.
 | `searchFiles` / `searchResults` | request / reply | filename search, capped | — |
 | `listChanges` / `changes` | request / reply | `git status` with `+`/`−` counts | — |
 | `readDiff` / `diff` | request / reply | one file's unified diff | — |
-| `trace` / `traceHTML` | request / reply | agent transcript as an HTML document | — |
 | `sshConfigHosts` / `sshConfigList` | request / reply | the Mac's `~/.ssh/config` aliases | keys never leave the Mac |
 | `error` | Mac → phone | request refused | terminal for the transport |
 

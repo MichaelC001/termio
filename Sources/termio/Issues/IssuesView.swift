@@ -711,12 +711,12 @@ struct IssueDetailView: View {
     @ViewBuilder
     private var conversationBody: some View {
         if let detail = model.detail {
-            let theme = TraceTheme.resolve(settings: settings, colorScheme: colorScheme)
+            let theme = DocumentTheme.resolve(settings: settings, colorScheme: colorScheme)
             let document = IssueDetailHTML.page(detail, theme: theme)
             let sources = MermaidRenderer.sources(in: document)
             let mermaidTheme = MermaidRenderer.Theme(theme)
             // GitHub draws mermaid in issue and PR bodies, so the pane does too — drawn
-            // off to the side and swapped in, like the reader and the trace.
+            // off to the side and swapped in, like the reader.
             let drawn = diagrams.merging(
                 MermaidRenderer.shared.cachedDiagrams(for: sources, theme: mermaidTheme)) { _, new in new }
             IssueWebView(
@@ -828,9 +828,9 @@ private struct CapsuleSwitch<Value: Hashable>: View {
 /// then each comment as a panel — all markdown through `MarkdownHTML` in
 /// `documentMode`, so raw HTML (bot comments, `<picture>`/`<img>`/tables) renders
 /// through the GitHub-mirroring `HTMLSanitizer` whitelist the way GitHub itself
-/// does, colored from the live `TraceTheme`.
+/// does, colored from the live `DocumentTheme`.
 enum IssueDetailHTML {
-    static func page(_ detail: IssueDetail, theme: TraceTheme) -> String {
+    static func page(_ detail: IssueDetail, theme: DocumentTheme) -> String {
         let s = detail.summary
         let labels = s.labels.map {
             "<span class=\"label\" style=\"border-color:#\($0.colorHex.isEmpty ? "888888" : $0.colorHex)\">\(escape($0.name))</span>"
@@ -921,7 +921,7 @@ enum IssueDetailHTML {
         return escape(formatter.localizedString(for: date, relativeTo: Date()))
     }
 
-    private static func css(_ theme: TraceTheme) -> String {
+    private static func css(_ theme: DocumentTheme) -> String {
         """
         \(MarkdownSkin.highlightTheme(dark: theme.isDark))
         \(MarkdownSkin.css(scope: ""))
@@ -984,7 +984,7 @@ enum IssueDetailHTML {
     }
 }
 
-/// The trace's minimal `WKWebView` host, re-declared privately for the detail
+/// A minimal `WKWebView` host, declared privately for the detail
 /// page: transparent while loading, links open in the browser.
 private struct IssueWebView: NSViewRepresentable {
     let html: String

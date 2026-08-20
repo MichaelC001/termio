@@ -5,18 +5,18 @@ import Foundation
 /// `MarkdownHTML`'s output.
 ///
 /// The stylesheet is a document-reading skin — capped measure, generous vertical rhythm, a
-/// clear type scale — the Apple-docs / iA-Writer register, distinct from the session
-/// trace's dense dashboard CSS. Prose is set in the bundled iA Writer Quattro (a
+/// clear type scale — the Apple-docs / iA-Writer register, distinct from the Issues
+/// pane's denser CSS. Prose is set in the bundled iA Writer Quattro (a
 /// "three-quarter mono": mono bones, proportional density — reads like a document while
 /// still belonging in a terminal app); code spans and blocks stay in the terminal font so
 /// they match the editor you flip from. All colors come through `var(--…)` filled from
-/// the active `TraceTheme`, so the page tracks whatever chrome theme termio is on.
+/// the active `DocumentTheme`, so the page tracks whatever chrome theme termio is on.
 enum MarkdownReaderRenderer {
     /// `embedFonts: false` drops the ~135KB of inlined Quattro `@font-face`
     /// CSS — the companion server's phone previews take this path, where the
     /// stack's system-sans fallthrough beats paying the weight per file read.
     static func document(
-        _ source: String, theme: TraceTheme, fontFamily: String, embedFonts: Bool = true
+        _ source: String, theme: DocumentTheme, fontFamily: String, embedFonts: Bool = true
     ) -> String {
         let (frontmatter, body) = splitFrontmatter(source)
         return """
@@ -183,7 +183,7 @@ enum MarkdownReaderRenderer {
     /// *which* kind it is at a glance, and a palette that follows the chrome accent would
     /// make five kinds look like one. Both sets are tuned to sit on the reader's
     /// background without shouting.
-    private static func themeVariables(_ t: TraceTheme) -> String {
+    private static func themeVariables(_ t: DocumentTheme) -> String {
         """
         :root {
           color-scheme: \(t.isDark ? "dark" : "light");
