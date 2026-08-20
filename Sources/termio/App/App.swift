@@ -248,8 +248,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateWindowTitle()
         // Keep the native title/subtitle in step with the selected session and its live branch.
         // The title reads only the selected session's working-directory/project path (see
-        // `updateWindowTitle`), both of which live on the structural store, so plain
-        // `objectWillChange` covers it — no per-session runtime ping needed here.
+        // `updateWindowTitle`). A loose terminal's cwd also reaches the structural store —
+        // `noteWorkingDirectory` persists it on the session — so plain `objectWillChange`
+        // covers every source, and no per-session runtime ping is needed here.
         titleObserver = store.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] in
@@ -582,12 +583,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// session's real working directory, so a worktree session shows where it actually runs.
     private func updateWindowTitle() {
         guard let window else { return }
-        guard let id = store.selectedSessionID, let project = store.project(for: id) else {
+        guard let id = store.selectedSessionID,
+              let folder = store.titleFolder(for: id) else {
             window.title = "Termio"
             window.subtitle = ""
             return
         }
-        let folder = store.session(id)?.worktreePath ?? project.path
         window.title = abbreviatingHome(folder)
         // Deliberately no machine here. `subtitle` renders beside the title in
         // the titlebar, so naming the device put it in two places at once — the
@@ -2337,19 +2338,20 @@ private struct BranchPickerToolbarView: View {
     static let titleWidthFloor: CGFloat = 80
     static let titleWidthCeiling: CGFloat = 460
 
-    /// The selected session's working directory: its worktree if it has one, else its project
-    /// folder. `nil` when nothing is selected.
+    /// The selected session's working directory: its worktree, its project folder, or — for a
+    /// loose terminal, which owns its path — its live cwd. `nil` when nothing is selected.
     private var folder: String? {
-        guard let id = store.selectedSessionID, let project = store.project(for: id) else { return nil }
-        return store.session(id)?.worktreePath ?? project.path
+        store.selectedSessionID.flatMap(store.titleFolder)
     }
 
     private var title: String {
         // An SSH terminal is titled by its host, not the local cwd it happens to have
         // launched from ($HOME) — matching how the sidebar labels the same row.
         if let host = store.selectedSessionID.flatMap(store.session)?.sshHost { return host }
+        // Only a session with nowhere to name — a loose chat in its scratch directory —
+        // falls back to the app's own name.
         guard let folder else { return "Termio" }
-        return URL(fileURLWithPath: folder).lastPathComponent
+        return TermioStore.terminalLabel(forPath: folder)
     }
 
     private var branch: String? {
@@ -2389,8 +2391,11 @@ private struct BranchPickerToolbarView: View {
         // Keep short names at the established 80pt toolbar width and propose the same hard ceiling
         // that AppKit applies to the hosting view. Do not use negative padding here: it shrinks the
         // measured view without shrinking or moving the Text glyphs, allowing them to paint past the
-        // toolbar item's trailing edge. Default centering preserves the existing short-title position.
-        .frame(minWidth: Self.titleWidthFloor, maxWidth: Self.titleWidthCeiling)
+        // toolbar item's trailing edge. Leading, not centered: a name shorter than the 80pt floor
+        // would otherwise be centered inside it and a longer one drawn flush left, so the title's
+        // left edge moved with every session switch. Pinned, it starts where the terminal text
+        // below it does and only ever grows to the right.
+        .frame(minWidth: Self.titleWidthFloor, maxWidth: Self.titleWidthCeiling, alignment: .leading)
     }
 }
 
