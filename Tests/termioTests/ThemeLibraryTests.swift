@@ -3,10 +3,11 @@ import GhosttyTheme
 import TermioShared
 @testable import termio
 
-/// The theme library's two load-bearing guarantees: a theme written to disk reads
-/// back as the same theme, and the store's index stays the curated list it claims
-/// to be — every name resolvable, the brightness split intact, and no two rows in
-/// a slot close enough to read as the same theme.
+/// The theme library's load-bearing guarantees: a theme written to disk reads back
+/// as the same theme, the built-in set stays the curated list it claims to be —
+/// every name resolvable, the brightness split intact, no two rows in a slot close
+/// enough to read as the same theme — and resolution reaches every name a slot can
+/// end up holding, including one inherited from a Ghostty config.
 @MainActor
 final class ThemeLibraryTests: XCTestCase {
     // MARK: - write / parse
@@ -53,52 +54,50 @@ final class ThemeLibraryTests: XCTestCase {
         XCTAssertEqual(ThemeLibrary.parse(name: definition.name, contents: contents), definition)
     }
 
-    /// Every catalog theme the store can install has to survive being written and
-    /// read back, not just a hand-picked one.
-    func testEveryStoreThemeRoundTrips() throws {
+    /// Every built-in has to survive being written and read back, not just a
+    /// hand-picked one — that trip is what **Duplicate to Themes Folder** does.
+    func testEveryBuiltInThemeRoundTrips() throws {
         let folder = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("theme-library-store-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
 
-        for name in ThemeLibrary.storeCatalog {
-            let definition = try XCTUnwrap(ThemeLibrary.storeTheme(named: name))
-            try ThemeLibrary.write(definition, into: folder)
-            let contents = try String(
-                contentsOf: folder.appendingPathComponent(name, isDirectory: false), encoding: .utf8)
-            XCTAssertEqual(ThemeLibrary.parse(name: name, contents: contents), definition, name)
+        for definition in ThemeLibrary.builtInThemes {
+            let url = try ThemeLibrary.write(definition, into: folder)
+            let contents = try String(contentsOf: url, encoding: .utf8)
+            XCTAssertEqual(
+                ThemeLibrary.parse(name: definition.name, contents: contents), definition,
+                definition.name)
         }
     }
 
-    // MARK: - Store catalog
+    // MARK: - Built-ins
 
-    func testEveryStoreCatalogNameResolves() {
-        let unresolved = ThemeStoreCatalog.names.filter { GhosttyThemeCatalog.theme(named: $0) == nil }
-        XCTAssertEqual(unresolved, [], "store names missing from the pinned catalog")
-        // The filter that drops stale rows must be dropping nothing today; a name
-        // silently disappearing from the store is exactly what it would look like.
-        XCTAssertEqual(ThemeLibrary.storeCatalog, ThemeStoreCatalog.names)
+    func testEveryBuiltInNameResolves() {
+        let unresolved = BuiltInThemes.names.filter { GhosttyThemeCatalog.theme(named: $0) == nil }
+        XCTAssertEqual(unresolved, [], "built-in names missing from the pinned catalog")
+        // The compactMap that drops stale entries must be dropping nothing today; a
+        // name silently disappearing from the picker is what it would look like.
+        XCTAssertEqual(ThemeLibrary.builtInThemes.map(\.name), BuiltInThemes.names)
     }
 
     /// Derived from each theme's own background luminance, never a hand-kept
     /// per-name assignment — that is the whole point of `isDark` deciding the slot.
-    func testStoreCatalogSplitsThirtyFiveDarkAndFifteenLight() {
-        let definitions = ThemeLibrary.storeCatalog.compactMap { ThemeLibrary.storeTheme(named: $0) }
+    func testBuiltInsSplitThirtyFiveDarkAndFifteenLight() {
+        let definitions = ThemeLibrary.builtInThemes
         XCTAssertEqual(definitions.count, 50)
         XCTAssertEqual(definitions.filter(\.isDark).count, 35)
         XCTAssertEqual(definitions.filter { !$0.isDark }.count, 15)
     }
 
-    /// The curation rule that keeps the store free of near-duplicates: within a
+    /// The curation rule that keeps the list free of near-duplicates: within a
     /// slot, no two themes sit closer than ΔE 12 on the weighted Lab metric the
     /// list was built with. Rejected pairs measure far below it (TokyoNight
     /// Night vs Storm 2.6, Catppuccin Mocha vs Macchiato 4.3), so a family that
     /// sneaks a second variant onto the list fails here.
-    func testNoTwoStoreThemesInASlotReadAsTheSameTheme() throws {
+    func testNoTwoBuiltInsInASlotReadAsTheSameTheme() throws {
         for dark in [true, false] {
-            let definitions = ThemeLibrary.storeCatalog
-                .compactMap { ThemeLibrary.storeTheme(named: $0) }
-                .filter { $0.isDark == dark }
+            let definitions = ThemeLibrary.builtInThemes.filter { $0.isDark == dark }
             for first in 0..<definitions.count {
                 for second in (first + 1)..<definitions.count {
                     let distance = try weightedDistance(definitions[first], definitions[second])
@@ -107,6 +106,61 @@ final class ThemeLibraryTests: XCTestCase {
                         "\(definitions[first].name) and \(definitions[second].name) read as one theme")
                 }
             }
+        }
+    }
+
+    // MARK: - Resolution
+
+    /// Every built-in of a slot's brightness is offered by that slot, and none of
+    /// the other slot's leaks in. Asserted as a subset because the machine running
+    /// the tests may also have its own theme files, which belong in the list too.
+    func testEverySlotOffersItsOwnBuiltIns() {
+        for dark in [true, false] {
+            let offered = Set(ThemeLibrary.selectableNames(dark: dark))
+            for definition in ThemeLibrary.builtInThemes {
+                XCTAssertEqual(
+                    offered.contains(definition.name), definition.isDark == dark,
+                    "\(definition.name) in the \(dark ? "dark" : "light") slot")
+            }
+        }
+    }
+
+    /// A Ghostty config may name any of the bundled schemes, not just the curated
+    /// 50, and termio writes that name straight into a slot. Resolution has to
+    /// reach it — otherwise the window paints the default while the setting says
+    /// otherwise.
+    func testResolutionReachesPastTheBuiltInsIntoTheCatalog() throws {
+        let inherited = try XCTUnwrap(firstCatalogThemeOutsideTheBuiltIns(dark: true))
+        XCTAssertEqual(ThemeLibrary.theme(named: inherited.name), inherited)
+    }
+
+    /// …and it is listed, not just resolvable. A name that paints the window while
+    /// sitting off the list that controls it is the ghost selection this library is
+    /// built to make impossible.
+    func testAnInheritedSelectionIsListedInItsSlot() throws {
+        let inherited = try XCTUnwrap(firstCatalogThemeOutsideTheBuiltIns(dark: true))
+        XCTAssertTrue(
+            ThemeLibrary.selectableNames(dark: true, selection: inherited.name)
+                .contains(inherited.name))
+        // The wider catalog is reached for the selection only — it is not a source
+        // the list draws from, or the picker would be 485 rows deep.
+        XCTAssertFalse(ThemeLibrary.selectableNames(dark: true).contains(inherited.name))
+    }
+
+    /// A selection of the wrong brightness is not smuggled into the slot by the
+    /// inherited-name path.
+    func testAnInheritedSelectionOfTheWrongBrightnessIsNotListed() throws {
+        let inherited = try XCTUnwrap(firstCatalogThemeOutsideTheBuiltIns(dark: false))
+        XCTAssertFalse(
+            ThemeLibrary.selectableNames(dark: true, selection: inherited.name)
+                .contains(inherited.name))
+    }
+
+    private func firstCatalogThemeOutsideTheBuiltIns(dark: Bool) -> GhosttyThemeDefinition? {
+        let builtIn = Set(ThemeLibrary.builtInThemes.map(\.name))
+        let userOwned = Set(ThemeLibrary.userThemeNames)
+        return GhosttyThemeCatalog.allThemes.first {
+            $0.isDark == dark && !builtIn.contains($0.name) && !userOwned.contains($0.name)
         }
     }
 

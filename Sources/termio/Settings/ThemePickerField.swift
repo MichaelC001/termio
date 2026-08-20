@@ -3,11 +3,9 @@ import GhosttyTheme
 
 /// A searchable theme picker with live color swatches.
 ///
-/// The list is termio's default plus the themes installed in the `Themes` folder
-/// — what the user actually has, not a warehouse. Browsing the curated 50 is the
-/// store's job (**Browse Themes…**), and an uninstalled name is deliberately
-/// absent here: a slot resolves against the library only, so listing a name the
-/// picker could not paint would be a dead row.
+/// The list is termio's default, the user's own theme files, and the 50 built-in
+/// schemes — everything the slot can actually paint, in one place. There is
+/// nothing to install first, so a row and a working theme are the same thing.
 ///
 /// A macOS-native pop-up button opening a popover with a search field and a real
 /// `List`, rather than a flat `Picker`, so hover, keyboard navigation, selection
@@ -19,12 +17,13 @@ struct ThemePickerField: View {
     /// from the localized title, which is display-only.
     let prefersDark: Bool
     @Binding var selection: String
-    /// The installed theme names, passed in so the parent's reload state stays the
+    /// The user's own theme names, passed in so the parent's reload state stays the
     /// single source of truth for what lives in the Themes folder.
     let userThemeNames: [String]
-    /// Opens the store, carrying whatever the user had typed here — an empty
-    /// search for a name they haven't installed is exactly when they want it.
-    let onBrowseStore: (String) -> Void
+    /// Asks the parent to copy a built-in into the Themes folder and reveal it.
+    /// The parent owns the reload and the error alert, so the picker only names
+    /// the theme.
+    let onDuplicate: (String) -> Void
 
     @State private var isPresented = false
     @State private var query = ""
@@ -103,9 +102,17 @@ struct ThemePickerField: View {
                         // Only the slot's own brightness: the Dark slot lists dark
                         // themes, the Light slot lists light ones, so a slot can never
                         // offer a theme that would render the wrong way.
-                        Section(localized("Installed")) { themeRows(slotInstalledNames) }
+                        if !slotUserNames.isEmpty {
+                            Section(localized("Your themes")) { themeRows(slotUserNames) }
+                        }
+                        Section(localized("Built-in")) { themeRows(slotBuiltInNames) }
+                        if !slotInheritedNames.isEmpty {
+                            Section(localized("From your Ghostty config")) {
+                                themeRows(slotInheritedNames)
+                            }
+                        }
                     } else {
-                        Section(resultsLabel) { themeRows(filteredInstalled) }
+                        Section(resultsLabel) { themeRows(filteredNames) }
                     }
                 }
                 .listStyle(.inset)
@@ -135,10 +142,6 @@ struct ThemePickerField: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
-            Button(localized("Browse Themes…")) {
-                isPresented = false
-                onBrowseStore(query)
-            }
             Button(localized("Done")) { isPresented = false }
                 .keyboardShortcut(.defaultAction)
         }
@@ -159,12 +162,8 @@ struct ThemePickerField: View {
             Image(systemName: "paintpalette")
                 .font(.system(size: 28))
                 .foregroundStyle(.tertiary)
-            Text(localized("No installed theme matches “\(query)”"))
+            Text(localized("No theme matches “\(query)”"))
                 .foregroundStyle(.secondary)
-            Button(localized("Browse Themes…")) {
-                isPresented = false
-                onBrowseStore(query)
-            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -173,6 +172,14 @@ struct ThemePickerField: View {
     private func themeRows(_ names: [String]) -> some View {
         ForEach(names, id: \.self) { name in
             themeRow(name: name, definition: ThemeLibrary.theme(named: name))
+                .contextMenu {
+                    // Editing a built-in means owning a copy of it: the file lands
+                    // in the Themes folder and shadows the scheme it came from.
+                    Button(localized("Duplicate to Themes Folder")) {
+                        isPresented = false
+                        onDuplicate(name)
+                    }
+                }
         }
     }
 
@@ -195,16 +202,38 @@ struct ThemePickerField: View {
         query.isEmpty || name.localizedCaseInsensitiveContains(query)
     }
 
-    /// The installed themes this slot can offer — only those matching the slot's
-    /// brightness, so a slot can never apply one that renders the wrong way.
-    private var slotInstalledNames: [String] {
+    /// The user's own themes this slot can offer — only those matching the slot's
+    /// brightness, so a slot can never apply one that renders the wrong way. Read
+    /// from the parent's list rather than the library so a reload refreshes it.
+    private var slotUserNames: [String] {
         userThemeNames.filter { ThemeLibrary.theme(named: $0)?.isDark == prefersDark }
     }
 
-    private var filteredInstalled: [String] { slotInstalledNames.filter(matches) }
-    private var hasResults: Bool { query.isEmpty || !filteredInstalled.isEmpty }
+    /// The built-in schemes for this slot, minus any the user has shadowed with a
+    /// file of their own — that file is already listed above, and one name cannot
+    /// mean two themes.
+    private var slotBuiltInNames: [String] {
+        let owned = Set(slotUserNames)
+        return ThemeLibrary.builtInNames(dark: prefersDark).filter { !owned.contains($0) }
+    }
+
+    /// The selection when it is neither a built-in nor a file — a theme inherited
+    /// from the user's Ghostty config. It is painting the window, so it has to be
+    /// visible in the list that controls it.
+    private var slotInheritedNames: [String] {
+        guard !selection.isEmpty,
+              !slotUserNames.contains(selection),
+              !slotBuiltInNames.contains(selection),
+              ThemeLibrary.theme(named: selection)?.isDark == prefersDark
+        else { return [] }
+        return [selection]
+    }
+
+    private var slotNames: [String] { slotUserNames + slotBuiltInNames + slotInheritedNames }
+    private var filteredNames: [String] { slotNames.filter(matches) }
+    private var hasResults: Bool { query.isEmpty || !filteredNames.isEmpty }
     private var resultsLabel: String {
-        let count = filteredInstalled.count
+        let count = filteredNames.count
         return count == 1 ? localized("1 result") : localized("\(count) results")
     }
 }

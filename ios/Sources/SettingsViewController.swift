@@ -911,7 +911,7 @@ final class ThemePickerViewController: UITableViewController {
         let names = [
             MobileSettings.defaultLightThemeName,
             MobileSettings.defaultDarkThemeName,
-        ] + ThemeStoreCatalog.names
+        ] + BuiltInThemes.names
         var seen: Set<String> = []
         themes = names
             .compactMap { GhosttyThemeCatalog.theme(named: $0) }

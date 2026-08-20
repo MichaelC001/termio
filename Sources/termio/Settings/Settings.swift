@@ -108,10 +108,10 @@ final class AppSettings: ObservableObject {
         /// Legacy single-theme key, read once to migrate older installs into the
         /// split light/dark keys above.
         static let themeName = "appearance.themeName"
-        /// Set once the two theme slots have been materialized into the Themes
-        /// folder, so the upgrade pass runs exactly once (see
-        /// `materializeSelectedThemes`).
-        static let themesMaterialized = "appearance.themesMaterialized"
+        /// Set once the Themes folder has been swept of the file copies the old
+        /// theme store installed, so the upgrade pass runs exactly once (see
+        /// `pruneRedundantThemeCopies`).
+        static let catalogCopiesPruned = "appearance.catalogCopiesPruned"
         static let cursorStyle = "appearance.cursorStyle"
         static let cursorBlink = "appearance.cursorBlink"
         static let windowPadding = "appearance.windowPadding"
@@ -481,16 +481,13 @@ final class AppSettings: ObservableObject {
             // makes a half-dark window (light sidebar, dark canvas). A bare theme lands only
             // in the appearance it belongs to; the other slot keeps termio's own canvas.
             if let definition = resolveGhosttyTheme(name) {
-                materializeInheritedTheme(definition)
                 overrides[definition.isDark ? Key.darkThemeName : Key.lightThemeName] = definition.name
             }
         case .split(let light, let dark):
             if let light, let definition = resolveGhosttyTheme(light) {
-                materializeInheritedTheme(definition)
                 overrides[Key.lightThemeName] = definition.name
             }
             if let dark, let definition = resolveGhosttyTheme(dark) {
-                materializeInheritedTheme(definition)
                 overrides[Key.darkThemeName] = definition.name
             }
         case nil:
@@ -499,33 +496,18 @@ final class AppSettings: ObservableObject {
         return overrides
     }
 
-    /// Gives an inherited Ghostty theme a file in termio's `Themes` folder before
-    /// it is written into a slot. A slot resolves against the library only, so an
-    /// inherited name that stayed a catalog lookup would paint nothing — and it
-    /// re-runs whenever the user's Ghostty config names a theme they haven't got,
-    /// which the one-time upgrade pass below cannot do.
-    private static func materializeInheritedTheme(_ definition: GhosttyThemeDefinition) {
-        do {
-            try ThemeLibrary.materializeFromCatalog(named: definition.name)
-        } catch {
-            Log.app.error("could not materialize inherited theme \(definition.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+    /// One-time upgrade: the old theme store installed a scheme by copying its file
+    /// into the `Themes` folder. The library resolves those schemes without a file
+    /// now, so an untouched copy is dead weight that would also freeze that theme
+    /// at whatever palette it shipped with the day it was installed. Files the user
+    /// has edited are left alone — see `removeRedundantCatalogCopies`.
+    private func pruneRedundantThemeCopies() {
+        guard !defaults.bool(forKey: Key.catalogCopiesPruned) else { return }
+        let removed = ThemeLibrary.removeRedundantCatalogCopies()
+        if removed > 0 {
+            Log.app.info("removed \(removed, privacy: .public) redundant theme copies")
         }
-    }
-
-    /// One-time upgrade: an installed termio picked its themes from a catalog that
-    /// the library no longer consults, so each occupied slot gets its file written
-    /// once. Two files at most — never the catalog — and existing selections keep
-    /// painting because they become library entries.
-    private func materializeSelectedThemes() {
-        guard !defaults.bool(forKey: Key.themesMaterialized) else { return }
-        for name in [lightThemeName, darkThemeName] {
-            do {
-                try ThemeLibrary.materializeFromCatalog(named: name)
-            } catch {
-                Log.app.error("could not materialize selected theme \(name, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            }
-        }
-        defaults.set(true, forKey: Key.themesMaterialized)
+        defaults.set(true, forKey: Key.catalogCopiesPruned)
     }
 
     init(defaults: UserDefaults = .standard, settingsStore: SettingsStore? = nil) {
@@ -642,7 +624,7 @@ final class AppSettings: ObservableObject {
         currentDeviceAlias = defaults.string(forKey: Key.currentDevice)
         currentWorkspaceID = defaults.string(forKey: Key.currentWorkspace).flatMap(UUID.init)
 
-        materializeSelectedThemes()
+        pruneRedundantThemeCopies()
     }
 
     /// Effective command for an agent: the user's override if it's non-empty,

@@ -17,23 +17,17 @@ struct SettingsView: View {
     /// window doesn't hold the store.
     let onSSHConnect: (String) -> Void
     @State private var selection: SettingsTab
-    /// Whether the Appearance tab's theme store is up. Held here so a deep link
-    /// (the palette's **Browse Themes…**) can open Settings straight onto the
-    /// sheet, and so dismissing it stays dismissed as the user moves between tabs.
-    @State private var isBrowsingThemeStore: Bool
 
     init(
         settings: AppSettings,
         usage: UsageMonitor,
         initialTab: SettingsTab = .general,
-        opensThemeStore: Bool = false,
         onSSHConnect: @escaping (String) -> Void
     ) {
         self.settings = settings
         self.usage = usage
         self.onSSHConnect = onSSHConnect
         _selection = State(initialValue: initialTab)
-        _isBrowsingThemeStore = State(initialValue: opensThemeStore)
     }
 
     var body: some View {
@@ -78,7 +72,7 @@ struct SettingsView: View {
     private var detail: some View {
         switch selection {
         case .general: GeneralSettingsTab(settings: settings)
-        case .appearance: AppearanceSettingsTab(settings: settings, isBrowsingStore: $isBrowsingThemeStore)
+        case .appearance: AppearanceSettingsTab(settings: settings)
         case .terminal: TerminalSettingsTab(settings: settings)
         case .machines: MachinesSettingsTab(settings: settings, onConnect: onSSHConnect)
         case .keyboard: KeybindingsSettingsTab()

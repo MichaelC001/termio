@@ -2,29 +2,50 @@ import Foundation
 import GhosttyTheme
 import TermioShared
 
-/// termio's terminal-theme library: the files in termio's `Themes` folder, and
-/// nothing else.
+/// termio's terminal-theme library: 50 built-in schemes, plus whatever the user
+/// has put in termio's `Themes` folder.
 ///
-/// A theme is a Ghostty-format file — the same `key = value` text Ghostty itself
-/// reads from `~/.config/ghostty/themes` (`background = #hex`, `palette = 0=#hex`,
-/// …) — so the thousands of community color schemes work unchanged. This is the
-/// VSCode/Zed model: a theme the user has is a file on their computer.
+/// The built-ins are the curated 50 (`BuiltInThemes`), resolved live out of the
+/// `GhosttyTheme` product rather than copied onto disk. Nothing to install,
+/// nothing that goes stale when the pinned package updates a palette, and no way
+/// for a selected name to resolve to nothing.
 ///
-/// `GhosttyThemeCatalog` (the ~485 schemes compiled into the `GhosttyTheme`
-/// product) is a warehouse, not a library. It is read only to install a store
-/// theme and to materialize a name that was selected before the library existed;
-/// `theme(named:)` never falls back to it. A selected name that resolves to no
-/// file would otherwise be a ghost: listed nowhere, yet painting the chrome.
+/// A user theme is a Ghostty-format file — the same `key = value` text Ghostty
+/// itself reads from `~/.config/ghostty/themes` (`background = #hex`,
+/// `palette = 0=#hex`, …) — so the thousands of community color schemes work
+/// unchanged. This is the VSCode/Zed model: a theme the user made is a file on
+/// their computer. A file wins over a built-in of the same name, so dropping in
+/// your own `Nord` overrides ours instead of fighting it.
+///
+/// `theme(named:)` resolves past the 50 into the full bundled catalog, because a
+/// Ghostty config's `theme = X` may name any of them and has to keep painting.
+/// Such a name is listed too — see `selectableNames(dark:selection:)`.
 ///
 /// Loading is lenient: a malformed file is skipped rather than failing the whole
 /// load.
 @MainActor
 enum ThemeLibrary {
-    /// Where theme files live, alongside termio's other support data
+    /// Where user theme files live, alongside termio's other support data
     /// (`~/Library/Application Support/termio/Themes`).
     static var directory: URL {
         AppChannel.supportDirectory.appendingPathComponent("Themes", isDirectory: true)
     }
+
+    // MARK: - Built-ins
+
+    /// The curated 50, filtered to the names the pinned catalog resolves so a
+    /// package rename drops a stale entry instead of showing a dead one. The names
+    /// are shared with the iPhone's picker (see `BuiltInThemes`), which offers the
+    /// same set.
+    static let builtInThemes: [GhosttyThemeDefinition] =
+        BuiltInThemes.names.compactMap { GhosttyThemeCatalog.theme(named: $0) }
+
+    /// Built-in names of one brightness, sorted — one slot's worth of the 50.
+    static func builtInNames(dark: Bool) -> [String] {
+        builtInThemes.filter { $0.isDark == dark }.map(\.name).sorted { $0.lowercased() < $1.lowercased() }
+    }
+
+    // MARK: - User themes
 
     /// Themes parsed from `directory`, cached after the first load. Call `reload()`
     /// to pick up files added or edited while the app is running.
@@ -47,117 +68,119 @@ enum ThemeLibrary {
         return loaded
     }
 
-    /// Resolves a theme by name — from a file in the `Themes` folder, and only
-    /// from there. See the type comment for why the catalog is not a fallback.
-    static func theme(named name: String) -> GhosttyThemeDefinition? {
-        userThemes.first { $0.name == name }
-    }
-
-    /// Installed theme names for one slot, filtered by each theme's own `isDark`
-    /// (background luminance) so the Dark slot can never offer a theme that would
-    /// render the wrong way.
-    static func installedThemeNames(dark: Bool) -> [String] {
-        userThemes.filter { $0.isDark == dark }
-            .map(\.name)
-            .sorted { $0.lowercased() < $1.lowercased() }
-    }
-
-    /// Every installed theme name, sorted — the Appearance tab's "N installed".
+    /// Every user theme name, sorted — the Appearance tab's "N in your folder".
     static var userThemeNames: [String] {
         userThemes.map(\.name).sorted { $0.lowercased() < $1.lowercased() }
     }
 
-    // MARK: - Store
-
-    /// The store's index in display order, filtered to the names the pinned
-    /// catalog resolves so a package rename drops a stale row instead of showing a
-    /// dead one. The names themselves are shared with the iPhone's picker (see
-    /// `ThemeStoreCatalog`), which offers the same set.
-    static let storeCatalog: [String] = ThemeStoreCatalog.names
-        .filter { GhosttyThemeCatalog.theme(named: $0) != nil }
-
-    /// A store row's definition, read from the catalog so an uninstalled row can
-    /// still draw its swatch. The only other catalog readers are `install` and
-    /// `materializeFromCatalog`; nothing on the resolve path calls this.
-    static func storeTheme(named name: String) -> GhosttyThemeDefinition? {
-        GhosttyThemeCatalog.theme(named: name)
+    /// User theme names of one brightness, sorted — the picker's own section.
+    static func userThemeNames(dark: Bool) -> [String] {
+        userThemes.filter { $0.isDark == dark }.map(\.name).sorted { $0.lowercased() < $1.lowercased() }
     }
 
-    /// Why an Install did not happen.
-    enum InstallRefusal: Error {
-        /// The store name is not in the pinned catalog — only reachable if the
-        /// package renamed a theme between the filter above and the call.
-        case unknownTheme(String)
-        /// A file in the `Themes` folder already answers to that name. It may be
-        /// the user's own hand-dropped theme, so Install refuses and the caller
-        /// offers an explicit Replace naming this path.
-        case alreadyInstalled(URL)
+    // MARK: - Resolution
+
+    /// Resolves a theme by name: the user's own file first, then the bundled
+    /// catalog. Resolving past the built-in 50 into the full catalog is what lets a
+    /// Ghostty config's `theme = Aardvark Blue` keep painting without termio
+    /// copying a file to disk on its behalf.
+    static func theme(named name: String) -> GhosttyThemeDefinition? {
+        if let own = userThemes.first(where: { $0.name == name }) { return own }
+        return GhosttyThemeCatalog.theme(named: name)
     }
 
-    /// Writes one store theme into the `Themes` folder. Refuses when a file
-    /// already parses to that name unless `replacingExisting` is set, so a
-    /// hand-dropped `Dracula` is never silently overwritten.
-    static func install(named name: String, replacingExisting: Bool = false) throws {
-        guard let definition = GhosttyThemeCatalog.theme(named: name) else {
-            throw InstallRefusal.unknownTheme(name)
+    /// The names one slot may offer, filtered by each theme's own `isDark`
+    /// (background luminance) so the Dark slot can never offer a theme that would
+    /// render the wrong way.
+    ///
+    /// `selection` is appended when it resolves to something outside the list — a
+    /// theme inherited from a Ghostty config. A name that is painting the window
+    /// has to stay visible in the list that controls it, or it reads as a ghost.
+    static func selectableNames(dark: Bool, selection: String = "") -> [String] {
+        var names = userThemeNames(dark: dark)
+        let owned = Set(names)
+        names += builtInNames(dark: dark).filter { !owned.contains($0) }
+        if !selection.isEmpty, !names.contains(selection),
+           theme(named: selection)?.isDark == dark {
+            names.append(selection)
         }
-        if !replacingExisting, let existing = fileURL(forInstalledTheme: name) {
-            throw InstallRefusal.alreadyInstalled(existing)
-        }
-        try write(definition)
-        reload()
+        return names
     }
 
-    /// Deletes the file backing an installed theme.
-    static func remove(named name: String) throws {
-        guard let url = fileURL(forInstalledTheme: name) else { return }
-        try FileManager.default.removeItem(at: url)
-        reload()
-    }
+    // MARK: - Files
 
-    /// The file an installed theme was parsed from, or `nil` when no file in the
-    /// folder parses to that name. Resolved by re-parsing rather than by guessing
-    /// the file name, because a theme's name comes from its file's stem and the
-    /// user may have named the file anything.
-    static func fileURL(forInstalledTheme name: String) -> URL? {
+    /// The file a user theme was parsed from, or `nil` when no file in the folder
+    /// parses to that name. Resolved by re-parsing rather than by guessing the file
+    /// name, because a theme's name comes from its file's stem and the user may
+    /// have named the file anything.
+    static func fileURL(forUserTheme name: String) -> URL? {
         sortedFiles().first { url in
             parse(name: url.deletingPathExtension().lastPathComponent,
                   contents: (try? String(contentsOf: url, encoding: .utf8)) ?? "")?.name == name
         }
     }
 
-    /// Whether the installed file for `name` still holds exactly what `write`
-    /// would emit. A file the user has edited is theirs: Remove confirms first,
-    /// and the store never offers to reinstall over it.
-    static func isPristine(installedTheme name: String) -> Bool {
-        guard let url = fileURL(forInstalledTheme: name),
-              let contents = try? String(contentsOf: url, encoding: .utf8),
-              let catalogDefinition = GhosttyThemeCatalog.theme(named: name)
-        else { return false }
-        return contents == serialize(catalogDefinition)
-    }
-
-    // MARK: - Materialization
-
-    /// Writes `name`'s catalog definition into the `Themes` folder when the
-    /// library has no file for it yet, so a name selected before the library
-    /// existed becomes a library entry instead of a ghost selection. Returns
-    /// whether a file was written.
+    /// Writes a theme's definition into the `Themes` folder so the user has a file
+    /// of their own to edit — this is how you fork one of the 50. The first copy
+    /// takes the theme's own name and so shadows it; a second becomes `Nord 2` and
+    /// stands beside it rather than overwriting the edits in the first.
     ///
-    /// Bounded by design: the caller passes only names that are already selected
-    /// (the two slots, and a Ghostty-inherited `theme = X`), never the catalog.
+    /// Returns the file it wrote. The caller reveals it, because a duplicate the
+    /// user cannot find is a duplicate that did nothing.
     @discardableResult
-    static func materializeFromCatalog(named name: String) throws -> Bool {
-        guard !name.isEmpty, theme(named: name) == nil,
-              fileURL(forInstalledTheme: name) == nil,
-              let definition = GhosttyThemeCatalog.theme(named: name)
-        else { return false }
-        try write(definition)
+    static func duplicateToThemesFolder(named name: String) throws -> URL {
+        guard let definition = theme(named: name) else { throw DuplicateRefusal.unknownTheme(name) }
+        let url = try write(definition, as: uniqueName(basedOn: name))
         reload()
-        return true
+        return url
     }
 
-    // MARK: - Files
+    /// Why a duplicate did not happen.
+    enum DuplicateRefusal: Error {
+        /// The name resolves to neither a file nor the catalog — only reachable if
+        /// the pinned package renamed a theme between listing it and the call.
+        case unknownTheme(String)
+    }
+
+    /// `Nord`, then `Nord 2`, `Nord 3`, … — a duplicate never overwrites the file
+    /// sitting next to it, so a second Duplicate is a second file rather than a
+    /// silent loss of the first one's edits.
+    private static func uniqueName(basedOn name: String) -> String {
+        let taken = Set(userThemes.map(\.name))
+        guard taken.contains(name) else { return name }
+        var suffix = 2
+        while taken.contains("\(name) \(suffix)") { suffix += 1 }
+        return "\(name) \(suffix)"
+    }
+
+    /// One-time upgrade: earlier versions installed a theme by copying its file out
+    /// of the catalog into the `Themes` folder. Those copies are redundant now —
+    /// the same schemes resolve without a file — and a copy left behind would go on
+    /// shadowing the built-in it duplicates, freezing that theme at the palette it
+    /// had on the day it was installed.
+    ///
+    /// Only deletes files that still hold byte for byte what the old Install wrote.
+    /// An edited file is the user's own theme and stays. Returns how many went.
+    @discardableResult
+    static func removeRedundantCatalogCopies() -> Int {
+        var removed = 0
+        for url in sortedFiles() {
+            guard let contents = try? String(contentsOf: url, encoding: .utf8),
+                  let definition = parse(
+                    name: url.deletingPathExtension().lastPathComponent, contents: contents),
+                  let catalogDefinition = GhosttyThemeCatalog.theme(named: definition.name),
+                  contents == serialize(catalogDefinition)
+            else { continue }
+            do {
+                try FileManager.default.removeItem(at: url)
+                removed += 1
+            } catch {
+                Log.app.error("could not remove redundant theme copy at \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        if removed > 0 { reload() }
+        return removed
+    }
 
     /// Creates the `Themes` folder if it does not exist yet and returns it, so
     /// "Open Themes Folder" always lands somewhere real even on a fresh install.
@@ -170,24 +193,29 @@ enum ThemeLibrary {
     }
 
     /// Serializes a definition back to Ghostty `key = value` text and writes it to
-    /// `directory` under the theme's name, with no file extension — the folder
-    /// already names a theme after its file's stem, so an extension would only be
-    /// stripped back off on the next load. `parse` reads back an equal definition.
-    static func write(_ definition: GhosttyThemeDefinition) throws {
-        try write(definition, into: ensureDirectoryExists())
+    /// `directory` under `fileName`, with no extension — the folder already names a
+    /// theme after its file's stem, so an extension would only be stripped back off
+    /// on the next load. `parse` reads back an equal definition.
+    @discardableResult
+    static func write(_ definition: GhosttyThemeDefinition, as fileName: String? = nil) throws -> URL {
+        try write(definition, into: ensureDirectoryExists(), as: fileName)
     }
 
-    /// Writes into an explicit folder. `write(_:)` is this against the library's
+    /// Writes into an explicit folder. `write(_:as:)` is this against the library's
     /// own folder; the parameter exists so the round-trip test can prove the file
     /// reads back equal without writing into the user's Themes folder.
-    static func write(_ definition: GhosttyThemeDefinition, into folder: URL) throws {
-        let url = folder.appendingPathComponent(definition.name, isDirectory: false)
+    @discardableResult
+    static func write(
+        _ definition: GhosttyThemeDefinition, into folder: URL, as fileName: String? = nil
+    ) throws -> URL {
+        let url = folder.appendingPathComponent(fileName ?? definition.name, isDirectory: false)
         try serialize(definition).write(to: url, atomically: true, encoding: .utf8)
+        return url
     }
 
     /// The Ghostty-format text for a definition. Palette entries are emitted in
     /// index order so the file is stable across writes and comparable byte for
-    /// byte (see `isPristine(installedTheme:)`).
+    /// byte (see `removeRedundantCatalogCopies`).
     static func serialize(_ definition: GhosttyThemeDefinition) -> String {
         var lines: [String] = [
             "background = #\(definition.background)",

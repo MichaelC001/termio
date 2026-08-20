@@ -1,10 +1,10 @@
-/// The theme store's index: 50 well-known Ghostty scheme names, in display order
-/// — 35 dark, then 15 light, by each theme's own background luminance.
+/// The built-in themes: 50 well-known Ghostty scheme names, in display order — 35
+/// dark, then 15 light, by each theme's own background luminance.
 ///
-/// Shared because both the Mac store and the iPhone's theme picker offer the same
-/// set, and two hand-kept copies would drift. Names only: the Mac resolves them
-/// against `GhosttyThemeCatalog` to install a file, the phone resolves them to
-/// render, and neither meaning belongs in this package.
+/// Shared because the Mac's theme picker and the iPhone's offer the same set, and
+/// two hand-kept copies would drift. Names only: both ends resolve them against
+/// `GhosttyThemeCatalog` to render, and that meaning does not belong in this
+/// package.
 ///
 /// Curated, not exhaustive. No two entries read as the same theme — measured as
 /// weighted mean CIE Lab distance over background, foreground, and ANSI 1–6, with
@@ -12,7 +12,7 @@
 /// (TokyoNight Night/Storm, Catppuccin Mocha/Macchiato, Rose Pine/Moon) down to
 /// one row each. `ThemeLibraryTests` enforces the resolve, the brightness split,
 /// and the distance rule.
-public enum ThemeStoreCatalog {
+public enum BuiltInThemes {
     public static let names: [String] = [
         "Dracula",
         "Catppuccin Mocha",
