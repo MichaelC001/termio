@@ -1393,6 +1393,29 @@ final class TermioStore: ObservableObject {
         runtimes[sessionID]?.workingDirectory
     }
 
+    /// The folder the window chrome names for a session: a project session's worktree
+    /// if it has one, else its project folder. A loose terminal belongs to no project
+    /// but owns its path, so it names its live cwd — the same place the sidebar row and
+    /// the inspector already follow (see `inspectorCheckout`). `nil` for a loose chat,
+    /// whose scoped scratch directory is not a place worth naming, and for an unknown id.
+    ///
+    /// The loose ladder walks down to `$HOME` rather than stopping at the reported cwd:
+    /// a shell reports nothing until its first prompt, so a fresh terminal would
+    /// otherwise show the app's own name for a beat and then swap to a path. These are
+    /// the rungs `surface(for:in:)` spawns the shell down, so the title names where the
+    /// shell is about to land, not where it has confirmed it is.
+    func titleFolder(for sessionID: Session.ID) -> String? {
+        guard let session = session(sessionID) else { return nil }
+        if let project = project(for: sessionID) {
+            return session.worktreePath ?? project.path
+        }
+        guard isLooseTerminal(sessionID) else { return nil }
+        return workingDirectory(for: sessionID)
+            ?? session.lastWorkingDirectory
+            ?? session.spawnDirectory
+            ?? Self.looseTerminalRoot
+    }
+
     /// Whether the user is plausibly looking at this session right now: termio is
     /// the active app and the session is selected. The status paths use it to pick
     /// between a quiet in-place settle and a "your turn" cue — with termio in the
@@ -1495,8 +1518,9 @@ final class TermioStore: ObservableObject {
     }
 
     /// A loose terminal's display label for a working directory: `~` at the home
-    /// directory, otherwise the folder's basename.
-    private static func terminalLabel(forPath path: String) -> String {
+    /// directory, otherwise the folder's basename. Shared with the toolbar title so
+    /// the row and the chrome above it name the same place the same way.
+    static func terminalLabel(forPath path: String) -> String {
         let standardized = (path as NSString).standardizingPath
         if standardized == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path {
             return "~"
