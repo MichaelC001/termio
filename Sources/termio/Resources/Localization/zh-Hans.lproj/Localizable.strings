@@ -556,8 +556,10 @@
 	<string>我的 Agent</string>
 	<key>Name</key>
 	<string>名称</string>
-	<key>Name the workspace. It starts empty; sessions and projects you open from now on are filed under it.</key>
-	<string>为工作区取个名字。它一开始是空的，此后你打开的会话和项目都归入其中。</string>
+	<key>Name the workspace. It starts empty; sessions and projects you open on %@ from now on are filed under it.</key>
+	<string>为工作区取个名字。它一开始是空的，此后你在 %@ 上打开的会话和项目都归入其中。</string>
+	<key>Name the workspace. It starts empty; sessions and projects you open on this Mac from now on are filed under it.</key>
+	<string>为工作区取个名字。它一开始是空的，此后你在这台 Mac 上打开的会话和项目都归入其中。</string>
 	<key>Name the worktree. A new branch of this name is created from HEAD and nested under this project.</key>
 	<string>为 worktree 命名。将从 HEAD 创建一个同名新分支，并嵌套在此项目下。</string>
 	<key>Navigation</key>
@@ -594,6 +596,8 @@
 	<string>在个人文件夹新建终端</string>
 	<key>New Workspace</key>
 	<string>新建工作区</string>
+	<key>New Workspace on %@</key>
+	<string>在 %@ 上新建工作区</string>
 	<key>New Workspace…</key>
 	<string>新建工作区…</string>
 	<key>New Worktree</key>

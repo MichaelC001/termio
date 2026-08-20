@@ -556,8 +556,10 @@
 	<string>My Agent</string>
 	<key>Name</key>
 	<string>Name</string>
-	<key>Name the workspace. It starts empty; sessions and projects you open from now on are filed under it.</key>
-	<string>Name the workspace. It starts empty; sessions and projects you open from now on are filed under it.</string>
+	<key>Name the workspace. It starts empty; sessions and projects you open on %@ from now on are filed under it.</key>
+	<string>Name the workspace. It starts empty; sessions and projects you open on %@ from now on are filed under it.</string>
+	<key>Name the workspace. It starts empty; sessions and projects you open on this Mac from now on are filed under it.</key>
+	<string>Name the workspace. It starts empty; sessions and projects you open on this Mac from now on are filed under it.</string>
 	<key>Name the worktree. A new branch of this name is created from HEAD and nested under this project.</key>
 	<string>Name the worktree. A new branch of this name is created from HEAD and nested under this project.</string>
 	<key>Navigation</key>
@@ -594,6 +596,8 @@
 	<string>New Terminal at Home</string>
 	<key>New Workspace</key>
 	<string>New Workspace</string>
+	<key>New Workspace on %@</key>
+	<string>New Workspace on %@</string>
 	<key>New Workspace…</key>
 	<string>New Workspace…</string>
 	<key>New Worktree</key>

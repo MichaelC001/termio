@@ -950,9 +950,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.switchToWorkspace(id)
     }
 
-    /// The submenu's trailing "New Workspace…" row.
+    /// "New Workspace…" wherever it stands as a plain verb — the Workspace
+    /// submenu's row, the toolbar `+`'s last row — and the This Mac row of the
+    /// device submenu those grow on a second machine.
     @objc func newWorkspace(_ sender: Any?) {
-        store.presentNewWorkspacePanel()
+        store.presentNewWorkspacePanel(on: .thisMac)
+    }
+
+    /// A device row of the New Workspace submenu (File ▸ Workspace and the toolbar
+    /// `+` share it — see `refreshNewWorkspaceItem`). Nothing is reached here: a
+    /// workspace is a filing scope, so it exists on that machine before anything
+    /// has connected to it.
+    @objc func newWorkspaceOnDevice(_ sender: NSMenuItem) {
+        guard let alias = sender.representedObject as? String else { return }
+        store.presentNewWorkspacePanel(on: .ssh(alias: alias))
     }
 
     /// The submenu's "Rename Workspace…" row. It acts on the workspace the window
@@ -1541,6 +1552,7 @@ enum DeviceMenuTag {
     static let newTerminalAtHome = 7302
     static let connectTo = 7303
     static let openProject = 7305
+    static let newWorkspace = 7306
 }
 
 /// The "Workspace ▸" item — the scopes, with the current one checked, and where the
@@ -1613,6 +1625,8 @@ extension AppDelegate: NSMenuDelegate {
             fillConnectToMenu(menu)
         case localized("Open Project"):
             fillOpenProjectMenu(menu)
+        case localized("New Workspace"):
+            fillNewWorkspaceMenu(menu)
         case localized("Workspace"):
             fillWorkspaceMenu(menu)
         default:
@@ -1628,6 +1642,10 @@ extension AppDelegate: NSMenuDelegate {
         // the roster is read once per pass rather than once per item — reading
         // `~/.ssh/config` for "Connect to…" is the expensive half.
         let known = DeviceRoster.known(in: store)
+        // The other machines are read once per pass for the same reason: both the
+        // Open Project and the New Workspace rows collapse on the same list, and it
+        // parses `~/.ssh/config` to build it.
+        let others = otherDevices(known: known)
         for item in menu.items {
             switch item.tag {
             case DeviceMenuTag.newTerminal:
@@ -1637,7 +1655,9 @@ extension AppDelegate: NSMenuDelegate {
             case DeviceMenuTag.connectTo:
                 item.isHidden = DeviceRoster.unusedAliases(known: known).isEmpty
             case DeviceMenuTag.openProject:
-                refreshOpenProjectItem(item, known: known)
+                refreshOpenProjectItem(item, others: others)
+            case DeviceMenuTag.newWorkspace:
+                refreshNewWorkspaceItem(item, others: others)
             default:
                 continue
             }
@@ -1689,8 +1709,8 @@ extension AppDelegate: NSMenuDelegate {
     /// The shortcut travels to the This Mac row so ⌘O still opens a local folder
     /// (AppKit's key-equivalent sweep descends submenus, the same behaviour the
     /// New Chat menu relies on).
-    private func refreshOpenProjectItem(_ item: NSMenuItem, known: [KnownDevice]) {
-        guard !openProjectDevices(known: known).isEmpty else {
+    private func refreshOpenProjectItem(_ item: NSMenuItem, others: [KnownDevice]) {
+        guard !others.isEmpty else {
             item.title = localized("Open Project…")
             item.submenu = nil
             item.action = #selector(openProject(_:))
@@ -1715,13 +1735,66 @@ extension AppDelegate: NSMenuDelegate {
         item.submenu = submenu
     }
 
-    /// The machines a project can be opened on: one worked on before, plus one from
-    /// `~/.ssh/config` never reached. Opening a project on a box is itself a first
-    /// contact — `ensureRemoteReady` installs termiod on the way — so the list is
-    /// the same one `Clone to <device>…` offers.
-    private func openProjectDevices(known: [KnownDevice]) -> [KnownDevice] {
+    /// The machines other than this Mac something can be put on: one worked on
+    /// before, plus one from `~/.ssh/config` never reached. Putting a project or a
+    /// workspace on a box is itself a first contact — `ensureRemoteReady` installs
+    /// termiod on the way — so the list is the same one `Clone to <device>…` offers.
+    ///
+    /// Empty is the single-machine install, which is what both device submenus
+    /// collapse on.
+    private func otherDevices(known: [KnownDevice]) -> [KnownDevice] {
         known.filter { !$0.isLocal }
             + DeviceRoster.unusedAliases(known: known).map { KnownDevice(alias: $0, deviceID: nil) }
+    }
+
+    /// The same single-device collapse applied to "New Workspace…": a plain verb
+    /// while this Mac is the only machine, a device submenu once there is a second
+    /// box to put a workspace on.
+    ///
+    /// A workspace belongs to exactly one machine, so the choice has to be made
+    /// somewhere. Making it here rather than in the name panel is what keeps the
+    /// device level invisible to someone who owns one machine — a pop-up inside the
+    /// panel would show every local-only user a one-item menu reading "This Mac",
+    /// which is a control for a decision they never took.
+    ///
+    /// No key equivalent travels with the shape: creating a workspace has no
+    /// shortcut, so unlike ⌘O there is nothing to move onto the This Mac row.
+    private func refreshNewWorkspaceItem(_ item: NSMenuItem, others: [KnownDevice]) {
+        guard !others.isEmpty else {
+            item.title = localized("New Workspace…")
+            item.submenu = nil
+            item.action = #selector(newWorkspace(_:))
+            item.target = self
+            return
+        }
+        // The ellipsis moves to the rows: each of those opens the name panel, and a
+        // parent that only reveals a submenu never carries one.
+        item.title = localized("New Workspace")
+        item.action = nil
+        // Attached once and filled by the delegate on open, like the other device
+        // submenus — the File menu's copy is rebuilt per open, but the toolbar `+`
+        // keeps its item across refreshes.
+        guard item.submenu?.title != localized("New Workspace") else { return }
+        let submenu = NSMenu(title: localized("New Workspace"))
+        submenu.delegate = self
+        item.submenu = submenu
+    }
+
+    private func fillNewWorkspaceMenu(_ menu: NSMenu) {
+        let local = menu.addItem(
+            withTitle: localized("This Mac…"), action: #selector(newWorkspace(_:)), keyEquivalent: "")
+        local.target = self
+        menu.addItem(.separator())
+        for device in otherDevices(known: DeviceRoster.known(in: store)) {
+            // The machine's own name, so nothing here is translated — it is the
+            // alias out of the user's `~/.ssh/config`.
+            let row = menu.addItem(
+                withTitle: "\(device.name)…",
+                action: #selector(newWorkspaceOnDevice(_:)),
+                keyEquivalent: "")
+            row.target = self
+            row.representedObject = device.alias
+        }
     }
 
     private func fillOpenProjectMenu(_ menu: NSMenu) {
@@ -1730,7 +1803,7 @@ extension AppDelegate: NSMenuDelegate {
         local.target = self
         local.applyShortcut(for: .openProject)
         menu.addItem(.separator())
-        for device in openProjectDevices(known: DeviceRoster.known(in: store)) {
+        for device in otherDevices(known: DeviceRoster.known(in: store)) {
             // The machine's own name, so nothing here is translated — it is the
             // alias out of the user's `~/.ssh/config`.
             let row = menu.addItem(
@@ -1921,9 +1994,14 @@ extension AppDelegate: NSMenuDelegate {
             item.state = workspace.id == store.currentWorkspaceID ? .on : .off
         }
         menu.addItem(.separator())
+        // The same row the toolbar `+` carries: a plain verb on one machine, a
+        // device submenu on two (`refreshNewWorkspaceItem`). This menu is rebuilt on
+        // every open rather than refreshed in place, so the row is shaped here
+        // instead of by tag.
         let new = menu.addItem(withTitle: localized("New Workspace…"),
                                action: #selector(newWorkspace(_:)), keyEquivalent: "")
         new.target = self
+        refreshNewWorkspaceItem(new, others: otherDevices(known: DeviceRoster.known(in: store)))
         let rename = menu.addItem(withTitle: localized("Rename Workspace…"),
                                   action: #selector(renameWorkspace(_:)), keyEquivalent: "")
         rename.target = self
@@ -2099,6 +2177,18 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
         folder.target = NSApp.delegate as? AppDelegate
         folder.tag = DeviceMenuTag.openProject
         menu.addItem(folder)
+        // The one container verb that belongs in a context-free menu: a new
+        // workspace reads no selection and no focus. It sits last, after a
+        // separator, because starting a scope is rarer than starting a session —
+        // and it is reshaped into a device submenu on open like the rows above
+        // (`refreshNewWorkspaceItem`), since a workspace is on one machine.
+        menu.addItem(.separator())
+        let workspace = NSMenuItem(title: localized("New Workspace…"),
+                                   action: #selector(AppDelegate.newWorkspace(_:)),
+                                   keyEquivalent: "")
+        workspace.target = NSApp.delegate as? AppDelegate
+        workspace.tag = DeviceMenuTag.newWorkspace
+        menu.addItem(workspace)
         return menu
     }
 
