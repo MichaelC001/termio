@@ -52,8 +52,16 @@ open class CodeAttributedString : NSTextStorage
     let stringStorage = NSTextStorage()
 
     /// Highlightr instace used internally for highlighting. Use this for configuring the theme.
-    public let highlightr: Highlightr
-    
+    ///
+    /// Optional, unlike upstream, which force-unwraps `Highlightr()` in every initializer.
+    /// That constructor fails whenever syntax highlighting cannot be set up — a missing
+    /// resource, a `JSContext` that would not allocate — and none of those are worth killing
+    /// the app over: the editor's job is to show the file, and uncolored text does that.
+    /// The trap fired for real, from a sheet's layout pass (#348 follow-up), and it had
+    /// already shipped once as the v0.2.4 release crash this file was vendored to fix.
+    /// `nil` here means "no highlighting"; the storage behaves as plain text.
+    public let highlightr: Highlightr?
+
     /// This object will be notified before and after the highlighting.
     open var highlightDelegate : HighlightDelegate?
 
@@ -63,7 +71,7 @@ open class CodeAttributedString : NSTextStorage
      - parameter highlightr: The highlightr instance to use. Defaults to `Highlightr()`.
 
      */
-    public init(highlightr: Highlightr = Highlightr()!)
+    public init(highlightr: Highlightr? = Highlightr())
     {
         self.highlightr = highlightr
         super.init()
@@ -72,24 +80,24 @@ open class CodeAttributedString : NSTextStorage
 
     /// Initialize the CodeAttributedString
     public override init() {
-        self.highlightr = Highlightr()!
+        self.highlightr = Highlightr()
         super.init()
         setupListeners()
     }
-    
+
     /// Initialize the CodeAttributedString
     required public init?(coder aDecoder: NSCoder)
     {
-        self.highlightr = Highlightr()!
+        self.highlightr = Highlightr()
         super.init(coder: aDecoder)
         setupListeners()
     }
-    
+
     #if os(OSX)
     /// Initialize the CodeAttributedString
     required public init?(pasteboardPropertyList propertyList: Any, ofType type: NSPasteboard.PasteboardType)
     {
-        self.highlightr = Highlightr()!
+        self.highlightr = Highlightr()
         super.init(pasteboardPropertyList: propertyList, ofType: type)
         setupListeners()
     }
@@ -166,11 +174,12 @@ open class CodeAttributedString : NSTextStorage
 
     func highlight(_ range: NSRange)
     {
-        if(language == nil)
+        // No highlighter (see `highlightr`) or no language means the text stays as typed.
+        guard highlightr != nil, let language else
         {
             return;
         }
-        
+
         if let highlightDelegate = highlightDelegate
         {
             let shouldHighlight : Bool? = highlightDelegate.shouldHighlight?(range)
@@ -185,7 +194,9 @@ open class CodeAttributedString : NSTextStorage
         let line = string.substring(with: range)
         DispatchQueue.global().async
         {
-            let tmpStrg = self.highlightr.highlight(line, as: self.language!)
+            // Read back off `self`, as upstream does: capturing the highlighter directly
+            // would carry a non-Sendable value into this `@Sendable` closure.
+            let tmpStrg = self.highlightr?.highlight(line, as: language)
             let finish = UncheckedSendableClosure(run: {
                 //Checks to see if this highlighting is still valid.
                 if((range.location + range.length) > self.stringStorage.length)

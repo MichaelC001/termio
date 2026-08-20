@@ -49,10 +49,14 @@ struct HighlightedTextView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         let storage = context.coordinator.textStorage
-        _ = storage.highlightr.setTheme(to: theme)
-        storage.highlightr.theme.setCodeFont(font)
-        storage.highlightr.theme.codeParagraphStyle = Self.paragraphStyle(font: font, lineSpacing: lineSpacing)
-        storage.highlightr.theme.codeBaselineOffset = Self.baselineOffset(lineSpacing: lineSpacing)
+        // No highlighter means highlighting could not be set up at all; the editor still
+        // shows the file, just uncolored.
+        if let highlightr = storage.highlightr {
+            _ = highlightr.setTheme(to: theme)
+            highlightr.theme.setCodeFont(font)
+            highlightr.theme.codeParagraphStyle = Self.paragraphStyle(font: font, lineSpacing: lineSpacing)
+            highlightr.theme.codeBaselineOffset = Self.baselineOffset(lineSpacing: lineSpacing)
+        }
         storage.language = language
         context.coordinator.appliedTheme = theme
         context.coordinator.appliedFont = font
@@ -157,7 +161,7 @@ struct HighlightedTextView: NSViewRepresentable {
         // large files; the text storage already re-highlights edited ranges incrementally on its own.
         var needsRehighlight = false
         if coordinator.appliedTheme != theme {
-            _ = storage.highlightr.setTheme(to: theme)
+            _ = storage.highlightr?.setTheme(to: theme)
             coordinator.appliedTheme = theme
             needsRehighlight = true
         }
@@ -178,9 +182,11 @@ struct HighlightedTextView: NSViewRepresentable {
         // `setTheme` above replaces the whole `Theme` instance (dropping its font and line metrics),
         // so the font, line height, and baseline lift are reasserted as one package first.
         if needsRehighlight {
-            storage.highlightr.theme.setCodeFont(font)
-            storage.highlightr.theme.codeParagraphStyle = Self.paragraphStyle(font: font, lineSpacing: lineSpacing)
-            storage.highlightr.theme.codeBaselineOffset = Self.baselineOffset(lineSpacing: lineSpacing)
+            if let highlightr = storage.highlightr {
+                highlightr.theme.setCodeFont(font)
+                highlightr.theme.codeParagraphStyle = Self.paragraphStyle(font: font, lineSpacing: lineSpacing)
+                highlightr.theme.codeBaselineOffset = Self.baselineOffset(lineSpacing: lineSpacing)
+            }
             storage.language = language
         }
 
