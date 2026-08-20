@@ -172,18 +172,23 @@ final class MermaidRenderer: NSObject {
         return webView
     }
 
-    /// The view lives in a borderless window parked far offscreen. WebKit does not lay out
-    /// a view that belongs to no window, and without layout `getBBox` returns zeroes and
-    /// every diagram collapses to a point.
+    /// The view lives in a borderless window. WebKit does not lay out a view that belongs
+    /// to no window, and without layout `getBBox` returns zeroes and every diagram
+    /// collapses to a point.
+    ///
+    /// The window is deliberately never ordered in. Belonging to a window is all WebKit
+    /// needs — it lays out and measures text in an unordered one exactly as it does in a
+    /// visible one. Ordering it front cost us a real window: borderless, unclosable, at
+    /// the normal level, and the window server does not honor an offscreen park position,
+    /// so it showed up as a white square in Mission Control that lived until the app quit
+    /// (#348).
     private func makeWebView() -> WKWebView {
         let frame = NSRect(x: 0, y: 0, width: 1400, height: 1400)
         let webView = WKWebView(frame: frame, configuration: WKWebViewConfiguration())
         webView.navigationDelegate = self
         let window = NSWindow(
-            contentRect: NSRect(x: -30000, y: -30000, width: frame.width, height: frame.height),
-            styleMask: [.borderless], backing: .buffered, defer: false)
+            contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = webView
-        window.orderFront(nil)
         self.window = window
         return webView
     }
