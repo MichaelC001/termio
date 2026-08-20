@@ -575,28 +575,6 @@ html[data-docs-theme="dark"]:has(.docs-surface) {
     }
   }
 
-  /* Orchestration demo: a short dash travels the full beam path once per
-     pulse. The path is normalized with pathLength=100; the 200 gap keeps a
-     single dash visible, and the offset sweep walks it from before the start
-     (30) to past the end (-105). React re-keys the path per pulse to restart. */
-  @keyframes beam-pulse {
-    from {
-      stroke-dashoffset: 30;
-      opacity: 1;
-    }
-    85% {
-      opacity: 1;
-    }
-    to {
-      stroke-dashoffset: -105;
-      opacity: 0;
-    }
-  }
-  .beam-pulse {
-    stroke-dasharray: 30 200;
-    stroke-linecap: round;
-    animation: beam-pulse 1s cubic-bezier(0.4, 0, 0.2, 1) forwards;
-  }
   @keyframes demo-cursor-blink {
     50% {
       opacity: 0;
@@ -605,13 +583,38 @@ html[data-docs-theme="dark"]:has(.docs-surface) {
   .demo-cursor {
     animation: demo-cursor-blink 1s step-end infinite;
   }
-  @keyframes dot-pulse {
-    50% {
-      opacity: 0.35;
+  /* The sidebar's "agent is working" mark, ported from the app's
+     WorkingIndicator: a comet runs the eight perimeter cells of a 3×3 dot grid,
+     carried by a brightness wave and a size swell so the tail can stay at half
+     ink and the grid keeps real weight. Every dot plays the same ramp — its
+     place on the ring is a negative animation-delay. Timings match the Swift
+     original: 1.1s a lap, opacity max(0.5, 1 - distance/4), scale
+     1 + 0.2·max(0, 1 - distance/2). */
+  @keyframes working-comet {
+    0% {
+      opacity: 1;
+      transform: scale(1.2);
+    }
+    12.5% {
+      opacity: 0.75;
+      transform: scale(1.1);
+    }
+    25%,
+    75% {
+      opacity: 0.5;
+      transform: scale(1);
+    }
+    87.5% {
+      opacity: 0.75;
+      transform: scale(1.1);
+    }
+    100% {
+      opacity: 1;
+      transform: scale(1.2);
     }
   }
-  .dot-working {
-    animation: dot-pulse 1.6s ease-in-out infinite;
+  .working-dot {
+    animation: working-comet 1.1s linear infinite;
   }
   /* Output lines land all at once (not typed) but fade + rise in gently, so a
      result "arriving" reads as a soft reveal rather than an abrupt pop. */
@@ -628,12 +631,260 @@ html[data-docs-theme="dark"]:has(.docs-surface) {
   .line-in {
     animation: line-in 0.32s var(--ease-apple) both;
   }
+  /* The content area splitting in two: the new column wipes open from the
+     divider outward, the way dragging a split open reveals it. */
+  @keyframes split-in {
+    from {
+      opacity: 0;
+      clip-path: inset(0 100% 0 0);
+    }
+    to {
+      opacity: 1;
+      clip-path: inset(0 0 0 0);
+    }
+  }
+  .split-in {
+    animation: split-in 0.44s var(--ease-apple) both;
+  }
+  /* A pane opening inside that column: the divider above it is already there,
+     so the content wipes down from it rather than sliding in from nowhere. */
+  @keyframes pane-in {
+    from {
+      opacity: 0;
+      clip-path: inset(0 0 100% 0);
+      transform: translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      clip-path: inset(0 0 0 0);
+      transform: none;
+    }
+  }
+  .pane-in {
+    animation: pane-in 0.42s var(--ease-apple) both;
+  }
   @media (prefers-reduced-motion: reduce) {
-    .beam-pulse,
     .demo-cursor,
-    .dot-working,
-    .line-in {
+    .working-dot,
+    .line-in,
+    .pane-in,
+    .split-in {
       animation: none;
+    }
+  }
+
+  /* ── Feature-grid mocks ────────────────────────────────────────────────
+     Six small app mocks loop forever beside the orchestration demo, so every
+     one of these is compositor-only (opacity / transform / color) and none of
+     them touches layout. Loops share a 6s bar so cards drifting against each
+     other still read as one system; per-element `animation-delay` places each
+     row in that bar. */
+
+  /* A two-state cross-fade — source ⇄ rendered, probing ⇄ reachable. `-a` holds
+     first, `-b` takes over, and both rest before the swap back. */
+  @keyframes mock-fade-a {
+    0%,
+    38% {
+      opacity: 1;
+    }
+    46%,
+    88% {
+      opacity: 0;
+    }
+    96%,
+    100% {
+      opacity: 1;
+    }
+  }
+  @keyframes mock-fade-b {
+    0%,
+    38% {
+      opacity: 0;
+    }
+    46%,
+    88% {
+      opacity: 1;
+    }
+    96%,
+    100% {
+      opacity: 0;
+    }
+  }
+  .mock-fade-a {
+    animation: mock-fade-a 6s var(--ease-apple) infinite both;
+  }
+  .mock-fade-b {
+    animation: mock-fade-b 6s var(--ease-apple) infinite both;
+  }
+
+  /* A row lighting up as the selection walks a list. */
+  @keyframes mock-option {
+    0%,
+    0.1% {
+      background-color: rgba(255, 255, 255, 0);
+    }
+    4%,
+    22% {
+      background-color: rgba(255, 255, 255, 0.09);
+    }
+    28%,
+    100% {
+      background-color: rgba(255, 255, 255, 0);
+    }
+  }
+  .mock-option {
+    animation: mock-option 4.8s var(--ease-apple) infinite both;
+  }
+
+  /* The palette query typing itself. Width, not content, so there is one
+     animated property and no reflow of anything around it. */
+  @keyframes mock-type {
+    0% {
+      max-width: 0ch;
+    }
+    18%,
+    88% {
+      max-width: 6ch;
+    }
+    100% {
+      max-width: 0ch;
+    }
+  }
+  .mock-type {
+    animation: mock-type 4.8s steps(6, end) infinite both;
+  }
+
+  /* The palette's live theme preview: the session behind it repaints as each
+     theme in the list is highlighted. */
+  @keyframes mock-theme {
+    0%,
+    28% {
+      background-color: #1b1b21;
+    }
+    38%,
+    62% {
+      background-color: #1e1c2b;
+    }
+    72%,
+    100% {
+      background-color: #231a24;
+    }
+  }
+  @keyframes mock-theme-ink {
+    0%,
+    28% {
+      color: #7dd3fc;
+    }
+    38%,
+    62% {
+      color: #cba6f7;
+    }
+    72%,
+    100% {
+      color: #ebbcba;
+    }
+  }
+  .mock-theme {
+    animation: mock-theme 4.8s var(--ease-apple) infinite both;
+  }
+  .mock-theme-ink {
+    animation: mock-theme-ink 4.8s var(--ease-apple) infinite both;
+  }
+
+  /* A session row cycling the app's three states: working (spinner), done
+     (green ring), needs-you (orange ring). The mark and the spinner are both
+     mounted and cross-faded, so the swap costs no layout. */
+  @keyframes mock-status-spinner {
+    0%,
+    28% {
+      opacity: 1;
+    }
+    33%,
+    100% {
+      opacity: 0;
+    }
+  }
+  @keyframes mock-status-mark {
+    0%,
+    28% {
+      opacity: 0;
+    }
+    33%,
+    100% {
+      opacity: 1;
+    }
+  }
+  /* Lit only after the spinner is fully out: in the app, working IS the
+     spinner, so a ring around one would be a state that cannot happen. */
+  @keyframes mock-status-ring {
+    0%,
+    36% {
+      border-color: transparent;
+    }
+    42%,
+    62% {
+      border-color: #27c93f;
+    }
+    68%,
+    92% {
+      border-color: #ffb764;
+    }
+    97%,
+    100% {
+      border-color: transparent;
+    }
+  }
+  .mock-status-spinner {
+    animation: mock-status-spinner 6s var(--ease-apple) infinite both;
+  }
+  .mock-status-mark {
+    animation: mock-status-mark 6s var(--ease-apple) infinite both;
+  }
+  .mock-status-ring {
+    animation: mock-status-ring 6s var(--ease-apple) infinite both;
+  }
+
+  /* A worktree's session revealed under its branch, one after another. */
+  @keyframes mock-open {
+    0%,
+    2% {
+      opacity: 0;
+      transform: translateY(-3px);
+    }
+    12%,
+    92% {
+      opacity: 1;
+      transform: none;
+    }
+    100% {
+      opacity: 0;
+      transform: translateY(-3px);
+    }
+  }
+  .mock-open {
+    animation: mock-open 6s var(--ease-apple) infinite both;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .mock-fade-a,
+    .mock-fade-b,
+    .mock-option,
+    .mock-type,
+    .mock-theme,
+    .mock-theme-ink,
+    .mock-status-spinner,
+    .mock-status-mark,
+    .mock-status-ring,
+    .mock-open {
+      animation: none;
+    }
+    /* Without the loop the `-b` layer would sit on top of `-a`; hold the
+       rendered/settled state, which is the one worth showing still. */
+    .mock-fade-a {
+      opacity: 0;
+    }
+    .mock-status-spinner {
+      opacity: 0;
     }
   }
 

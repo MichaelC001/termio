@@ -1,16 +1,28 @@
 // Shared site constants. Termio is free to use and ships with Sparkle
 // auto-updates — no account, no license keys, no payment backend.
 
+// The agents Termio ships a manifest for, in the order the app itself lists
+// them (`Sources/termio/Resources/agents/*.json`, the `order` field). The hero
+// marquee and the FAQ answer read this list; the agent showcase draws a panel
+// for the subset of it we have a capture of, and its names are checked against
+// this type so the two can't drift apart again. The app bundles a few more
+// manifests than this — an agent joins the list once it has a brand mark and
+// someone has run it.
 export const supportedAgents = [
   "Claude Code",
   "Codex",
-  "Antigravity",
-  "Amp",
-  "Pi",
   "OpenCode",
-  "Copilot",
+  "Pi",
+  "Amp",
   "Cursor",
+  "Copilot",
+  "Kimi",
+  "Antigravity",
+  "Crush",
+  "Grok",
 ] as const;
+
+export type SupportedAgent = (typeof supportedAgents)[number];
 
 export const navLinks = [
   { label: "Docs", href: "/docs" },
