@@ -1,5 +1,5 @@
-/// The built-in themes: 60 well-known Ghostty scheme names, in display order — 45
-/// dark, then 15 light, by each theme's own background luminance.
+/// The built-in themes: 67 well-known Ghostty scheme names, in display order — 45
+/// dark, then 22 light, by each theme's own background luminance.
 ///
 /// Shared because the Mac's theme picker and the iPhone's offer the same set, and
 /// two hand-kept copies would drift. Names only: both ends resolve them against
@@ -74,5 +74,12 @@ public enum BuiltInThemes {
         "One Half Light",
         "Modus Operandi",
         "Bluloco Light",
+        "Horizon Bright",
+        "Material",
+        "Neobones Light",
+        "Nvim Light",
+        "Coffee Theme",
+        "Novel",
+        "Belafonte Day",
     ]
 }

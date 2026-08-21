@@ -2,10 +2,10 @@ import Foundation
 import GhosttyTheme
 import TermioShared
 
-/// termio's terminal-theme library: 60 built-in schemes, plus whatever the user
+/// termio's terminal-theme library: 67 built-in schemes, plus whatever the user
 /// has put in termio's `Themes` folder.
 ///
-/// The built-ins are the curated 60 (`BuiltInThemes`), resolved live out of the
+/// The built-ins are the curated 67 (`BuiltInThemes`), resolved live out of the
 /// `GhosttyTheme` product rather than copied onto disk. Nothing to install,
 /// nothing that goes stale when the pinned package updates a palette, and no way
 /// for a selected name to resolve to nothing.
@@ -17,7 +17,7 @@ import TermioShared
 /// their computer. A file wins over a built-in of the same name, so dropping in
 /// your own `Nord` overrides ours instead of fighting it.
 ///
-/// `theme(named:)` resolves past the 60 into the full bundled catalog, because a
+/// `theme(named:)` resolves past the 67 into the full bundled catalog, because a
 /// Ghostty config's `theme = X` may name any of them and has to keep painting.
 /// Such a name is listed too — see `selectableNames(dark:selection:)`.
 ///
@@ -33,14 +33,14 @@ enum ThemeLibrary {
 
     // MARK: - Built-ins
 
-    /// The curated 60, filtered to the names the pinned catalog resolves so a
+    /// The curated 67, filtered to the names the pinned catalog resolves so a
     /// package rename drops a stale entry instead of showing a dead one. The names
     /// are shared with the iPhone's picker (see `BuiltInThemes`), which offers the
     /// same set.
     static let builtInThemes: [GhosttyThemeDefinition] =
         BuiltInThemes.names.compactMap { GhosttyThemeCatalog.theme(named: $0) }
 
-    /// Built-in names of one brightness, sorted — one slot's worth of the 60.
+    /// Built-in names of one brightness, sorted — one slot's worth of the 67.
     static func builtInNames(dark: Bool) -> [String] {
         builtInThemes.filter { $0.isDark == dark }.map(\.name).sorted { $0.lowercased() < $1.lowercased() }
     }
@@ -81,7 +81,7 @@ enum ThemeLibrary {
     // MARK: - Resolution
 
     /// Resolves a theme by name: the user's own file first, then the bundled
-    /// catalog. Resolving past the built-in 60 into the full catalog is what lets a
+    /// catalog. Resolving past the built-in 67 into the full catalog is what lets a
     /// Ghostty config's `theme = Aardvark Blue` keep painting without termio
     /// copying a file to disk on its behalf.
     static func theme(named name: String) -> GhosttyThemeDefinition? {
@@ -121,7 +121,7 @@ enum ThemeLibrary {
     }
 
     /// Writes a theme's definition into the `Themes` folder so the user has a file
-    /// of their own to edit — this is how you fork one of the 60. The first copy
+    /// of their own to edit — this is how you fork one of the 67. The first copy
     /// takes the theme's own name and so shadows it; a second becomes `Nord 2` and
     /// stands beside it rather than overwriting the edits in the first.
     ///
