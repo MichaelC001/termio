@@ -1,4 +1,4 @@
-/// The built-in themes: 50 well-known Ghostty scheme names, in display order — 35
+/// The built-in themes: 60 well-known Ghostty scheme names, in display order — 45
 /// dark, then 15 light, by each theme's own background luminance.
 ///
 /// Shared because the Mac's theme picker and the iPhone's offer the same set, and
@@ -49,6 +49,16 @@ public enum BuiltInThemes {
         "Matte Black",
         "Carbonfox",
         "Sonokai",
+        "Shades Of Purple",
+        "Zenburn",
+        "Blue Matrix",
+        "Homebrew",
+        "IR Black",
+        "Ocean",
+        "Espresso",
+        "traffic",
+        "Miasma",
+        "Arthur",
         "Catppuccin Latte",
         "GitHub Light Default",
         "Rose Pine Dawn",

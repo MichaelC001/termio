@@ -83,10 +83,10 @@ final class ThemeLibraryTests: XCTestCase {
 
     /// Derived from each theme's own background luminance, never a hand-kept
     /// per-name assignment — that is the whole point of `isDark` deciding the slot.
-    func testBuiltInsSplitThirtyFiveDarkAndFifteenLight() {
+    func testBuiltInsSplitFortyFiveDarkAndFifteenLight() {
         let definitions = ThemeLibrary.builtInThemes
-        XCTAssertEqual(definitions.count, 50)
-        XCTAssertEqual(definitions.filter(\.isDark).count, 35)
+        XCTAssertEqual(definitions.count, 60)
+        XCTAssertEqual(definitions.filter(\.isDark).count, 45)
         XCTAssertEqual(definitions.filter { !$0.isDark }.count, 15)
     }
 
@@ -126,7 +126,7 @@ final class ThemeLibraryTests: XCTestCase {
     }
 
     /// A Ghostty config may name any of the bundled schemes, not just the curated
-    /// 50, and termio writes that name straight into a slot. Resolution has to
+    /// 60, and termio writes that name straight into a slot. Resolution has to
     /// reach it — otherwise the window paints the default while the setting says
     /// otherwise.
     func testResolutionReachesPastTheBuiltInsIntoTheCatalog() throws {
