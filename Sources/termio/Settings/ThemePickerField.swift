@@ -3,7 +3,7 @@ import GhosttyTheme
 
 /// A searchable theme picker with live color swatches.
 ///
-/// The list is termio's default, the user's own theme files, and the 60 built-in
+/// The list is termio's default, the user's own theme files, and the 67 built-in
 /// schemes — everything the slot can actually paint, in one place. There is
 /// nothing to install first, so a row and a working theme are the same thing.
 ///

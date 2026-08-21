@@ -423,7 +423,7 @@ struct CommandPaletteView: View {
     // MARK: - Themes
 
     /// The theme selector's rows: a "Terminal default" reset plus every theme
-    /// matching the slot's brightness — the user's own files and the built-in 60 —
+    /// matching the slot's brightness — the user's own files and the built-in 67 —
     /// so the palette can never apply one that renders the wrong way.
     private var themeItems: [PaletteItem] {
         let dark = slotIsDark
