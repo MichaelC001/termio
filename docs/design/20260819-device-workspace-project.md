@@ -310,8 +310,8 @@ mechanical one. **Stage 1 of the implementation deliberately does none of them.*
   `20260819-workspace-switch-latency.md` was written when user-made workspaces
   never paid this.
 - **⌘1…9 reshuffle once.** `orderedWorkspaces` is also the shortcut order
-  (`App.swift:1911`); dropping the fallback-last rule moves them. The comment at
-  `:1904` already accepts positional instability.
+  (`WorkspaceMenu.rows`); dropping the fallback-last rule moves them. The comment
+  on `KeybindingStore.workspaceShortcuts` already accepts positional instability.
 - **`Session.deviceID` is the small half.** Every "which machine is this
   session on" read is `session.termiodRemoteHost ?? session.sshHost`
   (`DeviceContext.swift:181`, `TermioStore.swift:494`, and four more).
