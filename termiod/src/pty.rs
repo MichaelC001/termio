@@ -61,6 +61,69 @@ fn set_cloexec(fd: RawFd) -> Result<()> {
     Ok(())
 }
 
+/// Environment variables that describe the terminal — or the agent — that
+/// happened to launch the daemon, not how a session should run.
+///
+/// The daemon is long-lived and inherits its environment from whoever started
+/// it: the macOS app hands over its own `environ` (it must, for TMPDIR), and
+/// the app in turn inherits the shell that opened it. So a daemon started from
+/// inside a Claude Code session carries `CLAUDE_CODE_CHILD_SESSION` forever,
+/// and every session it spawns — hours or days later — inherits that agent's
+/// identity. Claude Code reads that flag as "you are a sub-session" and stops
+/// writing its transcript, so those sessions silently keep no history and
+/// never appear in `--resume`.
+///
+/// The macOS app strips the same set before it spawns a PTY in-process
+/// (`TermioStore.sanitizedEnvironment`), but it strips by *omission*: it sends
+/// the environment it wants and omission cannot unset what this process
+/// already has. Removing them here is what makes both spawn paths agree.
+const LAUNCHER_ENV_KEYS: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_EFFORT",
+    "TERMIO_SESSION",
+    "TERM_SESSION_ID",
+    "TERMINAL_EMULATOR",
+    "TMUX",
+    "TMUX_PANE",
+    "STY",
+    "INSIDE_EMACS",
+    "LC_TERMINAL",
+    "LC_TERMINAL_VERSION",
+    "KONSOLE_VERSION",
+    "GNOME_TERMINAL_SERVICE",
+    "WT_SESSION",
+    "NO_COLOR",
+    "FORCE_COLOR",
+    "CLICOLOR",
+    "CLICOLOR_FORCE",
+];
+
+const LAUNCHER_ENV_PREFIXES: &[&str] = &[
+    "TERM_PROGRAM",
+    "VSCODE_",
+    "CLAUDE_CODE_",
+    "ITERM_",
+    "GHOSTTY_",
+    "KITTY_",
+    "WEZTERM_",
+    "ALACRITTY_",
+];
+
+fn is_launcher_env(key: &str) -> bool {
+    LAUNCHER_ENV_KEYS.contains(&key) || LAUNCHER_ENV_PREFIXES.iter().any(|p| key.starts_with(p))
+}
+
+/// The launcher variables actually present in this daemon's environment. A
+/// session that wants any of them back — `TERM_PROGRAM=termio`,
+/// `TERMIO_SESSION=<this session's id>` — gets them as an explicit override,
+/// which is layered after the removal.
+fn inherited_launcher_keys() -> Vec<std::ffi::OsString> {
+    std::env::vars_os()
+        .map(|(key, _)| key)
+        .filter(|key| key.to_str().is_some_and(is_launcher_env))
+        .collect()
+}
+
 impl Pty {
     /// Open a PTY and spawn `argv` in `cwd`. Empty argv ⇒ the user's login
     /// shell, run as a login shell (`-<shell>`).
@@ -107,7 +170,11 @@ impl Pty {
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
-        // Inherit the daemon's environment, then layer session overrides.
+        // Inherit the daemon's environment, minus whatever the daemon's own
+        // launcher stamped into it, then layer session overrides.
+        for key in inherited_launcher_keys() {
+            cmd.env_remove(key);
+        }
         if std::env::var_os("TERM").is_none() {
             cmd.env("TERM", "xterm-256color");
         }
@@ -248,5 +315,60 @@ fn resolve_program(argv: &[String]) -> (String, Vec<String>, bool) {
         (shell, Vec::new(), true)
     } else {
         (argv[0].clone(), argv[1..].to_vec(), false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launcher_identity_is_classified_apart_from_the_session_environment() {
+        assert!(is_launcher_env("CLAUDE_CODE_CHILD_SESSION"));
+        assert!(is_launcher_env("CLAUDE_CODE_SESSION_ID"));
+        assert!(is_launcher_env("CLAUDECODE"));
+        assert!(is_launcher_env("TERM_PROGRAM"));
+        assert!(is_launcher_env("TERM_PROGRAM_VERSION"));
+        assert!(is_launcher_env("TERMIO_SESSION"));
+        assert!(is_launcher_env("TMUX"));
+
+        // Everything that says where the process runs, rather than who started
+        // the daemon, has to survive — a session with no PATH is unusable.
+        assert!(!is_launcher_env("PATH"));
+        assert!(!is_launcher_env("HOME"));
+        assert!(!is_launcher_env("SHELL"));
+        assert!(!is_launcher_env("TMPDIR"));
+        assert!(!is_launcher_env("TERM"));
+        assert!(!is_launcher_env("ANTHROPIC_API_KEY"));
+    }
+
+    /// The ordering half: removal happens *before* the session's own overrides
+    /// are layered, so a session can still ask for a key the daemon inherited.
+    #[tokio::test]
+    async fn spawned_child_gets_the_session_identity_not_the_daemon_launcher_identity() {
+        std::env::set_var("CLAUDE_CODE_CHILD_SESSION", "1");
+        std::env::set_var("TERM_PROGRAM", "Apple_Terminal");
+
+        let dump = std::env::temp_dir().join(format!("termiod-env-{}", std::process::id()));
+        let argv = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            format!("env > {}", dump.display()),
+        ];
+        let overrides = vec![("TERM_PROGRAM".to_string(), "termio".to_string())];
+        let (_pty, mut child) =
+            Pty::spawn(&argv, None, &overrides, 24, 80).expect("spawn env dump");
+        child.wait().expect("child exits");
+
+        let dumped = std::fs::read_to_string(&dump).expect("env dump");
+        let _ = std::fs::remove_file(&dump);
+        // Process-global, so leaving it set would follow every other test in
+        // this binary into whatever it spawns.
+        std::env::remove_var("CLAUDE_CODE_CHILD_SESSION");
+        std::env::remove_var("TERM_PROGRAM");
+
+        assert!(!dumped.contains("CLAUDE_CODE_CHILD_SESSION="));
+        assert!(dumped.contains("TERM_PROGRAM=termio"));
+        assert!(!dumped.contains("TERM_PROGRAM=Apple_Terminal"));
     }
 }
