@@ -2259,15 +2259,17 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     ) -> NSToolbarItem? {
         switch itemIdentifier {
         case .toggleNavigator:
+            // Hand-drawn for the same reason as the inspector toggle it now mirrors (see
+            // `NavigatorToggleToolbarView`): a native `isBordered` item wears its capsule in both
+            // states, so the pill said nothing on this end of the toolbar while the trailing one
+            // used it to mean "the pane is open".
             let item = NSToolbarItem(itemIdentifier: .toggleNavigator)
             item.label = localized("Navigator")
             item.toolTip = localized("Hide or show the navigator")
-            item.image = NSImage(systemSymbolName: "sidebar.leading", accessibilityDescription: "Navigator")
-            item.isBordered = true
-            // `NSSplitViewController.toggleSidebar(_:)` collapses the first (sidebar) item with
-            // the system animation. `nil` target routes up the responder chain to the split
-            // controller (the window's content view controller), so no custom action is needed.
-            item.action = #selector(NSSplitViewController.toggleSidebar(_:))
+            let host = NSHostingView(rootView: NavigatorToggleToolbarView())
+            host.sizingOptions = [.intrinsicContentSize]
+            item.view = host
+            item.isBordered = false
             return item
         case .workspaceSwitcher:
             // The workspace the sidebar is scoped to, at the head of the sidebar's own toolbar
@@ -2350,14 +2352,16 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
                 dividerIndex: 1
             )
         case .toggleInspector:
-            // Native bordered button, built exactly like the navigator toggle so the two are the
-            // same size; the trailing-sidebar glyph mirrors the leading one.
+            // Hand-drawn (see `InspectorToggleToolbarView`) because this one button has to look
+            // the same with and without its capsule; the trailing-sidebar glyph mirrors the
+            // navigator toggle's leading one.
             let item = NSToolbarItem(itemIdentifier: .toggleInspector)
             item.label = localized("Inspector")
             item.toolTip = localized("Hide or show the inspector")
-            item.image = NSImage(systemSymbolName: "sidebar.trailing", accessibilityDescription: "Inspector")
-            item.isBordered = true
-            item.action = #selector(AppDelegate.toggleFilesInspector(_:))
+            let host = NSHostingView(rootView: InspectorToggleToolbarView().environmentObject(store))
+            host.sizingOptions = [.intrinsicContentSize]
+            item.view = host
+            item.isBordered = false
             return item
         case .branchPicker:
             let item = NSToolbarItem(itemIdentifier: .branchPicker)
@@ -2470,6 +2474,102 @@ private struct BranchPickerToolbarView: View {
         // left edge moved with every session switch. Pinned, it starts where the terminal text
         // below it does and only ever grows to the right.
         .frame(minWidth: Self.titleWidthFloor, maxWidth: Self.titleWidthCeiling, alignment: .leading)
+    }
+}
+
+/// Both pane toggles — the navigator at the leading end of the toolbar, the inspector at the
+/// trailing end — drawn by one view so the two ends can never disagree.
+///
+/// Hand-drawn rather than a native `isBordered` toolbar item because AppKit renders the two
+/// states through different paths — bordered goes through `NSButton` (symbol scaled to the
+/// capsule, `.labelColor`), unbordered through the plain toolbar-image path (the toolbar's own
+/// image size and tint) — so flipping the border also changed the glyph's size and shade, and the
+/// two buttons stopped matching. Owning the glyph pins it and leaves the capsule as the only
+/// thing that changes.
+///
+/// Whether a capsule is drawn at all is the caller's to say, because the two sit on different
+/// backdrops: the trailing button is over plain window chrome, where the capsule is what marks
+/// the inspector as open; the leading one is over the sidebar's own vibrant material, where a
+/// glass pill reads as a lump on the column rather than as state. It takes
+/// `InspectorTabsToolbar`'s height and its `.regular` glass, which is already the pane switch's
+/// answer to matching the native buttons.
+private struct PaneToggleToolbarView: View {
+    let symbol: String
+    let showsCapsule: Bool
+    let help: String
+    let label: String
+    let toggle: () -> Void
+
+    @Environment(\.controlActiveState) private var controlActive
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Button(action: toggle) {
+            Image(systemName: symbol)
+                // Sized by measurement, not by guess: at 15pt this drew a 17.5×13.5pt glyph
+                // against the native bordered item it replaced (19.5×15.5), and the pair read
+                // uneven across the toolbar. 17 matches it.
+                .font(.system(size: 17))
+                .foregroundStyle(controlActive == .inactive
+                                 ? Color(nsColor: .disabledControlTextColor) : .primary)
+                .frame(width: InspectorTabsToolbar.controlHeight,
+                       height: InspectorTabsToolbar.controlHeight)
+                .background { if showsCapsule { capsuleBackground } }
+                .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(label)
+    }
+
+    @ViewBuilder
+    private var capsuleBackground: some View {
+        if #available(macOS 26.0, *) {
+            Color.clear.glassEffect(.regular, in: .capsule)
+        } else {
+            Capsule(style: .continuous)
+                .fill(colorScheme == .dark ? Color.white.opacity(0.06) : Color.white)
+        }
+    }
+}
+
+private struct NavigatorToggleToolbarView: View {
+    var body: some View {
+        PaneToggleToolbarView(
+            // Never capsuled, open or collapsed. This button lives in the sidebar's own toolbar
+            // region, over the vibrant `.sidebar` material and beside the traffic lights — a
+            // glass pill there sits on the column instead of on the chrome. Hand-drawn all the
+            // same, rather than an unbordered native item, because that path takes the toolbar's
+            // own image size and tint and would stop matching the trailing button's glyph.
+            symbol: "sidebar.leading",
+            showsCapsule: false,
+            help: localized("Hide or show the navigator"),
+            label: localized("Navigator")
+        ) {
+            // `NSSplitViewController.toggleSidebar(_:)` collapses the first (sidebar) item with
+            // the system animation. A `nil` target routes up the responder chain to the split
+            // controller (the window's content view controller), so there is no action to write.
+            NSApp.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil)
+        }
+    }
+}
+
+/// The trailing inspector toggle: the same glyph in both states, wearing the glass capsule only
+/// while the inspector is open. Closed, the button stands alone over the terminal, where a capsule
+/// reads as a chip of chrome floating on the content; open, it is the right end of the row the
+/// pane switch draws, and the shared capsule is what makes them one group.
+private struct InspectorToggleToolbarView: View {
+    @EnvironmentObject var store: TermioStore
+
+    var body: some View {
+        PaneToggleToolbarView(
+            symbol: "sidebar.trailing",
+            showsCapsule: store.inspectorVisible,
+            help: localized("Hide or show the inspector"),
+            label: localized("Inspector")
+        ) {
+            NSApp.sendAction(#selector(AppDelegate.toggleFilesInspector(_:)), to: nil, from: nil)
+        }
     }
 }
 
