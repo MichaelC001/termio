@@ -17,6 +17,20 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.38.0",
+    date: "2026-08-21",
+    title: "Workspace shortcuts",
+    changes: {
+      new: [
+        "⌘1 through ⌘9 switch workspaces. Each shortcut sits beside its workspace in the sidebar's workspace menu, so you can read it rather than remember it.",
+      ],
+      improved: [
+        "The workspace name in the toolbar stands on its own, larger and without an icon or chevron crowding it.",
+        "The sidebar and inspector buttons match each other. The sidebar button no longer carries a background of its own.",
+      ],
+    },
+  },
+  {
     version: "0.37.0",
     date: "2026-08-21",
     title: "Workspaces",
