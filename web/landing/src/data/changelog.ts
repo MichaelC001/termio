@@ -17,6 +17,22 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.40.0",
+    date: "2026-08-21",
+    title: "All four Catppuccin flavors",
+    changes: {
+      new: [
+        "Frappé and Macchiato join Latte and Mocha, so the flavor you pick a Catppuccin theme by is the one you find in the picker. Sixty-nine themes are built in now, forty-seven dark and twenty-two light.",
+      ],
+      improved: [
+        "The terminal core moves up to a newer ghostty. Tab stops clear properly when unset, a full reset clears the progress bar and the cursor along with it, and the terminal now answers in-band size reports.",
+      ],
+      fixed: [
+        "Sessions the remote daemon starts keep their transcript again. A daemon launched from inside a Claude Code session handed that session's identity to everything it spawned afterwards, and Claude Code read it as a sign it was a sub-session and stopped writing history.",
+      ],
+    },
+  },
+  {
     version: "0.39.0",
     date: "2026-08-21",
     title: "Seventeen more themes",
