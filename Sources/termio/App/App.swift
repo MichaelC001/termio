@@ -1122,12 +1122,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// and removed *with* them. When open the region reads `toggleNavigator, workspaceSwitcher, flex,
     /// sortProjects, newTerminal | sidebarTrackingSeparator`. Mirrors `setInspectorSwitchVisible`.
     ///
-    /// The workspace switcher is the exception: it does not leave with the sidebar, it *moves* across
-    /// the tracking separator to the head of the content region. A collapsed sidebar is exactly when
-    /// the window is only a terminal, and a terminal looks the same in every scope — dropping the one
-    /// control that says which workspace would remove the answer at the moment it is least guessable.
-    /// (Dia does the same with its profile indicator: one mount in the sidebar, another in the tab
-    /// dock for when the sidebar is away.)
+    /// The workspace switcher leaves with the sidebar it labels. It used to move across the tracking
+    /// separator instead, on the argument that a bare terminal looks the same in every scope and the
+    /// switcher is the only thing naming the current one. In practice it reads as a stray word beside
+    /// the window title — the sidebar's region empties with the sidebar, the way Finder's and Xcode's
+    /// do, and the workspace is still one click away through the sidebar or the Workspace menu.
     private func setNavigatorItemsVisible(_ visible: Bool) {
         guard let toolbar = window?.toolbar else { return }
         func index(of id: NSToolbarItem.Identifier) -> Int? {
@@ -1140,9 +1139,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         defer { NSAnimationContext.endGrouping() }
         if visible {
             guard index(of: .sortProjects) == nil else { return }
-            // Take the switcher off the content side first. It sits after the separator there, so
-            // removing it leaves the separator's index — the anchor every insert below uses — valid.
-            if let content = index(of: .workspaceSwitcher) { toolbar.removeItem(at: content) }
+            // Drop any stray copy before re-inserting, so the item is never added twice and the
+            // separator's index — the anchor every insert below uses — stays valid.
+            if let existing = index(of: .workspaceSwitcher) { toolbar.removeItem(at: existing) }
             guard let sep = index(of: .sidebarTrackingSeparator) else { return }
             // Insert in reverse at that one index so the final order is workspaceSwitcher, flex,
             // sortProjects, newTerminal. Re-reading the separator's index between inserts would walk
@@ -1152,18 +1151,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             toolbar.insertItem(withItemIdentifier: .flexibleSpace, at: sep)
             toolbar.insertItem(withItemIdentifier: .workspaceSwitcher, at: sep)
         } else {
-            // Move the switcher to the content side of the separator — ahead of the window's title,
-            // where it is still on screen with the sidebar away. Done before the guard below, because
-            // at launch with the sidebar already collapsed there are no sidebar buttons to remove and
-            // the switcher still has to land. Skipped when it is already there, so the repeated
-            // collapse callbacks the KVO observer sends don't rebuild it.
-            if let sep = index(of: .sidebarTrackingSeparator),
-               index(of: .workspaceSwitcher).map({ $0 < sep }) ?? true {
-                if let i = index(of: .workspaceSwitcher) { toolbar.removeItem(at: i) }
-                if let sep = index(of: .sidebarTrackingSeparator) {
-                    toolbar.insertItem(withItemIdentifier: .workspaceSwitcher, at: sep + 1)
-                }
-            }
+            // The switcher goes with the sidebar. Removed before the guard below, because at launch
+            // with the sidebar already collapsed there are no sidebar buttons to clean up and the
+            // switcher still has to leave. Idempotent, so the repeated collapse callbacks the KVO
+            // observer sends cost nothing.
+            if let existing = index(of: .workspaceSwitcher) { toolbar.removeItem(at: existing) }
             // Only clean up when the buttons are actually present (nothing to remove at launch with
             // the sidebar already collapsed). Re-find each id after every removal — indices shift.
             guard let sortIdx = index(of: .sortProjects) else { return }
