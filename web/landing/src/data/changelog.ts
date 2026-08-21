@@ -17,6 +17,17 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.39.0",
+    date: "2026-08-21",
+    title: "Seventeen more themes",
+    changes: {
+      new: [
+        "Sixty-seven themes are built in, up from fifty. Homebrew and IR Black bring the old Terminal.app look, Ocean has a real blue background, and Zenburn opens a run of neutral greys — Espresso, Miasma, Arthur and traffic — that the list had none of. Shades Of Purple and Blue Matrix fill out the dark end.",
+        "The light themes widen too: Coffee Theme, Novel and Belafonte Day for anyone who would rather not stare at white, plus Horizon Bright, Material, Neobones Light and Nvim Light. Nothing was taken away — the themes you already had are all still there.",
+      ],
+    },
+  },
+  {
     version: "0.38.0",
     date: "2026-08-21",
     title: "Workspace shortcuts",
