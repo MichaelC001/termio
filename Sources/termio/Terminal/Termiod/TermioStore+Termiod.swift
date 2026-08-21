@@ -82,7 +82,18 @@ extension TermioStore {
                            to inMemory: InMemoryTerminalSession,
                            for session: Session) {
         let isAgentSession = session.agent != .terminal && !session.isSSH
-        link.onOutput = { [weak inMemory] data in inMemory?.receive(data) }
+        // The same status tap the in-process PTY installs on its output. The daemon
+        // owning the PTY changes where the bytes come from, not what they say about
+        // the agent — and the channels this restores (screen liveness, declared
+        // screen rules, `OSC 9;4`) are what keep a spinner truthful when the host's
+        // own `E status` is silent and a hook report went missing.
+        let statusTap = makeStatusTap(
+            for: session, surface: inMemory, backend: link,
+            lastInputAt: { [weak link] in link?.lastInputAt })
+        link.onOutput = { [weak inMemory] data in
+            inMemory?.receive(data)
+            statusTap(data)
+        }
         // The attach handshake is the cheapest device discovery there is — it was
         // going to happen anyway — so every surfaced session teaches the app which
         // machine it is on, with no extra round trip.

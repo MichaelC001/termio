@@ -280,121 +280,16 @@ extension TermioStore {
         }
         if let pty {
             pty.addSink { [weak inMemory] data in inMemory?.receive(data) }
-            // Tap the same stream as a working-status signal (see
-            // `noteOutputActivity` for the full model): a *changing* rendered
-            // screen keeps a working session's `lastWorkingAt` fresh — and, when
-            // hooks have gone quiet, can promote an idle session back to working —
-            // while a static screen lets the stale sweep clear the spinner. The
-            // screen, not raw bytes, is the primary key: an agent parked at an
-            // idle prompt still dribbles output (a redraw, a blinking cursor) that
-            // the byte stream alone reads as activity, which is what pins a
-            // finished agent's spinner on forever. The per-tick byte count rides
-            // along as a secondary liveness signal for a viewport the user
-            // scrolled away from the live tail. `readViewportText` is thread-safe
-            // (its own lock), so the compare runs on the read pump; only the
-            // changed-flag and byte count hop to the main actor. Throttled to once
-            // a second. The read pump calls sinks serially, so the captured
-            // `lastPoke` / `lastScreenSignature` / `pendingBytes` need no lock.
-            // A user agent may declare `status` regex rules in its `agent.json`; the
-            // same viewport read that feeds the liveness sweep is classified against
-            // them to drive working / needs-attention / done for agents that ship no
-            // hook system (see `AgentStatusRules`). Built-ins carry no rules (they use
-            // hooks), so this is `nil` for them and the classify step is skipped.
-            //
-            // Caveat: `readViewportText` returns the *displayed* viewport, which follows
-            // the user's scrollback — so scrolling an inline agent's pane up feeds stale
-            // rows to the classifier until it snaps back to the bottom (self-healing;
-            // the byte-count signal covers working-liveness meanwhile). herdr avoids
-            // this by reading the live bottom (active) buffer; the clean fix
-            // here needs a `readActiveText()` on the libghostty wrapper (its blessed read
-            // serializes against the PTY write under a private lock we can't hold, and a
-            // raw unsynchronized `GHOSTTY_POINT_ACTIVE` read from this pump thread would
-            // race `inMemory.receive` — the exact libghostty threading hazard termio has
-            // been bitten by). Tracked as an upstream ask, not worked around unsafely.
-            let statusRules = session.agent.statusRules
-            let agentID = session.agent.id
             let isAgentSession = session.agent != .terminal && !session.isSSH
-            let statusTrace = ProcessInfo.processInfo.environment["TERMIO_STATUS_TRACE"] != nil
-            // Reads this session's ConEmu `OSC 9;4` progress out of the raw stream as
-            // a busy/idle signal (Grok emits it natively). Scanned on every chunk
-            // *before* the 1 s status throttle below — an agent's turn boundary is an
-            // edge, not something to sample once a second. The scan runs for every
-            // session (a plain terminal can be promoted to a hand-started Grok, whose
-            // sink was built while the row was still a shell); whether a transition is
-            // *acted on* is gated in `applyProgressActivity` by the session's live
-            // agent, so an unrelated shell's `wget`/`npm` progress bar can't move a dot.
-            var progressScanner = OSCProgressScanner()
-            var lastPoke = Date.distantPast
-            var lastScreenSignature: Int?
-            // Bytes seen since the last poke, so the throttled tick can report the
-            // stream's volume alongside the screen compare — the scroll-frozen-
-            // viewport liveness signal (see `noteOutputActivity`).
-            var pendingBytes = 0
-            pty.addSink { [weak self, weak inMemory, weak pty] data in
-                pendingBytes += data.count
-                for progress in progressScanner.scan(data) {
-                    if statusTrace {
-                        AgentStatusRules.trace(
-                            agent: "\(agentID).progress", session: session.id,
-                            activity: progress, matched: "OSC 9;4")
-                    }
-                    // Tie the event to the PTY that produced it. Unlike the title
-                    // channel — whose Combine subscription is torn down with the view
-                    // state on relaunch — this sink is only session-id-keyed, so a
-                    // same-agent relaunch could otherwise let a dead PTY's queued
-                    // `working` mark the replacement process. Applying only while this
-                    // PTY is still the session's live one drops that stale event.
-                    DispatchQueue.main.async { [weak pty] in
-                        guard let self, let pty, self.ptyProcesses[session.id] === pty else { return }
-                        self.applyProgressActivity(progress, for: session.id)
-                    }
-                }
-                let now = Date()
-                guard now.timeIntervalSince(lastPoke) >= 1 else { return }
-                lastPoke = now
-                let bytes = pendingBytes
-                pendingBytes = 0
+            pty.addSink(makeStatusTap(
+                for: session, surface: inMemory, backend: pty,
+                lastInputAt: { [weak pty] in pty?.lastInputAt },
                 // Pin the agent's launch binary (once, post-exec) as the baseline
                 // for the self-update relaunch check in `onExit` below. Agent
                 // sessions only — a terminal's exit policy never consults it.
-                if isAgentSession { pty?.recordChildExecutable() }
-                // The PTY timestamps every stdin write (Mac keystrokes, phone
-                // input over the companion bridge, synthetic `sessions send`
-                // text), so sampling it here — instead of tapping only the Mac
-                // surface's write callback — keeps promotion quiet after input
-                // from any device. Input echo repaints the screen just like
-                // agent output does.
-                let inputAt = pty?.lastInputAt
-                let text = inMemory?.readViewportText()
-                let screenChanged: Bool
-                if let text {
-                    let signature = text.hashValue
-                    screenChanged = signature != lastScreenSignature
-                    lastScreenSignature = signature
-                } else {
-                    // No surface to read (e.g. detached) — fall back to treating
-                    // output as activity rather than risk clearing a live turn.
-                    screenChanged = true
-                }
-                let detected: AgentStatusRules.Activity?
-                if let statusRules {
-                    let (activity, matched) = statusRules.explain(text ?? "")
-                    detected = activity
-                    if statusTrace {
-                        AgentStatusRules.trace(
-                            agent: agentID, session: session.id, activity: activity, matched: matched)
-                    }
-                } else {
-                    detected = nil
-                }
-                DispatchQueue.main.async {
-                    if let inputAt { self?.noteUserInput(session.id, at: inputAt) }
-                    self?.noteOutputActivity(session.id, screenChanged: screenChanged, bytes: bytes)
-                    if let detected {
-                        self?.applyScreenDetectedActivity(detected, for: session.id)
-                    }
-                }
-            }
+                // The daemon path has no equivalent: it owns the process, so the
+                // app cannot pin its executable.
+                onPoke: { [weak pty] in if isAgentSession { pty?.recordChildExecutable() } }))
             // A plain terminal's kernel-sampled introspection, after output settles:
             // which agent (if any) is running in its foreground, and — for a loose
             // terminal — the shell's cwd. Both are read from the child's own process
@@ -513,6 +408,150 @@ extension TermioStore {
         // writing them here is fine; only the `projects` write must be deferred.)
         DispatchQueue.main.async { [self] in recordLaunch(session.id, resumeID: launch.resumeID) }
         return state
+    }
+
+    /// Builds the status half of a session's byte stream — the tap both backends
+    /// install on their output, so a session behaves identically whether its PTY is
+    /// in this process or inside `termiod`. It was written for the in-process PTY
+    /// and lived inside that branch, which quietly meant a daemon-hosted session had
+    /// no screen liveness, no screen-rule classification and no `OSC 9;4` scan at
+    /// all: its only surviving channel was the title, and one channel is not enough
+    /// to keep a spinner honest.
+    ///
+    /// What the tap reads (see `noteOutputActivity` for the full model): a *changing*
+    /// rendered screen keeps a working session's `lastWorkingAt` fresh — and, when
+    /// hooks have gone quiet, can promote an idle session back to working — while a
+    /// static screen lets the stale sweep clear the spinner. The screen, not raw
+    /// bytes, is the primary key: an agent parked at an idle prompt still dribbles
+    /// output (a redraw, a blinking cursor) that the byte stream alone reads as
+    /// activity, which is what pins a finished agent's spinner on forever. The
+    /// per-tick byte count rides along as a secondary liveness signal for a viewport
+    /// the user scrolled away from the live tail. `readViewportText` is thread-safe
+    /// (its own lock), so the compare runs on the delivering thread; only the
+    /// changed-flag and byte count hop to the main actor. Throttled to once a second.
+    /// Both backends deliver serially, so the captured `lastPoke` /
+    /// `lastScreenSignature` / `pendingBytes` need no lock.
+    ///
+    /// A user agent may declare `status` regex rules in its `agent.json`; the same
+    /// viewport read that feeds the liveness sweep is classified against them to
+    /// drive working / needs-attention / done for agents that ship no hook system
+    /// (see `AgentStatusRules`). Built-ins carry no rules (they use hooks), so this
+    /// is `nil` for them and the classify step is skipped.
+    ///
+    /// Caveat: `readViewportText` returns the *displayed* viewport, which follows the
+    /// user's scrollback — so scrolling an inline agent's pane up feeds stale rows to
+    /// the classifier until it snaps back to the bottom (self-healing; the byte-count
+    /// signal covers working-liveness meanwhile). herdr avoids this by reading the
+    /// live bottom (active) buffer; the clean fix here needs a `readActiveText()` on
+    /// the libghostty wrapper (its blessed read serializes against the PTY write
+    /// under a private lock we can't hold, and a raw unsynchronized
+    /// `GHOSTTY_POINT_ACTIVE` read from this pump thread would race
+    /// `inMemory.receive` — the exact libghostty threading hazard termio has been
+    /// bitten by). Tracked as an upstream ask, not worked around unsafely.
+    ///
+    /// - Parameters:
+    ///   - backend: the object delivering the bytes (the `PTYProcess` or the
+    ///     `TermiodSessionLink`), held weakly and used to drop events a dead
+    ///     backend queued for a session that has since relaunched.
+    ///   - lastInputAt: when something was last written toward the session's stdin,
+    ///     from whichever backend owns the write path.
+    ///   - onPoke: backend-specific work for the throttled tick.
+    func makeStatusTap(
+        for session: Session,
+        surface inMemory: InMemoryTerminalSession,
+        backend: AnyObject,
+        lastInputAt: @escaping () -> Date?,
+        onPoke: @escaping () -> Void = {}
+    ) -> (Data) -> Void {
+        let statusRules = session.agent.statusRules
+        let agentID = session.agent.id
+        let statusTrace = ProcessInfo.processInfo.environment["TERMIO_STATUS_TRACE"] != nil
+        // Reads this session's ConEmu `OSC 9;4` progress out of the raw stream as
+        // a busy/idle signal (Grok emits it natively). Scanned on every chunk
+        // *before* the 1 s status throttle below — an agent's turn boundary is an
+        // edge, not something to sample once a second. The scan runs for every
+        // session (a plain terminal can be promoted to a hand-started Grok, whose
+        // sink was built while the row was still a shell); whether a transition is
+        // *acted on* is gated in `applyProgressActivity` by the session's live
+        // agent, so an unrelated shell's `wget`/`npm` progress bar can't move a dot.
+        var progressScanner = OSCProgressScanner()
+        var lastPoke = Date.distantPast
+        var lastScreenSignature: Int?
+        // Bytes seen since the last poke, so the throttled tick can report the
+        // stream's volume alongside the screen compare — the scroll-frozen-
+        // viewport liveness signal (see `noteOutputActivity`).
+        var pendingBytes = 0
+        return { [weak self, weak inMemory, weak backend] data in
+            pendingBytes += data.count
+            for progress in progressScanner.scan(data) {
+                if statusTrace {
+                    AgentStatusRules.trace(
+                        agent: "\(agentID).progress", session: session.id,
+                        activity: progress, matched: "OSC 9;4")
+                }
+                // Tie the event to the backend that produced it. Unlike the title
+                // channel — whose Combine subscription is torn down with the view
+                // state on relaunch — this tap is only session-id-keyed, so a
+                // same-agent relaunch could otherwise let a dead PTY's queued
+                // `working` mark the replacement process. Applying only while this
+                // backend is still the session's live one drops that stale event.
+                DispatchQueue.main.async { [weak backend] in
+                    guard let self, let backend,
+                          self.isLiveBackend(backend, for: session.id) else { return }
+                    self.applyProgressActivity(progress, for: session.id)
+                }
+            }
+            let now = Date()
+            guard now.timeIntervalSince(lastPoke) >= 1 else { return }
+            lastPoke = now
+            let bytes = pendingBytes
+            pendingBytes = 0
+            onPoke()
+            // The backend timestamps every stdin write (Mac keystrokes, phone
+            // input over the companion bridge, synthetic `sessions send` text), so
+            // sampling it here — instead of tapping only the Mac surface's write
+            // callback — keeps promotion quiet after input from any device. Input
+            // echo repaints the screen just like agent output does.
+            let inputAt = lastInputAt()
+            let text = inMemory?.readViewportText()
+            let screenChanged: Bool
+            if let text {
+                let signature = text.hashValue
+                screenChanged = signature != lastScreenSignature
+                lastScreenSignature = signature
+            } else {
+                // No surface to read (e.g. detached) — fall back to treating
+                // output as activity rather than risk clearing a live turn.
+                screenChanged = true
+            }
+            let detected: AgentStatusRules.Activity?
+            if let statusRules {
+                let (activity, matched) = statusRules.explain(text ?? "")
+                detected = activity
+                if statusTrace {
+                    AgentStatusRules.trace(
+                        agent: agentID, session: session.id, activity: activity, matched: matched)
+                }
+            } else {
+                detected = nil
+            }
+            DispatchQueue.main.async {
+                if let inputAt { self?.noteUserInput(session.id, at: inputAt) }
+                self?.noteOutputActivity(session.id, screenChanged: screenChanged, bytes: bytes)
+                if let detected {
+                    self?.applyScreenDetectedActivity(detected, for: session.id)
+                }
+            }
+        }
+    }
+
+    /// Whether this object is still the thing running the session — the in-process
+    /// PTY or the daemon link the store currently holds for it. A tap that outlived
+    /// its backend answers `false` and its queued events are dropped.
+    func isLiveBackend(_ backend: AnyObject, for id: Session.ID) -> Bool {
+        if let pty = ptyProcesses[id] { return pty === backend }
+        if let link = termiodLinks[id] { return link === backend }
+        return false
     }
 
     /// Stands in for the shell that would otherwise spawn locally. It carries no PTY

@@ -1259,6 +1259,17 @@ final class TermiodSessionLink: @unchecked Sendable {
     private var closed = false
     private var exitDelivered = false
 
+    /// The last instant something was written toward the session's stdin. Its own
+    /// lock, not the work queue, so the status tap can read it from the reader
+    /// thread without a hop.
+    private let inputLock = NSLock()
+    private var lastInputAtLocked = Date.distantPast
+    var lastInputAt: Date {
+        inputLock.lock()
+        defer { inputLock.unlock() }
+        return lastInputAtLocked
+    }
+
     /// Raw PTY bytes from the daemon — fed to the surface exactly where
     /// `PTYProcess`'s read pump delivers on the in-process path. Called on the
     /// reader thread; the consumer (`InMemoryTerminalSession.receive`) is
@@ -1365,6 +1376,13 @@ final class TermiodSessionLink: @unchecked Sendable {
 
     func send(_ data: Data) {
         guard !data.isEmpty else { return }
+        // Stamped here rather than on the work queue: this is the choke point every
+        // input path crosses (Mac keystrokes, the phone bridge, `sessions send`),
+        // and the status tap reads it to tell input echo apart from agent-driven
+        // output. Same contract as `PTYProcess.lastInputAt`.
+        inputLock.lock()
+        lastInputAtLocked = Date()
+        inputLock.unlock()
         workQueue.async { [self] in
             guard !closed else { return }
             guard attached else {
