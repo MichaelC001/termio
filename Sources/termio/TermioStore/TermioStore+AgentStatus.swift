@@ -367,6 +367,15 @@ extension TermioStore {
     /// can keep spinning), and a title-idle only ends a turn — an arbitrary title
     /// (which classifies idle by no-match) must not clear hook-set states.
     func applyTitleActivity(_ activity: AgentStatusRules.Activity, for id: Session.ID) {
+        // Liveness first, before the transition guard — every frame of a ticking
+        // title spinner is evidence the turn is still running, not just the first
+        // one. Claude reprints a new braille frame several times a second and they
+        // all collapse to a no-op here; refreshing only on the transition let
+        // `sweepStaleWorking` clear the spinner 12s into a live turn, and because
+        // the latch below still read `.working`, no later frame could raise it
+        // again — the turn finished with a calm row. This mirrors what
+        // `applyScreenDetectedActivity` already does with its own signal.
+        if activity == .working { lastWorkingAt[id] = Date() }
         guard lastTitleActivity[id] != activity else { return }
         let previous = lastTitleActivity[id]
         lastTitleActivity[id] = activity
@@ -376,7 +385,6 @@ extension TermioStore {
             guard let session = session(id), effectiveAgent(for: session) != .terminal
             else { return }
             setStatus(.working, for: id)
-            lastWorkingAt[id] = Date()
         case .attention:
             clearWorking(id)
             flagBlockingAttention(for: id)
@@ -407,6 +415,10 @@ extension TermioStore {
         // or resolves to an agent that doesn't emit progress, so it can't repopulate a
         // cleared entry or move a replacement process's dot.
         guard let session = session(id), effectiveAgent(for: session).emitsProgressStatus else { return }
+        // Repeated busy reports are liveness, same as a ticking title (see
+        // `applyTitleActivity`): refresh before the transition guard so a turn the
+        // agent keeps asserting can't be swept out from under it.
+        if activity == .working { lastWorkingAt[id] = Date() }
         guard lastProgressActivity[id] != activity else { return }
         let previous = lastProgressActivity[id]
         lastProgressActivity[id] = activity
@@ -414,7 +426,6 @@ extension TermioStore {
         case .working:
             guard status(for: id) != .needsAttention else { return }
             setStatus(.working, for: id)
-            lastWorkingAt[id] = Date()
         case .attention:
             clearWorking(id)
             flagBlockingAttention(for: id)

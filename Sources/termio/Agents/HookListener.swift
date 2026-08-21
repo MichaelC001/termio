@@ -98,6 +98,12 @@ final class HookListener {
     private let queue = DispatchQueue(label: "com.termio.hook-listener")
     private var source: DispatchSourceRead?
     private var listenDescriptor: Int32 = -1
+    /// Watches the socket *file* we bound, so an instance that loses the path to
+    /// someone else's `unlink` finds out (see `LocalSocket.watchForReplacement`).
+    private var pathWatch: DispatchSourceFileSystemObject?
+    /// Runs only while another instance holds the path, and takes it back when
+    /// that one goes away (see `LocalSocket.retryWhenFree`).
+    private var reclaim: DispatchSourceTimer?
 
     init(onReport: @escaping @MainActor (StatusReport) -> Void) {
         self.onReport = onReport
@@ -115,27 +121,43 @@ final class HookListener {
         try? FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let path = url.path
-        // A stale socket file from a previous run would make bind() fail with
-        // EADDRINUSE, so clear it first. (Errors here are fine — it may not exist.)
+        // Only clear a socket file nothing is listening on — the same guard session
+        // control uses, and for a worse failure. Unlinking whatever is there lets a
+        // second instance steal the channel: the running app keeps its now-unnamed
+        // socket, every hook connects to the new file, and once the thief exits the
+        // file it leaves behind refuses every connection. Hooks fire constantly, so
+        // the command they run ends in `2>/dev/null || true` and cannot say a word
+        // about it — the status plane just goes quiet, permanently, with agents
+        // still working and every row calm.
+        if LocalSocket.isLive(path) {
+            Self.log("""
+                another termio already answers at \(path) — leaving agent status to it \
+                (relaunch this process with TERMIO_CHANNEL=dev for a channel of its own; \
+                that steers this run, not how a bundle was built)
+                """)
+            // Standing down is not a decision for the rest of the run: the other
+            // instance is usually a short-lived `swift run`, and when it goes the
+            // path is ours to take.
+            if reclaim == nil {
+                reclaim = LocalSocket.retryWhenFree(path: path, on: queue) { [weak self] in
+                    self?.bindAndListen()
+                }
+            }
+            return
+        }
+        reclaim?.cancel()
+        reclaim = nil
+        // Nothing answers, so any file here is a leftover: clearing it is what
+        // keeps bind() from failing with EADDRINUSE.
         unlink(path)
 
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { Self.log("socket() failed: \(errno)"); return }
 
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let capacity = MemoryLayout.size(ofValue: address.sun_path)
-        let bytes = Array(path.utf8)
-        guard bytes.count < capacity else {
-            Self.log("socket path too long (\(bytes.count) ≥ \(capacity)): \(path)")
+        guard var address = LocalSocket.address(for: path) else {
+            Self.log("socket path too long: \(path)")
             close(descriptor)
             return
-        }
-        withUnsafeMutablePointer(to: &address.sun_path) {
-            $0.withMemoryRebound(to: UInt8.self, capacity: capacity) { destination in
-                for (index, byte) in bytes.enumerated() { destination[index] = byte }
-                destination[bytes.count] = 0
-            }
         }
         let size = socklen_t(MemoryLayout<sockaddr_un>.size)
         let bound = withUnsafePointer(to: &address) {
@@ -155,6 +177,16 @@ final class HookListener {
         listenDescriptor = descriptor
         self.source = source
         source.resume()
+        pathWatch = LocalSocket.watchForReplacement(of: path, on: queue) { [weak self] in
+            guard let self else { return }
+            Self.log("agent status socket was replaced — rebinding")
+            self.pathWatch?.cancel()
+            self.pathWatch = nil
+            self.source?.cancel()
+            self.source = nil
+            self.listenDescriptor = -1
+            self.bindAndListen()
+        }
     }
 
     private func acceptPending() {
