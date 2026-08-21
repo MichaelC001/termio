@@ -2270,6 +2270,10 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             host.sizingOptions = [.intrinsicContentSize]
             item.view = host
             item.isBordered = false
+            // The view takes the click; the action is what AppKit reads to synthesize this
+            // item's row in the `»` overflow menu and to validate it. A view-based item with
+            // neither an action nor a `menuFormRepresentation` overflows into a dead row.
+            item.action = #selector(NSSplitViewController.toggleSidebar(_:))
             return item
         case .workspaceSwitcher:
             // The workspace the sidebar is scoped to, at the head of the sidebar's own toolbar
@@ -2293,7 +2297,9 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             // A pull-down that sets how the sidebar orders projects (Recent Activity /
             // Name). Sits just left of the `+`, at the trailing edge of the sidebar's
             // toolbar region. Native `NSMenuToolbarItem` so it carries the standard
-            // menu chevron and free Liquid Glass bordered look, matching the toggles.
+            // menu chevron and free Liquid Glass bordered look. It keeps that border
+            // unconditionally where the pane toggles don't: this opens a menu, and a
+            // menu is always available — their capsule says whether a pane is open.
             let item = NSMenuToolbarItem(itemIdentifier: .sortProjects)
             item.label = localized("Sort")
             item.toolTip = localized("Choose how projects are ordered")
@@ -2362,6 +2368,8 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             host.sizingOptions = [.intrinsicContentSize]
             item.view = host
             item.isBordered = false
+            // Kept for the overflow menu and validation, as on the navigator toggle above.
+            item.action = #selector(AppDelegate.toggleFilesInspector(_:))
             return item
         case .branchPicker:
             let item = NSToolbarItem(itemIdentifier: .branchPicker)
