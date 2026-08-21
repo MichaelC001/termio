@@ -53,8 +53,23 @@ final class KeybindingSurfaceTests: XCTestCase {
         }
     }
 
-    /// The collisions that were live when #203 was filed, pinned so they cannot
-    /// come back one at a time.
+    /// No two claimants may share a shortcut. `conflict(for:excluding:)` guards the
+    /// recorder at runtime, but nothing guarded the shipped table — and a catalog
+    /// default landing on, say, ⌘3 would go unnoticed: it would win the menu bar,
+    /// ⌘3 would stop reaching the third workspace, and the unbind test above would
+    /// still pass, because both claimants unbind the same trigger.
+    func testNoTwoClaimantsShareAShortcut() {
+        let claimed = KeyCommandCatalog.all.compactMap { KeybindingStore.shared.shortcut(for: $0.id) }
+            + KeybindingStore.hostReserved.map(\.shortcut)
+        let duplicates = claimed.filter { shortcut in claimed.filter { $0 == shortcut }.count > 1 }
+        XCTAssertTrue(
+            duplicates.isEmpty,
+            "two commands claim: \(Set(duplicates.map(\.display)).sorted().joined(separator: ", "))"
+        )
+    }
+
+    /// The collisions that were live when #203 was filed, plus ghostty's `goto_tab`
+    /// on the digits, pinned so they cannot come back one at a time.
     func testKnownGhosttyCollisionsAreUnbound() {
         let triggers = Set(KeybindingStore.shared.surfaceUnbindTriggers)
         for trigger in [

@@ -69,12 +69,12 @@ struct WorkspaceSwitcherToolbarView: View {
                 .truncationMode(.middle)
                 .frame(maxWidth: Self.nameWidthCeiling)
                 .fixedSize()
+                // The overlay owns the press, the tooltip, and the accessibility of
+                // this control — it is the view under the pointer, so a `.help()` here
+                // would be shadowed by it and a SwiftUI accessibility element here would
+                // hide it. See `WorkspaceMenuHost`.
                 .overlay(WorkspaceMenuPopper(store: store))
-                .help(localized("The sidebar shows this workspace"))
-                .accessibilityElement()
-                .accessibilityLabel(localized("Workspace"))
-                .accessibilityValue(current.name)
-                .accessibilityAddTraits(.isButton)
+                .accessibilityHidden(true)
         }
     }
 
@@ -113,6 +113,7 @@ private struct WorkspaceMenuPopper: NSViewRepresentable {
     func makeNSView(context: Context) -> WorkspaceMenuHost {
         let view = WorkspaceMenuHost()
         view.store = store
+        view.toolTip = localized("The sidebar shows this workspace")
         return view
     }
 
@@ -136,6 +137,28 @@ private final class WorkspaceMenuHost: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
+        showMenu()
+    }
+
+    // MARK: - Accessibility
+    //
+    // The element is this view rather than the `Text` beneath it. A SwiftUI
+    // `.accessibilityAddTraits(.isButton)` only sets a trait — nothing there answers
+    // a press — so the control announced itself as a button and then did nothing,
+    // which the `Menu` it replaced did not do. Answering here gives the press a real
+    // implementation and one description that cannot disagree with the label drawn.
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .popUpButton }
+    override func accessibilityLabel() -> String? { localized("Workspace") }
+    override func accessibilityValue() -> Any? { store?.currentWorkspace.name }
+
+    override func accessibilityPerformPress() -> Bool {
+        showMenu()
+        return true
+    }
+
+    private func showMenu() {
         guard let store else { return }
         let menu = NSMenu()
         for row in WorkspaceMenu.rows(in: store, target: self, action: #selector(switchToWorkspace(_:))) {
@@ -146,14 +169,12 @@ private final class WorkspaceMenuHost: NSView {
         // already carry one (File ▸ Workspace and the sidebar `+`), and growing a
         // third here would put a machine list in the switcher, which is the "go to
         // a computer" mode the workspace replaced.
-        addAction(localized("New Workspace…"), to: menu) { $0.presentNewWorkspacePanel(on: .thisMac) }
-        addAction(localized("Rename Workspace…"), to: menu) {
-            $0.presentRenameWorkspacePanel($0.currentWorkspaceID)
-        }
+        addAction(localized("New Workspace…"), to: menu, #selector(newWorkspace))
+        addAction(localized("Rename Workspace…"), to: menu, #selector(renameWorkspace))
         // Removing the last workspace is refused in the store — the sidebar has to
         // have a scope to show — and this menu only opens while there is more than
         // one, so the row is always live where it is drawn.
-        addAction(localized("Remove Workspace"), to: menu) { $0.confirmRemoveWorkspace($0.currentWorkspaceID) }
+        addAction(localized("Remove Workspace"), to: menu, #selector(removeWorkspace))
         // No device verb here, deliberately. A machine you can *go to* is the
         // mode this scope replaced: it made the sidebar answer "which computer"
         // when the question is "which work". A device is a place a new thing is
@@ -165,10 +186,9 @@ private final class WorkspaceMenuHost: NSView {
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.height + 4), in: self)
     }
 
-    private func addAction(_ title: String, to menu: NSMenu, run: @escaping (TermioStore) -> Void) {
-        let item = NSMenuItem(title: title, action: #selector(invoke(_:)), keyEquivalent: "")
+    private func addAction(_ title: String, to menu: NSMenu, _ action: Selector) {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
-        item.representedObject = Handler(run)
         menu.addItem(item)
     }
 
@@ -177,15 +197,17 @@ private final class WorkspaceMenuHost: NSView {
         store?.switchToWorkspace(id)
     }
 
-    @objc private func invoke(_ sender: NSMenuItem) {
-        guard let store, let handler = sender.representedObject as? Handler else { return }
-        handler.run(store)
+    @objc private func newWorkspace() {
+        store?.presentNewWorkspacePanel(on: .thisMac)
     }
 
-    /// Boxes a menu-item closure so it can ride along on `representedObject`, the
-    /// only payload an `NSMenuItem` carries.
-    private final class Handler {
-        let run: (TermioStore) -> Void
-        init(_ run: @escaping (TermioStore) -> Void) { self.run = run }
+    @objc private func renameWorkspace() {
+        guard let store else { return }
+        store.presentRenameWorkspacePanel(store.currentWorkspaceID)
+    }
+
+    @objc private func removeWorkspace() {
+        guard let store else { return }
+        store.confirmRemoveWorkspace(store.currentWorkspaceID)
     }
 }
