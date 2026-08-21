@@ -1,6 +1,117 @@
 import Darwin
 import Foundation
 
+/// The bind-time defenses every local socket termio serves needs, in one place.
+/// Both listeners in this folder answer on an `AF_UNIX` path under the channel's
+/// Application Support directory, and both fail the same way without these: an
+/// unconditional `unlink` before `bind` lets a second instance take the *name*
+/// from a healthy first one, which then keeps listening on an inode nothing can
+/// address and never finds out. The usual thief is a bare SwiftPM binary — no
+/// bundle id means `AppChannel.suffix` is empty, so `swift run` during
+/// development lands on the *release* channel.
+enum LocalSocket {
+    /// Fills a `sockaddr_un` for `path`, or nil when the path doesn't fit
+    /// `sun_path`. Shared by the listeners and the liveness probe so all of them
+    /// agree on exactly which address they mean.
+    static func address(for path: String) -> sockaddr_un? {
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let capacity = MemoryLayout.size(ofValue: address.sun_path)
+        let bytes = Array(path.utf8)
+        guard bytes.count < capacity else { return nil }
+        withUnsafeMutablePointer(to: &address.sun_path) {
+            $0.withMemoryRebound(to: UInt8.self, capacity: capacity) { destination in
+                for (index, byte) in bytes.enumerated() { destination[index] = byte }
+                destination[bytes.count] = 0
+            }
+        }
+        return address
+    }
+
+    /// True when something is already accepting connections at `path`. A refused
+    /// connection — or no file at all — means the socket is stale and safe to
+    /// replace; a connect that lands means a live owner we must not evict.
+    static func isLive(_ path: String) -> Bool {
+        guard FileManager.default.fileExists(atPath: path),
+              var address = address(for: path)
+        else { return false }
+        let probe = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard probe >= 0 else { return false }
+        defer { close(probe) }
+        let size = socklen_t(MemoryLayout<sockaddr_un>.size)
+        return withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(probe, $0, size) }
+        } == 0
+    }
+
+    /// The inode behind `path`, or nil when nothing is there — the identity check
+    /// that tells "still our socket" from "someone rebound this name".
+    static func inode(of path: String) -> UInt64? {
+        var status = stat()
+        guard lstat(path, &status) == 0 else { return nil }
+        return UInt64(status.st_ino)
+    }
+
+    /// How often a listener that stood down re-probes the path it gave up.
+    static let reclaimInterval: TimeInterval = 30
+
+    /// Calls `onFree` once nothing answers at `path` any more. This is the other
+    /// half of standing down: the instance that took the path can exit *without*
+    /// unlinking, which leaves a file that refuses every connection and an inode
+    /// that never changes — so the replacement watch cannot see it and the socket
+    /// stays dead until someone relaunches the app. Only a periodic probe
+    /// distinguishes "still serving" from "gone, and its leftovers are in the way".
+    ///
+    /// Returns the resumed timer to retain; cancel it once the path is bound.
+    static func retryWhenFree(
+        path: String, on queue: DispatchQueue, onFree: @escaping () -> Void
+    ) -> DispatchSourceTimer {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + reclaimInterval, repeating: reclaimInterval)
+        timer.setEventHandler {
+            guard !isLive(path) else { return }
+            onFree()
+        }
+        timer.resume()
+        return timer
+    }
+
+    /// Watches for another instance's `unlink` taking a bound socket file away and
+    /// calls `onReplaced` when it happens. Without this, losing the path is
+    /// permanent and silent: the listener stays bound to an inode with no name,
+    /// every client gets ECONNREFUSED, and only a relaunch recovers. The caller's
+    /// handler re-runs its bind, which probes again — so a live replacement makes
+    /// it stand down, a bare `rm` gets the path back.
+    ///
+    /// The socket file itself can't be the watch target: `open(2)` on an AF_UNIX
+    /// socket fails with ENXIO, so a file-level vnode source never arms. We watch
+    /// the enclosing directory and re-check the entry when it changes.
+    ///
+    /// Returns the resumed source to retain, or nil when the watch can't be armed.
+    static func watchForReplacement(
+        of path: String, on queue: DispatchQueue, onReplaced: @escaping () -> Void
+    ) -> DispatchSourceFileSystemObject? {
+        let directory = (path as NSString).deletingLastPathComponent
+        let descriptor = open(directory, O_EVTONLY)
+        guard descriptor >= 0, let bound = inode(of: path) else {
+            if descriptor >= 0 { close(descriptor) }
+            return nil
+        }
+        let watch = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor, eventMask: [.write, .delete, .rename], queue: queue)
+        watch.setEventHandler {
+            // Every write anywhere in the support directory lands here (state.json
+            // above all), so the cheap identity check comes first: only a vanished
+            // entry or a different inode means the socket was replaced.
+            guard inode(of: path) != bound else { return }
+            onReplaced()
+        }
+        watch.setCancelHandler { close(descriptor) }
+        watch.resume()
+        return watch
+    }
+}
+
 /// One request from the `termio sessions …` CLI, sent as a single JSON object
 /// over `SessionControlListener`'s local socket. This is the write/drive
 /// counterpart to `HookListener`'s read-only status stream: where a hook reports
@@ -162,6 +273,9 @@ final class SessionControlListener: @unchecked Sendable {
     /// Watches the socket *file* we bound, so an instance that loses the path to
     /// someone else's `unlink` finds out (see `watchForReplacement`).
     private var pathWatch: DispatchSourceFileSystemObject?
+    /// Runs only while another instance holds the path, and takes it back when
+    /// that one goes away (see `LocalSocket.retryWhenFree`).
+    private var reclaim: DispatchSourceTimer?
 
     init(onRequest: @escaping @MainActor (ControlRequest) async -> Data,
          onWatch: @escaping @MainActor (ControlRequest) -> (UUID?, Data?, [SessionWatchEvent])) {
@@ -186,7 +300,7 @@ final class SessionControlListener: @unchecked Sendable {
         // with ECONNREFUSED while the app looks perfectly fine. The usual thief is
         // a bare SwiftPM binary — no bundle id means `AppChannel.suffix` is empty,
         // so `swift run` during development lands on the *release* channel.
-        if Self.isLive(path) {
+        if LocalSocket.isLive(path) {
             // Name `dev`, not `<name>`: a placeholder reads as "any name works",
             // and the reader's next move is usually TERMIO_CHANNEL=<name>
             // ./scripts/build-app.sh — which builds no such channel.
@@ -195,14 +309,24 @@ final class SessionControlListener: @unchecked Sendable {
                 to it (relaunch this process with TERMIO_CHANNEL=dev for a channel of \
                 its own; that steers this run, not how a bundle was built)
                 """)
+            // The instance we defer to is usually a short-lived `swift run`, and it
+            // can exit without unlinking — a dead file the replacement watch cannot
+            // see, because its inode never changes. Probing is the only way back.
+            if reclaim == nil {
+                reclaim = LocalSocket.retryWhenFree(path: path, on: queue) { [weak self] in
+                    self?.bindAndListen()
+                }
+            }
             return
         }
+        reclaim?.cancel()
+        reclaim = nil
         unlink(path)
 
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { Self.log("socket() failed: \(errno)"); return }
 
-        guard var address = Self.address(for: path) else {
+        guard var address = LocalSocket.address(for: path) else {
             Self.log("socket path too long: \(path)")
             close(descriptor)
             return
@@ -227,65 +351,9 @@ final class SessionControlListener: @unchecked Sendable {
         watchForReplacement(path)
     }
 
-    /// Fills a `sockaddr_un` for `path`, or nil when the path doesn't fit
-    /// `sun_path`. Shared by the listener and the liveness probe so both agree on
-    /// exactly which address they mean.
-    private static func address(for path: String) -> sockaddr_un? {
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let capacity = MemoryLayout.size(ofValue: address.sun_path)
-        let bytes = Array(path.utf8)
-        guard bytes.count < capacity else { return nil }
-        withUnsafeMutablePointer(to: &address.sun_path) {
-            $0.withMemoryRebound(to: UInt8.self, capacity: capacity) { destination in
-                for (index, byte) in bytes.enumerated() { destination[index] = byte }
-                destination[bytes.count] = 0
-            }
-        }
-        return address
-    }
-
-    /// True when something is already accepting connections at `path`. A refused
-    /// connection — or no file at all — means the socket is stale and safe to
-    /// replace; a connect that lands means a live owner we must not evict.
-    private static func isLive(_ path: String) -> Bool {
-        guard FileManager.default.fileExists(atPath: path),
-              var address = address(for: path)
-        else { return false }
-        let probe = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard probe >= 0 else { return false }
-        defer { close(probe) }
-        let size = socklen_t(MemoryLayout<sockaddr_un>.size)
-        return withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(probe, $0, size) }
-        } == 0
-    }
-
-    /// Watches for another instance's `unlink` taking our socket file away.
-    /// Without this, losing the path is permanent and silent: the listener stays
-    /// bound to an inode with no name, every client gets ECONNREFUSED, and only a
-    /// relaunch recovers. On a change we re-run `bindAndListen`, which probes
-    /// again — so a live replacement makes us stand down, a bare `rm` gets the
-    /// path back.
-    ///
-    /// The socket file itself can't be the watch target: `open(2)` on an AF_UNIX
-    /// socket fails with ENXIO, so a file-level vnode source never arms. We watch
-    /// the enclosing directory and re-check our own entry when it changes.
     private func watchForReplacement(_ path: String) {
-        let directory = (path as NSString).deletingLastPathComponent
-        let descriptor = open(directory, O_EVTONLY)
-        guard descriptor >= 0, let bound = Self.inode(of: path) else {
-            if descriptor >= 0 { close(descriptor) }
-            return
-        }
-        let watch = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: descriptor, eventMask: [.write, .delete, .rename], queue: queue)
-        watch.setEventHandler { [weak self] in
+        pathWatch = LocalSocket.watchForReplacement(of: path, on: queue) { [weak self] in
             guard let self else { return }
-            // Every write anywhere in the support directory lands here (state.json
-            // above all), so the cheap identity check comes first: only a vanished
-            // entry or a different inode means our socket was replaced.
-            guard Self.inode(of: path) != bound else { return }
             Self.log("session control socket was replaced — rebinding")
             self.pathWatch?.cancel()
             self.pathWatch = nil
@@ -294,17 +362,6 @@ final class SessionControlListener: @unchecked Sendable {
             self.listenDescriptor = -1
             self.bindAndListen()
         }
-        watch.setCancelHandler { close(descriptor) }
-        pathWatch = watch
-        watch.resume()
-    }
-
-    /// The inode behind `path`, or nil when nothing is there — the identity check
-    /// that tells "still our socket" from "someone rebound this name".
-    private static func inode(of path: String) -> UInt64? {
-        var status = stat()
-        guard lstat(path, &status) == 0 else { return nil }
-        return UInt64(status.st_ino)
     }
 
     private func acceptPending() {
