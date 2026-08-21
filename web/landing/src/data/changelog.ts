@@ -17,6 +17,34 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.37.0",
+    date: "2026-08-21",
+    title: "Workspaces",
+    changes: {
+      new: [
+        "Workspaces: the sidebar shows one workspace at a time instead of everything at once, and you switch from the toolbar. Everything you already had becomes your first workspace on launch — no projects move, no sessions are lost.",
+        "Fifty curated themes are built in. Pick one in Settings ▸ Appearance and it applies; the Themes folder goes back to holding only what you put there.",
+        "Droid, Copilot, Cline, Crush and Qwen Code join the built-in agent roster.",
+        "Git compares a branch against the one it would merge into, so you can see what a pull request would contain.",
+      ],
+      improved: [
+        "Settings ▸ SSH is now Settings ▸ Machines: the hosts from your ~/.ssh/config, each one a click from a connection test or a terminal.",
+        "A Codex session names itself from your first prompt, the way the other agents do.",
+        "A loose terminal titles the window with its own directory.",
+        "`termio sessions send --key` presses a named key, instead of only sending a line of text.",
+      ],
+      fixed: [
+        "Open Project and New Workspace stay clickable in the sidebar's + menu once a second machine is configured.",
+        "The workspace switcher leaves the toolbar with the sidebar, instead of sitting beside the window title.",
+        "The file editor shows a file even when syntax highlighting cannot start.",
+        "Background blur is ignored at full opacity, where it had nothing to blur.",
+        "The Issues list rebuilds when you change its kind or filter.",
+        "Notifications are gated on Termio's own bundle rather than any bundle.",
+        "Markdown with a Mermaid diagram no longer flashes a stray window.",
+      ],
+    },
+  },
+  {
     version: "0.36.0",
     date: "2026-08-12",
     title: "Speaks Simplified Chinese",
