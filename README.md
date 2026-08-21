@@ -100,20 +100,6 @@ TUI, not a chat summary. A key bar puts esc, tab, ctrl, and arrows above the
 keyboard, and hold-to-speak transcribes straight into the prompt. Free, in
 public beta: [join on TestFlight](https://testflight.apple.com/join/1Arf1UKR).
 
-<table>
-<tr>
-<td width="33%">
-  <img src="web/landing/public/screenshots/phone-mirror.webp" alt="A live Claude Code session mirrored on the iPhone" width="100%" />
-</td>
-<td width="33%">
-  <img src="web/landing/public/screenshots/phone-keys.webp" alt="The key bar with esc, tab, ctrl, and arrow keys above the keyboard" width="100%" />
-</td>
-<td width="33%">
-  <img src="web/landing/public/screenshots/phone-projects.webp" alt="The home page listing projects with their checked-out branches" width="100%" />
-</td>
-</tr>
-</table>
-
 ## Architecture
 
 Termio is moving every session onto `termiod`, a small Rust daemon that owns the

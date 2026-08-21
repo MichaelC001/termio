@@ -91,20 +91,6 @@ termio sessions watch                      # 即時串流狀態變化
 按住說話即可將語音直接轉寫進提示。免費，公開測試中：
 [在 TestFlight 上加入](https://testflight.apple.com/join/1Arf1UKR)。
 
-<table>
-<tr>
-<td width="33%">
-  <img src="web/landing/public/screenshots/phone-mirror.webp" alt="一個即時的 Claude Code 工作階段鏡射到 iPhone 上" width="100%" />
-</td>
-<td width="33%">
-  <img src="web/landing/public/screenshots/phone-keys.webp" alt="鍵盤上方帶有 esc、tab、ctrl 與方向鍵的按鍵列" width="100%" />
-</td>
-<td width="33%">
-  <img src="web/landing/public/screenshots/phone-projects.webp" alt="列出專案及其簽出分支的首頁" width="100%" />
-</td>
-</tr>
-</table>
-
 ## 路線圖
 
 - **Linux 遠端伺服器** — 工作階段跑在您自己的 Linux 機器上（VPS、開發機），

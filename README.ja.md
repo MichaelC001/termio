@@ -77,20 +77,6 @@ termio sessions watch                      # ステータスの変化をリア�
 
 コンパニオンアプリが、Mac のすべてのセッションをスマートフォンにライブでミラーリングします — チャットの要約ではなく、TUI そのものです。キーバーが esc、tab、ctrl、矢印キーをキーボードの上に並べ、長押しで話せば音声がそのままプロンプトに文字起こしされます。無料のパブリックベータを公開中です: [TestFlight で参加](https://testflight.apple.com/join/1Arf1UKR)。
 
-<table>
-<tr>
-<td width="33%">
-  <img src="web/landing/public/screenshots/phone-mirror.webp" alt="iPhone にミラーリングされたライブ Claude Code セッション" width="100%" />
-</td>
-<td width="33%">
-  <img src="web/landing/public/screenshots/phone-keys.webp" alt="キーボードの上に esc、tab、ctrl、矢印キーを備えたキーバー" width="100%" />
-</td>
-<td width="33%">
-  <img src="web/landing/public/screenshots/phone-projects.webp" alt="プロジェクトとチェックアウト中のブランチを一覧表示するホーム画面" width="100%" />
-</td>
-</tr>
-</table>
-
 ## ロードマップ
 
 - **Linux リモートサーバー** — VPS や開発マシンなど、自分の Linux マシンで

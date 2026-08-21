@@ -98,20 +98,6 @@ termio sessions watch                      # 상태 변화를 실시간으로 �
 무료이고 공개 베타 중이에요:
 [TestFlight에서 참여해주세요](https://testflight.apple.com/join/1Arf1UKR).
 
-<table>
-<tr>
-<td width="33%">
-  <img src="web/landing/public/screenshots/phone-mirror.webp" alt="iPhone에 실시간으로 미러링된 Claude Code 세션" width="100%" />
-</td>
-<td width="33%">
-  <img src="web/landing/public/screenshots/phone-keys.webp" alt="키보드 위의 esc, tab, ctrl, 화살표 키가 있는 키 바" width="100%" />
-</td>
-<td width="33%">
-  <img src="web/landing/public/screenshots/phone-projects.webp" alt="프로젝트와 체크아웃된 브랜치를 나열하는 홈 화면" width="100%" />
-</td>
-</tr>
-</table>
-
 ## 로드맵
 
 - **Linux 원격 서버** — VPS나 개발 머신 등 내 Linux 머신에서 세션을 돌리고,
