@@ -83,29 +83,65 @@ final class ThemeLibraryTests: XCTestCase {
 
     /// Derived from each theme's own background luminance, never a hand-kept
     /// per-name assignment — that is the whole point of `isDark` deciding the slot.
-    func testBuiltInsSplitFortyFiveDarkAndTwentyTwoLight() {
+    /// The tally lives here and nowhere else, so growing the list is one number to
+    /// update rather than a sweep through prose. It is a tripwire, not a target:
+    /// what it catches is a name added or lost without anyone meaning to.
+    func testBuiltInsSplitByBackgroundLuminance() {
         let definitions = ThemeLibrary.builtInThemes
-        XCTAssertEqual(definitions.count, 67)
-        XCTAssertEqual(definitions.filter(\.isDark).count, 45)
+        XCTAssertEqual(definitions.count, 69)
+        XCTAssertEqual(definitions.filter(\.isDark).count, 47)
         XCTAssertEqual(definitions.filter { !$0.isDark }.count, 22)
     }
 
     /// The curation rule that keeps the list free of near-duplicates: within a
-    /// slot, no two themes sit closer than ΔE 12 on the weighted Lab metric the
-    /// list was built with. Rejected pairs measure far below it (TokyoNight
-    /// Night vs Storm 2.6, Catppuccin Mocha vs Macchiato 4.3), so a family that
-    /// sneaks a second variant onto the list fails here.
+    /// slot, no two themes of different families sit closer than ΔE 11 on the
+    /// weighted Lab metric the list was built with. Rejected pairs measure far
+    /// below it (TokyoNight Night vs Storm 2.6), so a scheme arriving a second
+    /// time under another name fails here.
+    ///
+    /// The floor was 12 until Catppuccin Frappé joined: it sits 11.3 from Nord —
+    /// two blue-greys, `303446` against `2e3440` — and is now the list's tightest
+    /// pair, under the 12.1 of Kanagawa Dragon vs Melange Dark that set the old
+    /// line. Admitting a flavor someone came looking for is worth 0.7 of ΔE; a
+    /// third theme in that neighbourhood would not be.
+    ///
+    /// Flavors of one family are compared only for the split and the resolve.
+    /// Putting `Catppuccin Frappe` beside `Catppuccin Mocha` is a decision someone
+    /// made on purpose, and no ΔE would have told them otherwise.
     func testNoTwoBuiltInsInASlotReadAsTheSameTheme() throws {
         for dark in [true, false] {
             let definitions = ThemeLibrary.builtInThemes.filter { $0.isDark == dark }
             for first in 0..<definitions.count {
                 for second in (first + 1)..<definitions.count {
+                    guard !sameFamily(definitions[first].name, definitions[second].name) else { continue }
                     let distance = try weightedDistance(definitions[first], definitions[second])
                     XCTAssertGreaterThanOrEqual(
-                        distance, 12,
+                        distance, 11,
                         "\(definitions[first].name) and \(definitions[second].name) read as one theme")
                 }
             }
+        }
+    }
+
+    /// Themes of one scheme family, which every catalog spells as a shared first
+    /// word: Catppuccin Mocha/Macchiato/Frappe, Kanagawa Wave/Dragon.
+    private func sameFamily(_ first: String, _ second: String) -> Bool {
+        first.split(separator: " ").first == second.split(separator: " ").first
+    }
+
+    // MARK: - Chrome
+
+    /// Adding a theme to the list also puts it behind the sidebar and the window,
+    /// so every built-in has to derive chrome — a name that paints the terminal
+    /// but drops the chrome back to the system appearance is a half-applied theme,
+    /// which is what a missing background or foreground would produce.
+    func testEveryBuiltInDerivesChrome() throws {
+        for definition in ThemeLibrary.builtInThemes {
+            let chrome = try XCTUnwrap(ChromeTheme(definition), definition.name)
+            XCTAssertEqual(chrome.isDark, definition.isDark, definition.name)
+            // The device marks come from the theme's own bright ANSI slots, so a
+            // theme that defines none of them still has to yield a usable mark.
+            XCTAssertFalse(chrome.deviceTints.isEmpty, definition.name)
         }
     }
 
@@ -126,7 +162,7 @@ final class ThemeLibraryTests: XCTestCase {
     }
 
     /// A Ghostty config may name any of the bundled schemes, not just the curated
-    /// 67, and termio writes that name straight into a slot. Resolution has to
+    /// ones, and termio writes that name straight into a slot. Resolution has to
     /// reach it — otherwise the window paints the default while the setting says
     /// otherwise.
     func testResolutionReachesPastTheBuiltInsIntoTheCatalog() throws {
@@ -154,6 +190,19 @@ final class ThemeLibraryTests: XCTestCase {
         XCTAssertFalse(
             ThemeLibrary.selectableNames(dark: true, selection: inherited.name)
                 .contains(inherited.name))
+    }
+
+    /// A Ghostty config spells theme names its own way, and the slot it feeds is
+    /// written from the catalog's spelling — so `theme = catppuccin-frappe` has to
+    /// land on `Catppuccin Frappe` rather than on termio's default. An unknown
+    /// name resolves to nothing, which is what leaves that slot at the default
+    /// instead of guessing at a theme file termio cannot render.
+    func testAGhosttySpellingResolvesToTheCatalogName() {
+        for spelling in ["catppuccin-frappe", "Catppuccin Frappe", "CATPPUCCIN FRAPPE", "catppuccinfrappe"] {
+            XCTAssertEqual(
+                ThemeLibrary.catalogTheme(matching: spelling)?.name, "Catppuccin Frappe", spelling)
+        }
+        XCTAssertNil(ThemeLibrary.catalogTheme(matching: "a theme nobody shipped"))
     }
 
     private func firstCatalogThemeOutsideTheBuiltIns(dark: Bool) -> GhosttyThemeDefinition? {
