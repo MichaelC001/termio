@@ -62,6 +62,13 @@ you, one of them stuck. (The longer argument:
 - **Review without leaving.** A read-only git pane (changes, history, unified
   diffs), a file tree with a click-to-edit editor, and project-wide content
   search — the terminal stays the place where you commit.
+- **Git worktrees.** Create one from the sidebar; it nests under the project,
+  one branch per parallel task.
+- **Chats.** Scratch agent sessions that don't belong to any project.
+- **Usage meters.** Claude and Codex plan limits, read locally in
+  Settings → Usage.
+- **Themes.** Light, dark, and a glass appearance that follows the system.
+- **Auto-update.** Notarized DMG, updated by Sparkle.
 - **Free.** No account, no license keys, no paid tier. MIT-licensed.
 
 ## Works with your agents
