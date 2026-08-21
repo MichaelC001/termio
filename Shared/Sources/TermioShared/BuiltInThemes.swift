@@ -1,5 +1,7 @@
-/// The built-in themes: 69 well-known Ghostty scheme names, in display order — 47
-/// dark, then 22 light, by each theme's own background luminance.
+/// The built-in themes: well-known Ghostty scheme names, in display order — the
+/// dark ones, then the light ones, split by each theme's own background
+/// luminance. `ThemeLibraryTests` is where the tally lives; restating it here
+/// only creates a second number to forget.
 ///
 /// Shared because the Mac's theme picker and the iPhone's offer the same set, and
 /// two hand-kept copies would drift. Names only: both ends resolve them against

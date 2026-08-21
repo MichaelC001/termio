@@ -83,7 +83,10 @@ final class ThemeLibraryTests: XCTestCase {
 
     /// Derived from each theme's own background luminance, never a hand-kept
     /// per-name assignment — that is the whole point of `isDark` deciding the slot.
-    func testBuiltInsSplitFortySevenDarkAndTwentyTwoLight() {
+    /// The tally lives here and nowhere else, so growing the list is one number to
+    /// update rather than a sweep through prose. It is a tripwire, not a target:
+    /// what it catches is a name added or lost without anyone meaning to.
+    func testBuiltInsSplitByBackgroundLuminance() {
         let definitions = ThemeLibrary.builtInThemes
         XCTAssertEqual(definitions.count, 69)
         XCTAssertEqual(definitions.filter(\.isDark).count, 47)
@@ -159,7 +162,7 @@ final class ThemeLibraryTests: XCTestCase {
     }
 
     /// A Ghostty config may name any of the bundled schemes, not just the curated
-    /// 69, and termio writes that name straight into a slot. Resolution has to
+    /// ones, and termio writes that name straight into a slot. Resolution has to
     /// reach it — otherwise the window paints the default while the setting says
     /// otherwise.
     func testResolutionReachesPastTheBuiltInsIntoTheCatalog() throws {
@@ -187,6 +190,19 @@ final class ThemeLibraryTests: XCTestCase {
         XCTAssertFalse(
             ThemeLibrary.selectableNames(dark: true, selection: inherited.name)
                 .contains(inherited.name))
+    }
+
+    /// A Ghostty config spells theme names its own way, and the slot it feeds is
+    /// written from the catalog's spelling — so `theme = catppuccin-frappe` has to
+    /// land on `Catppuccin Frappe` rather than on termio's default. An unknown
+    /// name resolves to nothing, which is what leaves that slot at the default
+    /// instead of guessing at a theme file termio cannot render.
+    func testAGhosttySpellingResolvesToTheCatalogName() {
+        for spelling in ["catppuccin-frappe", "Catppuccin Frappe", "CATPPUCCIN FRAPPE", "catppuccinfrappe"] {
+            XCTAssertEqual(
+                ThemeLibrary.catalogTheme(matching: spelling)?.name, "Catppuccin Frappe", spelling)
+        }
+        XCTAssertNil(ThemeLibrary.catalogTheme(matching: "a theme nobody shipped"))
     }
 
     private func firstCatalogThemeOutsideTheBuiltIns(dark: Bool) -> GhosttyThemeDefinition? {

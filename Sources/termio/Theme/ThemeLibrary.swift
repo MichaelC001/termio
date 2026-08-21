@@ -2,10 +2,10 @@ import Foundation
 import GhosttyTheme
 import TermioShared
 
-/// termio's terminal-theme library: 69 built-in schemes, plus whatever the user
+/// termio's terminal-theme library: the built-in schemes, plus whatever the user
 /// has put in termio's `Themes` folder.
 ///
-/// The built-ins are the curated 69 (`BuiltInThemes`), resolved live out of the
+/// The built-ins are the curated list (`BuiltInThemes`), resolved live out of the
 /// `GhosttyTheme` product rather than copied onto disk. Nothing to install,
 /// nothing that goes stale when the pinned package updates a palette, and no way
 /// for a selected name to resolve to nothing.
@@ -17,9 +17,9 @@ import TermioShared
 /// their computer. A file wins over a built-in of the same name, so dropping in
 /// your own `Nord` overrides ours instead of fighting it.
 ///
-/// `theme(named:)` resolves past the 69 into the full bundled catalog, because a
-/// Ghostty config's `theme = X` may name any of them and has to keep painting.
-/// Such a name is listed too — see `selectableNames(dark:selection:)`.
+/// `theme(named:)` resolves past the curated list into the full bundled catalog,
+/// because a Ghostty config's `theme = X` may name any of them and has to keep
+/// painting. Such a name is listed too — see `selectableNames(dark:selection:)`.
 ///
 /// Loading is lenient: a malformed file is skipped rather than failing the whole
 /// load.
@@ -33,14 +33,14 @@ enum ThemeLibrary {
 
     // MARK: - Built-ins
 
-    /// The curated 69, filtered to the names the pinned catalog resolves so a
+    /// The curated list, filtered to the names the pinned catalog resolves so a
     /// package rename drops a stale entry instead of showing a dead one. The names
     /// are shared with the iPhone's picker (see `BuiltInThemes`), which offers the
     /// same set.
     static let builtInThemes: [GhosttyThemeDefinition] =
         BuiltInThemes.names.compactMap { GhosttyThemeCatalog.theme(named: $0) }
 
-    /// Built-in names of one brightness, sorted — one slot's worth of the 69.
+    /// Built-in names of one brightness, sorted — one slot's worth of the list.
     static func builtInNames(dark: Bool) -> [String] {
         builtInThemes.filter { $0.isDark == dark }.map(\.name).sorted { $0.lowercased() < $1.lowercased() }
     }
@@ -81,12 +81,34 @@ enum ThemeLibrary {
     // MARK: - Resolution
 
     /// Resolves a theme by name: the user's own file first, then the bundled
-    /// catalog. Resolving past the built-in 69 into the full catalog is what lets a
+    /// catalog. Resolving past the built-ins into the full catalog is what lets a
     /// Ghostty config's `theme = Aardvark Blue` keep painting without termio
     /// copying a file to disk on its behalf.
     static func theme(named name: String) -> GhosttyThemeDefinition? {
         if let own = userThemes.first(where: { $0.name == name }) { return own }
         return GhosttyThemeCatalog.theme(named: name)
+    }
+
+    /// Resolves a name Ghostty wrote rather than one picked in termio, tolerating
+    /// the spelling drift between Ghostty's theme list and the catalog's
+    /// iTerm2-Color-Schemes names ("catppuccin-latte" vs "Catppuccin Latte",
+    /// "Tokyo Night" vs "tokyonight"): exact match first, then one that ignores
+    /// case and separators.
+    ///
+    /// User theme files are deliberately not consulted, which is the whole reason
+    /// this is not `theme(named:)`. A Ghostty config can only mean Ghostty's own
+    /// themes, so a same-named file in termio's folder must not quietly redirect
+    /// it. Names the catalog cannot resolve are left to termio's own default —
+    /// Ghostty also accepts theme files termio has no way to render.
+    static func catalogTheme(matching name: String) -> GhosttyThemeDefinition? {
+        if let exact = GhosttyThemeCatalog.theme(named: name) { return exact }
+        let target = comparableName(name)
+        return GhosttyThemeCatalog.allThemes.first { comparableName($0.name) == target }
+    }
+
+    /// A theme name reduced to what every spelling of it agrees on.
+    private static func comparableName(_ name: String) -> String {
+        name.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 
     /// The names one slot may offer, filtered by each theme's own `isDark`
@@ -121,7 +143,7 @@ enum ThemeLibrary {
     }
 
     /// Writes a theme's definition into the `Themes` folder so the user has a file
-    /// of their own to edit — this is how you fork one of the 69. The first copy
+    /// of their own to edit — this is how you fork a built-in. The first copy
     /// takes the theme's own name and so shadows it; a second becomes `Nord 2` and
     /// stands beside it rather than overwriting the edits in the first.
     ///
