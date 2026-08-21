@@ -1977,23 +1977,13 @@ extension AppDelegate: NSMenuDelegate {
     /// opens a terminal there, which installs `termiod` on the way
     /// (`ensureRemoteReady`) and teaches the app which machine the alias reaches —
     /// after which it is a device and moves out of this menu.
-    /// The Workspace submenu: one row per workspace, the current one checked. The
-    /// first nine take ⌃⌥⌘1…9 — positional, so they are not in `KeyCommandCatalog`
-    /// with the rebindable commands: what row 2 means changes with the list, and a
-    /// binding whose target moves is not a binding a user can keep. The modifier trio
-    /// is the one no terminal program can want (Cmd is off-limits to a TUI) and that
-    /// nothing else in termio takes.
+    /// The Workspace submenu: one row per workspace, the current one checked, the
+    /// first nine on ⌘1…9. This is the copy that *binds* those keys — the sidebar
+    /// switcher draws the same rows from `WorkspaceMenu.rows`, but AppKit resolves
+    /// a key equivalent against the main menu, so only this one claims them.
     private func fillWorkspaceMenu(_ menu: NSMenu) {
-        for (index, workspace) in store.orderedWorkspaces.enumerated() {
-            let item = menu.addItem(
-                withTitle: workspace.name,
-                action: #selector(switchToWorkspace(_:)),
-                keyEquivalent: index < 9 ? String(index + 1) : ""
-            )
-            item.keyEquivalentModifierMask = [.control, .option, .command]
-            item.target = self
-            item.representedObject = workspace.id.uuidString
-            item.state = workspace.id == store.currentWorkspaceID ? .on : .off
+        for row in WorkspaceMenu.rows(in: store, target: self, action: #selector(switchToWorkspace(_:))) {
+            menu.addItem(row)
         }
         menu.addItem(.separator())
         // The same row the toolbar `+` carries: a plain verb on one machine, a
@@ -2282,11 +2272,11 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
         case .workspaceSwitcher:
             // The workspace the sidebar is scoped to, at the head of the sidebar's own toolbar
             // region — the band above the column it scopes. Borderless SwiftUI rather than an
-            // `NSMenuToolbarItem` so the one workspace menu has one definition
-            // (`WorkspaceSwitcherMenuContent`) instead of an AppKit copy that can drift from it,
-            // and so the control can name the workspace: this toolbar is `.iconOnly`, which drops
-            // item titles. It draws nothing while there is only one workspace, which is also when
-            // the sidebar region has the least room to spare.
+            // `NSMenuToolbarItem` so the control can name the workspace: this toolbar is
+            // `.iconOnly`, which drops item titles. Its menu is still AppKit, built from the same
+            // `WorkspaceMenu.rows` this file's `fillWorkspaceMenu` uses, so the two can't drift.
+            // It draws nothing while there is only one workspace, which is also when the sidebar
+            // region has the least room to spare.
             let item = NSToolbarItem(itemIdentifier: .workspaceSwitcher)
             item.label = localized("Workspace")
             item.toolTip = localized("Choose which workspace the sidebar shows")

@@ -2,6 +2,37 @@ import AppKit
 import SwiftUI
 import TermioShared
 
+/// The workspace rows, in the order every surface shows them: one item per
+/// workspace, the one on screen checked, the first nine carrying ⌘1…9.
+///
+/// One builder for both menus that draw them — the sidebar switcher and File ▸
+/// Workspace — because the digit is positional. Two menus numbering their own
+/// rows could disagree about which workspace ⌘2 reaches, and a number that lies
+/// is worse than no number at all.
+enum WorkspaceMenu {
+    /// `representedObject` carries the workspace's uuid string, which is what
+    /// `action` reads back — the one thing both callers' handlers share.
+    ///
+    /// The key equivalents are live only in the menu bar's copy: AppKit matches a
+    /// keystroke against the main menu, so the same items in a pull-down draw the
+    /// glyphs without claiming ⌘1…9 a second time.
+    @MainActor
+    static func rows(in store: TermioStore, target: AnyObject, action: Selector) -> [NSMenuItem] {
+        let shortcuts = KeybindingStore.workspaceShortcuts
+        return store.orderedWorkspaces.enumerated().map { index, workspace in
+            let item = NSMenuItem(title: workspace.name, action: action, keyEquivalent: "")
+            if index < shortcuts.count {
+                item.keyEquivalent = shortcuts[index].keyEquivalent
+                item.keyEquivalentModifierMask = shortcuts[index].keyEquivalentModifierMask
+            }
+            item.target = target
+            item.representedObject = workspace.id.uuidString
+            item.state = workspace.id == store.currentWorkspaceID ? .on : .off
+            return item
+        }
+    }
+}
+
 /// The workspace switcher, in the sidebar's own toolbar region: which scope you
 /// are in, and the control that changes it. It sits in the strip above the list
 /// rather than in a row of its own, next to the navigator toggle and the
@@ -27,75 +58,35 @@ struct WorkspaceSwitcherToolbarView: View {
         // word is a label for a decision the user never took.
         if store.hasMultipleWorkspaces {
             let current = store.currentWorkspace
-            Menu {
-                menuRows
-            } label: {
-                HStack(spacing: 5) {
-                    // Sized against the toolbar's own glyphs (the navigator toggle, the
-                    // sort pull-down) rather than shrunk to fit beside them, and set in
-                    // the sidebar's interface font — this control belongs to that column.
-                    // A workspace on another machine says so with the same server
-                    // mark its rows carry; one on this Mac is a place you put
-                    // things, so it takes the folder mark.
-                    HugeIconView(icon: current.device.isThisMac ? .folderOpen : .serverStack,
-                                 size: 15, color: color)
-                    Text(current.name)
-                        .font(settings.interfaceFont)
-                        .foregroundStyle(color)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    HugeIconView(icon: .chevronRight, size: 8, color: color,
-                                 lineWidthOverride: 1.75)
-                        .rotationEffect(.degrees(90))
-                }
+            // The name and nothing else. No device mark — the rows below already say
+            // which machine they are on — and no menu chevron: the toolbar band is
+            // three glyphs wide, and every point this control spends on decoration is
+            // a point the name truncates at.
+            Text(current.name)
+                .font(nameFont)
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .truncationMode(.middle)
                 .frame(maxWidth: Self.nameWidthCeiling)
-                .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help(localized("The sidebar shows this workspace"))
+                .fixedSize()
+                .overlay(WorkspaceMenuPopper(store: store))
+                .help(localized("The sidebar shows this workspace"))
+                .accessibilityElement()
+                .accessibilityLabel(localized("Workspace"))
+                .accessibilityValue(current.name)
+                .accessibilityAddTraits(.isButton)
         }
     }
 
-    @ViewBuilder
-    private var menuRows: some View {
-        // An inline Picker is what draws the checkmark on the current workspace; a
-        // row of Buttons would leave the switcher unable to say which one is showing.
-        Picker("", selection: selection) {
-            ForEach(store.orderedWorkspaces) { workspace in
-                Text(workspace.name).tag(workspace.id)
-            }
-        }
-        .pickerStyle(.inline)
-        .labelsHidden()
-        Divider()
-        // This Mac, without asking: the device submenu belongs to the menus that
-        // already carry one (File ▸ Workspace and the sidebar `+`), and growing a
-        // third here would put a machine list in the switcher, which is the "go to
-        // a computer" mode the workspace replaced.
-        Button(localized("New Workspace…")) { store.presentNewWorkspacePanel(on: .thisMac) }
-        Button(localized("Rename Workspace…")) {
-            store.presentRenameWorkspacePanel(store.currentWorkspaceID)
-        }
-        // Removing the last workspace is refused in the store — the sidebar has to
-        // have a scope to show — and this menu only opens while there is more than
-        // one, so the row is always live where it is drawn.
-        Button(localized("Remove Workspace")) {
-            store.confirmRemoveWorkspace(store.currentWorkspaceID)
-        }
-        // No device verb here, deliberately. A machine you can *go to* is the
-        // mode this scope replaced: it made the sidebar answer "which computer"
-        // when the question is "which work". A device is a place a new thing is
-        // put — New Terminal on it, Clone to it, File ▸ Connect to… for a box
-        // never reached — never a place the window travels to.
-    }
-
-    private var selection: Binding<Workspace.ID> {
-        Binding(
-            get: { store.currentWorkspaceID },
-            set: { store.switchToWorkspace($0) }
-        )
+    /// A step above the sidebar's own row text: this names the whole column, so it
+    /// reads as that column's title rather than as one more row of it. Derived from
+    /// the interface size rather than fixed, so it still follows the density
+    /// preference the rows below it follow.
+    private var nameFont: Font {
+        let size = settings.interfaceFontSize + 2
+        return settings.interfaceFontFamily.isEmpty
+            ? .system(size: size)
+            : .custom(settings.interfaceFontFamily, size: size)
     }
 
     // Matched to the sidebar toolbar's native glyphs (the `+` new-terminal item, the
@@ -104,5 +95,97 @@ struct WorkspaceSwitcherToolbarView: View {
     // one control band with them rather than a dimmer `.secondary` label.
     private var color: Color {
         controlActive == .inactive ? Color(nsColor: .disabledControlTextColor) : .primary
+    }
+}
+
+/// Opens the switcher's menu on click, over the label above it.
+///
+/// AppKit rather than SwiftUI's `Menu` because only `NSMenuItem` draws both halves
+/// a row needs at once: a checkmark in the state column for the workspace on
+/// screen, and the ⌘-digit that reaches it, right-aligned in the column macOS puts
+/// shortcuts in. SwiftUI offers one or the other — an inline `Picker` checkmarks,
+/// a `Button` takes `.keyboardShortcut` — and `.keyboardShortcut` would also
+/// *claim* ⌘1…9 for as long as this view is mounted, a second live binding racing
+/// File ▸ Workspace for the same keystroke.
+private struct WorkspaceMenuPopper: NSViewRepresentable {
+    let store: TermioStore
+
+    func makeNSView(context: Context) -> WorkspaceMenuHost {
+        let view = WorkspaceMenuHost()
+        view.store = store
+        return view
+    }
+
+    func updateNSView(_ nsView: WorkspaceMenuHost, context: Context) {
+        nsView.store = store
+    }
+}
+
+/// The click target, and the target of the menu it pops. One class rather than a
+/// view plus a coordinator: the menu is built when it opens, out of the store this
+/// view already holds, so there is no second place for its contents to live.
+private final class WorkspaceMenuHost: NSView {
+    weak var store: TermioStore?
+
+    /// Flipped so the anchor below reads in the direction the menu opens, rather
+    /// than depending on whichever convention the hosting view happens to use.
+    override var isFlipped: Bool { true }
+
+    /// A click in a background window opens the menu rather than only raising the
+    /// window — the switcher is often the reason the window is being reached for.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let store else { return }
+        let menu = NSMenu()
+        for row in WorkspaceMenu.rows(in: store, target: self, action: #selector(switchToWorkspace(_:))) {
+            menu.addItem(row)
+        }
+        menu.addItem(.separator())
+        // This Mac, without asking: the device submenu belongs to the menus that
+        // already carry one (File ▸ Workspace and the sidebar `+`), and growing a
+        // third here would put a machine list in the switcher, which is the "go to
+        // a computer" mode the workspace replaced.
+        addAction(localized("New Workspace…"), to: menu) { $0.presentNewWorkspacePanel(on: .thisMac) }
+        addAction(localized("Rename Workspace…"), to: menu) {
+            $0.presentRenameWorkspacePanel($0.currentWorkspaceID)
+        }
+        // Removing the last workspace is refused in the store — the sidebar has to
+        // have a scope to show — and this menu only opens while there is more than
+        // one, so the row is always live where it is drawn.
+        addAction(localized("Remove Workspace"), to: menu) { $0.confirmRemoveWorkspace($0.currentWorkspaceID) }
+        // No device verb here, deliberately. A machine you can *go to* is the
+        // mode this scope replaced: it made the sidebar answer "which computer"
+        // when the question is "which work". A device is a place a new thing is
+        // put — New Terminal on it, Clone to it, File ▸ Connect to… for a box
+        // never reached — never a place the window travels to.
+
+        // Anchored under the label the way a pull-down opens, rather than at the
+        // pointer the way a context menu does.
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.height + 4), in: self)
+    }
+
+    private func addAction(_ title: String, to menu: NSMenu, run: @escaping (TermioStore) -> Void) {
+        let item = NSMenuItem(title: title, action: #selector(invoke(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = Handler(run)
+        menu.addItem(item)
+    }
+
+    @objc private func switchToWorkspace(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let id = UUID(uuidString: raw) else { return }
+        store?.switchToWorkspace(id)
+    }
+
+    @objc private func invoke(_ sender: NSMenuItem) {
+        guard let store, let handler = sender.representedObject as? Handler else { return }
+        handler.run(store)
+    }
+
+    /// Boxes a menu-item closure so it can ride along on `representedObject`, the
+    /// only payload an `NSMenuItem` carries.
+    private final class Handler {
+        let run: (TermioStore) -> Void
+        init(_ run: @escaping (TermioStore) -> Void) { self.run = run }
     }
 }

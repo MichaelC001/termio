@@ -68,7 +68,7 @@ final class KeybindingSurfaceTests: XCTestCase {
             "super+,",              // open_config          → Settings…
             "super+q",              // quit                 → Quit Termio
             "super+ctrl+f",         // toggle_fullscreen    → Enter Full Screen
-        ] {
+        ] + (1...9).map { "super+\($0)" } {  // goto_tab:N → the workspace switcher's rows
             XCTAssertTrue(triggers.contains(trigger), "\(trigger) is still handled by the surface")
         }
     }

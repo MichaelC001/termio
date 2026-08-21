@@ -113,7 +113,28 @@ final class KeybindingStore: ObservableObject {
         // item is inserted by AppKit, so termio has no command of its own here —
         // only the duty to stop the surface from eating the key.
         ("Enter Full Screen", .init(modifiers: [.command, .control], key: .char("f"))),
-    ]
+    ] + workspaceShortcuts.enumerated().map { ("Workspace \($0.offset + 1)", $0.element) }
+
+    /// ⌘1…9 — the rows of the workspace switcher (`WorkspaceMenu.rows`).
+    ///
+    /// Cmd-digit is what an app means by "the nth top-level thing", and termio's
+    /// top-level thing is the workspace. Ghostty's own `goto_tab` on these keys
+    /// has nothing to reach in an app with no tabs, and session navigation
+    /// already holds the other half of that convention (⌘⇧] / ⌘⇧[ cycle), so the
+    /// indexed half is free.
+    ///
+    /// Being in `hostReserved` is what makes them work at all: ghostty binds
+    /// ⌘1…9 by default, a surface-handled keybind is consumed before the menu bar
+    /// sees the event, and `TerminalCallbackBridge` drops `goto_tab` as
+    /// unperformable in this embedding. Without the unbind the key would do
+    /// nothing whenever a terminal has focus — which in termio is nearly always.
+    ///
+    /// Positional, so deliberately not catalog commands: what row 2 means changes
+    /// with the list, and a binding whose target moves is not one a user can
+    /// rebind and keep. The switcher draws the digit beside each name so the
+    /// number is read rather than remembered.
+    static let workspaceShortcuts: [Shortcut] =
+        (1...9).map { .init(modifiers: [.command], key: .char(String($0))) }
 
     /// Keys the *surface* owns: they act on the terminal's own text, ghostty
     /// already implements them, and unbinding them would break the terminal.
