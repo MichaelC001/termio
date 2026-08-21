@@ -1720,13 +1720,24 @@ extension AppDelegate: NSMenuDelegate {
         // item's own key equivalent never fires, so ⌘O travels to the This Mac row
         // (see `fillOpenProjectMenu`).
         item.title = localized("Open Project")
-        item.action = nil
         item.keyEquivalent = ""
         item.keyEquivalentModifierMask = []
         // Attached once and filled by the delegate on open, like the other device
         // submenus. Replacing the menu object on every pass would swap it out from
         // under AppKit's key-equivalent sweep, which is what finds ⌘O in there.
+        //
+        // Everything below runs on the *first* reshape only. Once a submenu is
+        // attached AppKit owns both the action and the target — it installs its
+        // own `submenuAction:` aimed at the menu — and re-clearing them on a later
+        // pass strips that and leaves a submenu parent with no action, which dims
+        // the row permanently. This menu is refreshed on every open, so "later
+        // pass" means the second time the user pulls it down.
         guard item.submenu?.title != localized("Open Project") else { return }
+        // Cleared together, and before the submenu is attached: AppKit adopts the
+        // menu as the item's target only when nothing else already claims it, and
+        // a leftover AppDelegate cannot perform `submenuAction:`.
+        item.action = nil
+        item.target = nil
         let submenu = NSMenu(title: localized("Open Project"))
         submenu.delegate = self
         item.submenu = submenu
@@ -1767,11 +1778,13 @@ extension AppDelegate: NSMenuDelegate {
         // The ellipsis moves to the rows: each of those opens the name panel, and a
         // parent that only reveals a submenu never carries one.
         item.title = localized("New Workspace")
-        item.action = nil
         // Attached once and filled by the delegate on open, like the other device
         // submenus — the File menu's copy is rebuilt per open, but the toolbar `+`
-        // keeps its item across refreshes.
+        // keeps its item across refreshes. The action and target are cleared on the
+        // first reshape only, for the reason spelled out in `refreshOpenProjectItem`.
         guard item.submenu?.title != localized("New Workspace") else { return }
+        item.action = nil
+        item.target = nil
         let submenu = NSMenu(title: localized("New Workspace"))
         submenu.delegate = self
         item.submenu = submenu
