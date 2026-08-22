@@ -216,21 +216,58 @@ fn deploy(host: &str, prebuilt: Option<&str>, target_override: Option<&str>) -> 
                 Some(t) => t.to_string(),
                 None => detect_target(host)?,
             };
-            cross_compile(&target)?
+            match shipped_binary(&target) {
+                Some(path) => {
+                    eprintln!("[deploy] using the bundled {target} binary");
+                    path
+                }
+                None => cross_compile(&target)?,
+            }
         }
     };
 
     eprintln!("[deploy] installing {bin_path} → {host}:~/.local/bin/termiod");
     run_cmd(Command::new("ssh").args([host, "mkdir -p ~/.local/bin"]))?;
-    // scp expands ~ on the remote for OpenSSH.
-    run_cmd(Command::new("scp").args([&bin_path, &format!("{host}:.local/bin/termiod")]))?;
-    run_cmd(Command::new("ssh").args([host, "chmod +x ~/.local/bin/termiod"]))?;
+    // Uploaded beside the target and renamed over it, never written in place: a
+    // deployed daemon is usually *running*, and Linux refuses to open a running
+    // executable for writing (ETXTBSY) — so writing directly is the one case
+    // that always fails, upgrading a machine already in use. `mv` within a
+    // directory is `rename(2)`: atomic, and it leaves the running daemon holding
+    // the old inode until it exits, which is exactly the handover wanted.
+    //
+    // scp expands `~` on the remote for OpenSSH.
+    run_cmd(Command::new("scp").args([&bin_path, &format!("{host}:.local/bin/termiod.new")]))?;
+    run_cmd(Command::new("ssh").args([
+        host,
+        "chmod +x ~/.local/bin/termiod.new && mv ~/.local/bin/termiod.new ~/.local/bin/termiod",
+    ]))?;
 
     let bin = remote_bin();
     let version = ssh_capture(host, &format!("{bin} --version"))?;
     eprintln!("[deploy] installed: {}", version.trim());
     eprintln!("[deploy] daemon auto-starts on first attach/list (no service needed).");
     Ok(())
+}
+
+/// A daemon for `target` shipped beside this executable, as `termiod-<target>`.
+///
+/// This is what makes deploying possible for someone who installed Termio rather
+/// than cloning it: `cross_compile` below needs cargo, the musl target, and this
+/// crate's source tree at the path baked into it, none of which a `.app` from the
+/// DMG has. `scripts/build-app.sh` puts both Linux binaries in `Contents/Resources`
+/// next to the daemon that reads this, so the common case is a copy.
+///
+/// Found by the executable's own directory rather than by a bundle path or an
+/// environment variable: the daemon is run by absolute path out of whatever
+/// shipped it, and this keeps that the single source of truth. Building from the
+/// repo puts no siblings there, so a contributor still gets `cross_compile` — the
+/// path that proves the source tree actually cross-builds.
+fn shipped_binary(target: &str) -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let candidate = exe.parent()?.join(format!("termiod-{target}"));
+    candidate
+        .is_file()
+        .then(|| candidate.to_string_lossy().into_owned())
 }
 
 /// Ask the remote `uname` and map to a musl Rust target.
@@ -269,9 +306,9 @@ fn cross_compile(target: &str) -> Result<String> {
     if !status.success() {
         bail!(
             "cross-compile for {target} failed.\n\
-             A musl cross-linker is usually the missing piece. Options:\n  \
+             The target's std is usually the missing piece — the link itself needs no\n\
+             external toolchain (termiod/.cargo/config.toml uses the bundled rust-lld):\n  \
              • rustup target add {target}\n  \
-             • brew install FiloSottile/musl-cross/musl-cross  (or messense/macos-cross-toolchains)\n  \
              • or build on the host and deploy with: termiod remote deploy <host> --bin <path>"
         );
     }

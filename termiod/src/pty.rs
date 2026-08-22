@@ -124,6 +124,98 @@ fn inherited_launcher_keys() -> Vec<std::ffi::OsString> {
         .collect()
 }
 
+/// UTF-8 locales to fall back on, best first. `C.UTF-8` is the one every musl
+/// system and every glibc since 2.35 has; `C.utf8` is how older glibc spells the
+/// same thing; `en_US.UTF-8` is the common generated locale on a machine with no
+/// `C.UTF-8` at all. Each is probed, never assumed.
+const UTF8_FALLBACK_LOCALES: [&str; 3] = ["C.UTF-8", "C.utf8", "en_US.UTF-8"];
+
+/// One locale name reduced to what makes two spellings the same locale.
+/// `locale -a` prints glibc's own spelling (`en_US.utf8`, `C.utf8`) while the
+/// name that arrives over SSH is the canonical one (`en_US.UTF-8`).
+fn normalized_locale(name: &str) -> String {
+    name.chars()
+        .filter(|c| *c != '-' && *c != '_')
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Every locale this machine can resolve, as `locale -a` lists them, read once
+/// and kept for the daemon's life. Empty when the question could not be asked.
+///
+/// **Asking our own libc is the wrong question, and it is the mistake this
+/// replaces.** The daemon that ships to a VPS is statically linked against musl,
+/// whose `setlocale` accepts any name at all — musl treats every locale as UTF-8
+/// and has no database to miss. So an in-process probe answers "usable" for
+/// `en_US.UTF-8` on a machine where no such locale exists, and the repair below
+/// never fires. The programs that suffer — `bash`, `claude`, every TUI — are
+/// glibc programs resolving against the system's locale database, and `locale -a`
+/// is that database enumerated. It is the only oracle that speaks for the child
+/// rather than for us.
+fn available_locales() -> &'static std::collections::HashSet<String> {
+    static LOCALES: std::sync::OnceLock<std::collections::HashSet<String>> =
+        std::sync::OnceLock::new();
+    LOCALES.get_or_init(|| {
+        // stderr is dropped on purpose: `locale -a` also complains about the
+        // very locale we are here to fix, and its complaint is not the answer.
+        let Ok(output) = Command::new("locale").arg("-a").stderr(Stdio::null()).output() else {
+            return std::collections::HashSet::new();
+        };
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(normalized_locale)
+            .collect()
+    })
+}
+
+/// Whether a child on this machine can actually resolve `name` as a locale.
+///
+/// A machine that cannot be asked (no `locale` binary — Alpine, a scratch
+/// container) is taken at its word instead of being second-guessed: everything
+/// there is musl, where every name resolves and nothing warns.
+fn locale_is_usable(name: &str) -> bool {
+    let available = available_locales();
+    available.is_empty() || available.contains(&normalized_locale(name))
+}
+
+/// The locale the child would end up with: `LC_ALL` overrides everything,
+/// `LC_CTYPE` overrides `LANG` (POSIX). Empty is unset — an exported empty
+/// string selects the implementation default, not a locale named "".
+fn effective_locale(lookup: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    ["LC_ALL", "LC_CTYPE", "LANG"]
+        .into_iter()
+        .find_map(|key| lookup(key).filter(|value| !value.is_empty()))
+}
+
+/// A usable UTF-8 locale to put the child in, or `None` when the locale it
+/// already has works here.
+///
+/// This exists because a locale is named by one machine and resolved on another.
+/// macOS ships `SendEnv LANG LC_*` in `/etc/ssh/ssh_config`, so a Mac's
+/// `en_US.UTF-8` arrives on a VPS whose images generate only `C.UTF-8` — and the
+/// warning that follows (`setlocale: LC_ALL: cannot change locale`) is the
+/// *visible* half. The invisible half is worse: a failed `setlocale` leaves the
+/// program in the C locale, so a UTF-8 terminal draws a TUI's box characters as
+/// mojibake.
+///
+/// Repaired here rather than by asking the user to edit `~/.ssh/config`: this is
+/// the only place the question is answerable, because "does this locale exist" is
+/// a fact about the machine the session runs on, and this code is already on it.
+/// The user's ssh config stays theirs.
+fn utf8_locale_floor(
+    lookup: &dyn Fn(&str) -> Option<String>,
+    usable: &dyn Fn(&str) -> bool,
+) -> Option<&'static str> {
+    if let Some(named) = effective_locale(lookup) {
+        if usable(&named) {
+            return None;
+        }
+    }
+    UTF8_FALLBACK_LOCALES.into_iter().find(|name| usable(name))
+}
+
 impl Pty {
     /// Open a PTY and spawn `argv` in `cwd`. Empty argv ⇒ the user's login
     /// shell, run as a login shell (`-<shell>`).
@@ -181,6 +273,26 @@ impl Pty {
         cmd.env("TERMIOD_SESSION", "1");
         for (k, v) in env {
             cmd.env(k, v);
+        }
+        // After the session's own overrides, so the check sees the locale the
+        // child would really start with — and so a repair is not undone by the
+        // loop above re-applying the value that needed repairing.
+        let session_env = env;
+        let lookup = |key: &str| {
+            session_env
+                .iter()
+                .rev()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .or_else(|| std::env::var(key).ok())
+        };
+        if let Some(locale) = utf8_locale_floor(&lookup, &locale_is_usable) {
+            // `LC_ALL` is removed rather than reassigned: it overrides every
+            // category at once, and the machine's own `LC_TIME`/`LC_NUMERIC`
+            // are better answers than this fallback for everything but ctype.
+            cmd.env_remove("LC_ALL");
+            cmd.env("LANG", locale);
+            cmd.env("LC_CTYPE", locale);
         }
         if login_shell {
             // argv[0] = "-<shell>" marks a login shell to the shell itself.
@@ -370,5 +482,102 @@ mod tests {
         assert!(!dumped.contains("CLAUDE_CODE_CHILD_SESSION="));
         assert!(dumped.contains("TERM_PROGRAM=termio"));
         assert!(!dumped.contains("TERM_PROGRAM=Apple_Terminal"));
+    }
+
+    /// `LC_ALL` outranks both, then `LC_CTYPE`, then `LANG` — and an exported
+    /// empty string is unset, not a locale named "".
+    #[test]
+    fn the_effective_locale_follows_the_posix_precedence() {
+        let all = |key: &str| match key {
+            "LC_ALL" => Some("ja_JP.UTF-8".to_string()),
+            "LC_CTYPE" => Some("de_DE.UTF-8".to_string()),
+            "LANG" => Some("en_US.UTF-8".to_string()),
+            _ => None,
+        };
+        assert_eq!(effective_locale(&all).as_deref(), Some("ja_JP.UTF-8"));
+
+        let ctype = |key: &str| match key {
+            "LC_ALL" => Some(String::new()),
+            "LC_CTYPE" => Some("de_DE.UTF-8".to_string()),
+            "LANG" => Some("en_US.UTF-8".to_string()),
+            _ => None,
+        };
+        assert_eq!(effective_locale(&ctype).as_deref(), Some("de_DE.UTF-8"));
+
+        let none = |_: &str| None;
+        assert_eq!(effective_locale(&none), None);
+    }
+
+    /// The case this exists for: a Mac forwards `en_US.UTF-8` to a VPS whose
+    /// image generated only `C.UTF-8`. The name looks like UTF-8 and is not
+    /// usable here, which a string test cannot tell apart.
+    #[test]
+    fn an_unusable_locale_is_replaced_even_when_its_name_says_utf8() {
+        let forwarded = |key: &str| match key {
+            "LC_ALL" => Some("en_US.UTF-8".to_string()),
+            _ => None,
+        };
+        let only_c_utf8 = |name: &str| name == "C.UTF-8";
+        assert_eq!(
+            utf8_locale_floor(&forwarded, &only_c_utf8),
+            Some("C.UTF-8"),
+            "a locale this machine cannot resolve is not a locale"
+        );
+    }
+
+    /// A machine that has what it was handed is left alone — including a
+    /// non-UTF-8 locale someone chose on purpose, which is theirs to choose.
+    #[test]
+    fn a_usable_locale_is_left_alone() {
+        let lookup = |key: &str| (key == "LANG").then(|| "en_US.UTF-8".to_string());
+        assert_eq!(utf8_locale_floor(&lookup, &|_| true), None);
+
+        let latin = |key: &str| (key == "LANG").then(|| "en_US.ISO-8859-1".to_string());
+        assert_eq!(utf8_locale_floor(&latin, &|_| true), None);
+    }
+
+    /// Nothing set at all — the Amazon Linux / Alpine shape — takes the floor,
+    /// which is what stops a remote TUI drawing its borders as mojibake.
+    #[test]
+    fn an_unset_locale_takes_the_utf8_floor() {
+        let unset = |_: &str| None;
+        assert_eq!(utf8_locale_floor(&unset, &|_| true), Some("C.UTF-8"));
+        // Older glibc spells it the other way.
+        assert_eq!(
+            utf8_locale_floor(&unset, &|name: &str| name == "C.utf8"),
+            Some("C.utf8")
+        );
+        // And a machine with none of them keeps whatever it had: inventing a
+        // locale that does not resolve would trade one broken value for another.
+        assert_eq!(utf8_locale_floor(&unset, &|_| false), None);
+    }
+
+    /// `locale -a` prints glibc's spelling and SSH forwards the canonical one;
+    /// they name the same locale and must compare equal.
+    #[test]
+    fn two_spellings_of_one_locale_compare_equal() {
+        assert_eq!(normalized_locale("en_US.UTF-8"), normalized_locale("en_US.utf8"));
+        assert_eq!(normalized_locale("C.UTF-8"), normalized_locale("C.utf8"));
+        assert_ne!(normalized_locale("en_US.UTF-8"), normalized_locale("en_GB.UTF-8"));
+        // Not so aggressive that different locales collapse into each other.
+        assert_ne!(normalized_locale("C.UTF-8"), normalized_locale("C"));
+    }
+
+    /// The probe answers for the *child's* libc, so a machine that lists only
+    /// `C`/`C.utf8` must refuse `en_US.UTF-8` — which the daemon's own musl
+    /// `setlocale` would have accepted.
+    #[test]
+    fn the_probe_answers_from_the_machines_locale_list() {
+        let listed: std::collections::HashSet<String> = ["C", "C.utf8", "POSIX"]
+            .into_iter()
+            .map(normalized_locale)
+            .collect();
+        let usable = |name: &str| listed.contains(&normalized_locale(name));
+
+        assert!(usable("C.UTF-8"));
+        assert!(!usable("en_US.UTF-8"));
+
+        let forwarded = |key: &str| (key == "LC_ALL").then(|| "en_US.UTF-8".to_string());
+        assert_eq!(utf8_locale_floor(&forwarded, &usable), Some("C.UTF-8"));
     }
 }
