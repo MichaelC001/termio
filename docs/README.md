@@ -46,7 +46,7 @@ from the real front matter).
 | active | design | [macOS release runbook — cut, notarize, publish termio.dmg](runbook/macos-release-runbook.md) |
 | active | design | [Research brief — termiod Session Protocol (for design agent)](design/20260730-_research-session-protocol-brief.md) |
 | active | design | [Sessions CLI v2 — reliability & command design](design/20260724-sessions-cli-v2.md) |
-| active | research | ["Reading list: PTYs, SSH, and detachable remote terminals"](reading.md) |
+| active | research | ["Reading list: PTYs, SSH, and detachable remote terminals"](READING.md) |
 | active | rfc | [Push-to-talk voice dictation — hold the space bar (iOS shipped, OpenAI)](rfcs/push-to-talk-voice-dictation.md) |
 | approved | design | [会话历史 · 搜索 · 恢复（Session History / Search / Resume）](design/20260628-session-history-search-resume.md) |
 | approved | design | [Agent Resume Identity — keeping the resume pin on the live conversation](design/20260716-agent-resume-identity.md) |
