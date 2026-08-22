@@ -48,6 +48,7 @@ from the real front matter).
 | active | design | [Sessions CLI v2 — reliability & command design](design/20260724-sessions-cli-v2.md) |
 | active | research | ["Reading list: PTYs, SSH, and detachable remote terminals"](READING.md) |
 | active | rfc | [Push-to-talk voice dictation — hold the space bar (iOS shipped, OpenAI)](rfcs/push-to-talk-voice-dictation.md) |
+| active | rfc | [Unify the server plane in Rust, reduce the Mac app to a viewer](rfcs/unify-server-plane.md) |
 | approved | design | [会话历史 · 搜索 · 恢复（Session History / Search / Resume）](design/20260628-session-history-search-resume.md) |
 | approved | design | [Agent Resume Identity — keeping the resume pin on the live conversation](design/20260716-agent-resume-identity.md) |
 | approved | design | [Git worktree creation & lifecycle (Codex-aligned)](design/20260706-worktree-creation-lifecycle.md) |
@@ -114,7 +115,6 @@ from the real front matter).
 | draft | rfc | [Remote git — the pane's verbs run on the device](rfcs/remote-git-plane.md) |
 | draft | rfc | [Review — One path, local sessions run through termiod too](rfcs/one-path-local-through-termiod.review-claude.md) |
 | draft | rfc | [Termiod web client on official Ghostty WASM (Linux first)](design/20260818-termiod-web-client-ghostty-wasm.md) |
-| draft | rfc | [Unify the server plane in Rust, reduce the Mac app to a viewer](rfcs/unify-server-plane.md) |
 | fixed | bug | [New terminal opens unfocused (hollow cursor, beeps until clicked)](bug/terminal-focus-loss-on-new-session-mount.md) |
 | fixed | bug | [Terminal loses focus after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
 | fixed | bug | [Terminal loses focus while the window stays key — sibling-render trigger](bug/terminal-focus-loss-on-sibling-render.md) |

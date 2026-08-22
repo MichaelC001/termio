@@ -1,9 +1,9 @@
 ---
 title: Unify the server plane in Rust, reduce the Mac app to a viewer
-status: draft
+status: active
 type: rfc
 created: 2026-08-19
-updated: 2026-08-19
+updated: 2026-08-22
 related:
   - one-path-local-through-termiod.md
   - one-path-local-through-termiod.review-claude.md
@@ -11,33 +11,50 @@ related:
   - one-workspace-source.review-codex.md
   - remote-git-plane.md
   - 20260805-termiod-device-architecture.md
+  - 20260819-device-workspace-project.md
   - 20260818-termiod-web-client-ghostty-wasm.md
 ---
 
 # Unify the server plane in Rust, reduce the Mac app to a viewer
 
 > One server — `termiod` — owns every answer two people on two machines would
-> expect to match. Swift renders and nothing else. This is the execution plan
-> across the four RFCs that already argued the pieces, corrected against the
-> tree as it stands on `main` at `7fedc72`.
+> expect to match. Swift renders and nothing else. This is the **execution
+> spine**: the single ordered list of what happens next, restamped against the
+> tree at `90b3711`.
 
 ---
 
 ## 0. What this document is, and is not
 
-It is **not** a re-argument. `one-path-local-through-termiod.md` made the case
-and inventoried the split; `one-workspace-source.md` and its codex review
-settled the workspace reference; `remote-git-plane.md` staged git. This document
-does three things those four cannot do individually:
+It is not a re-argument. Four documents already made the case and are still the
+place to read *why*:
 
-1. **Accounts for what is already built**, including on unmerged branches, so
-   the next person does not rebuild it (§1).
+| Document | What it is authoritative for |
+| --- | --- |
+| `20260805-termiod-device-architecture.md` | **The normative invariants.** §4 the presentation boundary, §4.1 what each side owns, §5 the four planes and one connection, §5.1 the connection as an object |
+| `20260819-device-workspace-project.md` | The vocabulary: Device → Workspace → Project → Session, and which of those a device owns |
+| `one-path-local-through-termiod.md` | The Swift-side inventory, the daemon-lifecycle blockers, the CLI verb-by-verb split |
+| `remote-git-plane.md` | The git tiers, and the askpass mechanism |
+
+This document does the three things none of them can do individually:
+
+1. **Restamps them against the tree**, so nobody rebuilds what has landed or
+   reads a solved problem as current (§2).
 2. **Draws the boundary as a file-by-file table** — stays Swift, moves to Rust,
-   deleted — with real line counts measured today (§2).
-3. **Orders the stages against the blocker**, and fixes the citations the source
-   RFCs have drifted on (§3, §4).
+   deleted (§4).
+3. **Orders the work into one list with gates that run** (§6), and says where it
+   disagrees with a source RFC (§7).
 
-Where it disagrees with an existing RFC it says so and shows the code (§5).
+**Two ordering claims are normative here and supersede their sources:**
+
+- **This RFC supersedes device architecture §8's migration ordering.** §8 was
+  written before the daemon shipped in the bundle, before `Checkout`, and before
+  the git read tier; its steps 5–12 no longer describe a runnable sequence. §8's
+  *invariants* stand; its *order* does not. Where §8 numbers a step, §6 cites it
+  and says where it now sits. The one piece of §8's numbering worth keeping is
+  its 4a/4b/4c split of the connection work, which §6 Stage 4 adopts verbatim.
+- **This RFC supersedes `one-workspace-source.md` §5's stage order**, for the
+  reason its own codex review gave (§7.3).
 
 The deciding rule is unchanged, from device architecture §4.1: *would two people
 watching this session from two different machines expect the same answer?* Yes →
@@ -45,133 +62,196 @@ Rust. No → Swift.
 
 ---
 
-## 1. What is already done
+## 1. The invariants this plan runs under
 
-Measured on 2026-08-19. Branch diffs are `git diff --stat main...<branch>` from
-the main checkout; `main` is `7fedc72`.
+Restated only so a stage cannot be read as licence to break one. All are
+inherited; none is new here.
 
-### 1.1 Landed on `main`
-
-Five things the source RFCs list as missing or as future stages are **already on
-`main`**, and three of them carry stale citations that would send an
-implementer down a dead path.
-
-| Item | Where | Which RFC still calls it open |
-| --- | --- | --- |
-| **The `(device, root)` workspace reference exists.** `Checkout` — `device: KnownDevice`, `root: String?`, plus `localRoot`, `isOnAnotherDevice`, `deviceIdentity`, and identity-based `==`/`hash` keyed on `host_id` before alias | `Sources/termio/TermioStore/DeviceContext.swift:56-101`, built by `TermioStore.checkout(for:in:localRoot:routeDeviceID:)` at `TermioStore.swift:513-526` | `one-workspace-source.md` §2 proposes `ProjectLocation`; `remote-git-plane.md` §8.1 says the decision "is unresolved … **This RFC is blocked on that decision**". Both are stale — `grep -rn ProjectLocation Sources/ Shared/` → **0**, and `Checkout` is the shipped answer under a different name |
-| **The panes stopped asking a session how it was opened.** `grep -rn 'sshHost' Sources/termio/FileBrowser/` → **0** | commit `58dc85e`, on `main` | `one-workspace-source.md` §5 marks Stage 0 "implemented" but attributes it to a branch and names a test class (`InspectorWorkspaceTests`) that does not exist. The real suite is `Tests/termioTests/InspectorCheckoutTests.swift`, 6 tests |
-| **SSH ControlMaster multiplexing on the app's own `ssh`.** `multiplexingArguments(host:)` probes `ssh -G`, refuses to override a user's `ControlMaster no`, caps `ControlPath` at 100 bytes, and is applied in `Transport.ssh` | `TermiodClient.swift:208-236`, applied at `:381` | `one-path-local-through-termiod.md` Stage 2 item `4a` asks for exactly this. It is done. Only `BatchMode`/`ConnectTimeout` are absent |
-| **The daemon ships inside the `.app`, universal and signed.** commit `2199f35 feat(termiod): ship the daemon inside the app`. `build-app.sh:201-281` builds one Rust slice per architecture, `lipo`s them, and **fails the build if a required slice is missing** — the same check the app binary already had; `release.yml:90-99` installs the pinned Zig for the VT engine; the daemon is signed before the outer seal (observed: `Contents/Resources/termiod: replacing existing signature`, then the app). `daemonBinaryPath()` resolves `TERMIO_TERMIOD_BIN` → `Bundle.main` → a checkout walk anchored at the *binary*, not `currentDirectoryPath` (`TermiodClient.swift:94-146`) | `one-path-local-through-termiod.md` §5.2 item 1 and `one-binary-and-a-daemon-that-ships.md` §1 both lead with the cwd bug **and** with "the daemon does not ship". Both are fixed. Stage 4 below is what is *left* of that item, not the whole of it |
-| **Tombstones are decoded and cleared client-side.** | `TermioStore+Termiod.swift`, `DeviceSessions.tombstones` at `DeviceContext.swift:113-120` | closed by PR #324, correctly recorded in the one-path RFC's own revision |
-
-### 1.2 `feat/termiod-wss` — 5 commits, 69 files, +18,791/−4
-
-The largest body of unmerged work, and it is **not** the CompanionServer
-migration. It is a third client and a transport, and it adds **zero protocol
-verbs**.
-
-| Commit | What it adds |
-| --- | --- |
-| `2010fa4` | WSS handshake gating — `termiod/src/wss.rs` (1,075 lines, new): loopback-only bind, Origin allowlist, 24-byte `/dev/urandom` token presented as the `termiod.token.<t>` subprotocol, `termiod pair` to mint/rotate, rotation watched with `notify` and closing live splices with `CloseCode::Policy` |
-| `abcda40` | `docs/design/20260818-termiod-web-client-ghostty-wasm.md`, 1,039 lines |
-| `0ff80f0` | The session protocol over a WebSocket. `splice()` opens a fresh `UnixStream` to `paths::socket_path()` and copies bytes verbatim in 64 KiB chunks; WebSocket message boundaries are deliberately not frame boundaries. `termiod/tests/wss_bridge.rs`, 803 lines, 10 tests |
-| `8ca91ae` | `scripts/check-ghostty-pin.sh` + `.github/workflows/ghostty-pin.yml` — holds libghostty-swift, libghostty-rs and the browser's wasm to one ghostty sha |
-| `418dfec` | `web/client/` — 51 files, React 19 + Vite, an unforked prebuilt `ghostty-vt.wasm` pinned by sha256, canvas2d renderer, 219 vitest cases |
-
-Three facts that matter for planning:
-
-- **`termiod/src/protocol.rs` is untouched.** `git diff --name-only
-  main...feat/termiod-wss -- termiod/src/protocol.rs` is empty. The browser is a
-  *subset* re-implementation in TypeScript, advertising
-  `["events","snapshot","scrollback"]` and no `files`/`git`/`upload`.
-- **No Swift is touched.** `git diff --name-only main...feat/termiod-wss | grep
-  -E '^(Sources|Shared|Tests)/'` → nothing. It does not move CompanionServer and
-  does not intend to; the design doc's non-goals name "Replacing the Mac or iOS
-  apps," and the default attach mode is `observe` so a browser cannot steal the
-  write token.
-- **Merge risk is near zero.** `git log --oneline main --not feat/termiod-wss --
-  termiod/` is empty: `main` has not moved under `termiod/` since the branch
-  point `615f49c`. `termiod/ARCHITECTURE.md` is byte-identical on both.
-
-Two gaps the branch carries: nothing in CI runs `vitest`/`tsc`/`vite build` for
-`web/client/`, and `termiod/ARCHITECTURE.md` still describes termiod as
-Unix-socket + `termiod stdio` only.
-
-**Accounting:** this branch is worth merging on its own terms — it proves the
-protocol is transport-agnostic (invariant #4) with a byte-identical splice, and
-it is 100% additive. It is **not** progress on the Swift→Rust boundary, and this
-plan does not depend on it.
-
-### 1.3 `feat/one-workspace-source` — 1 commit, 1 file, +5/−1
-
-`7fc1481 style(sidebar): match the device name to the toolbar glyph color`,
-touching `Sources/termio/Sidebar/DeviceSwitcher.swift` only. **The Stage 0 work
-is on `main`, not on this branch.** The branch is a cosmetic leftover; nothing
-of the ProjectLocation model exists in code anywhere.
-
-### 1.4 `wip/one-binary-rfc` — 1 commit, 2 docs, +884
-
-`docs/rfcs/one-binary-and-a-daemon-that-ships.md` (214 lines) proposed shipping
-`termiod` inside the `.app` **and** merging the two binaries — `termiod` becomes
-a mode of `termio`. The review (670 lines) refused it on six blockers. The two
-that must not be re-proposed:
-
-- **B1** — a daemon named `termio` copied to Application Support lands at
-  `…/Application Support/termio[-dev]/bin/termio`, byte-for-byte the path
-  `CommandLineTool.supportCopyURL` owns (`SessionControl.swift:798,803,829`) and
-  every installed hook command names absolutely. The hook ends `2>/dev/null ||
-  true` (`HookListener.swift:307`), so status reporting would die silently.
-- **B2** — the rename's headline reason is not real. Hooks invoke an absolute
-  path plus five flags and a dialect-dependent stdout contract
-  (`HookListener.swift:289,303-315`), not a binary name. And one-path §7.5 makes
-  `scripts/termio` a *router* to `termiod`: a router named `termio` cannot
-  dispatch to a binary named `termio`.
-
-Salvaged and folded into this plan: ship the daemon in the bundle (§4 Stage 4),
-the launchd-job repair, and the observation that version negotiation is mostly
-already built (`daemon.rs:480-486`).
-
-### 1.5 Already merged upstream
-
-`refactor/workspace-device`, `refactor/workspace-stage2`, `docs/workspace-model`,
-`feat/remote-project-picker` look empty against a *stale* local `main` — and the
-first draft of this document read that as abandonment. They are not abandoned:
-all four merged into `origin/main` as PRs #354–#359, along with
-`chore/machines-tab` and `fix/workspace-menu-reachable`. The branches can be
-deleted; the work they carried is upstream and this plan is rebased onto it.
-
-What landed there and bears directly on this plan:
-
-| Commit | What it changes for us |
-| --- | --- |
-| `16bbf5b` | `refactor(workspaces): give every workspace one device` — the workspace/device pairing this plan assumed it would have to introduce |
-| `f078aef` | `docs(design): settle the device, workspace and project hierarchy` — the hierarchy §3 treats as open is settled here |
-| `315d7a5` | `feat(projects): complete the path when opening a project on another machine` — ships `TermiodDirectoryLister.swift`, a second `fs.list` caller (§4 Stage 1) |
-| `a720448` | `fix(app): gate notifications on Termio's own bundle, not any bundle` |
-
-The lesson is procedural and worth keeping: **a branch survey run against an
-unfetched `main` reports merged work as abandoned.** Fetch first.
-
-### 1.6 The daemon's side of the workspace plane, verified
-
-Not a branch — shipped in `termiod/` on `main`, and unreached from Swift.
-
-| Verb | Handler | Stateful? |
-| --- | --- | --- |
-| `fs.list` | `daemon.rs:1021-1056` → `files::list` (`files.rs:71`) | **No.** Canonicalises the root, confines each path (rejects `..` and symlink escape, `files.rs:49-68`), pages at 2,000 entries, stubs `.git`/`.hg`/`.svn` as `unloaded_dir`, and fails one path in a batch alone |
-| `fs.read` | `daemon.rs:1058-1109` → `files::read` (`files.rs:181`) | **No.** Absolute path, 1 MiB soft cap, replies `fs_file` then `F` chunks |
-| `fs.match` | `daemon.rs:1110-…` | **Yes** — needs a `subscribe_resource` to have built the name index; without one it honestly answers `coverage: 0.0` |
-| `fs.search` | streams `search_results` events, then `fs_searched`; cancellable | **No**, but streaming |
-| `git:` resource, `git.diff` | `resource.rs`, `git.rs` (501 lines: `run_status` + `run_diff` and nothing else) | resource **yes**, `git.diff` no |
-
-Swift reaches none of them: `grep -rn '"fs\.' Sources/ Shared/` → **0**;
-`grep -rn '"git\.' Sources/ Shared/` → **0**.
+1. **Anti-100×** — byte delivery never blocks on a host-side VT parse. The
+   foreground sampler is a two-second poll on the session actor for exactly this
+   reason (`session.rs:1501-1509`), not a read per frame.
+2. **State sync at boundaries only** — snapshots on attach, resize and resync.
+   `grid_diff` stays opt-in.
+3. **Never embed SSH or crypto.** System OpenSSH, the user's `~/.ssh/config`.
+4. **One protocol, versioned and transport-agnostic.** A second protocol for the
+   phone is a violation, which is why the companion wire is a debt (§8) and not
+   a design.
+5. **No nested window manager in the host.** One PTY per session.
+6. **Single writer, many readers.**
+7. **The host describes state; it never decides how that state looks**
+   (device arch §4). The `grid_diff` refusal at `TermiodClient.swift:27` and the
+   `S`-payload `palette: false` fix are the same rule twice.
 
 ---
 
-## 2. The boundary
+## 2. Ground truth — measured 2026-08-22 at `90b3711`
 
-### 2.1 Stays Swift — the viewer, and the stopping line
+The first revision of this document was cut at `7fedc72`. Thirteen commits have
+landed under `termiod/` since, and they move three of its eight stages. What
+follows replaces §1 of that revision wholesale.
+
+### 2.1 Landed since the last stamp
+
+| Commit | What it changes for this plan |
+| --- | --- |
+| `d38f50c feat(termiod): serve the git read tier from the device` | `git.log`, `git.show`, `git.branches` beside `git.diff`. `git.rs` 501 → **1,271 lines** (`run_log:374`, `run_show:426`, `run_branches:503`); `protocol.rs:611-642` carries the requests, `:770-811` the replies. Every verb runs the box's own git with `--no-optional-locks`. **This is remote-git-plane §5 Stage 1, minus `git.blame`** |
+| `ab104f3 test(termiod): cover the git read tier over the wire` | the read tier is tested at the protocol boundary, not only in-process |
+| `26a5dcb` + `c4934c2` (`feat/rust-foreground`, PR #366) | `foreground_pid`, `foreground_argv`, `foreground_job`, `child_cwd`, `child_executable`, `child_executable_replaced` on `SessionInfo` (`protocol.rs:1020-1045`), fed by a new `termiod/src/proc.rs` (416 lines, cfg-gated: `KERN_PROCARGS2` on macOS, `/proc/<pid>/{cmdline,cwd,exe}` on Linux) and `tcgetpgrp` on the PTY **master** (`pty.rs:252-260`). **First time a Linux host can name the agent in a session at all** |
+| `1746593 fix(termiod): scope the daemon socket and launchd job by channel` | **Stage 4 items 1 and 2 of the last revision, both done.** `Termiod.socketPath(channelSuffix:environment:)` (`TermiodClient.swift:62-85`) mirrors `paths::channel_suffix()` (`paths.rs:23`); `service::label()` (`service.rs:36-40`) suffixes the launchd label, which is also the plist filename and the `gui/$UID` target |
+| `ff53d19 perf(files): score the name index with frizbee's SIMD matcher` | `fs.match`'s scorer (`files.rs:348-381`), `frizbee 0.13` in `termiod/Cargo.toml` |
+| `2ed6ff6 ci(termiod): run the Swift files client against a real daemon` | `.github/workflows/termiod.yml:139` runs `swift test --filter TermiodFilesIntegrationTests` against a daemon CI just built. The opt-in integration suite is no longer opt-in-and-never-run |
+| `96dc2df fix(termiod): give daemon-hosted sessions the same status tap as local ones` | agent status no longer degrades when a session moves to the daemon |
+| `3ded234 fix(termiod): strip the launcher's identity from spawned sessions` | `CLAUDE_CODE_*`, `TMUX`, `TERM_PROGRAM` no longer leak from whoever started the daemon into every session it spawns |
+
+Still true from the previous stamp, re-verified today: `Checkout` is the shipped
+`(device, root)` reference (`DeviceContext.swift:56-101`); the panes no longer
+ask a session how it was opened; `multiplexingArguments(host:)` ships
+(`TermiodClient.swift:233`, applied at `:406`); the daemon builds universal,
+`lipo`s with a failing arch check, signs inside the outer seal, and resolves out
+of `Bundle.main` (`daemonBinaryPath()`, `:119`).
+
+### 2.2 Stage-1 gates, re-run today
+
+```
+grep -rn 'SFTPClient\|SSHFileSystemProvider\|SSHMux\|SSHProviderError\|sftpAlias' Sources/ Tests/ | wc -l   → 0
+grep -rc 'op = "fs_list"' Sources/                                                                          → 1
+grep -rn 'PTYProcess(' Sources/ | wc -l                                                                     → 1
+grep -rn 'TermiodConnection' Sources/ | wc -l                                                               → 0
+```
+
+`FileBrowserView.swift:77-84` now has exactly two branches plus an honest empty
+state: `RemoteFileTreeView` for any checkout with a root on another device, the
+`unavailable(pane:on:)` state when the device has no root to give, and the local
+tree. Stage 1 is closed.
+
+### 2.3 The three gaps this restamp exists to record
+
+Stages 5 and 6 of the last revision were **half-landed in Rust and unreached from
+Swift**. All three gaps below now have an implementation, **written and reviewed
+but uncommitted and unmerged** (§2.4) — they are recorded here as the problem
+statement Stage 2 is answering, not as open work. Where an answer is only
+partial, the gate that remains is named in Stage 2.
+
+**(a) Swift never decodes the foreground fields.**
+`Termiod.SessionInformation` (`TermiodClient.swift:780-819`) decodes eleven keys
+— `id, name, pid, alive, cwd, command, status, agentId, title, createdUnix,
+attachedClients` — and **none** of the six the daemon now sends. The consequence
+is visible: `displayLabel` still falls back to `programName(in: command)`
+(`:838-849`), which splits the login-shell wrapper apart with string rules to
+guess what is running. That heuristic is precisely what a kernel read exists to
+replace, and it is still what the sidebar shows.
+
+**Mostly answered.** The decode is built — all six fields, every one optional so
+"the device said no" stays distinct from "the device did not say". `displayLabel`
+is **not** rewired and still reaches the command-string guess for a roster-only
+row, which is a Stage 2 gate.
+
+**(b) `child_executable_replaced` is computed at exit and then dropped.**
+`Session::info()` deliberately re-checks the pinned inode rather than caching it,
+with a comment saying why: *"the record that matters most is the one built on the
+exit path"* (`session.rs:366-379`). The exit path does call it — `session.rs:1587`
+builds an `info` with `alive: false` for the tombstone. But:
+
+- `Event::SessionExited` carries `{ session, status }` and nothing else
+  (`protocol.rs:924-927`), so an attached client learns the session ended and
+  never learns why the binary moved.
+- `Tombstone::from_info` copies eleven fields and not this one
+  (`tombstone.rs:96-108`), so the durable record drops it too.
+
+"The agent updated itself and quit" is therefore computed correctly at the one
+moment it matters and cannot reach any client by either route. This is a
+delivery gap, not a mechanism gap — `proc::ExecutableIdentity::was_replaced()`
+is right and tested (`proc.rs:44-58`, `notices_a_replaced_executable`).
+
+**Half answered.** The event route is built (Stage 2); the tombstone route is
+not. `Tombstone::from_info` still drops the field, so a client that was not
+attached when the session died still cannot learn it. That remains a Stage 2
+gate.
+
+**(c) Linux has no live-process-group-member scan.**
+`sample_foreground` reads argv straight off the pgid
+(`session.rs:389-410`), resting on the comment *"the foreground group leader's
+pid **is** the pgid"*. That holds while the leader is alive. It stops holding in
+the ordinary pipeline case — `foo | bar` puts both in a group named after `foo`,
+and when `foo` exits first the group still owns the tty. `/proc/<pgid>/cmdline`
+is then gone, `process_arguments` returns `None`, and the session reports
+`foreground_job: true` with no argv: the client knows a job is running and
+cannot name it. `grep -rn 'pgrp' termiod/src/` finds only `tcgetpgrp` — nothing
+scans `/proc/*/stat` field 5 for a live member of the group, and nothing calls
+libproc's `proc_listpgrppids` on macOS, though both mechanisms exist. The fix is
+per-platform and belongs with the rest of `proc.rs`'s cfg-gating.
+
+**Answered on both targets** (Stage 2), with the macOS path additionally
+re-checking `pbi_pgid` per candidate so a recycled pid cannot be reported. The
+Linux path has still never been compiled or run — that is a Stage 2 gate.
+
+### 2.4 Unmerged branches that bear on this plan
+
+| Branch | Size | Standing |
+| --- | --- | --- |
+| `feat/termiod-remote-install` (`a497c00`) | 7 files, +732/−3 | **Answers open question 2 of the last revision.** Settings ▸ Machines reports what a box has and installs the slice this app carries; freshness is a digest, not a version string; the upload lands on a temp name and is moved only after `chmod`. Ships `TermiodInstaller.swift` (335) + 155 lines of tests, a `release.yml` artifact step, and `web/landing/public/install.sh`. Folded into Stage 5 |
+| `feat/termiod-wss` (5 commits) | 69 files, +18,791/−4 | A third client and a transport. Adds **zero** protocol verbs and touches **zero** Swift. **Its merge risk is no longer near zero** — `git log --oneline main --not feat/termiod-wss -- termiod/` is now **13 commits**, including `d38f50c`, `c4934c2` and `1746593`, so it needs a rebase across `protocol.rs`, `daemon.rs`, `git.rs` and `session.rs` rather than the byte-identical merge the last stamp described. Deferred, §8 |
+| `feat/stage5-rust-completion` | 0 commits · **+977/−62** uncommitted | **Stage 2's host half, implemented and reviewed.** `proc.rs` +595, `session.rs` +320, `protocol.rs` +117, `daemon.rs` +7. **99 tests pass.** |
+| `feat/stage5-swift-completion` | 0 commits · **+856/−59** uncommitted | **Stage 2's client half, implemented and reviewed.** `TermiodClient.swift` +181, `TermioStore+Termiod.swift` +135, `TermioStore+TerminalSurface.swift` +95, `TermioStore+ProjectActions.swift` +38, and 28 new cases across `TermiodEventTests` (+179) and `TermiodStatusTests` (+287). **483 tests pass.** |
+| `feat/foreground-parity` | 0 commits · +42 uncommitted, plus an untracked `TermioStore+SessionFacts.swift` | **An earlier, superseded attempt at the same client half.** It decodes `foregroundJob` as a non-optional `Bool` with `?? false`, which erases "the device did not answer" from the type — the distinction the skew rule rests on — and it carries no tests. **Do not merge it alongside the pair above**; harvest `SessionFacts`'s single-answer framing if anything, and drop the rest. |
+
+**All three point at `main`'s tip and are zero commits ahead.** The last
+revision's §1.5 warned that a survey against a stale `main` reports merged work
+as abandoned; the mirror trap is here — `git log main..<branch>` empty does
+**not** mean the branch is empty. Check `git status` in its worktree too.
+
+---
+
+## 3. Vocabulary — Workspace is not Project, and only one of them is the device's
+
+The word "workspace" named three different objects across these documents, and
+every argument about *where workspaces live* was an argument between the
+definitions. `20260819-device-workspace-project.md` settled it, and this plan
+uses the settled terms exclusively:
+
+```
+Device        a machine, identified by host_id, reached by ≥1 ~/.ssh/config alias
+  └ Workspace a named scope in the sidebar; holds projects and loose sessions
+      └ Project    a checkout: a directory root on that device
+          └ Session a PTY in that device's termiod
+```
+
+Two ownership claims, and they point in different directions on purpose:
+
+- **Workspace is a client concern, and stays viewer-owned for now.** It is the
+  user's arrangement of their own work — the same class of thing as split
+  layout and session naming, which §4.1 already keeps in Swift. It lives in the
+  Mac's `state.json`, and #345 removed machine-scoped navigation deliberately:
+  you switch workspaces, never machines. Every workspace *names* a device
+  (`20260819` §2), which is a hierarchy claim, not a storage one.
+- **Project and Checkout are device-owned facts, and the registry that
+  enumerates them is device work.** A directory root either exists on that box
+  or does not; two viewers must agree. `Checkout` (`DeviceContext.swift:56-101`)
+  is already the client-side spelling of `(device, root)` with `host_id`-first
+  identity. What is missing is the device's own answer to *what projects are
+  here* — device arch §8.11's registry.
+
+The gap is one field wide and worth stating precisely, because it looks larger
+than it is: `WorkstreamSpec` already carries `project` (`protocol.rs:390`), the
+daemon stores it (`session.rs:306`), and `Session::info()` reads back only
+`agent_id` (`:358`). **A client can write a session's project and can never read
+it.** Closing that is the first inch of the registry, not a new plane.
+
+Deliberately deferred, per `20260819` §5: moving workspace *authority* to the
+device. That decision belongs with direct-attach (§8), because its whole
+justification is a phone talking to a Linux box with no Mac in the path.
+Adopting the hierarchy now costs nothing later — every workspace already names
+its device.
+
+Retired vocabulary, do not reintroduce: "workspace" meaning a directory root;
+"workspace fallback" / `isDeviceFallback`; "local project" versus "remote
+project".
+
+---
+
+## 4. The boundary
+
+### 4.1 Stays Swift — the viewer, and the stopping line
 
 These fail the two-observers test outright, or are macOS-coupled. Nothing in
 this plan touches them, and a future stage that proposes to must argue against
@@ -179,342 +259,620 @@ this list rather than around it.
 
 | Area | Lines | Why it stays |
 | --- | --- | --- |
-| libghostty surface, `TerminalPane`, `SplitTree`, every `*View` | `Sources/termio/Terminal/` 6,218 · `Sidebar/` 1,971 · `Info/` 5,813 | Rendering, layout and panes are client concerns — invariant #5 |
-| `OSCProgressScanner` (`Sources/termio/Agents/`) | — | A byte-stream scan. Every client receives the same bytes; a host opinion of "working" on the wire is the host deciding presentation |
+| libghostty surface, `TerminalPane`, `SplitTree`, every `*View` | `Terminal/` 6,218 · `Sidebar/` 1,971 · `Info/` 5,813 | Rendering, layout and panes are client concerns — invariant #5 |
+| `OSCProgressScanner` (`Agents/`) | — | A byte-stream scan. Every client receives the same bytes; a host opinion of "working" is the host deciding presentation |
 | `AgentStatusRules` — screen-rule agent status | `TermioStore+TerminalSurface.swift:356-366` | Reads the *rendered viewport*, which every client already holds |
 | Theme, palette, fonts, keybindings | `Theme/` 527 · `Keybindings/` 628 | The `grid_diff` refusal (`TermiodClient.swift:27`) is the same rule: the host must never resolve a colour |
-| `TaskNotifications`, `MenuBarController`, keychain reads, `NSWorkspace`, Quick Look | across `App/` 4,320 · `Companion/Usage/` | This Mac's Notification Center is this Mac's |
-| Encoding a human keypress | `Terminal/Ghostty/` | Needs an `NSEvent` and ghostty's key encoder. Rust must not grow a model of one — invariant #5 wearing a keyboard |
-| Session grouping, naming, `termio://session/<uuid>` links | `TermioStore/` | The project tree is the user's arrangement, not the device's |
+| `TaskNotifications`, `MenuBarController`, keychain reads, `NSWorkspace`, Quick Look | `App/` 4,320 · `Companion/Usage/` | This Mac's Notification Center is this Mac's |
+| Encoding a human keypress | `Terminal/Ghostty/` | Needs an `NSEvent` and ghostty's key encoder — invariant #5 wearing a keyboard |
+| **Workspace grouping**, session naming, `termio://session/<uuid>` links | `TermioStore/` | §3. The arrangement is the user's, not the device's |
 | `focus`, `notify` CLI verbs | `TermioStore+SessionControl.swift:44-53` | Name *this* window and *this* Mac |
+| argv → agent mapping | client-side | The daemon reports argv; which glyph that becomes is presentation |
 
-### 2.2 Moves to Rust
+### 4.2 Moves to Rust
 
-Ordered by how ready the daemon already is.
+Ordered by how ready the daemon already is. "Daemon state" is measured today.
 
 | Responsibility | Swift today | Daemon state | Stage |
 | --- | --- | --- | --- |
-| Directory listing, file read | `SSHFileSystemProvider.swift` 531 + `SFTPClient.swift` 878 (SFTP over `ssh -s host sftp`); local `FileManager` | **Shipped**, stateless | **1** |
-| Content search | `ContentSearch.swift` 144 (`git grep` via `Process`) | **Shipped**, streamed + cancellable | 2 |
-| Filename fuzzy finder | local walk | **Shipped**, needs a subscription for coverage | 3 (blocked) |
-| Filesystem change notification | `FileTreeWatcher.swift` 139 (FSEvents), no remote equivalent | **Shipped** as the `fs:` resource | 3 (blocked) |
-| Git status | `GitService.swift:958-984` → `/usr/bin/git` | **Shipped** as the `git:` resource | 3 (blocked) |
-| Git diff for one path | `GitService.diffText` | **Shipped** (`git.diff`) | 2 |
-| Git history, commit contents, branch compare, discard, `.gitignore`, remote/PR URLs, clone info, stall fingerprint | `GitService.swift` 985 total, 12 verbs | **Absent** — `git.rs` is `run_status` + `run_diff` | 6, per `remote-git-plane.md` §5 |
-| Worktree enumeration | `WorktreeService.swift` | **Absent** | 6 |
-| Foreground job / argv / cwd | `PTYProcess.swift:807,868,925` | **Absent** — no `tcgetpgrp` in `termiod/src` | 5 |
-| Session roster, `read`, `send`, `watch`, `spawn`, `close` | `TermioStore+SessionControl.swift` 1,040 | Verbs exist; the CLI talks to the Swift socket | 7 |
-| Agent hook sink | `HookListener.swift` 944, `agent-status.sock` on this Mac | `set_status` exists; nothing routes a hook into it | 7 |
+| Directory listing, file read | — (deleted) | **Shipped and consumed** | **1 — done** |
+| Foreground job / argv / cwd / executable identity | `PTYProcess.swift:864-930` | **Shipped** (`proc.rs`, `pty.rs:258`); group-member resolution and the client decode written but **unmerged** (§2.4) | **2** |
+| Content search | `ContentSearch.swift` 144 (`git grep` via `Process`) | **Shipped**, streamed + cancellable | 3 |
+| Git diff for one path | `GitService.diffText` | **Shipped** (`git.diff`) | 3 |
+| Filename fuzzy finder | local walk | **Shipped** (`fs.match`, frizbee scorer); needs a subscription for coverage | 9 (gated on 4b) |
+| Filesystem change notification | `FileTreeWatcher.swift` 139 (FSEvents), no remote equivalent | **Shipped** as the `fs:` resource | 9 (gated on 4b) |
+| Git status | `GitService.changes` → `/usr/bin/git` | **Shipped** as the `git:` resource | 9 (gated on 4b) |
+| Git history, commit contents, branch list | `GitService.log/commitChanges/branchCompare` | **Shipped** (`git.log`, `git.show`, `git.branches`) | 9 |
+| Blame | absent both sides | **Absent** | 9 (or never — §9.5) |
+| Worktree enumeration | `WorktreeService.swift` 72 | **Absent** | 9 |
+| `.gitignore`, remote/PR URLs, clone info, stall fingerprint | `GitService.swift:565-984` | **Absent** | 9 |
+| Discard, stage, commit, stash, branch ops | `GitService.discard` + absent | **Absent** — new scope | 11 |
+| Fetch / pull / push, askpass | absent | **Absent** — new scope | 11 |
+| Session roster, `read`, `send`, `watch`, `spawn`, `close` | `TermioStore+SessionControl.swift` 1,040 | Verbs exist; the CLI talks to the Swift socket | 10 |
+| Agent hook sink | `HookListener.swift` 944, `agent-status.sock` on this Mac | `set_status` exists; nothing routes a hook into it | 10 |
 | PTY ownership | `PTYProcess.swift` 996 | **Shipped** (`pty.rs`) | 8 |
 
-### 2.3 Deleted outright
+### 4.3 Deleted outright
 
-| File | Lines | When | Gate |
+| File | Lines | Stage | Gate |
 | --- | --- | --- | --- |
-| `Sources/termio/FileBrowser/SFTPClient.swift` | 878 | Stage 1 | the symbol gate below |
-| `Sources/termio/FileBrowser/SSHFileSystemProvider.swift` | 531 | Stage 1 | same |
-| `Tests/termioTests/SSHFileSystemProviderTests.swift` | 508 | Stage 1 | same |
-| `Checkout.sftpAlias` + its branch in `FileBrowserView.swift:77-80` | ~12 | Stage 1 | same |
-| `SSHMux` and the `ControlMaster` options injected into a plain `ssh` session's argv (`sshCommand(host:)`) | ~110 | Stage 1 | same — the master existed only so the SFTP tree could ride it |
-| `Termiod.isEnabled` and every branch on it | `TermiodClient.swift:46` | Stage 8 | `grep -rn 'TERMIO_TERMIOD\b' Sources/ \| wc -l` → 0 |
-| `PTYProcess(` construction | `TermioStore+TerminalSurface.swift:228-231` | Stage 8 | `grep -rn 'PTYProcess(' Sources/ \| wc -l` → 0 |
+| `SFTPClient.swift`, `SSHFileSystemProvider.swift`, `SSHFileSystemProviderTests.swift`, `Checkout.sftpAlias`, `SSHMux` | 1,409 + ~120 | 1 | **done** — the symbol grep in §2.2 is 0 |
+| `PTYBridge`'s dependence on `PTYProcess` | — | 6 | `grep -rn 'PTYProcess' Sources/termio/Companion/` → 0 |
+| `Termiod.isEnabled` (`TermiodClient.swift:46`) and every branch on it | — | 8 | `grep -rn 'TERMIO_TERMIOD\b' Sources/ \| wc -l` → 0 |
+| `PTYProcess(` construction (`TermioStore+TerminalSurface.swift:253`) and `PTYProcess.swift` | 996 | 8 | `grep -rn 'PTYProcess(' Sources/ \| wc -l` → 0 |
+| `ContentSearch.swift`, `FileTreeWatcher.swift` | 283 | 9 | their symbol grep → 0 |
 
-**`RemoteFileTree.swift` (507 lines) is NOT deleted, and that is a deliberate
-change from the brief.** It is three things: `RemotePreviewStorage`/`Lease` (the
-0700 `mkdtemp` staging for read-only previews, referenced from
-`App.swift:497` and `TermioStore.swift:246,1609`), `RemoteFileNode` +
-`RemoteFileBrowserModel` (the lazy `List(children:)` tree), and
-`RemoteFileTreeView`/`RemoteFileRow` (the presentation). Only the **provider it
-calls** is SFTP-shaped, and that surface is four methods —
-`root()`, `list(_:)`, `read(_:limit:)`, `disconnect()`
-(`SSHFileSystemProvider.swift:160-186`). Swapping the provider deletes the same
-1,409 lines of SFTP the brief targeted while adding ~250 instead of ~700, and it
-keeps a tree whose lazy-load re-entrancy, expansion-state identity and
-preview-race guards are already correct. Rewriting the view to delete it would
-be new code where the deletion target is the transport.
+`RemoteFileTree.swift` (507 lines) is **not** deleted — settled in the last
+revision and unchanged. Only the provider behind it was SFTP-shaped, and it was
+four methods wide. The tree's lazy-load re-entrancy, expansion-state identity
+and preview-race guards are correct; rewriting the view would be new code where
+the deletion target was the transport.
 
 ---
 
-## 3. The blocker, narrowed
+## 5. The blocker, narrowed
 
-`one-workspace-source.md` §7.1 and `remote-git-plane.md` §8.2 both state it:
+`withControlChannel` (`TermiodClient.swift:1155`) is one-shot: it opens a
+`Transport`, `defer`s its close, and nothing can outlive the closure. Re-verified
+today; `grep -rn 'TermiodConnection' Sources/` → 0.
 
-> **Connection ownership.** The review requires a durable per-device connection
-> before resource subscriptions, while `withControlChannel`
-> (`TermiodClient.swift:1025-1042`) is one-shot. Stage 3 depends on this; Stages
-> 1-2 do not, since `fs.list` is a request/response.
+**What it does and does not gate:**
 
-Verified: the citation has **not** drifted — `withControlChannel` is at
-`TermiodClient.swift:1033-1042` with its doc comment from `:1025`, and the body
-is `let transport = try Transport.open(route)` + `defer { transport.close() }`.
-Nothing can outlive the closure.
-
-`remote-git-plane.md` §8.1 also claims a second prerequisite — the workspace
-reference — and that one **is** resolved: `Checkout` (§1.1). §8.1 should be
-struck.
-
-**What the blocker does and does not gate:**
-
-- **Not gated:** `fs.list`, `fs.read`, `git.diff`, `fs.search`. Each is one
-  request and its replies on one channel. `fs.search` streams, but the stream
-  ends with `fs_searched` inside the same call.
-- **Gated:** `subscribe_resource` for `fs:` and `git:`, and therefore live file
-  watching, the git changes pane, and `fs.match` coverage. A subscription's
+- **Not gated** — `fs.list`, `fs.read`, `fs.search`, `git.diff`, `git.log`,
+  `git.show`, `git.branches`. Each is one request and its replies on one
+  channel. `fs.search` streams, but the stream ends with `fs_searched` inside
+  the same call.
+- **Gated** — `subscribe_resource` for `fs:` and `git:`, and therefore live file
+  watching, the git Changes pane, and `fs.match` coverage. A subscription's
   whole value is that it outlives the request.
+- **Gated** — the companion's exit fan-out (§6 Stage 6). `TermiodSessionLink.onExit`
+  is one closure held by `attachTermiodLink` (`TermioStore+Termiod.swift:119`);
+  the observer registry belongs on a connection, not on a transport.
 
-So the ordering constraint is: **no `fs:`/`git:` subscription work before a
-`TermiodConnection` object exists.** That is Stage 3's prerequisite, and Stage 3
-is the fourth thing this plan does, not the first.
+The cost the blocker does not name: each one-shot call over SSH is a full connect
+plus hello. Locally 0.2 ms; remotely 26–33 ms with a warm ControlMaster and
+230–300 ms without. A tree that expands one directory per click is inside that
+budget; a search that re-issues per keystroke is not. Stage 3's gate measures it.
 
-One cost the blocker does not name and this plan must: each one-shot call over
-SSH is a full connect + hello. Locally that is 0.2 ms; remotely it is 26–33 ms
-with a warm ControlMaster (which §1.1 confirms now exists) and 230–300 ms
-without. A file tree that expands one directory per click is inside that budget;
-a tree that re-lists on every keystroke is not. Stage 1's criterion measures it.
+`remote-git-plane.md` §8.1 names a *second* prerequisite — the workspace
+reference — and that one is resolved (`Checkout`). §8.1 should be struck; §8.2
+and §8.3 stand.
 
 ---
 
-## 4. Stages
+## 6. Stages
 
-Each is independently shippable and carries a gate that runs.
+Each is independently shippable and carries a gate that runs. **This list
+supersedes device architecture §8's ordering** (§0).
+
+The shape of the reorder, against the previous revision: foreground parity moves
+from 5 to **2** because Rust already shipped its half — and the rest of it is now
+written, reviewed and waiting on four gates (§2.4, Stage 2); supervision moves from 4
+to **5** and absorbs the remote-install branch; and **companion decoupling, the
+default-on soak, and deleting the local PTY fork (6, 7, 8) now come before the
+CLI move and before any git expansion.** The reason is one-path §5's own
+rollback note: Stage 8 is the only step that is hard to revert, its mitigation is
+sequencing rather than a switch, and every stage that runs *after* the flag is
+deleted is a stage that would otherwise have to be built twice — once for each
+side of the fork. Moving the CLI while two session backends exist is exactly that
+double build.
 
 ### Stage 1 — the Files pane reads a device through `fs.*`; SFTP is deleted — **done**
 
-**The single best deletion-to-new-code ratio in this plan**, and it needs
-nothing from the blocker. Landed as `68f5006` (the client, +7 integration tests)
-and `8e106ea` (the tree, the deletions): **+513 / −2,030** across 14 files, of
-which 141 of the additions are the new integration tests.
+Landed as `68f5006` + `8e106ea`: **+513 / −2,030** across 14 files, of which 141
+additions are integration tests. Gates re-run in §2.2 and all clean. CI now runs
+the Swift client against a real daemon (`termiod.yml:139`), which closes the
+"opt-in and therefore never run" gap the original stage carried.
 
-Today the Files pane has three behaviours (`FileBrowserView.swift:76-88`): the
-SFTP tree for a `sftpAlias`, a dead `unavailable(pane:on:)` placeholder for a
-checkout on another *device* (the termiod case — the actual bug), and the local
-`FileManager` tree. After this stage there are two: local, and `fs.*`.
+One verification remains open and is recorded as open, not claimed: the device
+branch of the pane has not been seen on screen against a second machine running
+`termiod`.
 
-1. Add `Termiod.listDirectories(route:root:paths:)` and
-   `Termiod.readFile(route:path:limit:)` in a new
-   `Sources/termio/Terminal/Termiod/TermiodFiles.swift`, built on
-   `withControlChannel(caps: ["files"])`, mirroring `TermiodTransfer.swift`'s
-   request/`readReply` shape and decoding the `F` chunk header
-   (`re:u64be, offset:u64be, last:u8`, `protocol.rs:953-967`).
-2. Add `FsFilePayload` to `IncomingControl` (`TermiodClient.swift`) — additive,
-   `.unknown` stays the default. `FsListedPayload` is **not** added: `315d7a5`
-   already put it there for the path picker (§1.5), and this stage reuses it
-   rather than declaring a second copy.
-3. **One `fs.list` client, not two.** `TermiodDirectoryLister.swift` (upstream,
-   for the path picker) and `TermiodFiles.swift` (this stage, for the tree) each
-   arrived with their own `FsListOperation`, `PathListingPayload` and
-   `FsListedPayload`. The call sites stay separate — the picker's round trip is
-   blocking and holds a channel for as long as a field is being typed in, the
-   tree's is async and per-pane — but the wire types are shared, and the picker's
-   private encoder is deleted in favour of the seq-stamped one. Upstream's
-   `PathListingPayload` wins: its `init(from:)` defaults a missing `entries` to
-   `[]`, where the version written here made it optional at every call site.
-   *Gate:* `grep -rc 'op = "fs_list"' Sources/` → exactly 1.
-3. Re-point `RemoteFileBrowserModel` at the new provider. It takes a `Checkout`
-   instead of a `host: String`; `root()` becomes `checkout.root`.
-4. `FileBrowserView` renders the tree for **any** `isOnAnotherDevice` checkout;
-   the `sftpAlias` branch and the property go.
-5. Delete `SFTPClient.swift`, `SSHFileSystemProvider.swift`, and
-   `SSHFileSystemProviderTests.swift`. Keep `SSHMux` only if something else
-   needs it (it does not — `grep` shows no consumer outside these files).
-6. A plain-`ssh` session whose host has no daemon gets the honest empty state
-   naming the host, not a blank pane. Offering to install is Stage 4's job,
-   because `remote deploy` cannot run from a shipped app today (see §5).
+### Stage 2 — foreground parity: the client half
 
-**Gates:**
-- `swift build` clean; `swift test` green.
-- `grep -rn 'SFTPClient\|SSHFileSystemProvider\|SSHMux\|SSHProviderError\|sftpAlias' Sources/ Tests/ | wc -l` → 0.
-  Not `grep -rn 'SFTP'`, which `one-workspace-source.md` §5 Stage 5 asks for:
-  two comments deliberately record what the files plane replaced, and a gate
-  that forbids naming the thing you deleted forbids explaining why.
-- A new `TermiodFilesIntegrationTests`, on the opt-in
-  `TERMIO_TERMIOD_TEST_BIN` pattern `TermiodTransferIntegrationTests.swift`
-  already establishes: spawn a real daemon on a private socket, list a temp
-  tree, read a file back byte-for-byte, and assert the confinement refusal for
-  `../escape`. Runs under `swift test` when the env var is set, skips otherwise.
-- **Not yet verified on screen.** The dev bundle builds and the app launches with
-  a window, but the device branch of the pane cannot be exercised without a
-  second machine running `termiod`, and `screencapture` is unavailable in the
-  environment this was built in (no Screen Recording permission — every capture
-  answers `could not create image from display`). The tree's rendering on a real
-  device session is an open verification, not a claim.
+Rust's first half shipped in `c4934c2`. The rest — the client decode, the two
+delivery gaps in §2.3, and the group-member scan — is **implemented across two
+worktrees, reviewed and approved, and neither committed nor merged** (§2.4):
+99 Rust tests and 483 Swift tests pass locally. **This stage has not landed**,
+and the gates at the end of this section are what stands between the two.
 
-### Stage 2 — Search and the diff view read a device
+Nothing below is a proposal. It is the shape the implementation settled on,
+recorded because two of the decisions contradict what `one-path-local-through-termiod.md`
+§3.2 specified, and a later reader comparing the two needs to know which won.
+
+#### The wire, as built
+
+Both changes are additive within `proto:1` and both reuse events that already
+existed. **No `foreground_changed` event exists, and none is needed** — see §7.9.
+
+```
+E { ev: "roster", session, action: "updated", info: SessionInfo }   # whole row, on change
+E { ev: "session_exited", session, status, info: SessionInfo? }     # + final row
+```
+
+- **`E roster` carries whole `SessionInfo` updates.** `emit_roster()` already
+  sent `{session, action, info}` with the complete row; the foreground poll now
+  calls it on change. A client never merges deltas, so there is no partial-update
+  ordering problem to get wrong, and no second event shape to version.
+- **`E session_exited` gains an optional final `info`** (`Option<Box<SessionInfo>>`).
+  It is sampled once, after the reap, and the *same* record feeds both the event
+  and the tombstone — deliberately not sampled twice, because
+  `child_executable_replaced` is a fresh disk read every time it is asked and an
+  agent that replaced its binary between two reads is precisely the case both
+  consumers exist for. Absent from an old daemon; a client that finds it absent
+  keeps what it last read from `list`, which is today's behaviour. Round-trip and
+  old-payload-decodes tests both exist.
+
+#### Close confirmation reads the cached push, on purpose
+
+`closeConfirmationReason` answers from the last roster push —
+a sample up to one `FOREGROUND_POLL` (**2 s**) old — and **does not** ask `list`.
+This inverts one-path §3.2's instruction (§7.10). The reason is mechanical:
+`Session::info()` reads the `self.foreground` cache, so a `list` round trip
+returns the same sample built from the same poll. **It is not fresher.** It
+would cost 216–292 ms on the main thread over SSH to learn nothing.
+
+An in-process PTY still wins outright when one exists — it is asked `tcgetpgrp`
+at the instant of the question, so its `false` is a genuinely fresher no
+(`TermioStore.foregroundJob(reportedLocally:reportedByDevice:)`). Only a session
+this app does not host falls through to the device's cache.
+
+The staleness is accepted because it is bounded in both directions, and the two
+directions cost differently:
+
+- **False positive** — the job finished within the last poll and the user is
+  asked about a command that already ended. Cost: one dismissed dialog. This is
+  the safe direction to be wrong in.
+- **False negative** — a job started within the last poll and the close goes
+  through unasked. Cost: exactly the shipped no-confirm rule, which is what an
+  absent field already means.
+
+Which is why only an explicit `true` confirms. `nil` is nobody answering and
+must never be read as "unknown, so confirm" — that would tax every close on the
+sessions the shipped rule deliberately exempts (`remote-to-device.decisions.md` §2).
+
+#### Resolving the group, per platform
+
+`tcgetpgrp` names a *group*; every argv lookup wants a *pid*. The two agree while
+the leader lives, and part in a pipeline the moment it does not — `find . | grep foo`
+after `find` finishes leaves `grep` holding the terminal with a zero-length
+`/proc/<pgid>/cmdline`. tmux scans for a live member (`osdep-linux.c`); so does
+this, behind one `proc::foreground_member(pgid)` with a per-target body.
+
+- **macOS** — `proc_listpgrppids` enumerates the group, then each candidate is
+  read back through `proc_pidinfo(PROC_PIDTBSDINFO)` for its state **and a
+  re-check that `pbi_pgid` still matches the group we were asked about**. That
+  recheck is not redundant with having enumerated the group: between `tcgetpgrp`
+  naming it and this running, a pid can be recycled into something else, and a
+  member whose group no longer matches is a different process wearing the same
+  number.
+- **Linux** — `/proc/<pgid>/stat` first, which answers on nearly every sample for
+  one `stat` read and no walk. Only when the leader cannot answer does it walk
+  `/proc`, reading one `stat` per process and **no `cmdline` at all**; argv is
+  resolved afterwards, in preference order, stopping at the first process that
+  answers.
+- **Selection is leader-first, then ascending pid** — arbitrary but *stable*, so
+  a wide pipeline does not flap between two survivors and push a roster event
+  every poll for no new information. Zombies and dead states are filtered.
+- **`foreground_job` is derived from the group, not from the resolved pid.** A
+  pipeline whose leader exited is still a running job; keying it on a member that
+  could not be read would say the opposite at the worst moment.
+
+#### The expensive half is off the session actor
+
+The poll now splits along what it costs to learn. `tcgetpgrp` and the job flag
+stay on the actor — cheap, and the close confirmation needs them current. Argv,
+cwd, the executable pin and the group walk are dispatched to
+`spawn_blocking` and applied later, because that actor also runs the PTY read
+and the fan-out, and a process-table walk there is time the byte path spends
+waiting. **The anti-100× invariant is about more than the VT parse.**
+
+Two guards make the split safe:
+
+- **One resolution in flight per session** (`foreground_pending`). The poll is
+  slower than the work; queueing would only pile up answers about groups that
+  have already lost the terminal.
+- **Stale-pgid rejection.** A resolution carries the `pgid` it describes, and
+  `apply_foreground` drops it if the foreground moved while it was in flight.
+  That is not a stale version of the truth — it is the answer to a different
+  question. When the group changes, the cached pid and argv are cleared rather
+  than carried, so the gap is honest until the next resolution fills it.
+
+#### Remaining gates — all four are open
+
+- **Linux `cfg` compilation and runtime.** The `/proc` path has never been
+  compiled or run; it waits on `termiod.yml`'s ubuntu-24.04-arm job. Behaviourally:
+  run `sleep 60 | cat` in a session, and after the leader exits `foreground_job`
+  is true **and** `foreground_argv` is non-empty.
+- **Combined wire-order integration coverage is absent.** Each half is tested
+  against its own fixtures; nothing exercises a real daemon pushing a roster
+  update and then an exit event to a real Swift client, in order. The
+  `TermiodFilesIntegrationTests` pattern (`termiod.yml:139`) is the place for it.
+- **`child_executable_replaced` is still not on `Tombstone`.** The exit *event*
+  carries it; `Tombstone::from_info` (`tombstone.rs:96-108`) does not, so a
+  client that was not attached when the session died cannot learn it. §2.3(b).
+- **`displayLabel` still falls back to `programName(in: command)`** for
+  roster-only rows the app has never attached to — which is exactly the row that
+  has no other source of truth. The decode is in place; the consumer is not
+  rewired.
+
+Non-blocking, and explicitly **not** a gate: Linux reads argv twice on the walk
+path — once as the `has_argv` predicate that selects the member, once again in
+`process_arguments`. Returning the argv from the probe would halve it. That is an
+optimization on the rare branch, not a correctness issue, and it should not hold
+the stage.
+
+### Stage 3 — Search and the diff view read a device
 
 `fs.search` (streamed, cancellable) behind `FileSearchView`/`ContentSearch`, and
-`git.diff` behind the diff overlay. Still one channel per request; still not
-blocked.
+`git.diff` behind the TextKit diff overlay. Still one channel per request; still
+not blocked.
 
-**Gates:** ⇧⌘F on a VPS session returns hits with correct paths and line
-numbers; cancelling mid-stream produces `fs_searched {canceled: true}`; a diff
-for a device path renders in the existing TextKit overlay.
+**Gates:** ⇧⌘F on a VPS session returns hits with correct paths and line numbers;
+cancelling mid-stream produces `fs_searched {canceled: true}`; a diff for a
+device path renders in the existing overlay. **Cold-expand latency over a warm
+ControlMaster is recorded** — this is the measurement open question 1 of the last
+revision asked for, and it decides nothing else in this list, so take it here.
 
-### Stage 3 — the connection is an object (unblocks subscriptions)
+### Stage 4 — the connection is an object
 
-`TermiodConnection` per device owning transport, health and reconnect;
-`TermiodSessionLink` becomes a client of it; `withControlChannel` becomes a
-channel on it rather than a process. `handleStreamEnd` stops calling
-`deliverExitLocked` (`TermiodClient.swift:1557-1563`) — a transport failure is
-not a process exit.
+Device architecture §8.4's split, adopted verbatim because the sub-steps have
+genuinely different shapes and only one of them is hard.
 
-Then, and only then: `fs:` and `git:` subscriptions, live tree updates, the git
-changes pane, `fs.match` coverage.
+**4a — the argument list.** `multiplexingArguments(host:)` already ships
+`ControlMaster`, `ControlPersist` and a length-capped `ControlPath`, and refuses
+to override a user's `ControlMaster no` (`TermiodClient.swift:233-236`, applied
+at `:406`). What is missing is `BatchMode` and `ConnectTimeout`, which every
+other ssh call site in the app sets and this one does not — so an unloaded key
+prompts onto an unread stderr and the attach hangs with no error. **A one-line
+change with a real failure behind it.**
 
-**Gates:**
+*Gate:* attach to a host with a passphrase-protected key and no agent: a named
+error inside `ConnectTimeout`, never a hang.
+
+**4b — `TermiodConnection`.** One per device, owning the transport, its health
+and reconnect. `TermiodSessionLink` becomes a client of it rather than a
+transport owner; `withControlChannel` becomes a channel *on* it rather than a
+process. `handleStreamEnd` (`TermiodClient.swift:1867-1873`) stops calling
+`deliverExitLocked` — **a transport failure is not a process exit**, and today
+they are the same code path. The exit observer registry Stage 6 needs lands here.
+
+*Gates:*
 - Three panes on one SSH device: `pgrep -lf 'ssh .*<alias>'` shows **one** ssh.
 - `launchctl kickstart -k` the daemon with three local panes open: each pane
   shows a state named `daemon_lost`, distinct from `exited`, and `termiod
   tombstones` lists all three with no invented exit status. **Not** "history
   intact" — sessions do not survive a daemon restart and by decision never will
-  (`tombstone.rs:184`, burial loop `:194-201`).
-- `touch` a file on the VPS; the tree updates without a manual refresh.
-- Replay inside the watcher's 300-second linger (`resource.rs:51`) is exact;
-  past it, `gap: true` forces a full rescan.
+  (`tombstone.rs`, burial loop).
+- Pull the network on an attached device: panes degrade, and nothing reports an
+  exit status the child never produced.
 
-### Stage 4 — the daemon is supervised, and the two channels stop sharing one
+**4c — channel ids in the framing.** An additive `proto` bump so the four planes
+genuinely share one pipe rather than one pipe each. Sequenced last of the three
+because 4b keeps the durability promise on its own; 4c is what makes the promise
+cheap.
 
-`one-path-local-through-termiod.md` Stage 1 items 1 and 2 are **done** (§1.1):
-the daemon is built universal, `lipo`'d with a failing arch check, signed inside
-the outer seal, and resolved out of `Bundle.main`. Four items are left, and each
-is a release blocker on its own:
+*Gate:* a session attachment, an `fs:` subscription and an upload run
+concurrently over one transport, and the upload's chunking does not stall the
+byte path.
 
-1. **Per-channel `TERMIOD_SOCK`.** `socketPath()` (`TermiodClient.swift:55-68`)
-   has no channel term, while every other per-machine artifact this app owns is
-   scoped off one bundle-id read (`AppChannel.swift`). `termio-dev` and `termio`
-   are one device today. Note the observed dev-build defect that lands nearby: a
-   failed `TERMIO_CHANNEL=dev ./scripts/build-app.sh` leaves a `.dev`-suffixed
-   `CFBundleIdentifier` in the assembled bundle, and the next run suffixes it
-   again — `sh.termio.app.dev.dev`. The suffix must be applied idempotently.
-2. **A per-channel launchd label.** `service.rs:26` has exactly one `LABEL`,
-   which is also the plist filename and the `gui/$UID` target, and `install()`
-   can only plist `std::env::current_exe()` (`:101-107`). Both need arguments.
-3. **The app installs or repairs the job on launch.** Nothing calls
-   `launchctl` — `grep -n 'launchctl' Sources/termio/Terminal/Termiod/*.swift`
-   → 0. Until it does, `KeepAlive` is a mitigation that does not exist and
-   `spawnDaemon` is the only path.
-4. **A systemd `--user` unit + `enable-linger`**, and a decision on what a
-   Sparkle update does to a running daemon (`one-path-local-through-termiod.md`
-   §5.2 item 9 — the recommendation there is a compatibility window).
+### Stage 5 — the daemon is supervised, on both platforms
 
-**Gates:** that RFC's Stage 1 criteria, minus the ones items 1 and 2 already
-satisfy. `lipo -archs termio.app/Contents/Resources/termiod` prints both slices
-today; the two-plists and `kill -9`-respawn checks are what remains, and the
-notarization checks are CI-only.
+Items 1 and 2 of the last revision landed in `1746593`. Three remain, and each is
+a release blocker on its own.
 
-### Stage 5 — foreground parity
+1. **The app installs or repairs the launchd job on launch.** Nothing calls
+   `launchctl` — `grep -rn 'launchctl' Sources/` → **0**. Until it does,
+   `KeepAlive` is a mitigation that does not exist and `spawnDaemon` is the only
+   path. `service::install()` (`service.rs:175-201`) already writes the
+   channel-scoped plist and boots the label out first; it can only plist
+   `std::env::current_exe()`, so the app must invoke the bundled daemon's own
+   `service install` rather than reimplement it in Swift.
+2. **Linux: a systemd `--user` unit plus `loginctl enable-linger`.**
+   `service.rs:161-165` currently *refuses* on Linux with an error telling the
+   user to do it by hand. That refusal is honest and is not shippable as the
+   answer.
+3. **Merge `feat/termiod-remote-install`** (§2.4), which is what makes 1 and 2
+   reachable for a box the user has not touched: Settings ▸ Machines probes with
+   `--version` rather than `test -x` (executing the binary is what proves it
+   matches the CPU and links against a libc that exists), compares a digest
+   rather than a crate version, and moves the upload into place only after
+   `chmod`. This is open question 2 of the last revision, answered.
 
-`foreground_job: bool?` on `SessionInfo`, `foreground_changed` as a debounced
-push event, `tcgetpgrp` on the master with a per-platform argv/cwd lookup, argv →
-agent mapping staying on the client. Additive within `proto:1`.
+Plus the standing decision from one-path §5.2 item 9: what a Sparkle update does
+to a running daemon. The recommendation there is a compatibility window; take it
+or replace it, but do not ship Stage 7 without an answer.
 
-**Gates:** `one-path-local-through-termiod.md` Stage 3's four criteria, run in
-`termiod`'s CI on both macOS and Linux.
+**Gates:** two plists, one per channel, both `RunAtLoad` + `KeepAlive`;
+`kill -9` the daemon and it respawns; `lipo -archs` on the shipped binary prints
+both slices (true today); a fresh Linux box reachable by alias goes from nothing
+installed to an open session without a terminal, and survives a logout.
 
-### Stage 6 — git history on the device
+### Stage 6 — the companion stops depending on `PTYProcess`
 
-`remote-git-plane.md` §5 Stages 1–4 in its own order. §8.1's prerequisite is
-already satisfied (§3); §8.2's is satisfied by Stage 3 here.
+one-path §5 Stage 4, and the biggest single stage here. **Not** "extract a
+protocol both types satisfy": `PTYBridge` uses thirteen `PTYProcess` members
+(`CompanionServer.swift:985-1080`), and the ones without a daemon counterpart are
+each a decision:
 
-### Stage 7 — the CLI moves, verb by verb
+- **`modeResyncPreamble()` / `isAlternateScreenActive`.** `alt_screen` *is* on
+  the wire (`protocol.rs:174`, carried in both the `S` snapshot and the `G`
+  grid), so the alt-screen test has a counterpart. The mode **preamble** — mouse
+  reporting, the modes a skipped replay never carries — does not. The `S`
+  snapshot is the natural home; say so before writing it.
+- **Byte-capped replay.** The phone needs at most 128 KiB of the ring, because
+  the whole ring reflowed at a narrow grid is the allocator-panic trigger
+  recorded at `CompanionServer.swift:1007-1010`. Either the wire grows a replay
+  bound on `attach`, or the client truncates what it receives. The second wastes
+  bandwidth on exactly the link that has least to spare. **Decide it here, not
+  in code review.**
+- **`jiggleResize()`.** A resize to identical dimensions is a daemon no-op, so
+  "make the child redraw" has no verb. The honest options are a client-side wipe
+  plus a snapshot request, or accepting a stale frame until the next output. Do
+  **not** invent a host-side redraw op without arguing it — the host does not
+  decide presentation (invariant #7).
+- **Ownership.** `claimCompanionOwnership` / `claimHostOwnership` are an explicit
+  claim; the daemon's writer token is newest-interactive-wins
+  (`recompute_writer`, `session.rs`). Reconciling them is the piece most likely
+  to change phone behaviour visibly.
 
-`one-path-local-through-termiod.md` §7 and Stage 6, unchanged, plus §4's hook
-routing. `scripts/termio` becomes a router; `focus` and `notify` stay.
+Exit fan-out is inherited from 4b rather than solved here.
 
-### Stage 8 — the companion, then delete the fork
+**Gates:** one-path §5 Stage 4's criteria, unchanged, plus
+`grep -rn 'PTYProcess' Sources/termio/Companion/` → 0. Verified on a real device,
+not the simulator.
 
-`one-path-local-through-termiod.md` Stages 4 and 5. Deliberately last: §1.5 of
-that RFC establishes that `PTYBridge` uses twelve `PTYProcess` members and three
-have no daemon counterpart at all, so this is a rebuild of the mirror, not a
-conformance exercise.
+### Stage 7 — default on, for one full release
+
+Ship with `Termiod.isEnabled` defaulting to **true** and `TERMIO_TERMIOD=0`
+able to force it off. Then run one release and change nothing else in this list.
+
+This is not a formality. Stages 1–6 each removed a reason the flag existed;
+Stage 8 removes the alternative, and its rollback is a release rollback rather
+than a runtime switch. The soak is the only thing standing between that and a
+user with no way back. **Task notifications never fire from a dev build**, so the
+notification path in particular has to be exercised on the release channel here
+or it is not exercised at all.
+
+**Gate:** one shipped release on the release channel with the daemon backend on
+by default and no rollback. Concretely: local sessions survive an app quit and
+relaunch reattaching to the same pid; the companion, agent status, and task
+notifications behave as they did with the flag off.
+
+### Stage 8 — delete the local PTY fork
+
+Only now. Remove `Termiod.isEnabled` and every branch on it, the in-process
+`PTYProcess` construction (`TermioStore+TerminalSurface.swift:253`), the flag-off
+alerts (`TermioStore+Termiod.swift:861-865`, `TermioStore+TerminalSurface.swift:572`),
+the `ptyProcesses` half of `terminateAllSessions`, and `PTYProcess.swift` itself.
+
+**Gates:** one-path §5 Stage 5's criteria verbatim —
+`grep -rn 'TERMIO_TERMIOD\b' Sources/ | wc -l` → 0 (correctly excluding
+`TERMIO_TERMIOD_BIN`); `grep -rn 'PTYProcess(' Sources/ | wc -l` → 0; `sleep 300`
+in a local pane survives a quit and relaunch at the same pid; `swift test` green;
+a screen-recorded pass of new terminal, new agent session, group, close with a
+running job, close idle, agent self-quit.
+
+**Rollback: a release rollback.** That is what Stage 7 buys.
+
+### Stage 9 — the git and file panes read the device
+
+**This stage migrates capabilities the app already has. It adds no verb the
+product does not already ship**, and that boundary is what separates it from
+Stage 11.
+
+Gated on 4b for everything subscription-shaped:
+
+- `fs:` subscription → live tree updates; delete `FileTreeWatcher.swift`.
+- `git:` subscription → the Changes pane on a device.
+- `fs.match` coverage → Open Quickly against a device.
+- `git.log` / `git.show` / `git.branches`, already shipped in Rust and consumed
+  by nobody (`grep -rn '"git\.' Sources/` → **0**) → History and Compare.
+- The verbs the daemon does **not** have yet but the app does, all read-only:
+  worktree enumeration (`WorktreeService.swift`), `.gitignore` pattern reads,
+  remote/PR URL derivation, clone info, the stall fingerprint.
+
+`GitService.discard` is the one mutation in today's app. It moves in **Stage 11**
+with the rest of the mutation tier, not here — a discard that runs on the wrong
+machine destroys work.
+
+**Gates:** History, Compare and Changes render for a device checkout with the
+same views they use locally, and every unsupported control is **hidden rather
+than inert**. `touch` a file on the VPS and the tree updates without a manual
+refresh. Replay inside the watcher's 300-second linger (`resource.rs:51`) is
+exact; past it, `gap: true` forces a full rescan. **The watcher's budget is
+bounded before this ships** — a recursive watch plus a full BFS name-index walk
+over `$HOME` or a large monorepo, alive five minutes past the last subscriber, is
+not obviously authorized by "the user let us read this machine" (open question 3).
+
+### Stage 10 — the CLI moves, verb by verb
+
+one-path §7 and its Stage 6, unchanged in content and in internal order: `read`,
+`send`/`answer`, `watch`, `list`, `spawn`/`run`/`close`, then
+`agent report` → `set-status` plus hook installation on the device.
+`scripts/termio` becomes a router; `focus` and `notify` stay in Swift (§4.1).
+
+Now cheap, because there is one session backend to route to rather than two.
+
+**Gates:** one-path Stage 6's criteria verbatim, including the old-shape check on
+**values** — `termio sessions list --json` matched against the pre-move build for
+a session that has `cd`'d out of its spawn directory, which is the case that
+passes a field-identical check while `cwd` silently rots.
+
+### Stage 11 — remote git's new scope: mutation, askpass, network
+
+`remote-git-plane.md` §5 Stages 2–4, in its order, and **only** these — the read
+tier (its Stage 1) landed in `d38f50c` and is consumed in Stage 9 above.
+
+- **Local mutation tier**: staging, commit, discard, stash, branch ops, ignore
+  writes. No network, no credentials. Commit runs the box's hooks, which is the
+  point — hook output and hook failure must reach the pane rather than be
+  swallowed into a generic error.
+- **The askpass channel, built and tested alone**, before any verb depends on
+  it: a prompt raised on the box, answered on the Mac, plus cancel and timeout.
+- **Network tier**: `git.fetch`, `git.pull`, `git.push`, cancellable, with
+  progress.
+
+The prompt-answered-from-the-phone property is a *consequence* of the askpass
+prompt being a typed protocol object, not extra work, and it must not be built
+into the askpass stage.
+
+**Gates:** remote-git-plane §5's per-stage gates verbatim — a failing
+`pre-commit` hook shows its own output; `index.lock` contention is reported as
+contention; a passphrase-protected clone completes after answering on the Mac and
+a cancel produces a named error rather than a hang.
+
+`git.blame` (remote-git-plane §5 Stage 1) is **not** scheduled: it is
+editor-adjacent and termio's editor is a preview (§9.5).
 
 ---
 
-## 5. Where this disagrees with an existing RFC
+## 7. Where this disagrees with an existing RFC
 
-1. **`remote-git-plane.md` §8.1 is stale.** It says the workspace reference
-   "is unresolved in `one-workspace-source.md` and its review" and that the RFC
-   "should not be implemented before it". `Checkout`
-   (`DeviceContext.swift:56-101`) resolves it, with `host_id`-first identity —
-   which is what the codex review asked for and what `ProjectLocation` did not
-   give. Strike §8.1; §8.2 and §8.3 stand.
+1. **Device architecture §8's ordering is superseded** (§0). Its invariants and
+   its 4a/4b/4c split stand; steps 5–12 do not describe a runnable sequence any
+   more. In particular §8's step 9 ("request plane, then file tree and git move")
+   sits at Stage 9 here and needs no request plane — `fs.*` and `git.*` are their
+   own verbs and shipped that way.
 
-2. **`one-workspace-source.md` §2's `ProjectLocation` should not be built.** It
-   is a two-case enum keyed on `deviceID`; `KnownDevice` + `Checkout` are the
-   same information already in the tree, already tested
+2. **`remote-git-plane.md` §8.1 is stale.** It says the workspace reference "is
+   unresolved" and that the RFC "should not be implemented before it". `Checkout`
+   (`DeviceContext.swift:56-101`) resolves it, with the `host_id`-first identity
+   the codex review asked for. Strike §8.1; §8.2 and §8.3 stand. Its §5 Stage 1
+   is done in Rust, which §8.1 would have forbidden starting.
+
+3. **`one-workspace-source.md` §2's `ProjectLocation` should not be built.** A
+   two-case enum keyed on `deviceID` is a second spelling of `KnownDevice` +
+   `Checkout`, which is already in the tree, already tested
    (`InspectorCheckoutTests`, 6 tests), and already consumed by every inspector
-   pane. Adding a second spelling of the same idea is the fork this plan exists
-   to remove. The codex review anticipated exactly this: it proposed
-   `WorkspaceReference { deviceID; root }` over the enum, and `Checkout` *is*
-   that struct.
+   pane. `grep -rn ProjectLocation Sources/ Shared/` → 0, and should stay 0. The
+   codex review anticipated this: it proposed `WorkspaceReference { deviceID;
+   root }`, and `Checkout` *is* that struct.
 
-3. **`one-workspace-source.md` §5's stage order is inverted.** It puts "delete
-   SFTP" last, at Stage 5, behind editing and mutations. Its own review
-   disagreed — "SFTP is read-only. A static `fs.list`/`fs.read` tree plus the
-   settled plain-SSH install affordance can replace it" — and the review is
-   right. Deleting 1,409 lines of the least-tested transport in the app is the
-   cheapest correctness win available and it gates nothing.
+4. **`one-workspace-source.md` §5's stage order is inverted**, and this document
+   supersedes it. It put "delete SFTP" last, behind editing and mutations; its
+   own review disagreed and was right. That deletion shipped first and removed
+   1,409 lines.
 
-4. **The brief's "delete `RemoteFileTree.swift`" is wrong.** See §2.3. The SFTP
-   plane is 1,409 lines; the tree that renders it is not part of it.
+5. **The brief's "delete `RemoteFileTree.swift`" is wrong.** §4.3.
 
-5. **`one-path-local-through-termiod.md` §5.2 item 1 and
-   `one-binary-and-a-daemon-that-ships.md` §1 both lead with a problem that is
-   solved.** "A released build today cannot start a daemon at all" was true when
-   written and is not now: commit `2199f35` builds, `lipo`s, arch-checks and
-   signs `termiod` into `Contents/Resources`, and `daemonBinaryPath()` resolves
-   it. Verified by building the bundle here. What is left is supervision and
-   channel scoping — Stage 4, and a much smaller item than either RFC prices it
-   at. Both should be edited rather than read as current.
+6. **`one-path-local-through-termiod.md` §5.2 item 1 and
+   `one-binary-and-a-daemon-that-ships.md` §1 both lead with a solved problem.**
+   "A released build cannot start a daemon at all" was true when written:
+   `2199f35` builds, `lipo`s, arch-checks and signs `termiod` into
+   `Contents/Resources`, and `daemonBinaryPath()` resolves it. What is left is
+   Stage 5, a much smaller item than either RFC prices it at.
 
-6. **`one-path-local-through-termiod.md` Stage 2 item `4a` is done.**
-   `multiplexingArguments` ships (`TermiodClient.swift:208-236`, applied at
-   `:381`). Stage 3 here inherits only `4b`.
+7. **`one-path-local-through-termiod.md` Stage 2 item `4a` is partly done, not
+   done.** The last revision of this document said "done"; that overstated it.
+   `multiplexingArguments` ships, `BatchMode`/`ConnectTimeout` do not, and the
+   missing pair is the difference between a named error and a hang. Corrected in
+   Stage 4a.
 
-7. **`one-binary-and-a-daemon-that-ships.md` §2.3 stays dead.** Two binaries,
-   two names. Reason: B1 and B2 in §1.4. Do not re-propose.
+8. **`one-binary-and-a-daemon-that-ships.md` §2.3 stays dead.** Two binaries, two
+   names. A daemon named `termio` copied to Application Support lands byte-for-
+   byte on the path `CommandLineTool.supportCopyURL` owns and that every
+   installed hook names absolutely; the hook ends `2>/dev/null || true`, so
+   status reporting would die silently. And a router named `termio` cannot
+   dispatch to a binary named `termio`. **Do not re-propose.**
+
+9. **`one-path-local-through-termiod.md` §3.2's `foreground_changed` event does
+   not exist and should not be built.** That section specifies
+   `E { ev: "foreground_changed", session, pid, argv, cwd? }` as a debounced
+   push. The implementation instead reuses `E roster`, which already carried
+   `{session, action, info}` with the **whole** `SessionInfo`, and adds an
+   optional final `info` to `E session_exited`. Every property §3.2 argued for is
+   kept — it is a push and not a poll, it never touches `fan_out`, and the host
+   reports argv while the client maps it to an agent — and one problem is
+   removed: a whole-row event has no partial-update ordering to get wrong and
+   needs no second shape to version. **Strike the `foreground_changed` line from
+   §3.2; its three rules stand.**
+
+10. **`one-path-local-through-termiod.md` §3.2's last sentence is inverted by the
+    mechanism.** It reads: *"`foreground_job` rides `list` rather than an event
+    because its consumer asks once, at close time, and a stale push is worse than
+    a fresh question."* The premise does not hold. `Session::info()` reads the
+    `self.foreground` cache, so a `list` reply is built from **the same 2-second
+    sample** the push carried — the question is not fresher, it is the same
+    answer fetched again at 216–292 ms of main-thread SSH latency. The close
+    confirmation therefore reads the cached push deliberately, with an
+    in-process PTY overriding it whenever one exists, and both stale directions
+    bounded (Stage 2). **Strike that sentence.** The skew rule it sits beside —
+    an absent field preserves today's no-confirm behaviour and must never be read
+    as "unknown, so confirm" — is unchanged and is load-bearing.
 
 ---
 
-## 6. Non-goals
+## 8. Explicitly deferred
 
-- **QUIC, discovery, `grid_diff` by default, the workspace registry (device
-  arch §8.11).** Out, as in the source RFCs.
+Not "out of scope forever" — sequenced after this plan, with the reason recorded
+so nobody reads the absence as an oversight.
+
+- **Merging `feat/termiod-wss`.** Worth doing on its own terms: it proves the
+  protocol is transport-agnostic (invariant #4) with a byte-identical splice, it
+  is 100% additive, and it adds zero protocol verbs. It is **not** progress on
+  the Swift→Rust boundary and nothing here depends on it. Two conditions before
+  it lands: it needs a rebase across the thirteen `termiod/` commits it is now
+  behind (§2.4), and nothing in CI runs `vitest`/`tsc`/`vite build` for
+  `web/client/`. `termiod/ARCHITECTURE.md` still describes termiod as
+  Unix-socket + `termiod stdio` only.
+- **iOS attaching directly to a device.** Device arch §8.12. The topology is
+  decided; the transport is not, and it is gated on §9.6 — how a phone reaches a
+  device without embedding SSH (invariant #3). Until that is answered, the phone
+  stays a client of the Mac.
+- **Deleting the companion wire.** It is the one place the repo contradicts
+  invariant #4, and it is *not* deletable before the line above: deleting it
+  first leaves the phone with nothing to speak. §5 of
+  `20260819-device-workspace-project.md` establishes the cost is low when the
+  time comes — `WireProtocol.swift` contains the word "workspace" zero times, and
+  the whole artifact is a display prefix plus a routing id.
+- **Moving workspace authority to the device.** §3. Belongs with direct-attach,
+  for the same reason.
+- **QUIC, discovery, `grid_diff` by default.**
 - **Session survival across a daemon restart.** Decided against
   (`one-path-local-through-termiod.md` §5.2 item 7): a holder process or an
-  `exec`-preserving re-exec is a supervisor design, and it would reintroduce the
+  `exec`-preserving re-exec is a supervisor design, and it reintroduces the
   failure mode the daemon exists to remove — two processes disagreeing about who
   owns a PTY. Make restarts rare and honest instead.
-- **Merging `termio` and `termiod` into one binary.** §1.4.
-- **Moving `OSCProgressScanner` or `AgentStatusRules` to the host.** §2.1.
-- **A chat/structured-event lens.** Built and reverted three times; the design
+- **Merging `termio` and `termiod` into one binary.** §7.8.
+- **Moving `OSCProgressScanner` or `AgentStatusRules` to the host.** §4.1.
+- **A chat / structured-event lens.** Built and reverted three times; the design
   docs record why.
-- **Windows.** ConPTY has no controlling terminal and no `tcgetpgrp`. The field
-  would be absent, which is the same shape as an old daemon that does not send
-  it. One degrade path serves both.
-- **Merging `feat/termiod-wss`.** Worth doing, independent of this plan, and not
-  sequenced here.
+- **Windows.** ConPTY has no controlling terminal and no `tcgetpgrp`. The
+  foreground fields would be absent, which is the same shape as an old daemon
+  that does not send them — one degrade path serves both.
 
 ---
 
-## 7. Open questions
+## 9. Open questions
 
-1. **Does the one-shot channel cost show up in the Files pane over SSH?** Stage
-   1's criterion measures cold expansion. If a warm ControlMaster does not hold
-   it under ~50 ms per expand, Stage 3 moves ahead of Stage 2.
-2. **What does a plain-`ssh` session's Files pane say, exactly?** Stage 1 ships
-   the honest empty state; the install affordance needs Stage 4, because
-   `remote deploy` cross-compiles with `env!("CARGO_MANIFEST_DIR")` and `cargo`
-   on the user's Mac (`remote.rs:254-268`) and cannot run from a shipped app.
-   Nothing publishes a Linux `termiod` artifact today.
-3. **Does the watcher's budget need a bound before Stage 3?** The codex review
-   raised it: a recursive watch plus a full BFS name-index walk over `$HOME` or
-   a large monorepo, alive 5 minutes past the last subscriber
-   (`resource.rs:51`). Reaching a machine authorizes reads; it does not
-   obviously authorize that.
+1. **Does the one-shot channel cost show up over SSH?** Stage 3 measures cold
+   expansion over a warm ControlMaster. If it does not hold under ~50 ms, Stage 4
+   moves ahead of Stage 3. *(Carried from the last revision; Stage 1 shipped
+   without measuring it because the tree expands one directory per click and
+   search does not.)*
+2. ~~**What does a plain-`ssh` session's Files pane say, and who installs the
+   daemon?**~~ **Answered** by `feat/termiod-remote-install` (§2.4), folded into
+   Stage 5. The pane's honest empty state names the host; Settings ▸ Machines is
+   the affordance.
+3. **Does the watcher's budget need a bound before Stage 9?** Raised by the codex
+   review: a recursive watch plus a full BFS name-index walk over `$HOME` or a
+   large monorepo, alive five minutes past the last subscriber
+   (`resource.rs:51`). Reaching a machine authorizes reads; it does not obviously
+   authorize that. Stage 9's gate says yes; the shape of the bound is open.
 4. **File identity for the editor and the diff overlay.** `openFileURL`,
    `GitDiffRequest` and `IssuesPanelModel.repoRoot` all store local paths. They
-   need `(Checkout, relative path)` before Stage 6. Not before Stage 1 —
+   need `(Checkout, relative path)` before Stage 9. Not before Stage 3 —
    previews stage to a local temp file and already work that way.
-5. **Where does `Termiod.isEnabled` stop gating?** Every stage here is inert
-   with the flag off. Flipping the default is Stage 8's precondition and needs
-   one full release cycle behind it.
+5. **Does blame belong at all?** remote-git-plane §5 Stage 1 lists it and its own
+   §9.5 doubts it, on the grounds that blame is editor-adjacent and termio's
+   editor is a preview. It did not ship with the rest of the read tier
+   (`grep -rn blame termiod/src/` → 0). Decide when there is a real editor
+   surface, not before.
+6. **What does a Sparkle update do to a running daemon?** one-path §5.2 item 9
+   recommends a compatibility window. Stage 7 cannot ship without an answer,
+   because the soak is the release where it would first bite.
+7. **Where does the device's project registry start?** §3 shows the first inch is
+   one field — `Session::info()` reading back `workstream.project`. Whether the
+   registry grows past that before direct-attach is the same question as
+   workspace authority, and should be answered with it.
