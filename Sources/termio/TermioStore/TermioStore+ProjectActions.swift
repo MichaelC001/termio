@@ -706,6 +706,12 @@ extension TermioStore {
 
         let removedSessionIDs = Set(projects[projectIndex].sessions.map(\.id))
         for sessionID in removedSessionIDs {
+            // Removing the project destroys its sessions, so the daemon has to
+            // be told — the same verb Close Session uses. Detaching instead
+            // would leave every agent of a removed project running with nothing
+            // left on this side that can reach it.
+            termiodLinks[sessionID]?.killAndClose()
+            termiodLinks[sessionID] = nil
             surfaces[sessionID] = nil
             monitors[sessionID] = nil
             removeRuntime(for: sessionID)
