@@ -177,6 +177,9 @@ pub enum SessionMsg {
         grid_diff: bool,
         reply: oneshot::Sender<AddClientReply>,
     },
+    /// A client asks to be repainted: it lost bytes somewhere downstream and
+    /// cannot reconstruct the screen from what it has.
+    ResendSnapshot { id: ClientId },
     /// A client asks for the write token because its user is typing. Refused
     /// for an observer, which by §A never holds it.
     ClaimWriter {
@@ -1838,6 +1841,15 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                 session.emit_writer_changed(session.writer.clone());
             }
             session.emit_roster();
+        }
+        SessionMsg::ResendSnapshot { id } => {
+            if !session.clients.contains_key(&id) {
+                return None;
+            }
+            let request_id = session.allocate_snapshot_request();
+            // No scrollback: this repaints the viewport a client already has
+            // room for, and history it never lost.
+            session.request_snapshot(id, request_id, false);
         }
         SessionMsg::ClaimWriter { id, reply } => {
             // An observer is refused rather than promoted: it attached without

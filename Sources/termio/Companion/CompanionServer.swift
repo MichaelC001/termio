@@ -167,7 +167,10 @@ struct LinkLiveness {
 final class CompanionServer {
     private let port: UInt16
     private let rosterProvider: () -> CompanionRoster
-    private let ptyForSession: (String) -> PTYProcess?
+    /// Opens this server's *own* attachment to a session on its daemon, so a
+    /// phone is a second client of the session rather than a tap on the Mac's
+    /// copy of it. Nil when the session is unknown or could not be reached.
+    private let attachSession: (String) -> TermiodSessionLink?
     /// Creates a session for a `start` request. A nil agent is the phone's
     /// bare New Chat — the store resolves it through the same default-agent
     /// policy as ⌘N. Returns the new session's wire id plus the agent wire id
@@ -189,7 +192,7 @@ final class CompanionServer {
     /// silence and a short clock: the roster names every project on this Mac
     /// and an attach is keystroke access to a shell.
     private var authenticatedWireByConnection: [ObjectIdentifier: Int] = [:]
-    private var bridges: [ObjectIdentifier: PTYBridge] = [:]
+    private var bridges: [ObjectIdentifier: SessionBridge] = [:]
     private var lastRoster: CompanionRoster?
     private var pollTimer: Timer?
     private var ticks = 0
@@ -203,7 +206,7 @@ final class CompanionServer {
     init(
         port: UInt16 = CompanionServer.defaultPort,
         rosterProvider: @escaping () -> CompanionRoster,
-        ptyForSession: @escaping (String) -> PTYProcess?,
+        attachSession: @escaping (String) -> TermiodSessionLink?,
         startSession: @escaping (String, String?) -> (sessionID: String, agentID: String)?,
         stopSession: @escaping (String) -> Bool,
         startScratchTerminal: @escaping () -> (sessionID: String, agentID: String)?,
@@ -211,7 +214,7 @@ final class CompanionServer {
     ) {
         self.port = port
         self.rosterProvider = rosterProvider
-        self.ptyForSession = ptyForSession
+        self.attachSession = attachSession
         self.startSession = startSession
         self.stopSession = stopSession
         self.startScratchTerminal = startScratchTerminal
@@ -284,10 +287,7 @@ final class CompanionServer {
     func stop() {
         pollTimer?.invalidate()
         listener?.cancel()
-        for bridge in bridges.values {
-            bridge.stop()
-            bridge.pty.claimHostOwnership()
-        }
+        for bridge in bridges.values { bridge.stop() }
         bridges.removeAll()
         for connection in connectionByID.values { connection.cancel() }
         connectionByID.removeAll()
@@ -327,12 +327,10 @@ final class CompanionServer {
 
     private func drop(_ id: ObjectIdentifier) {
         if let bridge = bridges[id] {
+            // Detaching is the whole teardown: the size follows whichever
+            // device types next, and the session belongs to the daemon.
             bridge.stop()
             bridges[id] = nil
-            // The last phone detached: hand the winsize back to the Mac.
-            if !bridges.values.contains(where: { $0.pty === bridge.pty }) {
-                bridge.pty.claimHostOwnership()
-            }
         }
         connectionByID[id]?.cancel()
         connectionByID[id] = nil
@@ -363,8 +361,7 @@ final class CompanionServer {
                     // Typing from the phone is active use — the size follows it.
                     Task { @MainActor in
                         guard let bridge = self?.bridges[ObjectIdentifier(connection)] else { return }
-                        bridge.pty.claimCompanionOwnership()
-                        bridge.pty.write(content)
+                        bridge.write(content)
                     }
                 case .text:
                     if let text = String(data: content, encoding: .utf8),
@@ -403,25 +400,25 @@ final class CompanionServer {
         }
         switch control {
         case .attach(let sessionID):
-            guard let pty = ptyForSession(sessionID) else {
+            guard let link = attachSession(sessionID) else {
                 sendControl(.error(message: "unknown session — pull the list to refresh"), to: connection)
                 return
             }
             bridges[id]?.stop()
-            let bridge = PTYBridge(pty: pty, connection: connection)
+            let bridge = SessionBridge(link: link, connection: connection)
             bridges[id] = bridge
-            bridge.start()
-            // The bridge owns the token so `stop()` retires the observer with the
-            // attach: without that, a phone that re-attaches to another session
-            // would still hear THIS pty's exit — a spurious exit banner and a
-            // dropped connection while it's viewing a session that's fine.
-            bridge.exitToken = pty.addExitObserver { [weak self, weak connection] code in
+            // The bridge owns the attachment, so replacing it retires the exit
+            // handler with it: a phone that re-attaches to another session must
+            // not still hear THIS session's exit — a spurious exit banner and a
+            // dropped connection while it views a session that is fine.
+            bridge.onExit = { [weak self, weak connection] code in
                 guard let connection else { return }
                 Task { @MainActor in
                     self?.sendControl(.exit(code: code), to: connection)
                     self?.drop(ObjectIdentifier(connection))
                 }
             }
+            bridge.start()
         case .start(let projectID, let agent):
             // The phone's sidebar-equivalent "new session" — same store action
             // the CLI's spawn-on-`send` uses; the roster push announces it to
@@ -974,131 +971,71 @@ final class CompanionServer {
         )
     }
 }
+// MARK: - Session bridge
 
-// MARK: - PTY bridge
-
-/// One phone ↔ one session PTY. Output is tapped via a PTYProcess sink on a
-/// private serial queue, so a slow phone can never stall the Mac's terminal;
-/// if the socket falls more than `highWater` behind, frames are dropped and a
-/// resize jiggle repaints the screen once the pipe drains (catch-up snapshot,
-/// not a minutes-long fast-forward).
-private final class PTYBridge: @unchecked Sendable {
-    let pty: PTYProcess
+/// One phone ↔ one attachment on the session's daemon.
+///
+/// The phone is a second client of the same session, not a tap on the Mac's
+/// copy of it: the daemon fans bytes out to every attachment, so nothing here
+/// has to reach into the Mac's terminal. That is what lets a slow phone fall
+/// behind without stalling the Mac — if the socket is more than `highWater`
+/// behind, frames are dropped and the daemon's own resync repaints once the
+/// pipe drains.
+///
+/// Three things this used to do by hand are now the attach itself. The daemon
+/// renders its snapshot at *this client's* grid, so there is no replay of the
+/// Mac-width ring to cap, no reflow spike to dodge, and no mode preamble to
+/// re-assert — a snapshot carries modes, charsets and the scrolling region.
+private final class SessionBridge: @unchecked Sendable {
+    let link: TermiodSessionLink
     private let connection: NWConnection
     private let queue = DispatchQueue(label: "termio.companion.bridge")
-    private var sinkToken: UUID?
-    private var resizeToken: UUID?
-    /// Set by the attach handler (the observer's body needs the server, which the
-    /// bridge doesn't know); cleared here in `stop()` like the other two tokens.
-    var exitToken: UUID?
     private let lock = NSLock()
     private var pendingBytes = 0
     private var behind = false
-    private var clientCols = 0
-    private var clientRows = 0
-    /// The PTY is currently sized for some other device's grid, so this
-    /// client's screen holds wrong-width layout that the next repaint must
-    /// not draw over.
-    private var ptyIsForeignSized = false
     private static let highWater = 1 << 20   // start dropping above 1 MB in flight
     private static let lowWater = 128 << 10  // recovered once under 128 KB
-    /// Cap on the plain-shell replay sent to a phone on attach — a few
-    /// screenfuls, enough to paint the current screen without reflowing the
-    /// whole ring at the phone's narrow grid (the allocator-panic trigger).
-    private static let phoneReplayCap = 128 << 10  // 128 KB
-    /// Clears glyphs and scrollback but not modes — alt-screen and mouse
-    /// reporting survive, where a full RIS would knock the TUI out of them.
-    private static let wipe = Data("\u{1B}[2J\u{1B}[3J\u{1B}[H".utf8)
 
-    init(pty: PTYProcess, connection: NWConnection) {
-        self.pty = pty
+    /// Called when the session ends, so the server can tell the phone and drop
+    /// the connection. Set by the attach handler, which owns the server.
+    var onExit: ((Int32) -> Void)?
+
+    init(link: TermiodSessionLink, connection: NWConnection) {
+        self.link = link
         self.connection = connection
     }
 
     func start() {
-        // A full-screen TUI (Claude Code, vim) repaints its whole screen on the
-        // next SIGWINCH, and its ring buffer was laid out for whatever grid the
-        // Mac had — replaying those bytes at the phone's narrower grid lands the
-        // cursor motions wrong, so the stale frame survives as a ghost under the
-        // live one (and the reflow spike can tip the phone's allocator over). So
-        // for an alt-screen session skip the replay entirely: re-assert just the
-        // current modes below, wipe, and let the client's resize claim force a
-        // clean full repaint. A plain shell has no such repaint, so it still
-        // replays — its history is the screen.
-        let altScreen = pty.isAlternateScreenActive
-        // The panic-hunt datapoint: which attach path ran. An alt-screen TUI
-        // skips the byte replay (no reflow spike); a plain shell replays up to
-        // `phoneReplayCap`. Filter with:
-        //   log stream --predicate 'category == "companion"' --info
-        Log.companion.notice("attach altScreen=\(altScreen, privacy: .public) replayCapBytes=\(altScreen ? 0 : Self.phoneReplayCap, privacy: .public)")
-        sinkToken = pty.addSink(
-            on: queue,
-            replayingBuffer: !altScreen,
-            // The phone is a viewer, not the scrollback of record — the Mac keeps
-            // full history. Replaying the whole 1 MB ring reflows at the phone's
-            // narrow grid all at once and can tip libghostty's allocator into its
-            // panic screen on the cold attach. A few screenfuls is all a viewer
-            // needs to paint "where you are"; the rest is the Mac's to hold.
-            replayCap: Self.phoneReplayCap
-        ) { [weak self] data in
-            self?.send(data)
+        link.onOutput = { [weak self] data in
+            self?.queue.async { self?.send(data) }
         }
-        // When the replay is skipped nothing carries the mode switches, so the
-        // phone must be put into the alternate screen and mouse modes explicitly.
-        // Then wipe the glyphs — 2J/3J/home rather than a full RIS, so those modes
-        // survive. The repaint comes from the client's resize claim, which follows
-        // the attach on the same socket. The bridge queue is serial, so this lands
-        // after any replay and before that repaint.
-        queue.async { [weak self] in
-            guard let self else { return }
-            if altScreen {
-                let preamble = pty.modeResyncPreamble()
-                if !preamble.isEmpty { send(preamble) }
-            }
-            send(Self.wipe)
+        link.onExit = { [weak self] status, _, _ in
+            self?.onExit?(status)
         }
-        // Any winsize change this client didn't ask for (the Mac typing and
-        // reclaiming the size) makes the repaint that follows land wrong on
-        // this grid — wipe first so it can't draw over the current frame,
-        // and once more when the size comes back home.
-        resizeToken = pty.addResizeObserver { [weak self] cols, rows in
-            guard let self else { return }
-            lock.lock()
-            let foreign = cols != clientCols || rows != clientRows
-            let needsWipe = foreign || ptyIsForeignSized
-            ptyIsForeignSized = foreign
-            lock.unlock()
-            if needsWipe {
-                queue.async { self.send(Self.wipe) }
-            }
-        }
+        link.start()
     }
 
-    /// A resize control from this client: record its grid and claim the size
-    /// for it. When the winsize actually changes, the SIGWINCH makes the child
-    /// redraw (and the resize observer wipes any wrong-width layout). When it
-    /// does *not* change — a cold attach at the same size, or a re-entry that
-    /// reasserts the grid to reclaim ownership from the Mac — no SIGWINCH fires,
-    /// so jiggle to force the redraw ourselves. The current prompt is then
-    /// reprinted cleanly over any `PROMPT_SP` line the phone had rendered
-    /// reflowed at the Mac's width; scrollback is left intact (no wipe).
+    /// Keystrokes from the phone. The link claims the write token on the way
+    /// through, so a phone typing takes the session back from the Mac the same
+    /// way the Mac takes it back by typing.
+    func write(_ data: Data) {
+        link.send(data)
+    }
+
+    /// A resize control from this client. Sizing is the writer's to set, and
+    /// the phone becomes the writer by attaching or by typing — so this is the
+    /// grid the daemon adopts, and it answers with a keyframe rendered for it.
     func applyClientResize(cols: Int, rows: Int) {
-        lock.lock()
-        clientCols = cols
-        clientRows = rows
-        lock.unlock()
-        if !pty.resizeFromCompanion(cols: cols, rows: rows) {
-            pty.jiggleResize()
-        }
+        link.resize(rows: rows, cols: cols)
     }
 
     func stop() {
-        if let token = sinkToken { pty.removeSink(token) }
-        sinkToken = nil
-        if let token = resizeToken { pty.removeResizeObserver(token) }
-        resizeToken = nil
-        if let token = exitToken { pty.removeExitObserver(token) }
-        exitToken = nil
+        link.onOutput = nil
+        link.onExit = nil
+        onExit = nil
+        // Detach, never kill: the session belongs to the daemon and outlives
+        // every viewer of it, which is the whole point of it living there.
+        link.detach()
     }
 
     private func send(_ data: Data) {
@@ -1123,11 +1060,11 @@ private final class PTYBridge: @unchecked Sendable {
                 if recovered { behind = false }
                 lock.unlock()
                 if recovered {
-                    // The dropped frames tore escape sequences mid-stream;
-                    // clean the slate so remnants can't survive the forced
-                    // repaint as ghosts.
-                    queue.async { [weak self] in self?.send(Self.wipe) }
-                    pty.jiggleResize()
+                    // The dropped frames tore escape sequences mid-stream. Ask
+                    // the daemon for a fresh screen rather than wiping and
+                    // hoping: it holds the authoritative grid and can redraw
+                    // this client's exact viewport.
+                    link.requestResync()
                 }
             }
         )
@@ -1137,12 +1074,18 @@ private final class PTYBridge: @unchecked Sendable {
 // MARK: - Store → PTY attach
 
 extension TermioStore {
-    /// The PTY backing a session for a phone attach. If the session was never
-    /// shown on the Mac (surfaces are made lazily on first render), create it
-    /// now — that spawns the agent with its recorded resume arguments, so the
-    /// phone wakes the same conversation instead of being told "no terminal".
-    /// `wireID` is a full session UUID or the CLI's 8-char prefix.
-    func companionPTY(for wireID: String) -> PTYProcess? {
+    /// A phone's own attachment to a session on its daemon. If the session was
+    /// never shown on the Mac (surfaces are made lazily on first render),
+    /// surface it first — that spawns the agent with its recorded resume
+    /// arguments, so the phone wakes the same conversation instead of being
+    /// told "no terminal". `wireID` is a full session UUID or the CLI's
+    /// 8-char prefix.
+    ///
+    /// The link returned is the phone's alone. The daemon fans the session's
+    /// bytes out to every attachment, so a viewer on the phone costs one more
+    /// client rather than a tap on the Mac's own stream — and the two can hold
+    /// different grids, with the write token following whoever types.
+    func companionAttachment(for wireID: String) -> TermiodSessionLink? {
         guard let session = findCompanionSession(wireID) else { return nil }
         // Attaching from the phone is the mobile equivalent of selecting the
         // session in the desktop sidebar: the user is now looking at the prompt,
@@ -1154,9 +1097,14 @@ extension TermioStore {
         markSeen(session.id)
         // A deliberate attach from the phone, like desktop selection — float it now.
         if let project = project(for: session.id) { noteProjectActivity(project.id, force: true) }
-        if let pty = ptyProcesses[session.id] { return pty }
+        // Surfacing is what guarantees the session exists on the daemon; the
+        // attach below then resolves it by name rather than creating a second.
         _ = surface(for: session)
-        return ptyProcesses[session.id]
+        // The Mac's own link existing is what proves the session is on the
+        // daemon. The spec below is therefore never used to create anything —
+        // `attach` resolves the name first — so it carries nothing.
+        guard termiodLinks[session.id] != nil else { return nil }
+        return makeTermiodLink(for: session, argv: [], cwd: "", env: [:])
     }
 
     /// Create a session in a project for a phone `start` request — the same

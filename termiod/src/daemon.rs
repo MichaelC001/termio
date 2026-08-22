@@ -1409,6 +1409,14 @@ async fn process_control(
             send_response(out, response_cache, seq, response);
         }
         Control::Detach { .. } => return Ok(ControlFlow::Close),
+        Control::RequestSnapshot { seq } => {
+            let _ = out.send(Outbound::Control(error(
+                seq,
+                ErrorCode::ProtoError,
+                "request_snapshot needs an active attachment on this channel",
+                false,
+            )));
+        }
         Control::ClaimWriter { seq } => {
             // The token belongs to an attachment, and this channel has none —
             // the claim is only meaningful inside the attached loop.
@@ -1918,6 +1926,24 @@ async fn run_attach(
                     )
                 };
                 let _ = out.send(Outbound::Control(response));
+            }
+            Ok(Some(Frame::Control(Control::RequestSnapshot { seq }))) => {
+                if supports_snapshot {
+                    handle.send(SessionMsg::ResendSnapshot {
+                        id: client_id.clone(),
+                    });
+                    let _ = out.send(Outbound::Control(Control::Ok { re: seq }));
+                } else {
+                    // The snapshot plane was never negotiated on this
+                    // attachment, so there is nothing to answer with — say so
+                    // rather than leaving the client waiting for a repaint.
+                    let _ = out.send(Outbound::Control(error(
+                        seq,
+                        ErrorCode::ProtoError,
+                        "this attachment did not negotiate snapshots",
+                        false,
+                    )));
+                }
             }
             Ok(Some(Frame::Control(Control::Unknown))) => {}
             Ok(Some(Frame::Event(event))) => drop(event),

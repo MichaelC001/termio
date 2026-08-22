@@ -511,6 +511,20 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// Client asks for a fresh snapshot of the screen it is attached to.
+    ///
+    /// The byte stream is raw PTY output, so a client that lost any of it holds
+    /// a screen that is simply wrong — and only the host can say what the
+    /// screen should be. Attaching is the other way to get one; this is the
+    /// way that does not cost an attachment.
+    ///
+    /// The gap is not always the daemon's to see: a Mac relaying to a phone
+    /// drops frames on *its* outbound socket, downstream of everything the
+    /// daemon's own backlog protects.
+    RequestSnapshot {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
     /// Client asks for the write token, without re-attaching to get it.
     ///
     /// Attaching interactively already takes the token, which is right for the
@@ -893,6 +907,7 @@ impl Control {
             | Control::Attach { seq, .. }
             | Control::Detach { seq }
             | Control::ClaimWriter { seq }
+            | Control::RequestSnapshot { seq }
             | Control::Subscribe { seq, .. }
             | Control::SubscribeResource { seq, .. }
             | Control::UnsubscribeResource { seq, .. }

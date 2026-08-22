@@ -638,6 +638,10 @@ enum Termiod {
         let op = "claim_writer"
     }
 
+    private struct RequestSnapshotOperation: Encodable {
+        let op = "request_snapshot"
+    }
+
     /// Opens a transfer into a session's scratch directory on the device
     /// (§C.12 `temp:` dest). `session` is the termiod session name — the app's
     /// session UUID — and the daemon reaps whatever lands there when that
@@ -1360,6 +1364,10 @@ enum Termiod {
     static func claimWriterPayload() throws -> Data {
         try encodeControl(ClaimWriterOperation())
     }
+
+    static func requestSnapshotPayload() throws -> Data {
+        try encodeControl(RequestSnapshotOperation())
+    }
 }
 
 enum TermiodClientError: LocalizedError {
@@ -1735,6 +1743,27 @@ final class TermiodSessionLink: @unchecked Sendable {
         Termiod.killSession(target: sessionName, route: route)
         workQueue.async { [self] in
             teardownLocked()
+        }
+    }
+
+    /// Asks the daemon to repaint this attachment.
+    ///
+    /// For a relay that lost bytes on its *own* downstream socket — the phone
+    /// bridge dropping frames a slow link could not take — the daemon has no
+    /// way to know the screen is wrong, so it has to be told. The repaint
+    /// arrives as an ordinary snapshot on the reader.
+    func requestResync() {
+        workQueue.async { [self] in
+            guard !closed, attached, let transport else { return }
+            do {
+                try Termiod.writeFrame(transport.writeDescriptor, kind: .control,
+                                       payload: Termiod.requestSnapshotPayload())
+            } catch {
+                Log.termiod.error("""
+                resync request on \(self.sessionName, privacy: .public) failed: \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            }
         }
     }
 

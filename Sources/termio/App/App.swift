@@ -360,8 +360,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             rosterProvider: { [weak store] in
                 store?.companionRoster() ?? CompanionRoster(projects: [])
             },
-            ptyForSession: { [weak store] id in
-                store?.companionPTY(for: id)
+            attachSession: { [weak store] id in
+                store?.companionAttachment(for: id)
             },
             startSession: { [weak store] projectID, agent in
                 store?.companionStartSession(projectID: projectID, agent: agent)
