@@ -783,6 +783,35 @@ enum Termiod {
             createdUnix = try container.decodeIfPresent(UInt64.self, forKey: .createdUnix) ?? 0
             attachedClients = try container.decodeIfPresent(Int.self, forKey: .attachedClients) ?? 0
         }
+
+        /// What to call this session on screen. The name is the daemon's handle,
+        /// not a label: a session Termio created is named with the app's session
+        /// uuid, so a roster row for one this app has no record of would read as
+        /// a line of hex. In order of how much it tells a person: the reported
+        /// title, the agent, the program actually running, and — only when the
+        /// command says nothing — the name itself.
+        var displayLabel: String {
+            if let title, !title.isEmpty { return title }
+            if let agentID, !agentID.isEmpty { return agentID }
+            return Self.programName(in: command) ?? name
+        }
+
+        /// The program behind the login-shell wrapper Termio spawns through
+        /// (`/bin/zsh -ilc exec claude …`): the shell, its flags and `exec` are
+        /// scaffolding, and the first word after them is the thing running. A
+        /// bare `/bin/zsh -il` has nothing behind the scaffolding because the
+        /// shell *is* the session, so it names itself.
+        private static func programName(in command: String) -> String? {
+            var words = command.split(whereSeparator: \.isWhitespace).map(String.init)
+            guard let executable = words.first, !executable.isEmpty else { return nil }
+            let shell = URL(fileURLWithPath: executable).lastPathComponent
+            guard shell.hasSuffix("sh") else { return shell }
+            words.removeFirst()
+            while let flag = words.first, flag.hasPrefix("-") { words.removeFirst() }
+            if words.first == "exec" { words.removeFirst() }
+            guard let program = words.first, !program.isEmpty else { return shell }
+            return URL(fileURLWithPath: program).lastPathComponent
+        }
     }
 
     /// A dead session, as the daemon buried it (termiod/src/tombstone.rs). This
@@ -1136,8 +1165,21 @@ enum Termiod {
     /// Ends a session for real — the explicit user-facing destroy verb, never
     /// part of quit/detach. The target may be a termiod id or name (the app
     /// uses the session UUID it named the session with).
-    static func killSession(target: String, route: TermiodRoute = .local) {
+    ///
+    /// `completion` runs on the main queue once the daemon has answered, however
+    /// it answered. A caller that shows the device's own roster needs it: asking
+    /// for the roster before the kill lands would put the row straight back.
+    static func killSession(
+        target: String,
+        route: TermiodRoute = .local,
+        completion: (@Sendable @MainActor () -> Void)? = nil
+    ) {
         DispatchQueue.global(qos: .utility).async {
+            defer {
+                if let completion {
+                    DispatchQueue.main.async { MainActor.assumeIsolated(completion) }
+                }
+            }
             do {
                 try withControlChannel(route: route) { transport, _ in
                     try writeFrame(transport.writeDescriptor, kind: .control,

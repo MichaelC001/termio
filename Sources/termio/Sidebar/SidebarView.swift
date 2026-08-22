@@ -384,6 +384,8 @@ struct SidebarView: View {
             items.append(.separator)
         }
         items.append(.action(localized("Refresh")) { store.refreshDeviceSessions() })
+        items.append(.separator)
+        items.append(.action(localized("Close All")) { store.requestCloseAllDeviceSessions() })
         return items
     }
 
@@ -1415,10 +1417,7 @@ private struct DeviceOnlySessionRow: View {
     let chrome: ChromeTheme?
     @State private var isHovering = false
 
-    private var title: String {
-        if let title = information.title, !title.isEmpty { return title }
-        return information.name
-    }
+    private var title: String { information.displayLabel }
 
     /// What the device says the row is doing, in the fewest words that stay true:
     /// the command, and the directory it runs in on that machine.
@@ -1449,10 +1448,11 @@ private struct DeviceOnlySessionRow: View {
                 }
             }
             Spacer(minLength: 4)
-            if information.attachedClients > 0 {
-                // Someone else is watching this session. Worth saying out loud —
-                // the write token is single-holder, so opening it may not hand
-                // over the keyboard.
+            // Someone else is watching this session. Worth saying out loud — the
+            // write token is single-holder, so opening it may not hand over the
+            // keyboard. It yields the trailing edge to the close button on hover,
+            // which is where every other row in the sidebar puts that action.
+            if information.attachedClients > 0, !isHovering {
                 HugeIconView(icon: .view, size: 13, color: .secondary)
             }
         }
@@ -1462,10 +1462,35 @@ private struct DeviceOnlySessionRow: View {
         .help(information.cwd.isEmpty
               ? localized("Opened outside Termio on this device")
               : localized("Opened outside Termio, in \(information.cwd)"))
-        .onHover { isHovering = $0 }
         .simultaneousGesture(TapGesture().onEnded { store.adoptDeviceSession(information) })
+        // The same hover-reveal close as a session row. Without it the only way
+        // to end one of these was to adopt it into the sidebar first and close
+        // it there — backwards for the rows this section mostly holds, which are
+        // sessions no Termio on this Mac has a record of any more.
+        //
+        // Layered *outside* the row's tap, or the click that closes a session
+        // would also adopt it: a simultaneous gesture fires for every tap its
+        // own subtree receives, button or not. Hover is read outside both, so
+        // moving onto the button doesn't count as leaving the row and blink it
+        // back out from under the cursor.
+        .overlay(alignment: .trailing) {
+            SessionRowActionButton(
+                systemImage: "xmark.circle.fill",
+                help: localized("Close session"),
+                chrome: chrome
+            ) {
+                store.requestCloseDeviceSession(information)
+            }
+            .opacity(isHovering ? 1 : 0)
+            .allowsHitTesting(isHovering)
+        }
+        .onHover { isHovering = $0 }
         .background(SidebarRowContextMenu(items: {
-            [.action(localized("Open")) { store.adoptDeviceSession(information) }]
+            [
+                .action(localized("Open")) { store.adoptDeviceSession(information) },
+                .separator,
+                .action(localized("Close Session")) { store.requestCloseDeviceSession(information) },
+            ]
         }))
         .listRowBackground(
             SidebarRowHighlight(isSelected: false, isHovering: isHovering, chrome: chrome)

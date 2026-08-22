@@ -202,6 +202,8 @@
 	<string>关闭</string>
 	<key>Close (Esc)</key>
 	<string>关闭（Esc）</string>
+	<key>Close All</key>
+	<string>全部关闭</string>
 	<key>Close All Chats</key>
 	<string>关闭所有聊天</string>
 	<key>Close All Terminals</key>

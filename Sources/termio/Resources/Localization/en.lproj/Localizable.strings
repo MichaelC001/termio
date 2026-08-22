@@ -202,6 +202,8 @@
 	<string>Close</string>
 	<key>Close (Esc)</key>
 	<string>Close (Esc)</string>
+	<key>Close All</key>
+	<string>Close All</string>
 	<key>Close All Chats</key>
 	<string>Close All Chats</string>
 	<key>Close All Terminals</key>
