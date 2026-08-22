@@ -2024,7 +2024,7 @@ extension AppDelegate: NSMenuDelegate {
     }
 
     /// Fills a New SSH Connection submenu with one row per `~/.ssh/config` host —
-    /// the same aliases Settings ▸ Machines lists — each connecting directly, plus a
+    /// the same aliases Settings ▸ Devices lists — each connecting directly, plus a
     /// trailing "Add Host…" opening the same form as Settings' Add Host button
     /// and connecting to the machine it adds (see `addSSHHost`). With an empty
     /// config only "Add Host…" remains — the first-run path.

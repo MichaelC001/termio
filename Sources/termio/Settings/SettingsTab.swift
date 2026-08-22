@@ -7,10 +7,16 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case appearance
     case terminal
+    /// A **device** is a machine identified by its `host_id` and reached by one
+    /// or more `~/.ssh/config` aliases — the term the session protocol, the
+    /// daemon and `TermiodDevice` all already use. This tab was called
+    /// "Machines" while the app had no other name for the far end.
+    ///
     /// The raw value stays `ssh` because it is the value persisted under
     /// `lastOpenKey`; changing it would reopen Settings on another tab for
-    /// everyone who left this one showing.
-    case machines = "ssh"
+    /// everyone who left this one showing. It has now survived two renamings,
+    /// which is the point of it.
+    case devices = "ssh"
     case keyboard
     case agents
     case usage
@@ -28,7 +34,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: return localized("General")
         case .appearance: return localized("Appearance")
         case .terminal: return localized("Terminal")
-        case .machines: return localized("Machines")
+        case .devices: return localized("Devices")
         case .keyboard: return localized("Keyboard")
         case .agents: return localized("Agents")
         case .usage: return localized("Usage")
@@ -44,7 +50,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: return .settings
         case .appearance: return .paintBoard
         case .terminal: return .terminal
-        case .machines: return .serverStack
+        case .devices: return .serverStack
         case .keyboard: return .keyboard
         case .agents: return .bot
         case .usage: return .chartColumn
@@ -60,7 +66,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: return localized("The termio command-line tool, agent skill, and notifications")
         case .appearance: return localized("Theme, fonts, cursor, and window")
         case .terminal: return localized("Scrollback history and text selection")
-        case .machines: return localized("The machines in your ~/.ssh/config, and the keys that reach them")
+        case .devices: return localized("The devices in your ~/.ssh/config, and the keys that reach them")
         case .keyboard: return localized("Keyboard shortcuts for every command")
         case .agents: return localized("The coding agents offered when you start a session")
         case .usage: return localized("Token usage for your connected agents")
