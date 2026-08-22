@@ -17,6 +17,19 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.40.1",
+    date: "2026-08-22",
+    title: "The spinner stays on for the whole turn",
+    changes: {
+      fixed: [
+        "An agent's spinner stopped about twelve seconds into a turn and never came back, so a session that was still working sat there looking idle. It now runs as long as the turn does.",
+        "Sessions the daemon hosts read their status from the same signals a local one does. They had only the window title to go on, so a turn that started without a hook went unseen.",
+        "Agent status no longer goes quiet for good when another build of termio is launched beside the app. Two of them share the machine now, and one that lost the status channel takes it back on its own.",
+        "Claude Code's newer spinner counts as working. It changed shape in 2.1.228, and termio still recognized only the old one.",
+      ],
+    },
+  },
+  {
     version: "0.40.0",
     date: "2026-08-21",
     title: "All four Catppuccin flavors",
