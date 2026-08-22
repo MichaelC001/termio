@@ -1,3 +1,4 @@
+import Network
 import XCTest
 @testable import termio
 
@@ -186,11 +187,11 @@ final class SessionInputClockTests: XCTestCase {
     func testInputIsRecordedAgainstTheSessionNotTheConnection() {
         let session = Session(title: "agent", agent: .terminal)
         let store = makeStore(session)
-        XCTAssertNil(store.lastInputAt[session.id], "nothing has been typed yet")
+        XCTAssertNil(store.inputClock.lastInput(for: session.id), "nothing has been typed yet")
 
         store.noteInput(for: session.id)
 
-        let stamped = try? XCTUnwrap(store.lastInputAt[session.id])
+        let stamped = store.inputClock.lastInput(for: session.id)
         XCTAssertNotNil(stamped)
         XCTAssertLessThan(
             Date().timeIntervalSince(stamped ?? .distantPast), 1,
@@ -207,7 +208,7 @@ final class SessionInputClockTests: XCTestCase {
         store.noteCompanionInput(session.id.uuidString)
 
         XCTAssertNotNil(
-            store.lastInputAt[session.id],
+            store.inputClock.lastInput(for: session.id),
             "a phone's keystroke never reached the session's input clock")
     }
 
@@ -220,6 +221,50 @@ final class SessionInputClockTests: XCTestCase {
 
         store.noteCompanionInput(UUID().uuidString)
 
-        XCTAssertTrue(store.lastInputAt.isEmpty, "an unknown session was stamped")
+        XCTAssertTrue(store.inputClock.isEmpty, "an unknown session was stamped")
+    }
+}
+
+/// The phone's keystrokes reaching the session's input clock — through the
+/// bridge that actually carries them.
+///
+/// The first version of this coverage called `noteCompanionInput` directly,
+/// which proved only that a store method works. Severing `SessionBridge`'s
+/// `onInput` — the line that was actually missing — left it green. A test that
+/// cannot fail for the reason the bug existed is not coverage.
+///
+/// No daemon here on purpose: an unattached link buffers what it is handed
+/// instead of writing a socket, which is all this claim needs. Attaching one
+/// would only add a reader thread for the teardown to race.
+@MainActor
+final class CompanionInputBridgeTests: XCTestCase {
+    func testWritingThroughTheBridgeStampsTheSession() throws {
+        let session = Session(title: "agent", agent: .terminal)
+        let workspace = Workspace(name: "Sessions")
+        let project = Project(workspaceID: workspace.id, name: "termio", path: "/code/termio",
+                              branch: "main", sessions: [session])
+        let defaults = UserDefaults(suiteName: "companion-input-\(UUID().uuidString)")
+        let store = TermioStore(workspaces: [workspace], projects: [project],
+                                settings: AppSettings(defaults: defaults ?? .standard))
+
+        let link = TermiodSessionLink(
+            sessionName: session.id.uuidString,
+            specification: Termiod.CreateSpecification(
+                cwd: NSTemporaryDirectory(), argv: [], env: [], rows: 24, cols: 80),
+            rows: 24, cols: 80)
+
+        // Never started, either of them: `write` touches neither the socket nor
+        // the connection, and starting them would make this depend on machinery
+        // the claim has nothing to do with.
+        let connection = NWConnection(to: .hostPort(host: "127.0.0.1", port: 9), using: .tcp)
+        let bridge = SessionBridge(link: link, connection: connection)
+        bridge.onInput = { store.noteInput(for: session.id) }
+
+        XCTAssertNil(store.inputClock.lastInput(for: session.id), "nothing typed yet")
+        bridge.write(Data("hello".utf8))
+
+        XCTAssertNotNil(
+            store.inputClock.lastInput(for: session.id),
+            "a keystroke crossed the bridge without stamping the session")
     }
 }

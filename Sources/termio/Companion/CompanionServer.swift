@@ -994,7 +994,11 @@ final class CompanionServer {
 /// renders its snapshot at *this client's* grid, so there is no replay of the
 /// Mac-width ring to cap, no reflow spike to dodge, and no mode preamble to
 /// re-assert — a snapshot carries modes, charsets and the scrolling region.
-private final class SessionBridge: @unchecked Sendable {
+/// Not private: `write` is the one path by which a phone's keystrokes reach the
+/// session's input clock, and a test that cannot construct a bridge can only
+/// check that the store's own method works — which proves nothing about whether
+/// anything calls it.
+final class SessionBridge: @unchecked Sendable {
     let link: TermiodSessionLink
     private let connection: NWConnection
     private let queue = DispatchQueue(label: "termio.companion.bridge")
