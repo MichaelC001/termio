@@ -176,6 +176,11 @@ final class CompanionServer {
     /// policy as ⌘N. Returns the new session's wire id plus the agent wire id
     /// actually launched (echoed in `.started` so the phone can label the
     /// session before the next roster push), or nil when the start failed.
+    /// Records a phone keystroke against the session it was typed into. The
+    /// phone holds its own attachment, so nothing on the Mac's link sees this
+    /// input — and the keystroke-echo guard has to, or composing on the phone
+    /// reads as the agent producing output and promotes an idle row.
+    private let noteInput: (String) -> Void
     private let startSession: (String, String?) -> (sessionID: String, agentID: String)?
     private let stopSession: (String) -> Bool
     /// Opens a plain shell in the loose terminals funnel for the phone's
@@ -207,6 +212,7 @@ final class CompanionServer {
         port: UInt16 = CompanionServer.defaultPort,
         rosterProvider: @escaping () -> CompanionRoster,
         attachSession: @escaping (String) -> TermiodSessionLink?,
+        noteInput: @escaping (String) -> Void,
         startSession: @escaping (String, String?) -> (sessionID: String, agentID: String)?,
         stopSession: @escaping (String) -> Bool,
         startScratchTerminal: @escaping () -> (sessionID: String, agentID: String)?,
@@ -215,6 +221,7 @@ final class CompanionServer {
         self.port = port
         self.rosterProvider = rosterProvider
         self.attachSession = attachSession
+        self.noteInput = noteInput
         self.startSession = startSession
         self.stopSession = stopSession
         self.startScratchTerminal = startScratchTerminal
@@ -411,6 +418,7 @@ final class CompanionServer {
             // handler with it: a phone that re-attaches to another session must
             // not still hear THIS session's exit — a spurious exit banner and a
             // dropped connection while it views a session that is fine.
+            bridge.onInput = { [weak self] in self?.noteInput(sessionID) }
             bridge.onExit = { [weak self, weak connection] code in
                 guard let connection else { return }
                 Task { @MainActor in
@@ -999,6 +1007,9 @@ private final class SessionBridge: @unchecked Sendable {
     /// Called when the session ends, so the server can tell the phone and drop
     /// the connection. Set by the attach handler, which owns the server.
     var onExit: ((Int32) -> Void)?
+    /// Called for every keystroke this phone sends, so the store can stamp the
+    /// session. Set by the attach handler alongside `onExit`.
+    var onInput: (() -> Void)?
 
     init(link: TermiodSessionLink, connection: NWConnection) {
         self.link = link
@@ -1020,6 +1031,7 @@ private final class SessionBridge: @unchecked Sendable {
     /// way the Mac takes it back by typing.
     func write(_ data: Data) {
         link.send(data)
+        onInput?()
     }
 
     /// A resize control from this client. Sizing is the writer's to set, and
@@ -1033,6 +1045,7 @@ private final class SessionBridge: @unchecked Sendable {
         link.onOutput = nil
         link.onExit = nil
         onExit = nil
+        onInput = nil
         // Detach, never kill: the session belongs to the daemon and outlives
         // every viewer of it, which is the whole point of it living there.
         link.detach()
@@ -1074,6 +1087,14 @@ private final class SessionBridge: @unchecked Sendable {
 // MARK: - Store → PTY attach
 
 extension TermioStore {
+    /// Stamps a phone keystroke against the session it was typed into. The
+    /// phone attaches separately from the Mac, so this is the only route by
+    /// which its input reaches the keystroke-echo guard.
+    func noteCompanionInput(_ wireID: String) {
+        guard let session = findCompanionSession(wireID) else { return }
+        noteInput(for: session.id)
+    }
+
     /// A phone's own attachment to a session on its daemon. If the session was
     /// never shown on the Mac (surfaces are made lazily on first render),
     /// surface it first — that spawns the agent with its recorded resume

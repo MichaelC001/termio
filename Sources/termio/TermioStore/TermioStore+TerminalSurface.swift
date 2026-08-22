@@ -275,11 +275,14 @@ extension TermioStore {
         let termiodLink = makeTermiodLink(
             for: session, argv: argv, cwd: spawnPath, env: env)
         let inMemory = InMemoryTerminalSession(
-            write: { data in
+            write: { [weak self] data in
                 // Typing on the Mac reclaims the write token, and with it the
                 // winsize, from an attached phone — the size follows the device
                 // being used. `send` does the claiming.
                 termiodLink.send(data)
+                // Recorded against the session rather than this attachment, so
+                // the keystroke-echo guard sees a phone's typing too.
+                Task { @MainActor in self?.noteInput(for: session.id) }
             },
             resize: { [weak self] viewport in
                 let columns = Int(viewport.columns)

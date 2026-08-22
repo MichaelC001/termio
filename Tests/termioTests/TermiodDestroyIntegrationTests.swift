@@ -161,3 +161,65 @@ final class TermiodDestroyIntegrationTests: XCTestCase {
             "quitting killed the session — detach-not-kill is the whole point of the daemon")
     }
 }
+
+/// The keystroke-echo guard's input clock.
+///
+/// Input echo repaints the screen exactly like agent output does, so the status
+/// tap suppresses promotion for a moment after something was typed. That only
+/// works if it can see typing from *every* device. The Mac and a phone hold
+/// separate attachments to one session, so a timestamp kept on either
+/// attachment is invisible to the other — which made composing on the phone
+/// promote an idle agent to `working`.
+@MainActor
+final class SessionInputClockTests: XCTestCase {
+    private func makeStore(_ session: Session) -> TermioStore {
+        let workspace = Workspace(name: "Sessions")
+        let project = Project(workspaceID: workspace.id, name: "termio", path: "/code/termio",
+                              branch: "main", sessions: [session])
+        let defaults = UserDefaults(suiteName: "input-clock-\(UUID().uuidString)")
+        return TermioStore(workspaces: [workspace], projects: [project],
+                           settings: AppSettings(defaults: defaults ?? .standard))
+    }
+
+    /// The clock is per session, not per attachment: whichever device carried
+    /// the keystroke, the guard reads one answer.
+    func testInputIsRecordedAgainstTheSessionNotTheConnection() {
+        let session = Session(title: "agent", agent: .terminal)
+        let store = makeStore(session)
+        XCTAssertNil(store.lastInputAt[session.id], "nothing has been typed yet")
+
+        store.noteInput(for: session.id)
+
+        let stamped = try? XCTUnwrap(store.lastInputAt[session.id])
+        XCTAssertNotNil(stamped)
+        XCTAssertLessThan(
+            Date().timeIntervalSince(stamped ?? .distantPast), 1,
+            "the stamp must be the moment of the keystroke")
+    }
+
+    /// The phone's route in. It attaches separately from the Mac, so this is the
+    /// only path by which its typing reaches the guard — and it is addressed by
+    /// wire id, the phone's name for the session, not by `Session.ID`.
+    func testAPhoneKeystrokeReachesTheSameClock() throws {
+        let session = Session(title: "agent", agent: .terminal)
+        let store = makeStore(session)
+
+        store.noteCompanionInput(session.id.uuidString)
+
+        XCTAssertNotNil(
+            store.lastInputAt[session.id],
+            "a phone's keystroke never reached the session's input clock")
+    }
+
+    /// A wire id for a session this Mac does not have must not stamp anything —
+    /// a stale phone re-attaching after a session closed would otherwise keep
+    /// an unrelated row's guard alive.
+    func testAnUnknownWireIDStampsNothing() {
+        let session = Session(title: "agent", agent: .terminal)
+        let store = makeStore(session)
+
+        store.noteCompanionInput(UUID().uuidString)
+
+        XCTAssertTrue(store.lastInputAt.isEmpty, "an unknown session was stamped")
+    }
+}

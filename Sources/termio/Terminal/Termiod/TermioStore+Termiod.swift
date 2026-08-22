@@ -88,7 +88,7 @@ extension TermioStore {
         // own `E status` is silent and a hook report went missing.
         let statusTap = makeStatusTap(
             for: session, surface: inMemory, backend: link,
-            lastInputAt: { [weak link] in link?.lastInputAt })
+            lastInputAt: { [weak self] in self?.lastInputAt[session.id] })
         link.onOutput = { [weak inMemory] data in
             inMemory?.receive(data)
             statusTap(data)
