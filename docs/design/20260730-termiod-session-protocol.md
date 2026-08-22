@@ -3,7 +3,7 @@ title: termiod Session Protocol
 status: draft
 type: design
 created: 2026-07-30
-updated: 2026-08-19
+updated: 2026-08-22
 related:
   - 20260730-termiod-session-mux.md
   - 20260708-session-daemon-architecture.md
@@ -57,7 +57,11 @@ client and the Mac client stopped synthesising preludes of their own.
 beside `git.diff` — so the History and Compare tabs can be served by the device
 that owns the checkout. Stage 1 of `../rfcs/remote-git-plane.md`; the section
 heading's "read-only" now means "this tier reads", not "the kind will never
-mutate". -->
+mutate".
+2026-08-22: reserved the `tunnel` capability name (§C.3, new §C.14 — VS Code
+Remote's raw-pipe tunnel shape, deferred until a non-SSH pipe needs it) and
+added §H #11 (never require agent cooperation), from a design pass against VS
+Code Remote's public architecture record. -->
 
 
 # Design: termiod Session Protocol
@@ -219,7 +223,8 @@ First frame in each direction on **every** channel, before anything else:
   stream corrupts terminals (the weak-IPC-upgrade failure mode the companion
   wire taught us).
 - **`caps` are additive feature flags**, intersected: `events`, `snapshot`,
-  `grid_diff`, `send_wait`, `approvals`, later `share`, `file`, `git`. New
+  `grid_diff`, `send_wait`, `approvals`, later `share`, `file`, `git`,
+  `tunnel` (§C.14). New
   nouns arrive as capabilities inside `proto:1` for as long as additivity
   holds; `proto:2` is reserved for breaking framing/semantics changes.
 - Compatibility matrix commitment: **old client × new host and new client ×
@@ -772,6 +777,26 @@ that reads do not. Zed's proto carries deprecated `RepositoryEntry` debris
 from migrating git between two replication schemes; a single-mechanism
 resource plane cannot drift that way.
 
+### C.14 `tunnel` capability — name reserved, build deferred
+
+A `tunnel`-capable channel turns the pipe into a raw byte relay to a TCP port
+on the device: `tunnel.open {port}` → `ok`, then the channel drops framing and
+pipes bytes until either side closes. This is VS Code Remote's
+`ConnectionType.Tunnel` shape — connect, confirm, raw-pipe with the protocol
+layer discarded for throughput — and it is deliberately not designed further
+here. Over SSH the user already has `-L` and ControlMaster forwards, so a Mac
+client gains nothing today; the capability earns its implementation the day a
+client arrives on a pipe that cannot carry an SSH forward — the WSS-bound
+phone or web client opening the dev server an agent just started on the
+device. Reserving the name now costs one line and spares a compatibility
+scramble later.
+
+One detection lesson recorded ahead of need: when a client offers forwarding
+("the agent started something on :3000"), find candidate ports by parsing
+terminal output for localhost URLs, not by scanning `/proc/net/tcp` — VS Code
+shipped process scanning, drowned users in junk forwards, and retreated to
+output parsing as the Remote-SSH default.
+
 ## D. Transport bindings
 
 | | Unix socket | SSH stdio | QUIC (later) | WSS + relay (later) |
@@ -1033,6 +1058,13 @@ impossible retroactively.
    tale; iOS becomes a `grid_diff`-capable client of *this* protocol.
 10. **Guessing Superlogical's wire format** — we compete on our contract, not
     on speculation about theirs (**Unknown** stays unknown).
+11. **Features that require agent cooperation** — nothing in this protocol may
+    work only if Claude Code, Codex, or another agent adds Termio support.
+    Agents will not meet us halfway: Anthropic closed the OSC 52/5522
+    clipboard proposal (claude-code #42712) as not-planned while the community
+    shipped five bridge tools. Status rides hooks and PTY heuristics, paste
+    delivers a path any agent can read — the uncooperative agent is the design
+    case, not the degraded one.
 
 ## Top 5 decisions that need a human product call
 
