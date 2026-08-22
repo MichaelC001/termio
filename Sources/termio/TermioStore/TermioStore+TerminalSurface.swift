@@ -114,6 +114,48 @@ enum PiSession {
 }
 
 extension TermioStore {
+    /// What a session's process exiting means for its pane.
+    enum SessionExit: Equatable {
+        /// The agent replaced its own binary and quit asking to be restarted
+        /// (codex's in-pane upgrade ends with "Please restart Codex."). Respawn it
+        /// in place with its resume arguments — the restart, done for the user.
+        case relaunch
+        /// A clean `/quit`: hand the pane back to a shell in the same directory,
+        /// exactly where a hand-started agent leaves you.
+        case revertToShell
+        /// A plain terminal that exited cleanly. The pane goes away with no extra
+        /// keypress, like a native terminal tab.
+        case close
+        /// Leave the exit on screen, on ghostty's "Press any key to close"
+        /// prompt, so a failure's output stays readable.
+        case park
+    }
+
+    /// The exit policy, as a decision with no side effects, so the in-process PTY
+    /// and the daemon link run the *same* one rather than two that drift.
+    ///
+    /// Both backends know the same three things at exit: the code, what the row
+    /// is, and whether the launch binary was replaced underneath the running
+    /// process. Only the last differs in how it is *learned* — the local PTY pins
+    /// the executable itself, the daemon owns the process and reports it — which
+    /// is a producer difference, not a policy one.
+    ///
+    /// - Parameters:
+    ///   - isAgentSession: a declared agent, not a plain terminal and not `ssh`.
+    ///   - isPlainTerminal: the row's declared agent is `.terminal` (an SSH
+    ///     terminal is one of these, which is why the two flags are separate
+    ///     rather than one being the negation of the other).
+    ///   - executableReplaced: `false` when nothing knows — an absent answer must
+    ///     never respawn a process the user quit.
+    static func sessionExit(code: Int32, isAgentSession: Bool, isPlainTerminal: Bool,
+                            executableReplaced: Bool) -> SessionExit {
+        // A non-zero exit always parks: its error output is the only record of
+        // what went wrong, and closing or respawning over it loses that.
+        guard code == 0 else { return .park }
+        if isAgentSession { return executableReplaced ? .relaunch : .revertToShell }
+        return isPlainTerminal ? .close : .park
+    }
+
     /// `path` when it still names a real directory, else `nil`. A recorded cwd outlives
     /// the folder it points at, and a shell spawned in a deleted directory lands at `/`.
     static func existingDirectory(_ path: String?) -> String? {
@@ -345,28 +387,26 @@ extension TermioStore {
             pty.onExit = { [weak self, weak inMemory, weak pty] code, runtimeMs in
                 self?.ptyProcesses[session.id] = nil
                 self?.lastScreenActivity[session.id] = nil
-                // A clean agent exit never parks the pane on the dead-end
-                // "Press any key to close" prompt (whose keypress deleted the
-                // session outright). Two flavors, told apart by the launch
-                // binary on disk:
-                //  - replaced (codex's in-pane upgrade ends with "Please restart
-                //    Codex." and quits — Homebrew purged the old version): do the
-                //    restart for the user, respawning the agent in place with its
-                //    resume arguments. Can't loop — the respawn pins the new
-                //    binary as its own baseline.
-                //  - untouched (a plain `/quit`): hand the pane back to a shell
-                //    in the same directory — exactly where a hand-started agent
-                //    leaves you — demoting the session to a plain terminal (the
-                //    identity mirror of `noteForegroundAgent`'s promotion).
-                // A non-zero exit still parks on the prompt: its error output
-                // must stay readable.
-                if isAgentSession, code == 0 {
-                    if pty?.childExecutableWasReplaced() == true {
-                        self?.relaunchSession(session.id)
-                    } else {
-                        self?.revertSessionToShell(session.id)
-                    }
+                // `sessionExit` holds the policy; what is local here is only how
+                // the replacement answer is *got* — this process spawned the
+                // child, so it pinned the launch binary itself and can compare it
+                // (the daemon path reads the same answer off the exit event).
+                // The respawn re-pins the new binary as its own baseline, so a
+                // relaunch cannot loop.
+                let outcome = Self.sessionExit(
+                    code: code,
+                    isAgentSession: isAgentSession,
+                    isPlainTerminal: session.agent == .terminal,
+                    executableReplaced: pty?.childExecutableWasReplaced() == true)
+                switch outcome {
+                case .relaunch:
+                    self?.relaunchSession(session.id)
                     return
+                case .revertToShell:
+                    self?.revertSessionToShell(session.id)
+                    return
+                case .close, .park:
+                    break
                 }
                 // Report the *real* runtime, not 0. On macOS ghostty ignores the
                 // exit code and shows its "failed to launch the requested command"
@@ -377,14 +417,11 @@ extension TermioStore {
                 // "process exited" message, reserving the scary banner for genuine
                 // sub-threshold launch failures (binary not found, bad argv).
                 inMemory?.finish(exitCode: UInt32(bitPattern: code), runtimeMilliseconds: runtimeMs)
-                // A plain terminal that exits *cleanly* closes its tab like a
-                // native terminal (Terminal.app / iTerm2 / Ghostty all do this) —
-                // you typed `exit`, so the pane goes away with no extra keypress.
-                // A non-zero exit (terminal or agent — clean agent exits were
-                // handled above) is left on screen so its error output stays
-                // readable rather than silently vanishing. ghostty can't read
-                // the exit code reliably on macOS, but our `waitpid` here can.
-                if session.agent == .terminal, code == 0 {
+                // ghostty can't read the exit code reliably on macOS, but our
+                // `waitpid` here can — which is what lets a clean plain-terminal
+                // exit close its tab like a native terminal while a failure stays
+                // on screen.
+                if outcome == .close {
                     self?.closeSession(session.id)
                 }
             }

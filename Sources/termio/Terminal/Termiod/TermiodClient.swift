@@ -798,10 +798,54 @@ enum Termiod {
         /// this app has no row for means someone else is watching it.
         let attachedClients: Int
 
+        /// The pid the **device** picked to represent the group holding the tty's
+        /// foreground. Not the process group id: a group is not one process, and
+        /// which of its members answers for it is the host's call. Today's macOS
+        /// host answers with the group leader (whose pid is the pgid), but a host
+        /// that must skip a leader already reaped — `foo | bar` after `foo` exits,
+        /// where reading the leader would report *no* foreground command while
+        /// `bar` still runs — answers with the live member it found instead. This
+        /// side reads it as "the process to ask about", never as a group id.
+        ///
+        /// `nil` on a daemon too old to sample, and on one that sampled and found
+        /// nothing (a session whose child has gone).
+        let foregroundPid: Int32?
+        /// The selected live member's argv. **The host reports argv; this client decides
+        /// which agent it is** — mapping a program to an agent needs the user's own
+        /// manifests, which live here, so a box that has never heard of a
+        /// user-defined agent still reports enough for it to be recognised.
+        ///
+        /// `nil` means *not answered*, never "nothing is running": an old daemon
+        /// and an unreadable process look the same from here, and both must leave
+        /// the session's identity alone rather than demote it.
+        let foregroundArgv: [String]?
+        /// Whether something other than the session's own child holds the
+        /// foreground — a command is running rather than a shell idling at its
+        /// prompt.
+        ///
+        /// `nil` is *not reported*: the daemon omits the field when it is false,
+        /// so an idle prompt on a current daemon is indistinguishable from a
+        /// daemon that never sampled. Both mean the same thing to every consumer
+        /// (`remote-to-device.decisions.md` §2 — an absent field preserves
+        /// today's no-confirm behaviour, and must never be read as "unknown, so
+        /// confirm"), so the ambiguity costs nothing.
+        let foregroundJob: Bool?
+        /// The child's *current* directory — what `cd` moves, as opposed to `cwd`,
+        /// which is where the session was created. A path on the **device**.
+        let childCwd: String?
+        /// The binary the child is running, as the device's kernel resolved it.
+        let childExecutable: String?
+        /// Whether that binary has been replaced on disk since the session pinned
+        /// it — an agent that updated itself and quit, told apart from one that
+        /// just quit. Omitted when false, so `nil` reads as "not replaced".
+        let childExecutableReplaced: Bool?
+
         private enum CodingKeys: String, CodingKey {
             case id, name, pid, alive, cwd, command, status, title, createdUnix
             case agentID = "agentId"
             case attachedClients
+            case foregroundPid, foregroundArgv, foregroundJob
+            case childCwd, childExecutable, childExecutableReplaced
         }
 
         init(from decoder: Decoder) throws {
@@ -817,6 +861,17 @@ enum Termiod {
             title = try container.decodeIfPresent(String.self, forKey: .title)
             createdUnix = try container.decodeIfPresent(UInt64.self, forKey: .createdUnix) ?? 0
             attachedClients = try container.decodeIfPresent(Int.self, forKey: .attachedClients) ?? 0
+            // Every one of these stays optional rather than defaulting: a default
+            // would erase the difference between "the device says no" and "the
+            // device did not say", and each consumer below stands down on the
+            // second. This is the skew rule the whole additive contract rests on.
+            foregroundPid = try container.decodeIfPresent(Int32.self, forKey: .foregroundPid)
+            foregroundArgv = try container.decodeIfPresent([String].self, forKey: .foregroundArgv)
+            foregroundJob = try container.decodeIfPresent(Bool.self, forKey: .foregroundJob)
+            childCwd = try container.decodeIfPresent(String.self, forKey: .childCwd)
+            childExecutable = try container.decodeIfPresent(String.self, forKey: .childExecutable)
+            childExecutableReplaced = try container.decodeIfPresent(
+                Bool.self, forKey: .childExecutableReplaced)
         }
 
         /// What to call this session on screen. The name is the daemon's handle,
@@ -927,9 +982,30 @@ enum Termiod {
         let title: String?
     }
 
+    /// The device revising what it knows about a session — pushed on change, on
+    /// its own slow timer, never from the byte path (§A). `action` is the
+    /// daemon's word for what moved (`updated`, …) and stays a string so a newer
+    /// one does not fail the decode; `info` is the whole row, so a client never
+    /// merges deltas.
+    ///
+    /// `info` is optional because a delta that only announces a session's
+    /// arrival or departure has no row to carry — a client with nothing to
+    /// update simply ignores it.
+    struct RosterPayload: Decodable, Sendable {
+        let session: String
+        let action: String
+        let info: SessionInformation?
+    }
+
+    /// A session's process is gone. `info` is the device's final word on it —
+    /// `alive: false`, and a `childExecutableReplaced` computed on the exit path
+    /// rather than cached from the last poll, which is the whole reason the exit
+    /// carries a row at all: a binary swapped in the seconds before the agent
+    /// quit is exactly the case it answers. Absent on a daemon that predates it.
     struct SessionExitedPayload: Decodable, Sendable {
         let session: String
         let status: Int32
+        let info: SessionInformation?
     }
 
     /// Decoded `E` frames. Unknown events become `.unknown` and are ignored,
@@ -939,6 +1015,7 @@ enum Termiod {
         case status(StatusPayload)
         case writerChanged(WriterChangedPayload)
         case resized(ResizedPayload)
+        case roster(RosterPayload)
         case sessionExited(SessionExitedPayload)
         case unknown(String)
     }
@@ -1068,6 +1145,8 @@ enum Termiod {
             return .writerChanged(try decoder.decode(WriterChangedPayload.self, from: payload))
         case "resized":
             return .resized(try decoder.decode(ResizedPayload.self, from: payload))
+        case "roster":
+            return .roster(try decoder.decode(RosterPayload.self, from: payload))
         case "session_exited":
             return .sessionExited(try decoder.decode(SessionExitedPayload.self, from: payload))
         default:
@@ -1359,6 +1438,34 @@ final class TermiodSessionLink: @unchecked Sendable {
         return lastInputAtLocked
     }
 
+    /// The device's own description of this session while it is **running**, from
+    /// the last roster event it pushed. Its own lock rather than the work queue
+    /// because the one caller that cannot wait — the close confirmation, asked on
+    /// the main thread the instant the user clicks — must read it without a hop.
+    ///
+        /// This is a *cache of a push*, so it is as fresh as the daemon's sampling
+        /// cadence and no fresher. Every consumer treats it as a bounded sample;
+        /// `closeConfirmationReason` documents both directions in which it can be
+        /// stale and why asking `list` would not produce a fresher answer.
+    private let informationLock = NSLock()
+    private var latestInformationLocked: Termiod.SessionInformation?
+    /// The device's final word, from the exit event. Kept **apart** from the live
+    /// cache rather than overwriting it: the exit row describes a session that has
+    /// ended (`alive: false`, no foreground), it is recorded on the reader thread
+    /// while the link is still registered, and the close confirmation reads the
+    /// live cache from the main thread — so merging the two puts a dead session's
+    /// blank sample in front of a question about a running one. Two fields, no
+    /// window.
+    private var finalInformationLocked: Termiod.SessionInformation?
+
+    /// What the device last said about this session while it was running. `nil`
+    /// once nothing has pushed a roster row — never the exit row.
+    var latestInformation: Termiod.SessionInformation? {
+        informationLock.lock()
+        defer { informationLock.unlock() }
+        return latestInformationLocked
+    }
+
     /// Raw PTY bytes from the daemon — fed to the surface exactly where
     /// `PTYProcess`'s read pump delivers on the in-process path. Called on the
     /// reader thread; the consumer (`InMemoryTerminalSession.receive`) is
@@ -1368,11 +1475,17 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// session actually runs on. A session knows its *route* from the start but
     /// cannot know its *device* until something answers — this is that moment.
     var onDevice: ((TermiodDevice) -> Void)?
-    /// Fired once on the main queue with the exit status and elapsed
-    /// milliseconds since this link started (the daemon does not report the
-    /// child's true runtime; elapsed-since-attach serves ghostty's
-    /// abnormal-exit heuristic the same way).
-    var onExit: ((Int32, UInt64) -> Void)?
+    /// Fired once on the main queue with the exit status, elapsed milliseconds
+    /// since this link started (the daemon does not report the child's true
+    /// runtime; elapsed-since-attach serves ghostty's abnormal-exit heuristic the
+    /// same way), and the device's final word on the session when it sent one.
+    var onExit: ((Int32, UInt64, Termiod.SessionInformation?) -> Void)?
+    /// The device's revised description of this session, on the main queue,
+    /// every time the daemon pushes one. What the host reports is *facts about
+    /// the process* — foreground argv, the child's cwd, whether a job is running
+    /// — and what they mean is decided on this side, by the same consumers the
+    /// in-process PTY's own kernel poll feeds.
+    var onInformation: ((Termiod.SessionInformation) -> Void)?
     /// The session's workstream status as the host reports it (`working`,
     /// `needs_you`, …) with the workstream title when one rides along. Fired on
     /// the main queue for every `E status`.
@@ -1609,13 +1722,45 @@ final class TermiodSessionLink: @unchecked Sendable {
     }
 
     /// Must run on `workQueue` — `exitDelivered` is queue-confined state.
+    ///
+    /// The final row is read from its own field rather than passed in, so both
+    /// arrivals answer the same thing: the daemon emits `E session_exited` before
+    /// the `exited` control frame and this reader is serial, so the exit's own row
+    /// is already recorded by the time either lands. `nil` on a daemon too old to
+    /// carry one — which the exit policy reads as "the device did not say", never
+    /// as a fact about the process. The live roster cache is deliberately *not* a
+    /// fallback: a row sampled seconds before the exit answers a different
+    /// question, and the one field that matters here is computed on the exit path.
     private func deliverExitLocked(status: Int32) {
         guard !exitDelivered else { return }
         exitDelivered = true
         let runtimeMilliseconds = UInt64(max(0, Date().timeIntervalSince(startedAt) * 1000))
+        informationLock.lock()
+        let information = finalInformationLocked
+        informationLock.unlock()
         DispatchQueue.main.async { [self] in
-            onExit?(status, runtimeMilliseconds)
+            onExit?(status, runtimeMilliseconds, information)
         }
+    }
+
+    /// Records a roster push — the device revising what it knows about a session
+    /// that is still running — and publishes it. Called from the reader thread.
+    private func recordRosterInformation(_ information: Termiod.SessionInformation) {
+        informationLock.lock()
+        latestInformationLocked = information
+        informationLock.unlock()
+        DispatchQueue.main.async { [self] in onInformation?(information) }
+    }
+
+    /// Records the row riding the exit. It never reaches the live cache or the
+    /// live consumers: it describes a session that has *ended*, so handing it to
+    /// them would answer "is a command running in here" with a dead process's
+    /// blank sample, and would demote an agent row a beat before the exit path
+    /// decides what the pane becomes. `onExit` is its only reader.
+    private func recordFinalInformation(_ information: Termiod.SessionInformation) {
+        informationLock.lock()
+        finalInformationLocked = information
+        informationLock.unlock()
     }
 
     /// Dedicated blocking-read thread (the frame stream has no natural
@@ -1724,9 +1869,13 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// Unlocked by the `events` capability, and each arm is why it is offered:
     /// `status` is the product's core signal (an agent on a VPS has no other way
     /// to reach this Mac), `writer_changed` keeps write gating honest as the
-    /// token moves, and `resized` carries the authoritative dimensions §C.5
-    /// requires every client to know.
-    private func handleEvent(_ payload: Data) -> Bool {
+    /// token moves, `resized` carries the authoritative dimensions §C.5 requires
+    /// every client to know, and `roster` is what the device says the process is.
+    ///
+    /// Not private so the routing can be driven with real frames — which of the
+    /// two information caches an arriving frame lands in is the kind of thing
+    /// that goes wrong silently.
+    func handleEvent(_ payload: Data) -> Bool {
         let event: Termiod.IncomingEvent
         do {
             event = try Termiod.decodeEvent(payload)
@@ -1744,10 +1893,20 @@ final class TermiodSessionLink: @unchecked Sendable {
             applyWriter(change.writer)
         case .resized(let size):
             applyAuthoritativeGrid(TerminalGrid(rows: size.rows, cols: size.cols))
+        case .roster(let update):
+            // Not filtered by name: events are fanned per session, so everything
+            // arriving on this channel is about the session it was opened for.
+            // A delta with no row is an arrival/departure notice with nothing to
+            // update — the roster fetch is what answers those.
+            if let information = update.info { recordRosterInformation(information) }
         case .sessionExited(let exit):
+            // Recorded before the exit is delivered, and *before* the `exited`
+            // control frame the daemon sends next: this is the device's last word
+            // on the process, and the exit policy reads it.
+            if let information = exit.info { recordFinalInformation(information) }
             // The `exited` control frame says the same thing and normally lands
-            // first; both funnel into the same idempotent delivery, so whichever
-            // arrives is enough and neither can double-report.
+            // right after; both funnel into the same idempotent delivery, so
+            // whichever arrives is enough and neither can double-report.
             workQueue.async { [self] in
                 teardownLocked()
                 deliverExitLocked(status: exit.status)
