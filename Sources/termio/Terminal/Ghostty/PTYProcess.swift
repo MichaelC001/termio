@@ -858,13 +858,45 @@ final class PTYProcess: @unchecked Sendable {
         return info.st_ino != inode
     }
 
+    /// Whether a candidate can still answer for the group, or is on its way out.
+    /// `KERN_PROCARGS2` refuses a zombie, so a member the kernel has already
+    /// marked dead costs a sysctl to learn nothing.
+    enum MemberLiveness {
+        case live
+        case dead
+    }
+
+    /// A process considered as a member of the tty's foreground group, reduced to
+    /// what one `PROC_PIDTBSDINFO` call answers. Argv is deliberately not here —
+    /// it is the expensive read, and the selection resolves it lazily.
+    struct ForegroundGroupMember: Equatable {
+        let pid: pid_t
+        let liveness: MemberLiveness
+        let processGroup: pid_t
+    }
+
+    /// `SZOMB` from `<sys/proc.h>`. Spelled out because Darwin does not surface
+    /// the `p_stat` constants to Swift.
+    private static let zombieStatus: UInt32 = 5
+
     /// The argv of the process group currently in the *foreground* of this PTY —
     /// the program the user is actually interacting with: the login shell until it
     /// runs a command, then that command (a hand-started `claude`), then the shell
-    /// again once it exits. Read via `tcgetpgrp` + `KERN_PROCARGS2`, the pair iTerm2
-    /// and friends use to name a pane's running program (`tcgetpgrp` on a forkpty
-    /// master returns the tty's foreground group on macOS — verified). `nil` once the
-    /// child is reaped (a recycled pid must never be queried) or if the kernel refuses.
+    /// again once it exits. `tcgetpgrp` names the group — on a forkpty master it
+    /// returns the tty's foreground group on macOS, verified — and
+    /// `KERN_PROCARGS2` names a process: the pair iTerm2 and friends use to say
+    /// what is running in a pane.
+    ///
+    /// A group is not a process, though, and the two only agree while the leader
+    /// is alive. `sleep 60 | cat` runs both stages in one group named after
+    /// `sleep`; the moment `sleep` finishes, `KERN_PROCARGS2` on that pgid fails
+    /// outright while `cat` is still the program holding the terminal — so the
+    /// pane knew a job was running and had no name for it. termiod solved this in
+    /// `termiod/src/proc.rs`; this is the same search, and the two backends now
+    /// answer alike for the same pipeline.
+    ///
+    /// `nil` once the child is reaped (a recycled pid must never be queried), or
+    /// when nobody in the group can answer.
     func foregroundProcessArguments() -> [String]? {
         lock.lock()
         let exited = childExited
@@ -872,7 +904,89 @@ final class PTYProcess: @unchecked Sendable {
         guard !exited, pid > 0 else { return nil }
         let foreground = tcgetpgrp(masterFD)
         guard foreground > 0 else { return nil }
-        return Self.processArguments(pid: foreground)
+        return Self.foregroundArguments(
+            group: foreground,
+            members: Self.groupMembers(of: foreground),
+            read: { Self.processArguments(pid: $0) })
+    }
+
+    /// Pick the argv that describes the foreground group.
+    ///
+    /// The leader is tried first, so what a pane reports does not drift to some
+    /// later stage of a pipeline while the stage that names it is still running.
+    /// The rest are tried in ascending pid order — arbitrary, but *stable*: a
+    /// choice that flapped between two survivors would rename the row every poll
+    /// for no new information.
+    ///
+    /// A member whose own process group no longer matches the one we asked about
+    /// is dropped, and that check is not redundant with having enumerated the
+    /// group: between `tcgetpgrp` naming a group and this running, a pid can be
+    /// recycled into something else entirely, and its number alone is no evidence
+    /// it is the process we were asked about.
+    ///
+    /// `read` is a closure and the search stops at the first process that answers,
+    /// because each read is a sysctl and a wide pipeline should not pay for one
+    /// per member.
+    static func foregroundArguments(
+        group: pid_t, members: [ForegroundGroupMember], read: (pid_t) -> [String]?
+    ) -> [String]? {
+        guard group > 0 else { return nil }
+        let candidates = members
+            .filter { $0.processGroup == group && $0.liveness == .live }
+            .map(\.pid)
+            .sorted()
+        var ordered = candidates.contains(group) ? [group] : []
+        for pid in candidates where pid != group && !ordered.contains(pid) {
+            ordered.append(pid)
+        }
+        for pid in ordered {
+            if let arguments = read(pid) { return arguments }
+        }
+        return nil
+    }
+
+    /// Every process the kernel currently counts in `group`, each read back
+    /// through `PROC_PIDTBSDINFO` for its state and — the part that matters — its
+    /// *own* idea of which group it is in.
+    ///
+    /// Two things about `proc_listpgrppids` were established against the kernel
+    /// rather than read in a header: it answers with a **count of pids**, not a
+    /// byte length, and its `NULL`-buffer sizing call ignores the group filter
+    /// entirely, reporting every pid on the machine. So there is no sizing call to
+    /// make. Allocate, and grow only when the answer exactly filled the buffer —
+    /// the one case a truncation cannot be told from a fit. A pipeline wide enough
+    /// to fill 4096 slots is not a shape this has to serve exactly.
+    private static func groupMembers(of group: pid_t) -> [ForegroundGroupMember] {
+        guard group > 0 else { return [] }
+        var capacity = 64
+        while true {
+            var pids = [pid_t](repeating: 0, count: capacity)
+            let count = proc_listpgrppids(
+                group, &pids, Int32(capacity * MemoryLayout<pid_t>.size))
+            guard count > 0 else { return [] }
+            let found = min(Int(count), capacity)
+            if found < capacity || capacity >= 4096 {
+                return pids.prefix(found).compactMap(member(of:))
+            }
+            capacity *= 4
+        }
+    }
+
+    /// One candidate's state and process group. A pid that vanished between the
+    /// enumeration and this read is simply not a candidate.
+    private static func member(of pid: pid_t) -> ForegroundGroupMember? {
+        guard pid > 0 else { return nil }
+        var info = proc_bsdinfo()
+        let size = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info,
+                                Int32(MemoryLayout<proc_bsdinfo>.size))
+        guard size == Int32(MemoryLayout<proc_bsdinfo>.size) else { return nil }
+        // A zombie is the one state that disqualifies a member outright. A process
+        // still being created has no argv yet and is filtered by the read instead,
+        // which costs nothing extra because that read has to run anyway.
+        return ForegroundGroupMember(
+            pid: pid,
+            liveness: info.pbi_status == zombieStatus ? .dead : .live,
+            processGroup: pid_t(info.pbi_pgid))
     }
 
     /// Reads a process's full argument vector from the kernel (`KERN_PROCARGS2`),
