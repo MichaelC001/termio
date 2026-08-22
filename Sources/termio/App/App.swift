@@ -827,6 +827,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
         toolbar.showsBaselineSeparator = false
+        // The chrome is fixed, so the right-click menu had nothing to offer but a
+        // labelled variant of icons the window is laid out around.
+        if #available(macOS 15, *) {
+            toolbar.allowsDisplayModeCustomization = false
+        }
         if #available(macOS 26, *) {
             window.toolbarStyle = .automatic
         } else {
