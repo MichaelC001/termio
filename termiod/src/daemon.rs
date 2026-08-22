@@ -21,13 +21,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, Notify};
 
 const EVENT_BUFFER: usize = 1024;
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct ManagerInner {
     sessions: HashMap<String, SessionHandle>,
     id_counter: u32,
+    draining: bool,
 }
 
 #[derive(Clone)]
@@ -47,6 +49,7 @@ pub struct Manager {
     /// death has to leave evidence — an empty session list otherwise reads as
     /// "nothing was running" rather than "everything was lost".
     graveyard: Arc<Graveyard>,
+    session_removed: Arc<Notify>,
 }
 
 impl Manager {
@@ -60,6 +63,7 @@ impl Manager {
             inner: Arc::new(Mutex::new(ManagerInner {
                 sessions: HashMap::new(),
                 id_counter: 0,
+                draining: false,
             })),
             next_client_id: Arc::new(AtomicU64::new(1)),
             on_exit,
@@ -68,6 +72,7 @@ impl Manager {
             resources: Registry::new(),
             uploads: crate::files::Uploads::new(),
             graveyard,
+            session_removed: Arc::new(Notify::new()),
         }
     }
 
@@ -76,18 +81,20 @@ impl Manager {
         format!("c_{id:x}")
     }
 
-    fn new_session_id(&self) -> String {
+    fn create(&self, spec: crate::protocol::CreateSpec) -> Result<String> {
+        // The lock makes the transition to draining an exact boundary: a
+        // create either installs its handle before the shutdown snapshot or
+        // observes `draining` and never spawns a child.
+        let mut guard = self.inner.lock().unwrap();
+        if guard.draining {
+            anyhow::bail!("daemon is draining");
+        }
         let seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or(0);
-        let mut guard = self.inner.lock().unwrap();
         guard.id_counter = guard.id_counter.wrapping_add(1);
-        format!("{:08x}", seed ^ guard.id_counter.wrapping_mul(2654435761))
-    }
-
-    fn create(&self, spec: crate::protocol::CreateSpec) -> Result<String> {
-        let id = self.new_session_id();
+        let id = format!("{:08x}", seed ^ guard.id_counter.wrapping_mul(2654435761));
         let name = spec.name.clone().unwrap_or_else(|| id.clone());
         let cwd = spec.cwd.clone().unwrap_or_default();
         let command = if spec.argv.is_empty() {
@@ -112,11 +119,7 @@ impl Manager {
             self.events.clone(),
         )
         .context("spawning session")?;
-        self.inner
-            .lock()
-            .unwrap()
-            .sessions
-            .insert(id.clone(), handle);
+        guard.sessions.insert(id.clone(), handle);
         Ok(id)
     }
 
@@ -135,7 +138,51 @@ impl Manager {
     }
 
     fn remove(&self, id: &str) -> bool {
-        self.inner.lock().unwrap().sessions.remove(id).is_some()
+        let removed = self.inner.lock().unwrap().sessions.remove(id).is_some();
+        if removed {
+            self.session_removed.notify_one();
+        }
+        removed
+    }
+
+    fn begin_draining(&self, reason: EndReason) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.draining = true;
+        for handle in guard.sessions.values() {
+            handle.send(SessionMsg::Kill { reason });
+        }
+    }
+
+    async fn wait_until_empty(&self) {
+        loop {
+            let removed = self.session_removed.notified();
+            if self.inner.lock().unwrap().sessions.is_empty() {
+                return;
+            }
+            removed.await;
+        }
+    }
+
+    async fn finish_draining(&self, reason: EndReason) -> Result<()> {
+        if tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, self.wait_until_empty())
+            .await
+            .is_ok()
+        {
+            return self.graveyard.bury_remaining(reason);
+        }
+
+        eprintln!(
+            "termiod: shutdown drain exceeded {} seconds; forcing remaining sessions",
+            SHUTDOWN_DRAIN_TIMEOUT.as_secs()
+        );
+        // Mark the surviving roster entries before the direct kill. If their
+        // actors wake and reap concurrently, the graveyard's runtime dedupe
+        // preserves this deliberate-stop reason.
+        let persisted = self.graveyard.bury_remaining(reason);
+        for handle in self.handles() {
+            handle.force_kill();
+        }
+        persisted
     }
 
     fn publish(&self, event: Event) {
@@ -344,11 +391,13 @@ pub async fn serve() -> Result<()> {
         tokio::spawn(async move {
             while let Some(ended) = on_exit_rx.recv().await {
                 let id = ended.info.id.clone();
-                let reason = if ended.killed {
-                    EndReason::Killed
-                } else {
-                    EndReason::Exited
-                };
+                // A termination request can win after PTY EOF but before this
+                // task receives the actor's end record. The handle retains the
+                // first requested reason until burial completes.
+                let reason = manager
+                    .find(&id)
+                    .and_then(|handle| handle.termination_reason())
+                    .unwrap_or(ended.reason);
                 manager
                     .graveyard
                     .bury(&ended.info, reason, Some(ended.status));
@@ -367,29 +416,47 @@ pub async fn serve() -> Result<()> {
 
     eprintln!("termiod listening on {}", sock_path.display());
 
-    {
-        let sock_path = sock_path.clone();
-        tokio::spawn(async move {
-            let mut term =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
-                _ = term.recv() => {}
-            }
-            let _ = std::fs::remove_file(&sock_path);
-            std::process::exit(0);
-        });
-    }
+    let mut terminate =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .context("installing SIGTERM handler")?;
+    let shutdown_signal = async move {
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result.context("waiting for SIGINT"),
+            _ = terminate.recv() => Ok(()),
+        }
+    };
+    tokio::pin!(shutdown_signal);
 
     loop {
-        let (stream, _addr) = listener.accept().await?;
-        let manager = manager.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_conn(stream, manager).await {
-                eprintln!("termiod: connection error: {e:#}");
+        tokio::select! {
+            biased;
+            result = &mut shutdown_signal => {
+                result?;
+                break;
             }
-        });
+            accepted = listener.accept() => {
+                let (stream, _addr) = accepted?;
+                let manager = manager.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_conn(stream, manager).await {
+                        eprintln!("termiod: connection error: {e:#}");
+                    }
+                });
+            }
+        }
     }
+
+    manager.begin_draining(EndReason::DaemonStopped);
+    let drained = manager.finish_draining(EndReason::DaemonStopped).await;
+    // Keeping the bound listener through the drain prevents an autostarting
+    // client from placing a replacement daemon over state still being buried.
+    drop(listener);
+    match std::fs::remove_file(&sock_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => eprintln!("termiod: could not remove socket during shutdown: {error}"),
+    }
+    drained
 }
 
 #[derive(Clone)]
@@ -789,10 +856,9 @@ async fn process_control(
         Control::Kill { id, seq } => {
             let response = match manager.resolve(&id).await {
                 Some(handle) => {
-                    handle.send(SessionMsg::Kill);
-                    if manager.remove(&handle.id) {
-                        manager.publish_removed(&handle.id);
-                    }
+                    handle.send(SessionMsg::Kill {
+                        reason: EndReason::Killed,
+                    });
                     Control::Ok { re: seq }
                 }
                 None => error(

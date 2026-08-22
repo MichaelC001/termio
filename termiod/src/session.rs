@@ -8,12 +8,13 @@ use crate::protocol::{
     MAX_HISTORY_FRAME_SIZE, SNAPSHOT_CELL_SIZE,
 };
 use crate::pty::Pty;
+use crate::tombstone::EndReason;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc as std_mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -201,7 +202,9 @@ pub enum SessionMsg {
     Info {
         reply: oneshot::Sender<SessionInfo>,
     },
-    Kill,
+    Kill {
+        reason: EndReason,
+    },
 }
 
 /// What the manager needs to bury a session (§6). The session actor is the last
@@ -211,20 +214,42 @@ pub enum SessionMsg {
 pub struct SessionEnded {
     pub info: SessionInfo,
     pub status: i32,
-    /// A client asked for this end (`kill`), rather than the process choosing it.
-    pub killed: bool,
+    pub reason: EndReason,
 }
 
 /// Cheap, cloneable reference to a session task.
 #[derive(Clone)]
 pub struct SessionHandle {
     pub id: String,
+    pid: i32,
     tx: mpsc::UnboundedSender<SessionMsg>,
+    /// PTY EOF can become ready in the same scheduler turn as `Kill`; keeping
+    /// the first requested reason outside the queue makes that race deterministic.
+    termination_reason: Arc<Mutex<Option<EndReason>>>,
 }
 
 impl SessionHandle {
     pub fn send(&self, msg: SessionMsg) -> bool {
+        if let SessionMsg::Kill { reason } = &msg {
+            let mut requested = self.termination_reason.lock().unwrap();
+            if requested.is_none() {
+                *requested = Some(*reason);
+            }
+        }
         self.tx.send(msg).is_ok()
+    }
+
+    pub fn termination_reason(&self) -> Option<EndReason> {
+        *self.termination_reason.lock().unwrap()
+    }
+
+    /// A session actor normally owns termination and reports the exact reason.
+    /// This is only for the shutdown deadline: killing the process releases the
+    /// blocking child waiter even if the actor itself stopped making progress.
+    pub fn force_kill(&self) {
+        unsafe {
+            libc::kill(-self.pid, libc::SIGKILL);
+        }
     }
 }
 
@@ -1272,6 +1297,7 @@ pub fn spawn(
     let sidecar = spawn_sidecar(rows, cols)?;
 
     let (tx, rx) = mpsc::unbounded_channel();
+    let termination_reason = Arc::new(Mutex::new(None));
     let session = Session {
         id: id.clone(),
         name,
@@ -1318,8 +1344,14 @@ pub fn spawn(
         on_exit,
         sidecar.results,
         sidecar.thread,
+        termination_reason.clone(),
     ));
-    Ok(SessionHandle { id, tx })
+    Ok(SessionHandle {
+        id,
+        pid,
+        tx,
+        termination_reason,
+    })
 }
 
 struct Sidecar {
@@ -1488,12 +1520,13 @@ async fn run(
     on_exit: mpsc::UnboundedSender<SessionEnded>,
     mut sidecar_results: mpsc::UnboundedReceiver<SidecarResult>,
     sidecar_thread: JoinHandle<()>,
+    termination_reason: Arc<Mutex<Option<EndReason>>>,
 ) {
     let mut buf = vec![0u8; READ_CHUNK];
     let mut waiter = Some(waiter);
     let mut sidecar_results_open = true;
     let mut history_stages = VecDeque::<ClientId>::new();
-    let mut killed = false;
+    let mut end_reason = EndReason::Exited;
     // The first tick is immediate, so a session answers "what is running in
     // there" from its first roster request rather than after a cold two
     // seconds. Missed ticks are skipped instead of queued: a busy actor should
@@ -1518,10 +1551,8 @@ async fn run(
             }
             msg = rx.recv() => {
                 let Some(msg) = msg else { break };
-                if handle_msg(&mut session, msg) {
-                    // `handle_msg` only asks to stop for `Kill`, so this is the
-                    // one end a client chose — the distinction a tombstone keeps.
-                    killed = true;
+                if let Some(reason) = handle_msg(&mut session, msg) {
+                    end_reason = reason;
                     break;
                 }
             }
@@ -1564,6 +1595,11 @@ async fn run(
     }
 
     session.fallback_all_pending("session ended before the VT snapshot completed");
+    if end_reason == EndReason::Exited {
+        if let Some(requested) = *termination_reason.lock().unwrap() {
+            end_reason = requested;
+        }
+    }
     if let Some(sidecar_tx) = session.sidecar_tx.take() {
         let _ = sidecar_tx.send(SidecarCommand::Shutdown);
     }
@@ -1589,12 +1625,11 @@ async fn run(
     let _ = on_exit.send(SessionEnded {
         info,
         status: code,
-        killed,
+        reason: end_reason,
     });
 }
 
-/// Returns true if the session should terminate (`kill`).
-fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
+fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
     match msg {
         SessionMsg::AddClient {
             id,
@@ -1696,11 +1731,11 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
                 // client named. The child would see no SIGWINCH from this
                 // ioctl either, so nothing downstream is waiting on it.
                 if rows == session.rows && cols == session.cols {
-                    return false;
+                    return None;
                 }
                 if let Err(error) = session.pty.resize(rows, cols) {
                     session.reject_resize(&id, &error);
-                    return false;
+                    return None;
                 }
                 session.rows = rows;
                 session.cols = cols;
@@ -1737,15 +1772,15 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
         SessionMsg::Info { reply } => {
             let _ = reply.send(session.info());
         }
-        SessionMsg::Kill => {
+        SessionMsg::Kill { reason } => {
             // The child is a session leader, so pgid == pid.
             unsafe {
                 libc::kill(-session.pid, libc::SIGKILL);
             }
-            return true;
+            return Some(reason);
         }
     }
-    false
+    None
 }
 
 #[cfg(test)]
@@ -1758,6 +1793,7 @@ mod tests {
     };
     use crate::protocol::{Control, ErrorCode, Event, SessionInfo};
     use crate::pty::Pty;
+    use crate::tombstone::EndReason;
     use bytes::Bytes;
     use std::collections::{HashMap, VecDeque};
     use std::sync::{mpsc as std_mpsc, Arc};
@@ -2296,14 +2332,15 @@ mod tests {
             child_executable: None,
         };
 
-        assert!(!handle_msg(
+        assert!(handle_msg(
             &mut session,
             SessionMsg::Resize {
                 id: "writer".to_string(),
                 rows: 40,
                 cols: 120,
             },
-        ));
+        )
+        .is_none());
 
         assert_eq!((session.rows, session.cols), (24, 80));
         assert!(matches!(
@@ -2441,7 +2478,9 @@ mod tests {
         };
         assert!(roster.is_some_and(|info| info.foreground_pid.is_some()));
 
-        handle.send(SessionMsg::Kill);
+        handle.send(SessionMsg::Kill {
+            reason: EndReason::Killed,
+        });
     }
 
     /// A command started *inside* the session takes the tty's foreground away
@@ -2474,6 +2513,8 @@ mod tests {
             busy.foreground_argv
         );
 
-        handle.send(SessionMsg::Kill);
+        handle.send(SessionMsg::Kill {
+            reason: EndReason::Killed,
+        });
     }
 }
