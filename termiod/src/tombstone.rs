@@ -22,7 +22,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -41,6 +41,8 @@ pub enum EndReason {
     Exited,
     /// A client asked for it (`kill`). The user meant this.
     Killed,
+    /// The daemon was deliberately stopped and drained its sessions first.
+    DaemonStopped,
     /// The daemon went away while the session was running. Nobody chose this,
     /// and it is the reason tombstones exist at all.
     DaemonLost,
@@ -51,6 +53,7 @@ impl EndReason {
         match self {
             EndReason::Exited => "exited",
             EndReason::Killed => "killed",
+            EndReason::DaemonStopped => "daemon_stopped",
             EndReason::DaemonLost => "daemon_lost",
         }
     }
@@ -68,7 +71,7 @@ pub struct Tombstone {
     pub name: String,
     pub cwd: String,
     pub command: String,
-    /// `exited` · `killed` · `daemon_lost`.
+    /// `exited` · `killed` · `daemon_stopped` · `daemon_lost`.
     pub reason: String,
     /// The process's exit code. `None` for `daemon_lost` — the daemon that
     /// would have reaped the child died first, so no honest answer exists.
@@ -144,13 +147,13 @@ impl RosterEntry {
         }
     }
 
-    fn into_tombstone(self) -> Tombstone {
+    fn into_tombstone(self, reason: EndReason) -> Tombstone {
         Tombstone {
             id: self.id,
             name: self.name,
             cwd: self.cwd,
             command: self.command,
-            reason: EndReason::DaemonLost.as_str().to_string(),
+            reason: reason.as_str().to_string(),
             exit_status: None,
             created_unix: self.created_unix,
             ended_unix: now_unix(),
@@ -164,6 +167,10 @@ impl RosterEntry {
 struct State {
     graves: Vec<Tombstone>,
     roster: HashMap<String, RosterEntry>,
+    /// Prevents the bounded shutdown fallback and a late session reaper from
+    /// recording the same end twice. IDs can eventually be reused, so creation
+    /// time remains part of the identity.
+    buried: HashSet<(String, u64)>,
 }
 
 /// The on-disk record of what died. One per daemon, living beside the socket so
@@ -188,6 +195,7 @@ impl Graveyard {
             state: Mutex::new(State {
                 graves: Vec::new(),
                 roster: HashMap::new(),
+                buried: HashSet::new(),
             }),
         };
 
@@ -196,7 +204,7 @@ impl Graveyard {
         // Newest first, so the cap drops the oldest history rather than the
         // sessions that just died.
         for orphan in orphans.into_iter().rev() {
-            graves.insert(0, orphan.into_tombstone());
+            graves.insert(0, orphan.into_tombstone(EndReason::DaemonLost));
         }
         graves.truncate(MAX_GRAVES);
 
@@ -218,6 +226,12 @@ impl Graveyard {
     pub fn note_live(&self, info: &SessionInfo) {
         {
             let mut state = self.state.lock().unwrap();
+            if state
+                .buried
+                .contains(&(info.id.clone(), info.created_unix))
+            {
+                return;
+            }
             state
                 .roster
                 .insert(info.id.clone(), RosterEntry::from_info(info));
@@ -232,6 +246,12 @@ impl Graveyard {
     pub fn bury(&self, info: &SessionInfo, reason: EndReason, exit_status: Option<i32>) {
         {
             let mut state = self.state.lock().unwrap();
+            if !state
+                .buried
+                .insert((info.id.clone(), info.created_unix))
+            {
+                return;
+            }
             state.roster.remove(&info.id);
             state.graves.insert(0, Tombstone::from_info(info, reason, exit_status));
             state.graves.truncate(MAX_GRAVES);
@@ -239,6 +259,33 @@ impl Graveyard {
         if let Err(error) = self.persist_roster().and_then(|_| self.persist_graves()) {
             eprintln!("termiod: could not record session end: {error:#}");
         }
+    }
+
+    /// Converts anything that did not reach the ordinary reaper before the
+    /// shutdown deadline. The shared `buried` set makes this atomic with
+    /// `bury`, so a late reaper cannot replace or duplicate the stop reason.
+    pub fn bury_remaining(&self, reason: EndReason) -> Result<()> {
+        {
+            let mut state = self.state.lock().unwrap();
+            let mut remaining: Vec<RosterEntry> =
+                state.roster.drain().map(|(_, entry)| entry).collect();
+            remaining.sort_by_key(|entry| entry.created_unix);
+            for entry in remaining {
+                if state
+                    .buried
+                    .insert((entry.id.clone(), entry.created_unix))
+                {
+                    state.graves.insert(0, entry.into_tombstone(reason));
+                }
+            }
+            state.graves.truncate(MAX_GRAVES);
+        }
+
+        // The grave must reach disk before its roster entry disappears. If the
+        // process dies between these writes, the next daemon may show a
+        // duplicate explanation, but it cannot silently lose the session.
+        self.persist_graves()?;
+        self.persist_roster()
     }
 
     /// Every tombstone, newest first.
@@ -372,6 +419,24 @@ mod tests {
         let graves = Graveyard::open(&dir).unwrap().all();
         assert_eq!(graves.len(), 1);
         assert_eq!(graves[0].reason, "killed");
+    }
+
+    /// The deadline fallback and the actor reaper can finish in either order.
+    /// Whichever arrives late must not duplicate the grave or change its reason.
+    #[test]
+    fn a_late_reaper_does_not_replace_the_shutdown_reason() {
+        let dir = temp_dir("shutdown-race");
+        let graveyard = Graveyard::open(&dir).unwrap();
+        graveyard.note_live(&info("a"));
+        graveyard
+            .bury_remaining(EndReason::DaemonStopped)
+            .unwrap();
+        graveyard.bury(&info("a"), EndReason::Exited, Some(137));
+
+        let graves = graveyard.all();
+        assert_eq!(graves.len(), 1);
+        assert_eq!(graves[0].reason, "daemon_stopped");
+        assert_eq!(graves[0].exit_status, None);
     }
 
     /// Restarting repeatedly must not keep re-burying the same dead session.

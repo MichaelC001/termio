@@ -206,7 +206,9 @@ fn install() -> Result<()> {
 fn uninstall() -> Result<()> {
     let path = plist_path()?;
     let label = label();
-    let _ = launchctl(&["bootout", &format!("{}/{label}", domain_target())]);
+    let booted_out = launchctl(&["bootout", &format!("{}/{label}", domain_target())])
+        .map(|output| output.status.success())
+        .unwrap_or(false);
     match std::fs::remove_file(&path) {
         Ok(()) => println!("removed {}", path.display()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -214,9 +216,15 @@ fn uninstall() -> Result<()> {
         }
         Err(error) => return Err(error).with_context(|| format!("removing {}", path.display())),
     }
-    // Sessions are not killed here: uninstalling supervision is not a request to
-    // destroy what is running. The daemon keeps going until it exits on its own.
-    println!("running sessions are untouched; the daemon will not restart once it exits.");
+    // Booting out the job stops the daemon launchd owns, which ends its
+    // sessions — the old message claimed the opposite. But a daemon some client
+    // autostarted is not launchd's to stop, and it keeps running, so the claim
+    // is only true when there was a loaded job to boot out.
+    if booted_out {
+        println!("the daemon and its running sessions were stopped; it will not restart.");
+    } else {
+        println!("no supervised daemon was loaded; anything already running is untouched.");
+    }
     Ok(())
 }
 
