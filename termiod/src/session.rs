@@ -2640,7 +2640,9 @@ mod tests {
         assert!(busy.foreground_job, "a running command is a job");
         assert_ne!(busy.foreground_pid, Some(busy.pid));
 
-        handle.send(SessionMsg::Kill);
+        handle.send(SessionMsg::Kill {
+            reason: EndReason::Killed,
+        });
     }
 
     /// The pipeline case, end to end against a real shell and a real tty: the
@@ -2711,7 +2713,9 @@ mod tests {
         let live = settled_info(&handle, |info| info.child_executable.is_some()).await;
         assert!(live.alive, "a running session says so");
 
-        handle.send(SessionMsg::Kill);
+        handle.send(SessionMsg::Kill {
+            reason: EndReason::Killed,
+        });
 
         let exited = loop {
             match events_rx.recv().await {
@@ -2735,7 +2739,11 @@ mod tests {
             .recv()
             .await
             .expect("the manager is told the session ended");
-        assert!(ended.killed, "a client asked for this end");
+        assert_eq!(
+            ended.reason,
+            EndReason::Killed,
+            "a client asked for this end"
+        );
         assert!(!ended.info.alive);
         assert_eq!(
             serde_json::to_value(&*event_info).unwrap(),
