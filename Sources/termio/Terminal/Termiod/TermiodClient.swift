@@ -875,7 +875,24 @@ enum Termiod {
         var displayLabel: String {
             if let title, !title.isEmpty { return title }
             if let agentID, !agentID.isEmpty { return agentID }
+            // What the device's kernel says is actually running, before the
+            // string rules that guess at it. A roster-only row — a session this
+            // app has never attached to — has no surface to read a title off,
+            // so this is the only place its label can come from that is not a
+            // guess. `nil` means the daemon did not answer, which is why the
+            // guess stays as the fallback rather than being replaced.
+            if let program = Self.programName(inArgv: foregroundArgv) { return program }
             return Self.programName(in: command) ?? name
+        }
+
+        /// The foreground program the device reported, named the way a person
+        /// would name it. Interpreters are the case that matters: `python
+        /// train.py` read as "python" tells you less than the script does, but
+        /// only the host knows the argv, so the choice of *which* word to show
+        /// belongs here rather than on the device.
+        private static func programName(inArgv argv: [String]?) -> String? {
+            guard let argv, let executable = argv.first, !executable.isEmpty else { return nil }
+            return URL(fileURLWithPath: executable).lastPathComponent
         }
 
         /// The program behind the login-shell wrapper Termio spawns through
@@ -925,11 +942,21 @@ enum Termiod {
         /// The workstream status the session last reported. A session that died
         /// while `needs_you` is a different story from one that died `idle`.
         let status: String
+        /// Whether the session's binary was replaced on disk while it ran — an
+        /// agent that updated itself and quit, told apart from one that just
+        /// quit. The exit *event* carries this too, but only to clients that
+        /// were attached when it happened; for anyone who reconnects afterwards
+        /// the tombstone is the only route.
+        ///
+        /// Absent on a `daemon_lost` grave and on a daemon too old to record
+        /// it — in both cases nobody measured, which is not the same as
+        /// measuring "not replaced", so it must never be shown as a self-update.
+        let childExecutableReplaced: Bool
 
         private enum CodingKeys: String, CodingKey {
             case id, name, cwd, command, reason, exitStatus, createdUnix, endedUnix
             case agentID = "agentId"
-            case title, status
+            case title, status, childExecutableReplaced
         }
 
         init(from decoder: Decoder) throws {
@@ -945,6 +972,8 @@ enum Termiod {
             agentID = try container.decodeIfPresent(String.self, forKey: .agentID)
             title = try container.decodeIfPresent(String.self, forKey: .title)
             status = try container.decodeIfPresent(String.self, forKey: .status) ?? "unknown"
+            childExecutableReplaced = try container.decodeIfPresent(
+                Bool.self, forKey: .childExecutableReplaced) ?? false
         }
     }
 

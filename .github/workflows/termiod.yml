@@ -15,12 +15,14 @@ on:
       - ".github/workflows/termiod.yml"
       - "Sources/termio/Terminal/Termiod/**"
       - "Tests/termioTests/TermiodFilesIntegrationTests.swift"
+      - "Tests/termioTests/TermiodWireOrderIntegrationTests.swift"
   pull_request:
     paths:
       - "termiod/**"
       - ".github/workflows/termiod.yml"
       - "Sources/termio/Terminal/Termiod/**"
       - "Tests/termioTests/TermiodFilesIntegrationTests.swift"
+      - "Tests/termioTests/TermiodWireOrderIntegrationTests.swift"
 
 concurrency:
   group: termiod-${{ github.ref }}
@@ -136,7 +138,8 @@ jobs:
           TERMIO_TERMIOD_TEST_BIN: ${{ github.workspace }}/termiod/target/debug/termiod
         run: |
           pkill -9 -f "target/debug/[t]ermiod|deps/[t]ermiod-" || true
-          swift test --filter TermiodFilesIntegrationTests
+          swift test --filter TermiodFilesIntegrationTests \
+                     --filter TermiodWireOrderIntegrationTests
 
       - name: Cross-compile the Linux release binary
         run: |

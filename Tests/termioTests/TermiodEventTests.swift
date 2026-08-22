@@ -287,6 +287,82 @@ final class TermiodEventTests: XCTestCase {
         XCTAssertEqual(grave.agentID, "claude")
     }
 
+    /// A grave carries the self-update verdict. The exit *event* carries it too,
+    /// but only to clients that were attached when it fired — for a Mac that was
+    /// asleep when the agent replaced itself and quit, this is the only route.
+    func testATombstoneCarriesTheSelfUpdateVerdict() throws {
+        guard case .sessions(let payload) = try control("""
+        {"op":"sessions","sessions":[],"tombstones":[
+          {"id":"s_9","name":"9F1C-…","cwd":"/code","command":"claude",
+           "reason":"exited","exit_status":0,"created_unix":1786880000,
+           "ended_unix":1786886075,"status":"done","child_executable_replaced":true}]}
+        """) else { return XCTFail("expected a sessions reply") }
+        let grave = try XCTUnwrap(payload.tombstones.first)
+        XCTAssertTrue(grave.childExecutableReplaced)
+    }
+
+    /// `daemon_lost` cannot testify either way — the daemon that would have
+    /// re-read the inode is the thing that died. An absent field must read as
+    /// "nobody measured", never as a positive "not replaced" the UI could show.
+    func testALostGraveDoesNotClaimTheBinarySurvived() throws {
+        guard case .sessions(let payload) = try control("""
+        {"op":"sessions","sessions":[],"tombstones":[
+          {"id":"s_9","name":"9F1C-…","cwd":"/code","command":"claude",
+           "reason":"daemon_lost","created_unix":1786880000,"ended_unix":1786886075,
+           "status":"working"}]}
+        """) else { return XCTFail("expected a sessions reply") }
+        let grave = try XCTUnwrap(payload.tombstones.first)
+        XCTAssertFalse(grave.childExecutableReplaced)
+    }
+
+    // MARK: - What a roster-only row is called
+
+    private func information(_ json: String) throws -> Termiod.SessionInformation {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Termiod.SessionInformation.self, from: Data(json.utf8))
+    }
+
+    /// The row this whole field exists for: a session on another machine that
+    /// this app has never attached to. There is no surface to read a title off,
+    /// and `command` is the login-shell wrapper Termio spawns through — so the
+    /// only non-guess is what the device's kernel reported.
+    func testARosterOnlyRowIsNamedByTheKernelNotTheCommandString() throws {
+        let info = try information("""
+        {"id":"s_1","name":"9F1C-…","pid":4242,"alive":true,"cwd":"/code",
+         "command":"/bin/zsh -ilc exec claude --resume","status":"working",
+         "created_unix":1786880000,"attached_clients":0,
+         "foreground_pid":4310,"foreground_argv":["/opt/homebrew/bin/npm","run","build"],
+         "foreground_job":true}
+        """)
+        XCTAssertEqual(info.displayLabel, "npm",
+                       "the kernel said npm; the command string would have guessed claude")
+    }
+
+    /// A daemon that did not answer must leave the label alone rather than blank
+    /// it — the string rules stay as the fallback, so an older host reads exactly
+    /// as it did before the field existed.
+    func testAnUnansweredForegroundFallsBackToTheCommandString() throws {
+        let info = try information("""
+        {"id":"s_1","name":"9F1C-…","pid":4242,"alive":true,"cwd":"/code",
+         "command":"/bin/zsh -ilc exec claude --resume","status":"working",
+         "created_unix":1786880000,"attached_clients":0}
+        """)
+        XCTAssertEqual(info.displayLabel, "claude")
+    }
+
+    /// An agent that reported a title outranks both. The title is what the agent
+    /// says it is *doing*; the argv is only what it is running.
+    func testAReportedTitleStillOutranksTheForegroundArgv() throws {
+        let info = try information("""
+        {"id":"s_1","name":"9F1C-…","pid":4242,"alive":true,"cwd":"/code",
+         "command":"/bin/zsh -il","status":"working","title":"fix #164",
+         "created_unix":1786880000,"attached_clients":0,
+         "foreground_argv":["/usr/bin/git","rebase","-i"]}
+        """)
+        XCTAssertEqual(info.displayLabel, "fix #164")
+    }
+
     /// A daemon too old to bury anything answers without the field. The live
     /// list is still the answer to the question asked, so the reply must decode.
     func testSessionsReplyWithoutTombstonesDecodes() throws {
