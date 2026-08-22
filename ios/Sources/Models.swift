@@ -52,8 +52,17 @@ struct MockProject: Identifiable {
     /// Current git branch of the checkout (nil for non-repos / mock data).
     var branch: String?
     /// The Mac's `ProjectKind` raw value ("folder" / "terminals" / "chats");
-    /// nil from an older Mac or mock data — treat as a plain folder project.
+    /// nil for mock data — treat as a plain folder project.
     var kind: String?
+    /// The workspace this project is filed under on the Mac, and that
+    /// workspace's name — the list groups by the id and heads each group with
+    /// the name. Empty for the bundled mock, which has no workspace to speak of.
+    var workspaceID: String = ""
+    var workspaceName: String = ""
+    /// The `~/.ssh/config` alias of the machine the workspace is on, nil when
+    /// that machine is the Mac we're paired with. A checkout on a VPS and one on
+    /// the Mac are otherwise indistinguishable here.
+    var deviceAlias: String?
     let sessions: [MockSession]
 
     /// A stand-in for the Mac's loose-terminals container before it has opened
@@ -150,8 +159,8 @@ extension SessionStatus {
 
 extension MockSession {
     init(roster: RosterSession, project: RosterProject, agentsByID: [String: RosterAgent]) {
+        let projectBranch = project.branch.isEmpty ? nil : project.branch
         // "—" is the desktop's placeholder for "no branch"; drop it here.
-        let projectBranch = project.branch.flatMap { $0 == "—" || $0.isEmpty ? nil : $0 }
         let worktreeBranch = roster.branch.flatMap { $0 == "—" || $0.isEmpty ? nil : $0 }
         self.init(
             title: roster.title,
@@ -177,8 +186,11 @@ extension MockProject {
             name: roster.name,
             path: roster.path,
             rosterID: roster.id,
-            branch: roster.branch.flatMap { $0 == "—" || $0.isEmpty ? nil : $0 },
+            branch: roster.branch.isEmpty ? nil : roster.branch,
             kind: roster.kind,
+            workspaceID: roster.workspaceID,
+            workspaceName: roster.workspaceName,
+            deviceAlias: roster.deviceAlias,
             sessions: roster.sessions.map {
                 MockSession(roster: $0, project: roster, agentsByID: agentsByID)
             }

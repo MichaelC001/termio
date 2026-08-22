@@ -12,14 +12,45 @@ import UIKit
 final class ProjectListViewController: UIViewController {
     private let store: RosterStore
 
-    private enum Section { case needsYou, projects }
+    /// One workspace's projects — the group the table draws as a section. The
+    /// Mac's tree is Device → Workspace → Project → Session, and the phone was
+    /// showing only the last two: every machine's checkouts poured into one
+    /// column, a VPS clone indistinguishable from a local one. The workspace is
+    /// the group; `deviceAlias` is the machine it is on, named in the header the
+    /// way the Mac names it, and never a level you navigate.
+    private struct WorkspaceGroup {
+        let id: String
+        let name: String
+        let deviceAlias: String?
+        var projects: [MockProject]
+
+        /// The machine to put after the workspace name, and nil when there is
+        /// nothing to add: this Mac carries no mark — being on the machine you
+        /// paired with is the absence of one — and neither does a workspace
+        /// already named after its box, where the header says it once. Both
+        /// rules are the desktop sidebar's.
+        var machineLabel: String? {
+            guard let deviceAlias,
+                  deviceAlias.caseInsensitiveCompare(name) != .orderedSame
+            else { return nil }
+            return deviceAlias
+        }
+    }
+
+    private enum Section {
+        case needsYou
+        /// An index into `groups`.
+        case workspace(Int)
+    }
+
     /// The sections currently on screen, rebuilt on every roster change.
     private var sections: [Section] = []
     /// Cross-project attention sessions (the strip's rows).
     private var attention: [MockSession] = []
-    /// The store's projects in the chosen order — what the table shows.
-    /// Chats-kind containers are excluded: they have their own tab.
-    private var visible: [MockProject] = []
+    /// The store's projects, grouped by workspace in roster order — what the
+    /// table shows. Chats- and Terminals-kind containers are excluded: they have
+    /// their own tabs.
+    private var groups: [WorkspaceGroup] = []
 
     /// Mirrors the Mac sidebar's sort pull-down. The roster arrives in the
     /// Mac's recent-activity order, so "Recent Activity" means "as pushed";
@@ -189,19 +220,59 @@ final class ProjectListViewController: UIViewController {
     }
 
     /// Rebuild the section list from the store: the attention strip (only when
-    /// non-empty), then the projects in the chosen order. The loose funnels
-    /// (Chats, Terminals) belong to their own tabs, so they're kept out of the
-    /// folder list — their attention sessions still surface in the strip here,
-    /// the cross-cutting shortcut.
+    /// non-empty), then one section per workspace. The loose funnels (Chats,
+    /// Terminals) belong to their own tabs, so they're kept out of the folder
+    /// list — their attention sessions still surface in the strip here, the
+    /// cross-cutting shortcut.
     private func refilter() {
         attention = store.attentionSessions
-        let ordered = sortByName
-            ? store.projects.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            : store.projects
-        visible = ordered.filter { $0.kind != "chats" && $0.kind != "terminals" }
-        sections = (attention.isEmpty ? [] : [.needsYou]) + [.projects]
+        let folders = store.projects.filter { $0.kind != "chats" && $0.kind != "terminals" }
+        groups = Self.grouped(folders, sortedByName: sortByName)
+        sections = (attention.isEmpty ? [] : [.needsYou]) + groups.indices.map(Section.workspace)
         tableView.reloadData()
         updateEmptyState()
+    }
+
+    /// Projects into workspace groups. Workspaces keep the order the Mac pushed
+    /// them in — the sidebar's own order — and only the projects inside a group
+    /// re-sort when the user picks Name, so switching sort never reshuffles the
+    /// machines out from under them.
+    private static func grouped(_ projects: [MockProject], sortedByName: Bool) -> [WorkspaceGroup] {
+        var groups: [WorkspaceGroup] = []
+        var indexByWorkspace: [String: Int] = [:]
+        for project in projects {
+            if let index = indexByWorkspace[project.workspaceID] {
+                groups[index].projects.append(project)
+                continue
+            }
+            indexByWorkspace[project.workspaceID] = groups.count
+            groups.append(WorkspaceGroup(
+                id: project.workspaceID,
+                name: project.workspaceName,
+                deviceAlias: project.deviceAlias,
+                projects: [project]
+            ))
+        }
+        guard sortedByName else { return groups }
+        return groups.map { group in
+            var sorted = group
+            sorted.projects.sort {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+            return sorted
+        }
+    }
+
+    /// Every project on screen, in section order.
+    private var visible: [MockProject] { groups.flatMap(\.projects) }
+
+    /// Whether the sections are headed by their workspace. One unnamed local
+    /// workspace is the case almost everyone is in, and the Mac hides its own
+    /// workspace switcher there too — the page title already says "Projects".
+    /// A second workspace, or one that names a machine, is what makes the
+    /// grouping worth a header.
+    private var showsWorkspaceHeaders: Bool {
+        groups.count > 1 || groups.contains { $0.deviceAlias != nil && !$0.name.isEmpty }
     }
 
     // MARK: - Empty state
@@ -332,23 +403,36 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch sections[section] {
         case .needsYou: attention.count
-        case .projects: visible.count
+        case .workspace(let index): groups[index].projects.count
         }
     }
 
     func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
-        // Headers only when the strip splits the page in two; a plain project
-        // list under the "Projects" page title needs no second label.
-        guard sections.count > 1 else { return nil }
+        guard showsHeaders else { return nil }
         guard let header = tableView.dequeueReusableHeaderFooterView(
             withIdentifier: SectionCapView.reuseID
         ) as? SectionCapView else { return nil }
-        header.configure(title: sections[section] == .needsYou ? localized("Needs You") : localized("Projects"))
+        switch sections[section] {
+        case .needsYou:
+            header.configure(title: localized("Needs You"))
+        case .workspace(let index):
+            let group = groups[index]
+            header.configure(
+                title: showsWorkspaceHeaders ? group.name : localized("Projects"),
+                detail: showsWorkspaceHeaders ? group.machineLabel : nil
+            )
+        }
         return header
     }
 
+    /// Headers appear when the strip splits the page in two, or when the
+    /// workspaces themselves need naming.
+    private var showsHeaders: Bool {
+        sections.count > 1 || showsWorkspaceHeaders
+    }
+
     func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
-        sections.count > 1 ? 28 : 0
+        showsHeaders ? 28 : 0
     }
 
     /// A whitespace gap below each group — the divider-free separator,
@@ -379,11 +463,12 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
             }
             .margins(.horizontal, 12)
             .margins(.vertical, 0)
-        case .projects:
+        case .workspace(let index):
+            let projects = groups[index].projects
             cell.contentConfiguration = UIHostingConfiguration {
                 ProjectRow(
-                    project: visible[indexPath.row],
-                    showsSeparator: indexPath.row < visible.count - 1
+                    project: projects[indexPath.row],
+                    showsSeparator: indexPath.row < projects.count - 1
                 )
             }
             .margins(.horizontal, 12)
@@ -398,9 +483,9 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
             // Straight to the terminal — the strip exists so the blocked
             // session is one tap away, never behind its project page.
             store.openSession(attention[indexPath.row])
-        case .projects:
+        case .workspace(let index):
             navigationController?.pushViewController(
-                ProjectDetailViewController(store: store, project: visible[indexPath.row]),
+                ProjectDetailViewController(store: store, project: groups[index].projects[indexPath.row]),
                 animated: true
             )
         }
@@ -411,7 +496,7 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
         _ tableView: UITableView,
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
-        guard sections[indexPath.section] == .needsYou,
+        guard case .needsYou = sections[indexPath.section],
               store.companionURL != nil,
               let sessionID = attention[indexPath.row].rosterID
         else { return nil }
@@ -430,8 +515,8 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
         contextMenuConfigurationForRowAt indexPath: IndexPath,
         point: CGPoint
     ) -> UIContextMenuConfiguration? {
-        guard sections[indexPath.section] == .projects else { return nil }
-        let project = visible[indexPath.row]
+        guard case .workspace(let index) = sections[indexPath.section] else { return nil }
+        let project = groups[index].projects[indexPath.row]
         guard store.companionURL != nil, project.rosterID != nil else { return nil }
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             UIMenu(title: project.name, children: self?.store.newSessionActions(in: project) ?? [])
@@ -507,29 +592,54 @@ private struct ProjectRow: View {
 
 // MARK: - Section header
 
-/// A small gray caps label capping a group — only used when the attention
-/// strip splits the root page into two groups.
+/// A small gray caps label capping a group, with room for one trailing detail —
+/// the machine a workspace is on. Mail and Files head their groups the same way:
+/// the account or location names the section, and the rows underneath say
+/// nothing more about where they live.
+///
+/// The detail keeps its own case. It is an `~/.ssh/config` alias, a literal the
+/// user typed, and uppercasing it would make it something they can't find again.
 private final class SectionCapView: UITableViewHeaderFooterView {
     static let reuseID = "sectionCap"
 
     private let label = UILabel()
+    private let detailLabel = UILabel()
 
     override init(reuseIdentifier: String?) {
         super.init(reuseIdentifier: reuseIdentifier)
         label.font = .systemFont(ofSize: 13, weight: .semibold)
         label.textColor = .secondaryLabel
         label.translatesAutoresizingMaskIntoConstraints = false
+        detailLabel.font = .systemFont(ofSize: 13, weight: .regular)
+        detailLabel.textColor = .tertiaryLabel
+        detailLabel.textAlignment = .right
+        // The workspace name is the section's identity; the machine gives way
+        // when there isn't room for both.
+        detailLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(label)
+        contentView.addSubview(detailLabel)
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 22),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -16),
             label.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
+            detailLabel.leadingAnchor.constraint(
+                greaterThanOrEqualTo: label.trailingAnchor, constant: 8),
+            detailLabel.trailingAnchor.constraint(
+                equalTo: contentView.trailingAnchor, constant: -22),
+            detailLabel.firstBaselineAnchor.constraint(equalTo: label.firstBaselineAnchor),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func configure(title: String) {
+    func configure(title: String, detail: String? = nil) {
         label.text = title.uppercased()
+        detailLabel.text = detail
+        detailLabel.isHidden = detail == nil
+        isAccessibilityElement = true
+        accessibilityTraits = .header
+        // VoiceOver reads the group once, so the machine belongs in the same
+        // breath as the name rather than as a second, orphaned element.
+        accessibilityLabel = detail.map { "\(title), \(localized("on \($0)"))" } ?? title
     }
 }

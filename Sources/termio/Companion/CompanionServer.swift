@@ -1248,40 +1248,52 @@ extension TermioStore {
     /// Snapshot the current projects/sessions as a wire roster, mirroring what
     /// the sidebar renders (display titles, live agent status).
     func companionRoster() -> CompanionRoster {
-        // The phone still sees containers, one per section, because its roster is
-        // a flat list of cards and always has been. A workspace's Terminals and
-        // Chats each ride as one, tagged with the kind the phone already keys off
-        // (`RosterProject.kind`); telling the phone about workspaces themselves is
-        // an additive protocol change and belongs to its own RFC.
+        // The roster stays one flat list of containers, but each one names the
+        // workspace it belongs to and the machine that workspace is on, so the
+        // phone can group by workspace instead of pouring every machine's
+        // checkouts into a single column. Containers are emitted workspace by
+        // workspace, in sidebar order, so the pushed order is already the
+        // grouping order.
         var projects: [RosterProject] = []
         for workspace in workspaces {
-            let name = hasMultipleWorkspaces ? workspace.name : ""
+            let alias = workspace.deviceAlias
             if !workspace.terminals.isEmpty {
                 projects.append(RosterProject(
                     id: Self.looseWireID(workspace: workspace, chats: false),
-                    name: name.isEmpty ? "Terminals" : "\(name) — Terminals",
+                    name: "Terminals",
                     path: Self.looseTerminalRoot,
+                    workspaceID: workspace.id.uuidString,
+                    workspaceName: workspace.name,
+                    deviceAlias: alias,
                     kind: "terminals",
                     sessions: workspace.terminals.map(rosterSession)))
             }
             if !workspace.chats.isEmpty {
                 projects.append(RosterProject(
                     id: Self.looseWireID(workspace: workspace, chats: true),
-                    name: name.isEmpty ? "Chats" : "\(name) — Chats",
+                    name: "Chats",
                     path: Self.looseChatRoot,
+                    workspaceID: workspace.id.uuidString,
+                    workspaceName: workspace.name,
+                    deviceAlias: alias,
                     kind: "chats",
                     sessions: workspace.chats.map(rosterSession)))
             }
-        }
-        projects += self.projects.map { project in
-            RosterProject(
-                id: project.id.uuidString,
-                name: project.name,
-                path: project.path,
-                branch: branchModel.branch(for: project.path) ?? project.branch,
-                kind: "folder",
-                sessions: project.sessions.map(rosterSession)
-            )
+            projects += self.projects(inWorkspace: workspace.id).map { project in
+                RosterProject(
+                    id: project.id.uuidString,
+                    name: project.name,
+                    path: project.path,
+                    workspaceID: workspace.id.uuidString,
+                    workspaceName: workspace.name,
+                    deviceAlias: alias,
+                    // "—" is the desktop's own no-branch placeholder; the wire
+                    // says empty so the phone has one thing to test.
+                    branch: Self.wireBranch(branchModel.branch(for: project.path) ?? project.branch),
+                    kind: "folder",
+                    sessions: project.sessions.map(rosterSession)
+                )
+            }
         }
         // The phone's new-session menu mirrors the desktop's enabled agents,
         // in preset order — the same filter the sidebar's quick-add row uses.
@@ -1302,6 +1314,13 @@ extension TermioStore {
 
     private static func wireAgent(_ agent: AgentPreset) -> String {
         agent.wireName
+    }
+
+    /// A checkout's branch as the wire says it: the name, or empty for a folder
+    /// that is not a repo. "—" is a glyph the sidebar draws in an empty column,
+    /// not a branch, and it has no business crossing to another app.
+    private static func wireBranch(_ branch: String) -> String {
+        branch == "—" ? "" : branch
     }
 
     private static func wireStatus(_ status: SessionStatus) -> String {
