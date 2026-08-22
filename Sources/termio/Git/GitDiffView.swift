@@ -184,6 +184,7 @@ struct GitDiffView: View {
         // Fixed height + inset hairline shared with the git pane's mode switch, so this
         // bar and the inspector's `Changes | History` bar line up across the split.
         .frame(height: GitChangesView.topBarHeight)
+        .modifier(DetailHeaderTitlebarInset())
         .background(Color(nsColor: settings.terminalBackgroundColor))
         .overlay(alignment: .bottom) {
             Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)

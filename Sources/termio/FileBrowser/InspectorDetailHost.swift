@@ -110,6 +110,61 @@ struct InspectorRoot: View {
     }
 }
 
+/// The maximized detail's root view. It is the same content the inspector docks, run up under the
+/// titlebar: with the toolbar hidden for the duration (see `setDetailMaximized`) there is no band
+/// above it, so the detail's own header *is* the window's top bar rather than a second one beneath
+/// an empty strip. When the sidebar is collapsed the host reaches the window's leading edge and the
+/// traffic lights land on that header, so it takes an inset that clears them; with the sidebar open
+/// they sit over the sidebar and the header starts flush.
+struct MaximizedDetailContent: View {
+    @EnvironmentObject var store: TermioStore
+    /// Leading room the traffic lights need, measured from the live window by the app delegate —
+    /// the buttons' geometry is the system's to change, so it is never hardcoded here.
+    let trafficLightsInset: CGFloat
+
+    var body: some View {
+        InspectorDetailContent()
+            .environment(\.detailHeaderLeadingInset, needsTrafficLightsRoom ? trafficLightsInset : 0)
+            // Up into the titlebar only when the toolbar has stepped aside for this detail, which
+            // is exactly when the sidebar is collapsed (see `syncMaximizedChrome`). With the
+            // sidebar up the toolbar keeps the sidebar's controls, so the header stays below it
+            // rather than sliding under a band that is still drawing.
+            .ignoresSafeArea(.container, edges: store.sidebarVisible ? [] : .top)
+    }
+
+    /// Only when the buttons are actually sitting on this header. With the sidebar open they land
+    /// on the sidebar, and in fullscreen they are hidden until the pointer summons the titlebar —
+    /// which then slides in *over* the content, so holding a gap for them all along only pushes the
+    /// title inward for nothing.
+    private var needsTrafficLightsRoom: Bool {
+        !store.sidebarVisible && !store.windowIsFullScreen
+    }
+}
+
+/// Extra leading room a detail's header takes so its title clears the window's traffic lights.
+/// Non-zero only while the detail is maximized with the sidebar collapsed; docked in the inspector
+/// the header is nowhere near them.
+private struct DetailHeaderLeadingInsetKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+    var detailHeaderLeadingInset: CGFloat {
+        get { self[DetailHeaderLeadingInsetKey.self] }
+        set { self[DetailHeaderLeadingInsetKey.self] = newValue }
+    }
+}
+
+/// Carried by every detail header bar, so each one clears the traffic lights when it rides the
+/// titlebar. Applied outside the header's own padding, which keeps its docked spacing untouched.
+struct DetailHeaderTitlebarInset: ViewModifier {
+    @Environment(\.detailHeaderLeadingInset) private var inset
+
+    func body(content: Content) -> some View {
+        content.padding(.leading, inset)
+    }
+}
+
 /// The detail's own window controls, drawn at the trailing edge of each detail's header. All three
 /// act on the content area, so they live
 /// *in* it rather than in the window toolbar — which also sidesteps the flaky
