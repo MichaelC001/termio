@@ -131,6 +131,40 @@ jobs:
 
           echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
 
+      # What a user receives is the app *inside the DMG*, not the one the build
+      # left in the checkout — signing, notarization and the DMG copy all sit
+      # between them. The daemons are the payload that makes a remote machine
+      # work at all and they are plain files in Resources, so nothing else would
+      # notice them going missing: the app would install, launch, and fail only
+      # when someone pointed it at a VPS.
+      - name: Verify the daemons survived into the DMG
+        run: |
+          mount_point="$RUNNER_TEMP/dmg-check"
+          mkdir -p "$mount_point"
+          hdiutil attach "$DMG_PATH" -mountpoint "$mount_point" -nobrowse -quiet
+          resources="$mount_point/${APP_NAME}.app/Contents/Resources"
+          status=0
+          for daemon in \
+            "termiod:Mach-O" \
+            "termiod-x86_64-unknown-linux-musl:ELF 64-bit" \
+            "termiod-aarch64-unknown-linux-musl:ELF 64-bit"; do
+            name="${daemon%%:*}"
+            want="${daemon#*:}"
+            if [ ! -f "$resources/$name" ]; then
+              echo "error: $name is missing from the shipped app" >&2
+              status=1
+              continue
+            fi
+            got="$(file -b "$resources/$name")"
+            echo "$name: $got"
+            case "$got" in
+              *"$want"*) ;;
+              *) echo "error: $name is not a $want binary" >&2; status=1 ;;
+            esac
+          done
+          hdiutil detach "$mount_point" -quiet
+          exit $status
+
       # Notarize + staple the DMG. The app inside is already Developer-ID-signed
       # with the hardened runtime and a secure timestamp, which notarization needs.
       - name: Notarize and staple DMG

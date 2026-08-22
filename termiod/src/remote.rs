@@ -249,13 +249,19 @@ fn deploy(host: &str, prebuilt: Option<&str>, target_override: Option<&str>) -> 
     Ok(())
 }
 
-/// A daemon for `target` shipped beside this executable, as `termiod-<target>`.
+/// A daemon for `target` shipped beside this executable.
 ///
 /// This is what makes deploying possible for someone who installed Termio rather
 /// than cloning it: `cross_compile` below needs cargo, the musl target, and this
 /// crate's source tree at the path baked into it, none of which a `.app` from the
 /// DMG has. `scripts/build-app.sh` puts both Linux binaries in `Contents/Resources`
 /// next to the daemon that reads this, so the common case is a copy.
+///
+/// A Mac takes the daemon that is *already* there — the one running this code. It
+/// is built universal for the same reason the app is, so one file serves both
+/// architectures and there is nothing per-target to ship. Sent as a plain copy:
+/// `scp` sets no quarantine attribute, so a Developer-ID-signed binary landing on
+/// another Mac runs without a Gatekeeper prompt.
 ///
 /// Found by the executable's own directory rather than by a bundle path or an
 /// environment variable: the daemon is run by absolute path out of whatever
@@ -264,25 +270,41 @@ fn deploy(host: &str, prebuilt: Option<&str>, target_override: Option<&str>) -> 
 /// path that proves the source tree actually cross-builds.
 fn shipped_binary(target: &str) -> Option<String> {
     let exe = std::env::current_exe().ok()?;
+    if target.contains("apple-darwin") {
+        return exe.to_str().map(str::to_owned);
+    }
     let candidate = exe.parent()?.join(format!("termiod-{target}"));
     candidate
         .is_file()
         .then(|| candidate.to_string_lossy().into_owned())
 }
 
-/// Ask the remote `uname` and map to a musl Rust target.
+/// Ask the remote `uname` and map it to a Rust target.
+///
+/// Macs are here because a device is a machine the user owns, and plenty of them
+/// are a Mac mini or a Studio on the same desk — "remote" describes the road, not
+/// the thing at the end of it. The daemon's own build already covers Darwin (it is
+/// what runs local sessions), so supporting it costs a branch here rather than a
+/// new artifact.
 fn detect_target(host: &str) -> Result<String> {
     let uname = ssh_capture(host, "uname -sm")?;
-    let uname = uname.trim();
-    if !uname.starts_with("Linux") {
-        bail!("remote host is not Linux (uname: '{uname}'); pass --target explicitly");
-    }
-    let target = if uname.contains("x86_64") || uname.contains("amd64") {
-        "x86_64-unknown-linux-musl"
-    } else if uname.contains("aarch64") || uname.contains("arm64") {
-        "aarch64-unknown-linux-musl"
-    } else {
-        bail!("unrecognized remote arch (uname: '{uname}'); pass --target explicitly");
+    target_for_uname(uname.trim())
+}
+
+/// The `uname -sm` half of `detect_target`, split out so the mapping can be
+/// checked without a machine to ask.
+fn target_for_uname(uname: &str) -> Result<String> {
+    let arm = uname.contains("aarch64") || uname.contains("arm64");
+    let intel = uname.contains("x86_64") || uname.contains("amd64");
+    let target = match (uname.split_whitespace().next(), arm, intel) {
+        (Some("Linux"), true, _) => "aarch64-unknown-linux-musl",
+        (Some("Linux"), _, true) => "x86_64-unknown-linux-musl",
+        (Some("Darwin"), true, _) => "aarch64-apple-darwin",
+        (Some("Darwin"), _, true) => "x86_64-apple-darwin",
+        (Some("Linux" | "Darwin"), _, _) => {
+            bail!("unrecognized remote arch (uname: '{uname}'); pass --target explicitly")
+        }
+        _ => bail!("remote host is neither Linux nor macOS (uname: '{uname}'); pass --target explicitly"),
     };
     Ok(target.to_string())
 }
@@ -395,4 +417,38 @@ fn shell_quote(s: &str) -> String {
         return s.to_string();
     }
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What `uname -sm` actually prints on the machines Termio is pointed at.
+    #[test]
+    fn a_machine_is_recognized_from_its_own_uname() {
+        assert_eq!(target_for_uname("Linux x86_64").unwrap(), "x86_64-unknown-linux-musl");
+        assert_eq!(target_for_uname("Linux aarch64").unwrap(), "aarch64-unknown-linux-musl");
+        assert_eq!(target_for_uname("Darwin arm64").unwrap(), "aarch64-apple-darwin");
+        assert_eq!(target_for_uname("Darwin x86_64").unwrap(), "x86_64-apple-darwin");
+    }
+
+    /// A machine Termio has no daemon for says so, and says which of the two
+    /// things it could not recognise — the system or the architecture.
+    #[test]
+    fn an_unsupported_machine_names_what_was_not_recognized() {
+        let arch = target_for_uname("Linux riscv64").unwrap_err().to_string();
+        assert!(arch.contains("unrecognized remote arch"), "{arch}");
+
+        let system = target_for_uname("FreeBSD amd64").unwrap_err().to_string();
+        assert!(system.contains("neither Linux nor macOS"), "{system}");
+    }
+
+    /// The Mac case takes the daemon that is already running this code rather
+    /// than a per-target sibling, because it is built universal.
+    #[test]
+    fn a_mac_is_served_by_the_running_daemon_itself() {
+        let running = std::env::current_exe().ok().and_then(|p| p.to_str().map(str::to_owned));
+        assert_eq!(shipped_binary("aarch64-apple-darwin"), running);
+        assert_eq!(shipped_binary("x86_64-apple-darwin"), running);
+    }
 }
