@@ -531,6 +531,16 @@ final class TermioStore: ObservableObject {
     /// spawning `git status` for a pane nobody could see.
     @Published var inspectorVisible = false
 
+    /// Whether the leading project sidebar is expanded. Mirrored from its AppKit split item the
+    /// same way `inspectorVisible` is. A maximized detail reads it to know whether the traffic
+    /// lights land on its own header (sidebar collapsed) or on the sidebar (sidebar open).
+    @Published var sidebarVisible = true
+
+    /// Whether the window is in native macOS fullscreen. Mirrored from the window's own
+    /// enter/exit transitions. Fullscreen hides the traffic lights until the pointer summons the
+    /// titlebar, so a maximized detail stops reserving room for them there.
+    @Published var windowIsFullScreen = false
+
     /// A per-session snapshot of the inspector's *content* — which tab is showing, which
     /// detail (file / diff / PR-issue) is open, and how that detail splits the
     /// panel between its list and itself. Switching terminal tabs restores each session's

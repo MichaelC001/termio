@@ -103,6 +103,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // The full-window host that shows the active inspector detail blown up to cover everything
     // while `store.inspectorMaximized`; nil when the detail is docked in the inspector.
     private var maximizedDetailHost: NSHostingView<AnyView>?
+    // Whether maximizing is what collapsed the navigator, so restoring re-opens only a sidebar
+    // this mode closed — never one the user had already put away.
+    private var sidebarCollapsedForMaximize = false
     // Coalesces the per-frame `windowDidResize` stream into a single settle so the inspector's
     // max thickness (and the tracking-separator re-bind it forces) is recomputed once the drag
     // stops, not on every intermediate frame.
@@ -209,6 +212,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         applyWindowTransparency()
         applyChromeAppearance()
         updateInspectorMaxThickness()
+        // The autosaved frame can restore straight into fullscreen, so seed the mirror rather
+        // than waiting for a transition that already happened.
+        store.windowIsFullScreen = window.styleMask.contains(.fullScreen)
         installToolbar()
         // Empty the sidebar's toolbar region (sort + new-terminal) whenever the navigator collapses
         // and restore it when it reopens — the sidebar's own buttons ride with the sidebar, the way
@@ -216,7 +222,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // divider drag). No `.initial`: the launch-time sync below runs after the autosave restore.
         sidebarCollapseObserver = sidebarSplitItem?.observe(\.isCollapsed, options: [.new]) { [weak self] item, _ in
             let collapsed = item.isCollapsed
-            MainActor.assumeIsolated { self?.setNavigatorItemsVisible(!collapsed) }
+            MainActor.assumeIsolated {
+                self?.setNavigatorItemsVisible(!collapsed)
+                // A maximized detail reaches the window's leading edge only while the sidebar is
+                // collapsed; that's when its header has to clear the traffic lights — and when the
+                // toolbar has nothing left to carry.
+                self?.store.sidebarVisible = !collapsed
+                self?.syncMaximizedChrome()
+            }
         }
         // Mirror the inspector's live collapse state onto the store, so panes it hosts
         // can idle while hidden (a collapsed item keeps its view hierarchy alive — the
@@ -692,6 +705,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// `windowDidEnterFullScreen` corrects it.
     func windowWillEnterFullScreen(_ notification: Notification) {
         window?.titlebarAppearsTransparent = false
+        // Flip before the animation, so a maximized detail's header drops its traffic-light gap
+        // as the window grows rather than snapping inward once it lands.
+        store.windowIsFullScreen = true
+    }
+
+    /// The twin of `windowWillEnterFullScreen` for the maximized detail's header: the buttons come
+    /// back with the window, so the gap that clears them is restored before the animation ends.
+    func windowWillExitFullScreen(_ notification: Notification) {
+        store.windowIsFullScreen = false
     }
 
     /// Re-assert the terminal-colored chrome when crossing the fullscreen boundary. macOS rebuilds
@@ -701,12 +723,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowDidEnterFullScreen(_ notification: Notification) {
         applyChromeAppearance()
         applyWindowTransparency()
+        store.windowIsFullScreen = true
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
         applyChromeAppearance()
         applyWindowTransparency()
         updateInspectorMaxThickness()
+        store.windowIsFullScreen = false
     }
 
     /// View ▸ Toggle Full Screen (⌃⌘F).
@@ -1112,6 +1136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func syncNavigatorItems() {
         guard let item = sidebarSplitItem else { return }
         setNavigatorItemsVisible(!item.isCollapsed)
+        store.sidebarVisible = !item.isCollapsed
     }
 
     /// Inserts or removes the sidebar's own toolbar actions (the sort pull-down and the `+`
@@ -1194,19 +1219,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     /// Mounts (or removes) the full-window host that shows the active inspector detail blown up to
-    /// cover the content area (the terminal + inspector region, *not* the project sidebar) — an
-    /// in-window maximize, *not* native macOS fullscreen: the window stays put in its Space, the
-    /// menu bar stays visible. The sidebar stays reachable, and toggling it slides the maximized
-    /// detail with it (see the leading constraint below).
+    /// cover the content area — an in-window maximize, *not* native macOS fullscreen: the window
+    /// stays put in its Space and the menu bar stays visible. The navigator collapses with it, so
+    /// "fill the window" means the window rather than the window minus a column of chrome; re-open
+    /// it (View menu) and the host slides with it, since its leading edge tracks the split.
     /// `InspectorDetailContent` is the same view the inspector docks; while it is up the inspector
-    /// hides its own copy (see `InspectorRoot`), so the detail renders once. The toolbar stays above
-    /// it, so its maximize button restores and Esc still closes.
+    /// hides its own copy (see `InspectorRoot`), so the detail renders once. The toolbar goes with
+    /// the sidebar (see `syncMaximizedChrome`); restore and close ride the detail's own header, and
+    /// Esc still closes.
     private func setDetailMaximized(_ on: Bool) {
         guard let container = splitViewController?.view else { return }
         if on {
             guard maximizedDetailHost == nil else { return }
+            // Measure the traffic lights rather than assuming their layout: the header runs up into
+            // the titlebar, and where the buttons end (plus a gap) is where its title may start.
+            let buttonsEnd = window?.standardWindowButton(.zoomButton)?.frame.maxX ?? 70
             let host = NSHostingView(rootView: AnyView(
-                InspectorDetailContent()
+                // The header's own leading padding supplies the gap after the buttons.
+                MaximizedDetailContent(trafficLightsInset: buttonsEnd)
                     .environmentObject(store)
                     .environmentObject(settings)
             ))
@@ -1234,13 +1264,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 host.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             ])
             maximizedDetailHost = host
+            // "Fill the window" means the whole window: the navigator steps aside with the toolbar
+            // and comes back on restore. Leaving it up would keep a column of chrome beside a
+            // detail the user just asked to blow up — and its own controls (workspace, sort, `+`)
+            // live in the toolbar band that maximizing takes away.
+            if sidebarSplitItem?.isCollapsed == false {
+                sidebarCollapsedForMaximize = true
+                sidebarSplitItem?.isCollapsed = true
+            }
+            syncMaximizedChrome()
         } else {
             maximizedDetailHost?.removeFromSuperview()
             maximizedDetailHost = nil
+            // Only re-open what maximizing closed. A sidebar the user collapsed themselves — before
+            // maximizing, or while the detail was up — stays collapsed.
+            if sidebarCollapsedForMaximize {
+                sidebarCollapsedForMaximize = false
+                sidebarSplitItem?.isCollapsed = false
+            }
+            syncMaximizedChrome()
             // Removing the host re-exposes the terminal, but a tickless surface won't repaint
             // itself — nudge it so a switch out of a maximized detail can't leave a blank.
             store.repaintSelectedSurface()
         }
+    }
+
+    /// Drops the toolbar only when a maximized detail owns the *whole* window — which is to say
+    /// while the navigator is collapsed. Then the band carries nothing but the branch title and the
+    /// inspector toggle, both meaningless over a full-window detail, and the detail's own header
+    /// (name, Edit/Preview, restore, close) reads as a second bar under an empty one; hiding it
+    /// leaves the bare titlebar strip the traffic lights live in, and the detail's header becomes
+    /// the window's top bar. With the sidebar up the band is not spare chrome: the sidebar's own
+    /// workspace / sort / `+` controls live in its region, and taking the toolbar would strip the
+    /// sidebar of them for a mode that has nothing to do with it.
+    ///
+    /// Called on both the maximize transition and every sidebar collapse, so toggling the navigator
+    /// under a maximized detail lands in the right state. Idempotent — it returns when the toolbar
+    /// already matches, because re-asserting visibility churns the tracking separators.
+    private func syncMaximizedChrome() {
+        guard let window, let toolbar = window.toolbar else { return }
+        let hidesToolbar = maximizedDetailHost != nil && sidebarSplitItem?.isCollapsed == true
+        guard toolbar.isVisible == hidesToolbar else { return }
+        toolbar.isVisible = !hidesToolbar
+        // A hidden toolbar stops laying out, so its custom views come back measured against stale
+        // bounds — the branch picker's two-line project/branch title drew clipped at the top.
+        if !hidesToolbar {
+            DispatchQueue.main.async { [weak self] in self?.toolbarDelegate?.relayoutBranchPicker() }
+        }
+        // Without the toolbar the detail's header occupies the strip the window was dragged by, and
+        // a SwiftUI view swallows the mouse-down a titlebar drag needs. Dragging the background
+        // restores it: only views that *don't* handle the event start the drag, so the header's
+        // empty run moves the window while the document's own text keeps its selection drags.
+        window.isMovableByWindowBackground = hidesToolbar
     }
 
     /// Termio ▸ Check for Updates… — hands off to Sparkle's standard update flow.
@@ -2081,6 +2156,16 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     private var terminalPaneView: NSView? {
         guard let items = splitViewController?.splitViewItems, items.count > 1 else { return nil }
         return items[1].viewController.view
+    }
+
+    /// Re-measures the branch picker's custom view. A hidden toolbar stops laying out, so the
+    /// hosting view's intrinsic size is stale when the band comes back (restoring from a maximized
+    /// detail) and the two-line project/branch title draws against the wrong height — clipped at the
+    /// top. Same three calls the pane-width observer makes; only the trigger differs.
+    func relayoutBranchPicker() {
+        branchPickerWidthConstraint?.constant = branchPickerWidthLimit()
+        branchPickerHostingView?.invalidateIntrinsicContentSize()
+        branchPickerHostingView?.superview?.needsLayout = true
     }
 
     private func branchPickerWidthLimit() -> CGFloat {

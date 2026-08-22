@@ -684,6 +684,7 @@ struct IssueDetailView: View {
         }
         .padding(.horizontal, 8)
         .frame(height: GitChangesView.topBarHeight)
+        .modifier(DetailHeaderTitlebarInset())
         .overlay(alignment: .bottom) {
             Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)
         }

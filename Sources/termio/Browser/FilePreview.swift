@@ -74,6 +74,7 @@ struct FilePreviewView: View {
         }
         .padding(.horizontal, 12)
         .frame(height: GitChangesView.topBarHeight)
+        .modifier(DetailHeaderTitlebarInset())
         .background(Color(nsColor: settings.terminalBackgroundColor))
     }
 
