@@ -3,7 +3,7 @@ title: Device → Workspace → Project
 status: draft
 type: design
 created: 2026-08-19
-updated: 2026-08-19
+updated: 2026-08-22
 related:
   - 20260805-termiod-device-architecture.md
   - 20260819-workspace-switch-latency.md
@@ -218,10 +218,8 @@ collapse is correct again: with one scope there is nothing to switch.
 
 ### 8.2 The device comes from the menu, not the panel
 
-`New Workspace…` takes the same shape as `New Terminal` and `Open Project…`,
-which already grow a device submenu on a second machine and collapse to a plain
-verb without one (`refreshNewTerminalItem`, `refreshOpenProjectItem`,
-`DeviceMenuTag`):
+`New Workspace…` grows a device submenu on a second machine and collapses to a
+plain verb without one (`refreshNewWorkspaceItem`, `DeviceMenuTag`):
 
 ```
 One machine:     New Workspace…              → name panel
@@ -237,6 +235,16 @@ is a control for a decision they never took.
 
 The panel keeps #347's copy shape — **"New Workspace on ukvps"** beside
 **"Open a Project on ukvps"**.
+
+**`New Workspace` is the only device submenu this shape applies to**, and the
+rule that decides it is short: *a verb that creates the owner of a device must
+ask for one; a verb that creates something which inherits one must not.* A
+workspace is the owner, and a new one is not the one on screen, so there is
+nothing for it to inherit — the menu is the only place that choice can live.
+
+Everything below the workspace inherits, so `New Terminal` and `Open Project…`
+are plain verbs on every install (§9.1). `New SSH Connection ▸ <host>` keeps its
+list because the host is that verb's payload, not a device picker.
 
 ### 8.3 The panel opens with a usable default
 
@@ -298,11 +306,22 @@ mechanical one. **Stage 1 of the implementation deliberately does none of them.*
 
 - **`DeviceContext.swift:47` documents the opposite of §2** — *"one workspace
   holds checkouts on several devices"*. It must be corrected when Stage 2 lands.
-- **`Open Project ▸ <device>` loses its stated reason.** `App.swift:1685` says
-  the menu carries the device *because* "the workspace the row lands in has no
-  device of its own to inherit". Under §2 it inherits one, and the menu becomes
-  either redundant or a workspace-switching verb. §8.2 designs only the
-  `New Workspace` shape and should be extended to cover this.
+- **`Open Project ▸ <device>` lost its stated reason, and is gone.** The menu
+  carried the device *because* "the workspace the row lands in has no device of
+  its own to inherit". Under §2 it inherits one, which left the submenu either
+  redundant or a workspace-switching verb in a filing verb's clothes — and it was
+  already the latter, since `addRemoteProject` ends in `switchToWorkspace`.
+  `Open Project…` is now a plain verb on every install and
+  `presentOpenProjectPanel` dispatches on `currentWorkspace.device`: the folder
+  picker on this Mac, the remote path panel in a workspace that is a box's.
+
+  This also fixed the live half of it. ⌘O rode on the This Mac row, so pressing
+  it inside a workspace on a box opened a *local* picker, filed the folder into
+  `workspaceForThisMac`, and threw the user out of the scope they were in.
+
+  Opening a project on another machine is two steps now — switch workspace, then
+  ⌘O — which §2 already required of everything else. §8.2 records the rule that
+  decides which verbs keep a device submenu.
 - **Every workspace switch starts paying an SSH roster round trip.**
   `finishArriving` calls `switchToDevice` only when the workspace has an alias
   (`TermioStore+Workspaces.swift:284`); making that unconditional costs the

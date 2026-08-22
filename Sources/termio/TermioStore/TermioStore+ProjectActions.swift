@@ -525,8 +525,33 @@ extension TermioStore {
         }
     }
 
-    /// Presents a folder picker that opens the chosen directory as a new project.
+    /// Opens a project on the machine the current workspace belongs to.
+    ///
+    /// The device is inherited, never asked for. A checkout takes its machine from
+    /// the workspace that owns it, so the scope on screen has already answered
+    /// "which machine" — the same reason `New Terminal` opens on the device you
+    /// are looking at instead of growing a picker. Asking again turns one decision
+    /// into two, and it is what used to pin ⌘O to this Mac while the window was
+    /// showing a box: the folder landed in a workspace the user was not in, and
+    /// selecting it threw them out of the one they were.
+    ///
+    /// Opening a project on a *different* machine is therefore two steps now —
+    /// switch workspace, then open — which is what the hierarchy says anyway: you
+    /// switch workspaces, never machines. The single step was never one either;
+    /// `addRemoteProject` ends in `switchToWorkspace`, so the scope moved regardless
+    /// of which menu row was clicked.
     func presentOpenProjectPanel() {
+        switch currentWorkspace.device {
+        case .thisMac:
+            presentLocalProjectPanel()
+        case .ssh(let alias):
+            presentRemoteProjectPanel(
+                on: KnownDevice(alias: alias, deviceID: currentWorkspace.deviceID))
+        }
+    }
+
+    /// Presents a folder picker that opens the chosen directory as a new project.
+    private func presentLocalProjectPanel() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -571,42 +596,57 @@ extension TermioStore {
 
     // MARK: - A project on another machine
 
-    /// Opens a project that lives on `device`, which Termio cannot browse.
+    /// Opens a project that lives on `device`, browsed the way a folder on this Mac
+    /// is: a column picker over the machine's own directories
+    /// (`RemoteFolderPicker`), because a path you cannot see is a path you have to
+    /// already know.
     ///
-    /// There is no remote file picker, and this deliberately does not fake one:
-    /// `fs.list` is unbuilt on the client, and a panel that guesses at a directory
-    /// list would be a worse lie than a text field. So the two honest ways to name
-    /// a folder over there are to clone a repository onto the machine — which
-    /// creates the directory, so its path is known afterwards — or to type a path
-    /// that is already on it.
+    /// Cloning a repository onto the machine leaves through the picker's third
+    /// button. It names a folder that does not exist yet, so there is nothing to
+    /// browse to — a different question, and now a different panel.
     func presentRemoteProjectPanel(on device: KnownDevice) {
+        // Straight to the picker rather than back through `presentOpenProjectPanel`,
+        // which dispatches on the current workspace: this one has already been told
+        // which machine, and routing through the dispatcher would send a `.thisMac`
+        // caller back here whenever the scope on screen is a box's.
         guard let alias = device.alias else {
-            presentOpenProjectPanel()
+            presentLocalProjectPanel()
             return
         }
+        RemoteFolderPicker(alias: alias).present(over: NSApp.mainWindow) { [weak self] choice in
+            guard let self else { return }
+            switch choice {
+            case .cancelled:
+                return
+            case .folder(let path):
+                openRemoteProject(at: path, on: alias)
+            case .clone:
+                presentRemoteClonePanel(on: alias)
+            }
+        }
+    }
+
+    /// Asks for a repository to clone onto `alias`. One field, because the
+    /// destination is not the user's to name: the clone lands in the machine's home
+    /// directory and reports back the absolute path it created (`performRemoteClone`).
+    private func presentRemoteClonePanel(on alias: String) {
         let alert = NSAlert()
-        alert.messageText = localized("Open a Project on \(alias)")
+        alert.messageText = localized("Clone a Repository onto \(alias)")
         alert.informativeText = localized(
-            "Clone a repository onto \(alias), or open a folder that’s already there — the path completes as you type.")
-        alert.addButton(withTitle: localized("Open"))
+            "The clone runs on \(alias) and opens as a project there.")
+        alert.addButton(withTitle: localized("Clone"))
         alert.addButton(withTitle: localized("Cancel"))
 
-        let fields = RemoteProjectFields(alias: alias)
-        alert.accessoryView = fields.view
-        alert.window.initialFirstResponder = fields.field
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        // Not localized: a repository URL reads the same in every language.
+        field.placeholderString = "https://github.com/owner/repo.git"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
 
-        let response = alert.runModal()
-        // The listing channel is the panel's, so it goes when the panel does —
-        // including on Cancel, which would otherwise leak an SSH connection per
-        // dismissal.
-        fields.stop()
-        guard response == .alertFirstButtonReturn else { return }
-        let entry = fields.entry
-        if fields.isCloning {
-            cloneProject(from: entry, on: alias)
-        } else {
-            openRemoteProject(at: entry, on: alias)
-        }
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let origin = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !origin.isEmpty else { return }
+        cloneProject(from: origin, on: alias)
     }
 
     /// Clones `originURL` onto `alias` and files the result as a project in a
@@ -988,169 +1028,5 @@ enum RemotePathEntry {
         guard path.hasPrefix("~/") else { return path }
         let tail = path.dropFirst(2)
         return home.hasSuffix("/") ? home + tail : home + "/" + tail
-    }
-}
-
-/// The two ways to name a directory on another machine, as the accessory view of
-/// `presentRemoteProjectPanel`: clone a repository onto it, or open a folder
-/// already there.
-///
-/// The folder field completes as it is typed. Each `/` asks the machine for one
-/// directory — never a tree — and the answer is cached under the directory it
-/// describes, so moving the cursor around inside a path costs nothing. That is
-/// the whole of the "remote file browser": `fs.list`, one directory deep, at the
-/// moment the user names a new one.
-///
-/// A class rather than a few locals because the controls need a target that
-/// outlives the call that builds it — the alert runs modally and both the switch
-/// and the field have to keep answering while it is up.
-@MainActor
-private final class RemoteProjectFields: NSObject, NSTextFieldDelegate {
-    let view = NSStackView()
-    let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
-    private let mode = NSSegmentedControl(
-        labels: [localized("Clone a Repository"), localized("Open a Folder")],
-        trackingMode: .selectOne, target: nil, action: nil)
-
-    private let alias: String
-    private let lister: TermiodDirectoryLister
-    /// Where the machine says this account lives. `/` until the handshake
-    /// answers, so the field is usable before the connection is.
-    private var home = "/"
-    /// The last directory listed, and what was in it. One entry, not a cache of
-    /// many: a path field only ever completes inside the directory the cursor is
-    /// in, and holding older ones would just serve stale names after a rename.
-    private var listedDirectory: String?
-    private var listedNames: [String] = []
-    /// Guards the re-entrant `controlTextDidChange` that accepting a completion
-    /// fires, which would otherwise ask for completions of the text completion
-    /// just inserted.
-    private var isCompleting = false
-
-    /// Whether the entry is a repository to clone rather than a folder to open.
-    var isCloning: Bool { mode.selectedSegment == 0 }
-
-    /// What the user named, with a leading `~` expanded against the machine's own
-    /// home. termiod spawns the shell with a raw `chdir` and expands nothing, so
-    /// this has to happen here — and it can, because the handshake already said
-    /// where home is.
-    var entry: String {
-        let typed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !isCloning else { return typed }
-        return RemotePathEntry.expandingTilde(typed, home: home)
-    }
-
-    init(alias: String) {
-        self.alias = alias
-        lister = TermiodDirectoryLister(route: .ssh(alias))
-        super.init()
-        mode.selectedSegment = 0
-        mode.target = self
-        mode.action = #selector(modeChanged)
-        field.delegate = self
-        view.orientation = .vertical
-        view.alignment = .leading
-        view.spacing = 8
-        view.addArrangedSubview(mode)
-        view.addArrangedSubview(field)
-        field.widthAnchor.constraint(equalToConstant: 320).isActive = true
-        mode.widthAnchor.constraint(equalToConstant: 320).isActive = true
-        // NSAlert lays its accessory out by frame, so the stack has to carry its
-        // own measured height rather than a number guessed here — a control that
-        // grows with the user's text size would otherwise be clipped.
-        view.frame = NSRect(origin: .zero, size: view.fittingSize)
-        modeChanged()
-        connect()
-    }
-
-    /// Opens the listing channel in the background. The panel is already up by
-    /// then — a modal that blocked on an SSH handshake before showing anything
-    /// would read as a hang on exactly the machine that is slowest to reach.
-    private func connect() {
-        lister.connect { [weak self] result in
-            guard case .success(let home) = result else { return }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.home = home
-                // Only seeds an untouched field: someone who started typing
-                // during the handshake keeps what they wrote.
-                if !self.isCloning, self.field.stringValue.isEmpty {
-                    self.field.stringValue = home.hasSuffix("/") ? home : home + "/"
-                    self.refreshCompletions()
-                }
-            }
-        }
-    }
-
-    func stop() {
-        lister.close()
-    }
-
-    /// The placeholder is the only thing that changes: one field either way, so
-    /// switching never loses what was typed into the other one. Neither example is
-    /// localized — a URL and an absolute path read the same in every language.
-    @objc private func modeChanged() {
-        field.placeholderString = isCloning ? "https://github.com/owner/repo.git" : "/srv/api"
-    }
-
-    func controlTextDidChange(_ notification: Notification) {
-        guard !isCompleting, !isCloning else { return }
-        refreshCompletions()
-    }
-
-    /// Splits what is typed at the last `/` into the directory to list and the
-    /// partial name to match inside it, then lists that directory if it is not
-    /// the one already held. Typing further into the same directory re-filters
-    /// what is in hand and never touches the network.
-    private func refreshCompletions() {
-        let (directory, _) = RemotePathEntry.split(entry)
-        guard directory != listedDirectory else {
-            showCompletions()
-            return
-        }
-        lister.list(directory) { [weak self] result in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                // The user may have typed on while this was in flight; a reply
-                // for a directory they have already left is dropped rather than
-                // shown against the wrong path.
-                guard RemotePathEntry.split(self.entry).directory == directory else { return }
-                switch result {
-                case .success(let entries):
-                    self.listedDirectory = directory
-                    self.listedNames = entries.map(\.name)
-                    self.showCompletions()
-                case .failure:
-                    // An unreadable or missing directory completes to nothing.
-                    // It is not an error to report: the user is mid-path, and a
-                    // half-typed directory name is unreadable by definition.
-                    self.listedDirectory = directory
-                    self.listedNames = []
-                }
-            }
-        }
-    }
-
-    private func showCompletions() {
-        guard !listedNames.isEmpty, let editor = field.currentEditor() as? NSTextView else {
-            return
-        }
-        isCompleting = true
-        editor.complete(nil)
-        isCompleting = false
-    }
-
-    func control(
-        _ control: NSControl,
-        textView: NSTextView,
-        completions words: [String],
-        forPartialWordRange charRange: NSRange,
-        indexOfSelectedItem index: UnsafeMutablePointer<Int>
-    ) -> [String] {
-        let (_, partial) = RemotePathEntry.split(entry)
-        guard !partial.isEmpty else { return listedNames }
-        return listedNames.filter {
-            $0.range(of: partial, options: [.caseInsensitive, .anchored]) != nil
-        }
     }
 }

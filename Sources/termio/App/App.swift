@@ -910,22 +910,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// File ▸ Open Project… — presents the folder picker that opens a directory as a new
-    /// project. Reached via the responder chain (the menu item targets `nil`),
-    /// the same nil-target routing the Settings item uses.
+    /// File ▸ Open Project… — opens a project on the machine the current workspace
+    /// belongs to: the folder picker here, a path on that box in a workspace that
+    /// is a box's (see `presentOpenProjectPanel`). Reached via the responder chain
+    /// (the menu item targets `nil`), the same nil-target routing the Settings
+    /// item uses.
     @objc func openProject(_ sender: Any?) {
         store.presentOpenProjectPanel()
-    }
-
-    /// A device row of the Open Project submenu — the machine's alias rides in
-    /// `representedObject`. Termio can't browse that box, so the panel asks for a
-    /// repository to clone onto it or a path already there.
-    @objc func openProjectOnDevice(_ sender: NSMenuItem) {
-        guard let alias = sender.representedObject as? String else { return }
-        store.presentRemoteProjectPanel(
-            on: KnownDevice(
-                alias: alias,
-                deviceID: TermiodDeviceRegistry.shared.deviceID(for: TermiodRoute(sshAlias: alias))))
     }
 
     /// File ▸ New Terminal (⌘T) — a shell in the focused session's directory, beside
@@ -1623,7 +1614,6 @@ enum DeviceMenuTag {
     static let newTerminal = 7301
     static let newTerminalAtHome = 7302
     static let connectTo = 7303
-    static let openProject = 7305
     static let newWorkspace = 7306
 }
 
@@ -1695,8 +1685,6 @@ extension AppDelegate: NSMenuDelegate {
             fillNewSSHMenu(menu)
         case localized("Connect to…"):
             fillConnectToMenu(menu)
-        case localized("Open Project"):
-            fillOpenProjectMenu(menu)
         case localized("New Workspace"):
             fillNewWorkspaceMenu(menu)
         case localized("Workspace"):
@@ -1714,9 +1702,9 @@ extension AppDelegate: NSMenuDelegate {
         // the roster is read once per pass rather than once per item — reading
         // `~/.ssh/config` for "Connect to…" is the expensive half.
         let known = DeviceRoster.known(in: store)
-        // The other machines are read once per pass for the same reason: both the
-        // Open Project and the New Workspace rows collapse on the same list, and it
-        // parses `~/.ssh/config` to build it.
+        // The other machines are read once per pass for the same reason: the New
+        // Workspace row collapses on this list, and building it parses
+        // `~/.ssh/config`.
         let others = otherDevices(known: known)
         for item in menu.items {
             switch item.tag {
@@ -1726,8 +1714,6 @@ extension AppDelegate: NSMenuDelegate {
                 refreshNewTerminalItem(item, known: known, atHome: true, command: nil)
             case DeviceMenuTag.connectTo:
                 item.isHidden = DeviceRoster.unusedAliases(known: known).isEmpty
-            case DeviceMenuTag.openProject:
-                refreshOpenProjectItem(item, others: others)
             case DeviceMenuTag.newWorkspace:
                 refreshNewWorkspaceItem(item, others: others)
             default:
@@ -1769,62 +1755,13 @@ extension AppDelegate: NSMenuDelegate {
         if let command { item.applyShortcut(for: command) }
     }
 
-    /// The same single-device collapse applied to "Open Project…": a plain verb
-    /// while this Mac is the only machine, a device submenu once there is anywhere
-    /// else to put a project.
-    ///
-    /// Unlike New Terminal, this one *does* grow the submenu, because a project is
-    /// filed rather than entered: the workspace the row lands in has no device of
-    /// its own to inherit, so where the checkout lives is a choice only this menu
-    /// can carry. Picking This Mac is today's folder picker, unchanged.
-    ///
-    /// The shortcut travels to the This Mac row so ⌘O still opens a local folder
-    /// (AppKit's key-equivalent sweep descends submenus, the same behaviour the
-    /// New Chat menu relies on).
-    private func refreshOpenProjectItem(_ item: NSMenuItem, others: [KnownDevice]) {
-        guard !others.isEmpty else {
-            item.title = localized("Open Project…")
-            item.submenu = nil
-            item.action = #selector(openProject(_:))
-            item.target = self
-            item.applyShortcut(for: .openProject)
-            return
-        }
-        // The ellipsis moves to the rows: it is each of those that opens a panel,
-        // and a parent that only reveals a submenu never carries one. A submenu
-        // item's own key equivalent never fires, so ⌘O travels to the This Mac row
-        // (see `fillOpenProjectMenu`).
-        item.title = localized("Open Project")
-        item.keyEquivalent = ""
-        item.keyEquivalentModifierMask = []
-        // Attached once and filled by the delegate on open, like the other device
-        // submenus. Replacing the menu object on every pass would swap it out from
-        // under AppKit's key-equivalent sweep, which is what finds ⌘O in there.
-        //
-        // Everything below runs on the *first* reshape only. Once a submenu is
-        // attached AppKit owns both the action and the target — it installs its
-        // own `submenuAction:` aimed at the menu — and re-clearing them on a later
-        // pass strips that and leaves a submenu parent with no action, which dims
-        // the row permanently. This menu is refreshed on every open, so "later
-        // pass" means the second time the user pulls it down.
-        guard item.submenu?.title != localized("Open Project") else { return }
-        // Cleared together, and before the submenu is attached: AppKit adopts the
-        // menu as the item's target only when nothing else already claims it, and
-        // a leftover AppDelegate cannot perform `submenuAction:`.
-        item.action = nil
-        item.target = nil
-        let submenu = NSMenu(title: localized("Open Project"))
-        submenu.delegate = self
-        item.submenu = submenu
-    }
-
     /// The machines other than this Mac something can be put on: one worked on
-    /// before, plus one from `~/.ssh/config` never reached. Putting a project or a
-    /// workspace on a box is itself a first contact — `ensureRemoteReady` installs
-    /// termiod on the way — so the list is the same one `Clone to <device>…` offers.
+    /// before, plus one from `~/.ssh/config` never reached. Putting a workspace on
+    /// a box is itself a first contact — `ensureRemoteReady` installs termiod on
+    /// the way — so the list is the same one `Clone to <device>…` offers.
     ///
-    /// Empty is the single-machine install, which is what both device submenus
-    /// collapse on.
+    /// Empty is the single-machine install, which is what the New Workspace submenu
+    /// collapses on.
     private func otherDevices(known: [KnownDevice]) -> [KnownDevice] {
         known.filter { !$0.isLocal }
             + DeviceRoster.unusedAliases(known: known).map { KnownDevice(alias: $0, deviceID: nil) }
@@ -1853,10 +1790,15 @@ extension AppDelegate: NSMenuDelegate {
         // The ellipsis moves to the rows: each of those opens the name panel, and a
         // parent that only reveals a submenu never carries one.
         item.title = localized("New Workspace")
-        // Attached once and filled by the delegate on open, like the other device
-        // submenus — the File menu's copy is rebuilt per open, but the toolbar `+`
-        // keeps its item across refreshes. The action and target are cleared on the
-        // first reshape only, for the reason spelled out in `refreshOpenProjectItem`.
+        // Attached once and filled by the delegate on open — the File menu's copy is
+        // rebuilt per open, but the toolbar `+` keeps its item across refreshes.
+        //
+        // Everything below runs on the *first* reshape only. Once a submenu is
+        // attached AppKit owns both the action and the target — it installs its own
+        // `submenuAction:` aimed at the menu — and re-clearing them on a later pass
+        // strips that and leaves a submenu parent with no action, which dims the row
+        // permanently. This menu is refreshed on every open, so "later pass" means
+        // the second time the user pulls it down.
         guard item.submenu?.title != localized("New Workspace") else { return }
         item.action = nil
         item.target = nil
@@ -1876,24 +1818,6 @@ extension AppDelegate: NSMenuDelegate {
             let row = menu.addItem(
                 withTitle: "\(device.name)…",
                 action: #selector(newWorkspaceOnDevice(_:)),
-                keyEquivalent: "")
-            row.target = self
-            row.representedObject = device.alias
-        }
-    }
-
-    private func fillOpenProjectMenu(_ menu: NSMenu) {
-        let local = menu.addItem(
-            withTitle: localized("This Mac…"), action: #selector(openProject(_:)), keyEquivalent: "")
-        local.target = self
-        local.applyShortcut(for: .openProject)
-        menu.addItem(.separator())
-        for device in otherDevices(known: DeviceRoster.known(in: store)) {
-            // The machine's own name, so nothing here is translated — it is the
-            // alias out of the user's `~/.ssh/config`.
-            let row = menu.addItem(
-                withTitle: "\(device.name)…",
-                action: #selector(openProjectOnDevice(_:)),
                 keyEquivalent: "")
             row.target = self
             row.representedObject = device.alias
@@ -2253,14 +2177,13 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
         menu.addItem(terminal)
         menu.addItem(makeNewChatItem())
         menu.addItem(makeNewSSHItem())
-        // Targets the AppDelegate, like the terminal row above, so the delegate can
-        // reshape it into a device submenu on open (`refreshOpenProjectItem`) —
-        // both this and the File menu's row then go through one builder.
+        // A plain verb on every install, like the terminal row above: a project
+        // takes its machine from the workspace it is filed in, so the scope on
+        // screen has already made that choice (see `presentOpenProjectPanel`).
         let folder = NSMenuItem(title: localized("Open Project…"),
                                 action: #selector(AppDelegate.openProject(_:)),
                                 keyEquivalent: "")
         folder.target = NSApp.delegate as? AppDelegate
-        folder.tag = DeviceMenuTag.openProject
         menu.addItem(folder)
         // The one container verb that belongs in a context-free menu: a new
         // workspace reads no selection and no focus. It sits last, after a
@@ -2429,11 +2352,15 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             let item = NSToolbarItem(itemIdentifier: .inspectorTabs)
             item.label = localized("Inspector")
             item.toolTip = localized("Switch between project files, search, changes, and info")
-            let host = NSHostingView(rootView: InspectorTabsToolbar()
-                .environmentObject(store)
-                .environmentObject(store.settings))
-            host.sizingOptions = [.intrinsicContentSize]
-            item.view = host
+            // The switch's host also carries the terminal ‖ inspector seam, which the opaque
+            // fullscreen title bar would otherwise cover (see `InspectorTabsItemView`). It rides
+            // this item because this item is the one the tracking separator pins to the divider,
+            // and because a seam item of its own would push the switch off that divider.
+            item.view = InspectorTabsItemView(
+                content: AnyView(InspectorTabsToolbar()
+                    .environmentObject(store)
+                    .environmentObject(store.settings)),
+                splitView: splitViewController?.splitView)
             item.isBordered = false
             // First to overflow: the switch is incompressible, so when its section (the inspector
             // pane) gets too narrow it must yield to the `»` menu rather than slide over the divider
@@ -2501,6 +2428,132 @@ private extension NSToolbarItem.Identifier {
     static let toggleInspector = NSToolbarItem.Identifier("TermioToggleInspector")
     static let inspectorTrackingSeparator = NSToolbarItem.Identifier("TermioInspectorTrackingSeparator")
     static let branchPicker = NSToolbarItem.Identifier("TermioBranchPicker")
+}
+
+/// The inspector pane switch, plus the terminal ‖ inspector seam that an opaque title bar covers.
+///
+/// Windowed, nothing draws that seam: `.fullSizeContentView` runs the split view — dividers
+/// included — up behind the chrome, and `titlebarAppearsTransparent` lets divider 1 read straight
+/// through the toolbar band, so the line the user sees there *is* the content's own divider.
+/// Fullscreen drops that transparency (macOS 26's fullscreen title-bar host composites a light
+/// Liquid Glass band over a dark terminal otherwise — see `applyWindowTransparency`), and the
+/// opaque band it falls back to paints over the divider: the seam stops at the toolbar's floor
+/// while the content below still shows it.
+///
+/// A toolbar item is the only thing drawing *above* that band, so the hairline is hosted here
+/// rather than added as an item of its own — a separate item would push the switch off the
+/// divider by its own width plus the toolbar's inter-item spacing. It is a plain sublayer,
+/// positioned from the split view's live geometry, so it can sit outside this view's bounds and
+/// land on divider 1 at the band's full height. Auto Layout never sees it.
+private final class InspectorTabsItemView: NSView {
+    private let hosting: NSHostingView<AnyView>
+    private let seam = CALayer()
+    private weak var splitView: NSSplitView?
+
+    init(content: AnyView, splitView: NSSplitView?) {
+        self.hosting = NSHostingView(rootView: content)
+        self.splitView = splitView
+        super.init(frame: .zero)
+        wantsLayer = true
+        hosting.sizingOptions = [.intrinsicContentSize]
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(hosting)
+        // Pin on all four edges so the switch's own intrinsic width still drives the item's size —
+        // the Issues segment comes and goes, and the toolbar has to re-measure when it does.
+        NSLayoutConstraint.activate([
+            hosting.leadingAnchor.constraint(equalTo: leadingAnchor),
+            hosting.trailingAnchor.constraint(equalTo: trailingAnchor),
+            hosting.topAnchor.constraint(equalTo: topAnchor),
+            hosting.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        layer?.addSublayer(seam)
+        seam.isHidden = true
+        // The window resizes on both fullscreen transitions, which relayouts this view — but the
+        // title bar's opacity is what the seam keys off, and that is flipped separately (before the
+        // enter animation, after the exit one). Re-place the line once each transition settles.
+        // Target/selector rather than a block: the center keeps a zeroing weak reference to an
+        // observer registered this way, so there is no token to tear down from a nonisolated deinit.
+        for name in [NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(titleBarChromeDidChange), name: name, object: nil)
+        }
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    @objc private func titleBarChromeDidChange() {
+        needsLayout = true
+    }
+
+    /// A divider drag, a window resize and a fullscreen transition all reach this view as a frame
+    /// change, and `layout()` alone only follows the size half of that.
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        super.setFrameOrigin(newOrigin)
+        needsLayout = true
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        needsLayout = true
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        needsLayout = true
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        positionSeam()
+    }
+
+    /// Places the hairline on divider 1, spanning the title-bar band, in this view's coordinates —
+    /// which puts it outside its own bounds, on the leading side, over the tracking separator's
+    /// empty slot.
+    private func positionSeam() {
+        // No implicit fade as the line moves with the divider or blinks out on collapse.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        guard let seamRect = seamRectInContentView(), let contentView = window?.contentView else {
+            seam.isHidden = true
+            return
+        }
+        seam.frame = convert(seamRect, from: contentView)
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            seam.backgroundColor = NSColor.separatorColor.cgColor
+        }
+        seam.isHidden = false
+    }
+
+    /// The seam's rectangle in the content view's coordinates, or nil when there is nothing to
+    /// draw: no inspector beside the terminal, or a title bar the divider already reads through.
+    private func seamRectInContentView() -> NSRect? {
+        guard let splitView, let window, let contentView = window.contentView,
+              splitView.arrangedSubviews.count > 2 else { return nil }
+        // Exactly when the band is opaque. Keying off transparency rather than off fullscreen keeps
+        // this in step with `applyWindowTransparency`, and stops the line doubling the divider that
+        // already shows through a transparent bar.
+        guard !window.titlebarAppearsTransparent else { return nil }
+        let inspector = splitView.arrangedSubviews[2]
+        guard !inspector.isHidden, inspector.frame.width > 0 else { return nil }
+        // The band is whatever `.fullSizeContentView` leaves above the layout rect. Zero means the
+        // chrome is hidden (a fullscreen toolbar the pointer hasn't summoned), and the divider is
+        // already visible for its whole height.
+        let bandBottom = window.contentLayoutRect.maxY
+        let bandHeight = contentView.bounds.maxY - bandBottom
+        guard bandHeight > 0 else { return nil }
+        let thickness = max(1, splitView.dividerThickness)
+        let dividerX = splitView.convert(
+            NSPoint(x: inspector.frame.minX - thickness, y: 0), to: contentView
+        ).x
+        return NSRect(x: dividerX, y: bandBottom, width: thickness, height: bandHeight)
+    }
 }
 
 /// The custom title item: the selected session's folder name over its live git branch, drawn as
@@ -2741,13 +2794,13 @@ private func buildMainMenu() -> NSMenu {
     // decides what the sidebar lists and which repo the panes read.
     fileMenu.addItem(makeWorkspaceItem())
     fileMenu.addItem(.separator())
-    // Tagged so the delegate can grow it into a device submenu when there is
-    // somewhere other than this Mac to put a project (see `refreshOpenProjectItem`).
+    // ⌘O opens a project on the machine the current workspace is on, so it stays a
+    // plain verb however many machines are known (see `presentOpenProjectPanel`).
     fileMenu.addItem(
         withTitle: localized("Open Project…"),
         action: #selector(AppDelegate.openProject(_:)),
         command: .openProject
-    ).tag = DeviceMenuTag.openProject
+    )
     fileMenu.addItem(.separator())
     // The two branch verbs that fit termio's read-only git surface, with
     // GitHub Desktop's Branch-menu bindings: creating a worktree (termio's

@@ -180,6 +180,8 @@
 	<string>请选取其他名称。</string>
 	<key>Choose a name for this workspace.</key>
 	<string>为这个工作区取个名字。</string>
+	<key>Choose a project folder on %@.</key>
+	<string>选取 %@ 上的项目文件夹。</string>
 	<key>Choose a project folder to open in Termio.</key>
 	<string>选取要在 Termio 中打开的项目文件夹。</string>
 	<key>Choose another branch to compare with.</key>
@@ -192,8 +194,14 @@
 	<string>选取…</string>
 	<key>Clear</key>
 	<string>清除</string>
+	<key>Clone</key>
+	<string>克隆</string>
 	<key>Clone a Repository</key>
 	<string>克隆仓库</string>
+	<key>Clone a Repository onto %@</key>
+	<string>克隆一个仓库到 %@</string>
+	<key>Clone a Repository…</key>
+	<string>克隆仓库…</string>
 	<key>Clone a repository onto %@, or open a folder that’s already there — the path completes as you type.</key>
 	<string>把一个仓库克隆到 %@，或者打开一个已经在那里的文件夹——路径会边输入边补全。</string>
 	<key>Clone to</key>
@@ -1008,6 +1016,8 @@
 	<string>新建聊天（⌘N）启动的 Agent。“上次使用”跟随你最近一次聊天所用的 Agent。</string>
 	<key>The base branch has commits this branch doesn’t have, as of the last fetch.</key>
 	<string>截至上次 fetch，基础分支上有当前分支还没有的提交。</string>
+	<key>The clone runs on %@ and opens as a project there.</key>
+	<string>克隆在 %@ 上执行，并作为那台机器上的项目打开。</string>
 	<key>The coding agents offered when you start a session</key>
 	<string>新建会话时可以选用的编程 Agent</string>
 	<key>The devices in your ~/.ssh/config, and the keys that reach them</key>

@@ -223,7 +223,11 @@ final class TermiodImagePaste: NSObject {
 
         let route = TermiodRoute(sshAlias: host)
         let name = image.scratchFileName
-        let target = session.id.uuidString
+        // The name the *daemon* knows this session by, which is the app's own uuid
+        // only for a session the app created. One adopted off the machine's roster
+        // keeps the name it already had over there, so addressing the upload by
+        // `session.id` asked ukvps about a session that has never existed on it.
+        let target = store.daemonSessionName(for: session)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result {
                 try Termiod.uploadToSessionScratch(

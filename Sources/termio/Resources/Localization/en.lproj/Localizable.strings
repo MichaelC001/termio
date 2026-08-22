@@ -180,6 +180,8 @@
 	<string>Choose a different name.</string>
 	<key>Choose a name for this workspace.</key>
 	<string>Choose a name for this workspace.</string>
+	<key>Choose a project folder on %@.</key>
+	<string>Choose a project folder on %@.</string>
 	<key>Choose a project folder to open in Termio.</key>
 	<string>Choose a project folder to open in Termio.</string>
 	<key>Choose another branch to compare with.</key>
@@ -192,8 +194,14 @@
 	<string>Choose…</string>
 	<key>Clear</key>
 	<string>Clear</string>
+	<key>Clone</key>
+	<string>Clone</string>
 	<key>Clone a Repository</key>
 	<string>Clone a Repository</string>
+	<key>Clone a Repository onto %@</key>
+	<string>Clone a Repository onto %@</string>
+	<key>Clone a Repository…</key>
+	<string>Clone a Repository…</string>
 	<key>Clone a repository onto %@, or open a folder that’s already there — the path completes as you type.</key>
 	<string>Clone a repository onto %@, or open a folder that’s already there — the path completes as you type.</string>
 	<key>Clone to</key>
@@ -1008,6 +1016,8 @@
 	<string>The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.</string>
 	<key>The base branch has commits this branch doesn’t have, as of the last fetch.</key>
 	<string>The base branch has commits this branch doesn’t have, as of the last fetch.</string>
+	<key>The clone runs on %@ and opens as a project there.</key>
+	<string>The clone runs on %@ and opens as a project there.</string>
 	<key>The coding agents offered when you start a session</key>
 	<string>The coding agents offered when you start a session</string>
 	<key>The devices in your ~/.ssh/config, and the keys that reach them</key>

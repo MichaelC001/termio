@@ -321,6 +321,36 @@
         }
       }
     },
+    "Clone": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "克隆"
+          }
+        }
+      }
+    },
+    "Clone a Repository onto %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "克隆一个仓库到 %@"
+          }
+        }
+      }
+    },
+    "Clone a Repository…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "克隆仓库…"
+          }
+        }
+      }
+    },
     "Open a Folder": {
       "localizations": {
         "zh-Hans": {
@@ -1227,6 +1257,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "选取要在 Termio 中打开的项目文件夹。"
+          }
+        }
+      }
+    },
+    "Choose a project folder on %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选取 %@ 上的项目文件夹。"
           }
         }
       }
@@ -5601,6 +5641,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "克隆到"
+          }
+        }
+      }
+    },
+    "The clone runs on %@ and opens as a project there.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "克隆在 %@ 上执行，并作为那台机器上的项目打开。"
           }
         }
       }
