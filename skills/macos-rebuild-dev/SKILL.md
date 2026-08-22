@@ -20,6 +20,8 @@ release one, so both can run at the same time:
 | Bundle id | `sh.termio.app` | `sh.termio.app.dev` |
 | State + sockets | `~/Library/Application Support/termio` | `…/termio-dev` |
 | User config | `~/.termio` | `~/.termio-dev` |
+| Daemon socket | `$TMPDIR/termiod-<uid>` | `…-dev` |
+| Daemon launchd job | `sh.termio.termiod` | `sh.termio.termiod.dev` |
 | Companion port | 8787 | 8788 |
 | CLI on PATH | `termio` | `termio-dev` |
 | Sparkle auto-update | on | **stripped** (dev never self-updates) |

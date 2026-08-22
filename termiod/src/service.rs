@@ -23,7 +23,22 @@ use std::path::PathBuf;
 
 use crate::paths;
 
-pub const LABEL: &str = "sh.termio.termiod";
+const LABEL_BASE: &str = "sh.termio.termiod";
+
+/// The launchd label, scoped by channel: `sh.termio.termiod` for a release
+/// build, `sh.termio.termiod.dev` for the dev build beside it.
+///
+/// The label is also the plist filename and the `gui/$UID/…` target, so one
+/// label for two channels is one job for two apps to fight over: each
+/// `install()` boots the other's out, repoints the plist at its own binary, and
+/// `KeepAlive` respawns whichever wrote last. Scoping the socket alone would
+/// not have fixed that — it is a second axis.
+pub fn label() -> String {
+    match paths::channel_suffix().strip_prefix('-') {
+        Some(channel) => format!("{LABEL_BASE}.{channel}"),
+        None => LABEL_BASE.to_string(),
+    }
+}
 
 #[derive(clap::Subcommand)]
 pub enum ServiceCmd {
@@ -44,7 +59,7 @@ fn home() -> Result<PathBuf> {
 fn plist_path() -> Result<PathBuf> {
     Ok(home()?
         .join("Library/LaunchAgents")
-        .join(format!("{LABEL}.plist")))
+        .join(format!("{}.plist", label())))
 }
 
 fn escape(value: &str) -> String {
@@ -61,15 +76,39 @@ fn escape(value: &str) -> String {
 /// here when the user has not pinned it would make the daemon and the app
 /// rendezvous at different sockets the moment either one's `TMPDIR` differs.
 /// If the user has pinned it, they meant it, and the agent must honour it.
-pub fn plist(binary: &str, socket_override: Option<&str>) -> String {
-    let environment = match socket_override {
-        Some(socket) => format!(
-            "    <key>EnvironmentVariables</key>\n    \
-             <dict>\n        <key>TERMIOD_SOCK</key>\n        \
-             <string>{}</string>\n    </dict>\n",
-            escape(socket)
-        ),
-        None => String::new(),
+///
+/// `TERMIO_CHANNEL` is the opposite case and is pinned whenever it is not the
+/// release channel. There is nothing for the agent to inherit it *from*:
+/// launchd starts the daemon from its own environment, and the channel is not
+/// in it — the app reads its own off its bundle identifier. An unpinned agent
+/// would therefore serve the release socket no matter which build installed it,
+/// which is the collision this scoping exists to end.
+pub fn plist(
+    binary: &str,
+    socket_override: Option<&str>,
+    label: &str,
+    channel: Option<&str>,
+) -> String {
+    let mut variables: Vec<(&str, &str)> = Vec::new();
+    if let Some(channel) = channel {
+        variables.push(("TERMIO_CHANNEL", channel));
+    }
+    if let Some(socket) = socket_override {
+        variables.push(("TERMIOD_SOCK", socket));
+    }
+    let environment = if variables.is_empty() {
+        String::new()
+    } else {
+        let body: String = variables
+            .iter()
+            .map(|(key, value)| {
+                format!(
+                    "        <key>{key}</key>\n        <string>{}</string>\n",
+                    escape(value)
+                )
+            })
+            .collect();
+        format!("    <key>EnvironmentVariables</key>\n    <dict>\n{body}    </dict>\n")
     };
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -77,7 +116,7 @@ pub fn plist(binary: &str, socket_override: Option<&str>) -> String {
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>{LABEL}</string>
+    <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
         <string>{binary}</string>
@@ -92,7 +131,7 @@ pub fn plist(binary: &str, socket_override: Option<&str>) -> String {
 {environment}</dict>
 </plist>
 "#,
-        LABEL = LABEL,
+        label = escape(label),
         binary = escape(binary),
         environment = environment,
     )
@@ -137,13 +176,20 @@ fn install() -> Result<()> {
     std::fs::create_dir_all(path.parent().expect("plist path always has a parent"))
         .context("creating ~/Library/LaunchAgents")?;
     let socket_override = std::env::var("TERMIOD_SOCK").ok();
-    let contents = plist(&resolved_binary()?, socket_override.as_deref());
+    let label = label();
+    let suffix = paths::channel_suffix();
+    let contents = plist(
+        &resolved_binary()?,
+        socket_override.as_deref(),
+        &label,
+        suffix.strip_prefix('-'),
+    );
     std::fs::write(&path, contents).with_context(|| format!("writing {}", path.display()))?;
 
     // Replacing an existing agent: boot it out first, or `bootstrap` fails with
     // "service already loaded" and the user is left running the old binary while
     // the new plist sits on disk claiming otherwise.
-    let target = format!("{}/{LABEL}", domain_target());
+    let target = format!("{}/{label}", domain_target());
     let _ = launchctl(&["bootout", &target]);
     let output = launchctl(&["bootstrap", &domain_target(), &path.to_string_lossy()])?;
     if !output.status.success() {
@@ -152,18 +198,19 @@ fn install() -> Result<()> {
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    println!("installed {LABEL} → {}", path.display());
+    println!("installed {label} → {}", path.display());
     println!("termiod now starts at login and restarts if it crashes.");
     Ok(())
 }
 
 fn uninstall() -> Result<()> {
     let path = plist_path()?;
-    let _ = launchctl(&["bootout", &format!("{}/{LABEL}", domain_target())]);
+    let label = label();
+    let _ = launchctl(&["bootout", &format!("{}/{label}", domain_target())]);
     match std::fs::remove_file(&path) {
         Ok(()) => println!("removed {}", path.display()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            println!("{LABEL} was not installed");
+            println!("{label} was not installed");
         }
         Err(error) => return Err(error).with_context(|| format!("removing {}", path.display())),
     }
@@ -181,7 +228,7 @@ fn status() -> Result<()> {
         if path.exists() { "present" } else { "absent" }
     );
     println!("socket: {}", paths::socket_path()?.display());
-    let output = launchctl(&["print", &format!("{}/{LABEL}", domain_target())])?;
+    let output = launchctl(&["print", &format!("{}/{}", domain_target(), label())])?;
     if output.status.success() {
         let text = String::from_utf8_lossy(&output.stdout);
         let pid = text
@@ -197,16 +244,16 @@ fn status() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{plist, LABEL};
+    use super::{plist, LABEL_BASE};
 
     /// The two keys that make this a *supervised* daemon rather than a one-shot
     /// launch: start at login, and come back after a crash.
     #[test]
     fn the_agent_starts_at_login_and_restarts_after_a_crash() {
-        let text = plist("/usr/local/bin/termiod", None);
+        let text = plist("/usr/local/bin/termiod", None, LABEL_BASE, None);
         assert!(text.contains("<key>RunAtLoad</key>\n    <true/>"), "{text}");
         assert!(text.contains("<key>KeepAlive</key>\n    <true/>"), "{text}");
-        assert!(text.contains(&format!("<string>{LABEL}</string>")));
+        assert!(text.contains(&format!("<string>{LABEL_BASE}</string>")));
         assert!(text.contains("<string>serve</string>"));
     }
 
@@ -214,11 +261,52 @@ mod tests {
     /// to different rendezvous points, so the key is simply absent.
     #[test]
     fn no_socket_is_pinned_unless_the_user_pinned_one() {
-        assert!(!plist("/usr/local/bin/termiod", None).contains("TERMIOD_SOCK"));
+        assert!(!plist("/usr/local/bin/termiod", None, LABEL_BASE, None).contains("TERMIOD_SOCK"));
 
-        let pinned = plist("/usr/local/bin/termiod", Some("/tmp/custom/termiod.sock"));
+        let pinned = plist(
+            "/usr/local/bin/termiod",
+            Some("/tmp/custom/termiod.sock"),
+            LABEL_BASE,
+            None,
+        );
         assert!(pinned.contains("<key>TERMIOD_SOCK</key>"), "{pinned}");
         assert!(pinned.contains("<string>/tmp/custom/termiod.sock</string>"));
+    }
+
+    /// The release channel is the absence of a channel, so its agent carries no
+    /// `TERMIO_CHANNEL` and stays byte-identical to the one shipped before this
+    /// scoping existed. A dev build's agent must differ on both axes at once —
+    /// a distinct label, or the two jobs overwrite each other, *and* a pinned
+    /// channel, or the job launchd starts serves the release socket.
+    #[test]
+    fn a_dev_agent_is_a_different_job_pinned_to_its_own_channel() {
+        let release = plist("/usr/local/bin/termiod", None, LABEL_BASE, None);
+        assert!(!release.contains("TERMIO_CHANNEL"), "{release}");
+
+        let dev = plist(
+            "/usr/local/bin/termiod",
+            None,
+            &format!("{LABEL_BASE}.dev"),
+            Some("dev"),
+        );
+        assert!(dev.contains(&format!("<string>{LABEL_BASE}.dev</string>")), "{dev}");
+        assert!(dev.contains("<key>TERMIO_CHANNEL</key>"), "{dev}");
+        assert!(dev.contains("<string>dev</string>"), "{dev}");
+    }
+
+    /// Both environment keys land in one dict. Emitting a second
+    /// `EnvironmentVariables` would make launchd read only the last.
+    #[test]
+    fn a_pinned_socket_and_channel_share_one_dict() {
+        let text = plist(
+            "/usr/local/bin/termiod",
+            Some("/tmp/custom/termiod.sock"),
+            &format!("{LABEL_BASE}.dev"),
+            Some("dev"),
+        );
+        assert_eq!(text.matches("<key>EnvironmentVariables</key>").count(), 1, "{text}");
+        assert!(text.contains("<key>TERMIO_CHANNEL</key>"), "{text}");
+        assert!(text.contains("<key>TERMIOD_SOCK</key>"), "{text}");
     }
 
     /// A path with XML metacharacters must not be able to break the document —
@@ -226,7 +314,7 @@ mod tests {
     /// that explains nothing.
     #[test]
     fn paths_with_xml_metacharacters_stay_inside_their_element() {
-        let text = plist("/opt/a&b/<termiod>", None);
+        let text = plist("/opt/a&b/<termiod>", None, LABEL_BASE, None);
         assert!(text.contains("<string>/opt/a&amp;b/&lt;termiod&gt;</string>"), "{text}");
     }
 }

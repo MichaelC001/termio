@@ -9,13 +9,47 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::PathBuf;
 
+/// `"-dev"` for a side-by-side dev build, `""` for a release one.
+///
+/// Mirrors `AppChannel.suffix` in the app, and must keep mirroring it: the two
+/// sides derive this separately and a disagreement puts them on different
+/// sockets. Only a plain name becomes a path component, so a typo in
+/// `TERMIO_CHANNEL` can never open a stray directory beside the real ones — it
+/// falls back to the release channel instead.
+///
+/// The daemon cannot read this the way the app does. The app's channel comes
+/// off its bundle identifier, which a spawned binary has no way to see, so
+/// whoever starts the daemon has to say which channel it serves.
+pub fn channel_suffix() -> String {
+    let requested = std::env::var("TERMIO_CHANNEL")
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
+    if requested.is_empty() || requested == "release" {
+        return String::new();
+    }
+    if requested
+        .chars()
+        .all(|character| character.is_alphanumeric() || character == '-')
+    {
+        return format!("-{requested}");
+    }
+    String::new()
+}
+
 /// Directory holding the socket (and, later, logs / pid files).
+///
+/// Scoped by channel as well as by user. The socket is the rendezvous for a
+/// whole session table, so sharing one between the release app and a dev build
+/// beside it makes them one device: each is handed the other's entire roster,
+/// draws every row of it as a session nothing accounts for, and can kill it.
 pub fn runtime_dir() -> Result<PathBuf> {
+    let suffix = channel_suffix();
     let base = if let Some(xdg) = std::env::var_os("XDG_RUNTIME_DIR") {
-        PathBuf::from(xdg).join("termiod")
+        PathBuf::from(xdg).join(format!("termiod{suffix}"))
     } else {
         let uid = unsafe { libc::getuid() };
-        std::env::temp_dir().join(format!("termiod-{uid}"))
+        std::env::temp_dir().join(format!("termiod-{uid}{suffix}"))
     };
     Ok(base)
 }

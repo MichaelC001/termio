@@ -49,29 +49,54 @@ enum Termiod {
 
     /// Mirrors termiod/src/paths.rs exactly — both sides must derive the same
     /// socket or the app talks to a different daemon than the CLI:
-    /// `TERMIOD_SOCK` override, else `$XDG_RUNTIME_DIR/termiod/`, else a
-    /// uid-scoped directory under the temp dir (`$TMPDIR`, else `/tmp` — the
+    /// `TERMIOD_SOCK` override, else `$XDG_RUNTIME_DIR/termiod[-channel]/`, else
+    /// a uid-scoped directory under the temp dir (`$TMPDIR`, else `/tmp` — the
     /// same fallback order as Rust's `std::env::temp_dir()`).
+    ///
+    /// Scoped by channel as well as by uid. The daemon's whole session table
+    /// hangs off this one path — `state_dir()` in Rust is the socket's own
+    /// directory — so an unscoped socket makes a dev build and the release app
+    /// **one device**: they share `host.id`, each is handed the other's roster,
+    /// and each can kill what the other is running. The release channel's
+    /// suffix is empty, so its path is unchanged and its sessions survive this.
     static func socketPath() -> String {
-        let environment = ProcessInfo.processInfo.environment
+        socketPath(channelSuffix: AppChannel.suffix,
+                   environment: ProcessInfo.processInfo.environment)
+    }
+
+    /// Separate from the caller above so the derivation can be tested without a
+    /// bundle and for a channel this process is not running on. The mirror to
+    /// `termiod/src/paths.rs` is exactly the kind of agreement that drifts
+    /// silently: nothing fails to build when the two sides disagree, the app
+    /// just starts talking to a daemon nobody else can see.
+    static func socketPath(channelSuffix: String, environment: [String: String]) -> String {
         if let explicit = environment["TERMIOD_SOCK"], !explicit.isEmpty {
             return explicit
         }
         if let runtimeDirectory = environment["XDG_RUNTIME_DIR"], !runtimeDirectory.isEmpty {
-            return runtimeDirectory + "/termiod/termiod.sock"
+            return runtimeDirectory + "/termiod\(channelSuffix)/termiod.sock"
         }
         let temporaryDirectory = environment["TMPDIR"] ?? "/tmp"
         let base = temporaryDirectory.hasSuffix("/")
             ? String(temporaryDirectory.dropLast())
             : temporaryDirectory
-        return "\(base)/termiod-\(getuid())/termiod.sock"
+        return "\(base)/termiod-\(getuid())\(channelSuffix)/termiod.sock"
+    }
+
+    /// What to hand the daemon as `TERMIO_CHANNEL` so it derives the same socket
+    /// this app just did. Spelled out even for the release channel: the daemon
+    /// may be spawned from a process that already has the variable set to
+    /// something else, and inheriting that would send it elsewhere.
+    static var channelName: String {
+        AppChannel.suffix.isEmpty ? "release" : String(AppChannel.suffix.dropFirst())
     }
 
     /// The daemon's name inside the bundle. Unlike the `termio` CLI it is not
     /// renamed per channel: the CLI is symlinked onto PATH, where a dev copy
     /// would clobber the release one, while the daemon is only ever executed by
     /// absolute path out of the bundle that ships it. (Keeping the two channels'
-    /// *sessions* apart is `TERMIOD_SOCK`, a separate axis.)
+    /// *sessions* apart is the channel-scoped socket `socketPath()` derives, a
+    /// separate axis from the binary's name.)
     static let daemonBinaryName = "termiod"
 
     /// The daemon binary used for autostart. One resolution point so autostart
@@ -457,10 +482,20 @@ enum Termiod {
         // The daemon derives its socket path from its own environment, so it
         // must inherit ours (TMPDIR above all) or the two sides rendezvous at
         // different sockets.
+        //
+        // The channel is the one part it cannot inherit: this app reads its own
+        // off its bundle identifier, and a spawned binary has no way to see
+        // that. Passing it explicitly is what keeps a dev build's daemon off the
+        // release channel's socket — without it both apps land on the same
+        // session table and each is handed the other's sessions to draw and to
+        // kill. Set even for the release channel, so a stale `TERMIO_CHANNEL`
+        // inherited from whatever launched the app cannot redirect the daemon.
+        var childEnvironment = ProcessInfo.processInfo.environment
+        childEnvironment["TERMIO_CHANNEL"] = channelName
         let argumentStrings = [binary, "serve"]
         let argv: [UnsafeMutablePointer<CChar>?] = argumentStrings.map { strdup($0) } + [nil]
         let envp: [UnsafeMutablePointer<CChar>?] =
-            ProcessInfo.processInfo.environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+            childEnvironment.map { strdup("\($0.key)=\($0.value)") } + [nil]
         defer {
             argv.forEach { free($0) }
             envp.forEach { free($0) }

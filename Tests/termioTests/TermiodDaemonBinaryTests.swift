@@ -86,4 +86,61 @@ final class TermiodDaemonBinaryTests: XCTestCase {
 
         XCTAssertEqual(Termiod.daemonBinaryPath(), override)
     }
+
+    // MARK: - Channel scoping
+
+    /// The dev build and the release app must not land on one socket. The socket
+    /// is the rendezvous for a whole session table — in Rust `state_dir()` is the
+    /// socket's own directory, so `host.id` and the roster hang off it too — and
+    /// sharing it makes the two channels **one device**: each is handed the
+    /// other's sessions to draw under Also Running, and each can kill them.
+    func testTheDevChannelDerivesItsOwnSocket() {
+        let environment = ["TMPDIR": "/var/folders/xx/T/"]
+        let release = Termiod.socketPath(channelSuffix: "", environment: environment)
+        let dev = Termiod.socketPath(channelSuffix: "-dev", environment: environment)
+
+        XCTAssertNotEqual(release, dev)
+        XCTAssertTrue(dev.hasSuffix("-dev/termiod.sock"), dev)
+        XCTAssertEqual(URL(fileURLWithPath: release).deletingLastPathComponent().path + "-dev",
+                       URL(fileURLWithPath: dev).deletingLastPathComponent().path)
+    }
+
+    /// The release channel's suffix is empty, so its path is byte-identical to
+    /// the one it had before channels were scoped. Anything else would strand
+    /// every session running under a shipped termio the day this ships.
+    func testTheReleaseChannelSocketIsUnchanged() {
+        let path = Termiod.socketPath(channelSuffix: "",
+                                      environment: ["TMPDIR": "/var/folders/xx/T"])
+
+        XCTAssertEqual(path, "/var/folders/xx/T/termiod-\(getuid())/termiod.sock")
+    }
+
+    /// `TERMIOD_SOCK` still outranks the channel. It is how the tests and a
+    /// deliberate side-by-side daemon isolate, and a channel must not quietly
+    /// redirect a path the user pinned by hand.
+    func testAPinnedSocketOutranksTheChannel() {
+        let path = Termiod.socketPath(
+            channelSuffix: "-dev",
+            environment: ["TERMIOD_SOCK": "/tmp/pinned/termiod.sock", "TMPDIR": "/var/folders/xx/T"])
+
+        XCTAssertEqual(path, "/tmp/pinned/termiod.sock")
+    }
+
+    /// `$XDG_RUNTIME_DIR` is the preferred base on the systems that set it, and
+    /// it carries the channel too — otherwise the scoping holds on macOS and
+    /// silently does not on a Linux box reached over SSH.
+    func testTheRuntimeDirectoryBaseCarriesTheChannel() {
+        let path = Termiod.socketPath(channelSuffix: "-dev",
+                                      environment: ["XDG_RUNTIME_DIR": "/run/user/501"])
+
+        XCTAssertEqual(path, "/run/user/501/termiod-dev/termiod.sock")
+    }
+
+    /// What the app hands the daemon as `TERMIO_CHANNEL`. The release channel is
+    /// named rather than left empty: the daemon may be spawned from a process
+    /// that already has the variable set, and an unset key would let that value
+    /// through to redirect it.
+    func testTheReleaseChannelIsNamedNotOmitted() {
+        XCTAssertFalse(Termiod.channelName.isEmpty)
+    }
 }
