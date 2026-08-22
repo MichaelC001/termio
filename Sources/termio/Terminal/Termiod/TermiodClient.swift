@@ -634,6 +634,10 @@ enum Termiod {
         let op = "detach"
     }
 
+    private struct ClaimWriterOperation: Encodable {
+        let op = "claim_writer"
+    }
+
     /// Opens a transfer into a session's scratch directory on the device
     /// (§C.12 `temp:` dest). `session` is the termiod session name — the app's
     /// session UUID — and the daemon reaps whatever lands there when that
@@ -1352,6 +1356,10 @@ enum Termiod {
     static func detachPayload() throws -> Data {
         try encodeControl(DetachOperation())
     }
+
+    static func claimWriterPayload() throws -> Data {
+        try encodeControl(ClaimWriterOperation())
+    }
 }
 
 enum TermiodClientError: LocalizedError {
@@ -1416,6 +1424,8 @@ final class TermiodSessionLink: @unchecked Sendable {
     private var transport: Termiod.Transport?
     private var attached = false
     private var isWriter = false
+    /// A `claim_writer` is outstanding, so further input must not send another.
+    private var claimingWriter = false
     /// This connection's daemon-assigned id, from `hello_ok`. Without it a
     /// `writer_changed` naming `c_41` is unreadable — the whole point of the
     /// event is telling *this* client whether the token is still its.
@@ -1558,6 +1568,12 @@ final class TermiodSessionLink: @unchecked Sendable {
                 attached = true
                 isWriter = attachedPayload.writer
                 publishRenderWriter(attachedPayload.writer)
+                // The initial state has to be announced too, not just later
+                // changes: a client that attaches as an observer, or that opens
+                // a session a phone is already holding, is read-only from its
+                // first frame and has to be able to say so. `applyWriter` only
+                // ever fires on a transition, so nothing else covers this.
+                DispatchQueue.main.async { [self] in onWriter?(attachedPayload.writer) }
                 // `attached` reports the session's size *before* this attach is
                 // applied; the daemon then resizes to what a writer asked for and
                 // announces it as `E resized`. Seeding from the reply means an
@@ -1610,6 +1626,18 @@ final class TermiodSessionLink: @unchecked Sendable {
                 return
             }
             do {
+                // Typing is what claims the token, the same rule
+                // `PTYProcess.claimHostOwnership` follows on the in-process
+                // path: the size and the write follow the device whose user is
+                // actually at the keyboard. Without this a second attachment —
+                // a phone looking at the same session — would silently mute
+                // this one for as long as it stayed attached, because the
+                // daemon hands the token to whoever attached last.
+                //
+                // Ordering is safe: frames on one connection are processed in
+                // order, so the claim is resolved before the input behind it is
+                // tested against it.
+                if !isWriter { try claimWriterLocked() }
                 try sendDataLocked(data)
             } catch {
                 Log.termiod.error("""
@@ -1708,6 +1736,21 @@ final class TermiodSessionLink: @unchecked Sendable {
         workQueue.async { [self] in
             teardownLocked()
         }
+    }
+
+    /// Asks the daemon for the write token. The grant arrives as a
+    /// `writer_changed` event rather than as this call's reply, because every
+    /// other attachment has to learn about it too — `applyWriter` is what flips
+    /// `isWriter` and re-asserts this client's size.
+    ///
+    /// Sent at most once per lost token: `claimingWriter` clears when the
+    /// answer lands either way, so a burst of keystrokes on a muted attachment
+    /// does not become a burst of claims.
+    private func claimWriterLocked() throws {
+        guard let transport, !claimingWriter else { return }
+        claimingWriter = true
+        try Termiod.writeFrame(transport.writeDescriptor, kind: .control,
+                               payload: Termiod.claimWriterPayload())
     }
 
     private func sendDataLocked(_ data: Data) throws {
@@ -1871,6 +1914,10 @@ final class TermiodSessionLink: @unchecked Sendable {
             daemon error on \(self.sessionName, privacy: .public): \
             \(failure.message, privacy: .public)
             """)
+            // A refused claim answers here rather than with `writer_changed`,
+            // and the flag has to clear either way: left set, one refusal would
+            // mute this attachment for the rest of its life.
+            workQueue.async { [self] in claimingWriter = false }
             return false
         default:
             return false
@@ -1947,6 +1994,7 @@ final class TermiodSessionLink: @unchecked Sendable {
         workQueue.async { [self] in
             guard !closed else { return }
             let mine = writer != nil && writer == clientID
+            claimingWriter = false
             guard mine != isWriter else { return }
             isWriter = mine
             publishRenderWriter(mine)
