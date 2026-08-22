@@ -8,15 +8,19 @@ import Foundation
 /// History:
 ///   0: pre-versioning. No `wire` field on the wire; any peer that omits it.
 ///   1: 2026-08-07: `wire` declared on `.auth` and `CompanionRoster`.
+///   2: 2026-08-22: `RosterProject` names its workspace and that workspace's
+///      device, and its `branch`/`kind` became required. A v1 peer can't read a
+///      v2 roster, so both minimums move with it: the mismatch has to say
+///      "update the other end" rather than draw an empty project list.
 public enum Wire {
     /// A peer that predates the field entirely. Absent decodes to this.
     public static let legacy = 0
     /// This build's revision.
-    public static let current = 1
+    public static let current = 2
     /// Oldest Mac this phone will talk to.
-    public static let minimumServer = 0
+    public static let minimumServer = 2
     /// Oldest phone this Mac will serve.
-    public static let minimumClient = 0
+    public static let minimumClient = 2
 }
 
 /// The companion wire protocol, shared by the Mac companion server and the iOS
@@ -608,40 +612,66 @@ private func decodeLossyArray<Element: Decodable, Key: CodingKey>(
     return elements
 }
 
+/// One container of sessions as the phone lists it — a project checkout, or a
+/// workspace's loose Terminals or Chats section.
+///
+/// Every container names the workspace it is filed under and the machine that
+/// workspace belongs to, because the Mac's tree is Device → Workspace → Project
+/// → Session and a flat list drops the middle two: a checkout on a Linux VPS and
+/// one on the Mac arrive looking identical. `workspaceID` groups them and
+/// `deviceAlias` says which box the group is on.
 public struct RosterProject: Codable, Sendable, Equatable {
     public let id: String
     public let name: String
     public let path: String
-    /// Current git branch of the checkout, nil for non-repos. Optional so
-    /// older peers that don't send it still decode.
-    public let branch: String?
+    /// The workspace this container is filed under, by the Mac's stable id, so
+    /// the phone groups its list the way the sidebar's scope does.
+    public let workspaceID: String
+    /// That workspace's name, as the Mac's switcher shows it.
+    public let workspaceName: String
+    /// The `~/.ssh/config` alias of the machine the workspace belongs to, and
+    /// nil for the Mac that is serving this roster. One claim, matching
+    /// `Workspace.deviceAlias`: which machine, never "did the user name it".
+    public let deviceAlias: String?
+    /// Current git branch of the checkout, empty for non-repos and for the
+    /// loose sections.
+    public let branch: String
     /// What this container *is* on the Mac — `ProjectKind` on the wire:
     /// "folder" (a real project), "terminals" (loose shells), "chats" (loose
-    /// agent sessions). nil from an older Mac; treat as "folder".
-    public let kind: String?
+    /// agent sessions).
+    public let kind: String
     public let sessions: [RosterSession]
 
     public init(
-        id: String, name: String, path: String, branch: String? = nil,
-        kind: String? = nil, sessions: [RosterSession]
+        id: String, name: String, path: String,
+        workspaceID: String, workspaceName: String, deviceAlias: String? = nil,
+        branch: String = "", kind: String, sessions: [RosterSession]
     ) {
         self.id = id
         self.name = name
         self.path = path
+        self.workspaceID = workspaceID
+        self.workspaceName = workspaceName
+        self.deviceAlias = deviceAlias
         self.branch = branch
         self.kind = kind
         self.sessions = sessions
     }
 
-    private enum CodingKeys: String, CodingKey { case id, name, path, branch, kind, sessions }
+    private enum CodingKeys: String, CodingKey {
+        case id, name, path, workspaceID, workspaceName, deviceAlias, branch, kind, sessions
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         name = try c.decode(String.self, forKey: .name)
         path = try c.decode(String.self, forKey: .path)
-        branch = try c.decodeIfPresent(String.self, forKey: .branch)
-        kind = try c.decodeIfPresent(String.self, forKey: .kind)
+        workspaceID = try c.decode(String.self, forKey: .workspaceID)
+        workspaceName = try c.decode(String.self, forKey: .workspaceName)
+        deviceAlias = try c.decodeIfPresent(String.self, forKey: .deviceAlias)
+        branch = try c.decode(String.self, forKey: .branch)
+        kind = try c.decode(String.self, forKey: .kind)
         sessions = decodeLossyArray(c, CodingKeys.sessions)
     }
 }

@@ -3,6 +3,25 @@ import TermioShared
 import XCTest
 
 final class WireProtocolTests: XCTestCase {
+    /// The keys every wire-2 project carries, spliced into the fixtures below so
+    /// each test is about the one tolerance it names rather than about these.
+    private static let workspaceFields =
+        #""workspaceID":"w1","workspaceName":"Sessions","branch":"","kind":"folder""#
+
+    /// The wire-2 break, stated as a test: a project from a v1 Mac names no
+    /// workspace, so it is unreadable rather than half-read. The version gate is
+    /// what turns that into "update the other end"; this only pins that the
+    /// decoder does not quietly invent a workspace for it.
+    func testProjectWithoutAWorkspaceIsUnreadable() throws {
+        let json = #"""
+        {"t":"roster","projects":[{"id":"p1","name":"termio","path":"/tmp/termio","sessions":[]}]}
+        """#
+
+        let decoded = try XCTUnwrap(CompanionRoster.decode(json))
+
+        XCTAssertEqual(decoded.projects, [])
+    }
+
     func testAuthRoundTripCarriesCurrentWireVersion() {
         let auth = CompanionControl.auth(token: "pairing-token", wire: Wire.current)
 
@@ -37,7 +56,8 @@ final class WireProtocolTests: XCTestCase {
     /// empty app.
     func testRosterDropsOnlyTheUnreadableSession() throws {
         let json = """
-        {"t":"roster","projects":[{"id":"p1","name":"termio","path":"/tmp/termio","sessions":[\
+        {"t":"roster","projects":[{"id":"p1","name":"termio","path":"/tmp/termio",\
+        \(Self.workspaceFields),"sessions":[\
         {"id":"s1","title":"Good","agent":"claude","status":"idle"},\
         {"id":"s2","title":"Missing agent and status"},\
         {"id":"s3","title":"Also good","agent":"codex","status":"working"}]}]}
@@ -52,9 +72,9 @@ final class WireProtocolTests: XCTestCase {
     func testRosterDropsOnlyTheUnreadableProject() throws {
         let json = """
         {"t":"roster","projects":[\
-        {"id":"p1","name":"termio","path":"/tmp/termio","sessions":[]},\
-        {"name":"no id","path":"/tmp/broken","sessions":[]},\
-        {"id":"p3","name":"other","path":"/tmp/other","sessions":[]}]}
+        {"id":"p1","name":"termio","path":"/tmp/termio",\(Self.workspaceFields),"sessions":[]},\
+        {"name":"no id","path":"/tmp/broken",\(Self.workspaceFields),"sessions":[]},\
+        {"id":"p3","name":"other","path":"/tmp/other",\(Self.workspaceFields),"sessions":[]}]}
         """
 
         let decoded = try XCTUnwrap(CompanionRoster.decode(json))
@@ -66,7 +86,8 @@ final class WireProtocolTests: XCTestCase {
     /// still decodes — unknown keys are ignored, not fatal.
     func testRosterKeepsSessionWithUnknownFields() throws {
         let json = """
-        {"t":"roster","projects":[{"id":"p1","name":"termio","path":"/tmp/termio","sessions":[\
+        {"t":"roster","projects":[{"id":"p1","name":"termio","path":"/tmp/termio",\
+        \(Self.workspaceFields),"sessions":[\
         {"id":"s1","title":"Good","agent":"claude","status":"idle","somethingNewer":{"a":1}}]}]}
         """
 
@@ -94,7 +115,8 @@ final class WireProtocolTests: XCTestCase {
     func testRosterSkipsNonObjectSessionEntries() throws {
         for bad in ["null", "42", #""a string""#, "[1,2]", "[]", "true"] {
             let json = """
-            {"t":"roster","projects":[{"id":"p1","name":"termio","path":"/tmp/termio","sessions":[\
+            {"t":"roster","projects":[{"id":"p1","name":"termio","path":"/tmp/termio",\
+            \(Self.workspaceFields),"sessions":[\
             {"id":"s1","title":"Good","agent":"claude","status":"idle"},\
             \(bad),\
             {"id":"s3","title":"Also good","agent":"codex","status":"working"}]}]}
@@ -130,6 +152,7 @@ final class WireProtocolTests: XCTestCase {
             projects: [
                 RosterProject(
                     id: "p1", name: "termio", path: "/tmp/termio",
+                    workspaceID: "w1", workspaceName: "ukvps", deviceAlias: "ukvps",
                     branch: "fix/wire-tolerance", kind: "folder",
                     sessions: [
                         RosterSession(

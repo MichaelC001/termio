@@ -1481,6 +1481,16 @@
         }
       }
     },
+    "on %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 %@ 上"
+          }
+        }
+      }
+    },
     "plain text": {
       "localizations": {
         "zh-Hans": {
