@@ -124,24 +124,20 @@ extension TermioStore {
             \(writer ? "the writer" : "an observer", privacy: .public)
             """)
         }
-        // What the device knows about the process, routed to the same consumers
-        // the in-process PTY's kernel poll feeds — and gated exactly where that
-        // poll is gated, because the two are one feature with two producers.
-        //
-        // The poll is installed only on a row that *started* as a plain terminal
-        // (a declared agent's foreground is its own subprocess, and reading a `rg`
-        // it spawned as "no agent here" would demote the row mid-turn), and inside
-        // that, it reads the cwd only for a loose terminal — a project session's
-        // place is its project, not wherever its shell wandered.
-        let isShellBackedSession = session.agent == .terminal
-        let followsWorkingDirectory = isShellBackedSession && isLooseTerminal(session.id)
+        // What the device knows about the process, gated exactly where the
+        // in-process PTY's own kernel poll is gated: that poll is installed only
+        // on a row declared `.terminal` (a declared agent's foreground is its own
+        // subprocess, and reading a `rg` it spawned as "no agent here" would
+        // demote the row mid-turn), and follows the cwd only for a loose terminal,
+        // whose place is wherever it wandered rather than a project root.
+        let isPlainTerminal = session.agent == .terminal
+        let followsWorkingDirectory = isPlainTerminal && isLooseTerminal(session.id)
         link.onInformation = { [weak self] information in
             self?.applyTermiodInformation(
                 information, for: session.id,
-                identifiesAgent: isShellBackedSession,
+                identifiesAgent: isPlainTerminal,
                 followsWorkingDirectory: followsWorkingDirectory)
         }
-        let isPlainTerminal = session.agent == .terminal
         link.onExit = { [weak self, weak inMemory] code, runtimeMilliseconds, information in
             self?.applyTermiodExit(
                 for: session.id, code: code, runtimeMilliseconds: runtimeMilliseconds,
@@ -210,31 +206,19 @@ extension TermioStore {
 
     /// Lands a roster push on the session's row.
     ///
-    /// The host answers *what the process is* — the foreground group's argv, the
-    /// child's directory, whether a job is running in front of the shell — and
-    /// nothing about what those mean. Every interpretation stays here, in the
-    /// consumers the in-process PTY's own kernel poll already feeds, so a session
-    /// behaves the same whether the syscalls ran in this process or on a VPS:
-    /// argv becomes an agent through the *user's* `AgentCatalog`, the child's cwd
-    /// becomes the followed working directory, and the foreground job answers the
-    /// close confirmation (read at close time from `latestInformation`, not
-    /// pushed anywhere).
+    /// The host reports what the process *is*; what that means is decided here, by
+    /// the same consumers the in-process PTY's kernel poll feeds, so a session
+    /// behaves the same whether the syscalls ran in this process or on a VPS.
     ///
-    /// Every field is optional and every absence stands down. That is the skew
-    /// rule, and it is load-bearing in one direction only: a daemon too old to
-    /// sample, or a process the kernel would not answer for, must leave the row
-    /// exactly as the screen-derived signals left it — never demote an agent,
-    /// never move a directory — because "the device did not say" is not evidence.
+    /// Every absence stands down — "the device did not say" is not evidence, so a
+    /// daemon too old to sample, or a process the kernel refused, must leave the
+    /// row exactly as the screen-derived signals left it.
     /// - Parameters:
-    ///   - identifiesAgent: whether this row's identity follows its foreground —
-    ///     true for a session that started as a plain shell, false for a declared
-    ///     agent whose foreground is its own subprocess.
-    ///   - followsWorkingDirectory: whether this row owns its cwd — true for a
-    ///     loose terminal, false for a project session, whose place is its project
-    ///     rather than wherever its shell wandered. A separate flag rather than a
-    ///     consequence of the first: the local producer gates the two separately,
-    ///     and collapsing them here would start following a project session's cwd
-    ///     on the daemon path and nowhere else.
+    ///   - identifiesAgent: whether this row's identity follows its foreground.
+    ///     False for a declared agent, whose foreground is its own subprocess.
+    ///   - followsWorkingDirectory: whether this row owns its cwd. A separate flag
+    ///     rather than a consequence of the first, because the local producer gates
+    ///     the two separately.
     func applyTermiodInformation(_ information: Termiod.SessionInformation,
                                  for id: Session.ID,
                                  identifiesAgent: Bool,
@@ -263,9 +247,8 @@ extension TermioStore {
     ///   - information: the device's final word, from the exit event. Never a
     ///     roster row — `childExecutableReplaced` is computed on the exit path,
     ///     and a poll that ran seconds earlier answers a different question.
-    ///   - isAgentSession: snapshotted when the link was wired, like the
-    ///     in-process path's own capture, so a row promoted mid-life still exits
-    ///     as what it was launched as.
+    ///   - isAgentSession: snapshotted when the link was wired, so a row promoted
+    ///     mid-life still exits as what it was launched as.
     func applyTermiodExit(for id: Session.ID,
                           code: Int32,
                           runtimeMilliseconds: UInt64,

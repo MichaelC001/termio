@@ -184,16 +184,15 @@ mod imp {
     /// `proc_listpgrppids` answers with pids alone, so each one is read back
     /// through `PROC_PIDTBSDINFO` for its state and — the part that matters —
     /// its *own* idea of which group it is in. That second check is what keeps
-    /// a recycled pid out of the answer: a pid that has been reused since
-    /// `tcgetpgrp` named this group reports a different `pbi_pgid`, and the
-    /// shared rule drops it.
-    /// Two things about `proc_listpgrppids` are worth writing down, because
-    /// both were established against the kernel rather than read in a header:
-    /// it answers with a **count of pids**, not a byte length, and its
-    /// `NULL`-buffer sizing call ignores the group filter entirely — it reports
-    /// every pid on the machine. So there is no sizing call to make. Allocate,
-    /// and grow only when the answer exactly filled the buffer, which is the
-    /// one case a truncation cannot be told from a fit.
+    /// a recycled pid out of the answer: a pid reused since `tcgetpgrp` named
+    /// this group reports a different `pbi_pgid`, and the shared rule drops it.
+    ///
+    /// Two things about `proc_listpgrppids` were established against the kernel
+    /// rather than read in a header: it answers with a **count of pids**, not a
+    /// byte length, and its `NULL`-buffer sizing call ignores the group filter
+    /// entirely — it reports every pid on the machine. So there is no sizing
+    /// call to make. Allocate, and grow only when the answer exactly filled the
+    /// buffer, the one case a truncation cannot be told from a fit.
     fn group_members(pgid: i32) -> Vec<super::GroupMember> {
         if pgid <= 0 {
             return Vec::new();
@@ -243,10 +242,15 @@ mod imp {
         }
         Some(super::GroupMember {
             pid,
-            // Reduced to the one state the shared rule cares about. A process
-            // still being created (`SIDL`) has no argv yet and is filtered by
-            // the argv probe rather than by its state.
-            state: if info.pbi_status == SZOMB { 'Z' } else { 'R' },
+            // A zombie is the one state that disqualifies a member outright. A
+            // process still being created (`SIDL`) has no argv yet and is
+            // filtered by the argv probe instead, which costs nothing extra
+            // because that probe has to run for every candidate anyway.
+            liveness: if info.pbi_status == SZOMB {
+                super::Liveness::Dead
+            } else {
+                super::Liveness::Live
+            },
             process_group: info.pbi_pgid as i32,
         })
     }
@@ -349,10 +353,10 @@ mod imp {
     /// candidate is simply not a candidate.
     fn read_member(pid: i32) -> Option<super::GroupMember> {
         let raw = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let (state, process_group) = super::parse_process_stat(&raw)?;
+        let (liveness, process_group) = super::parse_process_stat(&raw)?;
         Some(super::GroupMember {
             pid,
-            state,
+            liveness,
             process_group,
         })
     }
@@ -394,10 +398,24 @@ mod imp {
 
 pub use imp::{executable_identity, foreground_member, process_arguments, working_directory};
 
-/// A process considered as a member of the foreground group, reduced to the
-/// three facts both hosts can enumerate cheaply: `/proc/<pid>/stat` on Linux,
-/// one `KERN_PROC_PGRP` sysctl on macOS. Argv is deliberately *not* here — it
-/// is the expensive read on both, and the selection resolves it lazily.
+/// Whether a candidate can still answer, or is on its way out. The hosts spell
+/// process state differently — a letter in `/proc/<pid>/stat`, a `p_stat` in
+/// `proc_bsdinfo` — and this is all of it the selection needs, so each host maps
+/// its own spelling on the way in rather than the rule learning both.
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux", test)),
+    allow(dead_code)
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Liveness {
+    Live,
+    Dead,
+}
+
+/// A process considered as a member of the foreground group, reduced to what
+/// both hosts can enumerate cheaply: one `/proc/<pid>/stat` read on Linux, one
+/// `PROC_PIDTBSDINFO` call on macOS. Argv is deliberately *not* here — it is the
+/// expensive read on both, and the selection resolves it lazily.
 #[cfg_attr(
     not(any(target_os = "macos", target_os = "linux", test)),
     allow(dead_code)
@@ -405,9 +423,7 @@ pub use imp::{executable_identity, foreground_member, process_arguments, working
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GroupMember {
     pid: i32,
-    /// Single-letter process state, in Linux's spelling. macOS maps `SZOMB`
-    /// onto `Z` so one rule serves both.
-    state: char,
+    liveness: Liveness,
     process_group: i32,
 }
 
@@ -417,14 +433,14 @@ struct GroupMember {
 /// The group check is not redundant with having enumerated the group. It is
 /// what stops a recycled pid being reported: between `tcgetpgrp` naming a group
 /// and this running, that pid can belong to something else entirely, and a pid
-/// whose `e_pgid` / `pgrp` no longer matches is not the process we were asked
+/// whose own process group no longer matches is not the process we were asked
 /// about no matter what its number is.
 #[cfg_attr(
     not(any(target_os = "macos", target_os = "linux", test)),
     allow(dead_code)
 )]
 fn member_is_live(member: &GroupMember, pgid: i32) -> bool {
-    member.process_group == pgid && !matches!(member.state, 'Z' | 'X' | 'x')
+    member.process_group == pgid && member.liveness == Liveness::Live
 }
 
 /// The Linux decision, with both `/proc` reads handed in so the shape of the
@@ -487,8 +503,9 @@ fn select_foreground_member(
         .collect();
     candidates.sort_unstable();
     candidates.dedup();
-    let leader = candidates.iter().copied().find(|pid| *pid == pgid);
-    leader
+    candidates
+        .contains(&pgid)
+        .then_some(pgid)
         .into_iter()
         .chain(candidates.iter().copied().filter(|pid| *pid != pgid))
         .find(|pid| has_argv(*pid))
@@ -499,14 +516,21 @@ fn select_foreground_member(
 /// because field 2 is the executable name in parentheses and a program is free
 /// to be called `sleep 1) 0 (evil`. The kernel writes the name verbatim, so the
 /// only reliable anchor is the *last* `)` in the line.
+///
+/// `Z`, `X` and `x` are the states a process cannot come back from; everything
+/// else — sleeping, stopped, traced — is a process that still answers.
 #[cfg(any(target_os = "linux", test))]
-fn parse_process_stat(raw: &str) -> Option<(char, i32)> {
+fn parse_process_stat(raw: &str) -> Option<(Liveness, i32)> {
     let tail = &raw[raw.rfind(')')? + 1..];
     let mut fields = tail.split_whitespace();
     let state = fields.next()?.chars().next()?;
     // state, ppid, then pgrp.
     let process_group = fields.nth(1)?.parse().ok()?;
-    Some((state, process_group))
+    let liveness = match state {
+        'Z' | 'X' | 'x' => Liveness::Dead,
+        _ => Liveness::Live,
+    };
+    Some((liveness, process_group))
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -713,22 +737,29 @@ mod tests {
         assert!(split_procargs2(&(-1i32).to_ne_bytes()).is_none());
     }
 
-    fn member(pid: i32, state: char) -> GroupMember {
+    fn live(pid: i32) -> GroupMember {
         GroupMember {
             pid,
-            state,
+            liveness: Liveness::Live,
             process_group: 100,
+        }
+    }
+
+    fn dead(pid: i32) -> GroupMember {
+        GroupMember {
+            liveness: Liveness::Dead,
+            ..live(pid)
         }
     }
 
     /// Stand-in for the per-host argv read, which also records the order the
     /// selection probed in — the cost this closure exists to bound.
-    fn argv_of(live: &[i32]) -> (impl FnMut(i32) -> bool + '_, Rc<RefCell<Vec<i32>>>) {
+    fn argv_of(answering: &[i32]) -> (impl FnMut(i32) -> bool + '_, Rc<RefCell<Vec<i32>>>) {
         let probed = Rc::new(RefCell::new(Vec::new()));
         let seen = Rc::clone(&probed);
         let has_argv = move |pid: i32| {
             seen.borrow_mut().push(pid);
-            live.contains(&pid)
+            answering.contains(&pid)
         };
         (has_argv, probed)
     }
@@ -738,7 +769,7 @@ mod tests {
     #[test]
     fn prefers_the_group_leader_while_it_is_usable() {
         let (has_argv, probed) = argv_of(&[100, 101]);
-        let members = [member(100, 'S'), member(101, 'R')];
+        let members = [live(100), live(101)];
         assert_eq!(select_foreground_member(100, &members, has_argv), Some(100));
         assert_eq!(*probed.borrow(), vec![100]);
     }
@@ -750,13 +781,13 @@ mod tests {
     #[test]
     fn falls_back_to_a_live_member_when_the_leader_is_gone() {
         let (has_argv, _) = argv_of(&[103]);
-        let zombie = [member(100, 'Z'), member(103, 'R')];
+        let zombie = [dead(100), live(103)];
         assert_eq!(select_foreground_member(100, &zombie, has_argv), Some(103));
 
         // Reaped outright: the leader is not enumerable at all, so it is not
         // even a candidate.
         let (has_argv, probed) = argv_of(&[103]);
-        let reaped = [member(103, 'R')];
+        let reaped = [live(103)];
         assert_eq!(select_foreground_member(100, &reaped, has_argv), Some(103));
         assert_eq!(
             *probed.borrow(),
@@ -770,7 +801,7 @@ mod tests {
     #[test]
     fn skips_a_live_leader_with_no_argv() {
         let (has_argv, probed) = argv_of(&[104]);
-        let members = [member(100, 'R'), member(104, 'S')];
+        let members = [live(100), live(104)];
         assert_eq!(select_foreground_member(100, &members, has_argv), Some(104));
         assert_eq!(
             *probed.borrow(),
@@ -784,13 +815,13 @@ mod tests {
     #[test]
     fn picks_the_same_survivor_every_time() {
         let (has_argv, _) = argv_of(&[105, 107]);
-        let ascending = [member(107, 'S'), member(105, 'R')];
+        let ascending = [live(107), live(105)];
         assert_eq!(
             select_foreground_member(100, &ascending, has_argv),
             Some(105)
         );
         let (has_argv, _) = argv_of(&[105, 107]);
-        let descending = [member(105, 'R'), member(107, 'S')];
+        let descending = [live(105), live(107)];
         assert_eq!(
             select_foreground_member(100, &descending, has_argv),
             Some(105)
@@ -802,7 +833,7 @@ mod tests {
         let (has_argv, _) = argv_of(&[]);
         assert_eq!(select_foreground_member(100, &[], has_argv), None);
         let (has_argv, probed) = argv_of(&[100, 103]);
-        let all_dead = [member(100, 'Z'), member(103, 'X')];
+        let all_dead = [dead(100), dead(103)];
         assert_eq!(select_foreground_member(100, &all_dead, has_argv), None);
         assert!(
             probed.borrow().is_empty(),
@@ -816,7 +847,7 @@ mod tests {
     #[test]
     fn ignores_processes_from_another_group() {
         let (has_argv, probed) = argv_of(&[100]);
-        let mut stranger = member(100, 'R');
+        let mut stranger = live(100);
         stranger.process_group = 200;
         assert_eq!(select_foreground_member(100, &[stranger], has_argv), None);
         assert!(probed.borrow().is_empty());
@@ -829,10 +860,10 @@ mod tests {
     #[test]
     fn parses_the_proc_stat_layout() {
         let plain = "4242 (grep) R 4200 4100 4100 34816 4242 0 0 0 0 0 0 0 20 0";
-        assert_eq!(parse_process_stat(plain), Some(('R', 4100)));
+        assert_eq!(parse_process_stat(plain), Some((Liveness::Live, 4100)));
 
         let awkward = "4242 (a (b) c) Z 4200 4100 4100 34816 0 0 0 0 0 0 0 0 20 0";
-        assert_eq!(parse_process_stat(awkward), Some(('Z', 4100)));
+        assert_eq!(parse_process_stat(awkward), Some((Liveness::Dead, 4100)));
     }
 
     #[test]
@@ -868,7 +899,7 @@ mod tests {
     #[test]
     fn a_reaped_leader_falls_through_to_the_scan() {
         let (has_argv, _) = argv_of(&[103]);
-        let survivors = vec![member(103, 'R')];
+        let survivors = vec![live(103)];
         assert_eq!(
             resolve_foreground_member(100, None, || survivors.clone(), has_argv),
             Some(103)
@@ -880,13 +911,13 @@ mod tests {
     /// is an honest "no answer", not a fabricated pid.
     #[test]
     fn an_unusable_leader_falls_through_to_the_scan() {
-        let zombie = member(100, 'Z');
+        let zombie = dead(100);
         let (has_argv, _) = argv_of(&[104]);
         assert_eq!(
             resolve_foreground_member(
                 100,
                 Some(zombie.clone()),
-                || vec![zombie.clone(), member(104, 'S')],
+                || vec![zombie.clone(), live(104)],
                 has_argv
             ),
             Some(104)
@@ -906,7 +937,7 @@ mod tests {
         let (has_argv, _) = argv_of(&[100]);
         let answer = resolve_foreground_member(
             100,
-            Some(member(100, 'S')),
+            Some(live(100)),
             || panic!("the leader answered; nothing should have scanned /proc"),
             has_argv,
         );
