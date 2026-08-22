@@ -164,13 +164,40 @@ impl RosterEntry {
     }
 }
 
+/// What identifies one session's end. The id alone is not enough: ids are short
+/// and can eventually be reused, so the creation time rides along.
+type GraveKey = (String, u64);
+
 struct State {
     graves: Vec<Tombstone>,
     roster: HashMap<String, RosterEntry>,
-    /// Prevents the bounded shutdown fallback and a late session reaper from
-    /// recording the same end twice. IDs can eventually be reused, so creation
-    /// time remains part of the identity.
-    buried: HashSet<(String, u64)>,
+    /// An index of `graves`, keeping the "has this end already been recorded?"
+    /// question O(1). It is what stops the bounded shutdown fallback and a late
+    /// session reaper from recording the same end twice, and what stops a
+    /// roster refresh from resurrecting something already buried.
+    buried: HashSet<GraveKey>,
+}
+
+impl State {
+    /// Records one session's end, unless that end is already recorded. Returns
+    /// whether it was added, so a caller can skip work it does not need.
+    fn record(&mut self, key: GraveKey, tombstone: impl FnOnce() -> Tombstone) -> bool {
+        if !self.buried.insert(key.clone()) {
+            return false;
+        }
+        self.roster.remove(&key.0);
+        self.graves.insert(0, tombstone());
+        true
+    }
+
+    /// Drops the oldest graves past the cap, and their index entries with them.
+    /// The index describes `graves`, so letting it outlive what it describes is
+    /// how it would grow without bound on a long-lived host.
+    fn cap_graves(&mut self) {
+        for dropped in self.graves.drain(MAX_GRAVES.min(self.graves.len())..) {
+            self.buried.remove(&(dropped.id, dropped.created_unix));
+        }
+    }
 }
 
 /// The on-disk record of what died. One per daemon, living beside the socket so
@@ -211,6 +238,13 @@ impl Graveyard {
         {
             let mut state = graveyard.state.lock().unwrap();
             state.graves = graves;
+            // Index what was just loaded, so the invariant holds from the first
+            // burial rather than from the first one this daemon happens to make.
+            state.buried = state
+                .graves
+                .iter()
+                .map(|grave| (grave.id.clone(), grave.created_unix))
+                .collect();
         }
         // The roster starts empty for this daemon: whatever the last one held is
         // now buried, and leaving the file behind would bury it twice on the
@@ -246,15 +280,11 @@ impl Graveyard {
     pub fn bury(&self, info: &SessionInfo, reason: EndReason, exit_status: Option<i32>) {
         {
             let mut state = self.state.lock().unwrap();
-            if !state
-                .buried
-                .insert((info.id.clone(), info.created_unix))
-            {
+            let key = (info.id.clone(), info.created_unix);
+            if !state.record(key, || Tombstone::from_info(info, reason, exit_status)) {
                 return;
             }
-            state.roster.remove(&info.id);
-            state.graves.insert(0, Tombstone::from_info(info, reason, exit_status));
-            state.graves.truncate(MAX_GRAVES);
+            state.cap_graves();
         }
         if let Err(error) = self.persist_roster().and_then(|_| self.persist_graves()) {
             eprintln!("termiod: could not record session end: {error:#}");
@@ -269,16 +299,14 @@ impl Graveyard {
             let mut state = self.state.lock().unwrap();
             let mut remaining: Vec<RosterEntry> =
                 state.roster.drain().map(|(_, entry)| entry).collect();
+            // Oldest first, because each is pushed onto the front: the graves
+            // come out newest-first, the order every other path leaves them in.
             remaining.sort_by_key(|entry| entry.created_unix);
             for entry in remaining {
-                if state
-                    .buried
-                    .insert((entry.id.clone(), entry.created_unix))
-                {
-                    state.graves.insert(0, entry.into_tombstone(reason));
-                }
+                let key = (entry.id.clone(), entry.created_unix);
+                state.record(key, || entry.into_tombstone(reason));
             }
-            state.graves.truncate(MAX_GRAVES);
+            state.cap_graves();
         }
 
         // The grave must reach disk before its roster entry disappears. If the
@@ -419,6 +447,25 @@ mod tests {
         let graves = Graveyard::open(&dir).unwrap().all();
         assert_eq!(graves.len(), 1);
         assert_eq!(graves[0].reason, "killed");
+    }
+
+    /// The index exists to answer "already recorded?" about the graves it
+    /// describes. A host that runs for months buries thousands of sessions, so
+    /// an index that outlived the capped list would be the one part of this
+    /// file that grows for ever.
+    #[test]
+    fn the_index_is_capped_with_the_graves() {
+        let dir = temp_dir("index-cap");
+        let graveyard = Graveyard::open(&dir).unwrap();
+        for index in 0..MAX_GRAVES + 50 {
+            let mut ended = info(&format!("s{index}"));
+            ended.created_unix = 1000 + index as u64;
+            graveyard.bury(&ended, EndReason::Exited, Some(0));
+        }
+
+        let state = graveyard.state.lock().unwrap();
+        assert_eq!(state.graves.len(), MAX_GRAVES);
+        assert_eq!(state.buried.len(), MAX_GRAVES);
     }
 
     /// The deadline fallback and the actor reaper can finish in either order.
