@@ -1419,14 +1419,27 @@ private struct DeviceOnlySessionRow: View {
 
     private var title: String { information.displayLabel }
 
-    /// What the device says the row is doing, in the fewest words that stay true:
-    /// the command, and the directory it runs in on that machine.
+    /// Where the device says the row is running. Just the directory: the command
+    /// is the login-shell wrapper Termio spawns through
+    /// (`/bin/zsh -ilc exec claude --dangerously-skip-permissions --session-id …`),
+    /// which is scaffolding wrapped around a uuid, and `title` has already
+    /// lifted the one word of it worth reading onto the line above. Printing the
+    /// rest put a flag the user never typed in the sidebar and truncated away
+    /// the directory, which is the part that says *which* of three claudes this
+    /// is. The whole string stays one hover away.
     private var detail: String {
-        let directory = information.cwd.isEmpty
-            ? "" : URL(fileURLWithPath: information.cwd).lastPathComponent
-        return [information.command, directory]
-            .filter { !$0.isEmpty }
-            .joined(separator: " · ")
+        information.cwd.isEmpty ? "" : URL(fileURLWithPath: information.cwd).lastPathComponent
+    }
+
+    /// Where the row came from, and — since the row itself no longer prints it —
+    /// the command it was started with, for the one case that needs the whole
+    /// string: telling two sessions of the same agent in the same directory apart.
+    private var helpText: String {
+        let origin = information.cwd.isEmpty
+            ? localized("Opened outside Termio on this device")
+            : localized("Opened outside Termio, in \(information.cwd)")
+        guard !information.command.isEmpty else { return origin }
+        return origin + "\n" + information.command
     }
 
     var body: some View {
@@ -1459,9 +1472,7 @@ private struct DeviceOnlySessionRow: View {
         .padding(.vertical, settings.interfaceRowPadding)
         .padding(.leading, 16)
         .contentShape(Rectangle())
-        .help(information.cwd.isEmpty
-              ? localized("Opened outside Termio on this device")
-              : localized("Opened outside Termio, in \(information.cwd)"))
+        .help(helpText)
         .simultaneousGesture(TapGesture().onEnded { store.adoptDeviceSession(information) })
         // The same hover-reveal close as a session row. Without it the only way
         // to end one of these was to adopt it into the sidebar first and close
