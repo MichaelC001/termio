@@ -306,9 +306,10 @@ impl Manager {
                     }) if session == session_id && until.iter().any(|wanted| wanted == &status) => {
                         return Ok((status, None));
                     }
-                    Ok(Event::SessionExited { session, status })
-                        if session == session_id
-                            && until.iter().any(|wanted| wanted == "exited") =>
+                    Ok(Event::SessionExited {
+                        session, status, ..
+                    }) if session == session_id
+                        && until.iter().any(|wanted| wanted == "exited") =>
                     {
                         return Ok(("exited".to_string(), Some(status)));
                     }

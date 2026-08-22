@@ -924,6 +924,19 @@ pub enum Event {
     SessionExited {
         session: String,
         status: i32,
+        /// The session's last `SessionInfo`, sampled after the child was reaped
+        /// and carried on the event so the answer travels with the news. Nobody
+        /// can ask for it afterwards: the session actor stops the moment this is
+        /// sent, and `list` no longer has a row. It always reports
+        /// `alive: false`, and `child_executable_replaced` is evaluated at exit
+        /// time — the whole reason the record has to be built here rather than
+        /// reconstructed from an earlier poll.
+        ///
+        /// Optional because an old daemon does not send it. A client that finds
+        /// it absent keeps whatever it last read from `list`, which is exactly
+        /// today's behaviour.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        info: Option<Box<SessionInfo>>,
     },
     /// This attachment's stream was cut and restarted at a fresh boundary. It
     /// arrives after the `S`/`ready` pair that re-establishes JOIN, and it means
@@ -1017,18 +1030,27 @@ pub struct SessionInfo {
     pub attached_clients: usize,
     #[serde(default)]
     pub writer_client_id: Option<String>,
-    /// The process group that owns the tty's foreground right now. This is the
-    /// program the user is talking to, which after the first minute of a
-    /// session is rarely the one in `command`.
+    /// The live process inside the tty's foreground process group whose argv is
+    /// reported below. This is the program the user is talking to, which after
+    /// the first minute of a session is rarely the one in `command`.
+    ///
+    /// A pid, not the process group id. The two agree whenever the group leader
+    /// is still running, which is every simple command; they part in a pipeline
+    /// whose leader has exited while a later stage still runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_pid: Option<i32>,
-    /// Argv of that process group's leader — the agent's identity, read from
-    /// the kernel rather than scraped off the screen.
+    /// Argv of that process — the agent's identity, read from the kernel rather
+    /// than scraped off the screen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_argv: Option<Vec<String>>,
     /// Whether something other than the session's own child holds the
     /// foreground, i.e. a command is running rather than a shell idling at its
     /// prompt. This is the signal a client keys "closing this loses work" off.
+    ///
+    /// Derived from the foreground *process group*, not from `foreground_pid`:
+    /// a pipeline whose leader has already exited is still a running job, and
+    /// comparing the surviving member's pid against the shell would say so
+    /// twice over — but comparing a *missing* one would say the opposite.
     #[serde(default, skip_serializing_if = "is_false")]
     pub foreground_job: bool,
     /// The child's *current* directory, which `cd` moves and `cwd` (the
@@ -1624,7 +1646,8 @@ mod tests {
         decode_cells, decode_file_chunk, decode_grid_payload, decode_history_payload,
         decode_snapshot_payload, decode_upload_chunk, encode_cells, encode_file_chunk,
         encode_grid_payload, encode_history_payload, encode_snapshot_payload, encode_upload_chunk,
-        Control, FileChunk, GridDiff, GridRow, HistoryChunk, Snapshot, UploadChunk, WireCell,
+        Control, Event, FileChunk, GridDiff, GridRow, HistoryChunk, SessionInfo, Snapshot,
+        UploadChunk, WireCell,
         WireColor, COLOR_TAG_RGB, SNAPSHOT_CELL_SIZE, FILE_CHUNK_HEADER_SIZE,
         MAX_FILE_FRAME_SIZE, MAX_UPLOAD_FRAME_SIZE,
     };
@@ -1852,5 +1875,87 @@ mod tests {
 
         let encoded = encode_grid_payload(&grid).unwrap();
         assert_eq!(decode_grid_payload(&encoded).unwrap(), grid);
+    }
+
+    fn ended_session() -> SessionInfo {
+        SessionInfo {
+            id: "s_1".to_string(),
+            name: "demo".to_string(),
+            cwd: "/work".to_string(),
+            command: "claude".to_string(),
+            pid: 4242,
+            rows: 48,
+            cols: 180,
+            clients: 0,
+            created_unix: 1_700_000_000,
+            alive: false,
+            status: "done".to_string(),
+            agent_id: Some("claude".to_string()),
+            title: None,
+            attached_clients: 0,
+            writer_client_id: None,
+            foreground_pid: None,
+            foreground_argv: None,
+            foreground_job: false,
+            child_cwd: Some("/work/sub".to_string()),
+            child_executable: Some("/usr/local/bin/claude".to_string()),
+            child_executable_replaced: true,
+        }
+    }
+
+    /// The exit event is the last thing said about a session, so the record it
+    /// carries has to survive the wire intact — `alive` and
+    /// `child_executable_replaced` in particular, since the client's whole
+    /// relaunch decision reads them.
+    #[test]
+    fn exit_event_carries_the_final_record() {
+        let event = Event::SessionExited {
+            session: "s_1".to_string(),
+            status: 0,
+            info: Some(Box::new(ended_session())),
+        };
+        let encoded = serde_json::to_value(&event).unwrap();
+        assert_eq!(encoded["info"]["alive"], false);
+        assert_eq!(encoded["info"]["child_executable_replaced"], true);
+        assert_eq!(encoded["info"]["child_executable"], "/usr/local/bin/claude");
+
+        match serde_json::from_value::<Event>(encoded).unwrap() {
+            Event::SessionExited { info, status, .. } => {
+                let info = info.expect("the record round-trips");
+                assert_eq!(status, 0);
+                assert!(!info.alive);
+                assert!(info.child_executable_replaced);
+                assert_eq!(info.pid, 4242);
+            }
+            other => panic!("decoded as the wrong event: {other:?}"),
+        }
+    }
+
+    /// Additive in both directions: an old daemon sends no `info`, and a new
+    /// daemon that has none to send omits the key rather than writing `null`,
+    /// so an old client's payload is byte-identical to what it saw before.
+    #[test]
+    fn exit_event_info_is_additive() {
+        let old_host = br#"{"ev":"session_exited","session":"s_1","status":137}"#;
+        match serde_json::from_slice::<Event>(old_host).unwrap() {
+            Event::SessionExited {
+                session,
+                status,
+                info,
+            } => {
+                assert_eq!(session, "s_1");
+                assert_eq!(status, 137);
+                assert!(info.is_none(), "an absent record must not be invented");
+            }
+            other => panic!("old exit payload decoded as the wrong event: {other:?}"),
+        }
+
+        let without = serde_json::to_value(Event::SessionExited {
+            session: "s_1".to_string(),
+            status: 0,
+            info: None,
+        })
+        .unwrap();
+        assert!(without.get("info").is_none());
     }
 }

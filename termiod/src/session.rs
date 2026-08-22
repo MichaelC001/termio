@@ -346,9 +346,13 @@ struct Session {
     /// answer a snapshot again — attach and resync fall back to ring replay.
     vt_stale: Option<String>,
     /// Last sample of who is in the tty's foreground and where the child is.
-    /// Refreshed by the poll tick only; `info()` reads the cache so a roster
-    /// request never turns into a burst of syscalls.
+    /// `info()` reads this cache so a roster request never turns into a burst
+    /// of syscalls.
     foreground: ForegroundSample,
+    /// A resolution is in flight on a blocking thread. One at a time: the poll
+    /// is slower than the work, and piling up would only queue answers about
+    /// groups that have already lost the terminal.
+    foreground_pending: bool,
     /// The binary the child is running, pinned on the first sample that finds
     /// it. One-shot on purpose: this is the *launch* baseline that
     /// `was_replaced()` compares against, and resampling would paper over the
@@ -356,14 +360,46 @@ struct Session {
     child_executable: Option<crate::proc::ExecutableIdentity>,
 }
 
-/// What one foreground poll found. Compared whole so a tick that learns nothing
-/// new costs nothing beyond the syscalls.
+/// What the session believes about its foreground right now.
+///
+/// Split deliberately along what it costs to learn. `pgid` and `job` come from
+/// one `tcgetpgrp` and are refreshed on the actor; everything below them is a
+/// process-table walk and arrives later, from [`ForegroundResolution`].
 #[derive(Default, Clone, PartialEq, Eq)]
 struct ForegroundSample {
+    /// The foreground process *group*, exactly as `tcgetpgrp` reported it.
+    /// Kept even when no member of it could be read, because "is a job
+    /// running?" is answered by comparing this against the session's own child
+    /// and must not turn into "no" the moment a pipeline's leader exits.
     pgid: Option<i32>,
+    /// The member of that group whose argv is reported below. Equal to `pgid`
+    /// whenever the group leader is still usable, which is the common case.
+    pid: Option<i32>,
     argv: Option<Vec<String>>,
     job: bool,
     cwd: Option<String>,
+}
+
+/// The expensive half of a foreground sample, computed on a blocking thread and
+/// handed back to the actor.
+///
+/// Reading argv means a `KERN_PROCARGS2` sysctl on macOS and a file read on
+/// Linux, and finding *which* pid to read it for can mean walking every process
+/// on the box when a pipeline's leader has exited. None of that may happen on
+/// the session actor: that task also runs the PTY read and the fan-out, so a
+/// process-table walk there is time the byte path spends waiting — the
+/// anti-100× invariant, which is about more than the VT parse.
+struct ForegroundResolution {
+    /// The group this answer describes. The foreground can move while the
+    /// resolution is in flight, and an answer about a group that has since lost
+    /// the terminal is not a stale version of the truth — it is the answer to a
+    /// different question, and gets dropped.
+    pgid: Option<i32>,
+    pid: Option<i32>,
+    argv: Option<Vec<String>>,
+    cwd: Option<String>,
+    /// Only set when the session had not pinned its binary yet.
+    executable: Option<crate::proc::ExecutableIdentity>,
 }
 
 impl Session {
@@ -384,7 +420,7 @@ impl Session {
             title: self.title.clone(),
             attached_clients: self.clients.len(),
             writer_client_id: self.writer.clone(),
-            foreground_pid: self.foreground.pgid,
+            foreground_pid: self.foreground.pid,
             foreground_argv: self.foreground.argv.clone(),
             foreground_job: self.foreground.job,
             child_cwd: self.foreground.cwd.clone(),
@@ -403,35 +439,101 @@ impl Session {
         }
     }
 
-    /// Ask the kernel who holds the tty's foreground and where the child is
-    /// standing. Returns whether anything moved, so a quiet session emits no
-    /// roster traffic.
+    /// The cheap half of the poll, and the only half that runs here: one
+    /// `tcgetpgrp` on the master. Returns whether anything moved, so a quiet
+    /// session emits no roster traffic.
     ///
-    /// Called from the poll tick only. These are a handful of cheap syscalls,
-    /// but they are still syscalls on the session actor's thread, and the
-    /// anti-100× invariant means byte delivery must never be the thing paying
-    /// for them — hence a fixed, slow cadence rather than a sample per frame.
-    fn sample_foreground(&mut self) -> bool {
+    /// The expensive half is dispatched to a blocking thread and applied later
+    /// by [`Session::apply_foreground`]. Both halves have to exist because they
+    /// answer different questions on different deadlines: "is a job running?"
+    /// is read at close time and must be current, and it is answerable from the
+    /// group id alone; "what is that job?" drives an icon and can be a beat
+    /// late.
+    fn sample_foreground(
+        &mut self,
+        resolved: &mpsc::UnboundedSender<ForegroundResolution>,
+    ) -> bool {
         if self.pid <= 0 {
             return false;
         }
         let pgid = self.pty.foreground_pgid();
-        let sample = ForegroundSample {
-            pgid,
-            // The foreground group leader's pid *is* the pgid: the shell puts
-            // each job in a group named after its leader.
-            argv: pgid.and_then(crate::proc::process_arguments),
-            job: pgid.is_some_and(|pgid| pgid != self.pid),
-            cwd: crate::proc::working_directory(self.pid),
-        };
-        if self.child_executable.is_none() {
-            self.child_executable = crate::proc::executable_identity(self.pid);
+        // Compared against the *group*: a foreground group that is not the
+        // child's own is a running job whether or not any member of it could
+        // be read.
+        let job = pgid.is_some_and(|pgid| pgid != self.pid);
+        let mut changed = false;
+        if self.foreground.pgid != pgid {
+            self.foreground.pgid = pgid;
+            // The cached identity described a group that no longer holds the
+            // terminal. Dropping it is an honest gap the resolution below
+            // fills; keeping it would name a program that has already exited.
+            self.foreground.pid = None;
+            self.foreground.argv = None;
+            changed = true;
         }
-        if sample == self.foreground {
+        if self.foreground.job != job {
+            self.foreground.job = job;
+            changed = true;
+        }
+        self.request_foreground(pgid, resolved);
+        changed
+    }
+
+    /// Hand the process-table work to a blocking thread.
+    fn request_foreground(
+        &mut self,
+        pgid: Option<i32>,
+        resolved: &mpsc::UnboundedSender<ForegroundResolution>,
+    ) {
+        if self.foreground_pending {
+            return;
+        }
+        self.foreground_pending = true;
+        let child = self.pid;
+        let pin_executable = self.child_executable.is_none();
+        let resolved = resolved.clone();
+        tokio::task::spawn_blocking(move || {
+            // A group id is not a pid. The shell names each job's group after
+            // its leader, so the two agree for as long as that leader is alive
+            // — and stop agreeing in a pipeline the moment it is not, which is
+            // why the pid comes from the host rather than from that assumption.
+            let pid = pgid.and_then(crate::proc::foreground_member);
+            let _ = resolved.send(ForegroundResolution {
+                pgid,
+                pid,
+                argv: pid.and_then(crate::proc::process_arguments),
+                cwd: crate::proc::working_directory(child),
+                executable: pin_executable
+                    .then(|| crate::proc::executable_identity(child))
+                    .flatten(),
+            });
+        });
+    }
+
+    /// Take a resolution the blocking thread finished, unless the foreground
+    /// moved while it was in flight. Returns whether anything moved.
+    fn apply_foreground(&mut self, resolution: ForegroundResolution) -> bool {
+        self.foreground_pending = false;
+        if resolution.pgid != self.foreground.pgid {
             return false;
         }
-        self.foreground = sample;
-        true
+        if self.child_executable.is_none() {
+            self.child_executable = resolution.executable;
+        }
+        let mut changed = false;
+        if self.foreground.pid != resolution.pid {
+            self.foreground.pid = resolution.pid;
+            changed = true;
+        }
+        if self.foreground.argv != resolution.argv {
+            self.foreground.argv = resolution.argv;
+            changed = true;
+        }
+        if self.foreground.cwd != resolution.cwd {
+            self.foreground.cwd = resolution.cwd;
+            changed = true;
+        }
+        changed
     }
 
     fn recompute_writer(&mut self) {
@@ -1323,6 +1425,7 @@ pub fn spawn(
         sidecar_queue: sidecar.queue,
         vt_stale: None,
         foreground: ForegroundSample::default(),
+        foreground_pending: false,
         child_executable: None,
     };
 
@@ -1533,11 +1636,20 @@ async fn run(
     // sample once when it catches up, not replay a backlog of polls.
     let mut foreground_poll = tokio::time::interval(FOREGROUND_POLL);
     foreground_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The process-table half of each poll runs on a blocking thread and comes
+    // back here. Held for the life of the loop so the branch below never sees a
+    // closed channel while the session is alive.
+    let (foreground_tx, mut foreground_rx) = mpsc::unbounded_channel::<ForegroundResolution>();
 
     loop {
         tokio::select! {
             _ = foreground_poll.tick() => {
-                if session.sample_foreground() {
+                if session.sample_foreground(&foreground_tx) {
+                    session.emit_roster();
+                }
+            }
+            Some(resolution) = foreground_rx.recv() => {
+                if session.apply_foreground(resolution) {
                     session.emit_roster();
                 }
             }
@@ -1608,9 +1720,20 @@ async fn run(
         Some(w) => w.await.unwrap_or(-1),
         None => -1,
     };
+    // One final record, built after the reap and used for everything that
+    // outlives the session: the exit event clients hear, and the tombstone the
+    // manager buries. Sampling it twice would let the two disagree — the
+    // interesting field, `child_executable_replaced`, is a fresh disk read every
+    // time it is asked, and an agent that replaced its binary between the two
+    // reads is exactly the case both consumers are for.
+    //
+    // `alive: false` — this record only ever describes a session that has ended.
+    let mut info = session.info();
+    info.alive = false;
     let exit_event = Event::SessionExited {
         session: session.id.clone(),
         status: code,
+        info: Some(Box::new(info.clone())),
     };
     let _ = session.events.send(exit_event.clone());
     for entry in session.clients.values() {
@@ -1618,10 +1741,6 @@ async fn run(
         let _ = entry.out.send(ClientEvent::Exited(code));
     }
     let _ = tokio::task::spawn_blocking(move || sidecar_thread.join()).await;
-    // `alive: false` — this record only ever describes a session that has ended,
-    // and a tombstone built from it must not claim otherwise.
-    let mut info = session.info();
-    info.alive = false;
     let _ = on_exit.send(SessionEnded {
         info,
         status: code,
@@ -1970,6 +2089,7 @@ mod tests {
                 sidecar_queue,
                 vt_stale: None,
                 foreground: super::ForegroundSample::default(),
+                foreground_pending: false,
                 child_executable: None,
             },
             event_rx,
@@ -2329,6 +2449,7 @@ mod tests {
             sidecar_queue: Arc::new(SidecarQueue::new()),
             vt_stale: None,
             foreground: super::ForegroundSample::default(),
+            foreground_pending: false,
             child_executable: None,
         };
 
@@ -2468,15 +2589,18 @@ mod tests {
         );
 
         // Learning who is in there is a roster change, so clients hear about it
-        // without polling.
-        let roster = loop {
-            match events_rx.try_recv() {
-                Ok(Event::Roster { info, .. }) => break info,
-                Ok(_) => continue,
-                Err(error) => panic!("no roster event for the first foreground sample: {error:?}"),
-            }
-        };
-        assert!(roster.is_some_and(|info| info.foreground_pid.is_some()));
+        // without polling. It takes two events, not one: the poll publishes the
+        // process group as soon as `tcgetpgrp` answers, and the identity behind
+        // it lands when the off-actor resolution comes back. Scanning for the
+        // second is the point — taking the first would assert against the half
+        // that is deliberately cheap.
+        let identified = std::iter::from_fn(|| events_rx.try_recv().ok()).any(|event| {
+            matches!(event, Event::Roster { info: Some(info), .. } if info.foreground_pid.is_some())
+        });
+        assert!(
+            identified,
+            "no roster event ever carried the resolved foreground pid"
+        );
 
         handle.send(SessionMsg::Kill {
             reason: EndReason::Killed,
@@ -2502,19 +2626,121 @@ mod tests {
             data: b"sleep 30\n".to_vec(),
         });
 
-        let busy = settled_info(&handle, |info| info.foreground_job).await;
-        assert_ne!(busy.foreground_pid, Some(busy.pid));
-        assert!(
-            busy.foreground_argv
+        // Settled on the argv, not on `foreground_job`. The two now land in
+        // separate ticks by design — the group id is read on the actor and the
+        // identity behind it arrives from a blocking thread — so waiting on the
+        // cheap half and asserting the expensive one is a race.
+        let busy = settled_info(&handle, |info| {
+            info.foreground_argv
                 .as_ref()
                 .and_then(|argv| argv.first())
-                .is_some_and(|arg| arg.ends_with("sleep")),
-            "foreground argv was {:?}",
-            busy.foreground_argv
+                .is_some_and(|arg| arg.ends_with("sleep"))
+        })
+        .await;
+        assert!(busy.foreground_job, "a running command is a job");
+        assert_ne!(busy.foreground_pid, Some(busy.pid));
+
+        handle.send(SessionMsg::Kill);
+    }
+
+    /// The pipeline case, end to end against a real shell and a real tty: the
+    /// group leader exits while a later stage keeps running.
+    ///
+    /// `true | sleep 30` makes a job whose leader is `true`, which finishes
+    /// immediately and is left a zombie or reaped outright while `sleep` still
+    /// holds the terminal. Reading argv from the process *group* id — what both
+    /// hosts did before this — answers nothing here, so the pane would claim
+    /// nothing is running while the user watches a command run. The assertion
+    /// is deliberately on argv being present and naming `sleep`: that is the
+    /// user-visible property, and it is what regressed.
+    #[tokio::test]
+    async fn a_pipeline_keeps_its_argv_after_the_group_leader_exits() {
+        let shell = ["/bin/sh", "/usr/bin/sh"]
+            .into_iter()
+            .find(|path| std::path::Path::new(path).exists())
+            .expect("no sh binary on this host");
+        let (handle, _events_rx, _on_exit) =
+            start_session(vec![shell.to_string(), "-i".to_string()], "/");
+
+        settled_info(&handle, |info| info.foreground_pid == Some(info.pid)).await;
+
+        handle.send(SessionMsg::Inject {
+            data: b"true | sleep 30\n".to_vec(),
+        });
+
+        let piped = settled_info(&handle, |info| {
+            info.foreground_job && info.foreground_argv.is_some()
+        })
+        .await;
+
+        let argv = piped
+            .foreground_argv
+            .as_ref()
+            .expect("a live pipeline must report an argv");
+        assert!(
+            argv.first().is_some_and(|arg| arg.ends_with("sleep")),
+            "the surviving stage should name itself; argv was {argv:?}"
+        );
+        assert_ne!(
+            piped.foreground_pid,
+            Some(piped.pid),
+            "the pipeline is not the session's own shell"
         );
 
         handle.send(SessionMsg::Kill {
             reason: EndReason::Killed,
         });
+    }
+
+    /// The session actor is the last thing that can answer for a session, and
+    /// once it has gone the only descriptions left are the ones it sent on its
+    /// way out. Both of them — the event clients hear and the record the
+    /// manager buries — have to be the *same* record, or a client and a
+    /// tombstone can disagree about a session neither can re-read.
+    #[tokio::test]
+    async fn the_exit_event_carries_the_record_the_tombstone_is_built_from() {
+        let cat = ["/bin/cat", "/usr/bin/cat"]
+            .into_iter()
+            .find(|path| std::path::Path::new(path).exists())
+            .expect("no cat binary on this host");
+        let (handle, mut events_rx, mut on_exit_rx) = start_session(vec![cat.to_string()], "/");
+
+        // Wait for the first foreground sample, so the record under test is the
+        // fully populated one rather than a session caught before its first
+        // poll tick.
+        let live = settled_info(&handle, |info| info.child_executable.is_some()).await;
+        assert!(live.alive, "a running session says so");
+
+        handle.send(SessionMsg::Kill);
+
+        let exited = loop {
+            match events_rx.recv().await {
+                Ok(Event::SessionExited { session, info, .. }) => break (session, info),
+                Ok(_) => continue,
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(error) => panic!("the exit event never arrived: {error:?}"),
+            }
+        };
+        let (session_id, event_info) = exited;
+        assert_eq!(session_id, "foreground-session");
+        let event_info = event_info.expect("the exit event carries the final record");
+        assert!(
+            !event_info.alive,
+            "a record built on the exit path must not claim the session is alive"
+        );
+        assert_eq!(event_info.pid, live.pid);
+        assert_eq!(event_info.child_executable, live.child_executable);
+
+        let ended = on_exit_rx
+            .recv()
+            .await
+            .expect("the manager is told the session ended");
+        assert!(ended.killed, "a client asked for this end");
+        assert!(!ended.info.alive);
+        assert_eq!(
+            serde_json::to_value(&*event_info).unwrap(),
+            serde_json::to_value(&ended.info).unwrap(),
+            "the event and the tombstone must be one record, not two samples"
+        );
     }
 }
