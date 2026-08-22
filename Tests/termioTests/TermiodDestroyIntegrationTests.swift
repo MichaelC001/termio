@@ -268,3 +268,49 @@ final class CompanionInputBridgeTests: XCTestCase {
             "a keystroke crossed the bridge without stamping the session")
     }
 }
+
+/// `clearActivityTracking` exists to be the one place that enumerates the
+/// per-session trackers, so close, project removal and relaunch cannot drift
+/// out of step as trackers are added. Nothing checked that it kept up.
+///
+/// The input clock was added without being registered there, which is exactly
+/// the drift the function's own comment warns about — a stamp per session the
+/// app had ever opened, never released.
+@MainActor
+final class ActivityTrackingCleanupTests: XCTestCase {
+    func testClearingActivityReleasesTheInputClock() {
+        let session = Session(title: "agent", agent: .terminal)
+        let workspace = Workspace(name: "Sessions")
+        let project = Project(workspaceID: workspace.id, name: "termio", path: "/code/termio",
+                              branch: "main", sessions: [session])
+        let defaults = UserDefaults(suiteName: "activity-clear-\(UUID().uuidString)")
+        let store = TermioStore(workspaces: [workspace], projects: [project],
+                                settings: AppSettings(defaults: defaults ?? .standard))
+
+        store.noteInput(for: session.id)
+        XCTAssertFalse(store.inputClock.isEmpty, "the fixture never stamped anything")
+
+        store.clearActivityTracking(for: session.id)
+
+        XCTAssertTrue(
+            store.inputClock.isEmpty,
+            "the session's input stamp outlived the session it belongs to")
+    }
+
+    /// Closing a session goes through that same teardown, so the release has to
+    /// survive the route the user actually takes.
+    func testClosingASessionReleasesTheInputClock() {
+        let session = Session(title: "agent", agent: .terminal)
+        let workspace = Workspace(name: "Sessions")
+        let project = Project(workspaceID: workspace.id, name: "termio", path: "/code/termio",
+                              branch: "main", sessions: [session])
+        let defaults = UserDefaults(suiteName: "activity-close-\(UUID().uuidString)")
+        let store = TermioStore(workspaces: [workspace], projects: [project],
+                                settings: AppSettings(defaults: defaults ?? .standard))
+
+        store.noteInput(for: session.id)
+        store.closeSession(session.id)
+
+        XCTAssertTrue(store.inputClock.isEmpty, "closing left the stamp behind")
+    }
+}
