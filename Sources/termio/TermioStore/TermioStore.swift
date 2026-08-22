@@ -836,10 +836,7 @@ final class TermioStore: ObservableObject {
 
     var surfaces: [Session.ID: TerminalViewState] = [:]
     var monitors: [Session.ID: [AnyCancellable]] = [:]
-    /// The termio-owned PTY behind each host-managed session — the byte stream
-    /// the surface renders and the companion server taps for a phone.
-    var ptyProcesses: [Session.ID: PTYProcess] = [:]
-    /// Flag-on (`TERMIO_TERMIOD=1`) counterpart of `ptyProcesses`: each
+    /// The daemon attachment behind each session: each
     /// session's attach channel into the local termiod daemon, which owns the
     /// PTY so the session outlives this app instance.
     var termiodLinks: [Session.ID: TermiodSessionLink] = [:]
@@ -907,16 +904,11 @@ final class TermioStore: ObservableObject {
     /// remains — the quit path can't rely on `terminate()`'s dispatched
     /// escalation timer, because the process dies before it fires.
     func terminateAllSessions() {
-        // Termiod-backed sessions are the opposite case: surviving the quit is
-        // their whole point, so the channel detaches and the daemon keeps the
-        // process. Kill is reserved for the explicit Close Session verb.
+        // Surviving the quit is the whole point, so the channel detaches and
+        // the daemon keeps the process. Kill is reserved for the explicit
+        // Close Session verb.
         for link in termiodLinks.values { link.detach() }
         termiodLinks.removeAll()
-        let ptys = Array(ptyProcesses.values)
-        guard !ptys.isEmpty else { return }
-        for pty in ptys { pty.terminate() }
-        usleep(300_000)
-        for pty in ptys { pty.forceKillIfAlive() }
     }
 
     /// The most recent host-owned terminal grid, persisted across launches. A

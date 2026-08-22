@@ -584,13 +584,6 @@ extension TermioStore {
             presentOpenProjectPanel()
             return
         }
-        // Checked before the panel rather than after it: the whole feature is the
-        // termiod backend, so with the flag off there is nothing to ask about, and
-        // asking anyway would leave a project row for a checkout nothing can open.
-        guard Termiod.isEnabled else {
-            presentTermiodDisabledAlert()
-            return
-        }
         let alert = NSAlert()
         alert.messageText = localized("Open a Project on \(alias)")
         alert.informativeText = localized(
@@ -713,8 +706,6 @@ extension TermioStore {
 
         let removedSessionIDs = Set(projects[projectIndex].sessions.map(\.id))
         for sessionID in removedSessionIDs {
-            ptyProcesses[sessionID]?.terminate()
-            ptyProcesses[sessionID] = nil
             surfaces[sessionID] = nil
             monitors[sessionID] = nil
             removeRuntime(for: sessionID)
@@ -815,9 +806,7 @@ extension TermioStore {
     /// (`remote-to-device.decisions.md` §2).
     func closeConfirmationReason(for session: Session) -> String? {
         guard session.agent.isShell else { return nil }
-        let running = Self.foregroundJob(
-            reportedLocally: ptyProcesses[session.id]?.hasForegroundJob,
-            reportedByDevice: termiodLinks[session.id]?.latestInformation?.foregroundJob)
+        let running = termiodLinks[session.id]?.latestInformation?.foregroundJob
         guard running == true else { return nil }
         return "A command is still running in this session. Closing it stops the command."
     }
@@ -830,8 +819,6 @@ extension TermioStore {
         guard let slot = locate(id) else { return }
         let sessionIndex = slot.sessionIndex
         removeSession(at: slot)
-        ptyProcesses[id]?.terminate()
-        ptyProcesses[id] = nil
         // Close Session is the destroy verb, so a termiod-backed session is
         // killed in the daemon too — unlike quit/detach, which keeps it alive.
         termiodLinks[id]?.killAndClose()
@@ -891,8 +878,6 @@ extension TermioStore {
     /// user, conversation resumed.
     func relaunchSession(_ id: Session.ID) {
         guard session(id) != nil else { return }
-        ptyProcesses[id]?.terminate()
-        ptyProcesses[id] = nil
         // A respawn-in-place must not leave the old daemon-side process
         // running under the same name, or the fresh surface would reattach to
         // it instead of spawning the replacement.

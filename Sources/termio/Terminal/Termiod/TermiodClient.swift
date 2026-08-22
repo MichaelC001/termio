@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 
 /// Attach client for the local `termiod` session host (Session Protocol v0.1,
-/// see termiod/src/protocol.rs). Behind the opt-in `TERMIO_TERMIOD=1` flag the
+/// see termiod/src/protocol.rs). The
 /// app stops owning PTYs itself: every session lives inside the daemon, the app
 /// merely attaches over the Unix socket, and quitting detaches instead of
 /// killing — which is what lets sessions survive an app quit or self-update.
@@ -40,10 +40,6 @@ enum Termiod {
     /// What a plain control channel (`list`, `kill`) offers: nothing. Both verbs
     /// are unconditional, and tombstones ride the `sessions` reply un-gated.
     static let controlCapabilities: [String] = []
-
-    /// Checked once — the flag flips the app's session backend wholesale, so a
-    /// mid-run change could not be honored anyway.
-    static let isEnabled = ProcessInfo.processInfo.environment["TERMIO_TERMIOD"] == "1"
 
     static let protocolVersion: UInt32 = 1
 

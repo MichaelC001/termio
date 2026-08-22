@@ -119,8 +119,8 @@ struct DeviceSessions: Sendable, Equatable {
 /// reached over a network, so "we do not know" is a real state and is shown as
 /// one rather than being flattened into an empty list.
 enum DeviceSessionsState {
-    /// The daemon backend is off (`TERMIO_TERMIOD` unset), so no device — this
-    /// Mac included — has a session host to ask.
+    /// Nothing has been asked yet. The state a fresh store starts in, before
+    /// the first roster request reaches a device.
     case unavailable
     case loading
     case ready(DeviceSessions)

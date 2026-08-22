@@ -210,7 +210,7 @@ final class TermiodImagePaste: NSObject {
     /// Returns whether this paste was taken over. `false` means "not our case"
     /// and the ordinary paste must still happen.
     private func pasteImage(into sessionID: Session.ID?) -> Bool {
-        guard Termiod.isEnabled, let store, let sessionID,
+        guard let store, let sessionID,
               let session = store.session(sessionID),
               // The device boundary is the whole condition: a session on this
               // Mac keeps the local mechanism, unchanged.

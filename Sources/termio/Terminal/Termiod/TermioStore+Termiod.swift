@@ -2,10 +2,9 @@ import AppKit
 import Foundation
 import GhosttyTerminal
 
-/// The flag-on (`TERMIO_TERMIOD=1`) session plumbing: sessions run inside the
-/// local termiod daemon and the app is an attach client. Kept beside the
-/// protocol client so the whole opt-in backend lives in one folder; the
-/// default `PTYProcess` path is untouched when the flag is off.
+/// Session plumbing: sessions run inside a termiod daemon — the local one, or
+/// one reached over SSH — and this app is an attach client. Kept beside the
+/// protocol client so the whole backend lives in one folder.
 extension TermioStore {
     /// Builds the attach channel for a session about to be surfaced. The
     /// termiod session is *named* with the app session's stable UUID, which is
@@ -358,11 +357,6 @@ extension TermioStore {
     func refreshDeviceSessions() {
         let span = Trace.device.begin("roster request")
         defer { Trace.device.end(span) }
-        guard Termiod.isEnabled else {
-            deviceSessions = .unavailable
-            deviceSessionsRoute = nil
-            return
-        }
         let device = currentDevice
         let route = device.route
         let key = route.description
@@ -572,10 +566,6 @@ extension TermioStore {
     /// renamed to a fresh uuid, because the name is how the daemon is asked for
     /// that exact PTY.
     func adoptDeviceSession(_ information: Termiod.SessionInformation) {
-        guard Termiod.isEnabled else {
-            presentTermiodDisabledAlert()
-            return
-        }
         let device = currentDevice
         var session = Session(title: information.displayLabel, agent: .terminal)
         session.termiodSessionName = information.name.isEmpty ? information.id : information.name
@@ -699,10 +689,6 @@ extension TermioStore {
     ) {
         let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { return }
-        guard Termiod.isEnabled else {
-            presentTermiodDisabledAlert()
-            return
-        }
 
         // The checkout is resolved *after* readiness, not before, because it is
         // keyed by device and only the handshake knows which device this alias
@@ -941,16 +927,6 @@ extension TermioStore {
         )
     }
 
-    /// The flag-off explainer: the remote feature is entirely the termiod backend,
-    /// so without `TERMIO_TERMIOD=1` there's nothing to attach to.
-    func presentTermiodDisabledAlert() {
-        let alert = NSAlert()
-        alert.messageText = "Remote terminals need the termiod backend"
-        alert.informativeText = "Set TERMIO_TERMIOD=1 and relaunch termio to open sessions on a remote host."
-        alert.alertStyle = .informational
-        alert.runModal()
-    }
-
     /// A remote setup/clone failure, shown verbatim so the cause (unreachable,
     /// auth, deploy) is visible rather than a silently dead pane.
     func presentRemoteSetupFailure(host: String, message: String) {
@@ -1000,10 +976,6 @@ extension TermioStore {
     ) {
         let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { return }
-        guard Termiod.isEnabled else {
-            presentTermiodDisabledAlert()
-            return
-        }
 
         // Unpushed commits live only on this Mac and won't be in a fresh clone —
         // warn before we clone what the remote can actually see, so the divergence

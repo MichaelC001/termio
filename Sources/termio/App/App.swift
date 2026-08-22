@@ -140,7 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if AppChannel.isDev { DebugWindowSnapshot.installTrigger() }
         // Sweep up session processes a previous instance stranded (crash,
         // force-quit, dev rebuild's kill -9) before this run adds its own.
-        PTYProcess.reapStrayOrphans()
+        StraySessionReaper.reapStrayOrphans()
         // Ask the device the last run ended on what is running on it, before any
         // pane mounts — the sidebar draws that answer, and a session that did not
         // survive is a tombstone rather than a silently missing row.
