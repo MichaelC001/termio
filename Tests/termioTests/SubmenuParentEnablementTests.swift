@@ -1,11 +1,12 @@
 import AppKit
 import XCTest
 
-/// The AppKit rule that dimmed ＋ ▸ Open Project and ＋ ▸ New Workspace.
+/// The AppKit rule that dimmed ＋ ▸ New Workspace (and ＋ ▸ Open Project, back
+/// when it grew a device submenu too).
 ///
-/// Both rows are built as ordinary action items with an explicit `target`, then
-/// reshaped into submenu parents once a second machine exists
-/// (`refreshOpenProjectItem` / `refreshNewWorkspaceItem`). Nulling the action is
+/// The row is built as an ordinary action item with an explicit `target`, then
+/// reshaped into a submenu parent once a second machine exists
+/// (`refreshNewWorkspaceItem`). Nulling the action is
 /// not enough: assigning `submenu` makes AppKit install its own `submenuAction:`,
 /// and it only adopts the submenu as the item's target when the target is already
 /// nil. A leftover target keeps the selector pointed at the AppDelegate, which
@@ -71,7 +72,7 @@ final class SubmenuParentEnablementTests: XCTestCase {
     /// launch: it worked once, then never again.
     ///
     /// Spelled out as two shapes rather than by calling the delegate:
-    /// `refreshOpenProjectItem` is private to the AppDelegate and needs a store and
+    /// `refreshNewWorkspaceItem` is private to the AppDelegate and needs a store and
     /// a window, so what is pinned here is the AppKit rule that makes its guard
     /// necessary, not the guard itself.
     func testClearingTheActionOnASecondRefreshDimsTheRow() {
