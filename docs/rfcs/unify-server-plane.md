@@ -20,7 +20,7 @@ related:
 > One server — `termiod` — owns every answer two people on two machines would
 > expect to match. Swift renders and nothing else. This is the **execution
 > spine**: the single ordered list of what happens next, restamped against the
-> tree at `90b3711`.
+> tree at `c69c022`.
 
 ---
 
@@ -84,7 +84,7 @@ inherited; none is new here.
 
 ---
 
-## 2. Ground truth — measured 2026-08-22 at `90b3711`
+## 2. Ground truth — measured 2026-08-22 at `c69c022`
 
 The first revision of this document was cut at `7fedc72`. Thirteen commits have
 landed under `termiod/` since, and they move three of its eight stages. What
@@ -127,10 +127,11 @@ tree. Stage 1 is closed.
 ### 2.3 The three gaps this restamp exists to record
 
 Stages 5 and 6 of the last revision were **half-landed in Rust and unreached from
-Swift**. All three gaps below now have an implementation, **written and reviewed
-but uncommitted and unmerged** (§2.4) — they are recorded here as the problem
-statement Stage 2 is answering, not as open work. Where an answer is only
-partial, the gate that remains is named in Stage 2.
+Swift**. All three gaps below now have an implementation, **written, reviewed,
+and committed together on `feat/termiod-session-facts`, but unmerged** (§2.4) —
+they are recorded here as the problem statement Stage 2 is answering, not as
+open work. Where an answer is only partial, the gate that remains is named in
+Stage 2.
 
 **(a) Swift never decodes the foreground fields.**
 `Termiod.SessionInformation` (`TermiodClient.swift:780-819`) decodes eleven keys
@@ -191,14 +192,14 @@ Linux path has still never been compiled or run — that is a Stage 2 gate.
 | --- | --- | --- |
 | `feat/termiod-remote-install` (`a497c00`) | 7 files, +732/−3 | **Answers open question 2 of the last revision.** Settings ▸ Machines reports what a box has and installs the slice this app carries; freshness is a digest, not a version string; the upload lands on a temp name and is moved only after `chmod`. Ships `TermiodInstaller.swift` (335) + 155 lines of tests, a `release.yml` artifact step, and `web/landing/public/install.sh`. Folded into Stage 5 |
 | `feat/termiod-wss` (5 commits) | 69 files, +18,791/−4 | A third client and a transport. Adds **zero** protocol verbs and touches **zero** Swift. **Its merge risk is no longer near zero** — `git log --oneline main --not feat/termiod-wss -- termiod/` is now **13 commits**, including `d38f50c`, `c4934c2` and `1746593`, so it needs a rebase across `protocol.rs`, `daemon.rs`, `git.rs` and `session.rs` rather than the byte-identical merge the last stamp described. Deferred, §8 |
-| `feat/stage5-rust-completion` | 0 commits · **+977/−62** uncommitted | **Stage 2's host half, implemented and reviewed.** `proc.rs` +595, `session.rs` +320, `protocol.rs` +117, `daemon.rs` +7. **99 tests pass.** |
-| `feat/stage5-swift-completion` | 0 commits · **+856/−59** uncommitted | **Stage 2's client half, implemented and reviewed.** `TermiodClient.swift` +181, `TermioStore+Termiod.swift` +135, `TermioStore+TerminalSurface.swift` +95, `TermioStore+ProjectActions.swift` +38, and 28 new cases across `TermiodEventTests` (+179) and `TermiodStatusTests` (+287). **483 tests pass.** |
+| `feat/termiod-session-facts` (`f4d8903`, `4f0e7da`) | 4 files · **+985/−62** | **Stage 2's host half, implemented and reviewed.** `proc.rs` +595, `session.rs` +328, `protocol.rs` +117, `daemon.rs` +7. The second commit adapts the new tests to `c69c022`'s graceful-shutdown API. **101 tests pass.** |
+| `feat/termiod-session-facts` (`96c73ad`) | 6 files · **+856/−59** | **Stage 2's client half, implemented and reviewed.** `TermiodClient.swift` +181, `TermioStore+Termiod.swift` +135, `TermioStore+TerminalSurface.swift` +95, `TermioStore+ProjectActions.swift` +38, and 28 new cases across `TermiodEventTests` (+179) and `TermiodStatusTests` (+287). **483 tests pass.** |
 | `feat/foreground-parity` | 0 commits · +42 uncommitted, plus an untracked `TermioStore+SessionFacts.swift` | **An earlier, superseded attempt at the same client half.** It decodes `foregroundJob` as a non-optional `Bool` with `?? false`, which erases "the device did not answer" from the type — the distinction the skew rule rests on — and it carries no tests. **Do not merge it alongside the pair above**; harvest `SessionFacts`'s single-answer framing if anything, and drop the rest. |
 
-**All three point at `main`'s tip and are zero commits ahead.** The last
-revision's §1.5 warned that a survey against a stale `main` reports merged work
-as abandoned; the mirror trap is here — `git log main..<branch>` empty does
-**not** mean the branch is empty. Check `git status` in its worktree too.
+The two completion worktrees were committed separately, then cherry-picked onto
+`feat/termiod-session-facts` at `c69c022` with this RFC. That integration branch
+is the only branch to review or merge for Stage 2. `feat/foreground-parity`
+remains a superseded, uncommitted worktree and must not be combined with it.
 
 ---
 
