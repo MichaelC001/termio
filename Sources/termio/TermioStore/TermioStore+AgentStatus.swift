@@ -229,7 +229,6 @@ extension TermioStore {
         lastProgressActivity[id] = nil
         lastScreenActivity[id] = nil
         stallProbes[id] = nil
-        inputClock.forget(id)
         blockingAttention.remove(id)
     }
 

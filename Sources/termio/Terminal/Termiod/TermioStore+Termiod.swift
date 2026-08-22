@@ -86,12 +86,7 @@ extension TermioStore {
         // the agent — and the channels this restores (screen liveness, declared
         // screen rules, `OSC 9;4`) are what keep a spinner truthful when the host's
         // own `E status` is silent and a hook report went missing.
-        let statusTap = makeStatusTap(
-            for: session, surface: inMemory, backend: link,
-            // Captured directly rather than through `self`: this runs on the
-            // reader thread, and the clock is the one piece of state here that
-            // is safe to touch from it.
-            lastInputAt: { [clock = inputClock] in clock.lastInput(for: session.id) })
+        let statusTap = makeStatusTap(for: session, surface: inMemory, backend: link)
         link.onOutput = { [weak inMemory] data in
             inMemory?.receive(data)
             statusTap(data)

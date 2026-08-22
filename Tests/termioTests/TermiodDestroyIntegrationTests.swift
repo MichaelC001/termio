@@ -163,7 +163,7 @@ final class TermiodDestroyIntegrationTests: XCTestCase {
     }
 }
 
-/// The keystroke-echo guard's input clock.
+/// The promotion guard's user-input stamp.
 ///
 /// Input echo repaints the screen exactly like agent output does, so the status
 /// tap suppresses promotion for a moment after something was typed. That only
@@ -172,7 +172,7 @@ final class TermiodDestroyIntegrationTests: XCTestCase {
 /// attachment is invisible to the other — which made composing on the phone
 /// promote an idle agent to `working`.
 @MainActor
-final class SessionInputClockTests: XCTestCase {
+final class UserInputStampTests: XCTestCase {
     private func makeStore(_ session: Session) -> TermioStore {
         let workspace = Workspace(name: "Sessions")
         let project = Project(workspaceID: workspace.id, name: "termio", path: "/code/termio",
@@ -187,11 +187,11 @@ final class SessionInputClockTests: XCTestCase {
     func testInputIsRecordedAgainstTheSessionNotTheConnection() {
         let session = Session(title: "agent", agent: .terminal)
         let store = makeStore(session)
-        XCTAssertNil(store.inputClock.lastInput(for: session.id), "nothing has been typed yet")
+        XCTAssertNil(store.lastUserInputAt[session.id], "nothing has been typed yet")
 
-        store.noteInput(for: session.id)
+        store.noteUserInput(session.id, at: Date())
 
-        let stamped = store.inputClock.lastInput(for: session.id)
+        let stamped = store.lastUserInputAt[session.id]
         XCTAssertNotNil(stamped)
         XCTAssertLessThan(
             Date().timeIntervalSince(stamped ?? .distantPast), 1,
@@ -208,8 +208,8 @@ final class SessionInputClockTests: XCTestCase {
         store.noteCompanionInput(session.id.uuidString)
 
         XCTAssertNotNil(
-            store.inputClock.lastInput(for: session.id),
-            "a phone's keystroke never reached the session's input clock")
+            store.lastUserInputAt[session.id],
+            "a phone's keystroke never reached the promotion guard")
     }
 
     /// A wire id for a session this Mac does not have must not stamp anything —
@@ -221,7 +221,7 @@ final class SessionInputClockTests: XCTestCase {
 
         store.noteCompanionInput(UUID().uuidString)
 
-        XCTAssertTrue(store.inputClock.isEmpty, "an unknown session was stamped")
+        XCTAssertTrue(store.lastUserInputAt.isEmpty, "an unknown session was stamped")
     }
 }
 
@@ -258,13 +258,13 @@ final class CompanionInputBridgeTests: XCTestCase {
         // the claim has nothing to do with.
         let connection = NWConnection(to: .hostPort(host: "127.0.0.1", port: 9), using: .tcp)
         let bridge = SessionBridge(link: link, connection: connection)
-        bridge.onInput = { store.noteInput(for: session.id) }
+        bridge.onInput = { store.noteUserInput(session.id, at: Date()) }
 
-        XCTAssertNil(store.inputClock.lastInput(for: session.id), "nothing typed yet")
+        XCTAssertNil(store.lastUserInputAt[session.id], "nothing typed yet")
         bridge.write(Data("hello".utf8))
 
         XCTAssertNotNil(
-            store.inputClock.lastInput(for: session.id),
+            store.lastUserInputAt[session.id],
             "a keystroke crossed the bridge without stamping the session")
     }
 }
@@ -278,7 +278,7 @@ final class CompanionInputBridgeTests: XCTestCase {
 /// app had ever opened, never released.
 @MainActor
 final class ActivityTrackingCleanupTests: XCTestCase {
-    func testClearingActivityReleasesTheInputClock() {
+    func testClearingActivityReleasesTheInputStamp() {
         let session = Session(title: "agent", agent: .terminal)
         let workspace = Workspace(name: "Sessions")
         let project = Project(workspaceID: workspace.id, name: "termio", path: "/code/termio",
@@ -287,19 +287,19 @@ final class ActivityTrackingCleanupTests: XCTestCase {
         let store = TermioStore(workspaces: [workspace], projects: [project],
                                 settings: AppSettings(defaults: defaults ?? .standard))
 
-        store.noteInput(for: session.id)
-        XCTAssertFalse(store.inputClock.isEmpty, "the fixture never stamped anything")
+        store.noteUserInput(session.id, at: Date())
+        XCTAssertNotNil(store.lastUserInputAt[session.id], "the fixture never stamped anything")
 
         store.clearActivityTracking(for: session.id)
 
-        XCTAssertTrue(
-            store.inputClock.isEmpty,
+        XCTAssertNil(
+            store.lastUserInputAt[session.id],
             "the session's input stamp outlived the session it belongs to")
     }
 
     /// Closing a session goes through that same teardown, so the release has to
     /// survive the route the user actually takes.
-    func testClosingASessionReleasesTheInputClock() {
+    func testClosingASessionReleasesTheInputStamp() {
         let session = Session(title: "agent", agent: .terminal)
         let workspace = Workspace(name: "Sessions")
         let project = Project(workspaceID: workspace.id, name: "termio", path: "/code/termio",
@@ -308,9 +308,9 @@ final class ActivityTrackingCleanupTests: XCTestCase {
         let store = TermioStore(workspaces: [workspace], projects: [project],
                                 settings: AppSettings(defaults: defaults ?? .standard))
 
-        store.noteInput(for: session.id)
+        store.noteUserInput(session.id, at: Date())
         store.closeSession(session.id)
 
-        XCTAssertTrue(store.inputClock.isEmpty, "closing left the stamp behind")
+        XCTAssertNil(store.lastUserInputAt[session.id], "closing left the stamp behind")
     }
 }

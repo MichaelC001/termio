@@ -1096,7 +1096,7 @@ extension TermioStore {
     /// which its input reaches the keystroke-echo guard.
     func noteCompanionInput(_ wireID: String) {
         guard let session = findCompanionSession(wireID) else { return }
-        noteInput(for: session.id)
+        noteUserInput(session.id, at: Date())
     }
 
     /// A phone's own attachment to a session on its daemon. If the session was

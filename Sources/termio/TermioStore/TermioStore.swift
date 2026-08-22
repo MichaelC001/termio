@@ -903,13 +903,6 @@ final class TermioStore: ObservableObject {
     /// synchronous grace so plain shells exit cleanly, then SIGKILL whatever
     /// remains — the quit path can't rely on `terminate()`'s dispatched
     /// escalation timer, because the process dies before it fires.
-    /// Records that something was typed into a session, from whichever device
-    /// carried it. Read by the status tap to tell an agent's own output apart
-    /// from the echo of a keystroke.
-    nonisolated func noteInput(for id: Session.ID) {
-        inputClock.note(id)
-    }
-
     func terminateAllSessions() {
         // Surviving the quit is the whole point, so the channel detaches and
         // the daemon keeps the process. Kill is reserved for the explicit
@@ -987,12 +980,6 @@ final class TermioStore: ObservableObject {
     /// (both in `setStatus`); probed by `sweepStalledSessions` in
     /// `TermioStore+AgentStatus`.
     var stallProbes: [Session.ID: StallProbe] = [:]
-    /// When something was last typed into each session, from any device.
-    ///
-    /// Its own type rather than a dictionary here because the status tap reads
-    /// it on the daemon's reader thread while writes come from the main actor —
-    /// see `SessionInputClock`.
-    let inputClock = SessionInputClock()
     /// The last activity a screen-scrape-configured agent's viewport was classified
     /// into (see `AgentStatusRules` / `applyScreenDetectedActivity`), so status is only
     /// re-driven on a transition — not re-emitted every tick the screen sits idle.

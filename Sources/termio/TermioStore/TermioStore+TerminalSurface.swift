@@ -280,9 +280,11 @@ extension TermioStore {
                 // winsize, from an attached phone — the size follows the device
                 // being used. `send` does the claiming.
                 termiodLink.send(data)
-                // Recorded against the session rather than this attachment, so
-                // the keystroke-echo guard sees a phone's typing too.
-                Task { @MainActor in self?.noteInput(for: session.id) }
+                // Straight to the guard's own state, on the actor that owns it.
+                // This closure is `@Sendable`, so it does not inherit main-actor
+                // isolation and the hop is real.
+                let now = Date()
+                Task { @MainActor in self?.noteUserInput(session.id, at: now) }
             },
             resize: { [weak self] viewport in
                 let columns = Int(viewport.columns)
@@ -356,14 +358,11 @@ extension TermioStore {
     ///   - backend: the object delivering the bytes (the `PTYProcess` or the
     ///     `TermiodSessionLink`), held weakly and used to drop events a dead
     ///     backend queued for a session that has since relaunched.
-    ///   - lastInputAt: when something was last written toward the session's stdin,
-    ///     from whichever backend owns the write path.
     ///   - onPoke: backend-specific work for the throttled tick.
     func makeStatusTap(
         for session: Session,
         surface inMemory: InMemoryTerminalSession,
         backend: AnyObject,
-        lastInputAt: @escaping () -> Date?,
         onPoke: @escaping () -> Void = {}
     ) -> (Data) -> Void {
         let statusRules = session.agent.statusRules
@@ -411,11 +410,6 @@ extension TermioStore {
             pendingBytes = 0
             onPoke()
             // The backend timestamps every stdin write (Mac keystrokes, phone
-            // input over the companion bridge, synthetic `sessions send` text), so
-            // sampling it here — instead of tapping only the Mac surface's write
-            // callback — keeps promotion quiet after input from any device. Input
-            // echo repaints the screen just like agent output does.
-            let inputAt = lastInputAt()
             let text = inMemory?.readViewportText()
             let screenChanged: Bool
             if let text {
@@ -439,7 +433,6 @@ extension TermioStore {
                 detected = nil
             }
             DispatchQueue.main.async {
-                if let inputAt { self?.noteUserInput(session.id, at: inputAt) }
                 self?.noteOutputActivity(session.id, screenChanged: screenChanged, bytes: bytes)
                 if let detected {
                     self?.applyScreenDetectedActivity(detected, for: session.id)
