@@ -177,6 +177,15 @@ pub enum SessionMsg {
         grid_diff: bool,
         reply: oneshot::Sender<AddClientReply>,
     },
+    /// A client asks to be repainted: it lost bytes somewhere downstream and
+    /// cannot reconstruct the screen from what it has.
+    ResendSnapshot { id: ClientId },
+    /// A client asks for the write token because its user is typing. Refused
+    /// for an observer, which by §A never holds it.
+    ClaimWriter {
+        id: ClientId,
+        reply: oneshot::Sender<bool>,
+    },
     RemoveClient {
         id: ClientId,
     },
@@ -1833,6 +1842,36 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             }
             session.emit_roster();
         }
+        SessionMsg::ResendSnapshot { id } => {
+            if !session.clients.contains_key(&id) {
+                return None;
+            }
+            let request_id = session.allocate_snapshot_request();
+            // No scrollback: this repaints the viewport a client already has
+            // room for, and history it never lost.
+            session.request_snapshot(id, request_id, false);
+        }
+        SessionMsg::ClaimWriter { id, reply } => {
+            // An observer is refused rather than promoted: it attached without
+            // a tty and cannot resize, so handing it the token would strand the
+            // session at whatever size the last real client left.
+            let eligible = session
+                .clients
+                .get(&id)
+                .map(|entry| entry.interactive)
+                .unwrap_or(false);
+            let _ = reply.send(eligible);
+            if !eligible {
+                return None;
+            }
+            if session.writer.as_ref() == Some(&id) {
+                return None;
+            }
+            session.writer = Some(id);
+            // The client that just took the token is told its own size claim is
+            // now the one that counts, the same shape `AddClient` uses.
+            session.emit_writer_changed(session.writer.clone());
+        }
         SessionMsg::Input { id, data } => {
             if session.writer.as_ref() == Some(&id) {
                 let _ = session.input_tx.send(data);
@@ -2138,6 +2177,41 @@ mod tests {
         attach_client(session, id, true)
     }
 
+    /// A client with a tty behind it — the kind that can hold the write token.
+    fn attach_interactive_client(
+        session: &mut Session,
+        id: &str,
+    ) -> mpsc::UnboundedReceiver<ClientEvent> {
+        let (client_tx, client_rx) = mpsc::unbounded_channel();
+        let (reply, _reply_rx) = oneshot::channel();
+        handle_msg(
+            session,
+            SessionMsg::AddClient {
+                id: id.to_string(),
+                interactive: true,
+                out: client_tx,
+                backlog: Arc::new(ClientBacklog::new()),
+                snapshot: false,
+                scrollback: false,
+                grid_diff: false,
+                reply,
+            },
+        );
+        client_rx
+    }
+
+    fn claim_writer(session: &mut Session, id: &str) -> bool {
+        let (reply, mut reply_rx) = oneshot::channel();
+        handle_msg(
+            session,
+            SessionMsg::ClaimWriter {
+                id: id.to_string(),
+                reply,
+            },
+        );
+        reply_rx.try_recv().unwrap_or(false)
+    }
+
     fn attach_client(
         session: &mut Session,
         id: &str,
@@ -2160,6 +2234,86 @@ mod tests {
             },
         );
         (client_rx, backlog)
+    }
+
+    /// Two devices on one session — a Mac and a phone showing the same agent.
+    ///
+    /// Attaching is what took the token before this verb existed, so the phone
+    /// permanently muted the Mac the moment it looked at a session, and the Mac
+    /// could only answer by tearing its attachment down and rebuilding it. The
+    /// token has to be able to travel without that.
+    #[tokio::test]
+    async fn the_write_token_follows_the_device_being_used() {
+        let Sidecar {
+            commands,
+            results: _results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+
+        let _mac = attach_interactive_client(&mut session, "mac");
+        assert_eq!(session.writer.as_deref(), Some("mac"), "first in, writer");
+
+        // Attaching still takes the token: that is what makes a fresh client
+        // usable without a round trip.
+        let _phone = attach_interactive_client(&mut session, "phone");
+        assert_eq!(session.writer.as_deref(), Some("phone"));
+
+        assert!(claim_writer(&mut session, "mac"), "the Mac's user typed");
+        assert_eq!(session.writer.as_deref(), Some("mac"));
+
+        assert!(claim_writer(&mut session, "phone"), "the phone's user typed");
+        assert_eq!(session.writer.as_deref(), Some("phone"));
+
+        let _ = session.sidecar_tx.take();
+        let _ = thread.join();
+    }
+
+    /// §A: observers never claim the write token. One that could would strand
+    /// the session at the last real client's size — it has no tty to resize.
+    #[tokio::test]
+    async fn an_observer_is_refused_the_write_token() {
+        let Sidecar {
+            commands,
+            results: _results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+
+        let _mac = attach_interactive_client(&mut session, "mac");
+        let (_watcher, _backlog) = attach_client(&mut session, "watcher", false);
+
+        assert!(!claim_writer(&mut session, "watcher"));
+        assert_eq!(
+            session.writer.as_deref(),
+            Some("mac"),
+            "a refused claim must not disturb the writer it failed to displace"
+        );
+
+        let _ = session.sidecar_tx.take();
+        let _ = thread.join();
+    }
+
+    /// A claim from a client that never attached — a stale id, a racing
+    /// reconnect — is refused rather than installing a writer nobody can reach.
+    #[tokio::test]
+    async fn a_stranger_cannot_claim_the_write_token() {
+        let Sidecar {
+            commands,
+            results: _results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+
+        let _mac = attach_interactive_client(&mut session, "mac");
+        assert!(!claim_writer(&mut session, "ghost"));
+        assert_eq!(session.writer.as_deref(), Some("mac"));
+
+        let _ = session.sidecar_tx.take();
+        let _ = thread.join();
     }
 
     /// What a client got, in the order it got it. `ClientEvent` carries wire

@@ -140,7 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if AppChannel.isDev { DebugWindowSnapshot.installTrigger() }
         // Sweep up session processes a previous instance stranded (crash,
         // force-quit, dev rebuild's kill -9) before this run adds its own.
-        PTYProcess.reapStrayOrphans()
+        StraySessionReaper.reapStrayOrphans()
         // Ask the device the last run ended on what is running on it, before any
         // pane mounts — the sidebar draws that answer, and a session that did not
         // survive is a tombstone rather than a silently missing row.
@@ -360,8 +360,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             rosterProvider: { [weak store] in
                 store?.companionRoster() ?? CompanionRoster(projects: [])
             },
-            ptyForSession: { [weak store] id in
-                store?.companionPTY(for: id)
+            attachSession: { [weak store] id in
+                store?.companionAttachment(for: id)
+            },
+            noteInput: { [weak store] wireID in
+                store?.noteCompanionInput(wireID)
             },
             startSession: { [weak store] projectID, agent in
                 store?.companionStartSession(projectID: projectID, agent: agent)

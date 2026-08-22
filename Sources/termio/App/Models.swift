@@ -477,10 +477,9 @@ struct Session: Identifiable, Hashable, Codable {
     /// the shell/agent lives on the remote box (see `TermioStore.addRemoteTerminal`).
     /// Unlike `sshHost` — which launches a plain `ssh <host>` in a *local* PTY —
     /// this is the durable termiod path, so detach-not-kill and snapshot repaint
-    /// carry across the network. The value is a `~/.ssh/config` alias. Only
-    /// consulted on the opt-in termiod backend (`TERMIO_TERMIOD=1`); a nil value
-    /// keeps the session local. Persisted so a relaunch reattaches to the same
-    /// remote daemon session by name.
+    /// carry across the network. The value is a `~/.ssh/config` alias; nil keeps
+    /// the session on this Mac's own daemon. Persisted so a relaunch reattaches
+    /// to the same remote daemon session by name.
     var termiodRemoteHost: String?
 
     /// The **device** this session was last found to be running on — the `host_id`

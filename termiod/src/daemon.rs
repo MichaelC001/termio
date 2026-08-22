@@ -1409,6 +1409,24 @@ async fn process_control(
             send_response(out, response_cache, seq, response);
         }
         Control::Detach { .. } => return Ok(ControlFlow::Close),
+        Control::RequestSnapshot { seq } => {
+            let _ = out.send(Outbound::Control(error(
+                seq,
+                ErrorCode::ProtoError,
+                "request_snapshot needs an active attachment on this channel",
+                false,
+            )));
+        }
+        Control::ClaimWriter { seq } => {
+            // The token belongs to an attachment, and this channel has none —
+            // the claim is only meaningful inside the attached loop.
+            let _ = out.send(Outbound::Control(error(
+                seq,
+                ErrorCode::ProtoError,
+                "claim_writer needs an active attachment on this channel",
+                false,
+            )));
+        }
         Control::Hello { .. } => {
             let _ = out.send(Outbound::Control(error(
                 None,
@@ -1886,6 +1904,47 @@ async fn run_attach(
                 break;
             }
             Ok(Some(Frame::Control(Control::Detach { .. }))) => break,
+            Ok(Some(Frame::Control(Control::ClaimWriter { seq }))) => {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                handle.send(SessionMsg::ClaimWriter {
+                    id: client_id.clone(),
+                    reply: reply_tx,
+                });
+                // The grant itself reaches every attachment as `writer_changed`;
+                // this reply only tells the asker whether it was eligible, so a
+                // client that is refused can say "read-only" rather than
+                // silently dropping the keystrokes that follow.
+                let granted = reply_rx.await.unwrap_or(false);
+                let response = if granted {
+                    Control::Ok { re: seq }
+                } else {
+                    error(
+                        seq,
+                        ErrorCode::NotWriter,
+                        "an observer cannot hold the write token",
+                        false,
+                    )
+                };
+                let _ = out.send(Outbound::Control(response));
+            }
+            Ok(Some(Frame::Control(Control::RequestSnapshot { seq }))) => {
+                if supports_snapshot {
+                    handle.send(SessionMsg::ResendSnapshot {
+                        id: client_id.clone(),
+                    });
+                    let _ = out.send(Outbound::Control(Control::Ok { re: seq }));
+                } else {
+                    // The snapshot plane was never negotiated on this
+                    // attachment, so there is nothing to answer with — say so
+                    // rather than leaving the client waiting for a repaint.
+                    let _ = out.send(Outbound::Control(error(
+                        seq,
+                        ErrorCode::ProtoError,
+                        "this attachment did not negotiate snapshots",
+                        false,
+                    )));
+                }
+            }
             Ok(Some(Frame::Control(Control::Unknown))) => {}
             Ok(Some(Frame::Event(event))) => drop(event),
             Ok(Some(Frame::Control(_))) => {

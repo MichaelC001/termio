@@ -511,6 +511,36 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// Client asks for a fresh snapshot of the screen it is attached to.
+    ///
+    /// The byte stream is raw PTY output, so a client that lost any of it holds
+    /// a screen that is simply wrong — and only the host can say what the
+    /// screen should be. Attaching is the other way to get one; this is the
+    /// way that does not cost an attachment.
+    ///
+    /// The gap is not always the daemon's to see: a Mac relaying to a phone
+    /// drops frames on *its* outbound socket, downstream of everything the
+    /// daemon's own backlog protects.
+    RequestSnapshot {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    /// Client asks for the write token, without re-attaching to get it.
+    ///
+    /// Attaching interactively already takes the token, which is right for the
+    /// first client and wrong for every one after it: two devices on one
+    /// session — a Mac and a phone showing the same agent — would otherwise
+    /// have to tear down and rebuild an attachment every time the user's hands
+    /// moved, and whichever attached last would silently mute the other.
+    ///
+    /// So the token follows the device being *used*: a client claims it when
+    /// its user actually types. Observers are refused (§A: observers never
+    /// claim the write token), which is what keeps "many readers" from
+    /// degenerating into a race between writers.
+    ClaimWriter {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
     Subscribe {
         events: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -876,6 +906,8 @@ impl Control {
             | Control::Send { seq, .. }
             | Control::Attach { seq, .. }
             | Control::Detach { seq }
+            | Control::ClaimWriter { seq }
+            | Control::RequestSnapshot { seq }
             | Control::Subscribe { seq, .. }
             | Control::SubscribeResource { seq, .. }
             | Control::UnsubscribeResource { seq, .. }

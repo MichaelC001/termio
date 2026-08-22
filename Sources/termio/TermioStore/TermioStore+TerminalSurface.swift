@@ -173,17 +173,6 @@ extension TermioStore {
             return existing
         }
 
-        // With the daemon off there is nothing to attach to, and falling through
-        // would spawn a *local* login shell in this Mac's `$HOME` under the remote
-        // host's name. `addRemoteTerminal` refuses at creation; this is the same
-        // refusal on re-select and on restore. Keyed on `termiodRemoteHost`, not
-        // `sshHost` — a plain SSH terminal is a local PTY running `ssh <host>`.
-        if let remoteHost = session.termiodRemoteHost, !Termiod.isEnabled {
-            let placeholder = termiodDisabledPlaceholder(host: remoteHost)
-            surfaces[session.id] = placeholder
-            return placeholder
-        }
-
         // An isolated worktree (if one was created for this session) wins over the
         // project's own directory, so the agent edits the branch in place.
         // A loose terminal instead respawns at the cwd it last reported over OSC 7
@@ -276,157 +265,36 @@ extension TermioStore {
         // (Codex, Aider/Rich) are unaffected.
         env["FORCE_HYPERLINK"] = "1"
 
-        // Opt-in termiod backend (`TERMIO_TERMIOD=1`): the session runs inside
-        // the local daemon and this app instance merely attaches, so quitting
-        // detaches instead of killing. Flag off, the in-process PTY below is
-        // created exactly as before.
-        let termiodLink: TermiodSessionLink? = Termiod.isEnabled
-            ? makeTermiodLink(for: session, argv: argv, cwd: spawnPath, env: env)
-            : nil
-        // The PTY is created first so the surface's `@Sendable` write/resize
-        // callbacks can capture it directly (it is thread-safe: fd writes and
-        // ioctl are atomic, sinks are lock-guarded).
-        // Spawn at the last real host grid rather than a fixed 80×24, so the
+        // The session runs inside the daemon and this app instance attaches to
+        // it, so quitting detaches instead of killing.
+        //
+        // Attached at the last real host grid rather than a fixed 80x24, so the
         // shell's first prompt is drawn at (usually) the window's actual width
         // and the first layout pass doesn't reflow it — the reflow that mangles
         // zsh's `PROMPT_SP` line into a stray `%` (see `lastHostGridColumns`).
-        let pty: PTYProcess? = termiodLink != nil
-            ? nil
-            : PTYProcess(argv: argv, cwd: spawnPath, env: env,
-                         cols: lastHostGridColumns, rows: lastHostGridRows)
+        let termiodLink = makeTermiodLink(
+            for: session, argv: argv, cwd: spawnPath, env: env)
         let inMemory = InMemoryTerminalSession(
-            write: { data in
-                if let termiodLink {
-                    termiodLink.send(data)
-                    return
-                }
-                // Typing on the Mac reclaims the winsize from an attached
-                // phone — the size follows the device being used.
-                pty?.claimHostOwnership()
-                pty?.write(data)
+            write: { [weak self] data in
+                // Typing on the Mac reclaims the write token, and with it the
+                // winsize, from an attached phone — the size follows the device
+                // being used. `send` does the claiming.
+                termiodLink.send(data)
+                // Straight to the guard's own state, on the actor that owns it.
+                // This closure is `@Sendable`, so it does not inherit main-actor
+                // isolation and the hop is real.
+                let now = Date()
+                Task { @MainActor in self?.noteUserInput(session.id, at: now) }
             },
             resize: { [weak self] viewport in
                 let columns = Int(viewport.columns)
                 let rows = Int(viewport.rows)
-                if let termiodLink {
-                    termiodLink.resize(rows: rows, cols: columns)
-                } else {
-                    pty?.resizeFromHost(cols: columns, rows: rows)
-                }
+                termiodLink.resize(rows: rows, cols: columns)
                 // Remember the host grid for the next session's initial size.
                 DispatchQueue.main.async { self?.rememberHostGrid(columns: columns, rows: rows) }
             }
         )
-        if let termiodLink {
-            attachTermiodLink(termiodLink, to: inMemory, for: session)
-        }
-        if let pty {
-            pty.addSink { [weak inMemory] data in inMemory?.receive(data) }
-            let isAgentSession = session.agent != .terminal && !session.isSSH
-            pty.addSink(makeStatusTap(
-                for: session, surface: inMemory, backend: pty,
-                lastInputAt: { [weak pty] in pty?.lastInputAt },
-                // Pin the agent's launch binary (once, post-exec) as the baseline
-                // for the self-update relaunch check in `onExit` below. Agent
-                // sessions only — a terminal's exit policy never consults it.
-                // The daemon path has no equivalent: it owns the process, so the
-                // app cannot pin its executable.
-                onPoke: { [weak pty] in if isAgentSession { pty?.recordChildExecutable() } }))
-            // A plain terminal's kernel-sampled introspection, after output settles:
-            // which agent (if any) is running in its foreground, and — for a loose
-            // terminal — the shell's cwd. Both are read from the child's own process
-            // because plain shells on macOS never emit OSC 7 (the stock /etc/zshrc
-            // reports cwd only under `TERM_PROGRAM=Apple_Terminal`) and the
-            // host-managed PTY injects no shell integration, so the OSC 7/foreground
-            // signals in `monitor(_:for:)` stay silent — the same integration-less
-            // fallback iTerm2 uses. A *trailing* debounce, not a leading-edge throttle:
-            // a `cd`'s new prompt (and an agent's first banner) land a few ms after the
-            // command echo, so a leading throttle samples the echo then skips the
-            // settled state and the now-idle shell emits nothing more to re-poll.
-            // Debouncing polls once ~350ms after output stops, catching both the launch
-            // and the exit of a hand-started agent. Detection runs for every terminal;
-            // cwd-following is for loose terminals only — a project session's place is
-            // its project, not where it wandered.
-            if session.agent == .terminal {
-                let sessionID = session.id
-                let followCwd = isLooseTerminal
-                var pendingPoll: DispatchWorkItem?
-                pty.addSink { [weak self, weak pty] _ in
-                    pendingPoll?.cancel()
-                    // Resolve off the main thread: both reads are syscalls that walk
-                    // kernel structures (`KERN_PROCARGS2`, `PROC_PIDVNODEPATHINFO`) —
-                    // usually microseconds, but they take locks and can stall under
-                    // memory pressure or on a slow mount, and a main-thread stall is a
-                    // beachball. Only the @MainActor-published tree writes hop to main.
-                    //
-                    // `@Sendable` is what says "off the main thread" to the compiler,
-                    // and it is load-bearing: a closure written in this main-actor
-                    // scope otherwise inherits main-actor isolation, and the block
-                    // `DispatchWorkItem` wraps it in re-checks that isolation when the
-                    // utility queue runs it — a trap on the first poll rather than a
-                    // hop. Marking it also makes the captures checked for real.
-                    let work = DispatchWorkItem { @Sendable [weak self, weak pty] in
-                        guard let pty else { return }
-                        // A hand-started agent (a `claude` typed at the prompt) becomes
-                        // the foreground process; when it exits the shell returns and
-                        // this resolves to `nil`, reverting the row to a plain terminal.
-                        let detected = pty.foregroundProcessArguments()
-                            .flatMap { AgentCatalog.shared.agent(forForegroundArguments: $0) }
-                        let cwd = followCwd ? pty.currentWorkingDirectory() : nil
-                        DispatchQueue.main.async {
-                            MainActor.assumeIsolated {
-                                self?.noteForegroundAgent(detected, for: sessionID)
-                                if let cwd { self?.noteWorkingDirectory(cwd, for: sessionID) }
-                            }
-                        }
-                    }
-                    pendingPoll = work
-                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.35, execute: work)
-                }
-            }
-            pty.onExit = { [weak self, weak inMemory, weak pty] code, runtimeMs in
-                self?.ptyProcesses[session.id] = nil
-                self?.lastScreenActivity[session.id] = nil
-                // `sessionExit` holds the policy; what is local here is only how
-                // the replacement answer is *got* — this process spawned the
-                // child, so it pinned the launch binary itself and can compare it
-                // (the daemon path reads the same answer off the exit event).
-                // The respawn re-pins the new binary as its own baseline, so a
-                // relaunch cannot loop.
-                let outcome = Self.sessionExit(
-                    code: code,
-                    isAgentSession: isAgentSession,
-                    isPlainTerminal: session.agent == .terminal,
-                    executableReplaced: pty?.childExecutableWasReplaced() == true)
-                switch outcome {
-                case .relaunch:
-                    self?.relaunchSession(session.id)
-                    return
-                case .revertToShell:
-                    self?.revertSessionToShell(session.id)
-                    return
-                case .close, .park:
-                    break
-                }
-                // Report the *real* runtime, not 0. On macOS ghostty ignores the
-                // exit code and shows its "failed to launch the requested command"
-                // overlay whenever runtime ≤ `abnormal-command-exit-runtime` (250 ms) —
-                // so a hardcoded 0 mislabeled every ordinary exit (a codex self-update
-                // that quits, an agent you `exit` out of) as a launch failure. A true
-                // runtime lets a long-lived session fall through to the neutral
-                // "process exited" message, reserving the scary banner for genuine
-                // sub-threshold launch failures (binary not found, bad argv).
-                inMemory?.finish(exitCode: UInt32(bitPattern: code), runtimeMilliseconds: runtimeMs)
-                // ghostty can't read the exit code reliably on macOS, but our
-                // `waitpid` here can — which is what lets a clean plain-terminal
-                // exit close its tab like a native terminal while a failure stays
-                // on screen.
-                if outcome == .close {
-                    self?.closeSession(session.id)
-                }
-            }
-            ptyProcesses[session.id] = pty
-        }
+        attachTermiodLink(termiodLink, to: inMemory, for: session)
 
         state.configuration = TerminalSurfaceOptions(backend: .inMemory(inMemory))
         surfaces[session.id] = state
@@ -490,14 +358,11 @@ extension TermioStore {
     ///   - backend: the object delivering the bytes (the `PTYProcess` or the
     ///     `TermiodSessionLink`), held weakly and used to drop events a dead
     ///     backend queued for a session that has since relaunched.
-    ///   - lastInputAt: when something was last written toward the session's stdin,
-    ///     from whichever backend owns the write path.
     ///   - onPoke: backend-specific work for the throttled tick.
     func makeStatusTap(
         for session: Session,
         surface inMemory: InMemoryTerminalSession,
         backend: AnyObject,
-        lastInputAt: @escaping () -> Date?,
         onPoke: @escaping () -> Void = {}
     ) -> (Data) -> Void {
         let statusRules = session.agent.statusRules
@@ -545,11 +410,6 @@ extension TermioStore {
             pendingBytes = 0
             onPoke()
             // The backend timestamps every stdin write (Mac keystrokes, phone
-            // input over the companion bridge, synthetic `sessions send` text), so
-            // sampling it here — instead of tapping only the Mac surface's write
-            // callback — keeps promotion quiet after input from any device. Input
-            // echo repaints the screen just like agent output does.
-            let inputAt = lastInputAt()
             let text = inMemory?.readViewportText()
             let screenChanged: Bool
             if let text {
@@ -573,7 +433,6 @@ extension TermioStore {
                 detected = nil
             }
             DispatchQueue.main.async {
-                if let inputAt { self?.noteUserInput(session.id, at: inputAt) }
                 self?.noteOutputActivity(session.id, screenChanged: screenChanged, bytes: bytes)
                 if let detected {
                     self?.applyScreenDetectedActivity(detected, for: session.id)
@@ -582,33 +441,12 @@ extension TermioStore {
         }
     }
 
-    /// Whether this object is still the thing running the session — the in-process
-    /// PTY or the daemon link the store currently holds for it. A tap that outlived
-    /// its backend answers `false` and its queued events are dropped.
+    /// Whether this object is still the daemon link the store holds for the
+    /// session. A tap that outlived its backend answers `false` and its queued
+    /// events are dropped.
     func isLiveBackend(_ backend: AnyObject, for id: Session.ID) -> Bool {
-        if let pty = ptyProcesses[id] { return pty === backend }
         if let link = termiodLinks[id] { return link === backend }
         return false
-    }
-
-    /// Stands in for the shell that would otherwise spawn locally. It carries no PTY
-    /// and no daemon link, so nothing runs behind it and nothing can be typed in, and
-    /// nothing is recorded as launched. Rendering is pumped by hand because this
-    /// embedding paints only on a wakeup and no process will ever produce one here.
-    private func termiodDisabledPlaceholder(host: String) -> TerminalViewState {
-        let controller = TerminalController { [self] builder in
-            applyAppearance(to: &builder)
-        }
-        let state = TerminalViewState(controller: controller)
-        state.controller.setTheme(makeTheme())
-        let inMemory = InMemoryTerminalSession(write: { _ in }, resize: { _ in })
-        state.configuration = TerminalSurfaceOptions(backend: .inMemory(inMemory))
-        // The sentence `presentTermiodDisabledAlert` shows, so both doors agree.
-        inMemory.receive(
-            "\r\n  This session runs on \(host) through termiod.\r\n"
-                + "  Set TERMIO_TERMIOD=1 and relaunch termio to open it.\r\n")
-        warmUpRendering(state)
-        return state
     }
 
     /// The app's environment minus identity claims that belong to whatever launched
