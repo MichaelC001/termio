@@ -856,7 +856,8 @@ extension TermioStore {
         // mirrors `Termiod.remoteBinary()` (`$HOME/.local/bin/termiod`).
         let probe = runProcess(
             "/usr/bin/ssh",
-            ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host,
+            ["-o", "BatchMode=yes",
+             "-o", "ConnectTimeout=\(Termiod.connectTimeoutSeconds)", host,
              "test -x $HOME/.local/bin/termiod && echo yes || echo no"]
         )
         guard let probe else {
