@@ -17,6 +17,17 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.40.3",
+    date: "2026-08-22",
+    title: "A dev build no longer shares the session host",
+    changes: {
+      fixed: [
+        "A second build of termio on the same Mac now keeps its own sessions. Both used one session host, so each was handed the other's entire list, showed every row of it under Also Running, and could close sessions the other was running. Sessions under a shipped termio are unaffected and keep running across the update.",
+        "Rows under Also Running show the folder a session is running in, instead of the whole command it was started with. The command was the shell wrapper termio launches through, so the part worth reading was cut off the end; it's on the row's tooltip now.",
+      ],
+    },
+  },
+  {
     version: "0.40.2",
     date: "2026-08-22",
     title: "Also Running lists only what nothing is watching",
