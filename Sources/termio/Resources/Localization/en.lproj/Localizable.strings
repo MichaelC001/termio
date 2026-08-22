@@ -346,6 +346,8 @@
 	<string>Delete…</string>
 	<key>Detached at %@</key>
 	<string>Detached at %@</string>
+	<key>Devices</key>
+	<string>Devices</string>
 	<key>Discard %lld Files…</key>
 	<string>Discard %lld Files…</string>
 	<key>Discard Changes</key>
@@ -534,8 +536,6 @@
 	<string>Local</string>
 	<key>Login shell</key>
 	<string>Login shell</string>
-	<key>Machines</key>
-	<string>Machines</string>
 	<key>Match Case</key>
 	<string>Match Case</string>
 	<key>Match Whole Word</key>
@@ -1010,6 +1010,8 @@
 	<string>The base branch has commits this branch doesn’t have, as of the last fetch.</string>
 	<key>The coding agents offered when you start a session</key>
 	<string>The coding agents offered when you start a session</string>
+	<key>The devices in your ~/.ssh/config, and the keys that reach them</key>
+	<string>The devices in your ~/.ssh/config, and the keys that reach them</string>
 	<key>The folder was removed, but git couldn’t prune its stale worktree metadata.</key>
 	<string>The folder was removed, but git couldn’t prune its stale worktree metadata.</string>
 	<key>The ignore rule couldn’t be added.</key>
@@ -1018,8 +1020,6 @@
 	<string>The listing failed.</string>
 	<key>The machine answered with no listing for that folder.</key>
 	<string>The machine answered with no listing for that folder.</string>
-	<key>The machines in your ~/.ssh/config, and the keys that reach them</key>
-	<string>The machines in your ~/.ssh/config, and the keys that reach them</string>
 	<key>The project and session list. Kept separate from the terminal font, and need not be monospaced.</key>
 	<string>The project and session list. Kept separate from the terminal font, and need not be monospaced.</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>

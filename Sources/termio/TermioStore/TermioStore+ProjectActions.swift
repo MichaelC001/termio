@@ -784,14 +784,41 @@ extension TermioStore {
         closeSession(id)
     }
 
+    /// Whether a command is running in front of the session's shell, given what
+    /// each possible producer says. The one that **owns the process** answers:
+    /// an in-process PTY is asked `tcgetpgrp` at the instant of the question, so
+    /// its answer wins outright — including its `false`, which is a fresher no
+    /// than any cached yes. Only a session this app does not host falls through
+    /// to the device's last roster push. `nil` is nobody answering.
+    ///
+    /// Split out from `closeConfirmationReason` because the precedence is the
+    /// part worth pinning: the two producers disagree only while a link and a PTY
+    /// both exist for one row, and picking the wrong one there is silent.
+    static func foregroundJob(reportedLocally: Bool?, reportedByDevice: Bool?) -> Bool? {
+        reportedLocally ?? reportedByDevice
+    }
+
     /// Why closing this session needs confirming, or `nil` when it doesn't. The only
     /// case left is a plain shell with a command in front of it: that command exists
     /// nowhere else, so closing loses it outright. Agent sessions never ask — their
     /// PTY is alive for the whole life of the session, so confirming on a live PTY
     /// taxed *every* close to protect a conversation the agent can resume anyway.
-    private func closeConfirmationReason(for session: Session) -> String? {
+    ///
+    /// A daemon-hosted session answers from the last roster push — a sample up to
+    /// one host poll old — and **asking again would not help**: `list` rebuilds its
+    /// answer from that same cached sample, so a synchronous round trip buys no
+    /// freshness while costing 216–292 ms on the main thread over SSH. The
+    /// staleness is bounded either way: a job that ended within the poll costs one
+    /// dialog the user dismisses, and one that started within it closes unasked —
+    /// which is exactly the shipped no-confirm rule. So only an explicit `true`
+    /// confirms; an absent field must never read as "unknown, so confirm"
+    /// (`remote-to-device.decisions.md` §2).
+    func closeConfirmationReason(for session: Session) -> String? {
         guard session.agent.isShell else { return nil }
-        guard let pty = ptyProcesses[session.id], pty.hasForegroundJob else { return nil }
+        let running = Self.foregroundJob(
+            reportedLocally: ptyProcesses[session.id]?.hasForegroundJob,
+            reportedByDevice: termiodLinks[session.id]?.latestInformation?.foregroundJob)
+        guard running == true else { return nil }
         return "A command is still running in this session. Closing it stops the command."
     }
 

@@ -1203,7 +1203,7 @@ private struct SessionRow: View {
             Group {
                 if session.isSSH, status != .working {
                     // An SSH terminal is a machine, so it carries the same server
-                    // glyph as its host row in Settings ▸ Machines (a globe reads as
+                    // glyph as its host row in Settings ▸ Devices (a globe reads as
                     // "web", not "that box") — except while a detected remote
                     // agent is working, when it falls through to the spinner below.
                     // Size 15 like the folder and agent marks sharing this

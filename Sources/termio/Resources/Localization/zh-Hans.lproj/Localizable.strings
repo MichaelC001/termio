@@ -346,6 +346,8 @@
 	<string>删除…</string>
 	<key>Detached at %@</key>
 	<string>已分离于 %@</string>
+	<key>Devices</key>
+	<string>设备</string>
 	<key>Discard %lld Files…</key>
 	<string>放弃 %lld 个文件的更改…</string>
 	<key>Discard Changes</key>
@@ -534,8 +536,6 @@
 	<string>本地</string>
 	<key>Login shell</key>
 	<string>登录 shell</string>
-	<key>Machines</key>
-	<string>机器</string>
 	<key>Match Case</key>
 	<string>区分大小写</string>
 	<key>Match Whole Word</key>
@@ -1010,6 +1010,8 @@
 	<string>截至上次 fetch，基础分支上有当前分支还没有的提交。</string>
 	<key>The coding agents offered when you start a session</key>
 	<string>新建会话时可以选用的编程 Agent</string>
+	<key>The devices in your ~/.ssh/config, and the keys that reach them</key>
+	<string>~/.ssh/config 里的设备，以及连上它们的密钥</string>
 	<key>The folder was removed, but git couldn’t prune its stale worktree metadata.</key>
 	<string>文件夹已移除，但 git 无法清理其残留的 worktree 元数据。</string>
 	<key>The ignore rule couldn’t be added.</key>
@@ -1018,8 +1020,6 @@
 	<string>读取目录失败。</string>
 	<key>The machine answered with no listing for that folder.</key>
 	<string>这台机器没有返回该文件夹的内容。</string>
-	<key>The machines in your ~/.ssh/config, and the keys that reach them</key>
-	<string>~/.ssh/config 里的机器，以及连上它们的密钥</string>
 	<key>The project and session list. Kept separate from the terminal font, and need not be monospaced.</key>
 	<string>项目与会话列表。与终端字体分开设置，无需等宽字体。</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>

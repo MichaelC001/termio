@@ -124,23 +124,25 @@ extension TermioStore {
             \(writer ? "the writer" : "an observer", privacy: .public)
             """)
         }
-        link.onExit = { [weak self, weak inMemory] code, runtimeMilliseconds in
-            self?.termiodLinks[session.id] = nil
-            self?.lastScreenActivity[session.id] = nil
-            // Mirrors the PTYProcess exit policy, minus the self-update
-            // binary-replaced check (the daemon owns the process, so the app
-            // cannot pin its executable): a clean agent quit hands the pane
-            // back to a shell; everything else parks on the exit prompt, and
-            // a clean plain-terminal exit closes the pane.
-            if isAgentSession, code == 0 {
-                self?.revertSessionToShell(session.id)
-                return
-            }
-            inMemory?.finish(exitCode: UInt32(bitPattern: code),
-                             runtimeMilliseconds: runtimeMilliseconds)
-            if session.agent == .terminal, code == 0 {
-                self?.closeSession(session.id)
-            }
+        // What the device knows about the process, gated exactly where the
+        // in-process PTY's own kernel poll is gated: that poll is installed only
+        // on a row declared `.terminal` (a declared agent's foreground is its own
+        // subprocess, and reading a `rg` it spawned as "no agent here" would
+        // demote the row mid-turn), and follows the cwd only for a loose terminal,
+        // whose place is wherever it wandered rather than a project root.
+        let isPlainTerminal = session.agent == .terminal
+        let followsWorkingDirectory = isPlainTerminal && isLooseTerminal(session.id)
+        link.onInformation = { [weak self] information in
+            self?.applyTermiodInformation(
+                information, for: session.id,
+                identifiesAgent: isPlainTerminal,
+                followsWorkingDirectory: followsWorkingDirectory)
+        }
+        link.onExit = { [weak self, weak inMemory] code, runtimeMilliseconds, information in
+            self?.applyTermiodExit(
+                for: session.id, code: code, runtimeMilliseconds: runtimeMilliseconds,
+                information: information, isAgentSession: isAgentSession,
+                isPlainTerminal: isPlainTerminal, surface: inMemory)
         }
         termiodLinks[session.id] = link
         link.start()
@@ -197,6 +199,88 @@ extension TermioStore {
             // reported on. Writing it would overwrite what the local signals
             // worked out, so it is left alone.
             break
+        }
+    }
+
+    // MARK: - Host-reported process facts
+
+    /// Lands a roster push on the session's row.
+    ///
+    /// The host reports what the process *is*; what that means is decided here, by
+    /// the same consumers the in-process PTY's kernel poll feeds, so a session
+    /// behaves the same whether the syscalls ran in this process or on a VPS.
+    ///
+    /// Every absence stands down — "the device did not say" is not evidence, so a
+    /// daemon too old to sample, or a process the kernel refused, must leave the
+    /// row exactly as the screen-derived signals left it.
+    /// - Parameters:
+    ///   - identifiesAgent: whether this row's identity follows its foreground.
+    ///     False for a declared agent, whose foreground is its own subprocess.
+    ///   - followsWorkingDirectory: whether this row owns its cwd. A separate flag
+    ///     rather than a consequence of the first, because the local producer gates
+    ///     the two separately.
+    func applyTermiodInformation(_ information: Termiod.SessionInformation,
+                                 for id: Session.ID,
+                                 identifiesAgent: Bool,
+                                 followsWorkingDirectory: Bool) {
+        guard session(id) != nil else { return }
+        // `nil` argv is *unanswered*, so it never reaches `noteForegroundAgent` —
+        // which reads its own `nil` as "a shell is in front now" and demotes.
+        // An answered argv that matches nothing is that demotion, correctly.
+        if identifiesAgent, let argv = information.foregroundArgv {
+            noteForegroundAgent(AgentCatalog.shared.agent(forForegroundArguments: argv), for: id)
+        }
+        // The daemon's equivalent of the local kernel poll, landing in the same
+        // place it does. (The shell's own OSC 7 reaches `noteWorkingDirectory`
+        // ungated, from the surface — that channel is the program volunteering
+        // where it is, which is a different thing from termio going and looking.)
+        if followsWorkingDirectory, let cwd = information.childCwd, !cwd.isEmpty {
+            noteWorkingDirectory(cwd, for: id)
+        }
+    }
+
+    /// A daemon-hosted session's process is gone. Named rather than inlined in the
+    /// link callback so the wiring from "the device said the binary moved" to "the
+    /// pane relaunches" is reachable without a daemon.
+    ///
+    /// - Parameters:
+    ///   - information: the device's final word, from the exit event. Never a
+    ///     roster row — `childExecutableReplaced` is computed on the exit path,
+    ///     and a poll that ran seconds earlier answers a different question.
+    ///   - isAgentSession: snapshotted when the link was wired, so a row promoted
+    ///     mid-life still exits as what it was launched as.
+    func applyTermiodExit(for id: Session.ID,
+                          code: Int32,
+                          runtimeMilliseconds: UInt64,
+                          information: Termiod.SessionInformation?,
+                          isAgentSession: Bool,
+                          isPlainTerminal: Bool,
+                          surface: InMemoryTerminalSession?) {
+        termiodLinks[id] = nil
+        lastScreenActivity[id] = nil
+        // The same policy the in-process PTY runs, on the same three inputs. The
+        // self-update check is no longer missing here: the app cannot pin a
+        // process it does not own, but the daemon that owns it can, and the exit
+        // event carries its answer.
+        let outcome = TermioStore.sessionExit(
+            code: code,
+            isAgentSession: isAgentSession,
+            isPlainTerminal: isPlainTerminal,
+            executableReplaced: information?.childExecutableReplaced == true)
+        switch outcome {
+        case .relaunch:
+            relaunchSession(id)
+            return
+        case .revertToShell:
+            revertSessionToShell(id)
+            return
+        case .close, .park:
+            break
+        }
+        surface?.finish(exitCode: UInt32(bitPattern: code),
+                        runtimeMilliseconds: runtimeMilliseconds)
+        if outcome == .close {
+            closeSession(id)
         }
     }
 
