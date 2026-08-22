@@ -88,6 +88,13 @@ pub struct Tombstone {
     /// that died `idle`, and that difference is exactly what the user lost.
     #[serde(default)]
     pub status: String,
+    /// The session's binary was replaced on disk while it ran — "the agent
+    /// updated itself and quit" rather than "the agent crashed". Computed on
+    /// the exit path, where the inode read is still meaningful, and carried
+    /// here because a client that was not attached when the session died has
+    /// no other route to it: `Event::SessionExited` reaches only the attached.
+    #[serde(default)]
+    pub child_executable_replaced: bool,
 }
 
 fn now_unix() -> u64 {
@@ -111,6 +118,7 @@ impl Tombstone {
             agent_id: info.agent_id.clone(),
             title: info.title.clone(),
             status: info.status.clone(),
+            child_executable_replaced: info.child_executable_replaced,
         }
     }
 }
@@ -160,6 +168,12 @@ impl RosterEntry {
             agent_id: self.agent_id,
             title: self.title,
             status: self.status,
+            // Both roads here — a daemon that died under the session, and one
+            // that stopped before the ordinary reaper reached it — skip the exit
+            // path, so the pinned inode was never re-read. `false` means "nobody
+            // looked", the same shape of ignorance as `exit_status: None` above,
+            // and neither grave can testify to a self-update either way.
+            child_executable_replaced: false,
         }
     }
 }
@@ -384,6 +398,52 @@ mod tests {
         assert_eq!(graves[0].exit_status, Some(0));
         assert_eq!(graves[0].status, "working");
         assert_eq!(graves[0].title.as_deref(), Some("fixing the parser"));
+    }
+
+    /// "The agent updated itself and quit" survives to a client that was not
+    /// watching. `Event::SessionExited` reaches only attached clients, so the
+    /// durable record is the sole route for anyone who reconnects afterwards —
+    /// and the field it needs is computed exactly once, on the exit path.
+    #[test]
+    fn a_replaced_executable_survives_in_the_durable_record() {
+        let dir = temp_dir("replaced");
+        let graveyard = Graveyard::open(&dir).unwrap();
+        let mut dying = info("a");
+        dying.alive = false;
+        dying.child_executable_replaced = true;
+        graveyard.note_live(&info("a"));
+        graveyard.bury(&dying, EndReason::Exited, Some(0));
+        drop(graveyard);
+
+        // Reopened, so this reads the field back off disk rather than out of
+        // the in-memory copy that bury() just wrote.
+        let graves = Graveyard::open(&dir).unwrap().all();
+        assert_eq!(graves.len(), 1);
+        assert!(
+            graves[0].child_executable_replaced,
+            "a self-update is why the session ended, and the record must say so"
+        );
+    }
+
+    /// Graveyards written before the field existed must still load. It is the
+    /// one file in the daemon that outlives its own binary by design, so a
+    /// missing key is an ordinary older-daemon read, not corruption.
+    #[test]
+    fn a_grave_written_without_the_field_still_loads() {
+        let dir = temp_dir("legacy");
+        std::fs::write(
+            dir.join("tombstones.json"),
+            r#"[{"id":"a","name":"a","cwd":"/tmp","command":"sh","reason":"exited",
+                 "exit_status":0,"created_unix":1000,"ended_unix":2000,"status":"idle"}]"#,
+        )
+        .unwrap();
+
+        let graves = Graveyard::open(&dir).unwrap().all();
+        assert_eq!(graves.len(), 1);
+        assert!(
+            !graves[0].child_executable_replaced,
+            "absent means the older daemon never measured it, which is not a replacement"
+        );
     }
 
     /// The case the whole file exists for: a session still on the roster when a
