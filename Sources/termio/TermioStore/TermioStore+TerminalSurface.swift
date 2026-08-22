@@ -667,7 +667,7 @@ extension TermioStore {
     /// No `ControlMaster` options are injected. The session used to double as a
     /// master so the inspector's SFTP tree could ride it; the tree now reads the
     /// device's own daemon, which brings its own multiplexing
-    /// (`Termiod.multiplexingArguments`) and, unlike this, only after checking
+    /// (`Termiod.sshArguments`) and, unlike this, only after checking
     /// that the user's `~/.ssh/config` left the decision to us.
     static func sshCommand(host: String) -> String {
         "ssh -- \(shellQuoted(host))"

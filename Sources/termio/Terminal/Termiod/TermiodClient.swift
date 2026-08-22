@@ -218,78 +218,131 @@ enum Termiod {
             ?? "$HOME/.local/bin/termiod"
     }
 
-    /// Options that make the SSH connection a resource this app holds rather
+    /// Every `-o` this app puts on its own `ssh`, resolved once per host. Two
+    /// concerns share one resolution because the `ssh -G` probe behind it forks
+    /// and this sits on the path that opens a session.
+    ///
+    /// **Multiplexing** makes the connection a resource this app holds rather
     /// than one it re-establishes per session. Without a master, every session
     /// and every reconnect pays a full TCP handshake plus SSH key exchange —
     /// measured at 230–300 ms against a VPS, against 26–33 ms once a master
     /// exists.
     ///
-    /// Nothing is injected when the user's own config already configures
-    /// multiplexing for this host. A command-line `-o` outranks
-    /// `~/.ssh/config`, so injecting unconditionally would override a
-    /// deliberate `ControlMaster no`, and the config is authoritative for how
-    /// to reach a host. Answers are cached per host because `ssh -G` forks and
-    /// this sits on the path that opens a session.
-    static func multiplexingArguments(host: String) -> [String] {
-        if let cached = multiplexingLock.withLock({ multiplexingCache[host] }) {
+    /// **`BatchMode` and `ConnectTimeout`** are what every other ssh call site
+    /// in the app already sets and this one did not. Nobody can answer a prompt
+    /// on this channel: the child's stdin is the framed protocol pipe, and ssh
+    /// asks for a key passphrase on `/dev/tty` — which is whatever terminal
+    /// launched the app and is not watching it, or nothing at all under Finder.
+    /// A passphrase-protected key with no agent loaded therefore either blocked
+    /// on that read with no timeout (still hung past 20 s on OpenSSH 10.2p1) or
+    /// failed for a reason the attach never saw. `BatchMode=yes` makes it exit
+    /// 255 with "Permission denied" in about a second, and `ConnectTimeout`
+    /// bounds the separate case of a host that swallows the connect and never
+    /// answers.
+    ///
+    /// A command-line `-o` outranks `~/.ssh/config`, so nothing is injected
+    /// where the user already answered the question: not multiplexing when they
+    /// configured either half of it, and not a timeout when they chose one for a
+    /// slow link. `BatchMode` is the exception and goes on unconditionally —
+    /// there is no reading of it under which a pipe nobody can type into should
+    /// wait for someone to.
+    static func sshArguments(host: String) -> [String] {
+        if let cached = sshArgumentsLock.withLock({ sshArgumentsCache[host] }) {
             return cached
         }
         // The probe runs outside the lock (never hold a lock across a fork); a
         // rare duplicate lookup just recomputes the same answer.
-        let resolved = resolveMultiplexingArguments(host: host)
-        multiplexingLock.withLock { multiplexingCache[host] = resolved }
+        let options = effectiveSSHConfig(host: host).map(EffectiveSSHOptions.init(dump:))
+        let resolved = sshArguments(options: options, controlPath: controlPath(for: host))
+        sshArgumentsLock.withLock { sshArgumentsCache[host] = resolved }
         return resolved
     }
 
-    private static let multiplexingLock = NSLock()
+    private static let sshArgumentsLock = NSLock()
     /// `nonisolated(unsafe)` because every access goes through
-    /// `multiplexingLock` above — the lock, not the actor, is what makes this
+    /// `sshArgumentsLock` above — the lock, not the actor, is what makes this
     /// safe, and the compiler cannot see that.
-    nonisolated(unsafe) private static var multiplexingCache: [String: [String]] = [:]
+    nonisolated(unsafe) private static var sshArgumentsCache: [String: [String]] = [:]
 
-    private static func resolveMultiplexingArguments(host: String) -> [String] {
-        guard userLeavesMultiplexingToUs(host: host),
-              let directory = controlSocketDirectory() else { return [] }
-        let path = directory.appendingPathComponent(controlSocketName(for: host)).path
-        // A Unix socket path is capped at 104 bytes, and an over-long
-        // ControlPath makes ssh fail outright rather than degrade. An unusually
-        // long temporary directory must cost multiplexing, never the session.
-        guard path.utf8.count < 100 else { return [] }
-        return ["-o", "ControlMaster=auto",
-                "-o", "ControlPath=\(path)",
-                "-o", "ControlPersist=10m"]
-    }
+    /// Matches the remote-readiness probe in `TermioStore+Termiod.swift`, so
+    /// both roads to a host give up on the same clock.
+    static let connectTimeoutSeconds = 10
 
-    /// `ssh -G <host>` prints the fully-resolved effective config. Multiplexing
-    /// is ours to set only when the user has configured neither half of it;
-    /// `false` and `none` are what OpenSSH prints for those defaults. A failed
-    /// probe answers "no", so a broken probe can never smuggle options past a
-    /// config it could not read.
-    private static func userLeavesMultiplexingToUs(host: String) -> Bool {
-        guard let config = effectiveSSHConfig(host: host) else { return false }
-        var master: String?
-        var path: String?
-        for line in config.split(separator: "\n") {
-            let fields = line.split(separator: " ", maxSplits: 1)
-            guard fields.count == 2 else { continue }
-            let value = fields[1].trimmingCharacters(in: .whitespaces).lowercased()
-            switch fields[0].lowercased() {
-            case "controlmaster": master = value
-            case "controlpath": path = value
-            default: continue
-            }
+    /// The argument list itself, taking what the probe found rather than
+    /// running it, so the decisions above are checkable without an ssh on the
+    /// machine. `options` is `nil` when `ssh -G` could not be read: only
+    /// `BatchMode` survives that, because the rest would be overriding a config
+    /// this process failed to read.
+    static func sshArguments(options: EffectiveSSHOptions?, controlPath: String?) -> [String] {
+        var arguments = ["-o", "BatchMode=yes"]
+        guard let options else { return arguments }
+        if !options.setsConnectTimeout {
+            arguments += ["-o", "ConnectTimeout=\(connectTimeoutSeconds)"]
         }
-        // A missing `controlmaster` line means an OpenSSH too old to be read
-        // this way, so leave its config alone.
-        guard let master, ["false", "no", "none"].contains(master) else { return false }
-        // OpenSSH omits `controlpath` entirely when it is unset (confirmed on
-        // 10.2p1) where older versions print `none`; both mean the user has
-        // chosen no path. Requiring the line to be present made this whole
-        // function answer "no" on a current macOS, which is a silent no-op —
-        // the exact failure this is meant to end.
-        return path == nil || path == "none"
+        if options.leavesMultiplexingToUs, let controlPath {
+            arguments += ["-o", "ControlMaster=auto",
+                          "-o", "ControlPath=\(controlPath)",
+                          "-o", "ControlPersist=10m"]
+        }
+        return arguments
     }
 
+    /// `nil` when multiplexing has to be skipped for this host. A Unix socket
+    /// path is capped at 104 bytes, and an over-long `ControlPath` makes ssh
+    /// fail outright rather than degrade. An unusually long temporary directory
+    /// must cost multiplexing, never the session.
+    private static func controlPath(for host: String) -> String? {
+        guard let directory = controlSocketDirectory() else { return nil }
+        let path = directory.appendingPathComponent(controlSocketName(for: host)).path
+        guard path.utf8.count < 100 else { return nil }
+        return path
+    }
+
+    /// The three lines of `ssh -G <host>`'s fully-resolved config that decide
+    /// whether an option is ours to set. Parsing is separate from the fork that
+    /// produces the dump so it can be tested against real OpenSSH output.
+    struct EffectiveSSHOptions {
+        /// The user configured neither half of multiplexing. `false` and `none`
+        /// are what OpenSSH prints for those defaults.
+        let leavesMultiplexingToUs: Bool
+        /// The user chose a connect timeout, whatever it is; OpenSSH prints
+        /// `connecttimeout none` when nobody has.
+        let setsConnectTimeout: Bool
+
+        init(dump: String) {
+            var master: String?
+            var path: String?
+            var timeout: String?
+            for line in dump.split(separator: "\n") {
+                let fields = line.split(separator: " ", maxSplits: 1)
+                guard fields.count == 2 else { continue }
+                let value = fields[1].trimmingCharacters(in: .whitespaces).lowercased()
+                switch fields[0].lowercased() {
+                case "controlmaster": master = value
+                case "controlpath": path = value
+                case "connecttimeout": timeout = value
+                default: continue
+                }
+            }
+            // A missing `controlmaster` line means an OpenSSH too old to be read
+            // this way, so leave its config alone. `connecttimeout` reads the
+            // same way: absent means unreadable, and unreadable keeps the
+            // decision with the config.
+            let masterIsOurs = master.map { ["false", "no", "none"].contains($0) } ?? false
+            // OpenSSH omits `controlpath` entirely when it is unset (confirmed on
+            // 10.2p1) where older versions print `none`; both mean the user has
+            // chosen no path. Requiring the line to be present made this whole
+            // check answer "no" on a current macOS, which is a silent no-op —
+            // the exact failure this is meant to end.
+            let pathIsOurs = path == nil || path == "none"
+            leavesMultiplexingToUs = masterIsOurs && pathIsOurs
+            setsConnectTimeout = timeout != "none"
+        }
+    }
+
+    /// `ssh -G <host>` prints the config every option resolves to for that host.
+    /// `nil` when it could not be run or exited non-zero, which is what stops a
+    /// broken probe from smuggling options past a config it could not read.
     private static func effectiveSSHConfig(host: String) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -403,7 +456,7 @@ enum Termiod {
 
             let command = "\(remoteBinary()) stdio"
             let arguments = ["ssh", "-o", "ServerAliveInterval=15"]
-                + multiplexingArguments(host: host)
+                + sshArguments(host: host)
                 + [host, command]
             let argv: [UnsafeMutablePointer<CChar>?] = arguments.map { strdup($0) } + [nil]
             defer { argv.forEach { free($0) } }
