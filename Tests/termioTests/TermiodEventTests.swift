@@ -363,6 +363,20 @@ final class TermiodEventTests: XCTestCase {
         XCTAssertEqual(info.displayLabel, "fix #164")
     }
 
+    /// The idle row, which is most of them: a session sitting at its prompt
+    /// reports its own login shell as the foreground, and a login shell's
+    /// `argv[0]` carries the `-` marker (`termiod/src/pty.rs` sets it). Passing
+    /// that through would name the commonest roster row `-zsh`.
+    func testALoginShellIsNamedWithoutItsLoginMarker() throws {
+        let info = try information("""
+        {"id":"s_1","name":"9F1C-…","pid":4242,"alive":true,"cwd":"/code",
+         "command":"/bin/zsh -il","status":"idle",
+         "created_unix":1786880000,"attached_clients":0,
+         "foreground_pid":4242,"foreground_argv":["-zsh"]}
+        """)
+        XCTAssertEqual(info.displayLabel, "zsh")
+    }
+
     /// A daemon too old to bury anything answers without the field. The live
     /// list is still the answer to the question asked, so the reply must decode.
     func testSessionsReplyWithoutTombstonesDecodes() throws {

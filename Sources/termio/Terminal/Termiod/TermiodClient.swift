@@ -886,13 +886,19 @@ enum Termiod {
         }
 
         /// The foreground program the device reported, named the way a person
-        /// would name it. Interpreters are the case that matters: `python
-        /// train.py` read as "python" tells you less than the script does, but
-        /// only the host knows the argv, so the choice of *which* word to show
-        /// belongs here rather than on the device.
+        /// would name it: the last path component of `argv[0]`, minus the login
+        /// marker.
+        ///
+        /// That marker is not an edge case — it is the *idle* row. A login shell
+        /// is spawned with `argv[0] = "-zsh"` (`termiod/src/pty.rs`, and every
+        /// terminal before it), and a session sitting at its prompt reports its
+        /// own shell as the foreground, so passing the dash through would label
+        /// the most common roster row `-zsh`.
         private static func programName(inArgv argv: [String]?) -> String? {
             guard let argv, let executable = argv.first, !executable.isEmpty else { return nil }
-            return URL(fileURLWithPath: executable).lastPathComponent
+            let name = URL(fileURLWithPath: executable).lastPathComponent
+            let program = name.hasPrefix("-") ? String(name.dropFirst()) : name
+            return program.isEmpty ? nil : program
         }
 
         /// The program behind the login-shell wrapper Termio spawns through
