@@ -1688,6 +1688,16 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> bool {
         }
         SessionMsg::Resize { id, rows, cols } => {
             if session.writer.as_ref() == Some(&id) {
+                // A resize is a barrier: the session quiesces and every
+                // attachment is handed a fresh keyframe to repaint from. Doing
+                // that for a size the PTY already has buys nothing and costs
+                // each viewer a full repaint — and one arrives on every attach,
+                // because `run_attach` asks unconditionally for the size the
+                // client named. The child would see no SIGWINCH from this
+                // ioctl either, so nothing downstream is waiting on it.
+                if rows == session.rows && cols == session.cols {
+                    return false;
+                }
                 if let Err(error) = session.pty.resize(rows, cols) {
                     session.reject_resize(&id, &error);
                     return false;
