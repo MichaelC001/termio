@@ -1327,6 +1327,9 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// The last grid actually written as an `R` frame, so a redundant resize
     /// isn't re-sent while the daemon is still applying the first one.
     private var sentGrid: TerminalGrid?
+    /// Bumped by every `resize`; only the newest scheduled send may write its
+    /// frame. See `scheduleResizeLocked`.
+    private var resizeGeneration: UInt64 = 0
     /// The PTY's real size, from `attached` and then every `E resized`. This is
     /// the authority — §C.5: a client that parses at its own window size instead
     /// of this one wraps the same bytes differently and diverges from the host.
@@ -1335,6 +1338,15 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// daemon crash.
     private var closed = false
     private var exitDelivered = false
+
+    /// What the reader thread needs to judge an arriving `S` against: the grid
+    /// the surface is currently laid out at, and whether this client is the one
+    /// moving the PTY toward it. Its own lock rather than the work queue because
+    /// a snapshot is rendered inline on the reader thread — hopping would break
+    /// the S-before-D ordering that path exists to preserve.
+    private let renderLock = NSLock()
+    private var renderTargetLocked: TerminalGrid
+    private var renderWriterLocked = false
 
     /// The last instant something was written toward the session's stdin. Its own
     /// lock, not the work queue, so the status tap can read it from the reader
@@ -1384,7 +1396,9 @@ final class TermiodSessionLink: @unchecked Sendable {
         self.sessionName = sessionName
         self.specification = specification
         self.route = route
-        desiredGrid = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
+        let grid = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
+        desiredGrid = grid
+        renderTargetLocked = grid
     }
 
     /// Kicks off connect → hello → attach in the background. The caller wires
@@ -1415,6 +1429,7 @@ final class TermiodSessionLink: @unchecked Sendable {
                 }
                 attached = true
                 isWriter = attachedPayload.writer
+                publishRenderWriter(attachedPayload.writer)
                 // `attached` reports the session's size *before* this attach is
                 // applied; the daemon then resizes to what a writer asked for and
                 // announces it as `E resized`. Seeding from the reply means an
@@ -1479,6 +1494,11 @@ final class TermiodSessionLink: @unchecked Sendable {
 
     func resize(rows: Int, cols: Int) {
         let size = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
+        // Recorded before the hop: this is what the surface is laid out at right
+        // now, and the reader thread judges every arriving keyframe against it.
+        renderLock.lock()
+        renderTargetLocked = size
+        renderLock.unlock()
         workQueue.async { [self] in
             guard !closed else { return }
             desiredGrid = size
@@ -1486,8 +1506,32 @@ final class TermiodSessionLink: @unchecked Sendable {
             // Observers must not resize the shared PTY out from under the
             // writer; the daemon would reject the frame anyway.
             guard isWriter else { return }
+            scheduleResizeLocked()
+        }
+    }
+
+    /// How long the grid must hold still before the size goes to the daemon.
+    /// The same 50ms `PTYProcess.resizeFromHost` coalesces on, and for a
+    /// sharper reason here: on the in-process path an intermediate size costs a
+    /// SIGWINCH, while on this one every distinct size is a host-side
+    /// **barrier** — the session quiesces, resizes, and pushes a fresh keyframe
+    /// to every attachment. A live drag or a settling split emits a burst of
+    /// them, and each keyframe is a full repaint racing the child's own redraw.
+    private static let resizeCoalescingInterval = DispatchTimeInterval.milliseconds(50)
+
+    /// Sends `desiredGrid` once the surface stops moving. Generation-stamped
+    /// rather than debounced with a cancellable work item because the size is
+    /// re-read at fire time: the last scheduled send is the only one that
+    /// writes, and it writes whatever the grid settled at.
+    ///
+    /// Must run on `workQueue`.
+    private func scheduleResizeLocked() {
+        resizeGeneration &+= 1
+        let generation = resizeGeneration
+        workQueue.asyncAfter(deadline: .now() + Self.resizeCoalescingInterval) { [self] in
+            guard !closed, attached, isWriter, generation == resizeGeneration else { return }
             do {
-                try sendResizeLocked(size)
+                try sendResizeLocked(desiredGrid)
             } catch {
                 Log.termiod.error("""
                 resize of \(self.sessionName, privacy: .public) failed: \
@@ -1602,15 +1646,19 @@ final class TermiodSessionLink: @unchecked Sendable {
                     // pulls the first live `D` — preserves S-before-D through
                     // the same `onOutput` seam, with no hold-back buffer needed.
                     // A mid-session `S` (the resize barrier's fresh keyframe)
-                    // takes the same path and repaints idempotently.
-                    if let repaint = TermiodSnapshot.decode(frame.payload)
-                        .map(TermiodSnapshot.render) {
-                        self.onOutput?(repaint)
-                    } else {
+                    // takes the same path and repaints idempotently — but only
+                    // one taken at the grid this surface is actually laid out
+                    // at (see `snapshotIsStale`).
+                    guard let keyframe = TermiodSnapshot.decode(frame.payload) else {
                         Log.termiod.error("""
                         undecodable snapshot frame on \(self.sessionName, privacy: .public)
                         """)
+                        break
                     }
+                    guard !self.snapshotIsStale(rows: keyframe.rows, cols: keyframe.cols) else {
+                        break
+                    }
+                    self.onOutput?(TermiodSnapshot.render(keyframe))
                 case .control:
                     if self.handleControl(frame.payload) { return }
                 case .event:
@@ -1729,6 +1777,7 @@ final class TermiodSessionLink: @unchecked Sendable {
             let mine = writer != nil && writer == clientID
             guard mine != isWriter else { return }
             isWriter = mine
+            publishRenderWriter(mine)
             Log.termiod.info("""
             write token on \(self.sessionName, privacy: .public) \
             \(mine ? "claimed" : "lost", privacy: .public)
@@ -1745,6 +1794,51 @@ final class TermiodSessionLink: @unchecked Sendable {
             }
             DispatchQueue.main.async { [self] in onWriter?(mine) }
         }
+    }
+
+    private func publishRenderWriter(_ mine: Bool) {
+        renderLock.lock()
+        renderWriterLocked = mine
+        renderLock.unlock()
+    }
+
+    /// Whether an arriving keyframe describes a screen this surface can't paint.
+    ///
+    /// The payload is a formatted repaint, wrapped rows and all, laid out for
+    /// the grid the host VT held when it was taken. Painted into a surface of a
+    /// different width every wrapped row shifts, which is a mangled screen — and
+    /// the TUIs that redraw incrementally (an agent's composer box) never repaint
+    /// it back, so the damage sits there until the next keystroke.
+    ///
+    /// Only a **writer** may drop one, and that is what makes dropping safe
+    /// rather than a blank pane: this client is then the one moving the PTY, so
+    /// a mismatch means its own resize is still in flight and the barrier at the
+    /// far end of it will push a keyframe at the right size. An observer has no
+    /// such promise — nothing it does will produce another `S` — so it paints
+    /// what it was given and lives with §C.5 divergence.
+    static func snapshotIsStale(payload: TerminalGrid,
+                                target: TerminalGrid,
+                                isWriter: Bool) -> Bool {
+        isWriter && payload != target
+    }
+
+    /// Reader-thread half of `snapshotIsStale`, reading the surface's grid and
+    /// the write token under `renderLock`.
+    private func snapshotIsStale(rows: Int, cols: Int) -> Bool {
+        let payload = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
+        renderLock.lock()
+        let target = renderTargetLocked
+        let writer = renderWriterLocked
+        renderLock.unlock()
+        guard Self.snapshotIsStale(payload: payload, target: target, isWriter: writer) else {
+            return false
+        }
+        Log.termiod.info("""
+        skipping \(payload.rows, privacy: .public)x\(payload.cols, privacy: .public) keyframe on \
+        \(self.sessionName, privacy: .public); this surface is \
+        \(target.rows, privacy: .public)x\(target.cols, privacy: .public)
+        """)
+        return true
     }
 
     /// Records the PTY's real size. Two things read it: `sendResizeLocked`, so a
