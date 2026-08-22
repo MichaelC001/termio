@@ -831,6 +831,16 @@
         }
       }
     },
+    "Close All": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部关闭"
+          }
+        }
+      }
+    },
     "Close All Terminals": {
       "localizations": {
         "zh-Hans": {

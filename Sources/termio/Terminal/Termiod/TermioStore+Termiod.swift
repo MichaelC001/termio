@@ -493,7 +493,7 @@ extension TermioStore {
             return
         }
         let device = currentDevice
-        var session = Session(title: information.title ?? information.name, agent: .terminal)
+        var session = Session(title: information.displayLabel, agent: .terminal)
         session.termiodSessionName = information.name.isEmpty ? information.id : information.name
         session.termiodRemoteHost = device.alias
         session.deviceID = device.deviceID
@@ -512,6 +512,81 @@ extension TermioStore {
         }
         workspaces[index].terminals.append(session)
         selectedSessionID = session.id
+    }
+
+    /// Ends a session the **device** reports and this app has no row for.
+    ///
+    /// Adoption alone left the roster one-way: the only route to a stranger row
+    /// was to take it into the sidebar first, which is backwards for the case
+    /// that produces most of them — a Termio whose state file was reset or
+    /// replaced, leaving its PTYs alive under names nothing here will ever
+    /// claim. Closing one is a device operation, so nothing local is touched:
+    /// there is no record, no surface and no link to tear down.
+    ///
+    /// It asks first, every time, and not on `requestCloseSession`'s terms —
+    /// that one can look at the PTY to see whether the close loses anything,
+    /// and this one cannot, because the process belongs to something that isn't
+    /// this app. Unknown is not the same as harmless.
+    func requestCloseDeviceSession(_ information: Termiod.SessionInformation) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Close “\(information.displayLabel)”?"
+        alert.informativeText = information.attachedClients > 0
+            ? "Another client is attached to this session. Closing it stops the "
+                + "process running on \(deviceDescription)."
+            : "This session isn't open in Termio. Closing it stops the process "
+                + "running on \(deviceDescription)."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Close Session")
+        alert.buttons.last?.hasDestructiveAction = true
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        closeDeviceSessions([information])
+    }
+
+    /// The whole stranger list at once. One question for the lot: a state-file
+    /// reset leaves them by the dozen, and answering the same alert twenty times
+    /// is not a safeguard.
+    func requestCloseAllDeviceSessions() {
+        let rows = deviceOnlySessions()
+        guard !rows.isEmpty else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Close \(rows.count) session\(rows.count == 1 ? "" : "s")?"
+        alert.informativeText = "These sessions aren't open in Termio. Closing them "
+            + "stops every one of their processes on \(deviceDescription)."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Close Sessions")
+        alert.buttons.last?.hasDestructiveAction = true
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        closeDeviceSessions(rows)
+    }
+
+    private func closeDeviceSessions(_ rows: [Termiod.SessionInformation]) {
+        let route = currentDevice.route
+        // The roster is asked once, after the last kill has been answered:
+        // re-asking mid-sweep would only fetch the rows that haven't died yet.
+        let kills = DispatchGroup()
+        for information in rows {
+            kills.enter()
+            Termiod.killSession(target: information.name.isEmpty ? information.id : information.name,
+                                route: route) { kills.leave() }
+        }
+        kills.notify(queue: .main) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // The kills changed the answer, so a reply that settled moments
+                // ago is stale by construction — clearing the coalescing window
+                // is what keeps `refreshDeviceSessions` from standing down and
+                // leaving the closed rows on screen.
+                self.rosterFetches[route.description]?.settledAt = nil
+                self.refreshDeviceSessions()
+            }
+        }
+    }
+
+    /// How to name the machine in a sentence a person reads.
+    private var deviceDescription: String {
+        currentDevice.alias ?? "this Mac"
     }
 
     // MARK: - Remote terminals (per-session SSH host)

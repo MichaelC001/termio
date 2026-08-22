@@ -17,6 +17,22 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.40.2",
+    date: "2026-08-22",
+    title: "Also Running lists only what nothing is watching",
+    changes: {
+      new: [
+        "Sessions under Also Running can be closed from the sidebar. Hover a row for its close button, or close the whole list from the section header — ending one used to mean opening it first.",
+      ],
+      improved: [
+        "Rows under Also Running are named after the program they're running, instead of the identifier the session was created with.",
+      ],
+      fixed: [
+        "Sessions belonging to another copy of termio on the same Mac no longer appear under Also Running. Both share one session host, so the second one to open was handed the first one's whole list and showed every row of it as a session nothing accounted for.",
+      ],
+    },
+  },
+  {
     version: "0.40.1",
     date: "2026-08-22",
     title: "The spinner stays on for the whole turn",

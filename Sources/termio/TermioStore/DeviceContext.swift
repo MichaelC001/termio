@@ -192,9 +192,24 @@ extension TermioStore {
     /// produce a row for a session this app never created.
     func deviceOnlySessions() -> [Termiod.SessionInformation] {
         let mine = sessions(authoredFor: currentDevice)
+        let isLocal = currentDevice.isLocal
         return (deviceSessions.sessions?.live ?? []).filter { information in
-            information.alive
-                && !mine.contains { daemonSessionName(for: $0) == information.name }
+            guard information.alive else { return false }
+            guard !mine.contains(where: { daemonSessionName(for: $0) == information.name })
+            else { return false }
+            // On this Mac, a session someone is already attached to belongs to
+            // another Termio. The daemon socket is per user, not per app, so a
+            // second copy on the same login — a dev build beside the release
+            // one — is handed the first one's entire roster, and every row of
+            // it arrives here looking like a session nothing accounts for.
+            // They are neither lost nor takeable (single writer), so they are
+            // not this list's business.
+            //
+            // Only on this Mac. On another device the roster *is* the sidebar,
+            // and a session the phone has open is still one of that machine's
+            // sessions — dropping it there would hide the box's own work.
+            if isLocal, information.attachedClients > 0 { return false }
+            return true
         }
     }
 
