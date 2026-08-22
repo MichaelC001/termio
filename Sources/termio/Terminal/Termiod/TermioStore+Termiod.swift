@@ -276,6 +276,14 @@ extension TermioStore {
             + "\u{1B}[0m\r\n"
             + localized("Select it again to reattach.")
             + "\r\n").utf8))
+        // Dropped *after* the message is on it, and this is what makes the
+        // message true: `surface(for:)` returns the cached surface before it
+        // considers building one, and the cached surface's write closure holds
+        // the link that just died. Without this the pane comes back looking
+        // alive and types into nothing. `relaunchSession` clears both for the
+        // same reason.
+        surfaces[id] = nil
+        monitors[id] = nil
     }
 
     func applyTermiodExit(for id: Session.ID,

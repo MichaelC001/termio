@@ -139,6 +139,39 @@ final class TermiodFaultIntegrationTests: XCTestCase {
         XCTAssertFalse(lostConnection, "an ordinary exit was also reported as a disconnection")
     }
 
+    /// "Select it again to reattach" has to be true, and it is only true if the
+    /// cached surface goes with the dead link. `surface(for:)` returns the cache
+    /// before it considers building anything, and that surface's write closure
+    /// holds the link that just died — so leaving it behind gives the user a
+    /// pane that looks alive and types into nothing.
+    func testALostConnectionRetiresTheSurfaceSoReattachRebuildsIt() throws {
+        let session = Session(title: "agent", agent: .terminal)
+        let workspace = Workspace(name: "Sessions")
+        let project = Project(workspaceID: workspace.id, name: "termio", path: "/code/termio",
+                              branch: "main", sessions: [session])
+        let defaults = UserDefaults(suiteName: "fault-surface-\(UUID().uuidString)")
+        let store = TermioStore(workspaces: [workspace], projects: [project],
+                                settings: AppSettings(defaults: defaults ?? .standard))
+
+        let link = self.link(session.id.uuidString,
+                             argv: ["/bin/sh", "-c", "while :; do sleep 3600; done"])
+        link.start()
+        defer { link.killAndClose() }
+        store.termiodLinks[session.id] = link
+        // A stand-in for "a surface is cached for this session". The surface
+        // object itself is irrelevant to the claim — what matters is that the
+        // entry is gone afterwards, so `surface(for:)` has to build a new one.
+        store.surfaces[session.id] = store.surface(for: session)
+        XCTAssertNotNil(store.surfaces[session.id], "the fixture never cached a surface")
+
+        store.applyTermiodConnectionLost(for: session.id, surface: nil)
+
+        XCTAssertNil(store.termiodLinks[session.id], "the dead attachment was kept")
+        XCTAssertNil(
+            store.surfaces[session.id],
+            "the surface holding the dead link survived, so reattaching returns a pane that types into nothing")
+    }
+
     /// The session outlives the connection, which is the claim the split rests
     /// on: after the daemon comes back, the same name resolves to the same
     /// still-running process rather than spawning a replacement.
