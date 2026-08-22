@@ -277,6 +277,45 @@ else
         fi
     done
     echo "==> Bundled $daemon_name architectures: $daemon_archs"
+
+    # The daemons that ship *to* a Linux box. `termiod remote deploy` used to
+    # cross-compile one on demand, which needs cargo, the musl target, and this
+    # crate's source at the path baked into the binary — so remote sessions
+    # worked for contributors and for nobody who installed the DMG. Shipping
+    # both slices makes the first connection to a new VPS a copy: scp into
+    # ~/.local/bin, chmod, done. No root, no package manager, no toolchain.
+    #
+    # Statically linked musl, cross-linked by the bundled rust-lld (see
+    # termiod/.cargo/config.toml) — the same build .github/workflows/termiod.yml
+    # already proves on every termiod change, so this adds no new toolchain.
+    #
+    # Dev builds skip it unless asked: each target rebuilds the Zig VT engine
+    # from scratch, which is minutes and gigabytes per slice, and a contributor
+    # deploying from a checkout still has `cross_compile` to fall back on.
+    if [[ "$channel" == "dev" && "${TERMIO_REMOTE_SLICES:-}" != "1" ]]; then
+        echo "==> Skipping the Linux $daemon_name slices (dev build; TERMIO_REMOTE_SLICES=1 to build them)"
+    else
+        for linux_target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            echo "==> Building $daemon_name ($linux_target)"
+            (
+                cd "$repo_root/termiod"
+                export PATH="$zig_bin:$PATH"
+                [[ -n "$daemon_developer_dir" ]] && export DEVELOPER_DIR="$daemon_developer_dir"
+                rustup target add "$linux_target" >/dev/null 2>&1 || true
+                cargo build --release --target "$linux_target"
+            )
+            built="$repo_root/termiod/target/$linux_target/release/$daemon_name"
+            # A binary that links is not a binary that runs on the VPS. Asserted
+            # here as well as in CI, because this is the copy users receive.
+            if ! file "$built" | grep -q "ELF 64-bit"; then
+                echo "error: $built is not a Linux ELF binary — $(file "$built")" >&2
+                exit 1
+            fi
+            cp "$built" "$resources_dir/$daemon_name-$linux_target"
+            chmod +x "$resources_dir/$daemon_name-$linux_target"
+        done
+        echo "==> Bundled Linux $daemon_name slices: x86_64 + aarch64"
+    fi
 fi
 
 # Stamp version / build number when the release workflow supplies them. The
