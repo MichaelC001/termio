@@ -25,7 +25,7 @@ pub(crate) fn cap_description() -> String {
 }
 
 use crate::protocol::GridDiff;
-use super::ClientId;
+use crate::id::ClientId;
 
 /// Counts PTY bytes queued for the VT sidecar but not yet parsed.
 pub(crate) struct SidecarQueue {

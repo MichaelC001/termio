@@ -7,6 +7,7 @@ use crate::protocol::{
     HistoryChunk, SessionInfo, Snapshot, WireCell, WireColor, WorkstreamSpec, HISTORY_HEADER_SIZE,
     MAX_HISTORY_FRAME_SIZE, SNAPSHOT_CELL_SIZE,
 };
+use crate::id::ClientId;
 use crate::pty::Pty;
 use crate::tombstone::EndReason;
 use bytes::Bytes;
@@ -17,8 +18,6 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc, oneshot};
-
-pub type ClientId = String;
 
 const RING_CAP: usize = 128 * 1024;
 const READ_CHUNK: usize = 64 * 1024;
@@ -282,7 +281,7 @@ impl Session {
             agent_id: self.workstream.as_ref().map(|w| w.agent_id.clone()),
             title: self.title.clone(),
             attached_clients: self.clients.len(),
-            writer_client_id: self.writer.clone(),
+            writer_client_id: self.writer.as_ref().map(ClientId::to_string),
             foreground_pid: self.foreground.pid,
             foreground_argv: self.foreground.argv.clone(),
             foreground_job: self.foreground.job,
@@ -646,14 +645,15 @@ impl Session {
                     entry,
                     ClientEvent::Control(Control::ResizeClaim {
                         session: self.id.clone(),
-                        writer: self.writer.clone(),
+                        writer: self.writer.as_ref().map(ClientId::to_string),
                     }),
                 );
             }
         }
+        let writer = self.writer.as_ref().map(ClientId::to_string);
         self.emit_event(Event::WriterChanged {
             session: self.id.clone(),
-            writer: self.writer.clone(),
+            writer,
         });
     }
 
@@ -748,7 +748,7 @@ impl Session {
         self.remove_dead(dead);
     }
 
-    fn reject_not_writer(&mut self, id: &str) {
+    fn reject_not_writer(&mut self, id: &ClientId) {
         if let Some(entry) = self.clients.get_mut(id) {
             Self::queue_non_data(
                 entry,
@@ -762,7 +762,7 @@ impl Session {
         }
     }
 
-    fn reject_resize(&mut self, id: &str, error: &anyhow::Error) {
+    fn reject_resize(&mut self, id: &ClientId, error: &anyhow::Error) {
         let message = format!("resize failed: {error}");
         eprintln!(
             "termiod: resize failed for writer {id} in session {}: {error}",
@@ -783,7 +783,7 @@ impl Session {
 
     fn queue_history_chunk(
         session_id: &str,
-        client_id: &str,
+        client_id: &ClientId,
         entry: &mut ClientEntry,
     ) -> Result<bool, ()> {
         let Some(payload) = entry.staged_history.front() else {
@@ -809,7 +809,7 @@ impl Session {
         Ok(!entry.staged_history.is_empty())
     }
 
-    fn continue_history(&mut self, client_id: &str) -> bool {
+    fn continue_history(&mut self, client_id: &ClientId) -> bool {
         let result = self
             .clients
             .get_mut(client_id)
@@ -817,7 +817,7 @@ impl Session {
         match result {
             Some(Ok(more)) => more,
             Some(Err(())) => {
-                self.remove_dead(vec![client_id.to_string()]);
+                self.remove_dead(vec![client_id.clone()]);
                 false
             }
             None => false,
@@ -829,7 +829,7 @@ impl Session {
     /// after `ready`, with buffered live data allowed between staged chunks.
     fn finish_snapshot(
         &mut self,
-        client_id: &str,
+        client_id: &ClientId,
         request_id: u64,
         result: Result<SidecarCapture, String>,
     ) -> bool {
@@ -854,7 +854,7 @@ impl Session {
             ..
         } = std::mem::replace(&mut entry.delivery, ClientDelivery::Live)
         else {
-            self.clients.insert(client_id.to_string(), entry);
+            self.clients.insert(client_id.clone(), entry);
             return false;
         };
 
@@ -948,7 +948,7 @@ impl Session {
                 return false;
             }
         }
-        self.clients.insert(client_id.to_string(), entry);
+        self.clients.insert(client_id.clone(), entry);
         history_pending
     }
 
@@ -1037,7 +1037,7 @@ impl Session {
 
     fn fallback_snapshot(
         &mut self,
-        client_id: &str,
+        client_id: &ClientId,
         entry: ClientEntry,
         buffered: VecDeque<Metered>,
         deferred: VecDeque<ClientEvent>,
@@ -1067,12 +1067,12 @@ impl Session {
                 return;
             }
         }
-        self.clients.insert(client_id.to_string(), entry);
+        self.clients.insert(client_id.clone(), entry);
     }
 
-    fn remove_finished_client(&mut self, client_id: &str) {
+    fn remove_finished_client(&mut self, client_id: &ClientId) {
         let old_writer = self.writer.clone();
-        if old_writer.as_deref() == Some(client_id) {
+        if old_writer.as_ref() == Some(client_id) {
             self.recompute_writer();
         }
         self.sync_grid_diff_interest();
@@ -1665,7 +1665,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             if interactive {
                 session.writer = Some(id.clone());
             }
-            let is_writer = session.writer.as_deref() == Some(id.as_str());
+            let is_writer = session.writer.as_ref() == Some(&id);
             let _ = reply.send(AddClientReply {
                 writer: is_writer,
                 rows: session.rows,
@@ -1685,7 +1685,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             let old_writer = session.writer.clone();
             session.clients.remove(&id);
             session.sync_grid_diff_interest();
-            if old_writer.as_deref() == Some(id.as_str()) {
+            if old_writer.as_ref() == Some(&id) {
                 session.recompute_writer();
             }
             if session.writer != old_writer {
@@ -1800,6 +1800,7 @@ mod tests {
         SidecarCommand, SidecarQueue, SidecarResult, SCROLLBACK_STAGE_MAX_BYTES,
         SNAPSHOT_CELL_SIZE,
     };
+    use crate::id::ClientId;
     use crate::protocol::{Control, ErrorCode, Event, SessionInfo};
     use crate::pty::Pty;
     use crate::tombstone::EndReason;
@@ -1810,6 +1811,12 @@ mod tests {
 
     fn chunk(len: usize) -> Bytes {
         Bytes::from(vec![b'x'; len])
+    }
+
+    /// The write token as a plain str, so the assertions read as they did
+    /// when the roster was keyed by `String`.
+    fn writer(session: &Session) -> Option<&str> {
+        session.writer.as_ref().map(ClientId::as_str)
     }
 
 
@@ -1851,7 +1858,7 @@ mod tests {
             .unwrap();
         sidecar
             .send(SidecarCommand::Snapshot {
-                client_id: "client".to_string(),
+                client_id: ClientId::new("client"),
                 request_id: 1,
                 scrollback: false,
             })
@@ -1978,7 +1985,7 @@ mod tests {
         handle_msg(
             session,
             SessionMsg::AddClient {
-                id: id.to_string(),
+                id: ClientId::new(id),
                 interactive: true,
                 out: client_tx,
                 backlog: Arc::new(ClientBacklog::new()),
@@ -1996,7 +2003,7 @@ mod tests {
         handle_msg(
             session,
             SessionMsg::ClaimWriter {
-                id: id.to_string(),
+                id: ClientId::new(id),
                 reply,
             },
         );
@@ -2014,7 +2021,7 @@ mod tests {
         handle_msg(
             session,
             SessionMsg::AddClient {
-                id: id.to_string(),
+                id: ClientId::new(id),
                 interactive: false,
                 out: client_tx,
                 backlog: backlog.clone(),
@@ -2044,18 +2051,18 @@ mod tests {
         let (mut session, _events) = test_session(commands, queue);
 
         let _mac = attach_interactive_client(&mut session, "mac");
-        assert_eq!(session.writer.as_deref(), Some("mac"), "first in, writer");
+        assert_eq!(writer(&session), Some("mac"), "first in, writer");
 
         // Attaching still takes the token: that is what makes a fresh client
         // usable without a round trip.
         let _phone = attach_interactive_client(&mut session, "phone");
-        assert_eq!(session.writer.as_deref(), Some("phone"));
+        assert_eq!(writer(&session), Some("phone"));
 
         assert!(claim_writer(&mut session, "mac"), "the Mac's user typed");
-        assert_eq!(session.writer.as_deref(), Some("mac"));
+        assert_eq!(writer(&session), Some("mac"));
 
         assert!(claim_writer(&mut session, "phone"), "the phone's user typed");
-        assert_eq!(session.writer.as_deref(), Some("phone"));
+        assert_eq!(writer(&session), Some("phone"));
 
         let _ = session.sidecar_tx.take();
         let _ = thread.join();
@@ -2078,7 +2085,7 @@ mod tests {
 
         assert!(!claim_writer(&mut session, "watcher"));
         assert_eq!(
-            session.writer.as_deref(),
+            writer(&session),
             Some("mac"),
             "a refused claim must not disturb the writer it failed to displace"
         );
@@ -2101,7 +2108,7 @@ mod tests {
 
         let _mac = attach_interactive_client(&mut session, "mac");
         assert!(!claim_writer(&mut session, "ghost"));
-        assert_eq!(session.writer.as_deref(), Some("mac"));
+        assert_eq!(writer(&session), Some("mac"));
 
         let _ = session.sidecar_tx.take();
         let _ = thread.join();
@@ -2163,7 +2170,7 @@ mod tests {
         let (mut joining, _joining_backlog) = attach_client(&mut session, "joining", true);
         assert!(
             matches!(
-                session.clients["joining"].delivery,
+                session.clients[&ClientId::new("joining")].delivery,
                 ClientDelivery::SnapshotPending { .. }
             ),
             "the joining client is not behind a barrier, so this proves nothing"
@@ -2228,13 +2235,13 @@ mod tests {
             session.fan_out(mib.clone());
         }
         assert!(backlog.reserve(chunk(1)).is_none(), "budget is not full");
-        assert!(session.clients.contains_key("slow"));
+        assert!(session.clients.contains_key(&ClientId::new("slow")));
 
         // The overflow chunk. It is not delivered — it is what the snapshot
         // replaces — and the client survives it.
         session.fan_out(mib.clone());
         assert!(
-            session.clients.contains_key("slow"),
+            session.clients.contains_key(&ClientId::new("slow")),
             "the first overflow dropped the client instead of resyncing it"
         );
         assert!(
@@ -2272,7 +2279,7 @@ mod tests {
         }
         session.fan_out(mib.clone());
         assert!(
-            !session.clients.contains_key("slow"),
+            !session.clients.contains_key(&ClientId::new("slow")),
             "the second overflow did not drop the client"
         );
         assert!(backlog.is_dropped());
@@ -2371,7 +2378,7 @@ mod tests {
             pty,
             input_tx,
             clients: HashMap::from([(
-                "writer".to_string(),
+                ClientId::new("writer"),
                 ClientEntry {
                     out: client_tx,
                     backlog,
@@ -2384,7 +2391,7 @@ mod tests {
                     backlog_strikes: 0,
                 },
             )]),
-            writer: Some("writer".to_string()),
+            writer: Some(ClientId::new("writer")),
             next_seq: 2,
             next_snapshot_request: 1,
             ring: VecDeque::new(),
@@ -2401,7 +2408,7 @@ mod tests {
         assert!(handle_msg(
             &mut session,
             SessionMsg::Resize {
-                id: "writer".to_string(),
+                id: ClientId::new("writer"),
                 rows: 40,
                 cols: 120,
             },

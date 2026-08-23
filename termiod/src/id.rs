@@ -1,0 +1,44 @@
+//! The host's identities.
+//!
+//! A client id, a session id and a session name were all `String`, and they all
+//! flow through the same functions. Nothing but the type told them apart, so the
+//! type is what tells them apart.
+//!
+//! These are host-side only. The wire keeps bare JSON strings, because that is
+//! what a JSON string is: `SessionInfo.id` and `Control::HelloOk.client_id` stay
+//! `String`, and every crossing into or out of them is a visible `new` or
+//! `to_string`. Swift sees no difference.
+
+use std::fmt;
+
+/// One connection to this host. Allocated per accepted connection, never reused
+/// within a daemon's life, and the key of both a session's client roster and the
+/// resource registry's subscriber tables.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ClientId(String);
+
+impl ClientId {
+    /// Take a string the caller vouches for. Every call site is a boundary: the
+    /// daemon minting an id for a connection it just accepted.
+    pub fn new(id: impl Into<String>) -> ClientId {
+        ClientId(id.into())
+    }
+
+    /// A subscriber that is not a connection. The resource registry's `git:`
+    /// kind rides the `fs:` watcher by subscribing to it and needs a key for
+    /// that interest; naming the constructor keeps the fabrication visible
+    /// rather than leaving a `format!` that reads like a real client.
+    pub fn internal(id: impl Into<String>) -> ClientId {
+        ClientId(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ClientId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}

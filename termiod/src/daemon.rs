@@ -9,9 +9,10 @@ use crate::protocol::{
     Event, FileChunk, Frame, SessionInfo, Snapshot, FILE_CHUNK_HEADER_SIZE, HOST_CAPABILITIES,
     MAX_FILE_FRAME_SIZE, PROTOCOL_VERSION, SUPPORTED_PROTOCOLS,
 };
+use crate::id::ClientId;
 use crate::resource::Registry;
 use crate::session::{
-    self, ClientBacklog, ClientEvent, ClientId, Metered, SessionEnded, SessionHandle, SessionMsg,
+    self, ClientBacklog, ClientEvent, Metered, SessionEnded, SessionHandle, SessionMsg,
 };
 use crate::tombstone::{EndReason, Graveyard};
 use anyhow::{Context, Result};
@@ -78,7 +79,7 @@ impl Manager {
 
     fn alloc_client_id(&self) -> ClientId {
         let id = self.next_client_id.fetch_add(1, Ordering::Relaxed);
-        format!("c_{id:x}")
+        ClientId::new(format!("c_{id:x}"))
     }
 
     fn create(&self, spec: crate::protocol::CreateSpec) -> Result<String> {
@@ -582,7 +583,7 @@ async fn handle_conn(stream: UnixStream, manager: Manager) -> Result<()> {
                         std::env::consts::OS,
                         std::env::consts::ARCH
                     ),
-                    client_id: client_id.clone(),
+                    client_id: client_id.to_string(),
                     home: std::env::var("HOME").unwrap_or_default(),
                 },
             )
