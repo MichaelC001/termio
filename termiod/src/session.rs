@@ -154,12 +154,8 @@ impl SessionHandle {
 struct ClientEntry {
     out: mpsc::UnboundedSender<ClientEvent>,
     backlog: Arc<ClientBacklog>,
-    /// Interactive attach order. Highest sequence owns the write token.
-    seq: u64,
-    interactive: bool,
-    snapshot_capable: bool,
-    grid_diff: bool,
-    delivery: ClientDelivery,
+    role: ClientRole,
+    plane: ClientPlane,
     /// Attach-only history staging. Resize barriers discard any remainder and
     /// deliberately do not restage it; resize/reflow history is a later policy.
     staged_history: VecDeque<Bytes>,
@@ -168,6 +164,139 @@ struct ClientEntry {
     /// already zeroed the count of what the client owes, so a second overflow
     /// means it could not keep up even from a clean start.
     backlog_strikes: u32,
+}
+
+/// Whether this attachment can hold the write token.
+enum ClientRole {
+    /// Attached without a tty. §A: an observer never claims the token. One that
+    /// could would strand the session at whatever size the last real client
+    /// left, having no tty of its own to resize.
+    Observer,
+    /// Attached with a tty. `seq` is interactive attach order — the highest
+    /// takes the token back when the current holder leaves. Only interactive
+    /// attachments are numbered, because only they are ever compared.
+    Interactive { seq: u64 },
+}
+
+impl ClientRole {
+    fn is_interactive(&self) -> bool {
+        matches!(self, ClientRole::Interactive { .. })
+    }
+
+    /// The attach order to rank this client by, or `None` for an attachment
+    /// that is not in the running for the token at all.
+    fn attach_seq(&self) -> Option<u64> {
+        match self {
+            ClientRole::Observer => None,
+            ClientRole::Interactive { seq } => Some(*seq),
+        }
+    }
+}
+
+/// Which plane the attachment reads, and — for the two that have one — where it
+/// stands relative to its snapshot boundary.
+///
+/// This is the negotiated capability pair made exclusive. `grid_diff` without
+/// `snapshot` was never a state the host would run: the parsed plane bootstraps
+/// and recovers through `S`, so the daemon drops the capability at hello and
+/// `AddClient` dropped it again. There is now no fourth case to drop.
+enum ClientPlane {
+    /// Never negotiated `snapshot`: raw PTY bytes only, ring replay on attach.
+    /// No boundary to stand behind, so no barrier and nothing to resync to —
+    /// which is why this variant carries no delivery state at all.
+    Raw,
+    /// Negotiated `snapshot`: raw PTY bytes, punctuated by `S` boundaries on
+    /// attach, resize and resync.
+    Snapshot(ClientDelivery),
+    /// Negotiated `snapshot` + `grid_diff`: server-parsed cells and keyframes,
+    /// never downstream PTY bytes.
+    Grid(ClientDelivery),
+}
+
+impl ClientPlane {
+    fn snapshots(&self) -> bool {
+        !matches!(self, ClientPlane::Raw)
+    }
+
+    fn is_grid(&self) -> bool {
+        matches!(self, ClientPlane::Grid(_))
+    }
+
+    /// Where this attachment stands relative to its snapshot boundary. `None`
+    /// for a raw attachment, which has no boundary and is live by construction.
+    fn delivery(&self) -> Option<&ClientDelivery> {
+        match self {
+            ClientPlane::Raw => None,
+            ClientPlane::Snapshot(delivery) | ClientPlane::Grid(delivery) => Some(delivery),
+        }
+    }
+
+    fn delivery_mut(&mut self) -> Option<&mut ClientDelivery> {
+        match self {
+            ClientPlane::Raw => None,
+            ClientPlane::Snapshot(delivery) | ClientPlane::Grid(delivery) => Some(delivery),
+        }
+    }
+
+    /// The request this attachment is waiting on, if it is behind a barrier.
+    fn pending_request(&self) -> Option<u64> {
+        match self.delivery() {
+            Some(ClientDelivery::SnapshotPending { request_id, .. }) => Some(*request_id),
+            _ => None,
+        }
+    }
+
+    fn is_pending(&self) -> bool {
+        self.pending_request().is_some()
+    }
+
+    /// Open a snapshot barrier. Events already deferred behind an older barrier
+    /// carry over — they are still owed — while the data buffered behind it is
+    /// handed back, because the snapshot that is coming supersedes it and the
+    /// caller decides whether to credit those bytes or retire them.
+    ///
+    /// A raw attachment has no barrier to open; nothing calls this for one, and
+    /// it is a no-op if anything ever does.
+    fn begin_pending(&mut self, request_id: u64) -> VecDeque<Metered> {
+        let Some(delivery) = self.delivery_mut() else {
+            return VecDeque::new();
+        };
+        let (superseded, deferred) = match std::mem::replace(delivery, ClientDelivery::Live) {
+            ClientDelivery::Live => (VecDeque::new(), VecDeque::new()),
+            ClientDelivery::SnapshotPending { data, deferred, .. } => (data, deferred),
+        };
+        *delivery = ClientDelivery::SnapshotPending {
+            request_id,
+            data: VecDeque::new(),
+            deferred,
+        };
+        superseded
+    }
+
+    /// Queue an event behind this attachment's open barrier. `false` when there
+    /// is no barrier and the caller should send it straight out.
+    fn defer(&mut self, event: ClientEvent) -> bool {
+        match self.delivery_mut() {
+            Some(ClientDelivery::SnapshotPending { deferred, .. }) => {
+                deferred.push_back(event);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Close an open barrier, leaving the attachment live, and hand back what
+    /// was queued behind it: the buffered data and the deferred events, in that
+    /// order. Empty queues for an attachment that had no barrier open.
+    fn settle(&mut self) -> (VecDeque<Metered>, VecDeque<ClientEvent>) {
+        let Some(delivery) = self.delivery_mut() else {
+            return (VecDeque::new(), VecDeque::new());
+        };
+        match std::mem::replace(delivery, ClientDelivery::Live) {
+            ClientDelivery::SnapshotPending { data, deferred, .. } => (data, deferred),
+            ClientDelivery::Live => (VecDeque::new(), VecDeque::new()),
+        }
+    }
 }
 
 enum ClientDelivery {
@@ -402,9 +531,23 @@ impl Session {
         self.writer = self
             .clients
             .iter()
-            .filter(|(_, entry)| entry.interactive)
-            .max_by_key(|(_, entry)| entry.seq)
+            .filter_map(|(id, entry)| entry.role.attach_seq().map(|seq| (id, seq)))
+            .max_by_key(|(_, seq)| *seq)
             .map(|(id, _)| id.clone());
+    }
+
+    /// The write token only ever moves through here, and only ever onto a
+    /// client that attached with a tty. Returns whether the claim was allowed.
+    fn grant_writer(&mut self, id: &ClientId) -> bool {
+        if !self
+            .clients
+            .get(id)
+            .is_some_and(|entry| entry.role.is_interactive())
+        {
+            return false;
+        }
+        self.writer = Some(id.clone());
+        true
     }
 
     fn allocate_snapshot_request(&mut self) -> u64 {
@@ -502,7 +645,7 @@ impl Session {
     }
 
     fn wants_grid_diffs(&self) -> bool {
-        self.clients.values().any(|entry| entry.grid_diff)
+        self.clients.values().any(|entry| entry.plane.is_grid())
     }
 
     fn sync_grid_diff_interest(&mut self) {
@@ -513,7 +656,7 @@ impl Session {
         let snapshot_clients: Vec<ClientId> = self
             .clients
             .iter()
-            .filter(|(_, entry)| entry.snapshot_capable)
+            .filter(|(_, entry)| entry.plane.snapshots())
             .map(|(id, _)| id.clone())
             .collect();
         let mut requests = Vec::with_capacity(snapshot_clients.len());
@@ -528,21 +671,10 @@ impl Session {
             // resize cancels any unfinished stage and does not recapture it;
             // history reflow/restaging semantics are intentionally deferred.
             entry.staged_history.clear();
-            let previous = std::mem::replace(&mut entry.delivery, ClientDelivery::Live);
-            let deferred = match previous {
-                ClientDelivery::Live => VecDeque::new(),
-                ClientDelivery::SnapshotPending { data, deferred, .. } => {
-                    // The new snapshot includes every write queued before the
-                    // resize, so replaying older buffered data would overlap.
-                    release_buffered(&entry.backlog, data);
-                    deferred
-                }
-            };
-            entry.delivery = ClientDelivery::SnapshotPending {
-                request_id,
-                data: VecDeque::new(),
-                deferred,
-            };
+            // The new snapshot includes every write queued before the resize, so
+            // replaying older buffered data would overlap.
+            let superseded = entry.plane.begin_pending(request_id);
+            release_buffered(&entry.backlog, superseded);
             requests.push((client_id, request_id));
         }
 
@@ -568,22 +700,13 @@ impl Session {
         entry.backlog_strikes += 1;
         entry.staged_history.clear();
         entry.backlog.begin_resync();
-        let previous = std::mem::replace(&mut entry.delivery, ClientDelivery::Live);
-        let mut deferred = match previous {
-            ClientDelivery::Live => VecDeque::new(),
-            // The buffered data was reserved under the epoch just retired, so it
-            // is dropped with the rest rather than replayed past the new `S`.
-            ClientDelivery::SnapshotPending { deferred, .. } => deferred,
-        };
-        deferred.push_back(ClientEvent::Event(Event::Resynced {
+        // The buffered data was reserved under the epoch just retired, so it is
+        // dropped where it sits rather than replayed past the new `S`.
+        drop(entry.plane.begin_pending(request_id));
+        entry.plane.defer(ClientEvent::Event(Event::Resynced {
             session: session_id,
             reason: reason.to_string(),
         }));
-        entry.delivery = ClientDelivery::SnapshotPending {
-            request_id,
-            data: VecDeque::new(),
-            deferred,
-        };
         eprintln!(
             "termiod: resyncing client {client_id} on session {}: {reason}",
             self.id
@@ -592,12 +715,12 @@ impl Session {
     }
 
     fn queue_non_data(entry: &mut ClientEntry, event: ClientEvent) -> bool {
-        match &mut entry.delivery {
-            ClientDelivery::Live => entry.out.send(event).is_ok(),
-            ClientDelivery::SnapshotPending { deferred, .. } => {
+        match entry.plane.delivery_mut() {
+            Some(ClientDelivery::SnapshotPending { deferred, .. }) => {
                 deferred.push_back(event);
                 true
             }
+            _ => entry.out.send(event).is_ok(),
         }
     }
 
@@ -668,11 +791,11 @@ impl Session {
                 // The parsed plane is opt-in: G clients never reserve or
                 // receive downstream PTY bytes. Raw clients keep this exact
                 // byte-blind path regardless of sidecar lag.
-                if entry.grid_diff {
+                if entry.plane.is_grid() {
                     return None;
                 }
                 let Some(payload) = entry.backlog.reserve(data.clone()) else {
-                    if entry.backlog_strikes == 0 && entry.snapshot_capable {
+                    if entry.backlog_strikes == 0 && entry.plane.snapshots() {
                         resync.push(id.clone());
                         return None;
                     }
@@ -684,15 +807,16 @@ impl Session {
                     );
                     return Some(id.clone());
                 };
-                match &mut entry.delivery {
-                    ClientDelivery::Live => {
+                match entry.plane.delivery_mut() {
+                    Some(ClientDelivery::SnapshotPending { data: buffered, .. }) => {
+                        buffered.push_back(payload);
+                    }
+                    // Raw, or snapshot-capable and past its boundary.
+                    _ => {
                         if entry.out.send(ClientEvent::Data(payload.clone())).is_err() {
                             entry.backlog.release(&payload);
                             return Some(id.clone());
                         }
-                    }
-                    ClientDelivery::SnapshotPending { data: buffered, .. } => {
-                        buffered.push_back(payload);
                     }
                 }
                 None
@@ -722,9 +846,7 @@ impl Session {
             .clients
             .iter_mut()
             .filter_map(|(id, entry)| {
-                if !entry.grid_diff
-                    || matches!(entry.delivery, ClientDelivery::SnapshotPending { .. })
-                {
+                if !entry.plane.is_grid() || entry.plane.is_pending() {
                     // An ordered G observed while pending precedes this
                     // client's S boundary, so the S supersedes it.
                     return None;
@@ -833,35 +955,25 @@ impl Session {
         request_id: u64,
         result: Result<SidecarCapture, String>,
     ) -> bool {
-        let is_current = self.clients.get(client_id).is_some_and(|entry| {
-            matches!(
-                entry.delivery,
-                ClientDelivery::SnapshotPending {
-                    request_id: current,
-                    ..
-                } if current == request_id
-            )
-        });
+        // A reply for a request this attachment is no longer waiting on
+        // describes a boundary that a resize or a resync has already replaced.
+        let is_current = self
+            .clients
+            .get(client_id)
+            .and_then(|entry| entry.plane.pending_request())
+            == Some(request_id);
         if !is_current {
             return false;
         }
         let Some(mut entry) = self.clients.remove(client_id) else {
             return false;
         };
-        let ClientDelivery::SnapshotPending {
-            mut data,
-            mut deferred,
-            ..
-        } = std::mem::replace(&mut entry.delivery, ClientDelivery::Live)
-        else {
-            self.clients.insert(client_id.clone(), entry);
-            return false;
-        };
+        let (mut data, mut deferred) = entry.plane.settle();
 
         let capture = match result {
             Ok(capture) => capture,
             Err(error) => {
-                if entry.grid_diff {
+                if entry.plane.is_grid() {
                     eprintln!(
                         "termiod: grid-diff snapshot unavailable for client {client_id} in session {}: {error}; disconnecting client",
                         self.id
@@ -884,7 +996,7 @@ impl Session {
         // Raw-plane clients get VT sequences so their own libghostty decides
         // colour (their theme, their palette, full SGR). Grid-diff clients are
         // server-state by design and need packed cells to seed the grid.
-        let snapshot_vt = if entry.grid_diff { None } else { capture.vt };
+        let snapshot_vt = if entry.plane.is_grid() { None } else { capture.vt };
         if let Some(scrollback) = capture.scrollback {
             match scrollback {
                 Ok(scrollback) => {
@@ -979,9 +1091,7 @@ impl Session {
             .clients
             .iter_mut()
             .filter_map(|(id, entry)| {
-                if !entry.grid_diff
-                    || matches!(entry.delivery, ClientDelivery::SnapshotPending { .. })
-                {
+                if !entry.plane.is_grid() || entry.plane.is_pending() {
                     return None;
                 }
                 (entry
@@ -1004,7 +1114,7 @@ impl Session {
         let ids: Vec<ClientId> = self
             .clients
             .iter()
-            .filter(|(_, entry)| entry.grid_diff)
+            .filter(|(_, entry)| entry.plane.is_grid())
             .map(|(id, _)| id.clone())
             .collect();
         if ids.is_empty() {
@@ -1017,10 +1127,9 @@ impl Session {
         );
         let old_writer = self.writer.clone();
         for id in ids {
-            if let Some(entry) = self.clients.remove(&id) {
-                if let ClientDelivery::SnapshotPending { data, .. } = entry.delivery {
-                    release_buffered(&entry.backlog, data);
-                }
+            if let Some(mut entry) = self.clients.remove(&id) {
+                let (buffered, _deferred) = entry.plane.settle();
+                release_buffered(&entry.backlog, buffered);
                 let _ = entry.out.send(ClientEvent::Control(Control::Error {
                     re: None,
                     code: ErrorCode::Internal,
@@ -1085,11 +1194,11 @@ impl Session {
         let pending: Vec<(ClientId, u64)> = self
             .clients
             .iter()
-            .filter_map(|(id, entry)| match entry.delivery {
-                ClientDelivery::SnapshotPending { request_id, .. } => {
-                    Some((id.clone(), request_id))
-                }
-                ClientDelivery::Live => None,
+            .filter_map(|(id, entry)| {
+                entry
+                    .plane
+                    .pending_request()
+                    .map(|request_id| (id.clone(), request_id))
             })
             .collect();
         for (id, request_id) in pending {
@@ -1620,11 +1729,18 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             grid_diff,
             reply,
         } => {
-            let seq = session.next_seq;
-            session.next_seq += 1;
+            // Only interactive attachments are numbered: the sequence exists
+            // to rank claims on the write token, and an observer is never in
+            // that ranking.
+            let role = if interactive {
+                let seq = session.next_seq;
+                session.next_seq += 1;
+                ClientRole::Interactive { seq }
+            } else {
+                ClientRole::Observer
+            };
             let old_writer = session.writer.clone();
             let snapshot_request = snapshot.then(|| session.allocate_snapshot_request());
-            let grid_diff = grid_diff && snapshot;
 
             if !snapshot {
                 for replay in &session.ring {
@@ -1637,24 +1753,32 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                     }
                 }
             }
+            // A client that did not negotiate snapshots gets the raw plane and
+            // no barrier; one that did starts behind the barrier its bootstrap
+            // `S` will open. Grid diffs ride on top of the snapshot plane and
+            // are unreachable without it.
+            let plane = match snapshot_request {
+                None => ClientPlane::Raw,
+                Some(request_id) => {
+                    let delivery = ClientDelivery::SnapshotPending {
+                        request_id,
+                        data: VecDeque::new(),
+                        deferred: VecDeque::new(),
+                    };
+                    if grid_diff {
+                        ClientPlane::Grid(delivery)
+                    } else {
+                        ClientPlane::Snapshot(delivery)
+                    }
+                }
+            };
             session.clients.insert(
                 id.clone(),
                 ClientEntry {
                     out,
                     backlog,
-                    seq,
-                    interactive,
-                    snapshot_capable: snapshot,
-                    grid_diff,
-                    delivery: if let Some(request_id) = snapshot_request {
-                        ClientDelivery::SnapshotPending {
-                            request_id,
-                            data: VecDeque::new(),
-                            deferred: VecDeque::new(),
-                        }
-                    } else {
-                        ClientDelivery::Live
-                    },
+                    role,
+                    plane,
                     staged_history: VecDeque::new(),
                     backlog_strikes: 0,
                 },
@@ -1663,7 +1787,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             // later Writes can only produce G results after its S boundary.
             session.sync_grid_diff_interest();
             if interactive {
-                session.writer = Some(id.clone());
+                session.grant_writer(&id);
             }
             let is_writer = session.writer.as_ref() == Some(&id);
             let _ = reply.send(AddClientReply {
@@ -1705,20 +1829,15 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
         SessionMsg::ClaimWriter { id, reply } => {
             // An observer is refused rather than promoted: it attached without
             // a tty and cannot resize, so handing it the token would strand the
-            // session at whatever size the last real client left.
-            let eligible = session
-                .clients
-                .get(&id)
-                .map(|entry| entry.interactive)
-                .unwrap_or(false);
+            // session at whatever size the last real client left. A stranger —
+            // a stale id, a racing reconnect — is refused for the same reason
+            // `grant_writer` will not install a writer nobody can reach.
+            let held = session.writer.as_ref() == Some(&id);
+            let eligible = session.grant_writer(&id);
             let _ = reply.send(eligible);
-            if !eligible {
+            if !eligible || held {
                 return None;
             }
-            if session.writer.as_ref() == Some(&id) {
-                return None;
-            }
-            session.writer = Some(id);
             // The client that just took the token is told its own size claim is
             // now the one that counts, the same shape `AddClient` uses.
             session.emit_writer_changed(session.writer.clone());
@@ -1796,9 +1915,9 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
 mod tests {
     use super::{
         handle_msg, scrollback_row_limit, should_emit_keyframe, spawn_sidecar, ClientBacklog,
-        ClientDelivery, ClientEntry, ClientEvent, Session, SessionHandle, SessionMsg, Sidecar,
-        SidecarCommand, SidecarQueue, SidecarResult, SCROLLBACK_STAGE_MAX_BYTES,
-        SNAPSHOT_CELL_SIZE,
+        ClientDelivery, ClientEntry, ClientEvent, ClientPlane, ClientRole, Session, SessionHandle,
+        SessionMsg, Sidecar, SidecarCommand, SidecarQueue, SidecarResult,
+        SCROLLBACK_STAGE_MAX_BYTES, SNAPSHOT_CELL_SIZE,
     };
     use crate::id::{ClientId, SessionId};
     use crate::protocol::{Control, ErrorCode, Event, SessionInfo};
@@ -2170,8 +2289,8 @@ mod tests {
         let (mut joining, _joining_backlog) = attach_client(&mut session, "joining", true);
         assert!(
             matches!(
-                session.clients[&ClientId::new("joining")].delivery,
-                ClientDelivery::SnapshotPending { .. }
+                session.clients[&ClientId::new("joining")].plane,
+                ClientPlane::Snapshot(ClientDelivery::SnapshotPending { .. })
             ),
             "the joining client is not behind a barrier, so this proves nothing"
         );
@@ -2382,11 +2501,8 @@ mod tests {
                 ClientEntry {
                     out: client_tx,
                     backlog,
-                    seq: 1,
-                    interactive: true,
-                    snapshot_capable: false,
-                    grid_diff: false,
-                    delivery: ClientDelivery::Live,
+                    role: ClientRole::Interactive { seq: 1 },
+                    plane: ClientPlane::Raw,
                     staged_history: VecDeque::new(),
                     backlog_strikes: 0,
                 },
