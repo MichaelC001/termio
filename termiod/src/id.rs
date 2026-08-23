@@ -1,8 +1,11 @@
 //! The host's identities.
 //!
 //! A client id, a session id and a session name were all `String`, and they all
-//! flow through the same functions. Nothing but the type told them apart, so the
-//! type is what tells them apart.
+//! flow through the same functions: a client id keys a session's roster, a
+//! session id keys the session table and the graveyard, and a user-supplied
+//! target — which may be an id *or* a name — arrives from the wire looking
+//! exactly like both. Nothing but the type told them apart, so the type is what
+//! tells them apart.
 //!
 //! These are host-side only. The wire keeps bare JSON strings, because that is
 //! what a JSON string is: `SessionInfo.id` and `Control::HelloOk.client_id` stay
@@ -38,6 +41,31 @@ impl ClientId {
 }
 
 impl fmt::Display for ClientId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// One session on this host. Distinct from the *name* a session carries, which
+/// a user picks; distinct again from the target a client sends, which is either
+/// of the two and must be resolved against the table before anything indexes
+/// with it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SessionId(String);
+
+impl SessionId {
+    /// Take a string the caller vouches for: an id the daemon minted, or one
+    /// read back out of a record the daemon wrote.
+    pub fn new(id: impl Into<String>) -> SessionId {
+        SessionId(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for SessionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }

@@ -9,7 +9,7 @@ use crate::protocol::{
     Event, FileChunk, Frame, SessionInfo, Snapshot, FILE_CHUNK_HEADER_SIZE, HOST_CAPABILITIES,
     MAX_FILE_FRAME_SIZE, PROTOCOL_VERSION, SUPPORTED_PROTOCOLS,
 };
-use crate::id::ClientId;
+use crate::id::{ClientId, SessionId};
 use crate::resource::Registry;
 use crate::session::{
     self, ClientBacklog, ClientEvent, Metered, SessionEnded, SessionHandle, SessionMsg,
@@ -28,7 +28,7 @@ const EVENT_BUFFER: usize = 1024;
 const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct ManagerInner {
-    sessions: HashMap<String, SessionHandle>,
+    sessions: HashMap<SessionId, SessionHandle>,
     id_counter: u32,
     draining: bool,
 }
@@ -82,7 +82,7 @@ impl Manager {
         ClientId::new(format!("c_{id:x}"))
     }
 
-    fn create(&self, spec: crate::protocol::CreateSpec) -> Result<String> {
+    fn create(&self, spec: crate::protocol::CreateSpec) -> Result<SessionId> {
         // The lock makes the transition to draining an exact boundary: a
         // create either installs its handle before the shutdown snapshot or
         // observes `draining` and never spawns a child.
@@ -95,8 +95,11 @@ impl Manager {
             .map(|d| d.subsec_nanos())
             .unwrap_or(0);
         guard.id_counter = guard.id_counter.wrapping_add(1);
-        let id = format!("{:08x}", seed ^ guard.id_counter.wrapping_mul(2654435761));
-        let name = spec.name.clone().unwrap_or_else(|| id.clone());
+        let id = SessionId::new(format!(
+            "{:08x}",
+            seed ^ guard.id_counter.wrapping_mul(2654435761)
+        ));
+        let name = spec.name.clone().unwrap_or_else(|| id.to_string());
         let cwd = spec.cwd.clone().unwrap_or_default();
         let command = if spec.argv.is_empty() {
             format!(
@@ -124,7 +127,7 @@ impl Manager {
         Ok(id)
     }
 
-    fn find(&self, id: &str) -> Option<SessionHandle> {
+    fn find(&self, id: &SessionId) -> Option<SessionHandle> {
         self.inner.lock().unwrap().sessions.get(id).cloned()
     }
 
@@ -138,7 +141,7 @@ impl Manager {
             .collect()
     }
 
-    fn remove(&self, id: &str) -> bool {
+    fn remove(&self, id: &SessionId) -> bool {
         let removed = self.inner.lock().unwrap().sessions.remove(id).is_some();
         if removed {
             self.session_removed.notify_one();
@@ -199,7 +202,7 @@ impl Manager {
         }
     }
 
-    async fn publish_created(&self, id: &str) {
+    async fn publish_created(&self, id: &SessionId) {
         let Some(handle) = self.find(id) else {
             return;
         };
@@ -216,7 +219,7 @@ impl Manager {
         });
     }
 
-    fn publish_removed(&self, id: &str) {
+    fn publish_removed(&self, id: &SessionId) {
         self.publish(Event::Roster {
             session: id.to_string(),
             action: "removed".to_string(),
@@ -236,9 +239,12 @@ impl Manager {
         infos
     }
 
-    /// Resolve a target that may be an id or a name.
+    /// Resolve a target that may be an id or a name. The only door into the
+    /// session table for a string that came off the wire: `find` takes a
+    /// `SessionId`, so nothing else can index the table with an unresolved
+    /// target.
     async fn resolve(&self, target: &str) -> Option<SessionHandle> {
-        if let Some(handle) = self.find(target) {
+        if let Some(handle) = self.find(&SessionId::new(target)) {
             return Some(handle);
         }
         for handle in self.handles() {
@@ -273,7 +279,7 @@ impl Manager {
         let Some(initial_info) = self.info(&handle).await else {
             return if until.iter().any(|wanted| wanted == "exited") {
                 Control::WaitResult {
-                    session: session_id,
+                    session: session_id.to_string(),
                     status: "exited".to_string(),
                     timed_out: false,
                     exit_status: None,
@@ -291,7 +297,7 @@ impl Manager {
         let initial = initial_info.status;
         if until.iter().any(|wanted| wanted == &initial) {
             return Control::WaitResult {
-                session: session_id,
+                session: session_id.to_string(),
                 status: initial,
                 timed_out: false,
                 exit_status: None,
@@ -304,12 +310,14 @@ impl Manager {
                 match events.recv().await {
                     Ok(Event::Status {
                         session, status, ..
-                    }) if session == session_id && until.iter().any(|wanted| wanted == &status) => {
+                    }) if session == session_id.as_str()
+                        && until.iter().any(|wanted| wanted == &status) =>
+                    {
                         return Ok((status, None));
                     }
                     Ok(Event::SessionExited {
                         session, status, ..
-                    }) if session == session_id
+                    }) if session == session_id.as_str()
                         && until.iter().any(|wanted| wanted == "exited") =>
                     {
                         return Ok(("exited".to_string(), Some(status)));
@@ -324,7 +332,7 @@ impl Manager {
 
         match tokio::time::timeout(Duration::from_millis(timeout_ms), wait).await {
             Ok(Ok((status, exit_status))) => Control::WaitResult {
-                session: session_id,
+                session: session_id.to_string(),
                 status,
                 timed_out: false,
                 exit_status,
@@ -335,7 +343,7 @@ impl Manager {
                 let current = self.info(&handle).await.map(|info| info.status);
                 if current.is_none() && until.iter().any(|wanted| wanted == "exited") {
                     return Control::WaitResult {
-                        session: session_id,
+                        session: session_id.to_string(),
                         status: "exited".to_string(),
                         timed_out: false,
                         exit_status: None,
@@ -343,7 +351,7 @@ impl Manager {
                     };
                 }
                 Control::WaitResult {
-                    session: session_id,
+                    session: session_id.to_string(),
                     status: current.unwrap_or_else(|| "exited".to_string()),
                     timed_out: true,
                     exit_status: None,
@@ -392,7 +400,9 @@ pub async fn serve() -> Result<()> {
         let manager = manager.clone();
         tokio::spawn(async move {
             while let Some(ended) = on_exit_rx.recv().await {
-                let id = ended.info.id.clone();
+                // The end record is a wire struct, so its id crosses back into
+                // the host's vocabulary here.
+                let id = SessionId::new(ended.info.id.clone());
                 // A termination request can win after PTY EOF but before this
                 // task receives the actor's end record. The handle retains the
                 // first requested reason until burial completes.
@@ -836,7 +846,10 @@ async fn process_control(
             let response = match manager.create(spec) {
                 Ok(id) => {
                     manager.publish_created(&id).await;
-                    Control::Created { id, re: seq }
+                    Control::Created {
+                        id: id.to_string(),
+                        re: seq,
+                    }
                 }
                 Err(e) => error(seq, ErrorCode::CreateFailed, format!("{e:#}"), false),
             };
@@ -1625,7 +1638,7 @@ async fn resolve_upload_dest(
     dest: &str,
     root: Option<&str>,
     session: Option<&str>,
-) -> std::result::Result<(crate::files::UploadDest, Option<String>), (ErrorCode, String)> {
+) -> std::result::Result<(crate::files::UploadDest, Option<SessionId>), (ErrorCode, String)> {
     if let Some(name) = dest.strip_prefix("temp:") {
         let Some(session) = session else {
             return Err((
@@ -1755,12 +1768,12 @@ async fn run_attach(
         handle.send(SessionMsg::Info { reply: tx });
         rx.await
             .map(|info| info.name)
-            .unwrap_or_else(|_| handle.id.clone())
+            .unwrap_or_else(|_| handle.id.to_string())
     };
     let _ = out.send(Outbound::Control(Control::Attached {
-        id: handle.id.clone(),
+        id: handle.id.to_string(),
         name,
-        session_id: handle.id.clone(),
+        session_id: handle.id.to_string(),
         writer: added.writer,
         rows: added.rows,
         cols: added.cols,
@@ -1781,7 +1794,7 @@ async fn run_attach(
     let supports_grid_diff = supports_snapshot && connection.capabilities.contains("grid_diff");
     let negotiated = connection.negotiated;
     let event_out = out.clone();
-    let session_id = handle.id.clone();
+    let session_id = handle.id.to_string();
     let bridge_backlog = backlog;
     let mut bridge = tokio::spawn(async move {
         while let Some(event) = client_events.recv().await {

@@ -4,6 +4,7 @@
 //! logout). Fall back to a uid-scoped dir under the system temp dir. Either
 //! way the directory is created 0700 so no other user can connect.
 
+use crate::id::SessionId;
 use anyhow::{bail, Context, Result};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -89,7 +90,7 @@ pub fn scratch_root() -> Result<PathBuf> {
 
 /// One session's scratch dir, created 0700 on first use and reaped with the
 /// session.
-pub fn session_scratch_dir(session_id: &str) -> Result<PathBuf> {
+pub fn session_scratch_dir(session_id: &SessionId) -> Result<PathBuf> {
     let dir = scratch_root()?.join(format!("session-{session_id}"));
     if !dir.exists() {
         std::fs::DirBuilder::new()

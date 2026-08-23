@@ -7,7 +7,7 @@ use crate::protocol::{
     HistoryChunk, SessionInfo, Snapshot, WireCell, WireColor, WorkstreamSpec, HISTORY_HEADER_SIZE,
     MAX_HISTORY_FRAME_SIZE, SNAPSHOT_CELL_SIZE,
 };
-use crate::id::ClientId;
+use crate::id::{ClientId, SessionId};
 use crate::pty::Pty;
 use crate::tombstone::EndReason;
 use bytes::Bytes;
@@ -118,7 +118,7 @@ pub struct SessionEnded {
 /// Cheap, cloneable reference to a session task.
 #[derive(Clone)]
 pub struct SessionHandle {
-    pub id: String,
+    pub id: SessionId,
     pid: i32,
     tx: mpsc::UnboundedSender<SessionMsg>,
     /// PTY EOF can become ready in the same scheduler turn as `Kill`; keeping
@@ -180,7 +180,7 @@ enum ClientDelivery {
 }
 
 struct Session {
-    id: String,
+    id: SessionId,
     name: String,
     cwd: String,
     command: String,
@@ -267,7 +267,7 @@ struct ForegroundResolution {
 impl Session {
     fn info(&self) -> SessionInfo {
         SessionInfo {
-            id: self.id.clone(),
+            id: self.id.to_string(),
             name: self.name.clone(),
             cwd: self.cwd.clone(),
             command: self.command.clone(),
@@ -469,7 +469,7 @@ impl Session {
         self.send_sidecar(SidecarCommand::Shutdown);
         self.sidecar_tx.take();
         self.emit_event(Event::VtStale {
-            session: self.id.clone(),
+            session: self.id.to_string(),
             reason: reason.clone(),
         });
         self.disconnect_grid_clients(&reason);
@@ -561,7 +561,7 @@ impl Session {
     /// fresh boundary. No other client is touched.
     fn force_resync(&mut self, client_id: &ClientId, reason: &str) {
         let request_id = self.allocate_snapshot_request();
-        let session_id = self.id.clone();
+        let session_id = self.id.to_string();
         let Some(entry) = self.clients.get_mut(client_id) else {
             return;
         };
@@ -632,7 +632,7 @@ impl Session {
 
     fn emit_roster(&mut self) {
         self.emit_event(Event::Roster {
-            session: self.id.clone(),
+            session: self.id.to_string(),
             action: "updated".to_string(),
             info: Some(Box::new(self.info())),
         });
@@ -644,7 +644,7 @@ impl Session {
                 Self::queue_non_data(
                     entry,
                     ClientEvent::Control(Control::ResizeClaim {
-                        session: self.id.clone(),
+                        session: self.id.to_string(),
                         writer: self.writer.as_ref().map(ClientId::to_string),
                     }),
                 );
@@ -652,7 +652,7 @@ impl Session {
         }
         let writer = self.writer.as_ref().map(ClientId::to_string);
         self.emit_event(Event::WriterChanged {
-            session: self.id.clone(),
+            session: self.id.to_string(),
             writer,
         });
     }
@@ -782,7 +782,7 @@ impl Session {
     }
 
     fn queue_history_chunk(
-        session_id: &str,
+        session_id: &SessionId,
         client_id: &ClientId,
         entry: &mut ClientEntry,
     ) -> Result<bool, ()> {
@@ -917,7 +917,7 @@ impl Session {
             || entry
                 .out
                 .send(ClientEvent::Event(Event::Ready {
-                    session: self.id.clone(),
+                    session: self.id.to_string(),
                 }))
                 .is_err()
         {
@@ -991,7 +991,7 @@ impl Session {
                     || entry
                         .out
                         .send(ClientEvent::Event(Event::Ready {
-                            session: self.id.clone(),
+                            session: self.id.to_string(),
                         }))
                         .is_err())
                 .then(|| id.clone())
@@ -1221,7 +1221,7 @@ fn release_buffered(backlog: &ClientBacklog, data: VecDeque<Metered>) {
 /// manager so it can remove the handle from the table.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn(
-    id: String,
+    id: SessionId,
     name: String,
     cwd: String,
     command: String,
@@ -1591,7 +1591,7 @@ async fn run(
     let mut info = session.info();
     info.alive = false;
     let exit_event = Event::SessionExited {
-        session: session.id.clone(),
+        session: session.id.to_string(),
         status: code,
         info: Some(Box::new(info.clone())),
     };
@@ -1751,7 +1751,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                 session.send_sidecar(SidecarCommand::Resize { rows, cols });
                 session.begin_snapshot_barrier();
                 session.emit_event(Event::Resized {
-                    session: session.id.clone(),
+                    session: session.id.to_string(),
                     rows,
                     cols,
                 });
@@ -1772,7 +1772,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                 session.title = title;
             }
             session.emit_event(Event::Status {
-                session: session.id.clone(),
+                session: session.id.to_string(),
                 status: session.status.clone(),
                 title: session.title.clone(),
             });
@@ -1800,7 +1800,7 @@ mod tests {
         SidecarCommand, SidecarQueue, SidecarResult, SCROLLBACK_STAGE_MAX_BYTES,
         SNAPSHOT_CELL_SIZE,
     };
-    use crate::id::ClientId;
+    use crate::id::{ClientId, SessionId};
     use crate::protocol::{Control, ErrorCode, Event, SessionInfo};
     use crate::pty::Pty;
     use crate::tombstone::EndReason;
@@ -1902,7 +1902,7 @@ mod tests {
         let (events, event_rx) = broadcast::channel(64);
         (
             Session {
-                id: "session".to_string(),
+                id: SessionId::new("session"),
                 name: "test".to_string(),
                 cwd: String::new(),
                 command: "cat".to_string(),
@@ -2364,7 +2364,7 @@ mod tests {
         let backlog = Arc::new(ClientBacklog::new());
         let (sidecar_tx, sidecar_rx) = std_mpsc::channel();
         let mut session = Session {
-            id: "session".to_string(),
+            id: SessionId::new("session"),
             name: "test".to_string(),
             cwd: String::new(),
             command: "cat".to_string(),
@@ -2480,7 +2480,7 @@ mod tests {
         let (on_exit, on_exit_rx) = mpsc::unbounded_channel();
         let (events, events_rx) = broadcast::channel(64);
         let handle = super::spawn(
-            "foreground-session".to_string(),
+            SessionId::new("foreground-session"),
             "test".to_string(),
             cwd.to_string(),
             argv.join(" "),

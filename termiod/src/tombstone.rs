@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::id::SessionId;
 use crate::protocol::SessionInfo;
 
 /// How many tombstones are kept. Enough to explain a bad afternoon, bounded so
@@ -179,12 +180,38 @@ impl RosterEntry {
 }
 
 /// What identifies one session's end. The id alone is not enough: ids are short
-/// and can eventually be reused, so the creation time rides along.
-type GraveKey = (String, u64);
+/// and can eventually be reused, so the creation time rides along. Built only
+/// from a whole record, so the pair cannot be assembled half-right.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct GraveKey {
+    session: SessionId,
+    created_unix: u64,
+}
+
+impl GraveKey {
+    fn of(session: &str, created_unix: u64) -> GraveKey {
+        GraveKey {
+            session: SessionId::new(session),
+            created_unix,
+        }
+    }
+
+    fn from_info(info: &SessionInfo) -> GraveKey {
+        GraveKey::of(&info.id, info.created_unix)
+    }
+
+    fn from_grave(grave: &Tombstone) -> GraveKey {
+        GraveKey::of(&grave.id, grave.created_unix)
+    }
+
+    fn from_roster(entry: &RosterEntry) -> GraveKey {
+        GraveKey::of(&entry.id, entry.created_unix)
+    }
+}
 
 struct State {
     graves: Vec<Tombstone>,
-    roster: HashMap<String, RosterEntry>,
+    roster: HashMap<SessionId, RosterEntry>,
     /// An index of `graves`, keeping the "has this end already been recorded?"
     /// question O(1). It is what stops the bounded shutdown fallback and a late
     /// session reaper from recording the same end twice, and what stops a
@@ -199,7 +226,7 @@ impl State {
         if !self.buried.insert(key.clone()) {
             return false;
         }
-        self.roster.remove(&key.0);
+        self.roster.remove(&key.session);
         self.graves.insert(0, tombstone());
         true
     }
@@ -209,7 +236,7 @@ impl State {
     /// how it would grow without bound on a long-lived host.
     fn cap_graves(&mut self) {
         for dropped in self.graves.drain(MAX_GRAVES.min(self.graves.len())..) {
-            self.buried.remove(&(dropped.id, dropped.created_unix));
+            self.buried.remove(&GraveKey::from_grave(&dropped));
         }
     }
 }
@@ -254,11 +281,7 @@ impl Graveyard {
             state.graves = graves;
             // Index what was just loaded, so the invariant holds from the first
             // burial rather than from the first one this daemon happens to make.
-            state.buried = state
-                .graves
-                .iter()
-                .map(|grave| (grave.id.clone(), grave.created_unix))
-                .collect();
+            state.buried = state.graves.iter().map(GraveKey::from_grave).collect();
         }
         // The roster starts empty for this daemon: whatever the last one held is
         // now buried, and leaving the file behind would bury it twice on the
@@ -274,15 +297,12 @@ impl Graveyard {
     pub fn note_live(&self, info: &SessionInfo) {
         {
             let mut state = self.state.lock().unwrap();
-            if state
-                .buried
-                .contains(&(info.id.clone(), info.created_unix))
-            {
+            if state.buried.contains(&GraveKey::from_info(info)) {
                 return;
             }
             state
                 .roster
-                .insert(info.id.clone(), RosterEntry::from_info(info));
+                .insert(SessionId::new(info.id.clone()), RosterEntry::from_info(info));
         }
         if let Err(error) = self.persist_roster() {
             eprintln!("termiod: could not record live session: {error:#}");
@@ -294,7 +314,7 @@ impl Graveyard {
     pub fn bury(&self, info: &SessionInfo, reason: EndReason, exit_status: Option<i32>) {
         {
             let mut state = self.state.lock().unwrap();
-            let key = (info.id.clone(), info.created_unix);
+            let key = GraveKey::from_info(info);
             if !state.record(key, || Tombstone::from_info(info, reason, exit_status)) {
                 return;
             }
@@ -317,7 +337,7 @@ impl Graveyard {
             // come out newest-first, the order every other path leaves them in.
             remaining.sort_by_key(|entry| entry.created_unix);
             for entry in remaining {
-                let key = (entry.id.clone(), entry.created_unix);
+                let key = GraveKey::from_roster(&entry);
                 state.record(key, || entry.into_tombstone(reason));
             }
             state.cap_graves();
