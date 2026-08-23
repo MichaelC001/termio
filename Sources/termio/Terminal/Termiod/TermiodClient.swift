@@ -1507,6 +1507,8 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// daemon crash.
     private var closed = false
     private var exitDelivered = false
+    private var connectionLostDelivered = false
+    private var startRefusedDelivered = false
 
     /// What the reader thread needs to judge an arriving `S` against: the grid
     /// the surface is currently laid out at, and whether this client is the one
@@ -1559,6 +1561,20 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// session actually runs on. A session knows its *route* from the start but
     /// cannot know its *device* until something answers — this is that moment.
     var onDevice: ((TermiodDevice) -> Void)?
+    /// Fired once on the main queue when the daemon **answered and refused** —
+    /// a cwd that does not exist, a rejected handshake, a spawn it would not
+    /// perform. Distinct from `onConnectionLost` because the daemon is right
+    /// there and there is no session: telling the user their work is "still
+    /// running" would be a different lie from the one this file set out to fix.
+    /// Carries the daemon's own words, which name the cause.
+    var onStartRefused: ((String) -> Void)?
+    /// Fired once on the main queue when the *connection* ends without the
+    /// session having ended: the daemon went away, the SSH pipe broke, the
+    /// network dropped. Deliberately not `onExit` — the child is almost
+    /// certainly still running, which is the entire point of it living in a
+    /// daemon, and reporting an exit for it invents a status the process never
+    /// produced and parks the pane over an error that does not exist.
+    var onConnectionLost: (() -> Void)?
     /// Fired once on the main queue with the exit status, elapsed milliseconds
     /// since this link started (the daemon does not report the child's true
     /// runtime; elapsed-since-attach serves ghostty's abnormal-exit heuristic the
@@ -1617,9 +1633,19 @@ final class TermiodSessionLink: @unchecked Sendable {
                 )
                 try Termiod.writeFrame(channel.writeDescriptor, kind: .control, payload: payload)
                 let reply = try Termiod.readFrame(channel.readDescriptor)
-                guard reply.kind == .control,
-                      case .attached(let attachedPayload) = try Termiod.decodeControl(reply.payload)
-                else {
+                guard reply.kind == .control else {
+                    throw TermiodClientError.handshakeRejected("attach was not acknowledged")
+                }
+                let acknowledgement = try Termiod.decodeControl(reply.payload)
+                // A refusal names its own cause — the directory that is not
+                // there, the spawn it would not perform. Carrying that message
+                // instead of a generic one is the whole reason the refusal is
+                // told apart from a lost connection: the pane can say *why*
+                // rather than only that something failed.
+                if case .error(let refusal) = acknowledgement {
+                    throw TermiodClientError.requestFailed(refusal.message)
+                }
+                guard case .attached(let attachedPayload) = acknowledgement else {
                     throw TermiodClientError.handshakeRejected("attach was not acknowledged")
                 }
                 attached = true
@@ -1662,7 +1688,20 @@ final class TermiodSessionLink: @unchecked Sendable {
                 \(error.localizedDescription, privacy: .public)
                 """)
                 teardownLocked()
-                deliverExitLocked(status: 1)
+                // Three outcomes, not two. Widening this arm to "lost
+                // connection" was too coarse: it also catches a daemon that is
+                // perfectly reachable and said no, and reporting that as a
+                // session still running elsewhere is its own lie.
+                switch error {
+                case TermiodClientError.handshakeRejected(let message),
+                     TermiodClientError.requestFailed(let message):
+                    deliverStartRefusedLocked(message)
+                default:
+                    // Could not reach it, or it stopped talking mid-handshake.
+                    // Same class as losing it mid-session; neither carries an
+                    // exit status.
+                    deliverConnectionLostLocked()
+                }
             }
         }
     }
@@ -2160,15 +2199,45 @@ final class TermiodSessionLink: @unchecked Sendable {
     }
 
     /// EOF or read error. After a deliberate detach/kill this is expected and
-    /// silent; otherwise the daemon went away, and the session is marked
-    /// exited so the pane doesn't sit live-looking but dead.
+    /// silent; otherwise the transport died under a session that is very
+    /// probably still running.
+    ///
+    /// This used to deliver `exit 1`. A transport failure and a process exit
+    /// are different events and only one of them carries a status: the child
+    /// never produced that 1, and the exit policy would park the pane over an
+    /// error with no error output behind it. A session surviving the loss of
+    /// its viewer is what the daemon is for, so the pane says the connection
+    /// went, not that the work did.
     private func handleStreamEnd() {
         workQueue.async { [self] in
             let wasDeliberate = closed
             teardownLocked()
-            guard !wasDeliberate else { return }
+            guard !wasDeliberate, !exitDelivered else { return }
             Log.termiod.error("connection to \(self.sessionName, privacy: .public) ended unexpectedly")
-            deliverExitLocked(status: 1)
+            deliverConnectionLostLocked()
         }
+    }
+
+    /// Announces the transport's death exactly once, and only when no exit has
+    /// already been delivered — a session that ended normally closes its stream
+    /// straight afterwards, and that EOF must not be reported a second time as
+    /// a disconnection.
+    private func deliverStartRefusedLocked(_ message: String) {
+        guard !exitDelivered, !connectionLostDelivered, !startRefusedDelivered else { return }
+        startRefusedDelivered = true
+        DispatchQueue.main.async { [self] in onStartRefused?(message) }
+    }
+
+    private func deliverConnectionLostLocked() {
+        // All three outcomes are mutually exclusive and each is final. The
+        // refusal arm cannot reach here today — a refusal happens inside
+        // `start()`, before `startReader` exists, so no EOF follows it — but the
+        // guard states the invariant rather than relying on that ordering: if a
+        // reader ever starts earlier, one failure must still be one report, and
+        // the second would arrive as "still running there", the exact sentence a
+        // refusal must never produce.
+        guard !exitDelivered, !connectionLostDelivered, !startRefusedDelivered else { return }
+        connectionLostDelivered = true
+        DispatchQueue.main.async { [self] in onConnectionLost?() }
     }
 }

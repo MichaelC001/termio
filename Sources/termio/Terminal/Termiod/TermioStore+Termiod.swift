@@ -135,6 +135,12 @@ extension TermioStore {
                 identifiesAgent: isPlainTerminal,
                 followsWorkingDirectory: followsWorkingDirectory)
         }
+        link.onStartRefused = { [weak self, weak inMemory] message in
+            self?.applyTermiodStartRefused(for: session.id, message: message, surface: inMemory)
+        }
+        link.onConnectionLost = { [weak self, weak inMemory] in
+            self?.applyTermiodConnectionLost(for: session.id, surface: inMemory)
+        }
         link.onExit = { [weak self, weak inMemory] code, runtimeMilliseconds, information in
             self?.applyTermiodExit(
                 for: session.id, code: code, runtimeMilliseconds: runtimeMilliseconds,
@@ -246,6 +252,56 @@ extension TermioStore {
     ///     and a poll that ran seconds earlier answers a different question.
     ///   - isAgentSession: snapshotted when the link was wired, so a row promoted
     ///     mid-life still exits as what it was launched as.
+    /// The daemon answered and refused: a cwd that no longer exists, a rejected
+    /// handshake, a spawn it would not perform.
+    ///
+    /// Not a lost connection — the daemon is right there — and not an exit,
+    /// because nothing ever started. The distinction matters on screen: saying
+    /// "the session is still running there" about a session that was never
+    /// created would be a different lie from the one this path exists to fix.
+    /// The daemon's own words are shown, since they name the cause.
+    func applyTermiodStartRefused(for id: Session.ID, message: String,
+                                  surface: InMemoryTerminalSession?) {
+        termiodLinks[id] = nil
+        Log.termiod.error("""
+        \(id.uuidString, privacy: .public) was refused by the device: \
+        \(message, privacy: .public)
+        """)
+        surface?.receive(Data((
+            "\r\n\u{1B}[31m"
+            + localized("This session couldn’t be started.")
+            + "\u{1B}[0m\r\n" + message + "\r\n").utf8))
+    }
+
+    /// The transport died under a session that is still running.
+    ///
+    /// Deliberately not `applyTermiodExit`: no exit policy runs, because there
+    /// was no exit — running it would park the pane over an error that does not
+    /// exist, and for a plain terminal `.close` would take the row away while
+    /// the shell it names is still alive on the device.
+    ///
+    /// The attachment is dropped, since it is dead, but nothing else about the
+    /// session is: no tombstone, no status change, no row removal. Selecting
+    /// the session again builds a fresh surface, and `attach` resolves the same
+    /// name back to the same process.
+    func applyTermiodConnectionLost(for id: Session.ID, surface: InMemoryTerminalSession?) {
+        termiodLinks[id] = nil
+        guard let session = session(id) else { return }
+        let place = session.termiodRemoteHost ?? localized("this Mac")
+        Log.termiod.error("""
+        lost the connection to \(session.id.uuidString, privacy: .public) on \
+        \(place, privacy: .public); the session keeps running there
+        """)
+        // Said on the screen the user is looking at, because a pane that simply
+        // stops updating is indistinguishable from an agent that went quiet.
+        surface?.receive(Data((
+            "\r\n\u{1B}[33m"
+            + localized("Lost the connection to \(place). The session is still running there.")
+            + "\u{1B}[0m\r\n"
+            + localized("Close the session and open it again to reattach.")
+            + "\r\n").utf8))
+    }
+
     func applyTermiodExit(for id: Session.ID,
                           code: Int32,
                           runtimeMilliseconds: UInt64,

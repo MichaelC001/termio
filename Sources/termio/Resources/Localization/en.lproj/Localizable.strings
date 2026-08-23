@@ -222,6 +222,8 @@
 	<string>Close Window</string>
 	<key>Close session</key>
 	<string>Close session</string>
+	<key>Close the session and open it again to reattach.</key>
+	<string>Close the session and open it again to reattach.</string>
 	<key>Closed</key>
 	<string>Closed</string>
 	<key>Closing it stops %lld session(s). The folders on disk are left alone.</key>
@@ -544,6 +546,8 @@
 	<string>Local</string>
 	<key>Login shell</key>
 	<string>Login shell</string>
+	<key>Lost the connection to %@. The session is still running there.</key>
+	<string>Lost the connection to %@. The session is still running there.</string>
 	<key>Match Case</key>
 	<string>Match Case</string>
 	<key>Match Whole Word</key>
@@ -1082,6 +1086,8 @@
 	<string>This project’s origin remote doesn’t point at github.com, so there is no issue tracker to show.</string>
 	<key>This pull request changes no files.</key>
 	<string>This pull request changes no files.</string>
+	<key>This session couldn’t be started.</key>
+	<string>This session couldn’t be started.</string>
 	<key>This week</key>
 	<string>This week</string>
 	<key>Timed out</key>
@@ -1198,6 +1204,8 @@ Enabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks
 	<string>termio can teach the agents you run (Claude Code, Codex, …) a `termio sessions` command so they can see, drive, and read each other's sessions in a project.
 
 Enabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks. You can turn it off anytime in Settings ▸ Agents.</string>
+	<key>this Mac</key>
+	<string>this Mac</string>
 	<key>· resets %@</key>
 	<string>· resets %@</string>
 	<key>“%@” already exists.</key>

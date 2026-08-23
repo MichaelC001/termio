@@ -222,6 +222,8 @@
 	<string>关闭窗口</string>
 	<key>Close session</key>
 	<string>关闭会话</string>
+	<key>Close the session and open it again to reattach.</key>
+	<string>关闭会话后重新打开即可接回。</string>
 	<key>Closed</key>
 	<string>已关闭</string>
 	<key>Closing it stops %lld session(s). The folders on disk are left alone.</key>
@@ -544,6 +546,8 @@
 	<string>本地</string>
 	<key>Login shell</key>
 	<string>登录 shell</string>
+	<key>Lost the connection to %@. The session is still running there.</key>
+	<string>与 %@ 的连接已断开。会话仍在那台机器上运行。</string>
 	<key>Match Case</key>
 	<string>区分大小写</string>
 	<key>Match Whole Word</key>
@@ -1082,6 +1086,8 @@
 	<string>该项目的 origin 远程仓库未指向 github.com，因此没有可显示的 issue 跟踪器。</string>
 	<key>This pull request changes no files.</key>
 	<string>此 PR 未更改任何文件。</string>
+	<key>This session couldn’t be started.</key>
+	<string>这个会话没能启动。</string>
 	<key>This week</key>
 	<string>本周</string>
 	<key>Timed out</key>
@@ -1198,6 +1204,8 @@ Enabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks
 	<string>termio 可以教你运行的 Agent（Claude Code、Codex 等）使用 `termio sessions` 命令，让它们在项目中查看、驱动并读取彼此的会话。
 
 启用后会在你的 ~/.claude/CLAUDE.md 中添加一段简短说明并安装状态 hooks。你可以随时在“设置 ▸ Agents”中将其关闭。</string>
+	<key>this Mac</key>
+	<string>本机</string>
 	<key>· resets %@</key>
 	<string>· 重置于 %@</string>
 	<key>“%@” already exists.</key>
