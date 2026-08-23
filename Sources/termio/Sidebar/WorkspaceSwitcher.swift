@@ -87,7 +87,13 @@ struct WorkspaceSwitcherToolbarView: View {
             // three glyphs wide, and every point this control spends on decoration is
             // a point the name truncates at.
             Text(current.name)
-                .font(nameFont)
+                // The very font the sidebar's rows and section headers use — not a copy of its
+                // definition, which is what this was and what let the two drift on paper. The band
+                // and the column below it share an x-height and read as one thing: this names that
+                // column, and a size step would separate it from what it names. Rank comes from
+                // weight instead — a label larger than the window title beside it is what makes a
+                // titlebar look mis-scaled.
+                .font(settings.interfaceFont)
                 .fontWeight(.medium)
                 .foregroundStyle(color)
                 .lineLimit(1)
@@ -101,19 +107,6 @@ struct WorkspaceSwitcherToolbarView: View {
                 .overlay(WorkspaceMenuPopper(store: store))
                 .accessibilityHidden(true)
         }
-    }
-
-    /// The sidebar's own row size, so the band and the column below it share an
-    /// x-height and read as one thing — this names that column, and a size step
-    /// would separate it from what it names. The rank comes from weight instead:
-    /// a label larger than the 13pt window title beside it is what makes a titlebar
-    /// look mis-scaled. Derived from the interface size rather than fixed, so it
-    /// still follows the density preference the rows below it follow.
-    private var nameFont: Font {
-        let size = settings.interfaceFontSize
-        return settings.interfaceFontFamily.isEmpty
-            ? .system(size: size)
-            : .custom(settings.interfaceFontFamily, size: size)
     }
 
     // Matched to the sidebar toolbar's native glyphs (the `+` new-terminal item, the

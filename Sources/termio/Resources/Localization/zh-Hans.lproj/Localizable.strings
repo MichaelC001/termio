@@ -194,8 +194,6 @@
 	<string>请另选一个用于对比的分支。</string>
 	<key>Choose how projects are ordered</key>
 	<string>选取项目的排序方式</string>
-	<key>Choose which workspace the sidebar shows</key>
-	<string>选择侧栏显示哪个工作区</string>
 	<key>Choose…</key>
 	<string>选取…</string>
 	<key>Clear</key>
