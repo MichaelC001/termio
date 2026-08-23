@@ -266,14 +266,16 @@ jobs:
 
       # Record the release on GitHub for the tag + auto-generated changelog.
       # Artifacts live on R2 (the private repo's own assets aren't public), so the
-      # download link goes in the title's trailing note rather than as an asset.
+      # download link leads the body — GitHub renders release titles as plain text,
+      # so a URL there is unclickable.
       - name: Record GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${{ steps.meta.outputs.version }}"
           gh release create "v${VERSION}" \
-            --title "${APP_NAME} v${VERSION} — $DOWNLOAD_BASE_URL/v${VERSION}/${APP_NAME}.dmg" \
+            --title "${APP_NAME} v${VERSION}" \
+            --notes "[Download ${APP_NAME} ${VERSION} for macOS]($DOWNLOAD_BASE_URL/v${VERSION}/${APP_NAME}.dmg)" \
             --generate-notes
 
       # Point the Homebrew tap (termio-sh/homebrew-tap) at this release so
