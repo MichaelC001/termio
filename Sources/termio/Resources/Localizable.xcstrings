@@ -5735,6 +5735,36 @@
         }
       }
     },
+    "Reaching %@…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在连接 %@…"
+          }
+        }
+      }
+    },
+    "Can’t reach %@: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连不上 %@：%@"
+          }
+        }
+      }
+    },
+    "Can’t reach %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连不上 %@"
+          }
+        }
+      }
+    },
     "Choose a name for this workspace.": {
       "localizations": {
         "zh-Hans": {

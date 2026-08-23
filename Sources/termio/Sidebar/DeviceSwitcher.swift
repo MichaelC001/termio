@@ -91,47 +91,109 @@ extension KnownDevice {
 }
 
 /// The mark a device carries wherever it is drawn small enough that its name
-/// won't fit — today the dot on a session row that runs elsewhere.
+/// won't fit — the dot on a row that runs somewhere other than this Mac.
 ///
-/// A color is not decoration here. The whole class of accident this app has to
-/// prevent is "I thought I was local, I was on the VPS": the panes now refuse to
-/// show the wrong machine's files, and the mark is the cue that arrives *before*
-/// the mistake, without the user reading a label.
+/// It is not decoration. The class of accident this app exists to prevent is
+/// "I thought I was local, I was on the VPS", and the mark is the cue that
+/// arrives *before* the mistake rather than after it. What does that work is the
+/// mark's **presence**: a dot means elsewhere, and this Mac carries none.
 ///
-/// The hue comes from the terminal theme (`ChromeTheme.deviceTints`), never from
-/// a palette of our own, and the index is derived from the device's identity so
-/// a machine keeps the same mark across launches, themes, and windows.
-enum DeviceTint {
-    static func color(for device: KnownDevice, chrome: ChromeTheme?) -> Color {
-        // This Mac is deliberately unhued. It is the machine you are on when you
-        // are not thinking about machines, so it reads as the absence of a mark
-        // and every tinted dot means "somewhere else".
-        guard !device.isLocal else { return .secondary }
-        guard let tints = chrome?.deviceTints, !tints.isEmpty else {
-            return Self.systemTints[index(for: device, count: Self.systemTints.count)]
+/// What the mark used to encode besides presence was *which* machine, as a hue
+/// derived from the device's identity. That has stopped paying for itself. A
+/// workspace belongs to exactly one machine and everything filed under it takes
+/// its machine from that workspace, so a hue drawn on those rows is the same
+/// colour repeated down the whole column — a distinction that distinguishes
+/// nothing. It also came from the terminal theme, so an identity changed when
+/// the user changed colour scheme, and it moved once more when a handshake
+/// replaced the alias with a `host_id`.
+///
+/// So the channel is spent on the thing the rows cannot otherwise say: whether
+/// the machine is answering. That is knowable exactly where it matters — every
+/// row in the sidebar belongs to the workspace on screen, and that workspace's
+/// device is the one already being asked for a roster.
+enum DeviceMark: Equatable {
+    /// This Mac: the machine you are on when you are not thinking about
+    /// machines, drawn as the absence of a mark.
+    case here
+    /// Another machine, with nothing live to say about it.
+    case elsewhere
+    /// Asked, not answered yet. Drawn hollow — "not filled in" is the shape of
+    /// the thing it means.
+    case reaching
+    /// Asked and refused, carrying the device's own words for the tooltip.
+    case unreachable(String)
+
+    /// What to draw for `device`, given the device the window is showing and
+    /// what that one last said.
+    ///
+    /// Liveness is only claimed for the device being shown, because it is the
+    /// only one this app has asked. Answering for the others would mean a roster
+    /// round trip per row — 216–292 ms cold, each
+    /// (`docs/design/20260819-workspace-switch-latency.md`) — to animate dots
+    /// nobody is looking at.
+    ///
+    /// Matched by identity rather than by alias, so a machine reached over a LAN
+    /// name and a tailnet name is one machine and not two: a mark keyed to the
+    /// road taken would give one box several marks as the user moves between
+    /// networks, which is worse than no mark at all.
+    static func mark(
+        for device: KnownDevice, current: KnownDevice, state: DeviceSessionsState
+    ) -> DeviceMark {
+        guard !device.isLocal else { return .here }
+        guard isSameMachine(device, current) else { return .elsewhere }
+        switch state {
+        case .loading: return .reaching
+        case .failed(let message): return .unreachable(message)
+        case .ready, .unavailable: return .elsewhere
         }
-        return tints[index(for: device, count: tints.count)]
     }
 
-    /// Used only when no terminal theme is selected, so the chrome is on the
-    /// system appearance and has no palette to borrow from.
-    private static let systemTints: [Color] = [.green, .yellow, .blue, .purple, .teal]
-
-    private static func index(for device: KnownDevice, count: Int) -> Int {
-        // The `host_id` once a handshake has revealed one, the alias until then —
-        // the same bootstrap/stable split `KnownDevice` carries. A device whose id
-        // arrives later therefore *can* change mark once, which is the honest
-        // outcome: before the handshake we did not know which machine it was.
-        let identity = device.deviceID ?? device.alias ?? ""
-        // FNV-1a rather than `hashValue`: Swift seeds its hasher per process, so a
-        // hashed index would repaint every device on every launch.
-        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
-        for byte in identity.utf8 {
-            hash ^= UInt64(byte)
-            hash &*= 0x100_0000_01b3
-        }
-        return Int(hash % UInt64(max(count, 1)))
+    private static func isSameMachine(_ one: KnownDevice, _ other: KnownDevice) -> Bool {
+        if let left = one.deviceID, let right = other.deviceID { return left == right }
+        return one.alias == other.alias
     }
+}
+
+/// `DeviceMark` drawn: a 6pt dot, hollow while the machine has not answered and
+/// struck through once it has refused.
+///
+/// Shape carries the state, not colour alone — the palette belongs to the
+/// terminal theme, and a cue that only exists as a hue is a cue some users
+/// cannot see. Colour appears once, on the failure, because that is the state
+/// worth pulling an eye toward; a machine that is simply elsewhere and fine is
+/// not news.
+struct DeviceMarkView: View {
+    let mark: DeviceMark
+    let name: String
+
+    private static let size: CGFloat = 6
+
+    var body: some View {
+        switch mark {
+        case .here:
+            EmptyView()
+        case .elsewhere:
+            dot.fill(Color.secondary)
+                .frame(width: Self.size, height: Self.size)
+                .help(localized("Runs on \(name)"))
+        case .reaching:
+            dot.stroke(Color.secondary, lineWidth: 1)
+                .frame(width: Self.size, height: Self.size)
+                .help(localized("Reaching \(name)…"))
+        case .unreachable(let message):
+            ZStack {
+                dot.stroke(Color.orange, lineWidth: 1)
+                Capsule()
+                    .fill(Color.orange)
+                    .frame(width: Self.size + 3, height: 1)
+                    .rotationEffect(.degrees(-45))
+            }
+            .frame(width: Self.size, height: Self.size)
+            .help(localized("Can’t reach \(name): \(message)"))
+        }
+    }
+
+    private var dot: Circle { Circle() }
 }
 
 // MARK: - Menu construction
