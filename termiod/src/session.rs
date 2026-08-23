@@ -3,9 +3,7 @@
 //! connection — detach never kills it.
 
 use crate::protocol::{
-    encode_grid_payload, encode_history_payload, Control, ErrorCode, Event, GridDiff, GridRow,
-    HistoryChunk, SessionInfo, Snapshot, WireCell, WireColor, WorkstreamSpec, HISTORY_HEADER_SIZE,
-    MAX_HISTORY_FRAME_SIZE, SNAPSHOT_CELL_SIZE,
+    encode_grid_payload, Control, ErrorCode, Event, GridDiff, SessionInfo, Snapshot, WorkstreamSpec,
 };
 use crate::id::{ClientId, SessionId};
 use crate::pty::Pty;
@@ -21,13 +19,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 const RING_CAP: usize = 128 * 1024;
 const READ_CHUNK: usize = 64 * 1024;
-pub const SCROLLBACK_STAGE_MAX_BYTES: usize = 1024 * 1024;
 pub const KEYFRAME_EVERY_FRAMES: u32 = 256;
-/// How often the session asks the kernel what is running in its terminal.
-/// Slow on purpose: this answers "which agent is in there", a question whose
-/// answer changes when a human starts or stops a program, not per frame.
-const FOREGROUND_POLL: std::time::Duration = std::time::Duration::from_secs(2);
-
 mod backlog;
 
 pub(crate) use backlog::{ClientBacklog, Metered};
@@ -35,6 +27,17 @@ pub(crate) use backlog::{ClientBacklog, Metered};
 mod sidecar;
 
 pub(crate) use sidecar::{SidecarCapture, SidecarCommand, SidecarQueue, SidecarResult, Vt};
+
+mod foreground;
+
+use foreground::{Foreground, ForegroundResolution};
+
+mod wire;
+
+use wire::{
+    encode_scrollback_chunks, grid_from_damage, scrollback_row_limit, wire_cell,
+    SCROLLBACK_STAGE_MAX_BYTES,
+};
 
 /// Pushed to an attached connection task.
 #[derive(Clone)]
@@ -331,61 +334,10 @@ struct Session {
     ring_bytes: usize,
     events: broadcast::Sender<Event>,
     vt: Vt,
-    /// Last sample of who is in the tty's foreground and where the child is.
+    /// Who is in the tty's foreground and where the child is standing.
     /// `info()` reads this cache so a roster request never turns into a burst
     /// of syscalls.
-    foreground: ForegroundSample,
-    /// A resolution is in flight on a blocking thread. One at a time: the poll
-    /// is slower than the work, and piling up would only queue answers about
-    /// groups that have already lost the terminal.
-    foreground_pending: bool,
-    /// The binary the child is running, pinned on the first sample that finds
-    /// it. One-shot on purpose: this is the *launch* baseline that
-    /// `was_replaced()` compares against, and resampling would paper over the
-    /// in-place upgrade it exists to notice.
-    child_executable: Option<crate::proc::ExecutableIdentity>,
-}
-
-/// What the session believes about its foreground right now.
-///
-/// Split deliberately along what it costs to learn. `pgid` and `job` come from
-/// one `tcgetpgrp` and are refreshed on the actor; everything below them is a
-/// process-table walk and arrives later, from [`ForegroundResolution`].
-#[derive(Default, Clone, PartialEq, Eq)]
-struct ForegroundSample {
-    /// The foreground process *group*, exactly as `tcgetpgrp` reported it.
-    /// Kept even when no member of it could be read, because "is a job
-    /// running?" is answered by comparing this against the session's own child
-    /// and must not turn into "no" the moment a pipeline's leader exits.
-    pgid: Option<i32>,
-    /// The member of that group whose argv is reported below. Equal to `pgid`
-    /// whenever the group leader is still usable, which is the common case.
-    pid: Option<i32>,
-    argv: Option<Vec<String>>,
-    job: bool,
-    cwd: Option<String>,
-}
-
-/// The expensive half of a foreground sample, computed on a blocking thread and
-/// handed back to the actor.
-///
-/// Reading argv means a `KERN_PROCARGS2` sysctl on macOS and a file read on
-/// Linux, and finding *which* pid to read it for can mean walking every process
-/// on the box when a pipeline's leader has exited. None of that may happen on
-/// the session actor: that task also runs the PTY read and the fan-out, so a
-/// process-table walk there is time the byte path spends waiting — the
-/// anti-100× invariant, which is about more than the VT parse.
-struct ForegroundResolution {
-    /// The group this answer describes. The foreground can move while the
-    /// resolution is in flight, and an answer about a group that has since lost
-    /// the terminal is not a stale version of the truth — it is the answer to a
-    /// different question, and gets dropped.
-    pgid: Option<i32>,
-    pid: Option<i32>,
-    argv: Option<Vec<String>>,
-    cwd: Option<String>,
-    /// Only set when the session had not pinned its binary yet.
-    executable: Option<crate::proc::ExecutableIdentity>,
+    foreground: Foreground,
 }
 
 impl Session {
@@ -406,120 +358,13 @@ impl Session {
             title: self.title.clone(),
             attached_clients: self.clients.len(),
             writer_client_id: self.writer.as_ref().map(ClientId::to_string),
-            foreground_pid: self.foreground.pid,
-            foreground_argv: self.foreground.argv.clone(),
-            foreground_job: self.foreground.job,
-            child_cwd: self.foreground.cwd.clone(),
-            child_executable: self
-                .child_executable
-                .as_ref()
-                .map(|identity| identity.path.clone()),
-            // Checked here rather than cached from the last tick: the record
-            // that matters most is the one built on the exit path, and a binary
-            // swapped during the seconds before the child quit is exactly the
-            // case this answers.
-            child_executable_replaced: self
-                .child_executable
-                .as_ref()
-                .is_some_and(|identity| identity.was_replaced()),
+            foreground_pid: self.foreground.current().pid,
+            foreground_argv: self.foreground.current().argv.clone(),
+            foreground_job: self.foreground.current().job,
+            child_cwd: self.foreground.current().cwd.clone(),
+            child_executable: self.foreground.executable_path(),
+            child_executable_replaced: self.foreground.executable_replaced(),
         }
-    }
-
-    /// The cheap half of the poll, and the only half that runs here: one
-    /// `tcgetpgrp` on the master. Returns whether anything moved, so a quiet
-    /// session emits no roster traffic.
-    ///
-    /// The expensive half is dispatched to a blocking thread and applied later
-    /// by [`Session::apply_foreground`]. Both halves have to exist because they
-    /// answer different questions on different deadlines: "is a job running?"
-    /// is read at close time and must be current, and it is answerable from the
-    /// group id alone; "what is that job?" drives an icon and can be a beat
-    /// late.
-    fn sample_foreground(
-        &mut self,
-        resolved: &mpsc::UnboundedSender<ForegroundResolution>,
-    ) -> bool {
-        if self.pid <= 0 {
-            return false;
-        }
-        let pgid = self.pty.foreground_pgid();
-        // Compared against the *group*: a foreground group that is not the
-        // child's own is a running job whether or not any member of it could
-        // be read.
-        let job = pgid.is_some_and(|pgid| pgid != self.pid);
-        let mut changed = false;
-        if self.foreground.pgid != pgid {
-            self.foreground.pgid = pgid;
-            // The cached identity described a group that no longer holds the
-            // terminal. Dropping it is an honest gap the resolution below
-            // fills; keeping it would name a program that has already exited.
-            self.foreground.pid = None;
-            self.foreground.argv = None;
-            changed = true;
-        }
-        if self.foreground.job != job {
-            self.foreground.job = job;
-            changed = true;
-        }
-        self.request_foreground(pgid, resolved);
-        changed
-    }
-
-    /// Hand the process-table work to a blocking thread.
-    fn request_foreground(
-        &mut self,
-        pgid: Option<i32>,
-        resolved: &mpsc::UnboundedSender<ForegroundResolution>,
-    ) {
-        if self.foreground_pending {
-            return;
-        }
-        self.foreground_pending = true;
-        let child = self.pid;
-        let pin_executable = self.child_executable.is_none();
-        let resolved = resolved.clone();
-        tokio::task::spawn_blocking(move || {
-            // A group id is not a pid. The shell names each job's group after
-            // its leader, so the two agree for as long as that leader is alive
-            // — and stop agreeing in a pipeline the moment it is not, which is
-            // why the pid comes from the host rather than from that assumption.
-            let pid = pgid.and_then(crate::proc::foreground_member);
-            let _ = resolved.send(ForegroundResolution {
-                pgid,
-                pid,
-                argv: pid.and_then(crate::proc::process_arguments),
-                cwd: crate::proc::working_directory(child),
-                executable: pin_executable
-                    .then(|| crate::proc::executable_identity(child))
-                    .flatten(),
-            });
-        });
-    }
-
-    /// Take a resolution the blocking thread finished, unless the foreground
-    /// moved while it was in flight. Returns whether anything moved.
-    fn apply_foreground(&mut self, resolution: ForegroundResolution) -> bool {
-        self.foreground_pending = false;
-        if resolution.pgid != self.foreground.pgid {
-            return false;
-        }
-        if self.child_executable.is_none() {
-            self.child_executable = resolution.executable;
-        }
-        let mut changed = false;
-        if self.foreground.pid != resolution.pid {
-            self.foreground.pid = resolution.pid;
-            changed = true;
-        }
-        if self.foreground.argv != resolution.argv {
-            self.foreground.argv = resolution.argv;
-            changed = true;
-        }
-        if self.foreground.cwd != resolution.cwd {
-            self.foreground.cwd = resolution.cwd;
-            changed = true;
-        }
-        changed
     }
 
     fn recompute_writer(&mut self) {
@@ -1192,107 +1037,6 @@ impl Session {
     }
 }
 
-fn scrollback_row_limit(cols: u16) -> usize {
-    let row_bytes = usize::from(cols).saturating_mul(SNAPSHOT_CELL_SIZE);
-    SCROLLBACK_STAGE_MAX_BYTES
-        .checked_div(row_bytes)
-        .unwrap_or(0)
-}
-
-fn encode_scrollback_chunks(
-    cols: u16,
-    rows: Vec<Vec<termiod_vt::Cell>>,
-) -> Result<VecDeque<Bytes>, String> {
-    if rows.is_empty() {
-        return Ok(VecDeque::new());
-    }
-    let row_bytes = usize::from(cols)
-        .checked_mul(SNAPSHOT_CELL_SIZE)
-        .ok_or_else(|| "scrollback row length overflow".to_string())?;
-    let rows_per_chunk = MAX_HISTORY_FRAME_SIZE
-        .checked_sub(HISTORY_HEADER_SIZE)
-        .and_then(|available| available.checked_div(row_bytes))
-        .unwrap_or(0)
-        .min(usize::from(u16::MAX));
-    if rows_per_chunk == 0 {
-        return Err(format!(
-            "one {cols}-column row cannot fit in a {MAX_HISTORY_FRAME_SIZE}-byte H frame"
-        ));
-    }
-
-    let mut rows = rows.into_iter();
-    let mut chunks = VecDeque::new();
-    let mut first_offset = 1u32;
-    loop {
-        let mut cells = Vec::with_capacity(rows_per_chunk * usize::from(cols));
-        let mut row_count = 0u16;
-        for _ in 0..rows_per_chunk {
-            let Some(row) = rows.next() else {
-                break;
-            };
-            if row.len() != usize::from(cols) {
-                return Err(format!(
-                    "scrollback row has {} cells, expected {cols}",
-                    row.len()
-                ));
-            }
-            cells.extend(row.into_iter().map(wire_cell));
-            row_count += 1;
-        }
-        if row_count == 0 {
-            break;
-        }
-        let payload = encode_history_payload(&HistoryChunk {
-            cols,
-            first_offset,
-            row_count,
-            cells,
-        })
-        .map_err(|error| error.to_string())?;
-        chunks.push_back(Bytes::from(payload));
-        first_offset = first_offset
-            .checked_add(u32::from(row_count))
-            .ok_or_else(|| "scrollback offset overflow".to_string())?;
-    }
-    Ok(chunks)
-}
-
-fn wire_color(color: termiod_vt::Color) -> WireColor {
-    match color {
-        termiod_vt::Color::Default => WireColor::Default,
-        termiod_vt::Color::Palette(index) => WireColor::Palette(index),
-        termiod_vt::Color::Rgb(value) => WireColor::Rgb([value.r, value.g, value.b]),
-    }
-}
-
-fn wire_cell(cell: termiod_vt::Cell) -> WireCell {
-    WireCell {
-        codepoint: cell.codepoint,
-        foreground: wire_color(cell.foreground),
-        background: wire_color(cell.background),
-        attributes: cell.attributes,
-    }
-}
-
-fn grid_from_damage(frame_seq: u32, damage: termiod_vt::Damage) -> GridDiff {
-    GridDiff {
-        frame_seq,
-        rows: damage.rows,
-        cols: damage.cols,
-        cursor_x: damage.cursor_x,
-        cursor_y: damage.cursor_y,
-        alt_screen: damage.alt_screen,
-        dirty_rows: damage
-            .dirty_rows
-            .into_iter()
-            .map(|row| GridRow {
-                row_index: row.row_index,
-                cells: row.cells.into_iter().map(wire_cell).collect(),
-            })
-            .collect(),
-    }
-}
-
 fn keyframe_every_frames() -> u32 {
     std::env::var("TERMIOD_KEYFRAME_EVERY")
         .ok()
@@ -1376,9 +1120,7 @@ pub fn spawn(
         ring_bytes: 0,
         events,
         vt: Vt::live(sidecar.commands, sidecar.queue),
-        foreground: ForegroundSample::default(),
-        foreground_pending: false,
-        child_executable: None,
+        foreground: Foreground::default(),
     };
 
     let waiter = tokio::task::spawn_blocking(move || {
@@ -1586,7 +1328,7 @@ async fn run(
     // there" from its first roster request rather than after a cold two
     // seconds. Missed ticks are skipped instead of queued: a busy actor should
     // sample once when it catches up, not replay a backlog of polls.
-    let mut foreground_poll = tokio::time::interval(FOREGROUND_POLL);
+    let mut foreground_poll = tokio::time::interval(foreground::POLL_INTERVAL);
     foreground_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // The process-table half of each poll runs on a blocking thread and comes
     // back here. Held for the life of the loop so the branch below never sees a
@@ -1596,12 +1338,12 @@ async fn run(
     loop {
         tokio::select! {
             _ = foreground_poll.tick() => {
-                if session.sample_foreground(&foreground_tx) {
+                if session.foreground.poll(&session.pty, session.pid, &foreground_tx) {
                     session.emit_roster();
                 }
             }
             Some(resolution) = foreground_rx.recv() => {
-                if session.apply_foreground(resolution) {
+                if session.foreground.apply(resolution) {
                     session.emit_roster();
                 }
             }
@@ -1898,10 +1640,9 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
 #[cfg(test)]
 mod tests {
     use super::{
-        handle_msg, scrollback_row_limit, should_emit_keyframe, spawn_sidecar, ClientBacklog,
-        ClientDelivery, ClientEntry, ClientEvent, ClientPlane, ClientRole, Session, SessionHandle,
-        SessionMsg, Sidecar, SidecarCommand, SidecarQueue, SidecarResult, Vt,
-        SCROLLBACK_STAGE_MAX_BYTES, SNAPSHOT_CELL_SIZE,
+        handle_msg, should_emit_keyframe, spawn_sidecar, ClientBacklog, ClientDelivery, ClientEntry,
+        ClientEvent, ClientPlane, ClientRole, Session, SessionHandle, SessionMsg, Sidecar,
+        SidecarCommand, SidecarQueue, SidecarResult, Vt,
     };
     use crate::id::{ClientId, SessionId};
     use crate::protocol::{Control, ErrorCode, Event, SessionInfo};
@@ -1924,16 +1665,6 @@ mod tests {
 
 
 
-
-    #[test]
-    fn scrollback_stage_cap_is_measured_in_encoded_rows() {
-        let cols = 80u16;
-        let row_bytes = usize::from(cols) * SNAPSHOT_CELL_SIZE;
-        let rows = scrollback_row_limit(cols);
-
-        assert!(rows * row_bytes <= SCROLLBACK_STAGE_MAX_BYTES);
-        assert!((rows + 1) * row_bytes > SCROLLBACK_STAGE_MAX_BYTES);
-    }
 
     #[test]
     fn keyframe_cadence_replaces_every_nth_grid_flush() {
@@ -2026,9 +1757,7 @@ mod tests {
                 ring_bytes: 0,
                 events,
                 vt: Vt::live(sidecar_tx, sidecar_queue),
-                foreground: super::ForegroundSample::default(),
-                foreground_pending: false,
-                child_executable: None,
+                foreground: super::Foreground::default(),
             },
             event_rx,
         )
@@ -2502,9 +2231,7 @@ mod tests {
             ring_bytes: 0,
             events,
             vt: Vt::live(sidecar_tx, Arc::new(SidecarQueue::new())),
-            foreground: super::ForegroundSample::default(),
-            foreground_pending: false,
-            child_executable: None,
+            foreground: super::Foreground::default(),
         };
 
         assert!(handle_msg(
