@@ -238,8 +238,6 @@
 	<string>Collapse All</string>
 	<key>Collapse Results</key>
 	<string>Collapse Results</string>
-	<key>Colour %lld</key>
-	<string>Colour %lld</string>
 	<key>Command</key>
 	<string>Command</string>
 	<key>Command Palette…</key>

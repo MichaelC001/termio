@@ -416,9 +416,7 @@ extension TermioStore {
     /// it is what authorises sweeping an empty one away. A workspace someone asked
     /// for is theirs even while it holds nothing.
     @discardableResult
-    func addWorkspace(named name: String, on device: WorkspaceDevice, color: Int? = nil)
-        -> Workspace.ID
-    {
+    func addWorkspace(named name: String, on device: WorkspaceDevice) -> Workspace.ID {
         let workspace = Workspace(
             name: name,
             deviceAlias: device.alias,
@@ -428,8 +426,7 @@ extension TermioStore {
             deviceID: device.alias.flatMap {
                 TermiodDeviceRegistry.shared.deviceID(for: TermiodRoute(sshAlias: $0))
             },
-            isAutoCreated: false,
-            color: color)
+            isAutoCreated: false)
         workspaces.append(workspace)
         currentWorkspaceID = workspace.id
         settings.currentWorkspaceID = workspace.id
@@ -439,13 +436,10 @@ extension TermioStore {
         return workspace.id
     }
 
-    func renameWorkspace(_ id: Workspace.ID, to name: String, color: Int? = nil) {
+    func renameWorkspace(_ id: Workspace.ID, to name: String) {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, let index = workspaces.firstIndex(where: { $0.id == id }) else { return }
         workspaces[index].name = name
-        // The same panel carries both, so renaming is also where a scope's colour
-        // is changed — there is no second dialog for one control.
-        if let color { workspaces[index].color = color }
     }
 
     /// Removes a workspace, closing everything in it. The last workspace is never
@@ -519,13 +513,13 @@ extension TermioStore {
             title = localized("New Workspace")
             message = localized("Name the workspace. It starts empty; sessions and projects you open on this Mac from now on are filed under it.")
         }
-        guard let chosen = promptForWorkspaceName(
+        guard let name = promptForWorkspaceName(
             title: title,
             message: message,
             confirm: localized("Create"),
             defaultName: nextFreeWorkspaceName
         ) else { return }
-        addWorkspace(named: chosen.name, on: device, color: chosen.color)
+        addWorkspace(named: name, on: device)
     }
 
     /// What the new-workspace field opens with: "Workspace", bumped past the names
@@ -555,14 +549,13 @@ extension TermioStore {
     /// other — the alias is what identifies it, not the label.
     func presentRenameWorkspacePanel(_ id: Workspace.ID) {
         guard let workspace = workspaces.first(where: { $0.id == id }) else { return }
-        guard let chosen = promptForWorkspaceName(
+        guard let name = promptForWorkspaceName(
             title: localized("Rename Workspace"),
             message: localized("Choose a name for this workspace."),
             confirm: localized("Rename"),
-            defaultName: workspace.name,
-            color: workspace.color
+            defaultName: workspace.name
         ) else { return }
-        renameWorkspace(id, to: chosen.name, color: chosen.color)
+        renameWorkspace(id, to: name)
     }
 
     /// Confirms before removing a workspace, because it closes every session in
@@ -589,34 +582,21 @@ extension TermioStore {
     /// A one-field name prompt, the same `NSAlert` shape the worktree and rename
     /// prompts use. Returns the trimmed entry, or `nil` if cancelled or emptied.
     private func promptForWorkspaceName(
-        title: String, message: String, confirm: String, defaultName: String,
-        color: Int? = nil
-    ) -> (name: String, color: Int)? {
+        title: String, message: String, confirm: String, defaultName: String
+    ) -> String? {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
         alert.addButton(withTitle: confirm)
         alert.addButton(withTitle: localized("Cancel"))
-
-        // The colour arrives already chosen — the least-used one, the same rule
-        // that fills it in for every workspace written before there were colours.
-        // So this is a decision the user may change, never one they must make:
-        // the panel opens with the name selected and Return still creates.
-        let fields = WorkspaceFields(
-            name: defaultName,
-            color: color ?? WorkspaceMigration.assigningColors(workspaces + [Workspace(name: "")])
-                .last?.color ?? 0,
-            tints: settings.chromeTheme(for: appearanceIsDark ? .dark : .light)?.workspaceTints ?? [])
-        alert.accessoryView = fields.view
-        alert.window.initialFirstResponder = fields.field
-        fields.field.selectText(nil)
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = defaultName
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        field.selectText(nil)
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        let name = fields.field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty ? nil : (name, fields.color)
-    }
-
-    private var appearanceIsDark: Bool {
-        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
     }
 
     // MARK: - The machine fallback
@@ -654,91 +634,5 @@ extension TermioStore {
             name: alias, deviceAlias: alias, deviceID: deviceID, isAutoCreated: true)
         workspaces.append(workspace)
         return workspace.id
-    }
-}
-
-/// The new-workspace panel's accessory: the name, and the colour the scope wears
-/// in the switcher.
-///
-/// The colour is a row of swatches rather than a pop-up because there are five of
-/// them and they are the thing being chosen — a menu would hide the choice behind
-/// a click and show a word for a colour. One arrives already selected, so the
-/// panel is still a name field that Return commits.
-///
-/// A class rather than a few locals because the alert runs modally and the
-/// swatches have to keep answering clicks while it is up.
-@MainActor
-private final class WorkspaceFields: NSObject {
-    let view = NSStackView()
-    let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-    private(set) var color: Int
-    private let tints: [Color]
-    private var swatches: [NSButton] = []
-
-    private static let swatchSize: CGFloat = 18
-
-    init(name: String, color: Int, tints: [Color]) {
-        self.color = color
-        self.tints = tints
-        super.init()
-        field.stringValue = name
-
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.spacing = 6
-        for index in tints.indices {
-            let button = NSButton(
-                frame: NSRect(x: 0, y: 0, width: Self.swatchSize, height: Self.swatchSize))
-            button.isBordered = false
-            button.title = ""
-            button.setButtonType(.momentaryChange)
-            button.target = self
-            button.action = #selector(pick(_:))
-            button.tag = index
-            // A colour has no name to read out, so the position is what a screen
-            // reader can say about it.
-            button.setAccessibilityLabel(localized("Colour \(index + 1)"))
-            swatches.append(button)
-            row.addArrangedSubview(button)
-        }
-        redrawSwatches()
-
-        view.orientation = .vertical
-        view.alignment = .leading
-        view.spacing = 10
-        view.addArrangedSubview(field)
-        if !tints.isEmpty { view.addArrangedSubview(row) }
-        field.widthAnchor.constraint(equalToConstant: 260).isActive = true
-        // NSAlert lays its accessory out by frame, so the stack carries its own
-        // measured size rather than a number guessed here.
-        view.frame = NSRect(origin: .zero, size: view.fittingSize)
-    }
-
-    @objc private func pick(_ sender: NSButton) {
-        color = sender.tag
-        redrawSwatches()
-    }
-
-    private func redrawSwatches() {
-        for (index, button) in zip(tints.indices, swatches) {
-            button.image = Self.swatch(NSColor(tints[index]), selected: index == color)
-        }
-    }
-
-    /// The selected swatch wears a ring rather than a checkmark: a tick drawn on
-    /// top of a colour has to be light or dark, and either one disappears against
-    /// half the palette.
-    private static func swatch(_ color: NSColor, selected: Bool) -> NSImage {
-        NSImage(size: NSSize(width: swatchSize, height: swatchSize), flipped: false) { rect in
-            color.setFill()
-            NSBezierPath(ovalIn: rect.insetBy(dx: 3, dy: 3)).fill()
-            if selected {
-                NSColor.labelColor.setStroke()
-                let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 0.75, dy: 0.75))
-                ring.lineWidth = 1.5
-                ring.stroke()
-            }
-            return true
-        }
     }
 }

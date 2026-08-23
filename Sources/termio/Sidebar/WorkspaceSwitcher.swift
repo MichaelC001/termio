@@ -19,10 +19,6 @@ enum WorkspaceMenu {
     @MainActor
     static func rows(in store: TermioStore, target: AnyObject, action: Selector) -> [NSMenuItem] {
         let shortcuts = KeybindingStore.workspaceShortcuts
-        // The menu is AppKit and has no SwiftUI environment to read the
-        // appearance from, so it asks the window that is showing it.
-        let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let chrome = store.settings.chromeTheme(for: dark ? .dark : .light)
         return store.orderedWorkspaces.enumerated().map { index, workspace in
             let item = NSMenuItem(title: workspace.name, action: action, keyEquivalent: "")
             if index < shortcuts.count {
@@ -32,16 +28,10 @@ enum WorkspaceMenu {
             item.target = target
             item.representedObject = workspace.id.uuidString
             item.state = workspace.id == store.currentWorkspaceID ? .on : .off
-            // The scope's own colour. This is the one place every workspace is
-            // visible at once, which is the only place a colour can be read
-            // without having been memorised — the menu is its own legend. Drawn
-            // nowhere else: inside a workspace every row belongs to it, so the
-            // same hue repeated down the sidebar would say nothing.
-            item.image = WorkspaceSwatch.image(for: workspace, chrome: chrome)
             // Which machine, in words, and only when the name does not already
             // say it — an auto-created workspace *is* named after its alias.
-            // Words rather than a second mark: the row has one image slot and the
-            // colour has it, and a machine's name is the thing a person types.
+            // In words rather than as a mark: a machine's name is the thing a
+            // person types, and the row has the room for it.
             if let alias = workspace.deviceAlias,
                !workspace.name.localizedCaseInsensitiveContains(alias) {
                 item.attributedTitle = titled(workspace.name, on: alias)
@@ -64,42 +54,6 @@ enum WorkspaceMenu {
                 .foregroundColor: NSColor.secondaryLabelColor,
             ]))
         return title
-    }
-}
-
-/// The dot a workspace wears in the switcher, rendered once per colour and kept.
-///
-/// Menus are rebuilt on every open (`menuNeedsUpdate`), so a swatch drawn per row
-/// per open is the same handful of images made over and over. The cache is keyed
-/// by the colour it drew, not by the workspace, because two scopes sharing a hue
-/// share the picture — and because a key that *is* the colour needs no
-/// invalidation when the theme changes: the same index resolves to a different
-/// colour, which is a different key.
-@MainActor
-enum WorkspaceSwatch {
-    private static let cache = NSCache<NSString, NSImage>()
-    private static let size = NSSize(width: 10, height: 10)
-
-    static func image(for workspace: Workspace, chrome: ChromeTheme?) -> NSImage? {
-        guard let color = resolved(workspace, chrome: chrome) else { return nil }
-        let key = NSString(string: color.description)
-        if let cached = cache.object(forKey: key) { return cached }
-        let image = NSImage(size: size, flipped: false) { rect in
-            color.setFill()
-            NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
-            return true
-        }
-        cache.setObject(image, forKey: key)
-        return image
-    }
-
-    /// Wrapped rather than clamped: the index is stored against a palette whose
-    /// size is the theme's business, and a theme with fewer tints must still draw
-    /// every workspace rather than collapsing the tail onto one colour.
-    private static func resolved(_ workspace: Workspace, chrome: ChromeTheme?) -> NSColor? {
-        guard let tints = chrome?.workspaceTints, !tints.isEmpty else { return nil }
-        let index = (workspace.color ?? 0) % tints.count
-        return NSColor(tints[index])
     }
 }
 
