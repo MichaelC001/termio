@@ -5775,16 +5775,6 @@
         }
       }
     },
-    "Choose which workspace the sidebar shows": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "选择侧栏显示哪个工作区"
-          }
-        }
-      }
-    },
     "Closing it stops %lld session(s). The folders on disk are left alone.": {
       "localizations": {
         "zh-Hans": {
