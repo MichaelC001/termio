@@ -305,7 +305,20 @@ final class TermioStore: ObservableObject {
     /// hosts the detail beside the terminal by default; the detail's maximize button flips this
     /// to cover everything (see the app delegate's full-window host), and it resets to `false`
     /// automatically whenever the last detail closes.
-    @Published var inspectorMaximized = false
+    @Published var inspectorMaximized = false {
+        didSet {
+            guard inspectorMaximized != oldValue else { return }
+            inspectorMaximizedDidChange.send(inspectorMaximized)
+        }
+    }
+
+    /// Fires once `inspectorMaximized` has actually landed, which `objectWillChange` cannot do.
+    /// The two halves of the maximize handoff live in different frameworks — SwiftUI drops the
+    /// docked detail, the app delegate mounts the full-window host — and a delegate driven off
+    /// `objectWillChange` has to defer a runloop to read the settled value, by which time SwiftUI
+    /// has already uncovered the inspector's file tree. Publishing from `didSet` lets the host go
+    /// up in the same turn the flag flips, so the swap never shows what is underneath.
+    let inspectorMaximizedDidChange = PassthroughSubject<Bool, Never>()
 
     /// Whether the list column is collapsed so the detail fills the whole inspector (terminal still
     /// visible), one step short of `inspectorMaximized`. Flipped by the detail chrome's list toggle;
