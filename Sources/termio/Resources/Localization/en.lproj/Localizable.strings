@@ -1086,6 +1086,8 @@
 	<string>This project’s origin remote doesn’t point at github.com, so there is no issue tracker to show.</string>
 	<key>This pull request changes no files.</key>
 	<string>This pull request changes no files.</string>
+	<key>This session couldn’t be started.</key>
+	<string>This session couldn’t be started.</string>
 	<key>This week</key>
 	<string>This week</string>
 	<key>Timed out</key>

@@ -1508,6 +1508,7 @@ final class TermiodSessionLink: @unchecked Sendable {
     private var closed = false
     private var exitDelivered = false
     private var connectionLostDelivered = false
+    private var startRefusedDelivered = false
 
     /// What the reader thread needs to judge an arriving `S` against: the grid
     /// the surface is currently laid out at, and whether this client is the one
@@ -1560,6 +1561,13 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// session actually runs on. A session knows its *route* from the start but
     /// cannot know its *device* until something answers — this is that moment.
     var onDevice: ((TermiodDevice) -> Void)?
+    /// Fired once on the main queue when the daemon **answered and refused** —
+    /// a cwd that does not exist, a rejected handshake, a spawn it would not
+    /// perform. Distinct from `onConnectionLost` because the daemon is right
+    /// there and there is no session: telling the user their work is "still
+    /// running" would be a different lie from the one this file set out to fix.
+    /// Carries the daemon's own words, which name the cause.
+    var onStartRefused: ((String) -> Void)?
     /// Fired once on the main queue when the *connection* ends without the
     /// session having ended: the daemon went away, the SSH pipe broke, the
     /// network dropped. Deliberately not `onExit` — the child is almost
@@ -1670,12 +1678,20 @@ final class TermiodSessionLink: @unchecked Sendable {
                 \(error.localizedDescription, privacy: .public)
                 """)
                 teardownLocked()
-                // Failing to *reach* the daemon is the same class of event as
-                // losing it mid-session, and neither carries an exit status.
-                // This arm used to invent `exit 1` too, which is what made
-                // rebuilding a surface over a still-broken transport put the
-                // fabricated exit straight back.
-                deliverConnectionLostLocked()
+                // Three outcomes, not two. Widening this arm to "lost
+                // connection" was too coarse: it also catches a daemon that is
+                // perfectly reachable and said no, and reporting that as a
+                // session still running elsewhere is its own lie.
+                switch error {
+                case TermiodClientError.handshakeRejected(let message),
+                     TermiodClientError.requestFailed(let message):
+                    deliverStartRefusedLocked(message)
+                default:
+                    // Could not reach it, or it stopped talking mid-handshake.
+                    // Same class as losing it mid-session; neither carries an
+                    // exit status.
+                    deliverConnectionLostLocked()
+                }
             }
         }
     }
@@ -2196,6 +2212,12 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// already been delivered — a session that ended normally closes its stream
     /// straight afterwards, and that EOF must not be reported a second time as
     /// a disconnection.
+    private func deliverStartRefusedLocked(_ message: String) {
+        guard !exitDelivered, !connectionLostDelivered, !startRefusedDelivered else { return }
+        startRefusedDelivered = true
+        DispatchQueue.main.async { [self] in onStartRefused?(message) }
+    }
+
     private func deliverConnectionLostLocked() {
         guard !exitDelivered, !connectionLostDelivered else { return }
         connectionLostDelivered = true

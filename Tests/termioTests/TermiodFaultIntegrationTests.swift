@@ -171,6 +171,43 @@ final class TermiodFaultIntegrationTests: XCTestCase {
         XCTAssertTrue(lostConnection, "an unreachable daemon was never reported at all")
     }
 
+    /// A daemon that is reachable and says no is a third outcome, not a lost
+    /// connection.
+    ///
+    /// Widening the attach-failure arm to "connection lost" swept this up with
+    /// it, so a spawn the device refused — a cwd that does not exist — told the
+    /// user their session was "still running there". Nothing was ever running.
+    /// That is a different lie from the one this file exists to remove.
+    func testARefusedSpawnIsNotALostConnection() throws {
+        var exits: [Int32] = []
+        var lostConnection = false
+        var refusal: String?
+
+        let missing = NSTemporaryDirectory() + "definitely-not-here-\(UUID().uuidString)"
+        let session = TermiodSessionLink(
+            sessionName: "refused-\(UUID().uuidString.prefix(8))",
+            specification: Termiod.CreateSpecification(
+                cwd: missing, argv: ["/bin/sh"], env: [], rows: 24, cols: 80),
+            rows: 24, cols: 80)
+        session.onExit = { code, _, _ in exits.append(code) }
+        session.onConnectionLost = { lostConnection = true }
+        session.onStartRefused = { refusal = $0 }
+        session.start()
+        defer { session.detach() }
+
+        XCTAssertTrue(
+            waitUntil(10) { refusal != nil || lostConnection || !exits.isEmpty },
+            "the daemon's refusal was never reported at all")
+        XCTAssertNotNil(refusal, "a refusal was reported as something else")
+        XCTAssertFalse(
+            lostConnection,
+            "a reachable daemon that refused was reported as a lost connection")
+        XCTAssertTrue(exits.isEmpty, "a refusal was reported as an exit \(exits)")
+        XCTAssertFalse(
+            refusal?.isEmpty ?? true,
+            "the refusal carried no reason, so the pane can only say it failed")
+    }
+
     /// The session outlives the connection, which is the claim the split rests
     /// on: after the daemon comes back, the same name resolves to the same
     /// still-running process rather than spawning a replacement.

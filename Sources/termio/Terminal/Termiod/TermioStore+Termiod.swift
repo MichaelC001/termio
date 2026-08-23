@@ -135,6 +135,9 @@ extension TermioStore {
                 identifiesAgent: isPlainTerminal,
                 followsWorkingDirectory: followsWorkingDirectory)
         }
+        link.onStartRefused = { [weak self, weak inMemory] message in
+            self?.applyTermiodStartRefused(for: session.id, message: message, surface: inMemory)
+        }
         link.onConnectionLost = { [weak self, weak inMemory] in
             self?.applyTermiodConnectionLost(for: session.id, surface: inMemory)
         }
@@ -249,6 +252,27 @@ extension TermioStore {
     ///     and a poll that ran seconds earlier answers a different question.
     ///   - isAgentSession: snapshotted when the link was wired, so a row promoted
     ///     mid-life still exits as what it was launched as.
+    /// The daemon answered and refused: a cwd that no longer exists, a rejected
+    /// handshake, a spawn it would not perform.
+    ///
+    /// Not a lost connection — the daemon is right there — and not an exit,
+    /// because nothing ever started. The distinction matters on screen: saying
+    /// "the session is still running there" about a session that was never
+    /// created would be a different lie from the one this path exists to fix.
+    /// The daemon's own words are shown, since they name the cause.
+    func applyTermiodStartRefused(for id: Session.ID, message: String,
+                                  surface: InMemoryTerminalSession?) {
+        termiodLinks[id] = nil
+        Log.termiod.error("""
+        \(id.uuidString, privacy: .public) was refused by the device: \
+        \(message, privacy: .public)
+        """)
+        surface?.receive(Data((
+            "\r\n\u{1B}[31m"
+            + localized("This session couldn’t be started.")
+            + "\u{1B}[0m\r\n" + message + "\r\n").utf8))
+    }
+
     /// The transport died under a session that is still running.
     ///
     /// Deliberately not `applyTermiodExit`: no exit policy runs, because there

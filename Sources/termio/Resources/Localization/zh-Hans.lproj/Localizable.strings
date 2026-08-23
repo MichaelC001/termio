@@ -1086,6 +1086,8 @@
 	<string>该项目的 origin 远程仓库未指向 github.com，因此没有可显示的 issue 跟踪器。</string>
 	<key>This pull request changes no files.</key>
 	<string>此 PR 未更改任何文件。</string>
+	<key>This session couldn’t be started.</key>
+	<string>这个会话没能启动。</string>
 	<key>This week</key>
 	<string>本周</string>
 	<key>Timed out</key>
