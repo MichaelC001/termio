@@ -71,10 +71,23 @@ struct WorkspaceSwitcherToolbarView: View {
     @EnvironmentObject var settings: AppSettings
     @Environment(\.controlActiveState) private var controlActive
 
-    /// Long names truncate rather than push the sort and `+` buttons toward
-    /// NSToolbar's `»` overflow: the sidebar region has only the room the
-    /// navigator's minimum thickness gives it.
-    private static let nameWidthCeiling: CGFloat = 130
+    /// One fixed box, wide enough for an ordinary name and narrow enough to leave the
+    /// sort and `+` buttons clear of NSToolbar's `»` overflow at the navigator's 240pt
+    /// minimum (the toggle, this box and those two buttons come to roughly 220).
+    ///
+    /// Fixed, not sized to the string. A label that measures its own text hands the
+    /// toolbar item a new intrinsic width on every switch, and NSToolbar answers by
+    /// re-laying out the region — which is what was seen as the name flicking and
+    /// shifting as the scope changed. That relayout belongs to AppKit, below SwiftUI,
+    /// so the deliberately un-animated transaction in `switchToWorkspace` cannot reach
+    /// it. Holding the width constant means there is nothing to re-lay out: no name,
+    /// of any length, can put the toolbar back into motion.
+    ///
+    /// A floor would have hidden this for short names and let it back for long ones.
+    /// Measuring the widest name and sizing to that keeps the box honest but needs
+    /// text metrics, a font bridge and a re-measure on every rename — machinery in
+    /// exchange for slack the flexible space beside it already absorbs.
+    private static let nameWidth: CGFloat = 104
 
     var body: some View {
         // The single-workspace collapse. Not "hidden but present": with one scope
@@ -98,8 +111,10 @@ struct WorkspaceSwitcherToolbarView: View {
                 .foregroundStyle(color)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(maxWidth: Self.nameWidthCeiling)
-                .fixedSize()
+                // Leading, so every name starts at the same x. Centred, a short one would
+                // sit in the middle of the box and the label's left edge would move on each
+                // switch — the same shift by a different route.
+                .frame(width: Self.nameWidth, alignment: .leading)
                 // The overlay owns the press, the tooltip, and the accessibility of
                 // this control — it is the view under the pointer, so a `.help()` here
                 // would be shadowed by it and a SwiftUI accessibility element here would
@@ -130,15 +145,23 @@ struct WorkspaceSwitcherToolbarView: View {
 private struct WorkspaceMenuPopper: NSViewRepresentable {
     let store: TermioStore
 
+    /// The name as well as the sentence, because the label above draws in a fixed box and
+    /// a name too long for it is middle-truncated with nowhere else to be read in place.
+    private static func toolTip(for store: TermioStore) -> String {
+        "\(store.currentWorkspace.name) — \(localized("The sidebar shows this workspace"))"
+    }
+
     func makeNSView(context: Context) -> WorkspaceMenuHost {
         let view = WorkspaceMenuHost()
         view.store = store
-        view.toolTip = localized("The sidebar shows this workspace")
+        view.toolTip = Self.toolTip(for: store)
         return view
     }
 
     func updateNSView(_ nsView: WorkspaceMenuHost, context: Context) {
         nsView.store = store
+        // Set here too: the scope changes far more often than this view is made.
+        nsView.toolTip = Self.toolTip(for: store)
     }
 }
 
