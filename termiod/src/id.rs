@@ -35,6 +35,9 @@ impl ClientId {
         ClientId(id.into())
     }
 
+    /// Only the assertions need this: everything in the host either keys a map
+    /// with a whole `ClientId` or renders one through `Display`.
+    #[cfg(test)]
     pub fn as_str(&self) -> &str {
         &self.0
     }
