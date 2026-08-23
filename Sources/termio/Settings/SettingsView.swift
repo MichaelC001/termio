@@ -12,20 +12,27 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var usage: UsageMonitor
+    /// The Workspaces tab's subject. Actions elsewhere are injected as closures so
+    /// a pane can't reach past its own concern, but that tab *is* a live view of
+    /// the workspace list — a closure would have to hand over a copy that stops
+    /// tracking the moment one is added.
+    @ObservedObject var store: TermioStore
     /// Opens an SSH terminal to a `~/.ssh/config` alias in the main window — the
-    /// Devices tab's Connect action, injected by the app delegate so the settings
-    /// window doesn't hold the store.
+    /// Devices tab's Connect action, injected by the app delegate because
+    /// connecting is a main-window launch, not something this window does.
     let onSSHConnect: (String) -> Void
     @State private var selection: SettingsTab
 
     init(
         settings: AppSettings,
         usage: UsageMonitor,
+        store: TermioStore,
         initialTab: SettingsTab = .general,
         onSSHConnect: @escaping (String) -> Void
     ) {
         self.settings = settings
         self.usage = usage
+        self.store = store
         self.onSSHConnect = onSSHConnect
         _selection = State(initialValue: initialTab)
     }
@@ -74,6 +81,7 @@ struct SettingsView: View {
         case .general: GeneralSettingsTab(settings: settings)
         case .appearance: AppearanceSettingsTab(settings: settings)
         case .terminal: TerminalSettingsTab(settings: settings)
+        case .workspaces: WorkspaceSettingsTab(store: store)
         case .devices: DevicesSettingsTab(settings: settings, onConnect: onSSHConnect)
         case .keyboard: KeybindingsSettingsTab()
         case .agents: AgentSettingsTab(settings: settings)

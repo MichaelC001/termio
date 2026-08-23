@@ -7,6 +7,10 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case appearance
     case terminal
+    /// Sits above Devices because that is the containment order the app itself
+    /// uses: a workspace belongs to a device, and everything filed in it lives on
+    /// that machine.
+    case workspaces
     /// A **device** is a machine identified by its `host_id` and reached by one
     /// or more `~/.ssh/config` aliases — the term the session protocol, the
     /// daemon and `TermiodDevice` all already use. This tab was called
@@ -34,6 +38,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: return localized("General")
         case .appearance: return localized("Appearance")
         case .terminal: return localized("Terminal")
+        case .workspaces: return localized("Workspaces")
         case .devices: return localized("Devices")
         case .keyboard: return localized("Keyboard")
         case .agents: return localized("Agents")
@@ -50,6 +55,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: return .settings
         case .appearance: return .paintBoard
         case .terminal: return .terminal
+        case .workspaces: return .copy
         case .devices: return .serverStack
         case .keyboard: return .keyboard
         case .agents: return .bot
@@ -66,6 +72,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: return localized("The termio command-line tool, agent skill, and notifications")
         case .appearance: return localized("Theme, fonts, cursor, and window")
         case .terminal: return localized("Scrollback history and text selection")
+        case .workspaces: return localized("The workspaces your projects and sessions are filed under")
         case .devices: return localized("The devices in your ~/.ssh/config, and the keys that reach them")
         case .keyboard: return localized("Keyboard shortcuts for every command")
         case .agents: return localized("The coding agents offered when you start a session")
