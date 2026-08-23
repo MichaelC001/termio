@@ -34,7 +34,7 @@ pub(crate) use backlog::{ClientBacklog, Metered};
 
 mod sidecar;
 
-pub(crate) use sidecar::{SidecarCapture, SidecarCommand, SidecarQueue, SidecarResult};
+pub(crate) use sidecar::{SidecarCapture, SidecarCommand, SidecarQueue, SidecarResult, Vt};
 
 /// Pushed to an attached connection task.
 #[derive(Clone)]
@@ -330,12 +330,7 @@ struct Session {
     ring: VecDeque<Bytes>,
     ring_bytes: usize,
     events: broadcast::Sender<Event>,
-    sidecar_tx: Option<std_mpsc::Sender<SidecarCommand>>,
-    sidecar_queue: Arc<SidecarQueue>,
-    /// Set once the VT has been denied bytes it needed. The screen it holds no
-    /// longer describes any boundary in the output stream, so it can never
-    /// answer a snapshot again — attach and resync fall back to ring replay.
-    vt_stale: Option<String>,
+    vt: Vt,
     /// Last sample of who is in the tty's foreground and where the child is.
     /// `info()` reads this cache so a roster request never turns into a burst
     /// of syscalls.
@@ -567,11 +562,9 @@ impl Session {
     }
 
     fn send_sidecar(&mut self, command: SidecarCommand) -> bool {
-        let sent = self
-            .sidecar_tx
-            .as_ref()
-            .is_some_and(|sender| sender.send(command).is_ok());
-        if !sent && self.sidecar_tx.take().is_some() {
+        let was_live = self.vt.is_live();
+        let sent = self.vt.send(command);
+        if !sent && was_live {
             eprintln!("termiod: VT sidecar for session {} stopped", self.id);
         }
         sent
@@ -582,35 +575,35 @@ impl Session {
     /// silently would leave `S` describing a screen that never occurred, and
     /// blocking here would put the VT parse back on the fan-out path.
     fn write_sidecar(&mut self, chunk: Bytes) {
-        if self.vt_stale.is_some() || self.sidecar_tx.is_none() {
+        if !self.vt.is_live() {
             return;
         }
-        if !self.sidecar_queue.try_reserve(chunk.len()) {
+        let len = chunk.len();
+        if !self.vt.try_reserve(len) {
             self.mark_vt_stale(format!(
                 "VT sidecar fell more than {} behind the PTY",
                 sidecar::cap_description()
             ));
             return;
         }
-        let len = chunk.len();
         if !self.send_sidecar(SidecarCommand::Write(chunk)) {
-            self.sidecar_queue.release(len);
+            self.vt.release(len);
         }
     }
 
     fn mark_vt_stale(&mut self, reason: String) {
-        if self.vt_stale.is_some() {
+        if !self.vt.is_live() {
             return;
         }
         eprintln!(
             "termiod: VT sidecar for session {} is stale: {reason}; snapshots now fall back to ring replay",
             self.id
         );
-        self.vt_stale = Some(reason.clone());
         // Nothing more will reach the VT, so drain what is queued rather than
-        // let a wedged parse hold the memory.
+        // let a wedged parse hold the memory. The shutdown goes out while the
+        // sender is still there; the VT is down the moment it has.
         self.send_sidecar(SidecarCommand::Shutdown);
-        self.sidecar_tx.take();
+        self.vt = Vt::down(reason.clone());
         self.emit_event(Event::VtStale {
             session: self.id.to_string(),
             reason: reason.clone(),
@@ -622,11 +615,7 @@ impl Session {
     /// Ask the sidecar for one client's snapshot, or fail it straight into the
     /// ring-replay fallback when the VT can no longer answer.
     fn request_snapshot(&mut self, client_id: ClientId, request_id: u64, scrollback: bool) {
-        let refusal = self.vt_stale.clone().or_else(|| {
-            self.sidecar_tx
-                .is_none()
-                .then(|| "VT sidecar is unavailable".to_string())
-        });
+        let refusal = self.vt.refusal().map(str::to_string);
         if let Some(reason) = refusal {
             self.finish_snapshot(&client_id, request_id, Err(reason));
             return;
@@ -636,11 +625,7 @@ impl Session {
             request_id,
             scrollback,
         }) {
-            self.finish_snapshot(
-                &client_id,
-                request_id,
-                Err("VT sidecar is unavailable".to_string()),
-            );
+            self.finish_snapshot(&client_id, request_id, Err(sidecar::UNAVAILABLE.to_string()));
         }
     }
 
@@ -1390,9 +1375,7 @@ pub fn spawn(
         ring: VecDeque::new(),
         ring_bytes: 0,
         events,
-        sidecar_tx: Some(sidecar.commands),
-        sidecar_queue: sidecar.queue,
-        vt_stale: None,
+        vt: Vt::live(sidecar.commands, sidecar.queue),
         foreground: ForegroundSample::default(),
         foreground_pending: false,
         child_executable: None,
@@ -1650,7 +1633,10 @@ async fn run(
                     }
                     None => {
                         sidecar_results_open = false;
-                        session.sidecar_tx.take();
+                        // The VT is down for the reason any absent sidecar is —
+                        // it cannot be asked — while the clients that were
+                        // waiting on an answer are told what happened to them.
+                        session.vt = Vt::down(sidecar::UNAVAILABLE);
                         session.disconnect_grid_clients("VT sidecar response channel closed");
                         session.fallback_all_pending("VT sidecar response channel closed");
                     }
@@ -1681,9 +1667,7 @@ async fn run(
             end_reason = requested;
         }
     }
-    if let Some(sidecar_tx) = session.sidecar_tx.take() {
-        let _ = sidecar_tx.send(SidecarCommand::Shutdown);
-    }
+    session.vt.shut_down();
 
     let code = match waiter.take() {
         Some(w) => w.await.unwrap_or(-1),
@@ -1916,7 +1900,7 @@ mod tests {
     use super::{
         handle_msg, scrollback_row_limit, should_emit_keyframe, spawn_sidecar, ClientBacklog,
         ClientDelivery, ClientEntry, ClientEvent, ClientPlane, ClientRole, Session, SessionHandle,
-        SessionMsg, Sidecar, SidecarCommand, SidecarQueue, SidecarResult,
+        SessionMsg, Sidecar, SidecarCommand, SidecarQueue, SidecarResult, Vt,
         SCROLLBACK_STAGE_MAX_BYTES, SNAPSHOT_CELL_SIZE,
     };
     use crate::id::{ClientId, SessionId};
@@ -2041,9 +2025,7 @@ mod tests {
                 ring: VecDeque::new(),
                 ring_bytes: 0,
                 events,
-                sidecar_tx: Some(sidecar_tx),
-                sidecar_queue,
-                vt_stale: None,
+                vt: Vt::live(sidecar_tx, sidecar_queue),
                 foreground: super::ForegroundSample::default(),
                 foreground_pending: false,
                 child_executable: None,
@@ -2183,7 +2165,7 @@ mod tests {
         assert!(claim_writer(&mut session, "phone"), "the phone's user typed");
         assert_eq!(writer(&session), Some("phone"));
 
-        let _ = session.sidecar_tx.take();
+        session.vt.shut_down();
         let _ = thread.join();
     }
 
@@ -2209,7 +2191,7 @@ mod tests {
             "a refused claim must not disturb the writer it failed to displace"
         );
 
-        let _ = session.sidecar_tx.take();
+        session.vt.shut_down();
         let _ = thread.join();
     }
 
@@ -2229,7 +2211,7 @@ mod tests {
         assert!(!claim_writer(&mut session, "ghost"));
         assert_eq!(writer(&session), Some("mac"));
 
-        let _ = session.sidecar_tx.take();
+        session.vt.shut_down();
         let _ = thread.join();
     }
 
@@ -2319,7 +2301,7 @@ mod tests {
             "the snapshot boundary and the bytes buffered behind it did not line up"
         );
 
-        let _ = session.sidecar_tx.take();
+        session.vt.shut_down();
         let _ = tokio::task::spawn_blocking(move || thread.join()).await;
     }
 
@@ -2403,7 +2385,7 @@ mod tests {
         );
         assert!(backlog.is_dropped());
 
-        let _ = session.sidecar_tx.take();
+        session.vt.shut_down();
         let _ = tokio::task::spawn_blocking(move || thread.join()).await;
     }
 
@@ -2437,7 +2419,13 @@ mod tests {
         session.write_sidecar(chunk.clone());
         session.fan_out(chunk.clone());
 
-        assert!(session.vt_stale.is_some(), "the budget did not bite");
+        assert!(
+            session
+                .vt
+                .refusal()
+                .is_some_and(|reason| reason.contains("behind the PTY")),
+            "the budget did not bite"
+        );
         let mut announced = false;
         while let Ok(event) = events.try_recv() {
             announced |= matches!(event, Event::VtStale { .. });
@@ -2470,7 +2458,7 @@ mod tests {
         assert_eq!(snapshots, 0, "a stale VT still answered a snapshot");
         assert_eq!(replayed, chunk, "the ring-replay fallback did not run");
 
-        let _ = session.sidecar_tx.take();
+        session.vt.shut_down();
         let _ = tokio::task::spawn_blocking(move || thread.join()).await;
     }
 
@@ -2513,9 +2501,7 @@ mod tests {
             ring: VecDeque::new(),
             ring_bytes: 0,
             events,
-            sidecar_tx: Some(sidecar_tx),
-            sidecar_queue: Arc::new(SidecarQueue::new()),
-            vt_stale: None,
+            vt: Vt::live(sidecar_tx, Arc::new(SidecarQueue::new())),
             foreground: super::ForegroundSample::default(),
             foreground_pending: false,
             child_executable: None,

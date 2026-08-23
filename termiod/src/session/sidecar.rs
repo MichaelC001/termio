@@ -8,6 +8,8 @@
 
 use bytes::Bytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc as std_mpsc;
+use std::sync::Arc;
 
 /// PTY bytes allowed to sit unparsed in the sidecar's command FIFO. The
 /// per-client budget stops a slow socket from buying unbounded memory; this
@@ -98,6 +100,96 @@ pub(crate) struct SidecarCapture {
     /// formatter failed, in which case delivery falls back to packed cells.
     pub(crate) vt: Option<Vec<u8>>,
     pub(crate) scrollback: Option<Result<termiod_vt::Scrollback, String>>,
+}
+
+/// What a snapshot request is refused with when the sidecar is simply not
+/// there — it never started, its sender is gone, or its answers stopped
+/// arriving. A VT that went *stale* refuses with the reason it went stale.
+pub(crate) const UNAVAILABLE: &str = "VT sidecar is unavailable";
+
+/// A session's VT, and whether it still has one.
+///
+/// These were three fields held in agreement by hand: a command sender, its
+/// byte budget, and a `vt_stale: Option<String>`. A stale reason alongside a
+/// live sender was not a state this host would run, and every question about
+/// the VT had to be asked twice to find out which kind of "no" it was.
+pub(crate) enum Vt {
+    /// The sidecar thread is parsing. `queue` is the budget that keeps it off
+    /// the byte path: the producer stops feeding the VT rather than blocking on
+    /// it or letting a slow parse buy unbounded memory.
+    Live {
+        commands: std_mpsc::Sender<SidecarCommand>,
+        queue: Arc<SidecarQueue>,
+    },
+    /// Nothing more will reach the VT. The screen it held no longer describes
+    /// any boundary in the output stream, so it can never answer a snapshot
+    /// again — attach and resync fall back to ring replay, and `reason` is what
+    /// they are told.
+    Down { reason: String },
+}
+
+impl Vt {
+    pub(crate) fn live(commands: std_mpsc::Sender<SidecarCommand>, queue: Arc<SidecarQueue>) -> Vt {
+        Vt::Live { commands, queue }
+    }
+
+    pub(crate) fn down(reason: impl Into<String>) -> Vt {
+        Vt::Down {
+            reason: reason.into(),
+        }
+    }
+
+    pub(crate) fn is_live(&self) -> bool {
+        matches!(self, Vt::Live { .. })
+    }
+
+    /// Why the VT cannot answer a snapshot, or `None` while it still can.
+    pub(crate) fn refusal(&self) -> Option<&str> {
+        match self {
+            Vt::Live { .. } => None,
+            Vt::Down { reason } => Some(reason),
+        }
+    }
+
+    /// Charge `bytes` of PTY output to the VT's budget. `false` means the parse
+    /// has fallen far enough behind that the only legal degrade is to stop
+    /// feeding it and say so.
+    pub(crate) fn try_reserve(&self, bytes: usize) -> bool {
+        match self {
+            Vt::Live { queue, .. } => queue.try_reserve(bytes),
+            Vt::Down { .. } => false,
+        }
+    }
+
+    /// Credit back bytes the VT will never parse.
+    pub(crate) fn release(&self, bytes: usize) {
+        if let Vt::Live { queue, .. } = self {
+            queue.release(bytes);
+        }
+    }
+
+    /// Hand the sidecar a command. `false` if it did not arrive, which also
+    /// takes the VT down: a sender that will not take a command has no thread
+    /// behind it, and the session is finding that out here.
+    pub(crate) fn send(&mut self, command: SidecarCommand) -> bool {
+        let Vt::Live { commands, .. } = self else {
+            return false;
+        };
+        if commands.send(command).is_ok() {
+            return true;
+        }
+        *self = Vt::down(UNAVAILABLE);
+        false
+    }
+
+    /// Ask the sidecar thread to stop and stop expecting answers from it.
+    /// Failure earns no word here: this runs on the way out.
+    pub(crate) fn shut_down(&mut self) {
+        if let Vt::Live { commands, .. } = self {
+            let _ = commands.send(SidecarCommand::Shutdown);
+        }
+        *self = Vt::down(UNAVAILABLE);
+    }
 }
 
 #[cfg(test)]
