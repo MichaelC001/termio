@@ -331,14 +331,34 @@ impl Pty {
             });
         }
 
-        let child = cmd
-            .spawn()
-            .with_context(|| format!("spawning session program '{program}'"))?;
+        let spawned = cmd.spawn();
 
-        // Parent no longer needs the slave.
+        // Parent no longer needs the slave, on the failing path as much as the
+        // succeeding one: a session whose directory is gone gets retried every
+        // time the user clicks it, and a leaked slave per attempt runs the
+        // daemon out of descriptors.
         unsafe {
             libc::close(slave_raw);
         }
+
+        let child = match spawned {
+            Ok(child) => child,
+            Err(error) => {
+                // A missing program and a missing working directory both come
+                // back as ENOENT, and the kernel doesn't say which one it meant.
+                // Name the one that is actually gone — a checkout deleted or
+                // sitting on an unmounted volume is far likelier than a missing
+                // shell, and blaming the shell sends the user hunting the wrong
+                // thing.
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    if let Some(dir) = cwd.filter(|dir| !std::path::Path::new(dir).is_dir()) {
+                        bail!("session directory '{dir}' no longer exists");
+                    }
+                }
+                return Err(error)
+                    .with_context(|| format!("spawning session program '{program}'"));
+            }
+        };
 
         let pid = child.id() as i32;
         let master = AsyncFd::new(master)?;
@@ -482,6 +502,46 @@ mod tests {
         assert!(!dumped.contains("CLAUDE_CODE_CHILD_SESSION="));
         assert!(dumped.contains("TERM_PROGRAM=termio"));
         assert!(!dumped.contains("TERM_PROGRAM=Apple_Terminal"));
+    }
+
+    /// A checkout that was deleted or is sitting on an unmounted volume fails the
+    /// spawn with the same ENOENT a missing program does. The message has to name
+    /// the directory: blaming `/bin/zsh` for a missing folder sent a user hunting
+    /// a shell that was never broken.
+    #[tokio::test]
+    async fn a_missing_working_directory_is_not_reported_as_a_missing_program() {
+        let missing = std::env::temp_dir().join(format!("termiod-gone-{}", std::process::id()));
+        let missing = missing.to_string_lossy().to_string();
+
+        let Err(error) = Pty::spawn(&["/bin/sh".to_string()], Some(&missing), &[], 24, 80) else {
+            panic!("a spawn into a directory that does not exist must fail");
+        };
+        let message = format!("{error:#}");
+
+        assert!(message.contains(&missing), "{message}");
+        assert!(!message.contains("/bin/sh"), "{message}");
+    }
+
+    /// The other half: a program that really is missing still says so, so naming
+    /// the directory has not just moved the misattribution the other way.
+    #[tokio::test]
+    async fn a_missing_program_is_still_reported_as_a_missing_program() {
+        let here = std::env::temp_dir().to_string_lossy().to_string();
+
+        let Err(error) = Pty::spawn(
+            &["/nonexistent/termiod-not-a-program".to_string()],
+            Some(&here),
+            &[],
+            24,
+            80,
+        ) else {
+            panic!("a spawn of a program that does not exist must fail");
+        };
+
+        assert!(
+            format!("{error:#}").contains("/nonexistent/termiod-not-a-program"),
+            "{error:#}"
+        );
     }
 
     /// `LC_ALL` outranks both, then `LC_CTYPE`, then `LANG` — and an exported

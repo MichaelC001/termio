@@ -17,6 +17,17 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.41.2",
+    date: "2026-08-23",
+    title: "A session that can't start says why",
+    changes: {
+      fixed: [
+        "A session whose folder has been deleted, moved, or left on an unmounted drive now names the folder. It used to report that your shell didn't exist — the same error code covers both, and termio picked the wrong one to blame.",
+        "Running the test suite from a checkout no longer overwrites the installed app's projects and sessions. This one only ever reached people who build termio themselves.",
+      ],
+    },
+  },
+  {
     version: "0.41.1",
     date: "2026-08-23",
     title: "The workspace name holds still",
