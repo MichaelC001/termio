@@ -139,37 +139,36 @@ final class TermiodFaultIntegrationTests: XCTestCase {
         XCTAssertFalse(lostConnection, "an ordinary exit was also reported as a disconnection")
     }
 
-    /// "Select it again to reattach" has to be true, and it is only true if the
-    /// cached surface goes with the dead link. `surface(for:)` returns the cache
-    /// before it considers building anything, and that surface's write closure
-    /// holds the link that just died — so leaving it behind gives the user a
-    /// pane that looks alive and types into nothing.
-    func testALostConnectionRetiresTheSurfaceSoReattachRebuildsIt() throws {
-        let session = Session(title: "agent", agent: .terminal)
-        let workspace = Workspace(name: "Sessions")
-        let project = Project(workspaceID: workspace.id, name: "termio", path: "/code/termio",
-                              branch: "main", sessions: [session])
-        let defaults = UserDefaults(suiteName: "fault-surface-\(UUID().uuidString)")
-        let store = TermioStore(workspaces: [workspace], projects: [project],
-                                settings: AppSettings(defaults: defaults ?? .standard))
+    /// Attaching to a daemon that is not there must not invent an exit either.
+    ///
+    /// This is the arm that made the first version of this fix circular: the
+    /// connection-lost handler retired the cached surface, `TerminalPane`'s body
+    /// calls `surface(for:)` so the *next render* rebuilt it — not the next
+    /// deliberate selection — and `start()` failing against the still-dead
+    /// transport delivered the same fabricated `exit 1` through its own catch.
+    /// Reaching the daemon and losing it are one class of event, and neither
+    /// carries a status.
+    func testAttachingWithNoDaemonIsNotReportedAsAnExit() throws {
+        // Point the client at a socket path nothing is listening on, which is
+        // what a rebuild over a broken transport actually meets.
+        let dead = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("gone-\(UUID().uuidString.prefix(8)).sock").path
+        setenv("TERMIOD_SOCK", dead, 1)
+        defer { setenv("TERMIOD_SOCK", socketDirectory?.appendingPathComponent("termiod.sock").path ?? "", 1) }
 
-        let link = self.link(session.id.uuidString,
-                             argv: ["/bin/sh", "-c", "while :; do sleep 3600; done"])
-        link.start()
-        defer { link.killAndClose() }
-        store.termiodLinks[session.id] = link
-        // A stand-in for "a surface is cached for this session". The surface
-        // object itself is irrelevant to the claim — what matters is that the
-        // entry is gone afterwards, so `surface(for:)` has to build a new one.
-        store.surfaces[session.id] = store.surface(for: session)
-        XCTAssertNotNil(store.surfaces[session.id], "the fixture never cached a surface")
+        var exits: [Int32] = []
+        var lostConnection = false
+        let session = link("norun-\(UUID().uuidString.prefix(8))", argv: ["/bin/sh"])
+        session.onExit = { code, _, _ in exits.append(code) }
+        session.onConnectionLost = { lostConnection = true }
+        session.start()
+        defer { session.detach() }
 
-        store.applyTermiodConnectionLost(for: session.id, surface: nil)
-
-        XCTAssertNil(store.termiodLinks[session.id], "the dead attachment was kept")
-        XCTAssertNil(
-            store.surfaces[session.id],
-            "the surface holding the dead link survived, so reattaching returns a pane that types into nothing")
+        XCTAssertTrue(waitUntil(10) { lostConnection || !exits.isEmpty }, "nothing was reported")
+        XCTAssertTrue(
+            exits.isEmpty,
+            "an unreachable daemon was reported as the session exiting with \(exits)")
+        XCTAssertTrue(lostConnection, "an unreachable daemon was never reported at all")
     }
 
     /// The session outlives the connection, which is the claim the split rests

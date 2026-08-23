@@ -1670,7 +1670,12 @@ final class TermiodSessionLink: @unchecked Sendable {
                 \(error.localizedDescription, privacy: .public)
                 """)
                 teardownLocked()
-                deliverExitLocked(status: 1)
+                // Failing to *reach* the daemon is the same class of event as
+                // losing it mid-session, and neither carries an exit status.
+                // This arm used to invent `exit 1` too, which is what made
+                // rebuilding a surface over a still-broken transport put the
+                // fabricated exit straight back.
+                deliverConnectionLostLocked()
             }
         }
     }
