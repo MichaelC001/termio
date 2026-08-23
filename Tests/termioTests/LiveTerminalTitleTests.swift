@@ -54,24 +54,43 @@ final class LiveTerminalTitleTests: XCTestCase {
 
     func testAgentTitlePrecedence() {
         XCTAssertEqual(
-            AgentSessionTitle.resolved(
-                stored: "Codex", agentName: "Codex", native: "Native title",
-                promptFallback: "Prompt title"),
+            AgentSessionTitle.automatic(
+                native: "Native title", promptFallback: "Prompt title",
+                placeholder: "Codex"),
             "Native title")
         XCTAssertEqual(
-            AgentSessionTitle.resolved(
-                stored: "Codex", agentName: "Codex", native: nil,
-                promptFallback: "Prompt title"),
+            AgentSessionTitle.automatic(
+                native: nil, promptFallback: "Prompt title", placeholder: "Codex"),
             "Prompt title")
         XCTAssertEqual(
-            AgentSessionTitle.resolved(
-                stored: "My name", agentName: "Codex", native: "Native title",
-                promptFallback: "Prompt title"),
-            "My name")
-        XCTAssertEqual(
-            AgentSessionTitle.resolved(
-                stored: "Codex", agentName: "Codex", native: nil, promptFallback: nil),
+            AgentSessionTitle.automatic(
+                native: nil, promptFallback: nil, placeholder: "Codex"),
             "Codex")
+    }
+
+    /// The remote regression: a label Termio composed for a row on another machine
+    /// is a placeholder, so the agent's live title still speaks through it. Reading
+    /// it as a chosen name is what froze a VPS row at `boxlit · ukvps` while its
+    /// local twin followed the conversation.
+    func testComposedRemoteLabelStillYieldsToTheLiveTitle() {
+        XCTAssertEqual(
+            AgentSessionTitle.automatic(
+                native: "Wire up the relay", promptFallback: nil,
+                placeholder: "boxlit · ukvps"),
+            "Wire up the relay")
+    }
+
+    /// The invariant the field shape buys: rewriting the placeholder — a promotion,
+    /// a demotion, a state-file migration renumbering old rows — can never disturb
+    /// the name someone gave. A flag beside `title` had to be updated at every one
+    /// of those sites, and the ones that forgot pinned the row to a name nobody gave.
+    func testRewritingThePlaceholderLeavesAGivenNameAlone() {
+        var session = Session(title: "Terminal 3", agent: .terminal)
+        session.givenTitle = "Deploy watch"
+
+        session.title = "Claude Code"
+
+        XCTAssertEqual(session.givenTitle, "Deploy watch")
     }
 
     func testCodexHookForwardsToolAndPromptFields() {
@@ -88,5 +107,38 @@ final class LiveTerminalTitleTests: XCTestCase {
         let decoded = try JSONDecoder().decode(Session.self, from: data)
 
         XCTAssertEqual(decoded.promptTitle, "Refactor Codex titles")
+    }
+
+    func testGivenTitlePersistsWithSession() throws {
+        var session = Session(title: "Codex", agent: .codex)
+        session.givenTitle = "Deploy watch"
+
+        let data = try JSONEncoder().encode(session)
+        let decoded = try JSONDecoder().decode(Session.self, from: data)
+
+        XCTAssertEqual(decoded.givenTitle, "Deploy watch")
+    }
+
+    /// A state file written before `givenTitle` existed has to be read back into the
+    /// same meaning: Termio's own conventions are placeholders, a real name is kept —
+    /// and the `<project> · <host>` label the old remote path wrote is recovered as
+    /// the placeholder it always was, so an already-frozen row unfreezes on upgrade.
+    func testGivenTitleIsRecoveredFromStateFilesWithoutIt() {
+        XCTAssertNil(
+            Session.recoveredGivenTitle("Terminal 3", agent: .terminal, remoteHost: nil))
+        XCTAssertNil(
+            Session.recoveredGivenTitle("Claude Code", agent: .claudeCode, remoteHost: nil))
+        XCTAssertNil(
+            Session.recoveredGivenTitle("boxlit · ukvps", agent: .claudeCode, remoteHost: "ukvps"))
+        XCTAssertNil(
+            Session.recoveredGivenTitle("ukvps", agent: .terminal, remoteHost: "ukvps"))
+        XCTAssertEqual(
+            Session.recoveredGivenTitle("Deploy watch", agent: .claudeCode, remoteHost: "ukvps"),
+            "Deploy watch")
+        // The same composed shape on a *local* session was never written by Termio,
+        // so it can only be a name someone typed.
+        XCTAssertEqual(
+            Session.recoveredGivenTitle("boxlit · ukvps", agent: .terminal, remoteHost: nil),
+            "boxlit · ukvps")
     }
 }
