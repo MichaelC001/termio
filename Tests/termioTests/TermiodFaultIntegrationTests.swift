@@ -206,6 +206,7 @@ final class TermiodFaultIntegrationTests: XCTestCase {
         XCTAssertFalse(
             refusal?.isEmpty ?? true,
             "the refusal carried no reason, so the pane can only say it failed")
+
     }
 
     /// The session outlives the connection, which is the claim the split rests

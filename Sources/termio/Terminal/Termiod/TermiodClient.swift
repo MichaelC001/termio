@@ -2219,7 +2219,14 @@ final class TermiodSessionLink: @unchecked Sendable {
     }
 
     private func deliverConnectionLostLocked() {
-        guard !exitDelivered, !connectionLostDelivered else { return }
+        // All three outcomes are mutually exclusive and each is final. The
+        // refusal arm cannot reach here today — a refusal happens inside
+        // `start()`, before `startReader` exists, so no EOF follows it — but the
+        // guard states the invariant rather than relying on that ordering: if a
+        // reader ever starts earlier, one failure must still be one report, and
+        // the second would arrive as "still running there", the exact sentence a
+        // refusal must never produce.
+        guard !exitDelivered, !connectionLostDelivered, !startRefusedDelivered else { return }
         connectionLostDelivered = true
         DispatchQueue.main.async { [self] in onConnectionLost?() }
     }
