@@ -134,6 +134,7 @@ struct WorkspaceSwitcherToolbarView: View {
             // a point the name truncates at.
             Text(current.name)
                 .font(nameFont)
+                .fontWeight(.medium)
                 .foregroundStyle(color)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -148,12 +149,14 @@ struct WorkspaceSwitcherToolbarView: View {
         }
     }
 
-    /// A step above the sidebar's own row text: this names the whole column, so it
-    /// reads as that column's title rather than as one more row of it. Derived from
-    /// the interface size rather than fixed, so it still follows the density
-    /// preference the rows below it follow.
+    /// The sidebar's own row size, so the band and the column below it share an
+    /// x-height and read as one thing — this names that column, and a size step
+    /// would separate it from what it names. The rank comes from weight instead:
+    /// a label larger than the 13pt window title beside it is what makes a titlebar
+    /// look mis-scaled. Derived from the interface size rather than fixed, so it
+    /// still follows the density preference the rows below it follow.
     private var nameFont: Font {
-        let size = settings.interfaceFontSize + 2
+        let size = settings.interfaceFontSize
         return settings.interfaceFontFamily.isEmpty
             ? .system(size: size)
             : .custom(settings.interfaceFontFamily, size: size)
@@ -234,17 +237,17 @@ private final class WorkspaceMenuHost: NSView {
         for row in WorkspaceMenu.rows(in: store, target: self, action: #selector(switchToWorkspace(_:))) {
             menu.addItem(row)
         }
-        menu.addItem(.separator())
         // This Mac, without asking: the device submenu belongs to the menus that
         // already carry one (File ▸ Workspace and the sidebar `+`), and growing a
         // third here would put a machine list in the switcher, which is the "go to
         // a computer" mode the workspace replaced.
         addAction(localized("New Workspace…"), to: menu, #selector(newWorkspace))
-        addAction(localized("Rename Workspace…"), to: menu, #selector(renameWorkspace))
-        // Removing the last workspace is refused in the store — the sidebar has to
-        // have a scope to show — and this menu only opens while there is more than
-        // one, so the row is always live where it is drawn.
-        addAction(localized("Remove Workspace"), to: menu, #selector(removeWorkspace))
+        menu.addItem(.separator())
+        // Renaming and removing are in Settings ▸ Workspaces. Creating stays here
+        // because it is the one verb that does not need the user to pick which
+        // workspace it acts on — the other two do, and this menu can only ever
+        // offer them for the row it already shows checked.
+        addAction(localized("Workspace Settings…"), to: menu, #selector(openWorkspaceSettings))
         // No device verb here, deliberately. A machine you can *go to* is the
         // mode this scope replaced: it made the sidebar answer "which computer"
         // when the question is "which work". A device is a place a new thing is
@@ -271,13 +274,7 @@ private final class WorkspaceMenuHost: NSView {
         store?.presentNewWorkspacePanel(on: .thisMac)
     }
 
-    @objc private func renameWorkspace() {
-        guard let store else { return }
-        store.presentRenameWorkspacePanel(store.currentWorkspaceID)
-    }
-
-    @objc private func removeWorkspace() {
-        guard let store else { return }
-        store.confirmRemoveWorkspace(store.currentWorkspaceID)
+    @objc private func openWorkspaceSettings() {
+        NSApp.sendAction(#selector(AppDelegate.openWorkspaceSettings(_:)), to: nil, from: nil)
     }
 }

@@ -62,6 +62,8 @@
 	<string>1 result</string>
 	<key>A different `%@` already exists at %@. Remove it first — Termio won’t overwrite a file it didn’t create.</key>
 	<string>A different `%@` already exists at %@. Remove it first — Termio won’t overwrite a file it didn’t create.</string>
+	<key>A workspace scopes the sidebar to the projects and sessions filed under it, on the machine it belongs to.</key>
+	<string>A workspace scopes the sidebar to the projects and sessions filed under it, on the machine it belongs to.</string>
 	<key>Activity</key>
 	<string>Activity</string>
 	<key>Add</key>
@@ -330,6 +332,8 @@
 	<string>Couldn’t write ~/.ssh/config: %@</string>
 	<key>Create</key>
 	<string>Create</string>
+	<key>Current workspace</key>
+	<string>Current workspace</string>
 	<key>Cursor</key>
 	<string>Cursor</string>
 	<key>Custom</key>
@@ -858,8 +862,6 @@
 	<string>Rename Session</string>
 	<key>Rename Workspace</key>
 	<string>Rename Workspace</string>
-	<key>Rename Workspace…</key>
-	<string>Rename Workspace…</string>
 	<key>Rename “%@”</key>
 	<string>Rename “%@”</string>
 	<key>Rename…</key>
@@ -1056,6 +1058,8 @@
 	<string>The working tree is clean.</string>
 	<key>The workspace is empty. Projects and sessions you open later go to another workspace.</key>
 	<string>The workspace is empty. Projects and sessions you open later go to another workspace.</string>
+	<key>The workspaces your projects and sessions are filed under</key>
+	<string>The workspaces your projects and sessions are filed under</string>
 	<key>Theme</key>
 	<string>Theme</string>
 	<key>Theme, fonts, cursor, and window</key>
@@ -1162,6 +1166,12 @@
 	<string>Working Directory</string>
 	<key>Workspace</key>
 	<string>Workspace</string>
+	<key>Workspace Settings…</key>
+	<string>Workspace Settings…</string>
+	<key>Workspace actions</key>
+	<string>Workspace actions</string>
+	<key>Workspaces</key>
+	<string>Workspaces</string>
 	<key>Worktree has changes</key>
 	<string>Worktree has changes</string>
 	<key>Worktree removed</key>

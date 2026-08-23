@@ -897,6 +897,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         settingsWindow?.contentView = NSHostingView(rootView: SettingsView(
             settings: settings,
             usage: usageMonitor,
+            store: store,
             initialTab: initialTab,
             onSSHConnect: { [weak self] host in
                 guard let self else { return }
@@ -986,16 +987,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.presentNewWorkspacePanel(on: .ssh(alias: alias))
     }
 
-    /// The submenu's "Rename Workspace…" row. It acts on the workspace the window
-    /// is in, which is the one the rows above show checked.
-    @objc func renameWorkspace(_ sender: Any?) {
-        store.presentRenameWorkspacePanel(store.currentWorkspaceID)
-    }
-
-    /// The submenu's "Remove Workspace" row, acting on the current workspace like
-    /// the rename above. Disabled at one workspace (see `validateMenuItem`).
-    @objc func removeWorkspace(_ sender: Any?) {
-        store.confirmRemoveWorkspace(store.currentWorkspaceID)
+    /// "Workspace Settings…", from File ▸ Workspace and the sidebar switcher — the
+    /// one pane that shows every workspace at once, which is where renaming and
+    /// removing one live.
+    @objc func openWorkspaceSettings(_ sender: Any?) {
+        openSettings(initialTab: .workspaces)
     }
 
     /// A row of the Connect to… submenu — first contact with a machine from
@@ -2001,12 +1997,14 @@ extension AppDelegate: NSMenuDelegate {
                                action: #selector(newWorkspace(_:)), keyEquivalent: "")
         new.target = self
         refreshNewWorkspaceItem(new, others: otherDevices(known: DeviceRoster.known(in: store)))
-        let rename = menu.addItem(withTitle: localized("Rename Workspace…"),
-                                  action: #selector(renameWorkspace(_:)), keyEquivalent: "")
-        rename.target = self
-        let remove = menu.addItem(withTitle: localized("Remove Workspace"),
-                                  action: #selector(removeWorkspace(_:)), keyEquivalent: "")
-        remove.target = self
+        menu.addItem(.separator())
+        // Renaming and removing are in Settings ▸ Workspaces rather than here.
+        // Both act on a workspace the user has to pick, and a menu that shows the
+        // list one checked row at a time can only offer them for the current one —
+        // which is why they read as "Rename Workspace" with no name in them.
+        let settingsItem = menu.addItem(withTitle: localized("Workspace Settings…"),
+                                        action: #selector(openWorkspaceSettings(_:)), keyEquivalent: "")
+        settingsItem.target = self
     }
 
     private func fillConnectToMenu(_ menu: NSMenu) {
@@ -2034,11 +2032,6 @@ extension AppDelegate: NSMenuItemValidation {
             return !store.sidebarSessionGroups.isEmpty
         case #selector(newWorktree(_:)), #selector(newPullRequest(_:)):
             return currentBranchProject != nil
-        // The store refuses to remove the last workspace — the sidebar has to have
-        // a scope to show — so the row dims rather than answering a click with
-        // nothing.
-        case #selector(removeWorkspace(_:)):
-            return store.hasMultipleWorkspaces
         default:
             return true
         }
