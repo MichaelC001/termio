@@ -173,16 +173,16 @@ struct DeviceMarkView: View {
         case .here:
             EmptyView()
         case .elsewhere:
-            dot.fill(Color.secondary)
+            Circle().fill(Color.secondary)
                 .frame(width: Self.size, height: Self.size)
                 .help(localized("Runs on \(name)"))
         case .reaching:
-            dot.stroke(Color.secondary, lineWidth: 1)
+            Circle().stroke(Color.secondary, lineWidth: 1)
                 .frame(width: Self.size, height: Self.size)
                 .help(localized("Reaching \(name)…"))
         case .unreachable(let message):
             ZStack {
-                dot.stroke(Color.orange, lineWidth: 1)
+                Circle().stroke(Color.orange, lineWidth: 1)
                 Capsule()
                     .fill(Color.orange)
                     .frame(width: Self.size + 3, height: 1)
@@ -193,7 +193,6 @@ struct DeviceMarkView: View {
         }
     }
 
-    private var dot: Circle { Circle() }
 }
 
 // MARK: - Menu construction

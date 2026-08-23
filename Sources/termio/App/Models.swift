@@ -129,6 +129,20 @@ struct Workspace: Identifiable, Hashable, Codable {
     /// unknown stays safe.
     var isAutoCreated: Bool?
 
+    /// Which of the theme's workspace tints marks this scope in the switcher, as
+    /// an index rather than a colour.
+    ///
+    /// An index because the palette is the terminal theme's, not ours
+    /// (`ChromeTheme.workspaceTints`): storing the resolved colour would freeze a
+    /// scope into the theme it was made under, and a workspace should re-skin
+    /// with everything else. It is also what makes the choice survivable — a hex
+    /// picked out of one palette is a stranger in the next one.
+    ///
+    /// `nil` only until `WorkspaceMigration.reconcile` fills it, which it does on
+    /// every load, so nothing downstream has to invent a colour for a workspace
+    /// written before this existed.
+    var color: Int?
+
     /// Every session the workspace owns directly. Its projects' sessions are not
     /// here — they belong to the project.
     var looseSessions: [Session] { terminals + chats }
@@ -155,7 +169,7 @@ struct Workspace: Identifiable, Hashable, Codable {
 
 extension Workspace {
     private enum CodingKeys: String, CodingKey {
-        case id, name, terminals, chats, deviceAlias, deviceID, isAutoCreated
+        case id, name, terminals, chats, deviceAlias, deviceID, isAutoCreated, color
     }
 
     /// Missing collections take their empty defaults so a workspace written by an
@@ -171,6 +185,7 @@ extension Workspace {
         deviceAlias = try c.decodeIfPresent(String.self, forKey: .deviceAlias)
         deviceID = try c.decodeIfPresent(String.self, forKey: .deviceID)
         isAutoCreated = try c.decodeIfPresent(Bool.self, forKey: .isAutoCreated)
+        color = try c.decodeIfPresent(Int.self, forKey: .color)
     }
 
     /// First-run state for a fresh install: one workspace holding one shell, so a
