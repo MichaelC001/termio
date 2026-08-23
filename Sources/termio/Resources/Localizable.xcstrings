@@ -1211,6 +1211,16 @@
         }
       }
     },
+    "Colour %lld": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "颜色 %lld"
+          }
+        }
+      }
+    },
     "Couldn’t create worktree session": {
       "localizations": {
         "zh-Hans": {
@@ -5731,6 +5741,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ 上也在运行"
+          }
+        }
+      }
+    },
+    "Reaching %@…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在连接 %@…"
+          }
+        }
+      }
+    },
+    "Can’t reach %@: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连不上 %@：%@"
+          }
+        }
+      }
+    },
+    "Can’t reach %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连不上 %@"
           }
         }
       }

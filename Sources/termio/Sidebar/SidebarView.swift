@@ -340,7 +340,19 @@ struct SidebarView: View {
         // about what is running, and it is the only place a session started
         // outside Termio can appear at all.
         let rows = store.deviceOnlySessions()
-        if !rows.isEmpty {
+        // Shown for a machine that has not answered, not only for one with rows
+        // to show. `deviceOnlySessions` returns nothing while a device is being
+        // reached and nothing when it refused, so this whole section used to
+        // vanish at exactly the moment it had something to say — and "no
+        // sessions" and "no machine" looked identical. `DeviceSessionsState`
+        // has carried the difference all along, including the daemon's own
+        // words; nothing rendered it.
+        //
+        // Only for a machine, never for this Mac: a local roster is a Unix
+        // socket away, so there is no reaching to watch and no failure that
+        // outlives a blink.
+        let unanswered = !device.isLocal && store.deviceSessions.isUnanswered
+        if !rows.isEmpty || unanswered {
             SidebarSectionHeader(
                 title: device.isLocal
                     ? localized("Also Running")
@@ -354,6 +366,18 @@ struct SidebarView: View {
                 menuItems: alsoRunningMenuItems(device)
             )
             if !alsoRunningCollapsed {
+                if case .failed(let message) = store.deviceSessions {
+                    // The device's own words, verbatim: ssh says why in one line
+                    // ("Operation timed out", "Permission denied"), and every
+                    // paraphrase of that is worse than the line itself.
+                    SidebarNoticeRow(
+                        title: localized("Can’t reach \(device.name)"),
+                        detail: message,
+                        chrome: chrome)
+                } else if case .loading = store.deviceSessions, rows.isEmpty {
+                    SidebarNoticeRow(
+                        title: localized("Reaching \(device.name)…"), detail: nil, chrome: chrome)
+                }
                 // Opening one of these is adoption, not creation: it keeps the
                 // name the device gave it so the attach lands on that PTY.
                 ForEach(rows, id: \.id) { information in
@@ -811,14 +835,14 @@ private struct ProjectHeader: View {
                     .help(localized("Git worktree"))
             }
             // The machine the checkout lives on, when that is not this Mac — the
-            // same tinted dot in the same hue a session row carries, because it
-            // says the same thing about the same machine. A local project carries
-            // nothing: being on your own Mac is the absence of a mark.
+            // same mark a session row carries, because it says the same thing
+            // about the same machine. A local project carries nothing: being on
+            // your own Mac is the absence of a mark.
             if let device = remoteDevice {
-                Circle()
-                    .fill(DeviceTint.color(for: device, chrome: chrome))
-                    .frame(width: 6, height: 6)
-                    .help(localized("Checked out on \(device.name)"))
+                DeviceMarkView(
+                    mark: DeviceMark.mark(
+                        for: device, current: store.currentDevice, state: store.deviceSessions),
+                    name: device.name)
             }
         }
         // On hover the trailing icons would otherwise sit on top of a long project
@@ -1253,16 +1277,17 @@ private struct SessionRow: View {
             // layout width), so the title always spans the full row and truncates
             // only at the true trailing edge. The spacer just left-aligns the title.
             Spacer(minLength: 4)
-            // The machine the row runs on, when that is not this Mac. A workspace
-            // spans machines, so the device is a property of the row: a small
-            // tinted dot, the same hue the workspace switcher gives that machine,
-            // arriving before the mistake rather than after it. Local rows carry
-            // nothing — being on your own Mac is the absence of a mark.
+            // The machine the row runs on, when that is not this Mac. Almost
+            // always the workspace's own machine — everything filed under a
+            // workspace is on it — but not always: a remote terminal opened from
+            // a project row is filed under that row wherever it runs. So the
+            // device stays a property of the row, and the mark arrives before the
+            // mistake rather than after it. Local rows carry nothing.
             if let device = remoteDevice {
-                Circle()
-                    .fill(DeviceTint.color(for: device, chrome: chrome))
-                    .frame(width: 6, height: 6)
-                    .help(localized("Runs on \(device.name)"))
+                DeviceMarkView(
+                    mark: DeviceMark.mark(
+                        for: device, current: store.currentDevice, state: store.deviceSessions),
+                    name: device.name)
             }
         }
         // VSCode-style trailing edge, reserving zero flow width: the close button appears here on
@@ -1410,6 +1435,46 @@ private struct SessionRow: View {
 /// Clicking it adopts it (see `TermioStore.adoptDeviceSession`), which gives the
 /// session a row here and attaches to the PTY that is already running rather
 /// than starting a second one beside it.
+/// A line in place of the rows that are not there: a machine being reached, or
+/// one that refused and said why.
+///
+/// Shaped like the rows it stands in for — same leading inset, same two-line
+/// title/detail — so the section keeps its rhythm whether it is holding sessions
+/// or an explanation. Not selectable and not an error dialog: it is the section's
+/// content while there is no content, and it goes away when the rows arrive.
+private struct SidebarNoticeRow: View {
+    @EnvironmentObject var settings: AppSettings
+    let title: String
+    let detail: String?
+    let chrome: ChromeTheme?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            HugeIconView(icon: .serverStack, size: 15, color: .secondary)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title)
+                    .font(settings.interfaceFont)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(settings.interfaceFont)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                }
+            }
+            Spacer(minLength: 4)
+        }
+        .padding(.vertical, settings.interfaceRowPadding)
+        .padding(.leading, 16)
+        .contentShape(Rectangle())
+        .help(detail ?? title)
+    }
+}
+
 private struct DeviceOnlySessionRow: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings

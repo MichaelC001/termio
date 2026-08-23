@@ -162,6 +162,10 @@
 	<string>无法以文本打开</string>
 	<key>Can’t preview</key>
 	<string>无法预览</string>
+	<key>Can’t reach %@</key>
+	<string>连不上 %@</string>
+	<key>Can’t reach %@: %@</key>
+	<string>连不上 %@：%@</string>
 	<key>Change Theme…</key>
 	<string>更改主题…</string>
 	<key>Changes</key>
@@ -232,6 +236,8 @@
 	<string>全部折叠</string>
 	<key>Collapse Results</key>
 	<string>折叠结果</string>
+	<key>Colour %lld</key>
+	<string>颜色 %lld</string>
 	<key>Command</key>
 	<string>命令</string>
 	<key>Command Palette…</key>
@@ -800,6 +806,8 @@
 	<string>范围</string>
 	<key>Reachable</key>
 	<string>可连接</string>
+	<key>Reaching %@…</key>
+	<string>正在连接 %@…</string>
 	<key>Reads ~/.ssh/config directly — Termio keeps no separate host list.</key>
 	<string>直接读取 ~/.ssh/config——Termio 不保留单独的主机列表。</string>
 	<key>Recent</key>

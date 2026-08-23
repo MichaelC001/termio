@@ -131,6 +131,17 @@ enum DeviceSessionsState {
         if case .ready(let sessions) = self { return sessions }
         return nil
     }
+
+    /// Whether the device has yet to say anything this app can act on. Both
+    /// halves produce an empty roster, and an empty roster is exactly what a
+    /// working machine with nothing running also produces — so a caller drawing
+    /// that list has to ask this to tell "nothing there" from "nobody home".
+    var isUnanswered: Bool {
+        switch self {
+        case .loading, .failed: true
+        case .ready, .unavailable: false
+        }
+    }
 }
 
 extension TermioStore {

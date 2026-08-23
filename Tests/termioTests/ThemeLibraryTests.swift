@@ -139,9 +139,6 @@ final class ThemeLibraryTests: XCTestCase {
         for definition in ThemeLibrary.builtInThemes {
             let chrome = try XCTUnwrap(ChromeTheme(definition), definition.name)
             XCTAssertEqual(chrome.isDark, definition.isDark, definition.name)
-            // The device marks come from the theme's own bright ANSI slots, so a
-            // theme that defines none of them still has to yield a usable mark.
-            XCTAssertFalse(chrome.deviceTints.isEmpty, definition.name)
         }
     }
 

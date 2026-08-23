@@ -177,7 +177,52 @@ enum WorkspaceMigration {
             project.workspaceID = fallbackID
             return project
         }
-        return stampingDevices(workspaces: workspaces, projects: filed)
+        // A colour for every workspace, including the ones written before there
+        // were any and the halves the split below has just minted. Assigned
+        // rather than derived from the id: a hash repeats often enough to notice
+        // with a palette this small, and the point of the mark is that two rows
+        // differ.
+        //
+        // After the split, not before — that is the whole of the idempotence.
+        // Colouring first left a fresh half with none, so the *next* load filled
+        // it in and the tree came back changed; `reconcile` runs on every launch,
+        // and a pass that keeps finding work is a sidebar that reshuffles itself.
+        let settled = stampingDevices(workspaces: workspaces, projects: filed)
+        return (assigningColors(settled.workspaces), settled.projects)
+    }
+
+    /// Fills in a tint for every workspace that has none, choosing the one the
+    /// fewest others already carry so a small palette spreads before it repeats.
+    ///
+    /// Order-independent: the workspaces that already chose are counted first, so
+    /// the answer does not depend on which end of the list is walked.
+    static func assigningColors(_ workspaces: [Workspace]) -> [Workspace] {
+        var used: [Int: Int] = [:]
+        for workspace in workspaces {
+            if let color = workspace.color { used[color, default: 0] += 1 }
+        }
+        return workspaces.map { workspace in
+            guard workspace.color == nil else { return workspace }
+            var workspace = workspace
+            let color = leastUsedColor(in: used)
+            used[color, default: 0] += 1
+            workspace.color = color
+            return workspace
+        }
+    }
+
+    /// The palette is the theme's and its size is not known here, so the index is
+    /// chosen within a fixed span and wrapped by whoever draws it. Five is the
+    /// count every built-in theme yields (`ChromeTheme.workspaceTints`).
+    static let colorCount = 5
+
+    private static func leastUsedColor(in used: [Int: Int]) -> Int {
+        (0..<colorCount).min { left, right in
+            let leftCount = used[left] ?? 0
+            let rightCount = used[right] ?? 0
+            if leftCount != rightCount { return leftCount < rightCount }
+            return left < right
+        } ?? 0
     }
 
     /// Leaves every workspace belonging to exactly one machine — the rule the whole

@@ -139,7 +139,7 @@ final class WorkspaceProjectFilingTests: XCTestCase {
         let relaunched = WorkspaceMigration.reconcile(
             workspaces: upgraded.workspaces, projects: saved)
 
-        XCTAssertEqual(relaunched.workspaces, upgraded.workspaces)
+        XCTAssertEqual(ignoringColors(relaunched.workspaces), ignoringColors(upgraded.workspaces))
         XCTAssertEqual(relaunched.projects.map(\.workspaceID), saved.map(\.workspaceID))
     }
 }

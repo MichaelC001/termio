@@ -162,6 +162,10 @@
 	<string>Can’t open as text</string>
 	<key>Can’t preview</key>
 	<string>Can’t preview</string>
+	<key>Can’t reach %@</key>
+	<string>Can’t reach %@</string>
+	<key>Can’t reach %@: %@</key>
+	<string>Can’t reach %@: %@</string>
 	<key>Change Theme…</key>
 	<string>Change Theme…</string>
 	<key>Changes</key>
@@ -232,6 +236,8 @@
 	<string>Collapse All</string>
 	<key>Collapse Results</key>
 	<string>Collapse Results</string>
+	<key>Colour %lld</key>
+	<string>Colour %lld</string>
 	<key>Command</key>
 	<string>Command</string>
 	<key>Command Palette…</key>
@@ -800,6 +806,8 @@
 	<string>Range</string>
 	<key>Reachable</key>
 	<string>Reachable</string>
+	<key>Reaching %@…</key>
+	<string>Reaching %@…</string>
 	<key>Reads ~/.ssh/config directly — Termio keeps no separate host list.</key>
 	<string>Reads ~/.ssh/config directly — Termio keeps no separate host list.</string>
 	<key>Recent</key>
