@@ -17,6 +17,16 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.41.1",
+    date: "2026-08-23",
+    title: "The workspace name holds still",
+    changes: {
+      fixed: [
+        "Switching workspaces no longer makes the name in the toolbar flick and shift. It was drawn at the width of whatever name it held, so every switch resized it and the toolbar re-flowed around it.",
+      ],
+    },
+  },
+  {
     version: "0.41.0",
     date: "2026-08-23",
     title: "Put a workspace on another machine",
