@@ -260,7 +260,7 @@ final class WorkspaceMigrationTests: XCTestCase {
         // on, and could then claim a workspace the user named.
         var settled = home
         settled.isAutoCreated = false
-        XCTAssertEqual(ignoringColors(workspaces), ignoringColors([settled]))
+        XCTAssertEqual(workspaces, [settled])
         XCTAssertEqual(projects, [filed])
 
         // And it is a fixed point from there — the property the churn would break.
@@ -296,7 +296,7 @@ final class WorkspaceMigrationTests: XCTestCase {
 
         var settled = scope
         settled.isAutoCreated = false
-        XCTAssertEqual(ignoringColors(workspaces), ignoringColors([settled]))
+        XCTAssertEqual(workspaces, [settled])
         XCTAssertEqual(workspaces.first?.device, .thisMac)
         XCTAssertNil(workspaces.first?.deviceAlias, "no alias is written, so the file keeps its shape")
     }
@@ -436,51 +436,6 @@ final class WorkspaceMigrationTests: XCTestCase {
         XCTAssertEqual(twice.projects, once.projects)
     }
 
-    /// Every workspace ends a load with a colour, including one written before
-    /// colours existed — the switcher draws from this and has no second answer.
-    func testEveryWorkspaceLeavesReconcileWithAColor() {
-        let (workspaces, _) = WorkspaceMigration.reconcile(
-            workspaces: [Workspace(name: "Work"), Workspace(name: "Servers")], projects: [])
-
-        XCTAssertTrue(workspaces.allSatisfy { $0.color != nil })
-    }
-
-    /// A palette this small has to spread before it repeats: two scopes that came
-    /// in blank must not come out the same colour.
-    func testColorsSpreadBeforeTheyRepeat() {
-        let blank = (0..<WorkspaceMigration.colorCount).map { Workspace(name: "Scope \($0)") }
-
-        let (workspaces, _) = WorkspaceMigration.reconcile(workspaces: blank, projects: [])
-
-        XCTAssertEqual(Set(workspaces.compactMap(\.color)).count, WorkspaceMigration.colorCount)
-    }
-
-    /// A colour the user picked is theirs. The fill only ever answers for a
-    /// workspace that has none.
-    func testAChosenColorSurvivesReconcile() {
-        var chosen = Workspace(name: "Work")
-        chosen.color = 3
-
-        let (workspaces, _) = WorkspaceMigration.reconcile(
-            workspaces: [chosen, Workspace(name: "Servers")], projects: [])
-
-        XCTAssertEqual(workspaces.first { $0.id == chosen.id }?.color, 3)
-    }
-
-    /// The half a split mints is coloured in the same pass that made it. Missing
-    /// this is what broke idempotence: the next load filled it in, so a tree came
-    /// back changed from a pass that runs on every launch.
-    func testASplitHalfIsColoredInThePassThatCreatedIt() {
-        let spanning = Workspace(name: "Work")
-        let (workspaces, _) = WorkspaceMigration.reconcile(
-            workspaces: [spanning],
-            projects: [checkout("api", in: spanning, on: "ukvps"),
-                       checkout("web", in: spanning, on: "devbox")])
-
-        XCTAssertGreaterThan(workspaces.count, 1, "the span is what makes it split")
-        XCTAssertTrue(workspaces.allSatisfy { $0.color != nil })
-    }
-
     /// The upgrade runs once. A state file that already carries workspaces is
     /// never handed to `migrate`, and re-running it over its own output would be a
     /// sign the snapshot decode had gone wrong — so pin that the fold is stable.
@@ -537,16 +492,5 @@ final class WorkspaceDefaultNameTests: XCTestCase {
     func testTheRuleHoldsForALocalizedBase() {
         XCTAssertEqual(
             TermioStore.nextFreeWorkspaceName(base: "工作区", taken: ["工作区"]), "工作区 2")
-    }
-}
-
-/// Colours are filled in by `reconcile` for every workspace that has none, which
-/// is a different question from the one these tests ask. Compared without them so
-/// an ownership assertion keeps saying what it says.
-func ignoringColors(_ workspaces: [Workspace]) -> [Workspace] {
-    workspaces.map { workspace in
-        var workspace = workspace
-        workspace.color = nil
-        return workspace
     }
 }

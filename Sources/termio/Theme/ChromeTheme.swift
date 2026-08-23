@@ -23,9 +23,6 @@ struct ChromeTheme {
     let accent: Color
     /// Whether the theme reads as dark, so the window can match its system
     /// appearance (traffic lights, scrollbars) to the theme.
-    /// Hues a workspace can be marked with in the switcher, in a fixed order
-    /// (see `Workspace.color`).
-    let workspaceTints: [Color]
     let isDark: Bool
 
     /// Ink guaranteed to contrast a background: dimmed white over dark, dimmed black over light.
@@ -68,15 +65,6 @@ struct ChromeTheme {
             ?? definition.selectionBackground.flatMap(Color.init(hex:))
             ?? foreground
         self.isDark = dark
-        // Green, yellow, blue, magenta, cyan — the bright half (palette 10-14),
-        // which is the half that survives a dark background. A slot the theme
-        // leaves undefined drops out rather than becoming a default hue that
-        // belongs to no theme; if every one is missing, the accent stands in so a
-        // workspace always has a mark.
-        let tints = [10, 11, 12, 13, 14]
-            .compactMap { definition.palette[$0] }
-            .compactMap(Color.init(hex:))
-        self.workspaceTints = tints.isEmpty ? [self.accent] : tints
     }
 
     /// WCAG contrast ratio between two opaque colors (1…21). Colors that can't be
