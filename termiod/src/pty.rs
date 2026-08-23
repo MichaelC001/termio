@@ -327,6 +327,52 @@ impl Pty {
                 if slave_raw > 2 {
                     libc::close(slave_raw);
                 }
+                // The launcher's signal state is not the session's, for the
+                // same reason its environment is not (see LAUNCHER_ENV_KEYS).
+                // `exec` resets handled signals on its own, but `SIG_IGN`
+                // survives it and the mask survives both fork and exec — so a
+                // daemon started under an ignored SIGQUIT, or forking from a
+                // thread that inherited a blocked SIGTSTP, passes that state
+                // on to the sessions it spawns. Rust's own spawn preserves the
+                // parent's mask deliberately, so this is ours to do.
+                //
+                // The mask is cleared outright, but dispositions are reset only
+                // for the terminal and job-control signals — not swept over
+                // 1..NSIG, whose range is not portable and where SIGKILL and
+                // SIGSTOP refuse the call. So an inherited `SIG_IGN` outside
+                // this list does still reach the session, and that is the line:
+                // ignoring SIGWINCH or SIGCONT already matches their default,
+                // and SIGUSR1/2 are a supervisor's contract with the program
+                // rather than terminal semantics. SIGPIPE is reset here even
+                // though Rust does it just before this closure runs, so a
+                // session does not depend on Rust's broken-pipe policy.
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = libc::SIG_DFL;
+                if libc::sigemptyset(&mut action.sa_mask) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                for signal in [
+                    libc::SIGCHLD,
+                    libc::SIGHUP,
+                    libc::SIGINT,
+                    libc::SIGPIPE,
+                    libc::SIGQUIT,
+                    libc::SIGTERM,
+                    libc::SIGALRM,
+                    libc::SIGTSTP,
+                    libc::SIGTTIN,
+                    libc::SIGTTOU,
+                ] {
+                    if libc::sigaction(signal, &action, std::ptr::null_mut()) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                let mut unblocked: libc::sigset_t = std::mem::zeroed();
+                if libc::sigemptyset(&mut unblocked) != 0
+                    || libc::sigprocmask(libc::SIG_SETMASK, &unblocked, std::ptr::null_mut()) != 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
                 Ok(())
             });
         }
@@ -482,6 +528,80 @@ mod tests {
         assert!(!dumped.contains("CLAUDE_CODE_CHILD_SESSION="));
         assert!(dumped.contains("TERM_PROGRAM=termio"));
         assert!(!dumped.contains("TERM_PROGRAM=Apple_Terminal"));
+    }
+
+    /// The other half of the launcher problem: the terminal and job-control
+    /// signals reach a session at their defaults, whatever the launcher left
+    /// blocked or ignored.
+    ///
+    /// `exec` resets handled signals, so most contamination heals itself. Two
+    /// kinds do not: `SIG_IGN` survives `exec`, and the signal mask survives
+    /// both `fork` and `exec`. Both leave the same fingerprint — a shell that
+    /// signals itself lives to reach `exit 99` — so each is staged on its own.
+    ///
+    /// An ignored SIGINT is process-wide and `cargo test` runs other tests on
+    /// other threads throughout, so the daemon's own state goes back before the
+    /// child is waited on, through a guard that a failed assert cannot skip.
+    #[tokio::test]
+    async fn a_session_gets_the_terminal_signals_the_launcher_blocked_or_ignored() {
+        use std::os::unix::process::ExitStatusExt;
+
+        struct RestoreDisposition(libc::sighandler_t);
+        impl Drop for RestoreDisposition {
+            fn drop(&mut self) {
+                unsafe { libc::signal(libc::SIGINT, self.0) };
+            }
+        }
+
+        struct RestoreMask(libc::sigset_t);
+        impl Drop for RestoreMask {
+            fn drop(&mut self) {
+                unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &self.0, std::ptr::null_mut()) };
+            }
+        }
+
+        let argv = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "kill -s INT $$; exit 99".to_string(),
+        ];
+
+        let ignored = {
+            let _restore = RestoreDisposition(unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) });
+            Pty::spawn(&argv, None, &[], 24, 80)
+        };
+        // The master is held until the child is reaped: closing it early hangs
+        // up the session, and a child killed by SIGHUP would pass for a pass.
+        let (_master, mut child) = ignored.expect("spawn under an ignored SIGINT");
+        assert_eq!(
+            child.wait().expect("the child exits").signal(),
+            Some(libc::SIGINT),
+            "an ignored SIGINT survives exec, so the session inherits it unless it is reset"
+        );
+
+        // The mask is per-thread, and `#[tokio::test]` runs on a single thread,
+        // so this is the thread that forks.
+        let blocked = {
+            let _restore = RestoreMask(unsafe {
+                let mut blocked: libc::sigset_t = std::mem::zeroed();
+                assert_eq!(libc::sigemptyset(&mut blocked), 0);
+                assert_eq!(libc::sigaddset(&mut blocked, libc::SIGINT), 0);
+                let mut previous: libc::sigset_t = std::mem::zeroed();
+                assert_eq!(
+                    libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, &mut previous),
+                    0,
+                    "the test asserts nothing if SIGINT was never blocked"
+                );
+                previous
+            });
+            Pty::spawn(&argv, None, &[], 24, 80)
+        };
+        let (_master, mut child) = blocked.expect("spawn under a blocked SIGINT");
+        assert_eq!(
+            child.wait().expect("the child exits").signal(),
+            Some(libc::SIGINT),
+            "the signal mask survives fork and exec, so a blocked SIGINT never reaches the session"
+        );
     }
 
     /// `LC_ALL` outranks both, then `LC_CTYPE`, then `LANG` — and an exported
