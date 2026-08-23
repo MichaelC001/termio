@@ -17,6 +17,17 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.41.3",
+    date: "2026-08-23",
+    title: "A session on another machine says what it's working on",
+    changes: {
+      fixed: [
+        "A session running on another machine now follows what its agent is doing, the way a local one does — the row becomes the agent's name, then the topic it's working on. It used to sit on a fixed \"project · host\" label forever: the name termio composed for the row was kept in the same place a name you type goes, so nothing was ever allowed to replace it.",
+        "Maximizing a file no longer flashes the file tree on the way there.",
+      ],
+    },
+  },
+  {
     version: "0.41.2",
     date: "2026-08-23",
     title: "A session that can't start says why",
