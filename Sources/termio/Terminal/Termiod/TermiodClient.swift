@@ -929,6 +929,20 @@ enum Termiod {
         /// a line of hex. In order of how much it tells a person: the reported
         /// title, the agent, the program actually running, and — only when the
         /// command says nothing — the name itself.
+        /// The rungs of `displayLabel` that are a *name* rather than a guess at one:
+        /// a title typed on the box, the daemon's own session name, the program the
+        /// session is running. A viewer keeps these — they are the only thing naming
+        /// the row over there.
+        ///
+        /// `nil` when the label is only the agent's id, which the client's own
+        /// promotion improves on: that row becomes `Claude Code`, and then whatever
+        /// the agent's live title says it is working on.
+        var givenName: String? {
+            if let title, !title.isEmpty { return title }
+            if let agentID, !agentID.isEmpty { return nil }
+            return displayLabel
+        }
+
         var displayLabel: String {
             if let title, !title.isEmpty { return title }
             if let agentID, !agentID.isEmpty { return agentID }

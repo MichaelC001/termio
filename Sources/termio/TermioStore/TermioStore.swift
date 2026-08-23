@@ -1487,25 +1487,26 @@ final class TermioStore: ObservableObject {
     /// once it reports something meaningful — that is how a `Claude Code` row
     /// becomes `Explore e2b.dev infra`, keeping two sessions of the same agent
     /// distinguishable. Agents whose OSC title names only the project can instead
-    /// fall back to a compact first-prompt title supplied by their hook. A name the
-    /// user set themselves wins, followed by a meaningful native title, then the
-    /// prompt-derived fallback.
+    /// fall back to a compact first-prompt title supplied by their hook. A
+    /// `givenTitle` wins over both, then a meaningful native title, then the
+    /// prompt-derived fallback, then the composed placeholder.
     ///
     /// Plain terminals never adopt a live title (their shell would just report
-    /// `user@host`/cwd noise); instead the auto-named ones (`Terminal N`) all show
-    /// a bare `Terminal` label. The stored title is left untouched (it seeds the
-    /// worktree branch slug, which must stay stable and unique); only the displayed
+    /// `user@host`/cwd noise); instead the ones Termio named itself all show a bare
+    /// `Terminal` label. `title` is left untouched throughout — only the displayed
     /// value is derived here.
+    ///
+    /// The name a row was given is a field (`Session.givenTitle`), never a string
+    /// test over `title`: a session running on another machine is born with a label
+    /// Termio composed for it, and reading that label as chosen is what used to
+    /// freeze a remote row at `<project> · <host>` for the rest of its life.
     func displayTitle(for session: Session) -> String {
+        if let given = session.givenTitle { return given }
         if session.agent != .terminal {
-            return AgentSessionTitle.resolved(
-                stored: session.title,
-                agentName: session.agent.displayName,
+            return AgentSessionTitle.automatic(
                 native: runtimes[session.id]?.liveTitle ?? session.liveTitle,
-                promptFallback: session.promptTitle)
-        }
-        guard Self.isAutoTerminalName(session.title) else {
-            return session.title
+                promptFallback: session.promptTitle,
+                placeholder: session.title)
         }
         // A loose terminal is labeled by its live cwd's basename (`~` at home):
         // the session owns its path, so `cd ~/code/foo` renames the row to `foo`
@@ -1534,7 +1535,9 @@ final class TermioStore: ObservableObject {
 
     /// Whether `title` is an auto-generated `Terminal N` label (as opposed to a
     /// name the user chose), which is what makes it eligible for live re-indexing.
-    static func isAutoTerminalName(_ title: String) -> Bool {
+    /// A pure test over the string, so `Session` can reach it while decoding off
+    /// the main actor.
+    nonisolated static func isAutoTerminalName(_ title: String) -> Bool {
         let suffix = title.dropFirst("Terminal ".count)
         return title.hasPrefix("Terminal ") && !suffix.isEmpty
             && suffix.allSatisfy(\.isNumber)
@@ -1659,12 +1662,12 @@ final class TermioStore: ObservableObject {
 /// The order the sidebar names an agent session in, kept out of `TermioStore` so a
 /// test can pin the precedence without standing up a window.
 enum AgentSessionTitle {
-    /// A name the user set wins outright. Otherwise the agent's own native title
-    /// speaks, and only when it says nothing does the first prompt stand in.
-    static func resolved(
-        stored: String, agentName: String, native: String?, promptFallback: String?
+    /// What an agent row calls itself when nobody has named it: the agent's own
+    /// native title speaks first, the first prompt stands in when it says nothing,
+    /// and the composed placeholder shows only when neither has anything to say.
+    static func automatic(
+        native: String?, promptFallback: String?, placeholder: String
     ) -> String {
-        guard stored == agentName else { return stored }
-        return native ?? promptFallback ?? stored
+        native ?? promptFallback ?? placeholder
     }
 }

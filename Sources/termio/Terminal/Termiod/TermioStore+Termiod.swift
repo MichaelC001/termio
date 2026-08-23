@@ -622,6 +622,7 @@ extension TermioStore {
     func adoptDeviceSession(_ information: Termiod.SessionInformation) {
         let device = currentDevice
         var session = Session(title: information.displayLabel, agent: .terminal)
+        session.givenTitle = information.givenName
         session.termiodSessionName = information.name.isEmpty ? information.id : information.name
         session.termiodRemoteHost = device.alias
         session.deviceID = device.deviceID
@@ -733,8 +734,10 @@ extension TermioStore {
     /// sit dead.
     ///
     /// `cwd` (used by "Clone to <device>…") is the remote directory the shell spawns
-    /// in; `title` overrides the sidebar label (the host alias by default, or a
-    /// repo name for a clone).
+    /// in; `title` overrides the sidebar label (the host alias by default, or a repo
+    /// name for a clone) for a session that lands in a machine's own workspace. A
+    /// session that lands under a project takes that project's own naming instead —
+    /// see `createRemoteTerminalSession`.
     func addRemoteTerminal(
         host: String,
         cwd: String? = nil,
@@ -756,7 +759,6 @@ extension TermioStore {
                 self.presentRemoteSetupFailure(host: host, message: error.message)
             case .success(let device):
                 var cwd = cwd
-                var title = title
                 // Opened from a project row: the user means "this repo, on that
                 // machine". The local path doesn't exist over there, so the only
                 // honest answer is the checkout `Clone to <device>…` recorded.
@@ -771,7 +773,6 @@ extension TermioStore {
                         return
                     }
                     cwd = checkout
-                    title = title ?? "\(project.name) · \(host)"
                 }
                 self.createRemoteTerminalSession(
                     host: host, device: device.id, cwd: cwd, title: title, project: projectID
@@ -820,6 +821,15 @@ extension TermioStore {
         // to the machine's own fallback workspace, so a remote session is never
         // filed among the loose local shells.
         if let projectID, let index = projects.firstIndex(where: { $0.id == projectID }) {
+            // Named exactly like a local project's terminals (`addSession`), because
+            // the header above the row already names the repo and the row's device
+            // mark already names the machine — repeating both back as the label
+            // (`boxlit · ukvps`) said nothing the row wasn't saying, and it pinned
+            // the label: a composed name that isn't the auto convention reads as one
+            // the user chose, so the row could never become `Claude Code` and then
+            // follow the agent's own title the way its local twin does.
+            let count = projects[index].sessions.filter { $0.agent == .terminal }.count
+            session.title = "Terminal \(count + 1)"
             projects[index].sessions.append(session)
             selectedSessionID = session.id
             return

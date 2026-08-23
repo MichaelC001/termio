@@ -187,7 +187,7 @@ extension TermioStore {
         guard let session = session(id),
               session.promptTitle == nil,
               session.agent != .terminal,
-              session.title == session.agent.displayName,
+              session.givenTitle == nil,
               let title = AgentPromptTitle.normalized(raw)
         else { return }
         updateSession(id) { $0.promptTitle = title }
@@ -456,10 +456,10 @@ extension TermioStore {
             // promoted row is the agent's own subprocess, not a new identity.
             guard session.agent == .terminal, detected != .terminal else { return }
             // Adopt the declared-session title convention (`addSession`) so the row
-            // reads `Claude Code` — but never overwrite a name the user chose.
-            if Self.isAutoTerminalName(session.title) {
-                session.title = detected.displayName
-            }
+            // reads `Claude Code`. Unconditional: a name the user chose lives in
+            // `givenTitle` and outranks this at display time, so there is nothing
+            // here to protect it from.
+            session.title = detected.displayName
             session.agent = detected
             self[home] = session
         } else if session.agent != .terminal {
@@ -478,13 +478,12 @@ extension TermioStore {
         guard let home = locate(id) else { return }
         var session = self[home]
         guard session.agent != .terminal else { return }
-        // Un-renamed rows fall back to the auto `Terminal N` convention (numbered
-        // like `addSession`, counting this row itself), so display naming — cwd
-        // basename for loose terminals — takes over again.
-        if session.title == session.agent.displayName {
-            let terminalCount = roster(at: home).filter { $0.agent == .terminal }.count
-            session.title = "Terminal \(terminalCount + 1)"
-        }
+        // Back to the auto `Terminal N` convention (numbered like `addSession`,
+        // counting this row itself), so display naming — cwd basename for loose
+        // terminals — takes over again. A name the user chose is untouched by this:
+        // it lives in `givenTitle` and still outranks the placeholder.
+        let terminalCount = roster(at: home).filter { $0.agent == .terminal }.count
+        session.title = "Terminal \(terminalCount + 1)"
         session.agent = .terminal
         session.liveTitle = nil
         session.promptTitle = nil
