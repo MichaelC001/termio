@@ -1633,9 +1633,19 @@ final class TermiodSessionLink: @unchecked Sendable {
                 )
                 try Termiod.writeFrame(channel.writeDescriptor, kind: .control, payload: payload)
                 let reply = try Termiod.readFrame(channel.readDescriptor)
-                guard reply.kind == .control,
-                      case .attached(let attachedPayload) = try Termiod.decodeControl(reply.payload)
-                else {
+                guard reply.kind == .control else {
+                    throw TermiodClientError.handshakeRejected("attach was not acknowledged")
+                }
+                let acknowledgement = try Termiod.decodeControl(reply.payload)
+                // A refusal names its own cause — the directory that is not
+                // there, the spawn it would not perform. Carrying that message
+                // instead of a generic one is the whole reason the refusal is
+                // told apart from a lost connection: the pane can say *why*
+                // rather than only that something failed.
+                if case .error(let refusal) = acknowledgement {
+                    throw TermiodClientError.requestFailed(refusal.message)
+                }
+                guard case .attached(let attachedPayload) = acknowledgement else {
                     throw TermiodClientError.handshakeRejected("attach was not acknowledged")
                 }
                 attached = true

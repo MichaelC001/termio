@@ -206,7 +206,13 @@ final class TermiodFaultIntegrationTests: XCTestCase {
         XCTAssertFalse(
             refusal?.isEmpty ?? true,
             "the refusal carried no reason, so the pane can only say it failed")
-
+        // Not merely non-empty: the generic "attach was not acknowledged" this
+        // arm used to throw passes that and names nothing. What the pane prints
+        // has to be the device's own account of why — the only part of it the
+        // user can act on — so the reply's error payload must survive the throw.
+        XCTAssertNotEqual(
+            refusal, "attach was not acknowledged",
+            "the daemon's reason was discarded, so the pane can only say it failed")
     }
 
     /// The session outlives the connection, which is the claim the split rests
