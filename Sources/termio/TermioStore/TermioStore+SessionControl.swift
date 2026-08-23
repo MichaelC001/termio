@@ -185,6 +185,12 @@ extension TermioStore {
             if let transcript = transcriptPaths[session.id] {
                 entry["transcript"] = transcript
             }
+            // A spawn whose prompt never appeared on screen looks identical to
+            // one working quietly. Saying so here is the only way a caller that
+            // already got its "queued" reply can find out.
+            if undeliveredPrompts.contains(session.id) {
+                entry["prompt_undelivered"] = true
+            }
             return entry
         }
         // Text output is a column table, the deep link first: the link IS the
@@ -203,7 +209,9 @@ extension TermioStore {
                     sessionLink(for: session),
                     effectiveAgent(for: session).wireName.lowercased(),
                     Self.statusToken(status(for: session.id)),
-                    description.isEmpty ? title : "\(title) — \(description)",
+                    undeliveredPrompts.contains(session.id)
+                        ? "\(title) — prompt may not have been received"
+                        : (description.isEmpty ? title : "\(title) — \(description)"),
                 ]
             }
             let widths = (0 ..< 3).map { col in
@@ -340,9 +348,23 @@ extension TermioStore {
         Task { [weak self] in
             guard let self else { return }
             await self.waitForBootSettle(of: state)
+            let before = self.viewportText(for: fresh.id)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             if await !self.performDelivery(delivered, to: fresh, state: state) {
                 FileHandle.standardError.write(Data(
                     "termio: session control could not deliver the queued prompt to \(link)\n".utf8))
+                return
+            }
+            // Writing the bytes is not the same as the agent receiving them: a
+            // startup gate consumes typed text as its own answer, silently. The
+            // caller already has its reply and its address, so this is the only
+            // place the discrepancy can be recorded at all.
+            if await !self.payloadVisiblyLanded(for: fresh.id, before: before) {
+                self.noteUndeliveredPrompt(for: fresh.id)
+                FileHandle.standardError.write(Data((
+                    "termio: the prompt for \(link) was written but the screen did not change — "
+                    + "the agent is probably still on a startup prompt and swallowed it. "
+                    + "Check the pane, then resend with `termio sessions send`.\n").utf8))
             }
         }
         return spawnQueuedReply(request, fresh)
@@ -440,10 +462,58 @@ extension TermioStore {
             try? await Task.sleep(for: .milliseconds(40))
             Self.pressKey(press, on: surfaceHandle)
         }
-        guard submit else { return true }
+        guard submit else {
+            undeliveredPrompts.remove(session.id)
+            return true
+        }
         try? await Task.sleep(for: .milliseconds(40))
         Self.pressReturn(on: surfaceHandle)
+        // Whatever went wrong with the spawn prompt, someone has since driven
+        // this session by hand; the warning has served its purpose.
+        undeliveredPrompts.remove(session.id)
         return true
+    }
+
+    /// Records that a spawned session's prompt was written but never showed up
+    /// on its screen. Cleared the moment anything is delivered to that session
+    /// again, so it describes the present rather than accumulating history.
+    func noteUndeliveredPrompt(for id: Session.ID) {
+        undeliveredPrompts.insert(id)
+    }
+
+    /// Whether the payload visibly reached the program, checked by watching the
+    /// screen rather than by understanding the program.
+    ///
+    /// `performDelivery` reports whether the bytes could be *written*, which is a
+    /// weaker claim than it looks: an agent still on a startup gate — Codex's
+    /// hook-trust prompt, a usage notice, a first-run dialog — consumes typed
+    /// text as an answer to its own question and shows nothing. The write
+    /// succeeds and the prompt is gone.
+    ///
+    /// That gate also defeats `waitForBootSettle`, whose readiness test is two
+    /// identical frames: a program waiting for a keypress is *perfectly* still.
+    /// So readiness cannot be established before typing; it can only be
+    /// confirmed after. Text entering a composer always redraws it — no TUI
+    /// accepts input invisibly — so an unchanged screen means the payload went
+    /// somewhere this caller did not intend.
+    ///
+    /// Deliberately advisory: it reports, and never retypes. A second attempt
+    /// against a dialog that swallowed the first is how one stray prompt becomes
+    /// two menu answers.
+    private func payloadVisiblyLanded(
+        for id: Session.ID, before: String?
+    ) async -> Bool {
+        // Long enough for a composer to repaint, short enough that a caller
+        // watching the reply does not notice. A TUI that redraws slower than this
+        // reports a false negative, which costs a log line and nothing else.
+        let deadline = Date().addingTimeInterval(1.5)
+        while Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(120))
+            let now = viewportText(for: id)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if now != before { return true }
+        }
+        return false
     }
 
     /// Puts `payload` into the session's PTY as raw bytes, NOT through
