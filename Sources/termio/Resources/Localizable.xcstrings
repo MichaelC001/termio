@@ -5885,16 +5885,6 @@
         }
       }
     },
-    "Rename Workspace…": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "重命名工作区…"
-          }
-        }
-      }
-    },
     "Runs on %@": {
       "localizations": {
         "zh-Hans": {
@@ -6071,6 +6061,66 @@
           "stringUnit": {
             "state": "translated",
             "value": "这个会话没能启动。"
+          }
+        }
+      }
+    },
+    "Workspaces": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工作区"
+          }
+        }
+      }
+    },
+    "The workspaces your projects and sessions are filed under": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你的项目和会话归入的工作区"
+          }
+        }
+      }
+    },
+    "A workspace scopes the sidebar to the projects and sessions filed under it, on the machine it belongs to.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工作区把侧栏限定在归入它的项目和会话上，都在它所属的那台机器上。"
+          }
+        }
+      }
+    },
+    "Workspace Settings…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工作区设置…"
+          }
+        }
+      }
+    },
+    "Workspace actions": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工作区操作"
+          }
+        }
+      }
+    },
+    "Current workspace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前工作区"
           }
         }
       }
