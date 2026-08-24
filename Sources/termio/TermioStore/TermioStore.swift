@@ -206,6 +206,20 @@ final class TermioStore: ObservableObject {
     /// has to redraw as the pointer crosses zones.
     @Published var sessionDropTarget: SessionDropTarget?
 
+    /// What a release over a sidebar row would do: land in the gap above or below
+    /// it, or group the dragged session with it. Held here rather than in each
+    /// row's `@State` so one writer owns it — a per-row flag can only be cleared by
+    /// the row that set it, and a drag that ends without SwiftUI calling that row
+    /// back leaves the cue on screen (see `PaneDragRearrange.clearStrandedDropCue`).
+    @Published var sessionRowDrop: SessionRowDrop?
+
+    /// A pending drop on a sidebar row: which row, and which gap it would land in —
+    /// `nil` meaning the middle of the row, which groups the two sessions instead.
+    struct SessionRowDrop: Equatable {
+        var row: Session.ID
+        var insert: RowInsertion?
+    }
+
     /// When each project was last active — the moment one of its agents last reported
     /// work, or the user last switched to one of its sessions. Drives the sidebar's
     /// "Recent Activity" sort (see `orderedProjects`). In-memory and `@Published` so a

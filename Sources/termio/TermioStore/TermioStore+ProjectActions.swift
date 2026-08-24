@@ -30,6 +30,11 @@ extension TermioStore {
         return session.id
     }
 
+    /// Which gap a dragged row lands in, relative to the row it was released over.
+    enum RowInsertion {
+        case above, below
+    }
+
     /// Whether `moved` may be drag-reordered next to `target`: both must sit in the
     /// same roster — one project, or one workspace's Terminals or Chats — and the
     /// same worktree bucket. Drives which rows light their background as a legal
@@ -43,24 +48,25 @@ extension TermioStore {
             == sessionBucketKey(self[targetSlot], at: targetSlot)
     }
 
-    /// Moves `moved` next to `target` within their shared roster, committed on drop
-    /// (a cross-roster move is a no-op via `canReorder`). The insert side follows the
-    /// drag direction: dropping onto a row *below* lands `moved` just under the target,
-    /// onto one *above* lands it just over — so the gesture reads as "move toward the
-    /// row you let go on". Persistence rides the tree's `didSet` like every roster edit.
-    func reorderSession(_ moved: Session.ID, relativeTo target: Session.ID) {
+    /// Moves `moved` to the `side` of `target` within their shared roster, committed
+    /// on drop (a cross-roster move is a no-op via `canReorder`). Persistence rides
+    /// the tree's `didSet` like every roster edit.
+    ///
+    /// The side is the caller's, not inferred from which row started higher: the
+    /// sidebar draws an insertion line at the edge the pointer is nearest, and a
+    /// line that showed one gap while the row landed in another would be a lie.
+    func reorderSession(_ moved: Session.ID, relativeTo target: Session.ID,
+                        insert side: RowInsertion) {
         guard canReorder(moved, relativeTo: target),
-              let movedSlot = locate(moved), let targetSlot = locate(target)
+              let movedSlot = locate(moved)
         else { return }
 
         var sessions = roster(at: movedSlot)
-        let movedIndex = movedSlot.sessionIndex
-        let targetIndex = targetSlot.sessionIndex
-        let row = sessions.remove(at: movedIndex)
+        let row = sessions.remove(at: movedSlot.sessionIndex)
         // Re-find the target after the removal so its index stays valid regardless of
-        // which row came first; insert on the side `moved` was dragged from.
+        // which row came first.
         let newTarget = sessions.firstIndex(where: { $0.id == target }) ?? sessions.count - 1
-        sessions.insert(row, at: movedIndex < targetIndex ? newTarget + 1 : newTarget)
+        sessions.insert(row, at: side == .above ? newTarget : newTarget + 1)
         setRoster(sessions, at: movedSlot)
         // A drop that lands between a group's rows would split its bracket in two;
         // rows only join or leave a group through "Group with" / "Ungroup", so the

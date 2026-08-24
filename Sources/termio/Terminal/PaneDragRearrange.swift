@@ -139,9 +139,12 @@ final class PaneDragRearrange {
     /// with the button up — making this the first thing to run after any drag,
     /// however it ended, for the cost of a comparison the rest of the time.
     private func clearStrandedDropCue() {
-        guard let store, store.sessionDropTarget != nil,
-              NSEvent.pressedMouseButtons & 1 == 0 else { return }
+        guard let store, NSEvent.pressedMouseButtons & 1 == 0,
+              store.sessionDropTarget != nil || store.sessionRowDrop != nil
+                  || store.draggingSessionID != nil
+        else { return }
         store.sessionDropTarget = nil
+        store.sessionRowDrop = nil
         store.draggingSessionID = nil
     }
 

@@ -27,9 +27,10 @@ final class SessionDropTests: XCTestCase {
         try await super.tearDown()
     }
 
-    private func makeStore(sessions: [Session]) -> TermioStore {
+    private func makeStore(sessions: [Session], chats: [Session] = []) -> TermioStore {
         var workspace = Workspace(name: "Default")
         workspace.terminals = sessions
+        workspace.chats = chats
         let settings = AppSettings(
             defaults: defaults,
             settingsStore: SettingsStore(
@@ -135,6 +136,64 @@ final class SessionDropTests: XCTestCase {
         store.dropSession(moved.id, onto: anchor.id, zone: .right)
 
         XCTAssertTrue(store.splitGroups.isEmpty)
+    }
+
+    // MARK: - Sidebar row gaps
+
+    /// The insertion line names a gap, so the row lands in that gap — not in the one
+    /// the drag direction would have implied. Dragging downward onto a row's *top*
+    /// third has to land above it, which is the case the old direction-inferred
+    /// reorder got backwards.
+    func testReorderLandsOnTheSideTheCallerNames() {
+        let first = Session(title: "Terminal 1")
+        let second = Session(title: "Terminal 2")
+        let third = Session(title: "Terminal 3")
+        let store = makeStore(sessions: [first, second, third])
+
+        store.reorderSession(first.id, relativeTo: third.id, insert: .above)
+
+        XCTAssertEqual(rowOrder(store), [second.id, first.id, third.id])
+    }
+
+    /// The same drag, the other gap.
+    func testReorderBelowLandsAfterTheTarget() {
+        let first = Session(title: "Terminal 1")
+        let second = Session(title: "Terminal 2")
+        let third = Session(title: "Terminal 3")
+        let store = makeStore(sessions: [first, second, third])
+
+        store.reorderSession(third.id, relativeTo: first.id, insert: .below)
+
+        XCTAssertEqual(rowOrder(store), [first.id, third.id, second.id])
+    }
+
+    /// Dragging upward and dragging downward into the same gap must agree — the
+    /// side is the pointer's, so the row that started lower cannot land elsewhere.
+    func testTheSameGapIsReachedFromEitherDirection() {
+        let a = Session(title: "Terminal 1")
+        let b = Session(title: "Terminal 2")
+        let store = makeStore(sessions: [a, b])
+
+        store.reorderSession(b.id, relativeTo: a.id, insert: .above)
+        XCTAssertEqual(rowOrder(store), [b.id, a.id])
+
+        store.reorderSession(a.id, relativeTo: b.id, insert: .above)
+        XCTAssertEqual(rowOrder(store), [a.id, b.id])
+    }
+
+    /// Rows in different rosters never reorder into each other — a row cannot leave
+    /// its section by being dropped on one — so the gap cue stays dark there rather
+    /// than offering a move that would not happen.
+    func testReorderRefusesAcrossRosters() {
+        let terminal = Session(title: "Terminal 1")
+        let chat = Session(title: "Chat 1")
+        let store = makeStore(sessions: [terminal], chats: [chat])
+
+        XCTAssertFalse(store.canReorder(chat.id, relativeTo: terminal.id))
+        store.reorderSession(chat.id, relativeTo: terminal.id, insert: .above)
+
+        XCTAssertEqual(rowOrder(store), [terminal.id])
+        XCTAssertEqual(store.workspaces.first?.chats.map(\.id), [chat.id])
     }
 
     /// Dropping a row on its own pane is the degenerate case of the same gesture.
