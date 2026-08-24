@@ -85,6 +85,12 @@ final class TermioStore: ObservableObject {
                 // a window showing one scope while the terminal belongs to another
                 // is the same confusion the device context exists to prevent.
                 enterWorkspace(of: id)
+                // Every selection is also the answer to "where was I in this
+                // scope", so the workspace it belongs to remembers it (see
+                // `workspaceSelections`). Filed under the session's *own*
+                // workspace rather than the current one, so a deep link that
+                // jumps scopes records the arrival where it landed.
+                if let owner = workspace(for: id)?.id { workspaceSelections[owner] = id }
                 // Looking at a session is being on its machine. Every path that
                 // moves the selection — a deep link, the palette, a notification,
                 // a split, a freshly opened remote terminal — lands here, so this
@@ -595,6 +601,17 @@ final class TermioStore: ObservableObject {
     /// pruned alongside its runtime in `syncRuntimes`.
     var inspectorStates: [Session.ID: InspectorState] = [:]
 
+    /// The session each workspace was last left on, so switching back lands where the
+    /// user was rather than on whichever row sorts first. Written on every selection
+    /// change and read by `finishArriving`.
+    ///
+    /// Held here rather than on `Workspace` for the same reason `inspectorStates` is:
+    /// this is written on every row click, and `workspaces` is `@Published` — a write
+    /// there would rebuild the sidebar to record something the sidebar already shows.
+    /// Persisted, so the scope you return to after a relaunch is the scope you left.
+    /// Entries for closed sessions are pruned alongside their runtimes in `syncRuntimes`.
+    var workspaceSelections: [Workspace.ID: Session.ID] = [:]
+
     /// True only while `restored()` seeds the saved layouts and hand-applies the selected
     /// one — it suppresses the capture/restore in `selectedSessionID`'s didSet so a
     /// programmatic selection during launch can't overwrite a just-seeded layout.
@@ -719,8 +736,12 @@ final class TermioStore: ObservableObject {
         let live = Set(sessionSlots.sessionIDs)
         for id in live where runtimes[id] == nil { runtimes[id] = SessionRuntime() }
         for id in runtimes.keys where !live.contains(id) { runtimes.removeValue(forKey: id) }
-        // A closed session's saved inspector layout goes with it.
+        // A closed session's saved inspector layout goes with it, and so does its
+        // claim on being the row a workspace comes back to.
         for id in inspectorStates.keys where !live.contains(id) { inspectorStates.removeValue(forKey: id) }
+        for (workspace, id) in workspaceSelections where !live.contains(id) {
+            workspaceSelections.removeValue(forKey: workspace)
+        }
     }
 
     /// Sets a session's status, no-op-guarded so a redundant same-value write (the hook
@@ -1339,6 +1360,16 @@ final class TermioStore: ObservableObject {
                 store.inspectorStates[id] = state
             }
         }
+        // Seed where each workspace was left. Validated against the live tree, since a
+        // session recorded before the quit may not have come back — a workspace whose
+        // row is gone falls back to its first session the way it always did.
+        if let selections = snapshot.workspaceSelections {
+            let live = Set(store.allSessions.map(\.id))
+            for (key, id) in selections {
+                guard let workspace = UUID(uuidString: key), live.contains(id) else { continue }
+                store.workspaceSelections[workspace] = id
+            }
+        }
         // Guard the selection change so its didSet neither captures the (still-default)
         // live inspector over a just-seeded layout nor schedules a startup save.
         store.isRestoringInspector = true
@@ -1385,13 +1416,16 @@ final class TermioStore: ObservableObject {
                 fileReadOnly: state.openFileReadOnly
             )
         }
+        var selections: [String: Session.ID] = [:]
+        for (workspace, id) in workspaceSelections { selections[workspace.uuidString] = id }
         stateFile.save(.init(
             workspaces: workspaces,
             currentWorkspaceID: currentWorkspaceID,
             projects: projects,
             selectedSessionID: selectedSessionID,
             splitGroups: splitGroups,
-            inspectorLayouts: layouts.isEmpty ? nil : layouts
+            inspectorLayouts: layouts.isEmpty ? nil : layouts,
+            workspaceSelections: selections.isEmpty ? nil : selections
         ))
     }
 
