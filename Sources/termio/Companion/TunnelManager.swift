@@ -161,29 +161,79 @@ final class TunnelManager: ObservableObject {
     @Published private(set) var status: Status = .off
 
     private var process: Process?
+    /// Bumped every time the tunnel is torn down, so async work started under
+    /// an earlier intent can tell that it has been superseded.
+    ///
+    /// `provider` cannot answer that question: `suspend()` leaves it selected
+    /// (turning Mobile Access back on must restore the user's choice), so a
+    /// `provider == target` check passes just as happily after a suspend as
+    /// before one. `restart()` installs a binary and probes it with awaits in
+    /// between, and on a slow first install that is a long window in which the
+    /// user can turn Mobile Access off and still get a public tunnel spawned
+    /// at the end of it.
+    private var generation = 0
+    /// The restart waiting out its backoff, held so it can be cancelled.
+    ///
+    /// Without a handle it could not be: `stopProcess` returns early when no
+    /// child is live, which is exactly the state a scheduled retry sits in. So
+    /// turning Mobile Access off — or the companion listener failing, which now
+    /// suspends too — left the queued closure alone, and it spawned a tunnel
+    /// minutes later for a server that was deliberately not serving. The
+    /// backoff made that window five minutes wide instead of three seconds.
+    private var pendingRestart: DispatchWorkItem?
     private var outputBuffer = Data()
     private var terminationObserver: NSObjectProtocol?
-    /// Unexpected exits since the last run that actually held: the tunnel
-    /// self-heals on relay hiccups but refuses to hot-loop against a hard
-    /// failure.
+    /// Unexpected exits since the last run that actually held. It does not stop
+    /// the tunnel retrying — it only slows it down (`restartDelay`).
     private var consecutiveFailures = 0
     /// When the live child started, so its exit can be judged by how long it
     /// lasted. A tunnel that prints a URL and dies seconds later is a hard
     /// failure wearing a success's clothes — see `durableRun`.
-    private var processStartedAt: Date?
+    ///
+    /// Monotonic (`ProcessInfo.systemUptime`), never `Date`: this measures how
+    /// long the child was *live*, and a wall clock answers a different
+    /// question. A Mac that slept a minute after launch would report the nap as
+    /// uptime, mark a three-second flap durable, and reopen the storm below;
+    /// an NTP correction would do the same. `LinkLiveness` picks this clock for
+    /// the same reason.
+    private var processStartedAt: TimeInterval?
 
     /// How long a run must last to count as healthy rather than a flap.
     ///
     /// Printing a URL used to be the proof, and it is not one: two app
     /// instances racing for the same port produced a tunnel that came up,
     /// announced a fresh public URL, and was killed ~3s later, forever. Each
-    /// cycle looked like a success, so the failure count reset and the cap
-    /// below never tripped — eight public URLs in twenty-two seconds, every one
-    /// of them breaking the QR a paired phone had already scanned.
+    /// cycle looked like a success, so the failure count reset and the backoff
+    /// below never took hold — eight public URLs in twenty-two seconds, every
+    /// one of them breaking the QR a paired phone had already scanned.
     ///
-    /// Well clear of the 3s restart delay, so an ordinary relay hiccup on a
+    /// Well clear of the 3s first retry, so an ordinary relay hiccup on a
     /// tunnel that has been up for a while still reads as the hiccup it is.
     private static let durableRun: TimeInterval = 60
+
+    /// How long to wait before the next restart, doubling per consecutive
+    /// failure from 3s and held at 5 minutes.
+    ///
+    /// Backoff rather than a cap, because a cap has to answer "how bad is bad
+    /// enough to stop forever" and there is no answer: a relay that drops every
+    /// 50s is serving — badly — and giving up on it stranded a working tunnel
+    /// until the user reselected the provider by hand. Backoff needs no such
+    /// judgment. A hard failure costs one attempt per five minutes instead of
+    /// one per three seconds, which is what the cap was actually for, and a
+    /// relay that recovers on its own is picked back up without anyone
+    /// touching Settings.
+    /// The wait past which a spinner stops being an honest description of what
+    /// the tunnel is doing, and the status says so in words instead.
+    private static let quietRetryDelay: TimeInterval = 24
+
+    static func restartDelay(afterFailures failures: Int) -> TimeInterval {
+        // Guarded before the subtraction, not after: `failures - 1` on
+        // `Int.min` traps, and a delay function is the last place that should
+        // be able to bring the app down.
+        guard failures > 1 else { return 3 }
+        let doublings = min(failures - 1, 8)
+        return min(3 * pow(2, Double(doublings)), 300)
+    }
 
     private init() {
         provider = UserDefaults.standard.string(forKey: Self.providerKey)
@@ -208,6 +258,12 @@ final class TunnelManager: ObservableObject {
     /// on calls `startIfEnabled()` and restores the same provider.
     func suspend() {
         stopProcess()
+        // `stopProcess` deliberately says nothing about status — `restart` calls
+        // it and immediately sets `.starting`. Suspending is the other case: it
+        // is the end state, so it has to name one, or the pane keeps whatever
+        // was last true. That was a spinner mid-start, and "Connected" with a
+        // URL that no longer resolves when a live tunnel was torn down.
+        status = .off
     }
 
     func setProvider(_ newProvider: Provider) {
@@ -254,27 +310,37 @@ final class TunnelManager: ObservableObject {
         Self.reapStrayTunnels()
         Self.reapStrayCustomTunnel()
         let target = provider
+        // Read after `stopProcess` above, so this names the intent this call is
+        // acting on; any later teardown moves it and strands the work below.
+        let epoch = generation
         status = .starting
         Task {
+            // Checked before the first side effect, not just before the spawn:
+            // the body starts asynchronously, so a suspend between `restart()`
+            // returning and this line would otherwise still announce
+            // "Installing…" and pull a CLI down over the network for a tunnel
+            // nobody is going to get.
+            guard self.generation == epoch, self.provider == target else { return }
             var binary = Self.findBinary(named: target.binaryName)
             if binary == nil {
                 status = .installing
                 do {
                     binary = try await Self.install(target)
                 } catch {
-                    if self.provider == target {
+                    if self.generation == epoch, self.provider == target {
                         status = .failed("couldn’t install \(target.binaryName): \(error.localizedDescription)")
                     }
                     return
                 }
             }
-            // The user may have flipped the picker while the download ran.
-            guard self.provider == target, let binary else { return }
+            // The user may have flipped the picker — or turned Mobile Access
+            // off entirely — while the download ran.
+            guard self.generation == epoch, self.provider == target, let binary else { return }
             // Off the main actor: the probe execs the binary once per install.
             let arguments = await Task.detached {
                 Self.launchArguments(for: target, binary: binary)
             }.value
-            guard self.provider == target else { return }
+            guard self.generation == epoch, self.provider == target else { return }
             spawn(binary, for: target, arguments: arguments)
         }
     }
@@ -353,7 +419,9 @@ final class TunnelManager: ObservableObject {
                 guard let self, self.process === process else { return }
                 pipe.fileHandleForReading.readabilityHandler = nil
                 self.process = nil
-                let uptime = self.processStartedAt.map { Date().timeIntervalSince($0) }
+                let uptime = self.processStartedAt.map {
+                    ProcessInfo.processInfo.systemUptime - $0
+                }
                 self.processStartedAt = nil
                 Log.tunnel.notice("""
                 \(provider.binaryName, privacy: .public) exited \
@@ -364,29 +432,53 @@ final class TunnelManager: ObservableObject {
                 // appeared: only lasting proves the tunnel was ever usable.
                 if let uptime, uptime >= Self.durableRun { self.consecutiveFailures = 0 }
                 // Quick tunnels drop when the relay blips; restart while the
-                // user still wants one, but don't hot-loop a hard failure.
+                // user still wants one, but slow down against a hard failure.
                 // Each restart mints a NEW public URL — the open QR follows,
                 // an already-paired phone must re-scan (stable subdomains
-                // need tunelo to grow a --subdomain flag).
+                // need tunelo to grow a --subdomain flag), which is the real
+                // cost being rationed here.
                 guard self.provider == provider else { return }
                 self.consecutiveFailures += 1
-                guard self.consecutiveFailures < 5 else {
-                    self.status = .failed("\(provider.binaryName) keeps exiting — pick the tunnel again to retry")
-                    return
+                let delay = Self.restartDelay(afterFailures: self.consecutiveFailures)
+                // Once the wait is long enough to look like nothing is
+                // happening, say what is happening instead of spinning. The
+                // cap this replaced at least told the user it had given up; an
+                // indefinite "Starting tunnel…" would be the worse of the two.
+                if delay >= Self.quietRetryDelay {
+                    self.status = .failed(
+                        "\(provider.binaryName) keeps exiting — retrying every \(Int(delay))s")
+                } else {
+                    self.status = .starting
                 }
-                self.status = .starting
-                Log.tunnel.notice("restarting \(provider.binaryName, privacy: .public) in 3s (attempt \(self.consecutiveFailures, privacy: .public))")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                    Task { @MainActor in
-                        guard let self, self.process == nil, self.provider == provider else { return }
+                Log.tunnel.notice("""
+                restarting \(provider.binaryName, privacy: .public) \
+                in \(Int(delay), privacy: .public)s \
+                (attempt \(self.consecutiveFailures, privacy: .public))
+                """)
+                // The body runs on the main queue directly rather than hopping
+                // through a `Task`: a hop makes the work item cancellable only
+                // up to the moment it fires, after which the enqueued task is
+                // beyond reach and restarts a tunnel the user has since turned
+                // off. Cancelling has to mean cancelled, so there is nothing
+                // between the item and the work. Safe because the item is only
+                // ever scheduled on `DispatchQueue.main`.
+                let retry = DispatchWorkItem { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        // Cleared whenever the item runs, before the guards, so
+                        // the handle never outlives the work it names.
+                        self.pendingRestart = nil
+                        guard self.process == nil, self.provider == provider else { return }
                         self.restart()
                     }
                 }
+                self.pendingRestart = retry
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: retry)
             }
         }
         do {
             try process.run()
-            processStartedAt = Date()
+            processStartedAt = ProcessInfo.processInfo.systemUptime
             Log.tunnel.info("spawned \(provider.binaryName, privacy: .public) (pid \(process.processIdentifier, privacy: .public))")
             // A custom relay has no argv signature to match on later, so the
             // pid is the only handle a *future* run has on this child.
@@ -424,6 +516,14 @@ final class TunnelManager: ObservableObject {
     }
 
     private func stopProcess() {
+        // Above the guard, deliberately: a tunnel waiting out its backoff has
+        // no live child, so everything below is skipped for exactly the state
+        // in which a queued restart is the only thing left to stop.
+        pendingRestart?.cancel()
+        pendingRestart = nil
+        // Also above the guard: async work started before this teardown must be
+        // superseded whether or not a child was live to kill.
+        generation &+= 1
         guard let process else { return }
         process.terminationHandler = nil
         processStartedAt = nil
