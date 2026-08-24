@@ -94,8 +94,6 @@
 	<string>Address</string>
 	<key>Adds a Host block to ~/.ssh/config.</key>
 	<string>Adds a Host block to ~/.ssh/config.</string>
-	<key>Advanced</key>
-	<string>Advanced</string>
 	<key>Agent</key>
 	<string>Agent</string>
 	<key>Agent skill</key>
@@ -342,6 +340,8 @@
 	<string>Couldn’t write ~/.ssh/config: %@</string>
 	<key>Create</key>
 	<string>Create</string>
+	<key>Credentials</key>
+	<string>Credentials</string>
 	<key>Current workspace</key>
 	<string>Current workspace</string>
 	<key>Cursor</key>
@@ -1038,6 +1038,8 @@
 	<string>Termio for iPhone is in beta</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio is open source — star the repo, report bugs, and request features.</string>
+	<key>Termio signs in with keys — there is nowhere in ssh config to keep a password. A host that only takes one still opens in a terminal, and Devices offers to install your key on it.</key>
+	<string>Termio signs in with keys — there is nowhere in ssh config to keep a password. A host that only takes one still opens in a terminal, and Devices offers to install your key on it.</string>
 	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Fifty schemes are built in, and any Ghostty-format file you drop into the Themes folder shows up here too.</key>
 	<string>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Fifty schemes are built in, and any Ghostty-format file you drop into the Themes folder shows up here too.</string>
 	<key>Test</key>

@@ -94,8 +94,6 @@
 	<string>地址</string>
 	<key>Adds a Host block to ~/.ssh/config.</key>
 	<string>在 ~/.ssh/config 中添加一个 Host 配置块。</string>
-	<key>Advanced</key>
-	<string>高级</string>
 	<key>Agent</key>
 	<string>Agent</string>
 	<key>Agent skill</key>
@@ -342,6 +340,8 @@
 	<string>无法写入 ~/.ssh/config：%@</string>
 	<key>Create</key>
 	<string>创建</string>
+	<key>Credentials</key>
+	<string>登录凭据</string>
 	<key>Current workspace</key>
 	<string>当前工作区</string>
 	<key>Cursor</key>
@@ -1038,6 +1038,8 @@
 	<string>Termio for iPhone 正在测试中</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio 是开源软件：欢迎给仓库加星标、报告 bug 和提出功能请求。</string>
+	<key>Termio signs in with keys — there is nowhere in ssh config to keep a password. A host that only takes one still opens in a terminal, and Devices offers to install your key on it.</key>
+	<string>Termio 用密钥登录——ssh 配置里没有存放密码的地方。只接受密码的主机仍然可以在终端里打开，设备列表会提示把你的密钥装上去。</string>
 	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Fifty schemes are built in, and any Ghostty-format file you drop into the Themes folder shows up here too.</key>
 	<string>Termio 会随 macOS 外观变化在两者间切换；将槽位留在默认值即可使用 Termio 自带的画布。内置 50 个精选配色，你放进主题文件夹的 Ghostty 格式文件也会出现在这里。</string>
 	<key>Test</key>

@@ -328,14 +328,19 @@ private extension SSHProbeResult {
 /// already uses, because a machine you add is almost always reached as the same
 /// person with the same key as the last one.
 ///
-/// They are filled in rather than hidden behind a picker. An earlier draft offered
-/// the identity as one "Sign in as" row with the fields for the exceptional case
-/// in Advanced, and that is the shape Tabby and XPipe both avoid: whatever names
-/// the credential, the fields it governs belong directly beneath it. Two places for
-/// one question is how a three-field sheet became confusing.
+/// They are filled in rather than hidden behind a picker, and they sit in a section
+/// of their own headed Credentials — the grouping Termius uses, because signing in
+/// is one question and a form that scatters it across a box of unrelated fields
+/// never reads as one. An earlier draft offered the identity as a "Sign in as" row
+/// whose exceptional case lived in Advanced, which is the shape Tabby and XPipe
+/// both avoid: whatever names the credential owns the fields beneath it.
 ///
-/// Only `Port` stays behind Advanced. It is the one field with a default nobody
-/// argues with, and the address absorbs it anyway when written as `host:2222`.
+/// Nothing is behind a disclosure. `Port` was the only candidate, and hiding one
+/// short field to save one row bought a mode where there could be none.
+///
+/// The Credentials footer says out loud that there is no password field and where
+/// a password host does get handled. Termius has one and termio cannot; leaving
+/// that unsaid makes the sheet look incomplete rather than decided.
 struct AddSSHHostSheet: View {
     let existingAliases: Set<String>
     /// When set (the AppKit-presented menu path), called with the added alias —
@@ -351,7 +356,6 @@ struct AddSSHHostSheet: View {
     @State private var user = ""
     @State private var key: KeyChoice = .defaults
     @State private var port = ""
-    @State private var advancedExpanded = false
     @State private var writeError: String?
     /// Read once, on appear: the sheet is modal, so neither the config nor `~/.ssh`
     /// can change under it, and re-reading per keystroke would walk every file
@@ -433,11 +437,7 @@ struct AddSSHHostSheet: View {
                         localized("Address"), text: $address,
                         prompt: Text("server.example.com")
                     )
-                    TextField(
-                        localized("User"), text: $user,
-                        prompt: Text(NSUserName())
-                    )
-                    keyPicker
+                    TextField(localized("Port"), text: $port, prompt: Text("22"))
                     TextField(
                         localized("Name"), text: $typedAlias,
                         prompt: Text(derivedAlias.isEmpty ? "myserver" : derivedAlias)
@@ -448,11 +448,17 @@ struct AddSSHHostSheet: View {
                     footer
                 }
                 Section {
-                    DisclosureGroup(isExpanded: $advancedExpanded) {
-                        TextField(localized("Port"), text: $port, prompt: Text("22"))
-                    } label: {
-                        Text(localized("Advanced"))
-                    }
+                    TextField(
+                        localized("User"), text: $user,
+                        prompt: Text(NSUserName())
+                    )
+                    keyPicker
+                } header: {
+                    SectionHeaderLabel(title: localized("Credentials"))
+                } footer: {
+                    Text(localized("Termio signs in with keys — there is nowhere in ssh config to keep a password. A host that only takes one still opens in a terminal, and Devices offers to install your key on it."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)
@@ -475,8 +481,7 @@ struct AddSSHHostSheet: View {
             }
             .padding(12)
         }
-        .frame(width: 460, height: advancedExpanded ? 400 : 344)
-        .animation(.easeOut(duration: 0.18), value: advancedExpanded)
+        .frame(width: 460, height: 452)
         .onAppear(perform: prefill)
     }
 

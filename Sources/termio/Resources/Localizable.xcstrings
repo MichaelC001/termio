@@ -6205,16 +6205,6 @@
         }
       }
     },
-    "Advanced": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "高级"
-          }
-        }
-      }
-    },
     "A name can’t contain spaces — it’s what you type after `ssh`.": {
       "localizations": {
         "zh-Hans": {
@@ -6271,6 +6261,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "在 ~/.ssh/config 中添加一个 Host 配置块。"
+          }
+        }
+      }
+    },
+    "Credentials": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "登录凭据"
+          }
+        }
+      }
+    },
+    "Termio signs in with keys — there is nowhere in ssh config to keep a password. A host that only takes one still opens in a terminal, and Devices offers to install your key on it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Termio 用密钥登录——ssh 配置里没有存放密码的地方。只接受密码的主机仍然可以在终端里打开，设备列表会提示把你的密钥装上去。"
           }
         }
       }
