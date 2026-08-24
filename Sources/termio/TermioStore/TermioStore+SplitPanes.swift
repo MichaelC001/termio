@@ -53,6 +53,7 @@ extension TermioStore {
         if let group = groupIndex(containing: focusedID) {
             splitGroups[group] = splitGroups[group]
                 .splitting(leaf: focusedID, direction: direction, adding: newSession.id, slot: slot)
+                .equalized()
         } else {
             splitGroups.append(.split(SplitBranch(
                 direction: direction, ratio: 0.5,
@@ -87,10 +88,18 @@ extension TermioStore {
     /// With `takeFocus` false the selection stays where the user put it: the new
     /// pane is mounted invisibly instead (see `activateInBackground`), so its
     /// surface still attaches and can take a queued prompt.
+    ///
+    /// `direction` and `ratio` are the caller's placement request (`spawn
+    /// --direction down --ratio 0.25`): a direction splits the anchor's own
+    /// pane on that axis instead of taking the opposite-stack rule, and a
+    /// ratio is the new pane's share of the split — stated, so it pins the
+    /// divider against later equalization. Both absent means the automatic
+    /// placement above, with the group re-equalized after the insert.
     @discardableResult
     func addSplitSession(
         in scope: ControlScope, agent: AgentPreset = .terminal,
-        anchor: Session.ID? = nil, takeFocus: Bool = true
+        anchor: Session.ID? = nil, takeFocus: Bool = true,
+        direction: SplitDirection? = nil, ratio: Double? = nil
     ) -> Session.ID? {
         let inScope = Set(scope.sessions.map(\.id))
         let anchorID = anchor.flatMap { inScope.contains($0) ? $0 : nil }
@@ -124,18 +133,26 @@ extension TermioStore {
         // A lone anchor opens side by side; an anchor that already has a
         // neighbour keeps its full pane, with the newcomer stacked into the
         // opposite side of its divider (see `splitting(oppositeLeaf:adding:)`).
+        // An explicit direction overrides the stack rule — the caller said
+        // where the pane goes relative to itself, so its own leaf splits.
         if let group = groupIndex(containing: anchorID) {
-            if splitGroups[group].branchDirection(childLeaf: anchorID) != nil {
+            if let direction {
                 splitGroups[group] = splitGroups[group]
-                    .splitting(oppositeLeaf: anchorID, adding: newSession.id)
+                    .splitting(leaf: anchorID, direction: direction, adding: newSession.id,
+                               newShare: ratio)
+            } else if splitGroups[group].branchDirection(childLeaf: anchorID) != nil {
+                splitGroups[group] = splitGroups[group]
+                    .splitting(oppositeLeaf: anchorID, adding: newSession.id, newShare: ratio)
             } else {
                 splitGroups[group] = splitGroups[group]
-                    .splitting(leaf: anchorID, direction: .horizontal, adding: newSession.id)
+                    .splitting(leaf: anchorID, direction: .horizontal, adding: newSession.id,
+                               newShare: ratio)
             }
+            splitGroups[group] = splitGroups[group].equalized()
         } else {
-            splitGroups.append(.split(SplitBranch(direction: .horizontal, ratio: 0.5,
-                                                  first: .leaf(anchorID),
-                                                  second: .leaf(newSession.id))))
+            splitGroups.append(.split(SplitBranch(direction: direction ?? .horizontal,
+                                                  adding: .leaf(newSession.id), at: .second,
+                                                  share: ratio, to: .leaf(anchorID))))
         }
         if takeFocus {
             selectedSessionID = newSession.id
@@ -261,6 +278,7 @@ extension TermioStore {
         if let group = anchorGroup {
             splitGroups[group] = splitGroups[group]
                 .splitting(leaf: anchor, direction: axis, adding: moved, slot: slot)
+                .equalized()
         } else {
             splitGroups.append(.split(SplitBranch(
                 direction: axis, ratio: 0.5,
@@ -329,6 +347,7 @@ extension TermioStore {
             guard let vacated = splitGroups[group].removing(leaf: source) else { return }
             splitGroups[group] = vacated.splitting(leaf: target, direction: direction,
                                                    adding: source, slot: zone.slot)
+                                        .equalized()
         } else {
             splitGroups[group] = splitGroups[group].swapping(source, and: target)
         }
@@ -381,7 +400,7 @@ extension TermioStore {
             for id in removed { pruned = pruned?.removing(leaf: id) }
             // A group needs two panes to mean anything; a lone survivor is just
             // an ungrouped session again.
-            if let pruned, case .split = pruned { return pruned }
+            if let pruned, case .split = pruned { return pruned.equalized() }
             return nil
         }
         if let preferred { selectedSessionID = preferred }
@@ -414,10 +433,11 @@ extension TermioStore {
     }
 
     /// Installs a mutated group, dissolving it when fewer than two panes remain
-    /// (absence of a group *is* the single-pane state).
+    /// (absence of a group *is* the single-pane state). Surviving groups come
+    /// back equalized: a pane leaving a run hands its share back to the run.
     private func setGroup(at index: Int, to tree: SplitNode?) {
         if let tree, case .split = tree {
-            splitGroups[index] = tree
+            splitGroups[index] = tree.equalized()
         } else {
             splitGroups.remove(at: index)
         }
