@@ -377,6 +377,17 @@ def session_pid(name):
     return None
 
 
+def wait_for_size(name, expected, timeout=4.0):
+    """The size a claim carries arrives a round trip after the keystroke that
+    claimed it, so sampling `list` immediately would race the barrier."""
+    end = time.time() + timeout
+    while time.time() < end:
+        if session_size(name) == expected:
+            return True
+        time.sleep(0.1)
+    return session_size(name) == expected
+
+
 def session_size(name):
     for s in json.loads(cli_out("list", "--json")):
         if s["name"] == name or s["id"] == name:
@@ -425,7 +436,8 @@ def main():
     time.sleep(0.3)
     check("detach ≠ kill: session still listed", session_pid("demo") is not None)
 
-    # Reattach: different window size (newest-client claim), same process.
+    # Reattach: different window size. The session has no writer left, so this
+    # attach takes the token and its grid applies.
     p2, m2 = spawn_attach(["demo"], rows=40, cols=100)
     read_until(m2, "attached to demo")
     replay = drain(m2, 0.4)
@@ -433,7 +445,7 @@ def main():
     os.write(m2, b"echo MARKER_TWO\r")
     check("reattach: input works", b"MARKER_TWO" in read_until(m2, "MARKER_TWO"))
     check("reattach: same process (pid unchanged)", session_pid("demo") == pid_before)
-    check("reattach: newest-client resize (40x100)", session_size("demo") == (40, 100))
+    check("reattach: an unheld session takes the new grid (40x100)", session_size("demo") == (40, 100))
     os.write(m2, b"\x1c")
     p2.wait(timeout=5)
     cli("kill", "demo")
@@ -441,7 +453,7 @@ def main():
     print("\n# 2. multi-client fan-out + single-writer input")
     a1p, a1 = spawn_attach(["fan", "--", "cat"], rows=26, cols=90)
     read_until(a1, "attached to fan")
-    a2p, a2 = spawn_attach(["fan"], rows=34, cols=110)  # newest ⇒ writer
+    a2p, a2 = spawn_attach(["fan"], rows=34, cols=110)  # a reader until it types
     read_until(a2, "attached to fan")
 
     # Inject via `send` (always applied); cat echoes to *both* clients.
@@ -449,13 +461,17 @@ def main():
     check("fan-out: client 1 sees injected output", b"PINGPONG" in read_until(a1, "PINGPONG"))
     check("fan-out: client 2 sees injected output", b"PINGPONG" in read_until(a2, "PINGPONG"))
 
-    # Single writer = newest (a2). Input from a1 (not writer) is ignored.
+    # Single writer = whoever is being used. a1 attached first and still holds
+    # the token; a2 arriving did not take it, and — the regression this pins —
+    # did not drag the one PTY down to a2's grid behind a1's back.
+    check("attaching does not take the winsize", session_size("fan") == (26, 90))
     os.write(a1, b"FROM_A1\r")
-    time.sleep(0.4)
-    leaked = drain(a2, 0.4)
-    check("single-writer: non-writer input ignored", b"FROM_A1" not in leaked)
+    check("single-writer: writer input applied", b"FROM_A1" in read_until(a2, "FROM_A1"))
+
+    # Typing is what moves the token, and the size travels with it.
     os.write(a2, b"FROM_A2\r")
-    check("single-writer: writer input applied", b"FROM_A2" in read_until(a2, "FROM_A2"))
+    check("single-writer: typing takes the token", b"FROM_A2" in read_until(a1, "FROM_A2"))
+    check("the winsize follows the token", wait_for_size("fan", (34, 110)))
 
     os.write(a2, b"\x1c")
     a2p.wait(timeout=5)
@@ -1030,17 +1046,24 @@ def main():
     attached2, _ = w2.recv_matching(
         lambda kind, msg: kind == "C" and msg.get("op") == "attached"
     )
+    check(
+        "writer policy: attaching does not take the token from a live writer",
+        attached1 is not None
+        and attached2 is not None
+        and attached1[1]["writer"] is True
+        and attached2[1]["writer"] is False,
+    )
+    # Promotion is a verb. A client sends it when its user shows up — typing on
+    # the Mac, opening the session on a phone — and never merely by arriving.
+    w2.send_control({"op": "claim_writer", "seq": 3})
     changed, _ = w1.recv_matching(
         lambda kind, msg: kind == "E"
         and msg.get("ev") == "writer_changed"
         and msg.get("writer") == w2.hello["client_id"]
     )
     check(
-        "writer policy: newest interactive attach wins and emits writer_changed",
-        attached1 is not None
-        and attached2 is not None
-        and attached2[1]["writer"] is True
-        and changed is not None,
+        "writer policy: claim_writer moves the token and emits writer_changed",
+        changed is not None,
     )
     w1.send_data(b"REJECT_ME\r")
     rejected, _ = w1.recv_matching(
