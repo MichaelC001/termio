@@ -267,6 +267,16 @@ extension TermioStore {
         // (Codex, Aider/Rich) are unaffected.
         env["FORCE_HYPERLINK"] = "1"
 
+        // An SSH session to a host with a saved password answers the prompt from
+        // the Keychain instead of asking. Empty for every other host and for every
+        // host with nothing saved, so ssh behaves exactly as it always has. The
+        // key install is deliberately excluded: `ssh-copy-id` is how a password
+        // host stops being one, and feeding it the password it is trying to
+        // replace would install the key while teaching the user nothing.
+        if let host = session.sshHost, session.sshKeyToInstall == nil {
+            env.merge(SSHPasswordStore.askpassEnvironment(for: host)) { _, new in new }
+        }
+
         // The session runs inside the daemon and this app instance attaches to
         // it, so quitting detaches instead of killing.
         //

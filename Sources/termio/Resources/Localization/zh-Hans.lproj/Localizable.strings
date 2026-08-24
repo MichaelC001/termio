@@ -68,6 +68,8 @@
 	<string>另一个 `%@` 已存在于 %@。请先移除，Termio 不会覆盖并非自己创建的文件。</string>
 	<key>A double quote can’t be written to ssh config.</key>
 	<string>ssh 配置无法写入双引号。</string>
+	<key>A key is the credential that works everywhere, including sessions running on the box. A password is saved to your Keychain, never to ssh config, and only ever read when ssh asks for it.</key>
+	<string>密钥是到处都能用的凭据，包括跑在那台机器上的会话。密码保存在你的钥匙串里，不会写进 ssh 配置，只在 ssh 需要时才被读取。</string>
 	<key>A name can’t contain spaces — it’s what you type after `ssh`.</key>
 	<string>名称不能包含空格——它就是你在 `ssh` 后面输入的内容。</string>
 	<key>A port is a number from 1 to 65535.</key>
@@ -332,6 +334,8 @@
 	<string>无法移除 %@。</string>
 	<key>Couldn’t remove worktree</key>
 	<string>无法移除 worktree</string>
+	<key>Couldn’t save the password to your Keychain.</key>
+	<string>无法把密码保存到钥匙串。</string>
 	<key>Couldn’t update %@.</key>
 	<string>无法更新 %@。</string>
 	<key>Couldn’t update .gitignore</key>
@@ -474,6 +478,8 @@
 	<string>授予组织访问权限…</string>
 	<key>Group with</key>
 	<string>编组到</string>
+	<key>Hide</key>
+	<string>隐藏</string>
 	<key>Hide or show the inspector</key>
 	<string>隐藏或显示检查器</string>
 	<key>Hide or show the navigator</key>
@@ -774,6 +780,8 @@
 	<string>配对 iPhone 与远程访问</string>
 	<key>Panes</key>
 	<string>窗格</string>
+	<key>Password</key>
+	<string>密码</string>
 	<key>Paste</key>
 	<string>粘贴</string>
 	<key>Permissions</key>
@@ -958,6 +966,8 @@
 	<string>设置…</string>
 	<key>Shortcuts must include ⌘ so they can’t shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel.</key>
 	<string>快捷键必须包含 ⌘，以免遮蔽 Agent 或 shell 所需的按键。录制时按 ⌫ 可移除快捷键，按 esc 取消。</string>
+	<key>Show</key>
+	<string>显示</string>
 	<key>Show Original</key>
 	<string>显示原身</string>
 	<key>Show Project Files</key>
@@ -1038,8 +1048,6 @@
 	<string>Termio for iPhone 正在测试中</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio 是开源软件：欢迎给仓库加星标、报告 bug 和提出功能请求。</string>
-	<key>Termio signs in with keys — there is nowhere in ssh config to keep a password. A host that only takes one still opens in a terminal, and Devices offers to install your key on it.</key>
-	<string>Termio 用密钥登录——ssh 配置里没有存放密码的地方。只接受密码的主机仍然可以在终端里打开，设备列表会提示把你的密钥装上去。</string>
 	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Fifty schemes are built in, and any Ghostty-format file you drop into the Themes folder shows up here too.</key>
 	<string>Termio 会随 macOS 外观变化在两者间切换；将槽位留在默认值即可使用 Termio 自带的画布。内置 50 个精选配色，你放进主题文件夹的 Ghostty 格式文件也会出现在这里。</string>
 	<key>Test</key>

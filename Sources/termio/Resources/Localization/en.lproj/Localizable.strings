@@ -68,6 +68,8 @@
 	<string>A different `%@` already exists at %@. Remove it first — Termio won’t overwrite a file it didn’t create.</string>
 	<key>A double quote can’t be written to ssh config.</key>
 	<string>A double quote can’t be written to ssh config.</string>
+	<key>A key is the credential that works everywhere, including sessions running on the box. A password is saved to your Keychain, never to ssh config, and only ever read when ssh asks for it.</key>
+	<string>A key is the credential that works everywhere, including sessions running on the box. A password is saved to your Keychain, never to ssh config, and only ever read when ssh asks for it.</string>
 	<key>A name can’t contain spaces — it’s what you type after `ssh`.</key>
 	<string>A name can’t contain spaces — it’s what you type after `ssh`.</string>
 	<key>A port is a number from 1 to 65535.</key>
@@ -332,6 +334,8 @@
 	<string>Couldn’t remove %@.</string>
 	<key>Couldn’t remove worktree</key>
 	<string>Couldn’t remove worktree</string>
+	<key>Couldn’t save the password to your Keychain.</key>
+	<string>Couldn’t save the password to your Keychain.</string>
 	<key>Couldn’t update %@.</key>
 	<string>Couldn’t update %@.</string>
 	<key>Couldn’t update .gitignore</key>
@@ -474,6 +478,8 @@
 	<string>Grant Org Access…</string>
 	<key>Group with</key>
 	<string>Group with</string>
+	<key>Hide</key>
+	<string>Hide</string>
 	<key>Hide or show the inspector</key>
 	<string>Hide or show the inspector</string>
 	<key>Hide or show the navigator</key>
@@ -774,6 +780,8 @@
 	<string>Pair your iPhone and remote access</string>
 	<key>Panes</key>
 	<string>Panes</string>
+	<key>Password</key>
+	<string>Password</string>
 	<key>Paste</key>
 	<string>Paste</string>
 	<key>Permissions</key>
@@ -958,6 +966,8 @@
 	<string>Settings…</string>
 	<key>Shortcuts must include ⌘ so they can’t shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel.</key>
 	<string>Shortcuts must include ⌘ so they can’t shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel.</string>
+	<key>Show</key>
+	<string>Show</string>
 	<key>Show Original</key>
 	<string>Show Original</string>
 	<key>Show Project Files</key>
@@ -1038,8 +1048,6 @@
 	<string>Termio for iPhone is in beta</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio is open source — star the repo, report bugs, and request features.</string>
-	<key>Termio signs in with keys — there is nowhere in ssh config to keep a password. A host that only takes one still opens in a terminal, and Devices offers to install your key on it.</key>
-	<string>Termio signs in with keys — there is nowhere in ssh config to keep a password. A host that only takes one still opens in a terminal, and Devices offers to install your key on it.</string>
 	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Fifty schemes are built in, and any Ghostty-format file you drop into the Themes folder shows up here too.</key>
 	<string>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Fifty schemes are built in, and any Ghostty-format file you drop into the Themes folder shows up here too.</string>
 	<key>Test</key>

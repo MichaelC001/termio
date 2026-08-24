@@ -355,6 +355,8 @@ struct AddSSHHostSheet: View {
     @State private var typedAlias = ""
     @State private var user = ""
     @State private var key: KeyChoice = .defaults
+    @State private var password = ""
+    @State private var passwordRevealed = false
     @State private var port = ""
     @State private var writeError: String?
     /// Read once, on appear: the sheet is modal, so neither the config nor `~/.ssh`
@@ -433,14 +435,11 @@ struct AddSSHHostSheet: View {
         VStack(spacing: 0) {
             Form {
                 Section {
-                    TextField(
-                        localized("Address"), text: $address,
-                        prompt: Text("server.example.com")
-                    )
-                    TextField(localized("Port"), text: $port, prompt: Text("22"))
-                    TextField(
+                    field(localized("Address"), text: $address, prompt: "server.example.com")
+                    field(localized("Port"), text: $port, prompt: "22")
+                    field(
                         localized("Name"), text: $typedAlias,
-                        prompt: Text(derivedAlias.isEmpty ? "myserver" : derivedAlias)
+                        prompt: derivedAlias.isEmpty ? "myserver" : derivedAlias
                     )
                 } header: {
                     SectionHeaderLabel(title: localized("Add SSH Host"))
@@ -448,15 +447,13 @@ struct AddSSHHostSheet: View {
                     footer
                 }
                 Section {
-                    TextField(
-                        localized("User"), text: $user,
-                        prompt: Text(NSUserName())
-                    )
+                    field(localized("User"), text: $user, prompt: NSUserName())
                     keyPicker
+                    passwordField
                 } header: {
                     SectionHeaderLabel(title: localized("Credentials"))
                 } footer: {
-                    Text(localized("Termio signs in with keys — there is nowhere in ssh config to keep a password. A host that only takes one still opens in a terminal, and Devices offers to install your key on it."))
+                    Text(localized("A key is the credential that works everywhere, including sessions running on the box. A password is saved to your Keychain, never to ssh config, and only ever read when ssh asks for it."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -495,6 +492,48 @@ struct AddSSHHostSheet: View {
         else { return }
         user = common.user
         if let identityFile = common.identityFile { key = .file(identityFile) }
+    }
+
+    /// Optional, and last: the credential that works in fewer places belongs under
+    /// the one that works everywhere. Reveal follows the platform — `SecureField`
+    /// until asked, so a shoulder gets nothing by default — and the value goes to
+    /// the Keychain on Add, never into the block being written.
+    private var passwordField: some View {
+        LabeledContent(localized("Password")) {
+            HStack(spacing: 6) {
+                Group {
+                    if passwordRevealed {
+                        TextField("", text: $password, prompt: Text(localized("optional")))
+                    } else {
+                        SecureField("", text: $password, prompt: Text(localized("optional")))
+                    }
+                }
+                .textFieldStyle(.plain)
+                .multilineTextAlignment(.trailing)
+                .labelsHidden()
+                Button {
+                    passwordRevealed.toggle()
+                } label: {
+                    Image(systemName: passwordRevealed ? "eye.slash" : "eye")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(passwordRevealed ? localized("Hide") : localized("Show"))
+            }
+        }
+    }
+
+    /// One labelled row, values trailing-aligned the way the rest of Settings writes
+    /// them (`AgentSettingsTab`'s Command row). A plain `TextField(label:)` lets each
+    /// row size its own gap, so four fields land at four different left edges — the
+    /// ragged column that made this sheet look thrown together.
+    private func field(_ label: String, text: Binding<String>, prompt: String) -> some View {
+        LabeledContent(label) {
+            TextField("", text: text, prompt: Text(prompt))
+                .textFieldStyle(.plain)
+                .multilineTextAlignment(.trailing)
+                .labelsHidden()
+        }
     }
 
     /// The keys in `~/.ssh` by name, led by the no-`IdentityFile` default. A key the
@@ -554,10 +593,22 @@ struct AddSSHHostSheet: View {
                 port: effectivePort,
                 identityFile: effectiveIdentityFile
             )
-            finish(effectiveAlias)
         } catch {
             writeError = localized("Couldn’t write ~/.ssh/config: \(error.localizedDescription)")
+            return
         }
+        // After the block, and never fatal to it: the host is added and reachable
+        // by hand either way, so a Keychain that refuses is worth reporting rather
+        // than a reason to throw the block away.
+        if !password.isEmpty {
+            do {
+                try SSHPasswordStore.save(password, for: effectiveAlias)
+            } catch {
+                writeError = error.localizedDescription
+                return
+            }
+        }
+        finish(effectiveAlias)
     }
 
     private func finish(_ addedAlias: String?) {

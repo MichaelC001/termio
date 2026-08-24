@@ -6275,12 +6275,52 @@
         }
       }
     },
-    "Termio signs in with keys — there is nowhere in ssh config to keep a password. A host that only takes one still opens in a terminal, and Devices offers to install your key on it.": {
+    "Password": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Termio 用密钥登录——ssh 配置里没有存放密码的地方。只接受密码的主机仍然可以在终端里打开，设备列表会提示把你的密钥装上去。"
+            "value": "密码"
+          }
+        }
+      }
+    },
+    "Show": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示"
+          }
+        }
+      }
+    },
+    "Hide": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐藏"
+          }
+        }
+      }
+    },
+    "Couldn’t save the password to your Keychain.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法把密码保存到钥匙串。"
+          }
+        }
+      }
+    },
+    "A key is the credential that works everywhere, including sessions running on the box. A password is saved to your Keychain, never to ssh config, and only ever read when ssh asks for it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "密钥是到处都能用的凭据，包括跑在那台机器上的会话。密码保存在你的钥匙串里，不会写进 ssh 配置，只在 ssh 需要时才被读取。"
           }
         }
       }
