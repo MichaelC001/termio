@@ -382,6 +382,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         )
         companionServer = companion
+        // Serving and publishing are one decision, so they fail as one: a
+        // second instance that loses the race for the port must not leave a
+        // public URL pointing at it.
+        companion.onListenerFailed = {
+            Log.companion.error("not serving — taking the public tunnel down")
+            TunnelManager.shared.suspend()
+        }
         // Mobile Access is the master switch: only serve (and resume the public
         // tunnel) when it's on. The token gate in the server is what makes
         // fronting it with a tunnel safe.

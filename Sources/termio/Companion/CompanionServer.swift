@@ -190,6 +190,12 @@ final class CompanionServer {
     /// Opens an `ssh <host>` terminal for the phone's Terminals ＋ → SSH
     /// (`.startSSH`); returns the `.started` echo, or nil on failure.
     private let startSSHSession: (String) -> (sessionID: String, agentID: String)?
+    /// Called when this server will not be serving after all — the port is
+    /// held by someone else, or the listener died. Set by whoever owns the
+    /// wiring (`AppDelegate`), because the thing that has to be undone is the
+    /// *tunnel*, and a server that cannot bind must not leave a public URL
+    /// pointing at a port it does not answer on.
+    var onListenerFailed: (() -> Void)?
     private var listener: NWListener?
     private var connections: Set<ObjectIdentifier> = []
     private var connectionByID: [ObjectIdentifier: NWConnection] = [:]
@@ -240,19 +246,30 @@ final class CompanionServer {
         ws.maximumMessageSize = 16 << 20
         params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
 
-        guard let listener = try? NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!) else {
+        guard let endpoint = NWEndpoint.Port(rawValue: port),
+              let listener = try? NWListener(using: params, on: endpoint)
+        else {
             Log.companion.error("failed to bind port \(self.port, privacy: .public)")
+            onListenerFailed?()
             return
         }
         listener.newConnectionHandler = { [weak self] connection in
             Task { @MainActor in self?.accept(connection) }
         }
-        listener.stateUpdateHandler = { state in
+        listener.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
             switch state {
             case .ready:
                 Log.companion.notice("listening on ws://localhost:\(self.port, privacy: .public)")
             case .failed(let error):
+                // Terminal, not transient: an NWListener does not recover from
+                // `.failed`, and the common cause is a second instance already
+                // holding the port. Say so and take the public URL down with
+                // it — the alternative is what the log caught, a tunnel
+                // announcing a fresh address every few seconds for a port this
+                // process never answered on.
                 Log.companion.error("listener failed: \(error.localizedDescription, privacy: .public)")
+                Task { @MainActor in self.onListenerFailed?() }
             case .waiting(let error):
                 Log.companion.notice("listener waiting: \(error.localizedDescription, privacy: .public)")
             default:

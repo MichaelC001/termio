@@ -163,9 +163,27 @@ final class TunnelManager: ObservableObject {
     private var process: Process?
     private var outputBuffer = Data()
     private var terminationObserver: NSObjectProtocol?
-    /// Unexpected exits since the last healthy URL: the tunnel self-heals on
-    /// relay hiccups but refuses to hot-loop against a hard failure.
+    /// Unexpected exits since the last run that actually held: the tunnel
+    /// self-heals on relay hiccups but refuses to hot-loop against a hard
+    /// failure.
     private var consecutiveFailures = 0
+    /// When the live child started, so its exit can be judged by how long it
+    /// lasted. A tunnel that prints a URL and dies seconds later is a hard
+    /// failure wearing a success's clothes — see `durableRun`.
+    private var processStartedAt: Date?
+
+    /// How long a run must last to count as healthy rather than a flap.
+    ///
+    /// Printing a URL used to be the proof, and it is not one: two app
+    /// instances racing for the same port produced a tunnel that came up,
+    /// announced a fresh public URL, and was killed ~3s later, forever. Each
+    /// cycle looked like a success, so the failure count reset and the cap
+    /// below never tripped — eight public URLs in twenty-two seconds, every one
+    /// of them breaking the QR a paired phone had already scanned.
+    ///
+    /// Well clear of the 3s restart delay, so an ordinary relay hiccup on a
+    /// tunnel that has been up for a while still reads as the hiccup it is.
+    private static let durableRun: TimeInterval = 60
 
     private init() {
         provider = UserDefaults.standard.string(forKey: Self.providerKey)
@@ -335,7 +353,16 @@ final class TunnelManager: ObservableObject {
                 guard let self, self.process === process else { return }
                 pipe.fileHandleForReading.readabilityHandler = nil
                 self.process = nil
-                Log.tunnel.notice("\(provider.binaryName, privacy: .public) exited (status \(process.terminationStatus, privacy: .public))")
+                let uptime = self.processStartedAt.map { Date().timeIntervalSince($0) }
+                self.processStartedAt = nil
+                Log.tunnel.notice("""
+                \(provider.binaryName, privacy: .public) exited \
+                (status \(process.terminationStatus, privacy: .public)) \
+                after \(Int(uptime ?? 0), privacy: .public)s
+                """)
+                // A run that held is what clears the count, not a URL that
+                // appeared: only lasting proves the tunnel was ever usable.
+                if let uptime, uptime >= Self.durableRun { self.consecutiveFailures = 0 }
                 // Quick tunnels drop when the relay blips; restart while the
                 // user still wants one, but don't hot-loop a hard failure.
                 // Each restart mints a NEW public URL — the open QR follows,
@@ -359,6 +386,7 @@ final class TunnelManager: ObservableObject {
         }
         do {
             try process.run()
+            processStartedAt = Date()
             Log.tunnel.info("spawned \(provider.binaryName, privacy: .public) (pid \(process.processIdentifier, privacy: .public))")
             // A custom relay has no argv signature to match on later, so the
             // pid is the only handle a *future* run has on this child.
@@ -392,13 +420,13 @@ final class TunnelManager: ObservableObject {
               let url = URL(string: String(text[range]))
         else { return }
         Log.tunnel.notice("up at \(url.absoluteString, privacy: .public)")
-        consecutiveFailures = 0
         status = .running(url)
     }
 
     private func stopProcess() {
         guard let process else { return }
         process.terminationHandler = nil
+        processStartedAt = nil
         (process.standardOutput as? Pipe)?.fileHandleForReading.readabilityHandler = nil
         process.terminate()
         // We reached this child ourselves, so no later run needs to hunt it.
