@@ -17,6 +17,27 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.42.0",
+    date: "2026-08-24",
+    title: "Drag a session where you want it",
+    changes: {
+      new: [
+        "Drag a session out of the sidebar and onto a pane to group it in beside what's already there. Every part of the pane is a live edge, so releasing anywhere picks a side rather than landing in a dead middle. A pane the session can't join declines the drag, and the pane already holding it dims.",
+        "Inside the sidebar, where a dragged row lands decides what happens to it: the middle of a row groups the two sessions, the top or bottom edge reorders into that gap. A line means \"between these\", a lifted row means \"into this one\".",
+        "`termio sessions spawn` and `run` take `--direction right|down` and `--ratio`, so a spawned session can say where it goes and how much of the split it takes. `--direction down --ratio 0.25` is a log strip.",
+      ],
+      improved: [
+        "Splitting the same way twice now shares the space evenly — split right twice and the panes read as thirds, instead of a half and two quarters. Dividers you've dragged yourself stay where you put them, and the rest redistribute around them.",
+        "A workspace comes back to the session you left it on, rather than whatever sorts first. The row carries its panes, its split group and its inspector tab with it, so returning to a scope puts your own work back on screen.",
+      ],
+      fixed: [
+        "A prompt sent to a session now says when it was written but never received. An agent still on a startup gate — a hook-trust prompt, a first-run notice — takes typed text as the answer to its own question and shows nothing for it; the send used to report success anyway. `termio sessions list` flags the session until something else is delivered to it.",
+        "The address that serves your phone retries with backoff when it can't come up, stays down once you suspend it, and no longer keeps minting fresh URLs it can't serve. Its failure messages are translated.",
+        "A session started by the termio server no longer inherits signals the server happened to have ignored or blocked, which could leave ⌃C or ⌃Z doing nothing in that terminal.",
+      ],
+    },
+  },
+  {
     version: "0.41.4",
     date: "2026-08-24",
     title: "The terminal keeps the width of the window you're using",
