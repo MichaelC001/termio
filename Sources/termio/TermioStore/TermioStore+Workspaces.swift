@@ -348,10 +348,15 @@ extension TermioStore {
     private func finishArriving(in id: Workspace.ID) {
         let span = Trace.workspace.begin("workspace settle")
         defer { Trace.workspace.end(span) }
-        // Clearing beats guessing: an empty workspace shows the welcome state,
-        // which is the honest picture of a scope with nothing open in it.
+        // Back to the row this scope was left on (`workspaceSelections`), because
+        // coming back to a workspace is resuming what you were doing in it — the
+        // panes, the split group, and the inspector tab all follow the selected
+        // session, so landing on the first row instead reopens someone else's work.
+        // The first row is still the answer for a scope never visited, and clearing
+        // beats guessing for an empty one: the welcome state is the honest picture
+        // of a scope with nothing open in it.
         let selection = Trace.workspace.begin("workspace selection")
-        selectedSessionID = sessions(inWorkspace: id).first?.id
+        selectedSessionID = arrivalSelection(inWorkspace: id)
         Trace.workspace.end(selection)
         // A machine's fallback workspace is also the machine, so entering it asks
         // that device for its roster. A workspace the user made spans machines and
@@ -361,6 +366,18 @@ extension TermioStore {
             switchToDevice(KnownDevice(alias: alias, deviceID: workspace.deviceID))
             Trace.workspace.end(device)
         }
+    }
+
+    /// The row arriving in a workspace lands on: the one that scope was left on when
+    /// it is still there, and its first session otherwise. Validated against the live
+    /// roster rather than trusted, since a remembered session can have been closed
+    /// from another scope (or not have come back after a relaunch).
+    func arrivalSelection(inWorkspace id: Workspace.ID) -> Session.ID? {
+        let sessions = sessions(inWorkspace: id)
+        if let last = workspaceSelections[id], sessions.contains(where: { $0.id == last }) {
+            return last
+        }
+        return sessions.first?.id
     }
 
     /// Follows a session into its workspace. Called from the selection's `didSet`,
@@ -454,10 +471,11 @@ extension TermioStore {
         // captured before the teardown.
         for session in target.looseSessions { closeSession(session.id) }
         workspaces.removeAll { $0.id == id }
+        workspaceSelections.removeValue(forKey: id)
         if currentWorkspaceID == id, let first = workspaces.first {
             currentWorkspaceID = first.id
             settings.currentWorkspaceID = first.id
-            selectedSessionID = sessions(inWorkspace: first.id).first?.id
+            selectedSessionID = arrivalSelection(inWorkspace: first.id)
         }
     }
 
