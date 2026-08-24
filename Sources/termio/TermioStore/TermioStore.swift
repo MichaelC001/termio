@@ -183,12 +183,22 @@ final class TermioStore: ObservableObject {
         backgroundActivationIDs.append(id)
     }
 
-    /// The session currently being drag-reordered in the sidebar, recorded when a row
+    /// The session currently being dragged out of the sidebar, recorded when the row
     /// drag begins so a hovered row can ask `canReorder` whether it's a legal drop
     /// target (same project + worktree bucket) and light its background only then.
-    /// Transient drag bookkeeping — deliberately *not* `@Published`, since it's read
-    /// on drop-hover events, never rendered.
-    var draggingSessionID: Session.ID?
+    ///
+    /// `@Published` because the terminal area draws from it too: the pane you are
+    /// carrying is washed for the length of the drag, which is the only thing that
+    /// distinguishes "this pane is the session in your hand" from a drop that
+    /// silently did nothing.
+    @Published var draggingSessionID: Session.ID?
+
+    /// Where a sidebar row dragged over the terminal area would land: the pane
+    /// under the pointer and the half it would take. Written by the panes' drop
+    /// delegate, drawn by `TerminalPane` — the sidebar-drag twin of `paneDrag`,
+    /// and `@Published` for the same reason: the highlight is on screen, so it
+    /// has to redraw as the pointer crosses zones.
+    @Published var sessionDropTarget: SessionDropTarget?
 
     /// When each project was last active — the moment one of its agents last reported
     /// work, or the user last switched to one of its sessions. Drives the sidebar's
