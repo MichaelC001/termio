@@ -21,6 +21,10 @@ struct SettingsView: View {
     /// Devices tab's Connect action, injected by the app delegate because
     /// connecting is a main-window launch, not something this window does.
     let onSSHConnect: (String) -> Void
+    /// Runs `ssh-copy-id` for an alias with the given public key, in the main
+    /// window — injected for the same reason as `onSSHConnect`, since it is also a
+    /// terminal launch rather than something this window can do.
+    let onSetUpKey: (String, String) -> Void
     @State private var selection: SettingsTab
 
     init(
@@ -28,12 +32,14 @@ struct SettingsView: View {
         usage: UsageMonitor,
         store: TermioStore,
         initialTab: SettingsTab = .general,
-        onSSHConnect: @escaping (String) -> Void
+        onSSHConnect: @escaping (String) -> Void,
+        onSetUpKey: @escaping (String, String) -> Void
     ) {
         self.settings = settings
         self.usage = usage
         self.store = store
         self.onSSHConnect = onSSHConnect
+        self.onSetUpKey = onSetUpKey
         _selection = State(initialValue: initialTab)
     }
 
@@ -82,7 +88,10 @@ struct SettingsView: View {
         case .appearance: AppearanceSettingsTab(settings: settings)
         case .terminal: TerminalSettingsTab(settings: settings)
         case .workspaces: WorkspaceSettingsTab(store: store)
-        case .devices: DevicesSettingsTab(settings: settings, onConnect: onSSHConnect)
+        case .devices:
+            DevicesSettingsTab(
+                settings: settings, onConnect: onSSHConnect, onSetUpKey: onSetUpKey
+            )
         case .keyboard: KeybindingsSettingsTab()
         case .agents: AgentSettingsTab(settings: settings)
         case .usage: UsageSettingsTab(settings: settings, usage: usage)

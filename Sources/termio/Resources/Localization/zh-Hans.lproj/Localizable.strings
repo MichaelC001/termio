@@ -66,6 +66,18 @@
 	<string>1 个结果</string>
 	<key>A different `%@` already exists at %@. Remove it first — Termio won’t overwrite a file it didn’t create.</key>
 	<string>另一个 `%@` 已存在于 %@。请先移除，Termio 不会覆盖并非自己创建的文件。</string>
+	<key>A double quote can’t be written to ssh config.</key>
+	<string>ssh 配置无法写入双引号。</string>
+	<key>A key is the credential that works everywhere, including sessions running on the box. A password is saved to your Keychain, never to ssh config, and only ever read when ssh asks for it.</key>
+	<string>密钥是到处都能用的凭据，包括跑在那台机器上的会话。密码保存在你的钥匙串里，不会写进 ssh 配置，只在 ssh 需要时才被读取。</string>
+	<key>A line break can’t be written to ssh config.</key>
+	<string>ssh 配置无法写入换行。</string>
+	<key>A name can’t contain spaces — it’s what you type after `ssh`.</key>
+	<string>名称不能包含空格——它就是你在 `ssh` 后面输入的内容。</string>
+	<key>A password can’t contain a line break.</key>
+	<string>密码不能包含换行。</string>
+	<key>A port is a number from 1 to 65535.</key>
+	<string>端口是 1 到 65535 之间的数字。</string>
 	<key>A workspace scopes the sidebar to the projects and sessions filed under it, on the machine it belongs to.</key>
 	<string>工作区把侧栏限定在归入它的项目和会话上，都在它所属的那台机器上。</string>
 	<key>Activity</key>
@@ -86,6 +98,8 @@
 	<string>添加到聊天</string>
 	<key>Address</key>
 	<string>地址</string>
+	<key>Adds a Host block to ~/.ssh/config.</key>
+	<string>在 ~/.ssh/config 中添加一个 Host 配置块。</string>
 	<key>Agent</key>
 	<string>Agent</string>
 	<key>Agent skill</key>
@@ -324,6 +338,8 @@
 	<string>无法移除 %@。</string>
 	<key>Couldn’t remove worktree</key>
 	<string>无法移除 worktree</string>
+	<key>Couldn’t save the password to your Keychain.</key>
+	<string>无法把密码保存到钥匙串。</string>
 	<key>Couldn’t update %@.</key>
 	<string>无法更新 %@。</string>
 	<key>Couldn’t update .gitignore</key>
@@ -332,6 +348,8 @@
 	<string>无法写入 ~/.ssh/config：%@</string>
 	<key>Create</key>
 	<string>创建</string>
+	<key>Credentials</key>
+	<string>登录凭据</string>
 	<key>Current workspace</key>
 	<string>当前工作区</string>
 	<key>Cursor</key>
@@ -354,6 +372,8 @@
 	<string>默认浅色主题</string>
 	<key>Default agent</key>
 	<string>默认 Agent</string>
+	<key>Default keys</key>
+	<string>默认密钥</string>
 	<key>Delete</key>
 	<string>删除</string>
 	<key>Delete %@?</key>
@@ -462,6 +482,8 @@
 	<string>授予组织访问权限…</string>
 	<key>Group with</key>
 	<string>编组到</string>
+	<key>Hide</key>
+	<string>隐藏</string>
 	<key>Hide or show the inspector</key>
 	<string>隐藏或显示检查器</string>
 	<key>Hide or show the navigator</key>
@@ -512,6 +534,8 @@
 	<string>加入</string>
 	<key>Jump to session, project, or file…</key>
 	<string>跳转到会话、项目或文件…</string>
+	<key>Key</key>
+	<string>密钥</string>
 	<key>Key file</key>
 	<string>密钥文件</string>
 	<key>Keyboard</key>
@@ -760,6 +784,8 @@
 	<string>配对 iPhone 与远程访问</string>
 	<key>Panes</key>
 	<string>窗格</string>
+	<key>Password</key>
+	<string>密码</string>
 	<key>Paste</key>
 	<string>粘贴</string>
 	<key>Permissions</key>
@@ -934,12 +960,18 @@
 	<string>会话控制</string>
 	<key>Sessions</key>
 	<string>会话</string>
+	<key>Set Up Key</key>
+	<string>设置密钥</string>
+	<key>Set Up Key…</key>
+	<string>设置密钥…</string>
 	<key>Settings</key>
 	<string>设置</string>
 	<key>Settings…</key>
 	<string>设置…</string>
 	<key>Shortcuts must include ⌘ so they can’t shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel.</key>
 	<string>快捷键必须包含 ⌘，以免遮蔽 Agent 或 shell 所需的按键。录制时按 ⌫ 可移除快捷键，按 esc 取消。</string>
+	<key>Show</key>
+	<string>显示</string>
 	<key>Show Original</key>
 	<string>显示原身</string>
 	<key>Show Project Files</key>
@@ -1090,6 +1122,10 @@
 	<string>此文件为二进制文件，请在 GitHub 上打开查看。</string>
 	<key>This folder has no git “origin” remote to clone.</key>
 	<string>这个文件夹没有 git “origin” 远程，无法克隆。</string>
+	<key>This host takes a password. Termio signs in with keys, and ~/.ssh has none that ssh offers on its own — run ssh-keygen to make one, then set it up here.</key>
+	<string>这台主机接受密码登录。Termio 用密钥登录，而 ~/.ssh 里没有 ssh 会自动尝试的密钥——先用 ssh-keygen 生成一个，再回到这里设置。</string>
+	<key>This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it.</key>
+	<string>这台主机接受密码登录。Termio 用密钥登录，设置一次之后，会话、文件树和远程终端都能连上它。</string>
 	<key>This machine’s termiod is too old to list folders.</key>
 	<string>这台机器上的 termiod 版本太旧，列不出文件夹。</string>
 	<key>This month</key>
@@ -1154,6 +1190,8 @@
 	<string>在 %@ 上查看</string>
 	<key>Waiting for the agent’s first status report.</key>
 	<string>正在等待 Agent 的首次状态报告。</string>
+	<key>Wants a password</key>
+	<string>需要密码</string>
 	<key>WeChat</key>
 	<string>微信</string>
 	<key>WeChat group</key>

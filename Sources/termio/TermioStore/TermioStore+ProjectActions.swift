@@ -436,6 +436,25 @@ extension TermioStore {
         selectedSessionID = session.id
     }
 
+    /// Opens a terminal running `ssh-copy-id` against `host`, installing
+    /// `publicKey` in its `authorized_keys`. Used by Settings ▸ Devices when a
+    /// probe finds a host that wants a password: the session exists so the
+    /// server's password prompt has somewhere to be answered, and what it leaves
+    /// behind — a key — is what the rest of termio can actually use.
+    func addKeyInstallSession(host: String, publicKey: String) {
+        let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty else { return }
+        var session = Session(title: localized("Set Up Key"), agent: .terminal)
+        session.givenTitle = session.title
+        session.sshHost = host
+        session.sshKeyToInstall = publicKey
+
+        let workspaceID = deviceWorkspace(for: host)
+        guard let index = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
+        workspaces[index].terminals.append(session)
+        selectedSessionID = session.id
+    }
+
     /// Prompts for an SSH destination, then opens a terminal to it. The combo box is
     /// pre-populated with the connectable `Host` aliases from `~/.ssh/config` (the
     /// same list the phone imports), but stays editable so a one-off `user@host` that

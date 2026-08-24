@@ -6154,6 +6154,196 @@
           }
         }
       }
+    },
+    "Set Up Key…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置密钥…"
+          }
+        }
+      }
+    },
+    "Set Up Key": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置密钥"
+          }
+        }
+      }
+    },
+    "Wants a password": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要密码"
+          }
+        }
+      }
+    },
+    "This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台主机接受密码登录。Termio 用密钥登录，设置一次之后，会话、文件树和远程终端都能连上它。"
+          }
+        }
+      }
+    },
+    "A name can’t contain spaces — it’s what you type after `ssh`.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名称不能包含空格——它就是你在 `ssh` 后面输入的内容。"
+          }
+        }
+      }
+    },
+    "A port is a number from 1 to 65535.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "端口是 1 到 65535 之间的数字。"
+          }
+        }
+      }
+    },
+    "A double quote can’t be written to ssh config.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ssh 配置无法写入双引号。"
+          }
+        }
+      }
+    },
+    "Key": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "密钥"
+          }
+        }
+      }
+    },
+    "Default keys": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认密钥"
+          }
+        }
+      }
+    },
+    "Adds a Host block to ~/.ssh/config.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 ~/.ssh/config 中添加一个 Host 配置块。"
+          }
+        }
+      }
+    },
+    "Credentials": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "登录凭据"
+          }
+        }
+      }
+    },
+    "Password": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "密码"
+          }
+        }
+      }
+    },
+    "Show": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示"
+          }
+        }
+      }
+    },
+    "Hide": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐藏"
+          }
+        }
+      }
+    },
+    "Couldn’t save the password to your Keychain.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法把密码保存到钥匙串。"
+          }
+        }
+      }
+    },
+    "A key is the credential that works everywhere, including sessions running on the box. A password is saved to your Keychain, never to ssh config, and only ever read when ssh asks for it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "密钥是到处都能用的凭据，包括跑在那台机器上的会话。密码保存在你的钥匙串里，不会写进 ssh 配置，只在 ssh 需要时才被读取。"
+          }
+        }
+      }
+    },
+    "A line break can’t be written to ssh config.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ssh 配置无法写入换行。"
+          }
+        }
+      }
+    },
+    "A password can’t contain a line break.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "密码不能包含换行。"
+          }
+        }
+      }
+    },
+    "This host takes a password. Termio signs in with keys, and ~/.ssh has none that ssh offers on its own — run ssh-keygen to make one, then set it up here.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台主机接受密码登录。Termio 用密钥登录，而 ~/.ssh 里没有 ssh 会自动尝试的密钥——先用 ssh-keygen 生成一个，再回到这里设置。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

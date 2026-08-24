@@ -914,6 +914,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 // The new session is selected in the store; surface the main
                 // window over Settings so the connection is immediately visible.
                 self.window.makeKeyAndOrderFront(nil)
+            },
+            onSetUpKey: { [weak self] host, publicKey in
+                guard let self else { return }
+                self.store.addKeyInstallSession(host: host, publicKey: publicKey)
+                // Same reason as above, and more so: this session opens on a
+                // password prompt waiting to be answered.
+                self.window.makeKeyAndOrderFront(nil)
             }
         ).frame(minWidth: 640, minHeight: 480))
         settingsWindow?.makeKeyAndOrderFront(nil)

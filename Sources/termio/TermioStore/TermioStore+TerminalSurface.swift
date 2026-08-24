@@ -216,8 +216,10 @@ extension TermioStore {
         // the remote host allocates its own pty over the connection. It never
         // resumes (a local-agent concept), so it short-circuits the agent launch
         // resolution below.
-        let launch = session.sshHost.map { (command: Self.sshCommand(host: $0), resumeID: String?.none) }
-            ?? resolveLaunch(for: session, spawnPath: spawnPath)
+        let launch = session.sshHost.map {
+            (command: Self.sshLaunchCommand(host: $0, keyToInstall: session.sshKeyToInstall),
+             resumeID: String?.none)
+        } ?? resolveLaunch(for: session, spawnPath: spawnPath)
         let agentCommand = launch.command
 
         // Pi checks the pinned `--session-id` against its session store at startup
@@ -264,6 +266,16 @@ extension TermioStore {
         // `PTYProcess` self-detection). Tools that emit OSC 8 unconditionally
         // (Codex, Aider/Rich) are unaffected.
         env["FORCE_HYPERLINK"] = "1"
+
+        // An SSH session to a host with a saved password answers the prompt from
+        // the Keychain instead of asking. Empty for every other host and for every
+        // host with nothing saved, so ssh behaves exactly as it always has. The
+        // key install is deliberately excluded: `ssh-copy-id` is how a password
+        // host stops being one, and feeding it the password it is trying to
+        // replace would install the key while teaching the user nothing.
+        if let host = session.sshHost, session.sshKeyToInstall == nil {
+            env.merge(SSHPasswordStore.askpassEnvironment(for: host)) { _, new in new }
+        }
 
         // The session runs inside the daemon and this app instance attaches to
         // it, so quitting detaches instead of killing.
@@ -509,6 +521,19 @@ extension TermioStore {
     /// that the user's `~/.ssh/config` left the decision to us.
     static func sshCommand(host: String) -> String {
         "ssh -- \(shellQuoted(host))"
+    }
+
+    /// What an SSH session actually launches: normally the shell above, but the
+    /// one-shot `ssh-copy-id` when the session carries a key to install.
+    ///
+    /// `ssh-copy-id` is the only place termio takes part in a password at all, and
+    /// it takes part by getting out of the way — the prompt is the remote server's,
+    /// answered on this PTY by the person sitting here. What it leaves behind is a
+    /// key, which is the one credential the paths that can never prompt
+    /// (`BatchMode=yes` on every termiod connection) are able to use.
+    static func sshLaunchCommand(host: String, keyToInstall: String?) -> String {
+        guard let keyToInstall else { return sshCommand(host: host) }
+        return "ssh-copy-id -i \(shellQuoted(keyToInstall)) -- \(shellQuoted(host))"
     }
 
     /// POSIX single-quote escaping: wraps `value` in `'…'`, splicing any embedded
