@@ -11,6 +11,7 @@
 //! nothing here can touch the terminal hot path by construction, because it
 //! only ever runs on control channels.
 
+use crate::id::SessionId;
 use crate::protocol::{DirEntry, EntryKind, PathListing};
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Component, Path, PathBuf};
@@ -568,7 +569,7 @@ struct UploadState {
     size: u64,
     sha256: String,
     mode: Option<u32>,
-    session: Option<String>,
+    session: Option<SessionId>,
     received: u64,
     hasher: sha2::Sha256,
     file: std::fs::File,
@@ -610,7 +611,7 @@ impl Uploads {
         size: u64,
         sha256: &str,
         mode: Option<u32>,
-        session: Option<String>,
+        session: Option<SessionId>,
     ) -> Result<(String, u64)> {
         if sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             bail!("sha256 must be 64 hex characters");
@@ -775,12 +776,12 @@ impl Uploads {
 
     /// Drop every in-flight upload bound for a dead session's scratch dir.
     /// Called from the reaper before the dir itself is removed.
-    pub fn drop_session(&self, session_id: &str) {
+    pub fn drop_session(&self, session_id: &SessionId) {
         let mut inner = self.inner.lock().unwrap();
         let doomed: Vec<String> = inner
             .by_id
             .iter()
-            .filter(|(_, state)| state.session.as_deref() == Some(session_id))
+            .filter(|(_, state)| state.session.as_ref() == Some(session_id))
             .map(|(id, _)| id.clone())
             .collect();
         for id in doomed {
@@ -1204,7 +1205,7 @@ mod tests {
                 body.len() as u64,
                 &hex_sha256(&body),
                 Some(0o777),
-                Some("s_1".to_string()),
+                Some(SessionId::new("s_1")),
             )
             .unwrap();
         uploads.chunk(&id, 0, &body).unwrap();
@@ -1217,10 +1218,10 @@ mod tests {
         // dotfile behind.
         let dest = resolve_scratch_dest(&root, "paste-2.png").unwrap();
         let (id, _) = uploads
-            .open(dest, 4, &hex_sha256(b"gone"), None, Some("s_1".to_string()))
+            .open(dest, 4, &hex_sha256(b"gone"), None, Some(SessionId::new("s_1")))
             .unwrap();
         uploads.chunk(&id, 0, b"go").unwrap();
-        uploads.drop_session("s_1");
+        uploads.drop_session(&SessionId::new("s_1"));
         assert!(uploads.chunk(&id, 2, b"ne").is_err(), "upload is gone");
         let names: Vec<String> = std::fs::read_dir(&root)
             .unwrap()

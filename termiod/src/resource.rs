@@ -23,7 +23,7 @@
 //!   FSEvents' `MustScanSubDirs`.
 
 use crate::protocol::Event;
-use crate::session::ClientId;
+use crate::id::ClientId;
 use anyhow::{anyhow, Context, Result};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{HashMap, VecDeque};
@@ -414,7 +414,7 @@ impl Registry {
         let fs_entry = self.fs_entry_locked(watches, &fs_id, Path::new(root))?;
 
         let (signal_tx, signal_rx) = mpsc::unbounded_channel::<Event>();
-        let internal_client = format!("git-signal:{resource}");
+        let internal_client = ClientId::internal(format!("git-signal:{resource}"));
         {
             let mut guard = fs_entry.state.lock().unwrap();
             guard.subscribers.insert(internal_client.clone(), signal_tx);
@@ -441,10 +441,10 @@ impl Registry {
     /// subscribed. The watch keeps running for `LINGER` so the same client can
     /// come back and resume from its cursor — detach ≠ kill, applied to the
     /// resource plane.
-    pub fn unsubscribe(&self, resource: &str, client: &str) -> bool {
+    pub fn unsubscribe(&self, resource: &str, client: &ClientId) -> bool {
         fn drop_interest<B: ResourceBatch>(
             state: &Arc<Mutex<ResourceState<B>>>,
-            client: &str,
+            client: &ClientId,
         ) -> bool {
             let mut guard = state.lock().unwrap();
             let removed = guard.subscribers.remove(client).is_some();
@@ -462,7 +462,7 @@ impl Registry {
     }
 
     /// Drop every subscription held by a departing connection.
-    pub fn drop_client(&self, client: &str) {
+    pub fn drop_client(&self, client: &ClientId) {
         let resources: Vec<String> = self.watches.lock().unwrap().keys().cloned().collect();
         for resource in resources {
             self.unsubscribe(&resource, client);
@@ -515,7 +515,7 @@ async fn git_loop(
     entry: GitEntry,
     registry: Registry,
     fs_resource: String,
-    internal_client: String,
+    internal_client: ClientId,
 ) {
     refresh_git(&resource, &root, &entry).await;
     loop {
@@ -800,13 +800,13 @@ mod tests {
     fn changes_while_detached_are_recorded_and_replayed_on_return() {
         let mut state = headless();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        state.subscribers.insert("c_1".to_string(), tx);
+        state.subscribers.insert(ClientId::new("c_1"), tx);
 
         state.publish("fs:/repo", batch(&["/repo/attached"]));
         assert_eq!(rx.try_recv().map(|e| seqs(&[e])[0]).unwrap(), 1);
 
         // The client goes away; the agent keeps writing.
-        state.subscribers.remove("c_1");
+        state.subscribers.remove(&ClientId::new("c_1"));
         state.idle_since = Some(Instant::now());
         state.publish("fs:/repo", batch(&["/repo/while-gone-1"]));
         state.publish("fs:/repo", batch(&["/repo/while-gone-2"]));

@@ -11,6 +11,7 @@ mod client;
 mod daemon;
 mod files;
 mod git;
+mod id;
 mod paths;
 mod proc;
 mod protocol;

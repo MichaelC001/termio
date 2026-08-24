@@ -3,149 +3,41 @@
 //! connection — detach never kills it.
 
 use crate::protocol::{
-    encode_grid_payload, encode_history_payload, Control, ErrorCode, Event, GridDiff, GridRow,
-    HistoryChunk, SessionInfo, Snapshot, WireCell, WireColor, WorkstreamSpec, HISTORY_HEADER_SIZE,
-    MAX_HISTORY_FRAME_SIZE, SNAPSHOT_CELL_SIZE,
+    encode_grid_payload, Control, ErrorCode, Event, GridDiff, SessionInfo, Snapshot, WorkstreamSpec,
 };
+use crate::id::{ClientId, SessionId};
 use crate::pty::Pty;
 use crate::tombstone::EndReason;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-pub type ClientId = String;
-
 const RING_CAP: usize = 128 * 1024;
 const READ_CHUNK: usize = 64 * 1024;
-const CLIENT_BACKLOG_CAP: usize = 4 * 1024 * 1024;
-/// PTY bytes allowed to sit unparsed in the VT sidecar's command FIFO. The
-/// per-client budget stopped a slow socket from buying unbounded memory; this
-/// stops a slow *parse* from doing the same one hop upstream.
-const SIDECAR_QUEUE_CAP: usize = 16 * 1024 * 1024;
-pub const SCROLLBACK_STAGE_MAX_BYTES: usize = 1024 * 1024;
 pub const KEYFRAME_EVERY_FRAMES: u32 = 256;
-/// How often the session asks the kernel what is running in its terminal.
-/// Slow on purpose: this answers "which agent is in there", a question whose
-/// answer changes when a human starts or stops a program, not per frame.
-const FOREGROUND_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+mod backlog;
 
-/// A payload admitted against a client's backlog. The epoch pins it to the
-/// reservation that let it through, so a forced resync can discard everything
-/// already queued for that client without corrupting the count.
-#[derive(Clone)]
-pub struct Metered {
-    pub bytes: Bytes,
-    epoch: u64,
-}
+pub(crate) use backlog::{ClientBacklog, Metered};
 
-/// Counts PTY bytes queued anywhere between a session and its socket writer.
-pub(crate) struct ClientBacklog {
-    outstanding: AtomicUsize,
-    /// Bumped by a forced resync. Everything reserved under an older epoch is
-    /// stale: it precedes a snapshot that supersedes it, so it is dropped
-    /// undelivered and never released.
-    epoch: AtomicU64,
-    dropped: AtomicBool,
-}
+mod sidecar;
 
-impl ClientBacklog {
-    pub(crate) fn new() -> Self {
-        Self {
-            outstanding: AtomicUsize::new(0),
-            epoch: AtomicU64::new(0),
-            dropped: AtomicBool::new(false),
-        }
-    }
+pub(crate) use sidecar::{SidecarCapture, SidecarCommand, SidecarQueue, SidecarResult, Vt};
 
-    fn reserve(&self, bytes: Bytes) -> Option<Metered> {
-        self.outstanding
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |outstanding| {
-                outstanding
-                    .checked_add(bytes.len())
-                    .filter(|total| *total <= CLIENT_BACKLOG_CAP)
-            })
-            .ok()?;
-        Some(Metered {
-            bytes,
-            epoch: self.epoch.load(Ordering::Acquire),
-        })
-    }
+mod foreground;
 
-    /// True once the client has consumed everything the session handed it.
-    #[cfg(test)]
-    fn is_drained(&self) -> bool {
-        self.outstanding.load(Ordering::Relaxed) == 0
-    }
+use foreground::{Foreground, ForegroundResolution};
 
-    /// Discard everything already queued for this client and start a new epoch.
-    /// The queued payloads are dropped where they sit rather than released, so
-    /// the counter is reset here instead of unwound.
-    fn begin_resync(&self) {
-        self.epoch.fetch_add(1, Ordering::AcqRel);
-        self.outstanding.store(0, Ordering::Release);
-    }
+mod wire;
 
-    /// True while this payload still belongs to the client's current stream.
-    pub(crate) fn is_current(&self, payload: &Metered) -> bool {
-        payload.epoch == self.epoch.load(Ordering::Acquire)
-    }
-
-    pub(crate) fn release(&self, payload: &Metered) {
-        if !self.is_current(payload) {
-            return;
-        }
-        let _ =
-            self.outstanding
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |outstanding| {
-                    Some(outstanding.saturating_sub(payload.bytes.len()))
-                });
-    }
-
-    fn mark_dropped(&self) {
-        self.dropped.store(true, Ordering::Release);
-    }
-
-    pub(crate) fn is_dropped(&self) -> bool {
-        self.dropped.load(Ordering::Acquire)
-    }
-}
-
-/// Counts PTY bytes queued for the VT sidecar but not yet parsed.
-struct SidecarQueue {
-    outstanding: AtomicUsize,
-}
-
-impl SidecarQueue {
-    fn new() -> Self {
-        Self {
-            outstanding: AtomicUsize::new(0),
-        }
-    }
-
-    fn try_reserve(&self, bytes: usize) -> bool {
-        self.outstanding
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |outstanding| {
-                outstanding
-                    .checked_add(bytes)
-                    .filter(|total| *total <= SIDECAR_QUEUE_CAP)
-            })
-            .is_ok()
-    }
-
-    fn release(&self, bytes: usize) {
-        let _ =
-            self.outstanding
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |outstanding| {
-                    Some(outstanding.saturating_sub(bytes))
-                });
-    }
-}
+use wire::{
+    encode_scrollback_chunks, grid_from_damage, scrollback_row_limit, wire_cell,
+    SCROLLBACK_STAGE_MAX_BYTES,
+};
 
 /// Pushed to an attached connection task.
 #[derive(Clone)]
@@ -229,7 +121,7 @@ pub struct SessionEnded {
 /// Cheap, cloneable reference to a session task.
 #[derive(Clone)]
 pub struct SessionHandle {
-    pub id: String,
+    pub id: SessionId,
     pid: i32,
     tx: mpsc::UnboundedSender<SessionMsg>,
     /// PTY EOF can become ready in the same scheduler turn as `Kill`; keeping
@@ -265,12 +157,8 @@ impl SessionHandle {
 struct ClientEntry {
     out: mpsc::UnboundedSender<ClientEvent>,
     backlog: Arc<ClientBacklog>,
-    /// Interactive attach order. Highest sequence owns the write token.
-    seq: u64,
-    interactive: bool,
-    snapshot_capable: bool,
-    grid_diff: bool,
-    delivery: ClientDelivery,
+    role: ClientRole,
+    plane: ClientPlane,
     /// Attach-only history staging. Resize barriers discard any remainder and
     /// deliberately do not restage it; resize/reflow history is a later policy.
     staged_history: VecDeque<Bytes>,
@@ -279,6 +167,139 @@ struct ClientEntry {
     /// already zeroed the count of what the client owes, so a second overflow
     /// means it could not keep up even from a clean start.
     backlog_strikes: u32,
+}
+
+/// Whether this attachment can hold the write token.
+enum ClientRole {
+    /// Attached without a tty. §A: an observer never claims the token. One that
+    /// could would strand the session at whatever size the last real client
+    /// left, having no tty of its own to resize.
+    Observer,
+    /// Attached with a tty. `seq` is interactive attach order — the highest
+    /// takes the token back when the current holder leaves. Only interactive
+    /// attachments are numbered, because only they are ever compared.
+    Interactive { seq: u64 },
+}
+
+impl ClientRole {
+    fn is_interactive(&self) -> bool {
+        matches!(self, ClientRole::Interactive { .. })
+    }
+
+    /// The attach order to rank this client by, or `None` for an attachment
+    /// that is not in the running for the token at all.
+    fn attach_seq(&self) -> Option<u64> {
+        match self {
+            ClientRole::Observer => None,
+            ClientRole::Interactive { seq } => Some(*seq),
+        }
+    }
+}
+
+/// Which plane the attachment reads, and — for the two that have one — where it
+/// stands relative to its snapshot boundary.
+///
+/// This is the negotiated capability pair made exclusive. `grid_diff` without
+/// `snapshot` was never a state the host would run: the parsed plane bootstraps
+/// and recovers through `S`, so the daemon drops the capability at hello and
+/// `AddClient` dropped it again. There is now no fourth case to drop.
+enum ClientPlane {
+    /// Never negotiated `snapshot`: raw PTY bytes only, ring replay on attach.
+    /// No boundary to stand behind, so no barrier and nothing to resync to —
+    /// which is why this variant carries no delivery state at all.
+    Raw,
+    /// Negotiated `snapshot`: raw PTY bytes, punctuated by `S` boundaries on
+    /// attach, resize and resync.
+    Snapshot(ClientDelivery),
+    /// Negotiated `snapshot` + `grid_diff`: server-parsed cells and keyframes,
+    /// never downstream PTY bytes.
+    Grid(ClientDelivery),
+}
+
+impl ClientPlane {
+    fn snapshots(&self) -> bool {
+        !matches!(self, ClientPlane::Raw)
+    }
+
+    fn is_grid(&self) -> bool {
+        matches!(self, ClientPlane::Grid(_))
+    }
+
+    /// Where this attachment stands relative to its snapshot boundary. `None`
+    /// for a raw attachment, which has no boundary and is live by construction.
+    fn delivery(&self) -> Option<&ClientDelivery> {
+        match self {
+            ClientPlane::Raw => None,
+            ClientPlane::Snapshot(delivery) | ClientPlane::Grid(delivery) => Some(delivery),
+        }
+    }
+
+    fn delivery_mut(&mut self) -> Option<&mut ClientDelivery> {
+        match self {
+            ClientPlane::Raw => None,
+            ClientPlane::Snapshot(delivery) | ClientPlane::Grid(delivery) => Some(delivery),
+        }
+    }
+
+    /// The request this attachment is waiting on, if it is behind a barrier.
+    fn pending_request(&self) -> Option<u64> {
+        match self.delivery() {
+            Some(ClientDelivery::SnapshotPending { request_id, .. }) => Some(*request_id),
+            _ => None,
+        }
+    }
+
+    fn is_pending(&self) -> bool {
+        self.pending_request().is_some()
+    }
+
+    /// Open a snapshot barrier. Events already deferred behind an older barrier
+    /// carry over — they are still owed — while the data buffered behind it is
+    /// handed back, because the snapshot that is coming supersedes it and the
+    /// caller decides whether to credit those bytes or retire them.
+    ///
+    /// A raw attachment has no barrier to open; nothing calls this for one, and
+    /// it is a no-op if anything ever does.
+    fn begin_pending(&mut self, request_id: u64) -> VecDeque<Metered> {
+        let Some(delivery) = self.delivery_mut() else {
+            return VecDeque::new();
+        };
+        let (superseded, deferred) = match std::mem::replace(delivery, ClientDelivery::Live) {
+            ClientDelivery::Live => (VecDeque::new(), VecDeque::new()),
+            ClientDelivery::SnapshotPending { data, deferred, .. } => (data, deferred),
+        };
+        *delivery = ClientDelivery::SnapshotPending {
+            request_id,
+            data: VecDeque::new(),
+            deferred,
+        };
+        superseded
+    }
+
+    /// Queue an event behind this attachment's open barrier. `false` when there
+    /// is no barrier and the caller should send it straight out.
+    fn defer(&mut self, event: ClientEvent) -> bool {
+        match self.delivery_mut() {
+            Some(ClientDelivery::SnapshotPending { deferred, .. }) => {
+                deferred.push_back(event);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Close an open barrier, leaving the attachment live, and hand back what
+    /// was queued behind it: the buffered data and the deferred events, in that
+    /// order. Empty queues for an attachment that had no barrier open.
+    fn settle(&mut self) -> (VecDeque<Metered>, VecDeque<ClientEvent>) {
+        let Some(delivery) = self.delivery_mut() else {
+            return (VecDeque::new(), VecDeque::new());
+        };
+        match std::mem::replace(delivery, ClientDelivery::Live) {
+            ClientDelivery::SnapshotPending { data, deferred, .. } => (data, deferred),
+            ClientDelivery::Live => (VecDeque::new(), VecDeque::new()),
+        }
+    }
 }
 
 enum ClientDelivery {
@@ -290,44 +311,8 @@ enum ClientDelivery {
     },
 }
 
-enum SidecarCommand {
-    Write(Bytes),
-    Resize {
-        rows: u16,
-        cols: u16,
-    },
-    Snapshot {
-        client_id: ClientId,
-        request_id: u64,
-        scrollback: bool,
-    },
-    SetGridDiff(bool),
-    Shutdown,
-}
-
-/// Snapshot replies and live grid updates share this single FIFO channel.
-/// Separate channels could let a post-boundary G overtake its S and regress
-/// rows after the client applies the newer snapshot.
-enum SidecarResult {
-    Snapshot {
-        client_id: ClientId,
-        request_id: u64,
-        result: Result<SidecarCapture, String>,
-    },
-    Grid(GridDiff),
-    Keyframe(termiod_vt::Snapshot),
-}
-
-struct SidecarCapture {
-    snapshot: termiod_vt::Snapshot,
-    /// The same screen serialised back to VT sequences. `None` only if the
-    /// formatter failed, in which case delivery falls back to packed cells.
-    vt: Option<Vec<u8>>,
-    scrollback: Option<Result<termiod_vt::Scrollback, String>>,
-}
-
 struct Session {
-    id: String,
+    id: SessionId,
     name: String,
     cwd: String,
     command: String,
@@ -348,73 +333,17 @@ struct Session {
     ring: VecDeque<Bytes>,
     ring_bytes: usize,
     events: broadcast::Sender<Event>,
-    sidecar_tx: Option<std_mpsc::Sender<SidecarCommand>>,
-    sidecar_queue: Arc<SidecarQueue>,
-    /// Set once the VT has been denied bytes it needed. The screen it holds no
-    /// longer describes any boundary in the output stream, so it can never
-    /// answer a snapshot again — attach and resync fall back to ring replay.
-    vt_stale: Option<String>,
-    /// Last sample of who is in the tty's foreground and where the child is.
+    vt: Vt,
+    /// Who is in the tty's foreground and where the child is standing.
     /// `info()` reads this cache so a roster request never turns into a burst
     /// of syscalls.
-    foreground: ForegroundSample,
-    /// A resolution is in flight on a blocking thread. One at a time: the poll
-    /// is slower than the work, and piling up would only queue answers about
-    /// groups that have already lost the terminal.
-    foreground_pending: bool,
-    /// The binary the child is running, pinned on the first sample that finds
-    /// it. One-shot on purpose: this is the *launch* baseline that
-    /// `was_replaced()` compares against, and resampling would paper over the
-    /// in-place upgrade it exists to notice.
-    child_executable: Option<crate::proc::ExecutableIdentity>,
-}
-
-/// What the session believes about its foreground right now.
-///
-/// Split deliberately along what it costs to learn. `pgid` and `job` come from
-/// one `tcgetpgrp` and are refreshed on the actor; everything below them is a
-/// process-table walk and arrives later, from [`ForegroundResolution`].
-#[derive(Default, Clone, PartialEq, Eq)]
-struct ForegroundSample {
-    /// The foreground process *group*, exactly as `tcgetpgrp` reported it.
-    /// Kept even when no member of it could be read, because "is a job
-    /// running?" is answered by comparing this against the session's own child
-    /// and must not turn into "no" the moment a pipeline's leader exits.
-    pgid: Option<i32>,
-    /// The member of that group whose argv is reported below. Equal to `pgid`
-    /// whenever the group leader is still usable, which is the common case.
-    pid: Option<i32>,
-    argv: Option<Vec<String>>,
-    job: bool,
-    cwd: Option<String>,
-}
-
-/// The expensive half of a foreground sample, computed on a blocking thread and
-/// handed back to the actor.
-///
-/// Reading argv means a `KERN_PROCARGS2` sysctl on macOS and a file read on
-/// Linux, and finding *which* pid to read it for can mean walking every process
-/// on the box when a pipeline's leader has exited. None of that may happen on
-/// the session actor: that task also runs the PTY read and the fan-out, so a
-/// process-table walk there is time the byte path spends waiting — the
-/// anti-100× invariant, which is about more than the VT parse.
-struct ForegroundResolution {
-    /// The group this answer describes. The foreground can move while the
-    /// resolution is in flight, and an answer about a group that has since lost
-    /// the terminal is not a stale version of the truth — it is the answer to a
-    /// different question, and gets dropped.
-    pgid: Option<i32>,
-    pid: Option<i32>,
-    argv: Option<Vec<String>>,
-    cwd: Option<String>,
-    /// Only set when the session had not pinned its binary yet.
-    executable: Option<crate::proc::ExecutableIdentity>,
+    foreground: Foreground,
 }
 
 impl Session {
     fn info(&self) -> SessionInfo {
         SessionInfo {
-            id: self.id.clone(),
+            id: self.id.to_string(),
             name: self.name.clone(),
             cwd: self.cwd.clone(),
             command: self.command.clone(),
@@ -428,130 +357,37 @@ impl Session {
             agent_id: self.workstream.as_ref().map(|w| w.agent_id.clone()),
             title: self.title.clone(),
             attached_clients: self.clients.len(),
-            writer_client_id: self.writer.clone(),
-            foreground_pid: self.foreground.pid,
-            foreground_argv: self.foreground.argv.clone(),
-            foreground_job: self.foreground.job,
-            child_cwd: self.foreground.cwd.clone(),
-            child_executable: self
-                .child_executable
-                .as_ref()
-                .map(|identity| identity.path.clone()),
-            // Checked here rather than cached from the last tick: the record
-            // that matters most is the one built on the exit path, and a binary
-            // swapped during the seconds before the child quit is exactly the
-            // case this answers.
-            child_executable_replaced: self
-                .child_executable
-                .as_ref()
-                .is_some_and(|identity| identity.was_replaced()),
+            writer_client_id: self.writer.as_ref().map(ClientId::to_string),
+            foreground_pid: self.foreground.current().pid,
+            foreground_argv: self.foreground.current().argv.clone(),
+            foreground_job: self.foreground.current().job,
+            child_cwd: self.foreground.current().cwd.clone(),
+            child_executable: self.foreground.executable_path(),
+            child_executable_replaced: self.foreground.executable_replaced(),
         }
-    }
-
-    /// The cheap half of the poll, and the only half that runs here: one
-    /// `tcgetpgrp` on the master. Returns whether anything moved, so a quiet
-    /// session emits no roster traffic.
-    ///
-    /// The expensive half is dispatched to a blocking thread and applied later
-    /// by [`Session::apply_foreground`]. Both halves have to exist because they
-    /// answer different questions on different deadlines: "is a job running?"
-    /// is read at close time and must be current, and it is answerable from the
-    /// group id alone; "what is that job?" drives an icon and can be a beat
-    /// late.
-    fn sample_foreground(
-        &mut self,
-        resolved: &mpsc::UnboundedSender<ForegroundResolution>,
-    ) -> bool {
-        if self.pid <= 0 {
-            return false;
-        }
-        let pgid = self.pty.foreground_pgid();
-        // Compared against the *group*: a foreground group that is not the
-        // child's own is a running job whether or not any member of it could
-        // be read.
-        let job = pgid.is_some_and(|pgid| pgid != self.pid);
-        let mut changed = false;
-        if self.foreground.pgid != pgid {
-            self.foreground.pgid = pgid;
-            // The cached identity described a group that no longer holds the
-            // terminal. Dropping it is an honest gap the resolution below
-            // fills; keeping it would name a program that has already exited.
-            self.foreground.pid = None;
-            self.foreground.argv = None;
-            changed = true;
-        }
-        if self.foreground.job != job {
-            self.foreground.job = job;
-            changed = true;
-        }
-        self.request_foreground(pgid, resolved);
-        changed
-    }
-
-    /// Hand the process-table work to a blocking thread.
-    fn request_foreground(
-        &mut self,
-        pgid: Option<i32>,
-        resolved: &mpsc::UnboundedSender<ForegroundResolution>,
-    ) {
-        if self.foreground_pending {
-            return;
-        }
-        self.foreground_pending = true;
-        let child = self.pid;
-        let pin_executable = self.child_executable.is_none();
-        let resolved = resolved.clone();
-        tokio::task::spawn_blocking(move || {
-            // A group id is not a pid. The shell names each job's group after
-            // its leader, so the two agree for as long as that leader is alive
-            // — and stop agreeing in a pipeline the moment it is not, which is
-            // why the pid comes from the host rather than from that assumption.
-            let pid = pgid.and_then(crate::proc::foreground_member);
-            let _ = resolved.send(ForegroundResolution {
-                pgid,
-                pid,
-                argv: pid.and_then(crate::proc::process_arguments),
-                cwd: crate::proc::working_directory(child),
-                executable: pin_executable
-                    .then(|| crate::proc::executable_identity(child))
-                    .flatten(),
-            });
-        });
-    }
-
-    /// Take a resolution the blocking thread finished, unless the foreground
-    /// moved while it was in flight. Returns whether anything moved.
-    fn apply_foreground(&mut self, resolution: ForegroundResolution) -> bool {
-        self.foreground_pending = false;
-        if resolution.pgid != self.foreground.pgid {
-            return false;
-        }
-        if self.child_executable.is_none() {
-            self.child_executable = resolution.executable;
-        }
-        let mut changed = false;
-        if self.foreground.pid != resolution.pid {
-            self.foreground.pid = resolution.pid;
-            changed = true;
-        }
-        if self.foreground.argv != resolution.argv {
-            self.foreground.argv = resolution.argv;
-            changed = true;
-        }
-        if self.foreground.cwd != resolution.cwd {
-            self.foreground.cwd = resolution.cwd;
-            changed = true;
-        }
-        changed
     }
 
     fn recompute_writer(&mut self) {
         self.writer = self
             .clients
             .iter()
-            .filter(|(_, entry)| entry.interactive)
-            .max_by_key(|(_, entry)| entry.seq)
+            .filter_map(|(id, entry)| entry.role.attach_seq().map(|seq| (id, seq)))
+            .max_by_key(|(_, seq)| *seq)
             .map(|(id, _)| id.clone());
+    }
+
+    /// The write token only ever moves through here, and only ever onto a
+    /// client that attached with a tty. Returns whether the claim was allowed.
+    fn grant_writer(&mut self, id: &ClientId) -> bool {
+        if !self
+            .clients
+            .get(id)
+            .is_some_and(|entry| entry.role.is_interactive())
+        {
+            return false;
+        }
+        self.writer = Some(id.clone());
+        true
     }
 
     fn allocate_snapshot_request(&mut self) -> u64 {
@@ -571,11 +407,9 @@ impl Session {
     }
 
     fn send_sidecar(&mut self, command: SidecarCommand) -> bool {
-        let sent = self
-            .sidecar_tx
-            .as_ref()
-            .is_some_and(|sender| sender.send(command).is_ok());
-        if !sent && self.sidecar_tx.take().is_some() {
+        let was_live = self.vt.is_live();
+        let sent = self.vt.send(command);
+        if !sent && was_live {
             eprintln!("termiod: VT sidecar for session {} stopped", self.id);
         }
         sent
@@ -586,37 +420,37 @@ impl Session {
     /// silently would leave `S` describing a screen that never occurred, and
     /// blocking here would put the VT parse back on the fan-out path.
     fn write_sidecar(&mut self, chunk: Bytes) {
-        if self.vt_stale.is_some() || self.sidecar_tx.is_none() {
-            return;
-        }
-        if !self.sidecar_queue.try_reserve(chunk.len()) {
-            self.mark_vt_stale(format!(
-                "VT sidecar fell more than {} MiB behind the PTY",
-                SIDECAR_QUEUE_CAP / (1024 * 1024)
-            ));
+        if !self.vt.is_live() {
             return;
         }
         let len = chunk.len();
+        if !self.vt.try_reserve(len) {
+            self.mark_vt_stale(format!(
+                "VT sidecar fell more than {} behind the PTY",
+                sidecar::cap_description()
+            ));
+            return;
+        }
         if !self.send_sidecar(SidecarCommand::Write(chunk)) {
-            self.sidecar_queue.release(len);
+            self.vt.release(len);
         }
     }
 
     fn mark_vt_stale(&mut self, reason: String) {
-        if self.vt_stale.is_some() {
+        if !self.vt.is_live() {
             return;
         }
         eprintln!(
             "termiod: VT sidecar for session {} is stale: {reason}; snapshots now fall back to ring replay",
             self.id
         );
-        self.vt_stale = Some(reason.clone());
         // Nothing more will reach the VT, so drain what is queued rather than
-        // let a wedged parse hold the memory.
+        // let a wedged parse hold the memory. The shutdown goes out while the
+        // sender is still there; the VT is down the moment it has.
         self.send_sidecar(SidecarCommand::Shutdown);
-        self.sidecar_tx.take();
+        self.vt = Vt::down(reason.clone());
         self.emit_event(Event::VtStale {
-            session: self.id.clone(),
+            session: self.id.to_string(),
             reason: reason.clone(),
         });
         self.disconnect_grid_clients(&reason);
@@ -626,11 +460,7 @@ impl Session {
     /// Ask the sidecar for one client's snapshot, or fail it straight into the
     /// ring-replay fallback when the VT can no longer answer.
     fn request_snapshot(&mut self, client_id: ClientId, request_id: u64, scrollback: bool) {
-        let refusal = self.vt_stale.clone().or_else(|| {
-            self.sidecar_tx
-                .is_none()
-                .then(|| "VT sidecar is unavailable".to_string())
-        });
+        let refusal = self.vt.refusal().map(str::to_string);
         if let Some(reason) = refusal {
             self.finish_snapshot(&client_id, request_id, Err(reason));
             return;
@@ -640,16 +470,12 @@ impl Session {
             request_id,
             scrollback,
         }) {
-            self.finish_snapshot(
-                &client_id,
-                request_id,
-                Err("VT sidecar is unavailable".to_string()),
-            );
+            self.finish_snapshot(&client_id, request_id, Err(sidecar::UNAVAILABLE.to_string()));
         }
     }
 
     fn wants_grid_diffs(&self) -> bool {
-        self.clients.values().any(|entry| entry.grid_diff)
+        self.clients.values().any(|entry| entry.plane.is_grid())
     }
 
     fn sync_grid_diff_interest(&mut self) {
@@ -660,7 +486,7 @@ impl Session {
         let snapshot_clients: Vec<ClientId> = self
             .clients
             .iter()
-            .filter(|(_, entry)| entry.snapshot_capable)
+            .filter(|(_, entry)| entry.plane.snapshots())
             .map(|(id, _)| id.clone())
             .collect();
         let mut requests = Vec::with_capacity(snapshot_clients.len());
@@ -675,21 +501,10 @@ impl Session {
             // resize cancels any unfinished stage and does not recapture it;
             // history reflow/restaging semantics are intentionally deferred.
             entry.staged_history.clear();
-            let previous = std::mem::replace(&mut entry.delivery, ClientDelivery::Live);
-            let deferred = match previous {
-                ClientDelivery::Live => VecDeque::new(),
-                ClientDelivery::SnapshotPending { data, deferred, .. } => {
-                    // The new snapshot includes every write queued before the
-                    // resize, so replaying older buffered data would overlap.
-                    release_buffered(&entry.backlog, data);
-                    deferred
-                }
-            };
-            entry.delivery = ClientDelivery::SnapshotPending {
-                request_id,
-                data: VecDeque::new(),
-                deferred,
-            };
+            // The new snapshot includes every write queued before the resize, so
+            // replaying older buffered data would overlap.
+            let superseded = entry.plane.begin_pending(request_id);
+            release_buffered(&entry.backlog, superseded);
             requests.push((client_id, request_id));
         }
 
@@ -708,29 +523,20 @@ impl Session {
     /// fresh boundary. No other client is touched.
     fn force_resync(&mut self, client_id: &ClientId, reason: &str) {
         let request_id = self.allocate_snapshot_request();
-        let session_id = self.id.clone();
+        let session_id = self.id.to_string();
         let Some(entry) = self.clients.get_mut(client_id) else {
             return;
         };
         entry.backlog_strikes += 1;
         entry.staged_history.clear();
         entry.backlog.begin_resync();
-        let previous = std::mem::replace(&mut entry.delivery, ClientDelivery::Live);
-        let mut deferred = match previous {
-            ClientDelivery::Live => VecDeque::new(),
-            // The buffered data was reserved under the epoch just retired, so it
-            // is dropped with the rest rather than replayed past the new `S`.
-            ClientDelivery::SnapshotPending { deferred, .. } => deferred,
-        };
-        deferred.push_back(ClientEvent::Event(Event::Resynced {
+        // The buffered data was reserved under the epoch just retired, so it is
+        // dropped where it sits rather than replayed past the new `S`.
+        drop(entry.plane.begin_pending(request_id));
+        entry.plane.defer(ClientEvent::Event(Event::Resynced {
             session: session_id,
             reason: reason.to_string(),
         }));
-        entry.delivery = ClientDelivery::SnapshotPending {
-            request_id,
-            data: VecDeque::new(),
-            deferred,
-        };
         eprintln!(
             "termiod: resyncing client {client_id} on session {}: {reason}",
             self.id
@@ -739,12 +545,12 @@ impl Session {
     }
 
     fn queue_non_data(entry: &mut ClientEntry, event: ClientEvent) -> bool {
-        match &mut entry.delivery {
-            ClientDelivery::Live => entry.out.send(event).is_ok(),
-            ClientDelivery::SnapshotPending { deferred, .. } => {
+        match entry.plane.delivery_mut() {
+            Some(ClientDelivery::SnapshotPending { deferred, .. }) => {
                 deferred.push_back(event);
                 true
             }
+            _ => entry.out.send(event).is_ok(),
         }
     }
 
@@ -779,7 +585,7 @@ impl Session {
 
     fn emit_roster(&mut self) {
         self.emit_event(Event::Roster {
-            session: self.id.clone(),
+            session: self.id.to_string(),
             action: "updated".to_string(),
             info: Some(Box::new(self.info())),
         });
@@ -791,15 +597,16 @@ impl Session {
                 Self::queue_non_data(
                     entry,
                     ClientEvent::Control(Control::ResizeClaim {
-                        session: self.id.clone(),
-                        writer: self.writer.clone(),
+                        session: self.id.to_string(),
+                        writer: self.writer.as_ref().map(ClientId::to_string),
                     }),
                 );
             }
         }
+        let writer = self.writer.as_ref().map(ClientId::to_string);
         self.emit_event(Event::WriterChanged {
-            session: self.id.clone(),
-            writer: self.writer.clone(),
+            session: self.id.to_string(),
+            writer,
         });
     }
 
@@ -814,31 +621,32 @@ impl Session {
                 // The parsed plane is opt-in: G clients never reserve or
                 // receive downstream PTY bytes. Raw clients keep this exact
                 // byte-blind path regardless of sidecar lag.
-                if entry.grid_diff {
+                if entry.plane.is_grid() {
                     return None;
                 }
                 let Some(payload) = entry.backlog.reserve(data.clone()) else {
-                    if entry.backlog_strikes == 0 && entry.snapshot_capable {
+                    if entry.backlog_strikes == 0 && entry.plane.snapshots() {
                         resync.push(id.clone());
                         return None;
                     }
                     entry.backlog.mark_dropped();
                     eprintln!(
-                        "termiod: dropping slow client {id} from session {}: output backlog exceeded {} MiB again",
+                        "termiod: dropping slow client {id} from session {}: output backlog exceeded {} again",
                         self.id,
-                        CLIENT_BACKLOG_CAP / (1024 * 1024)
+                        backlog::cap_description()
                     );
                     return Some(id.clone());
                 };
-                match &mut entry.delivery {
-                    ClientDelivery::Live => {
+                match entry.plane.delivery_mut() {
+                    Some(ClientDelivery::SnapshotPending { data: buffered, .. }) => {
+                        buffered.push_back(payload);
+                    }
+                    // Raw, or snapshot-capable and past its boundary.
+                    _ => {
                         if entry.out.send(ClientEvent::Data(payload.clone())).is_err() {
                             entry.backlog.release(&payload);
                             return Some(id.clone());
                         }
-                    }
-                    ClientDelivery::SnapshotPending { data: buffered, .. } => {
-                        buffered.push_back(payload);
                     }
                 }
                 None
@@ -848,10 +656,7 @@ impl Session {
         for client_id in resync {
             self.force_resync(
                 &client_id,
-                &format!(
-                    "output backlog exceeded {} MiB",
-                    CLIENT_BACKLOG_CAP / (1024 * 1024)
-                ),
+                &format!("output backlog exceeded {}", backlog::cap_description()),
             );
         }
     }
@@ -871,9 +676,7 @@ impl Session {
             .clients
             .iter_mut()
             .filter_map(|(id, entry)| {
-                if !entry.grid_diff
-                    || matches!(entry.delivery, ClientDelivery::SnapshotPending { .. })
-                {
+                if !entry.plane.is_grid() || entry.plane.is_pending() {
                     // An ordered G observed while pending precedes this
                     // client's S boundary, so the S supersedes it.
                     return None;
@@ -881,9 +684,9 @@ impl Session {
                 let Some(metered) = entry.backlog.reserve(payload.clone()) else {
                     entry.backlog.mark_dropped();
                     eprintln!(
-                        "termiod: dropping slow grid-diff client {id} from session {}: output backlog exceeded {} MiB",
+                        "termiod: dropping slow grid-diff client {id} from session {}: output backlog exceeded {}",
                         self.id,
-                        CLIENT_BACKLOG_CAP / (1024 * 1024)
+                        backlog::cap_description()
                     );
                     return Some(id.clone());
                 };
@@ -897,7 +700,7 @@ impl Session {
         self.remove_dead(dead);
     }
 
-    fn reject_not_writer(&mut self, id: &str) {
+    fn reject_not_writer(&mut self, id: &ClientId) {
         if let Some(entry) = self.clients.get_mut(id) {
             Self::queue_non_data(
                 entry,
@@ -911,7 +714,7 @@ impl Session {
         }
     }
 
-    fn reject_resize(&mut self, id: &str, error: &anyhow::Error) {
+    fn reject_resize(&mut self, id: &ClientId, error: &anyhow::Error) {
         let message = format!("resize failed: {error}");
         eprintln!(
             "termiod: resize failed for writer {id} in session {}: {error}",
@@ -931,8 +734,8 @@ impl Session {
     }
 
     fn queue_history_chunk(
-        session_id: &str,
-        client_id: &str,
+        session_id: &SessionId,
+        client_id: &ClientId,
         entry: &mut ClientEntry,
     ) -> Result<bool, ()> {
         let Some(payload) = entry.staged_history.front() else {
@@ -941,8 +744,8 @@ impl Session {
         let Some(metered) = entry.backlog.reserve(payload.clone()) else {
             entry.backlog.mark_dropped();
             eprintln!(
-                "termiod: dropping slow client {client_id} from session {session_id}: scrollback backlog exceeded {} MiB",
-                CLIENT_BACKLOG_CAP / (1024 * 1024)
+                "termiod: dropping slow client {client_id} from session {session_id}: scrollback backlog exceeded {}",
+                backlog::cap_description()
             );
             return Err(());
         };
@@ -958,7 +761,7 @@ impl Session {
         Ok(!entry.staged_history.is_empty())
     }
 
-    fn continue_history(&mut self, client_id: &str) -> bool {
+    fn continue_history(&mut self, client_id: &ClientId) -> bool {
         let result = self
             .clients
             .get_mut(client_id)
@@ -966,7 +769,7 @@ impl Session {
         match result {
             Some(Ok(more)) => more,
             Some(Err(())) => {
-                self.remove_dead(vec![client_id.to_string()]);
+                self.remove_dead(vec![client_id.clone()]);
                 false
             }
             None => false,
@@ -978,39 +781,29 @@ impl Session {
     /// after `ready`, with buffered live data allowed between staged chunks.
     fn finish_snapshot(
         &mut self,
-        client_id: &str,
+        client_id: &ClientId,
         request_id: u64,
         result: Result<SidecarCapture, String>,
     ) -> bool {
-        let is_current = self.clients.get(client_id).is_some_and(|entry| {
-            matches!(
-                entry.delivery,
-                ClientDelivery::SnapshotPending {
-                    request_id: current,
-                    ..
-                } if current == request_id
-            )
-        });
+        // A reply for a request this attachment is no longer waiting on
+        // describes a boundary that a resize or a resync has already replaced.
+        let is_current = self
+            .clients
+            .get(client_id)
+            .and_then(|entry| entry.plane.pending_request())
+            == Some(request_id);
         if !is_current {
             return false;
         }
         let Some(mut entry) = self.clients.remove(client_id) else {
             return false;
         };
-        let ClientDelivery::SnapshotPending {
-            mut data,
-            mut deferred,
-            ..
-        } = std::mem::replace(&mut entry.delivery, ClientDelivery::Live)
-        else {
-            self.clients.insert(client_id.to_string(), entry);
-            return false;
-        };
+        let (mut data, mut deferred) = entry.plane.settle();
 
         let capture = match result {
             Ok(capture) => capture,
             Err(error) => {
-                if entry.grid_diff {
+                if entry.plane.is_grid() {
                     eprintln!(
                         "termiod: grid-diff snapshot unavailable for client {client_id} in session {}: {error}; disconnecting client",
                         self.id
@@ -1033,7 +826,7 @@ impl Session {
         // Raw-plane clients get VT sequences so their own libghostty decides
         // colour (their theme, their palette, full SGR). Grid-diff clients are
         // server-state by design and need packed cells to seed the grid.
-        let snapshot_vt = if entry.grid_diff { None } else { capture.vt };
+        let snapshot_vt = if entry.plane.is_grid() { None } else { capture.vt };
         if let Some(scrollback) = capture.scrollback {
             match scrollback {
                 Ok(scrollback) => {
@@ -1066,7 +859,7 @@ impl Session {
             || entry
                 .out
                 .send(ClientEvent::Event(Event::Ready {
-                    session: self.id.clone(),
+                    session: self.id.to_string(),
                 }))
                 .is_err()
         {
@@ -1097,7 +890,7 @@ impl Session {
                 return false;
             }
         }
-        self.clients.insert(client_id.to_string(), entry);
+        self.clients.insert(client_id.clone(), entry);
         history_pending
     }
 
@@ -1128,9 +921,7 @@ impl Session {
             .clients
             .iter_mut()
             .filter_map(|(id, entry)| {
-                if !entry.grid_diff
-                    || matches!(entry.delivery, ClientDelivery::SnapshotPending { .. })
-                {
+                if !entry.plane.is_grid() || entry.plane.is_pending() {
                     return None;
                 }
                 (entry
@@ -1140,7 +931,7 @@ impl Session {
                     || entry
                         .out
                         .send(ClientEvent::Event(Event::Ready {
-                            session: self.id.clone(),
+                            session: self.id.to_string(),
                         }))
                         .is_err())
                 .then(|| id.clone())
@@ -1153,7 +944,7 @@ impl Session {
         let ids: Vec<ClientId> = self
             .clients
             .iter()
-            .filter(|(_, entry)| entry.grid_diff)
+            .filter(|(_, entry)| entry.plane.is_grid())
             .map(|(id, _)| id.clone())
             .collect();
         if ids.is_empty() {
@@ -1166,10 +957,9 @@ impl Session {
         );
         let old_writer = self.writer.clone();
         for id in ids {
-            if let Some(entry) = self.clients.remove(&id) {
-                if let ClientDelivery::SnapshotPending { data, .. } = entry.delivery {
-                    release_buffered(&entry.backlog, data);
-                }
+            if let Some(mut entry) = self.clients.remove(&id) {
+                let (buffered, _deferred) = entry.plane.settle();
+                release_buffered(&entry.backlog, buffered);
                 let _ = entry.out.send(ClientEvent::Control(Control::Error {
                     re: None,
                     code: ErrorCode::Internal,
@@ -1186,7 +976,7 @@ impl Session {
 
     fn fallback_snapshot(
         &mut self,
-        client_id: &str,
+        client_id: &ClientId,
         entry: ClientEntry,
         buffered: VecDeque<Metered>,
         deferred: VecDeque<ClientEvent>,
@@ -1216,12 +1006,12 @@ impl Session {
                 return;
             }
         }
-        self.clients.insert(client_id.to_string(), entry);
+        self.clients.insert(client_id.clone(), entry);
     }
 
-    fn remove_finished_client(&mut self, client_id: &str) {
+    fn remove_finished_client(&mut self, client_id: &ClientId) {
         let old_writer = self.writer.clone();
-        if old_writer.as_deref() == Some(client_id) {
+        if old_writer.as_ref() == Some(client_id) {
             self.recompute_writer();
         }
         self.sync_grid_diff_interest();
@@ -1234,117 +1024,16 @@ impl Session {
         let pending: Vec<(ClientId, u64)> = self
             .clients
             .iter()
-            .filter_map(|(id, entry)| match entry.delivery {
-                ClientDelivery::SnapshotPending { request_id, .. } => {
-                    Some((id.clone(), request_id))
-                }
-                ClientDelivery::Live => None,
+            .filter_map(|(id, entry)| {
+                entry
+                    .plane
+                    .pending_request()
+                    .map(|request_id| (id.clone(), request_id))
             })
             .collect();
         for (id, request_id) in pending {
             self.finish_snapshot(&id, request_id, Err(error.to_string()));
         }
-    }
-}
-
-fn scrollback_row_limit(cols: u16) -> usize {
-    let row_bytes = usize::from(cols).saturating_mul(SNAPSHOT_CELL_SIZE);
-    SCROLLBACK_STAGE_MAX_BYTES
-        .checked_div(row_bytes)
-        .unwrap_or(0)
-}
-
-fn encode_scrollback_chunks(
-    cols: u16,
-    rows: Vec<Vec<termiod_vt::Cell>>,
-) -> Result<VecDeque<Bytes>, String> {
-    if rows.is_empty() {
-        return Ok(VecDeque::new());
-    }
-    let row_bytes = usize::from(cols)
-        .checked_mul(SNAPSHOT_CELL_SIZE)
-        .ok_or_else(|| "scrollback row length overflow".to_string())?;
-    let rows_per_chunk = MAX_HISTORY_FRAME_SIZE
-        .checked_sub(HISTORY_HEADER_SIZE)
-        .and_then(|available| available.checked_div(row_bytes))
-        .unwrap_or(0)
-        .min(usize::from(u16::MAX));
-    if rows_per_chunk == 0 {
-        return Err(format!(
-            "one {cols}-column row cannot fit in a {MAX_HISTORY_FRAME_SIZE}-byte H frame"
-        ));
-    }
-
-    let mut rows = rows.into_iter();
-    let mut chunks = VecDeque::new();
-    let mut first_offset = 1u32;
-    loop {
-        let mut cells = Vec::with_capacity(rows_per_chunk * usize::from(cols));
-        let mut row_count = 0u16;
-        for _ in 0..rows_per_chunk {
-            let Some(row) = rows.next() else {
-                break;
-            };
-            if row.len() != usize::from(cols) {
-                return Err(format!(
-                    "scrollback row has {} cells, expected {cols}",
-                    row.len()
-                ));
-            }
-            cells.extend(row.into_iter().map(wire_cell));
-            row_count += 1;
-        }
-        if row_count == 0 {
-            break;
-        }
-        let payload = encode_history_payload(&HistoryChunk {
-            cols,
-            first_offset,
-            row_count,
-            cells,
-        })
-        .map_err(|error| error.to_string())?;
-        chunks.push_back(Bytes::from(payload));
-        first_offset = first_offset
-            .checked_add(u32::from(row_count))
-            .ok_or_else(|| "scrollback offset overflow".to_string())?;
-    }
-    Ok(chunks)
-}
-
-fn wire_color(color: termiod_vt::Color) -> WireColor {
-    match color {
-        termiod_vt::Color::Default => WireColor::Default,
-        termiod_vt::Color::Palette(index) => WireColor::Palette(index),
-        termiod_vt::Color::Rgb(value) => WireColor::Rgb([value.r, value.g, value.b]),
-    }
-}
-
-fn wire_cell(cell: termiod_vt::Cell) -> WireCell {
-    WireCell {
-        codepoint: cell.codepoint,
-        foreground: wire_color(cell.foreground),
-        background: wire_color(cell.background),
-        attributes: cell.attributes,
-    }
-}
-
-fn grid_from_damage(frame_seq: u32, damage: termiod_vt::Damage) -> GridDiff {
-    GridDiff {
-        frame_seq,
-        rows: damage.rows,
-        cols: damage.cols,
-        cursor_x: damage.cursor_x,
-        cursor_y: damage.cursor_y,
-        alt_screen: damage.alt_screen,
-        dirty_rows: damage
-            .dirty_rows
-            .into_iter()
-            .map(|row| GridRow {
-                row_index: row.row_index,
-                cells: row.cells.into_iter().map(wire_cell).collect(),
-            })
-            .collect(),
     }
 }
 
@@ -1370,7 +1059,7 @@ fn release_buffered(backlog: &ClientBacklog, data: VecDeque<Metered>) {
 /// manager so it can remove the handle from the table.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn(
-    id: String,
+    id: SessionId,
     name: String,
     cwd: String,
     command: String,
@@ -1430,12 +1119,8 @@ pub fn spawn(
         ring: VecDeque::new(),
         ring_bytes: 0,
         events,
-        sidecar_tx: Some(sidecar.commands),
-        sidecar_queue: sidecar.queue,
-        vt_stale: None,
-        foreground: ForegroundSample::default(),
-        foreground_pending: false,
-        child_executable: None,
+        vt: Vt::live(sidecar.commands, sidecar.queue),
+        foreground: Foreground::default(),
     };
 
     let waiter = tokio::task::spawn_blocking(move || {
@@ -1643,7 +1328,7 @@ async fn run(
     // there" from its first roster request rather than after a cold two
     // seconds. Missed ticks are skipped instead of queued: a busy actor should
     // sample once when it catches up, not replay a backlog of polls.
-    let mut foreground_poll = tokio::time::interval(FOREGROUND_POLL);
+    let mut foreground_poll = tokio::time::interval(foreground::POLL_INTERVAL);
     foreground_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // The process-table half of each poll runs on a blocking thread and comes
     // back here. Held for the life of the loop so the branch below never sees a
@@ -1653,12 +1338,12 @@ async fn run(
     loop {
         tokio::select! {
             _ = foreground_poll.tick() => {
-                if session.sample_foreground(&foreground_tx) {
+                if session.foreground.poll(&session.pty, session.pid, &foreground_tx) {
                     session.emit_roster();
                 }
             }
             Some(resolution) = foreground_rx.recv() => {
-                if session.apply_foreground(resolution) {
+                if session.foreground.apply(resolution) {
                     session.emit_roster();
                 }
             }
@@ -1690,7 +1375,10 @@ async fn run(
                     }
                     None => {
                         sidecar_results_open = false;
-                        session.sidecar_tx.take();
+                        // The VT is down for the reason any absent sidecar is —
+                        // it cannot be asked — while the clients that were
+                        // waiting on an answer are told what happened to them.
+                        session.vt = Vt::down(sidecar::UNAVAILABLE);
                         session.disconnect_grid_clients("VT sidecar response channel closed");
                         session.fallback_all_pending("VT sidecar response channel closed");
                     }
@@ -1721,9 +1409,7 @@ async fn run(
             end_reason = requested;
         }
     }
-    if let Some(sidecar_tx) = session.sidecar_tx.take() {
-        let _ = sidecar_tx.send(SidecarCommand::Shutdown);
-    }
+    session.vt.shut_down();
 
     let code = match waiter.take() {
         Some(w) => w.await.unwrap_or(-1),
@@ -1740,7 +1426,7 @@ async fn run(
     let mut info = session.info();
     info.alive = false;
     let exit_event = Event::SessionExited {
-        session: session.id.clone(),
+        session: session.id.to_string(),
         status: code,
         info: Some(Box::new(info.clone())),
     };
@@ -1769,11 +1455,18 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             grid_diff,
             reply,
         } => {
-            let seq = session.next_seq;
-            session.next_seq += 1;
+            // Only interactive attachments are numbered: the sequence exists
+            // to rank claims on the write token, and an observer is never in
+            // that ranking.
+            let role = if interactive {
+                let seq = session.next_seq;
+                session.next_seq += 1;
+                ClientRole::Interactive { seq }
+            } else {
+                ClientRole::Observer
+            };
             let old_writer = session.writer.clone();
             let snapshot_request = snapshot.then(|| session.allocate_snapshot_request());
-            let grid_diff = grid_diff && snapshot;
 
             if !snapshot {
                 for replay in &session.ring {
@@ -1786,24 +1479,32 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                     }
                 }
             }
+            // A client that did not negotiate snapshots gets the raw plane and
+            // no barrier; one that did starts behind the barrier its bootstrap
+            // `S` will open. Grid diffs ride on top of the snapshot plane and
+            // are unreachable without it.
+            let plane = match snapshot_request {
+                None => ClientPlane::Raw,
+                Some(request_id) => {
+                    let delivery = ClientDelivery::SnapshotPending {
+                        request_id,
+                        data: VecDeque::new(),
+                        deferred: VecDeque::new(),
+                    };
+                    if grid_diff {
+                        ClientPlane::Grid(delivery)
+                    } else {
+                        ClientPlane::Snapshot(delivery)
+                    }
+                }
+            };
             session.clients.insert(
                 id.clone(),
                 ClientEntry {
                     out,
                     backlog,
-                    seq,
-                    interactive,
-                    snapshot_capable: snapshot,
-                    grid_diff,
-                    delivery: if let Some(request_id) = snapshot_request {
-                        ClientDelivery::SnapshotPending {
-                            request_id,
-                            data: VecDeque::new(),
-                            deferred: VecDeque::new(),
-                        }
-                    } else {
-                        ClientDelivery::Live
-                    },
+                    role,
+                    plane,
                     staged_history: VecDeque::new(),
                     backlog_strikes: 0,
                 },
@@ -1820,9 +1521,9 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             // typing — both ends claim on input — so the only attach that takes
             // it is the one that finds nobody holding it.
             if interactive && session.writer.is_none() {
-                session.writer = Some(id.clone());
+                session.grant_writer(&id);
             }
-            let is_writer = session.writer.as_deref() == Some(id.as_str());
+            let is_writer = session.writer.as_ref() == Some(&id);
             let _ = reply.send(AddClientReply {
                 writer: is_writer,
                 rows: session.rows,
@@ -1842,7 +1543,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             let old_writer = session.writer.clone();
             session.clients.remove(&id);
             session.sync_grid_diff_interest();
-            if old_writer.as_deref() == Some(id.as_str()) {
+            if old_writer.as_ref() == Some(&id) {
                 session.recompute_writer();
             }
             if session.writer != old_writer {
@@ -1862,20 +1563,15 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
         SessionMsg::ClaimWriter { id, reply } => {
             // An observer is refused rather than promoted: it attached without
             // a tty and cannot resize, so handing it the token would strand the
-            // session at whatever size the last real client left.
-            let eligible = session
-                .clients
-                .get(&id)
-                .map(|entry| entry.interactive)
-                .unwrap_or(false);
+            // session at whatever size the last real client left. A stranger —
+            // a stale id, a racing reconnect — is refused for the same reason
+            // `grant_writer` will not install a writer nobody can reach.
+            let held = session.writer.as_ref() == Some(&id);
+            let eligible = session.grant_writer(&id);
             let _ = reply.send(eligible);
-            if !eligible {
+            if !eligible || held {
                 return None;
             }
-            if session.writer.as_ref() == Some(&id) {
-                return None;
-            }
-            session.writer = Some(id);
             // The client that just took the token is told its own size claim is
             // now the one that counts, the same shape `AddClient` uses.
             session.emit_writer_changed(session.writer.clone());
@@ -1908,7 +1604,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                 session.send_sidecar(SidecarCommand::Resize { rows, cols });
                 session.begin_snapshot_barrier();
                 session.emit_event(Event::Resized {
-                    session: session.id.clone(),
+                    session: session.id.to_string(),
                     rows,
                     cols,
                 });
@@ -1929,7 +1625,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                 session.title = title;
             }
             session.emit_event(Event::Status {
-                session: session.id.clone(),
+                session: session.id.to_string(),
                 status: session.status.clone(),
                 title: session.title.clone(),
             });
@@ -1952,11 +1648,11 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
 #[cfg(test)]
 mod tests {
     use super::{
-        handle_msg, scrollback_row_limit, should_emit_keyframe, spawn_sidecar, ClientBacklog,
-        ClientDelivery, ClientEntry, ClientEvent, Session, SessionHandle, SessionMsg, Sidecar,
-        SidecarCommand, SidecarQueue, SidecarResult, CLIENT_BACKLOG_CAP,
-        SCROLLBACK_STAGE_MAX_BYTES, SIDECAR_QUEUE_CAP, SNAPSHOT_CELL_SIZE,
+        handle_msg, should_emit_keyframe, spawn_sidecar, ClientBacklog, ClientDelivery, ClientEntry,
+        ClientEvent, ClientPlane, ClientRole, Session, SessionHandle, SessionMsg, Sidecar,
+        SidecarCommand, SidecarQueue, SidecarResult, Vt,
     };
+    use crate::id::{ClientId, SessionId};
     use crate::protocol::{Control, ErrorCode, Event, SessionInfo};
     use crate::pty::Pty;
     use crate::tombstone::EndReason;
@@ -1969,75 +1665,14 @@ mod tests {
         Bytes::from(vec![b'x'; len])
     }
 
-    #[test]
-    fn client_backlog_enforces_byte_cap() {
-        let backlog = ClientBacklog::new();
-
-        let bulk = backlog
-            .reserve(chunk(CLIENT_BACKLOG_CAP - 1))
-            .expect("bulk reservation");
-        let last = backlog.reserve(chunk(1)).expect("last byte");
-        assert!(backlog.reserve(chunk(1)).is_none());
-
-        backlog.release(&bulk);
-        backlog.release(&last);
-        assert!(backlog.is_drained());
-        let after = backlog
-            .reserve(chunk(1))
-            .expect("reservation after release");
-        backlog.release(&after);
+    /// The write token as a plain str, so the assertions read as they did
+    /// when the roster was keyed by `String`.
+    fn writer(session: &Session) -> Option<&str> {
+        session.writer.as_ref().map(ClientId::as_str)
     }
 
-    #[test]
-    fn resync_retires_queued_payloads_without_unwinding_the_count() {
-        let backlog = ClientBacklog::new();
-        let stale = backlog
-            .reserve(chunk(CLIENT_BACKLOG_CAP))
-            .expect("full reservation");
-        assert!(backlog.reserve(chunk(1)).is_none());
 
-        backlog.begin_resync();
 
-        // The queued payload is dropped where it sits, so the client starts the
-        // new epoch with the whole budget rather than waiting for a drain.
-        assert!(!backlog.is_current(&stale));
-        assert!(backlog.is_drained());
-        let fresh = backlog
-            .reserve(chunk(CLIENT_BACKLOG_CAP))
-            .expect("fresh reservation");
-
-        // A late release of a retired payload must not credit the new epoch.
-        backlog.release(&stale);
-        assert!(backlog.reserve(chunk(1)).is_none());
-        backlog.release(&fresh);
-        assert!(backlog.is_drained());
-    }
-
-    #[test]
-    fn sidecar_queue_stops_admitting_bytes_past_its_budget() {
-        let queue = SidecarQueue::new();
-
-        assert!(queue.try_reserve(SIDECAR_QUEUE_CAP));
-        assert!(!queue.try_reserve(1));
-
-        queue.release(SIDECAR_QUEUE_CAP);
-        assert!(queue.try_reserve(1));
-        queue.release(1);
-        // Releasing more than was reserved is a bug, not a panic: the VT thread
-        // and the session actor account independently.
-        queue.release(SIDECAR_QUEUE_CAP);
-        assert!(queue.try_reserve(SIDECAR_QUEUE_CAP));
-    }
-
-    #[test]
-    fn scrollback_stage_cap_is_measured_in_encoded_rows() {
-        let cols = 80u16;
-        let row_bytes = usize::from(cols) * SNAPSHOT_CELL_SIZE;
-        let rows = scrollback_row_limit(cols);
-
-        assert!(rows * row_bytes <= SCROLLBACK_STAGE_MAX_BYTES);
-        assert!((rows + 1) * row_bytes > SCROLLBACK_STAGE_MAX_BYTES);
-    }
 
     #[test]
     fn keyframe_cadence_replaces_every_nth_grid_flush() {
@@ -2065,7 +1700,7 @@ mod tests {
             .unwrap();
         sidecar
             .send(SidecarCommand::Snapshot {
-                client_id: "client".to_string(),
+                client_id: ClientId::new("client"),
                 request_id: 1,
                 scrollback: false,
             })
@@ -2095,10 +1730,7 @@ mod tests {
         thread.join().unwrap();
         // Every byte the session charged to the queue is credited back once the
         // VT has parsed it, or the budget ratchets shut on a healthy session.
-        assert_eq!(
-            queue.outstanding.load(std::sync::atomic::Ordering::Relaxed),
-            0
-        );
+        assert!(queue.is_drained());
     }
 
     /// A session with no clients, a live sidecar, and a PTY that only has to
@@ -2112,7 +1744,7 @@ mod tests {
         let (events, event_rx) = broadcast::channel(64);
         (
             Session {
-                id: "session".to_string(),
+                id: SessionId::new("session"),
                 name: "test".to_string(),
                 cwd: String::new(),
                 command: "cat".to_string(),
@@ -2132,12 +1764,8 @@ mod tests {
                 ring: VecDeque::new(),
                 ring_bytes: 0,
                 events,
-                sidecar_tx: Some(sidecar_tx),
-                sidecar_queue,
-                vt_stale: None,
-                foreground: super::ForegroundSample::default(),
-                foreground_pending: false,
-                child_executable: None,
+                vt: Vt::live(sidecar_tx, sidecar_queue),
+                foreground: super::Foreground::default(),
             },
             event_rx,
         )
@@ -2195,7 +1823,7 @@ mod tests {
         handle_msg(
             session,
             SessionMsg::AddClient {
-                id: id.to_string(),
+                id: ClientId::new(id),
                 interactive: true,
                 out: client_tx,
                 backlog: Arc::new(ClientBacklog::new()),
@@ -2213,7 +1841,7 @@ mod tests {
         handle_msg(
             session,
             SessionMsg::ClaimWriter {
-                id: id.to_string(),
+                id: ClientId::new(id),
                 reply,
             },
         );
@@ -2231,7 +1859,7 @@ mod tests {
         handle_msg(
             session,
             SessionMsg::AddClient {
-                id: id.to_string(),
+                id: ClientId::new(id),
                 interactive: false,
                 out: client_tx,
                 backlog: backlog.clone(),
@@ -2261,20 +1889,20 @@ mod tests {
         let (mut session, _events) = test_session(commands, queue);
 
         let _mac = attach_interactive_client(&mut session, "mac");
-        assert_eq!(session.writer.as_deref(), Some("mac"), "first in, writer");
+        assert_eq!(writer(&session), Some("mac"), "first in, writer");
 
         // Looking is not taking: the phone arrives as a reader, and the Mac —
         // whose window is the one sized for this PTY — keeps writing.
         let _phone = attach_interactive_client(&mut session, "phone");
-        assert_eq!(session.writer.as_deref(), Some("mac"));
+        assert_eq!(writer(&session), Some("mac"));
 
         assert!(claim_writer(&mut session, "phone"), "the phone's user typed");
-        assert_eq!(session.writer.as_deref(), Some("phone"));
+        assert_eq!(writer(&session), Some("phone"));
 
         assert!(claim_writer(&mut session, "mac"), "the Mac's user typed");
-        assert_eq!(session.writer.as_deref(), Some("mac"));
+        assert_eq!(writer(&session), Some("mac"));
 
-        let _ = session.sidecar_tx.take();
+        session.vt.shut_down();
         let _ = thread.join();
     }
 
@@ -2294,20 +1922,20 @@ mod tests {
         let (mut session, _events) = test_session(commands, queue);
 
         let _mac = attach_interactive_client(&mut session, "mac");
-        assert_eq!(session.writer.as_deref(), Some("mac"));
+        assert_eq!(writer(&session), Some("mac"));
 
         handle_msg(
             &mut session,
             SessionMsg::RemoveClient {
-                id: "mac".to_string(),
+                id: ClientId::new("mac"),
             },
         );
-        assert_eq!(session.writer.as_deref(), None, "nobody is left to write");
+        assert_eq!(writer(&session), None, "nobody is left to write");
 
         let _reattached = attach_interactive_client(&mut session, "mac-again");
-        assert_eq!(session.writer.as_deref(), Some("mac-again"));
+        assert_eq!(writer(&session), Some("mac-again"));
 
-        let _ = session.sidecar_tx.take();
+        session.vt.shut_down();
         let _ = thread.join();
     }
 
@@ -2328,12 +1956,12 @@ mod tests {
 
         assert!(!claim_writer(&mut session, "watcher"));
         assert_eq!(
-            session.writer.as_deref(),
+            writer(&session),
             Some("mac"),
             "a refused claim must not disturb the writer it failed to displace"
         );
 
-        let _ = session.sidecar_tx.take();
+        session.vt.shut_down();
         let _ = thread.join();
     }
 
@@ -2351,9 +1979,9 @@ mod tests {
 
         let _mac = attach_interactive_client(&mut session, "mac");
         assert!(!claim_writer(&mut session, "ghost"));
-        assert_eq!(session.writer.as_deref(), Some("mac"));
+        assert_eq!(writer(&session), Some("mac"));
 
-        let _ = session.sidecar_tx.take();
+        session.vt.shut_down();
         let _ = thread.join();
     }
 
@@ -2413,8 +2041,8 @@ mod tests {
         let (mut joining, _joining_backlog) = attach_client(&mut session, "joining", true);
         assert!(
             matches!(
-                session.clients["joining"].delivery,
-                ClientDelivery::SnapshotPending { .. }
+                session.clients[&ClientId::new("joining")].plane,
+                ClientPlane::Snapshot(ClientDelivery::SnapshotPending { .. })
             ),
             "the joining client is not behind a barrier, so this proves nothing"
         );
@@ -2443,7 +2071,7 @@ mod tests {
             "the snapshot boundary and the bytes buffered behind it did not line up"
         );
 
-        let _ = session.sidecar_tx.take();
+        session.vt.shut_down();
         let _ = tokio::task::spawn_blocking(move || thread.join()).await;
     }
 
@@ -2474,17 +2102,17 @@ mod tests {
 
         // Nothing on the far end ever releases, so the budget fills for real.
         let mib = chunk(1024 * 1024);
-        for _ in 0..(CLIENT_BACKLOG_CAP / mib.len()) {
+        for _ in 0..(super::backlog::CAP_FOR_TESTS / mib.len()) {
             session.fan_out(mib.clone());
         }
         assert!(backlog.reserve(chunk(1)).is_none(), "budget is not full");
-        assert!(session.clients.contains_key("slow"));
+        assert!(session.clients.contains_key(&ClientId::new("slow")));
 
         // The overflow chunk. It is not delivered — it is what the snapshot
         // replaces — and the client survives it.
         session.fan_out(mib.clone());
         assert!(
-            session.clients.contains_key("slow"),
+            session.clients.contains_key(&ClientId::new("slow")),
             "the first overflow dropped the client instead of resyncing it"
         );
         assert!(
@@ -2517,17 +2145,17 @@ mod tests {
 
         // Second strike. The client starts from an empty budget and still
         // cannot drain, so this time it goes.
-        for _ in 0..(CLIENT_BACKLOG_CAP / mib.len()) {
+        for _ in 0..(super::backlog::CAP_FOR_TESTS / mib.len()) {
             session.fan_out(mib.clone());
         }
         session.fan_out(mib.clone());
         assert!(
-            !session.clients.contains_key("slow"),
+            !session.clients.contains_key(&ClientId::new("slow")),
             "the second overflow did not drop the client"
         );
         assert!(backlog.is_dropped());
 
-        let _ = session.sidecar_tx.take();
+        session.vt.shut_down();
         let _ = tokio::task::spawn_blocking(move || thread.join()).await;
     }
 
@@ -2544,7 +2172,7 @@ mod tests {
         } = spawn_sidecar(24, 80).unwrap();
         // Park the whole budget so the next PTY chunk cannot be admitted. This
         // stands in for a VT parse that has stopped making progress.
-        assert!(queue.try_reserve(SIDECAR_QUEUE_CAP));
+        assert!(queue.try_reserve(super::sidecar::CAP_FOR_TESTS));
         let (mut session, mut events) = test_session(commands, queue);
         let (mut client, _backlog) = attach_snapshot_client(&mut session, "raw");
         pump_sidecar(&mut session, &mut results, 1).await;
@@ -2561,7 +2189,13 @@ mod tests {
         session.write_sidecar(chunk.clone());
         session.fan_out(chunk.clone());
 
-        assert!(session.vt_stale.is_some(), "the budget did not bite");
+        assert!(
+            session
+                .vt
+                .refusal()
+                .is_some_and(|reason| reason.contains("behind the PTY")),
+            "the budget did not bite"
+        );
         let mut announced = false;
         while let Ok(event) = events.try_recv() {
             announced |= matches!(event, Event::VtStale { .. });
@@ -2594,7 +2228,7 @@ mod tests {
         assert_eq!(snapshots, 0, "a stale VT still answered a snapshot");
         assert_eq!(replayed, chunk, "the ring-replay fallback did not run");
 
-        let _ = session.sidecar_tx.take();
+        session.vt.shut_down();
         let _ = tokio::task::spawn_blocking(move || thread.join()).await;
     }
 
@@ -2607,7 +2241,7 @@ mod tests {
         let backlog = Arc::new(ClientBacklog::new());
         let (sidecar_tx, sidecar_rx) = std_mpsc::channel();
         let mut session = Session {
-            id: "session".to_string(),
+            id: SessionId::new("session"),
             name: "test".to_string(),
             cwd: String::new(),
             command: "cat".to_string(),
@@ -2621,37 +2255,30 @@ mod tests {
             pty,
             input_tx,
             clients: HashMap::from([(
-                "writer".to_string(),
+                ClientId::new("writer"),
                 ClientEntry {
                     out: client_tx,
                     backlog,
-                    seq: 1,
-                    interactive: true,
-                    snapshot_capable: false,
-                    grid_diff: false,
-                    delivery: ClientDelivery::Live,
+                    role: ClientRole::Interactive { seq: 1 },
+                    plane: ClientPlane::Raw,
                     staged_history: VecDeque::new(),
                     backlog_strikes: 0,
                 },
             )]),
-            writer: Some("writer".to_string()),
+            writer: Some(ClientId::new("writer")),
             next_seq: 2,
             next_snapshot_request: 1,
             ring: VecDeque::new(),
             ring_bytes: 0,
             events,
-            sidecar_tx: Some(sidecar_tx),
-            sidecar_queue: Arc::new(SidecarQueue::new()),
-            vt_stale: None,
-            foreground: super::ForegroundSample::default(),
-            foreground_pending: false,
-            child_executable: None,
+            vt: Vt::live(sidecar_tx, Arc::new(SidecarQueue::new())),
+            foreground: super::Foreground::default(),
         };
 
         assert!(handle_msg(
             &mut session,
             SessionMsg::Resize {
-                id: "writer".to_string(),
+                id: ClientId::new("writer"),
                 rows: 40,
                 cols: 120,
             },
@@ -2723,7 +2350,7 @@ mod tests {
         let (on_exit, on_exit_rx) = mpsc::unbounded_channel();
         let (events, events_rx) = broadcast::channel(64);
         let handle = super::spawn(
-            "foreground-session".to_string(),
+            SessionId::new("foreground-session"),
             "test".to_string(),
             cwd.to_string(),
             argv.join(" "),
