@@ -3,7 +3,7 @@ title: Termiod web client on official Ghostty WASM (Linux first)
 status: draft
 type: rfc
 created: 2026-08-18
-updated: 2026-08-18
+updated: 2026-08-24
 related:
   - 20260730-termiod-session-protocol.md
   - 20260805-termiod-hot-path-and-client-classes.md
@@ -293,7 +293,7 @@ Control-channel sequence (existing ops, no new verbs):
 
 Steady state on the attach socket is raw `D` in both directions. The host's sidecar VT (`termiod/vt`) is consulted only to build `S` / `H`. The browser's Wasm VT parses the same bytes. Two state machines, one log. That is the anti-100× invariant applied to a third client, not a new architecture.
 
-Default attach mode is **`observe`**. Opening the page while a Mac holds the write token must not steal it (`recompute_writer` promotes the newest `AttachMode::Interact`). A **Take input** control closes the observe attachment and opens a new attach WebSocket with `mode: interact` (there is no promote verb; `Control::Attach` sets mode once per channel). **Release** does the reverse: detach the interact socket and reattach as observe. `claim: "polite"` is specified in the hot-path doc and is **not** on `Control::Attach`; the web client does not invent it.
+Default attach mode is **`observe`**. Opening the page while a Mac holds the write token must not steal it — and since an `interact` attach now takes the token only when nobody holds it, neither mode steals. Eligibility is still fixed at attach: only an `AttachMode::Interact` client may claim, and no control operation turns an observer into one. So the **first** *Take input* is still a reattach — detach the observe socket, open one with `mode: interact` — and every handover after that is a bare `Control::ClaimWriter` on the channel already open, because promotion is now a verb. **Release** remains a reattach as observe, since giving the token *back* has no verb. `claim: "polite"` is specified in the hot-path doc and is **not** on `Control::Attach`; the web client does not invent it.
 
 ### VT source
 
@@ -482,7 +482,7 @@ The test is device architecture §4's: feed one `S` to a light page and a dark p
 
 Client-side KeyEncoder against the official `key/encoder.h` + `key/event.h`. Structured `KeyboardEvent` → escape bytes, including DECCKM / kitty flags the Wasm is already tracking. The host accepts raw PTY bytes on the attach write path (`SessionMsg::Input` in `run_attach`). There is no structured-key verb to invent.
 
-The **write token** is `AttachMode`, not the pairing secret. `mode: interact` claims it (newest-claim-wins, `recompute_writer`). `mode: observe` never claims. Observer `D` / `R` is answered `error { code: "not_writer" }`. No CRDT.
+The **write token** is `Control::ClaimWriter`, not the pairing secret and not `AttachMode`. `mode: interact` makes a client *eligible* to claim, and takes the token on attach only when nobody holds it; `mode: observe` is never eligible. Observer `D` / `R` is answered `error { code: "not_writer" }`. No CRDT.
 
 ### Resize
 
@@ -967,7 +967,7 @@ Sharing ACLs, phone-direct-over-WSS as a replacement for the companion wire, and
 12. **`H` never enters the Wasm.** Decoded `WireColor` rows are the seam's row shape; the renderer paints history above the viewport in the viewer's palette.
 13. **Linux first, one hop to the device.** The browser attaches to the box's `termiod`. The Mac is not a gateway. Channel-id multiplexing is not a prerequisite.
 14. **Clipboard and extra data channels are out of v1.** Do not invent Superlogical's unpublished protocol.
-15. **Pairing token authenticates the pipe. `mode: interact` claims the write token** (newest wins, `recompute_writer`). `mode: observe` never claims. The page defaults to observe and may attach either way. No CRDT.
+15. **Pairing token authenticates the pipe. `Control::ClaimWriter` takes the write token**; `mode: interact` only makes a client eligible to send it, and takes the token on attach when nobody holds it. `mode: observe` is never eligible. The page defaults to observe and may attach either way. No CRDT.
 
 ---
 

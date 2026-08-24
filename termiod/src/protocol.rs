@@ -527,11 +527,13 @@ pub enum Control {
     },
     /// Client asks for the write token, without re-attaching to get it.
     ///
-    /// Attaching interactively already takes the token, which is right for the
-    /// first client and wrong for every one after it: two devices on one
-    /// session — a Mac and a phone showing the same agent — would otherwise
-    /// have to tear down and rebuild an attachment every time the user's hands
-    /// moved, and whichever attached last would silently mute the other.
+    /// Attaching interactively takes the token only when nobody holds it, which
+    /// is right for the first client and would be wrong for every one after it:
+    /// two devices on one session — a Mac and a phone showing the same agent —
+    /// would otherwise have to tear down and rebuild an attachment every time
+    /// the user's hands moved, whichever attached last would silently mute the
+    /// other, and the newcomer's grid would drag the one shared PTY to its own
+    /// width behind the muted client's back.
     ///
     /// So the token follows the device being *used*: a client claims it when
     /// its user actually types. Observers are refused (§A: observers never

@@ -70,8 +70,10 @@ client ──► pipe ──► termiod ──► PTY ──► agent
 - Hot path: raw PTY bytes over the pipe.  
 - Every negotiated channel starts with `hello`; a no-`hello` v0 control frame
   enters legacy mode with no capabilities.
-- One interactive attachment owns the write/resize token. A newer interactive
-  claim demotes (but does not detach) the prior writer; observers never claim.
+- One interactive attachment owns the write/resize token. Attaching takes it
+  only when nobody holds it; after that the token follows the device being
+  *used* — a `claim_writer` demotes (but does not detach) the prior writer.
+  Observers never claim.
 - `E` frames fan out status, writer, resize, exit, and roster deltas. A
   control channel can subscribe without attaching to a PTY.
 - VT / libghostty snapshot: **later** (host-side sidecar for resync), not in the critical path for every keystroke.

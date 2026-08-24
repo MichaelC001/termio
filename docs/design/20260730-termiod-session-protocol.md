@@ -3,7 +3,7 @@ title: termiod Session Protocol
 status: draft
 type: design
 created: 2026-07-30
-updated: 2026-08-22
+updated: 2026-08-24
 related:
   - 20260730-termiod-session-mux.md
   - 20260708-session-daemon-architecture.md
@@ -319,12 +319,20 @@ ignores `Resized`/`WriterChanged` (`client.rs`) — acceptable for a single
 same-size CLI, incorrect the moment a second differently-sized viewer
 attaches.)*
 
-**Writer policy — single writer, newest claim, observable.** Any
-`mode:"interact"` attach takes the write token; the previous writer stays
-attached but demoted, and *everyone* on the session gets
-`E {ev:"writer_changed", writer:"c_41"}`. Observers' `D`/`R` frames are
-answered with `error {code:"not_writer"}` rather than dropped. This is the
-POC behavior formalized plus notification. CRDT/multi-caret input is
+**Writer policy — single writer, follows the device being used, observable.**
+A `mode:"interact"` attach takes the write token only when nobody holds it;
+after that the token moves on `claim_writer` alone, which every client sends
+when its user actually shows up (typing, or opening the session on a phone).
+The previous writer stays attached but demoted, and *everyone* on the session
+gets `E {ev:"writer_changed", writer:"c_41"}`. Observers' `D`/`R` frames are
+answered with `error {code:"not_writer"}` rather than dropped.
+
+Attach originally took the token unconditionally, which reads identically for a
+phone opening one session and a Mac window quietly holding fifteen: the phone's
+grid then travelled to the shared PTY through the attach resize, and the
+desktop — whose `R` frames are gated on the token it had just lost — was left
+rendering a screen formatted for a grid it does not have, with no event able to
+correct it. Promotion has to be a verb, not a side effect of arriving. CRDT/multi-caret input is
 explicitly rejected (§H); the write token is also the natural place a future
 share ACL plugs in without new message shapes.
 

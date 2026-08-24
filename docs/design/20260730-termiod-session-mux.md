@@ -3,7 +3,7 @@ title: termiod — Agent-native session mux
 status: draft
 type: design
 created: 2026-07-30
-updated: 2026-07-31
+updated: 2026-08-24
 related:
   - 20260708-session-daemon-architecture.md
   - 20260724-sidebar-scroll-performance.md
@@ -246,7 +246,7 @@ Align with [session-daemon-architecture](20260708-session-daemon-architecture.md
 | **v1.1** | Dirty-row / grid diffs at frame cap | Bandwidth + fidelity |
 | **always** | list/create/kill/attach, resize claim, **agent status**, roster deltas | ADE |
 
-**Rules:** detach ≠ kill · resize newest-client (v1) · multi-viewer observe yes · default **single writer** until §8 · capability negotiation on `hello`.
+**Rules:** detach ≠ kill · resize follows the write token, which an attach takes only when nobody holds it and `claim_writer` moves after that · multi-viewer observe yes · default **single writer** until §8 · capability negotiation on `hello`.
 
 **Input replication, not state sync (the anti-100× core).** The host keeps
 viewers consistent by shipping the **log** (raw PTY bytes, each client replays
