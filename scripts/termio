@@ -118,6 +118,14 @@ the automatic stack; --ratio is the new pane's share of the split (e.g. 0.25
 for a short strip) and holds against later spawns. Panes without a stated
 ratio share their run evenly.
 
+Readiness is judged from the screen, so an agent sitting on a startup gate —
+a trust prompt, a usage notice, a first-run dialog — looks ready while it is
+actually waiting for a keypress, and swallows the prompt as its answer. The
+reply cannot know this; it has already been sent. When it happens the session
+is flagged in `sessions list` (`prompt_undelivered` in --json), so check there
+before waiting on a reply that will never come, then resend with
+`sessions send`.
+
 --wait holds the reply until the spawned agent's first turn settles (or
 --timeout ms elapse; default 300000, clamped 1000–600000). The reply then
 carries the final status, the transcript path, and the cursor..cursor_end

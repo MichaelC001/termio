@@ -894,6 +894,11 @@ final class TermioStore: ObservableObject {
 
     var surfaces: [Session.ID: TerminalViewState] = [:]
     var monitors: [Session.ID: [AnyCancellable]] = [:]
+    /// Spawned sessions whose prompt was written but never appeared on screen —
+    /// almost always an agent still on a startup gate, which consumes typed text
+    /// as an answer to its own question. Reported by `sessions list` because the
+    /// caller already has its reply by the time this is known.
+    var undeliveredPrompts: Set<Session.ID> = []
     /// The daemon attachment behind each session: each
     /// session's attach channel into the local termiod daemon, which owns the
     /// PTY so the session outlives this app instance.
