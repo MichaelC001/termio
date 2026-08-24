@@ -47,10 +47,21 @@ enum PaneDropZone: Equatable {
         let relY = point.y / size.height
         let half = centerFraction / 2
         if abs(relX - 0.5) <= half, abs(relY - 0.5) <= half { return .center }
+        return edge(at: point, in: size)
+    }
+
+    /// The nearest edge, with no center box — the zoning a session dragged out of
+    /// the sidebar uses. That drag has exactly one meaning, "group in on this
+    /// side", so every part of the pane has to answer it: a middle that did
+    /// something else would be a dead zone you can only discover by missing.
+    static func edge(at point: CGPoint, in size: CGSize) -> PaneDropZone {
+        guard size.width > 0, size.height > 0 else { return .left }
+        let relX = point.x / size.width
+        let relY = point.y / size.height
         let edges: [(PaneDropZone, CGFloat)] = [
             (.left, relX), (.right, 1 - relX), (.top, relY), (.bottom, 1 - relY),
         ]
-        return edges.min { $0.1 < $1.1 }!.0
+        return edges.min { $0.1 < $1.1 }?.0 ?? .left
     }
 
     /// The part of the target pane to highlight while this zone is hovered:

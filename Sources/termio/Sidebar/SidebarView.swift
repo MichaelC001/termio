@@ -1340,6 +1340,10 @@ private struct SessionRow: View {
             // an editor, a text field — will accept it. Shipping the link means a
             // stray drop pastes something that works (`termio://session/<uuid>`,
             // what `termio sessions` takes) instead of leaking an internal id.
+            // A pane recognises one of these rows by parsing that link back off the
+            // drag pasteboard (see `PaneDropDelegate`), so plain text is the whole
+            // payload: SwiftUI rebuilds the item provider on the receiving side, and
+            // a private type registered here would not survive the trip.
             return NSItemProvider(object: store.sessionLink(for: session) as NSString)
         } preview: {
             // The drag preview is just the row's identity (icon + title), so the
