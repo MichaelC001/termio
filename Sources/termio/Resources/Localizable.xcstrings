@@ -6205,26 +6205,6 @@
         }
       }
     },
-    "Sign in as": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "登录身份"
-          }
-        }
-      }
-    },
-    "Other…": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "其他…"
-          }
-        }
-      }
-    },
     "Advanced": {
       "localizations": {
         "zh-Hans": {
@@ -6261,6 +6241,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "ssh 配置无法写入双引号。"
+          }
+        }
+      }
+    },
+    "Key": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "密钥"
+          }
+        }
+      }
+    },
+    "Default keys": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认密钥"
+          }
+        }
+      }
+    },
+    "Adds a Host block to ~/.ssh/config.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 ~/.ssh/config 中添加一个 Host 配置块。"
           }
         }
       }

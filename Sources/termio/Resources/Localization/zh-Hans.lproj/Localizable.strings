@@ -92,6 +92,8 @@
 	<string>添加到聊天</string>
 	<key>Address</key>
 	<string>地址</string>
+	<key>Adds a Host block to ~/.ssh/config.</key>
+	<string>在 ~/.ssh/config 中添加一个 Host 配置块。</string>
 	<key>Advanced</key>
 	<string>高级</string>
 	<key>Agent</key>
@@ -362,6 +364,8 @@
 	<string>默认浅色主题</string>
 	<key>Default agent</key>
 	<string>默认 Agent</string>
+	<key>Default keys</key>
+	<string>默认密钥</string>
 	<key>Delete</key>
 	<string>删除</string>
 	<key>Delete %@?</key>
@@ -520,6 +524,8 @@
 	<string>加入</string>
 	<key>Jump to session, project, or file…</key>
 	<string>跳转到会话、项目或文件…</string>
+	<key>Key</key>
+	<string>密钥</string>
 	<key>Key file</key>
 	<string>密钥文件</string>
 	<key>Keyboard</key>
@@ -762,8 +768,6 @@
 	<string>在 iPhone 上打开邀请链接，用 TestFlight 安装。</string>
 	<key>Opened outside Termio on this device</key>
 	<string>在这台设备上由 Termio 之外打开</string>
-	<key>Other…</key>
-	<string>其他…</string>
 	<key>Padding: %lld pt</key>
 	<string>边距：%lld 点</string>
 	<key>Pair your iPhone and remote access</key>
@@ -964,8 +968,6 @@
 	<string>显示 Agent 正在工作还是在等待你：侧栏的转圈指示和菜单栏的脉冲。会将 Termio 的 hooks 安装到各 Agent 的配置中。</string>
 	<key>Sidebar</key>
 	<string>侧栏</string>
-	<key>Sign in as</key>
-	<string>登录身份</string>
 	<key>Size: %lld pt</key>
 	<string>大小：%lld 磅</string>
 	<key>Skill reinstalled</key>

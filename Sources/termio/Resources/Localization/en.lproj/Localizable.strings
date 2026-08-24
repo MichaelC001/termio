@@ -92,6 +92,8 @@
 	<string>Add to Chat</string>
 	<key>Address</key>
 	<string>Address</string>
+	<key>Adds a Host block to ~/.ssh/config.</key>
+	<string>Adds a Host block to ~/.ssh/config.</string>
 	<key>Advanced</key>
 	<string>Advanced</string>
 	<key>Agent</key>
@@ -362,6 +364,8 @@
 	<string>Default Light Theme</string>
 	<key>Default agent</key>
 	<string>Default agent</string>
+	<key>Default keys</key>
+	<string>Default keys</string>
 	<key>Delete</key>
 	<string>Delete</string>
 	<key>Delete %@?</key>
@@ -520,6 +524,8 @@
 	<string>Join</string>
 	<key>Jump to session, project, or file…</key>
 	<string>Jump to session, project, or file…</string>
+	<key>Key</key>
+	<string>Key</string>
 	<key>Key file</key>
 	<string>Key file</string>
 	<key>Keyboard</key>
@@ -762,8 +768,6 @@
 	<string>Open the invite on your iPhone to install it with TestFlight.</string>
 	<key>Opened outside Termio on this device</key>
 	<string>Opened outside Termio on this device</string>
-	<key>Other…</key>
-	<string>Other…</string>
 	<key>Padding: %lld pt</key>
 	<string>Padding: %lld pt</string>
 	<key>Pair your iPhone and remote access</key>
@@ -964,8 +968,6 @@
 	<string>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio’s hooks into each agent’s config.</string>
 	<key>Sidebar</key>
 	<string>Sidebar</string>
-	<key>Sign in as</key>
-	<string>Sign in as</string>
 	<key>Size: %lld pt</key>
 	<string>Size: %lld pt</string>
 	<key>Skill reinstalled</key>

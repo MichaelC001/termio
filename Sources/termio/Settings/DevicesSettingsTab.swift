@@ -323,12 +323,19 @@ private extension SSHProbeResult {
 ///
 /// The address leads and everything else follows from it: `you@box.example.com:2222`
 /// fills the user and port, and the name is the address's first label until the
-/// user types their own. What remains is the pair that decides whether the host
-/// will actually let you in — offered as one "Sign in as" row built from the
-/// identities the config already uses, because a machine you add is almost always
-/// reached as the same person with the same key as the last one. Port and an
-/// explicit key stay behind Advanced: they are the exception, and a form that
-/// shows every exception at once reads as five equally likely questions.
+/// user types their own. Under it sit the two fields that decide whether the host
+/// lets you in — a user and a key — pre-filled from what the rest of the config
+/// already uses, because a machine you add is almost always reached as the same
+/// person with the same key as the last one.
+///
+/// They are filled in rather than hidden behind a picker. An earlier draft offered
+/// the identity as one "Sign in as" row with the fields for the exceptional case
+/// in Advanced, and that is the shape Tabby and XPipe both avoid: whatever names
+/// the credential, the fields it governs belong directly beneath it. Two places for
+/// one question is how a three-field sheet became confusing.
+///
+/// Only `Port` stays behind Advanced. It is the one field with a default nobody
+/// argues with, and the address absorbs it anyway when written as `host:2222`.
 struct AddSSHHostSheet: View {
     let existingAliases: Set<String>
     /// When set (the AppKit-presented menu path), called with the added alias —
@@ -341,21 +348,27 @@ struct AddSSHHostSheet: View {
     /// Empty until the user types a name of their own; until then the field shows
     /// (and Add uses) the one derived from the address.
     @State private var typedAlias = ""
-    @State private var identity: IdentityChoice = .other
     @State private var user = ""
+    @State private var key: KeyChoice = .defaults
     @State private var port = ""
-    @State private var identityFile = ""
     @State private var advancedExpanded = false
     @State private var writeError: String?
-    /// Read once, on appear: the sheet is modal, so the config cannot change under
-    /// it, and re-deriving per keystroke would re-read every file `Include` pulls in.
-    @State private var suggestions: [SSHIdentity] = []
+    /// Read once, on appear: the sheet is modal, so neither the config nor `~/.ssh`
+    /// can change under it, and re-reading per keystroke would walk every file
+    /// `Include` pulls in.
+    @State private var keys: [SSHPublicKey] = []
 
-    /// Which credentials the new block will carry: one the config already uses, or
-    /// the fields under Advanced.
-    private enum IdentityChoice: Hashable {
-        case suggested(SSHIdentity)
-        case other
+    /// What goes on the block's `IdentityFile` line — which is the only question
+    /// ssh_config can answer here, so it is the only one the row asks. `defaults`
+    /// writes no line at all and lets ssh do what it does alone: try the agent,
+    /// then the default key names. It leads for the same reason Tabby's auth
+    /// selector leads with Auto and XPipe's strategy list leads with no identity.
+    private enum KeyChoice: Hashable {
+        case defaults
+        case file(String)
+        /// Not a value — the row that opens the file panel, reverted the moment it
+        /// is chosen so the picker never rests on a verb.
+        case choose
     }
 
     private var parsedAddress: (user: String, host: String, port: String) {
@@ -370,12 +383,10 @@ struct AddSSHHostSheet: View {
         typedAlias.isEmpty ? derivedAlias : typedAlias.trimmingCharacters(in: .whitespaces)
     }
 
-    /// The address's own user/port win over the picked identity and the Advanced
-    /// field: they were typed later, and typing them is a correction.
+    /// A user or port written into the address wins over the field: it was typed
+    /// later and more specifically, and typing it there is a correction.
     private var effectiveUser: String {
-        if !parsedAddress.user.isEmpty { return parsedAddress.user }
-        if case .suggested(let suggestion) = identity { return suggestion.user }
-        return user.trimmingCharacters(in: .whitespaces)
+        parsedAddress.user.isEmpty ? user.trimmingCharacters(in: .whitespaces) : parsedAddress.user
     }
 
     private var effectivePort: String {
@@ -383,8 +394,8 @@ struct AddSSHHostSheet: View {
     }
 
     private var effectiveIdentityFile: String {
-        if case .suggested(let suggestion) = identity { return suggestion.identityFile ?? "" }
-        return identityFile.trimmingCharacters(in: .whitespaces)
+        if case .file(let path) = key { return path }
+        return ""
     }
 
     /// The first thing standing between the sheet and a working Add, or nil when
@@ -422,7 +433,11 @@ struct AddSSHHostSheet: View {
                         localized("Address"), text: $address,
                         prompt: Text("server.example.com")
                     )
-                    if !suggestions.isEmpty { identityPicker }
+                    TextField(
+                        localized("User"), text: $user,
+                        prompt: Text(NSUserName())
+                    )
+                    keyPicker
                     TextField(
                         localized("Name"), text: $typedAlias,
                         prompt: Text(derivedAlias.isEmpty ? "myserver" : derivedAlias)
@@ -434,13 +449,6 @@ struct AddSSHHostSheet: View {
                 }
                 Section {
                     DisclosureGroup(isExpanded: $advancedExpanded) {
-                        if suggestions.isEmpty || identity == .other {
-                            TextField(
-                                localized("User"), text: $user,
-                                prompt: Text(localized("optional"))
-                            )
-                            keyFileField
-                        }
                         TextField(localized("Port"), text: $port, prompt: Text("22"))
                     } label: {
                         Text(localized("Advanced"))
@@ -467,62 +475,69 @@ struct AddSSHHostSheet: View {
             }
             .padding(12)
         }
-        .frame(width: 460, height: advancedExpanded ? 420 : 320)
+        .frame(width: 460, height: advancedExpanded ? 400 : 344)
         .animation(.easeOut(duration: 0.18), value: advancedExpanded)
-        .onAppear {
-            suggestions = SSHConfigFile.suggestedIdentities(in: SSHConfigFile.hosts())
-            if let first = suggestions.first { identity = .suggested(first) }
-        }
+        .onAppear(perform: prefill)
     }
 
-    /// The identities already in the config, most-used first. The trailing row
-    /// opens the fields under Advanced instead of asking for them up front.
-    private var identityPicker: some View {
-        Picker(localized("Sign in as"), selection: $identity) {
-            ForEach(suggestions) { suggestion in
-                Text(label(for: suggestion)).tag(IdentityChoice.suggested(suggestion))
+    /// Fills the credential fields from what the config already does, so the common
+    /// case — another box reached the same way as the last one — is a matter of
+    /// typing an address. Both fields stay visible and editable: a default you can
+    /// see is a suggestion, and one you can't is a trap.
+    private func prefill() {
+        keys = SSHConfigFile.publicKeys()
+        guard let common = SSHConfigFile.suggestedIdentities(in: SSHConfigFile.hosts()).first
+        else { return }
+        user = common.user
+        if let identityFile = common.identityFile { key = .file(identityFile) }
+    }
+
+    /// The keys in `~/.ssh` by name, led by the no-`IdentityFile` default. A key the
+    /// user picked from elsewhere joins the list so the choice they made is a row
+    /// they can see, rather than a path in a field.
+    private var keyPicker: some View {
+        Picker(localized("Key"), selection: $key) {
+            Text(localized("Default keys")).tag(KeyChoice.defaults)
+            ForEach(keyOptions, id: \.self) { path in
+                Text((path as NSString).lastPathComponent).tag(KeyChoice.file(path))
             }
             Divider()
-            Text(localized("Other…")).tag(IdentityChoice.other)
+            Text(localized("Choose…")).tag(KeyChoice.choose)
         }
-        .onChange(of: identity) { _, choice in
-            if choice == .other { advancedExpanded = true }
-        }
-    }
-
-    private var keyFileField: some View {
-        LabeledContent(localized("Key file")) {
-            HStack(spacing: 6) {
-                TextField(
-                    "", text: $identityFile,
-                    prompt: Text(localized("optional — ~/.ssh/id_ed25519"))
-                )
-                .labelsHidden()
-                Button(localized("Choose…"), action: chooseIdentityFile)
-            }
+        .onChange(of: key) { previous, choice in
+            guard choice == .choose else { return }
+            // Never rest on the verb: the panel's outcome decides, and cancelling
+            // leaves the row exactly where the user found it.
+            key = chooseIdentityFile() ?? previous
         }
     }
 
-    /// Either what's wrong, or what the sheet is about to do — stated as the
-    /// command the user will be able to type, since that is the result they get.
+    /// The private-key paths to offer: every `~/.ssh` key, plus one picked from
+    /// elsewhere, `~`-relative the way ssh configs are conventionally written.
+    private var keyOptions: [String] {
+        var paths = keys.map { "~/.ssh/" + $0.name.replacingOccurrences(of: ".pub", with: "") }
+        if case .file(let path) = key, !paths.contains(path) { paths.append(path) }
+        return paths
+    }
+
+    /// Either what's wrong, or what the sheet is about to do — stated as the command
+    /// the user will be able to type, since that is the result they get. Before an
+    /// address exists there is no command to promise, so it says only what it does.
     @ViewBuilder
     private var footer: some View {
         if let validationMessage {
             Text(.init(validationMessage))
                 .font(.caption)
                 .foregroundStyle(.orange)
+        } else if effectiveAlias.isEmpty {
+            Text(localized("Adds a Host block to ~/.ssh/config."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
         } else {
-            Text(.init(localized("Adds a Host block to ~/.ssh/config. You’ll be able to run `ssh \(effectiveAlias.isEmpty ? "myserver" : effectiveAlias)` anywhere.")))
+            Text(.init(localized("Adds a Host block to ~/.ssh/config. You’ll be able to run `ssh \(effectiveAlias)` anywhere.")))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-    }
-
-    /// How an identity reads in the menu: `you · id_ed25519`, with whichever half
-    /// it sets. A user it doesn't set is the local one, which is what ssh would do.
-    private func label(for identity: SSHIdentity) -> String {
-        let user = identity.user.isEmpty ? NSUserName() : identity.user
-        return identity.keyName.isEmpty ? user : "\(user) · \(identity.keyName)"
     }
 
     private func add() {
@@ -546,19 +561,24 @@ struct AddSSHHostSheet: View {
 
     /// A file picker starting in `~/.ssh` with hidden files visible (the whole
     /// directory is dot-hidden). The chosen path is stored `~`-relative, the way
-    /// ssh configs are conventionally written.
-    private func chooseIdentityFile() {
+    /// ssh configs are conventionally written. nil when the panel was cancelled.
+    private func chooseIdentityFile() -> KeyChoice? {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.showsHiddenFiles = true
         panel.directoryURL = SSHConfigFile.configURL.deletingLastPathComponent()
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
         let path = url.standardizedFileURL.path
-        identityFile = path.hasPrefix(home + "/")
-            ? "~" + path.dropFirst(home.count)
-            : path
+        // `IdentityFile` names the private key; picking the public half is the
+        // easy slip, since that is the file people hand around.
+        let privatePath = path.hasSuffix(".pub") ? String(path.dropLast(4)) : path
+        return .file(
+            privatePath.hasPrefix(home + "/")
+                ? "~" + privatePath.dropFirst(home.count)
+                : privatePath
+        )
     }
 }
