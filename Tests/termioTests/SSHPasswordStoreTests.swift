@@ -38,6 +38,30 @@ final class SSHPasswordStoreTests: XCTestCase {
         XCTAssertTrue(SSHPasswordStore.askpassEnvironment(for: alias).isEmpty)
     }
 
+    /// Neither leg of the trip survives one: `security` reads the confirmation
+    /// line-wise and ssh takes only the helper's first line, so accepting it would
+    /// store a truncated password whose failure looks like a wrong one.
+    func testAPasswordWithALineBreakIsRefused() {
+        XCTAssertThrowsError(try SSHPasswordStore.save("two\nlines", for: alias)) { error in
+            XCTAssertEqual(error as? SSHPasswordError, .passwordContainsNewline)
+        }
+        XCTAssertFalse(SSHPasswordStore.hasPassword(for: alias))
+    }
+
+    /// The existence check gates every SSH session launch on the main actor. A
+    /// subprocess there is a visible freeze, so it must not be one.
+    func testExistenceCheckIsFastEnoughForTheMainActor() throws {
+        try SSHPasswordStore.save("hunter2", for: alias)
+        let started = Date()
+        for _ in 0..<50 { _ = SSHPasswordStore.hasPassword(for: alias) }
+        let each = Date().timeIntervalSince(started) / 50
+        XCTAssertLessThan(each, 0.005, "\(Int(each * 1000)) ms per check is a spawn, not a query")
+    }
+
+    func testRemovingSomethingThatIsNotThereStillReportsSuccess() {
+        XCTAssertTrue(SSHPasswordStore.remove(for: alias))
+    }
+
     func testEnvironmentForcesAskpassOverATerminal() throws {
         try SSHPasswordStore.save("hunter2", for: alias)
         let environment = SSHPasswordStore.askpassEnvironment(for: alias)

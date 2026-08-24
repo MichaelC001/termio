@@ -6195,16 +6195,6 @@
         }
       }
     },
-    "This host takes a password. Termio signs in with keys, and there is no key in ~/.ssh yet — create one with ssh-keygen, then set it up here.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "这台主机接受密码登录。Termio 用密钥登录，而 ~/.ssh 里还没有密钥——先用 ssh-keygen 生成一个，再回到这里设置。"
-          }
-        }
-      }
-    },
     "A name can’t contain spaces — it’s what you type after `ssh`.": {
       "localizations": {
         "zh-Hans": {
@@ -6321,6 +6311,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "密钥是到处都能用的凭据，包括跑在那台机器上的会话。密码保存在你的钥匙串里，不会写进 ssh 配置，只在 ssh 需要时才被读取。"
+          }
+        }
+      }
+    },
+    "A line break can’t be written to ssh config.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ssh 配置无法写入换行。"
+          }
+        }
+      }
+    },
+    "A password can’t contain a line break.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "密码不能包含换行。"
+          }
+        }
+      }
+    },
+    "This host takes a password. Termio signs in with keys, and ~/.ssh has none that ssh offers on its own — run ssh-keygen to make one, then set it up here.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台主机接受密码登录。Termio 用密钥登录，而 ~/.ssh 里没有 ssh 会自动尝试的密钥——先用 ssh-keygen 生成一个，再回到这里设置。"
           }
         }
       }

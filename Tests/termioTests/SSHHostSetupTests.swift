@@ -32,11 +32,40 @@ final class SSHHostSetupTests: XCTestCase {
     }
 
     /// An IPv6 literal is nothing but colons; splitting on the last one would
-    /// truncate the address into a different (and reachable) host.
+    /// truncate the address into a different (and reachable) host. The brackets
+    /// come off because `HostName` wants the literal bare.
     func testBracketedIPv6KeepsItsColons() {
         let parsed = SSHConfigFile.parseDestination("[fe80::1]")
-        XCTAssertEqual(parsed.host, "[fe80::1]")
+        XCTAssertEqual(parsed.host, "fe80::1")
         XCTAssertEqual(parsed.port, "")
+    }
+
+    func testBracketedIPv6WithAPortSplitsOnTheBracket() {
+        let parsed = SSHConfigFile.parseDestination("[2001:db8::1]:2222")
+        XCTAssertEqual(parsed.host, "2001:db8::1")
+        XCTAssertEqual(parsed.port, "2222")
+    }
+
+    /// `2001:db8::1` is a whole address, not `2001:db8:` on port 1 — and the wrong
+    /// reading yields a host that can resolve, so it fails as a mystery later.
+    func testUnbracketedIPv6IsNotSplitIntoAPort() {
+        let parsed = SSHConfigFile.parseDestination("2001:db8::1")
+        XCTAssertEqual(parsed.host, "2001:db8::1")
+        XCTAssertEqual(parsed.port, "")
+    }
+
+    func testUserWithBracketedIPv6AndPort() {
+        let parsed = SSHConfigFile.parseDestination("root@[2001:db8::1]:2222")
+        XCTAssertEqual(parsed.user, "root")
+        XCTAssertEqual(parsed.host, "2001:db8::1")
+        XCTAssertEqual(parsed.port, "2222")
+    }
+
+    func testEmptyAndPartialInputYieldNothingRatherThanGarbage() {
+        XCTAssertEqual(SSHConfigFile.parseDestination("").host, "")
+        let trailingAt = SSHConfigFile.parseDestination("you@")
+        XCTAssertEqual(trailingAt.user, "you")
+        XCTAssertEqual(trailingAt.host, "")
     }
 
     // MARK: - Naming the host
@@ -67,6 +96,35 @@ final class SSHHostSetupTests: XCTestCase {
                 forHost: "build.example.com", avoiding: ["build", "build-2"]
             ),
             "build-3"
+        )
+    }
+
+    /// A fixed ceiling handed back the taken base, so the sheet suggested a name it
+    /// then rejected as a duplicate and Add could never be pressed.
+    func testAliasKeepsCountingPastTheHundredthCollision() {
+        var taken: Set<String> = ["build"]
+        for suffix in 2...100 { taken.insert("build-\(suffix)") }
+        let suggested = SSHConfigFile.suggestedAlias(forHost: "build.example.net", avoiding: taken)
+        XCTAssertEqual(suggested, "build-101")
+        XCTAssertFalse(taken.contains(suggested))
+    }
+
+    // MARK: - What can be written into the config
+
+    func testALineBreakIsRefusedRatherThanWritten() {
+        XCTAssertTrue(SSHConfigFile.isUnwritable("box\n  ProxyCommand /bin/sh"))
+        XCTAssertTrue(SSHConfigFile.isUnwritable("box\rHost other"))
+        XCTAssertFalse(SSHConfigFile.isUnwritable("server.example.com"))
+        // A space is legal in a value; `appendHost` quotes it.
+        XCTAssertFalse(SSHConfigFile.isUnwritable("~/My Keys/id_ed25519"))
+    }
+
+    func testAppendHostRefusesAValueCarryingItsOwnDirective() {
+        XCTAssertThrowsError(
+            try SSHConfigFile.appendHost(
+                alias: "box\nHost evil", hostName: "example.com",
+                user: "", port: "", identityFile: ""
+            )
         )
     }
 
@@ -127,6 +185,27 @@ final class SSHHostSetupTests: XCTestCase {
             keys: [key("id_rsa.pub", algorithm: "RSA"), key("id_ed25519.pub", algorithm: "ED25519")]
         )
         XCTAssertEqual(chosen?.name, "id_ed25519.pub")
+    }
+
+    /// With no `IdentityFile` in the block, ssh offers only its default names and
+    /// the agent. Installing `work_security_key` would report success and change
+    /// nothing, because the next connection never offers that key.
+    func testAKeySshWouldNeverOfferIsNotInstalled() {
+        XCTAssertNil(SSHConfigFile.publicKeyToInstall(
+            for: host("box"),
+            keys: [key("work_security_key.pub", algorithm: "ED25519-SK")]
+        ))
+    }
+
+    func testDefaultNamedKeyIsPreferredOverAStrongerCustomOne() {
+        let chosen = SSHConfigFile.publicKeyToInstall(
+            for: host("box"),
+            keys: [
+                key("work_security_key.pub", algorithm: "ED25519-SK"),
+                key("id_rsa.pub", algorithm: "RSA"),
+            ]
+        )
+        XCTAssertEqual(chosen?.name, "id_rsa.pub")
     }
 
     /// ssh will offer exactly the pinned key, so installing a different one leaves

@@ -234,7 +234,7 @@ private struct SSHHostRow: View {
     private var passwordAdvice: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(keyToInstall == nil
-                 ? localized("This host takes a password. Termio signs in with keys, and there is no key in ~/.ssh yet — create one with ssh-keygen, then set it up here.")
+                 ? localized("This host takes a password. Termio signs in with keys, and ~/.ssh has none that ssh offers on its own — run ssh-keygen to make one, then set it up here.")
                  : localized("This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -418,11 +418,20 @@ struct AddSSHHostSheet: View {
         if !effectivePort.isEmpty, Int(effectivePort).map({ (1...65535).contains($0) }) != true {
             return localized("A port is a number from 1 to 65535.")
         }
+        let values = [effectiveAlias, parsedAddress.host, effectiveUser, effectiveIdentityFile]
         // ssh_config has no escape for a literal double quote — such values can't
         // be written faithfully, so refuse rather than corrupt the file.
-        let values = [effectiveAlias, parsedAddress.host, effectiveUser, effectiveIdentityFile]
         if values.contains(where: { $0.contains("\"") }) {
             return localized("A double quote can’t be written to ssh config.")
+        }
+        // A line break would end the directive, and a pasted address carrying one
+        // could append directives of its own. `appendHost` refuses it as well; this
+        // is so the sheet says why instead of failing at the write.
+        if values.contains(where: SSHConfigFile.isUnwritable) {
+            return localized("A line break can’t be written to ssh config.")
+        }
+        if password.contains(where: \.isNewline) {
+            return localized("A password can’t contain a line break.")
         }
         return nil
     }
@@ -551,8 +560,13 @@ struct AddSSHHostSheet: View {
         .onChange(of: key) { previous, choice in
             guard choice == .choose else { return }
             // Never rest on the verb: the panel's outcome decides, and cancelling
-            // leaves the row exactly where the user found it.
-            key = chooseIdentityFile() ?? previous
+            // leaves the row exactly where the user found it. Presented after this
+            // transaction rather than inside it — `runModal` spins a nested event
+            // loop, and starting one while SwiftUI is still applying the selection
+            // it caused is how a picker flickers or wedges.
+            DispatchQueue.main.async {
+                key = chooseIdentityFile() ?? previous
+            }
         }
     }
 

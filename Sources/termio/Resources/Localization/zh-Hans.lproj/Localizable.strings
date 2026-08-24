@@ -70,8 +70,12 @@
 	<string>ssh 配置无法写入双引号。</string>
 	<key>A key is the credential that works everywhere, including sessions running on the box. A password is saved to your Keychain, never to ssh config, and only ever read when ssh asks for it.</key>
 	<string>密钥是到处都能用的凭据，包括跑在那台机器上的会话。密码保存在你的钥匙串里，不会写进 ssh 配置，只在 ssh 需要时才被读取。</string>
+	<key>A line break can’t be written to ssh config.</key>
+	<string>ssh 配置无法写入换行。</string>
 	<key>A name can’t contain spaces — it’s what you type after `ssh`.</key>
 	<string>名称不能包含空格——它就是你在 `ssh` 后面输入的内容。</string>
+	<key>A password can’t contain a line break.</key>
+	<string>密码不能包含换行。</string>
 	<key>A port is a number from 1 to 65535.</key>
 	<string>端口是 1 到 65535 之间的数字。</string>
 	<key>A workspace scopes the sidebar to the projects and sessions filed under it, on the machine it belongs to.</key>
@@ -1118,8 +1122,8 @@
 	<string>此文件为二进制文件，请在 GitHub 上打开查看。</string>
 	<key>This folder has no git “origin” remote to clone.</key>
 	<string>这个文件夹没有 git “origin” 远程，无法克隆。</string>
-	<key>This host takes a password. Termio signs in with keys, and there is no key in ~/.ssh yet — create one with ssh-keygen, then set it up here.</key>
-	<string>这台主机接受密码登录。Termio 用密钥登录，而 ~/.ssh 里还没有密钥——先用 ssh-keygen 生成一个，再回到这里设置。</string>
+	<key>This host takes a password. Termio signs in with keys, and ~/.ssh has none that ssh offers on its own — run ssh-keygen to make one, then set it up here.</key>
+	<string>这台主机接受密码登录。Termio 用密钥登录，而 ~/.ssh 里没有 ssh 会自动尝试的密钥——先用 ssh-keygen 生成一个，再回到这里设置。</string>
 	<key>This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it.</key>
 	<string>这台主机接受密码登录。Termio 用密钥登录，设置一次之后，会话、文件树和远程终端都能连上它。</string>
 	<key>This machine’s termiod is too old to list folders.</key>
