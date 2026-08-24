@@ -185,6 +185,85 @@ final class SplitTreeTests: XCTestCase {
                        [above, agent, run2, run1, below])
     }
 
+    /// Splitting right twice must read as thirds, not 1/2 + 1/4 + 1/4 — the
+    /// panes of a same-direction run are peers, so `equalized()` hands each an
+    /// even share regardless of the order the splits happened in.
+    func testEqualizedTurnsASplitChainIntoEvenShares() {
+        let tree = SplitNode.leaf(agent)
+            .splitting(leaf: agent, direction: .horizontal, adding: run1)
+            .splitting(leaf: run1, direction: .horizontal, adding: run2)
+            .equalized()
+        let frames = tree.layout(in: CGRect(x: 0, y: 0, width: 1, height: 1),
+                                 dividerThickness: 0).frames
+        for id in [agent, run1, run2] {
+            XCTAssertEqual(frames[id]!.width, 1.0 / 3.0, accuracy: 0.001)
+        }
+    }
+
+    /// The spawn stack: the anchor keeps half, and its companions divide the
+    /// opposite column evenly — three rows of a third each, not the newest
+    /// companion taking half the column.
+    func testEqualizedSpawnStackGivesCompanionsEvenRows() {
+        let tree = SplitNode.split(SplitBranch(direction: .horizontal, ratio: 0.5,
+                                               first: .leaf(agent), second: .leaf(run1)))
+            .splitting(oppositeLeaf: agent, adding: run2)
+            .splitting(oppositeLeaf: agent, adding: run3)
+            .equalized()
+        let frames = tree.layout(in: CGRect(x: 0, y: 0, width: 1, height: 1),
+                                 dividerThickness: 0).frames
+        // The anchor's own divider stays at half — the stack is one segment of
+        // the horizontal run, not three.
+        XCTAssertEqual(frames[agent]!.width, 0.5, accuracy: 0.001)
+        for id in [run1, run2, run3] {
+            XCTAssertEqual(frames[id]!.height, 1.0 / 3.0, accuracy: 0.001)
+        }
+    }
+
+    /// A dragged divider is the user's stated ratio: `updatingRatio` pins it,
+    /// and equalization redistributes around it instead of over it.
+    func testDraggedDividerSurvivesEqualization() {
+        var tree = SplitNode.split(SplitBranch(direction: .horizontal, ratio: 0.5,
+                                               first: .leaf(agent), second: .leaf(run1)))
+        guard case .split(let branch) = tree else { return XCTFail("expected a branch") }
+        tree = tree.updatingRatio(branchID: branch.id, to: 0.7)
+        tree = tree.splitting(leaf: run1, direction: .horizontal, adding: run2).equalized()
+
+        let frames = tree.layout(in: CGRect(x: 0, y: 0, width: 1, height: 1),
+                                 dividerThickness: 0).frames
+        // The drag holds; only the undragged remainder divides evenly.
+        XCTAssertEqual(frames[agent]!.width, 0.7, accuracy: 0.001)
+        XCTAssertEqual(frames[run1]!.width, 0.15, accuracy: 0.001)
+        XCTAssertEqual(frames[run2]!.width, 0.15, accuracy: 0.001)
+    }
+
+    /// A spawn that states its share (`--ratio 0.25`) gets exactly that and
+    /// keeps it: the divider is pinned at insert, so the next equalization
+    /// pass cannot flatten the requested strip back to an even share.
+    func testExplicitShareIsPinnedAtInsert() {
+        let tree = SplitNode.leaf(agent)
+            .splitting(leaf: agent, direction: .vertical, adding: run1, newShare: 0.25)
+            .equalized()
+        let frames = tree.layout(in: CGRect(x: 0, y: 0, width: 1, height: 1),
+                                 dividerThickness: 0).frames
+        XCTAssertEqual(frames[run1]!.height, 0.25, accuracy: 0.001)
+        XCTAssertEqual(frames[agent]!.height, 0.75, accuracy: 0.001)
+    }
+
+    /// `pinned` postdates persisted trees: a state file written before the
+    /// field existed must decode with every divider unpinned, not fail.
+    func testDecodingTreeWithoutPinnedDefaultsToUnpinned() throws {
+        let tree = SplitNode.split(SplitBranch(direction: .horizontal, ratio: 0.5, pinned: true,
+                                               first: .leaf(agent), second: .leaf(run1)))
+        var json = String(decoding: try JSONEncoder().encode(tree), as: UTF8.self)
+        json = json.replacingOccurrences(of: ",\"pinned\":true", with: "")
+        json = json.replacingOccurrences(of: "\"pinned\":true,", with: "")
+        XCTAssertFalse(json.contains("pinned"), "the fixture must lack the key entirely")
+
+        let decoded = try JSONDecoder().decode(SplitNode.self, from: Data(json.utf8))
+        guard case .split(let branch) = decoded else { return XCTFail("expected a branch") }
+        XCTAssertFalse(branch.pinned)
+    }
+
     /// Two groups whose rows touch stay two runs, and a run already adjacent is
     /// returned untouched — gathering runs after every group edit, so it must be
     /// idempotent and must never fuse neighbouring groups.

@@ -31,6 +31,10 @@ struct StateFile {
         /// trace is a snapshot of data that gets re-fetched (see `TermioStore.InspectorState`).
         /// Optional so older state files still decode.
         var inspectorLayouts: [String: InspectorLayout]?
+        /// The session each workspace was last left on, keyed by workspace
+        /// `id.uuidString` (see `TermioStore.workspaceSelections`). Optional so older
+        /// state files still decode.
+        var workspaceSelections: [String: Session.ID]?
 
         init(
             workspaces: [Workspace]?,
@@ -39,7 +43,8 @@ struct StateFile {
             selectedSessionID: Session.ID?,
             splitRoot: SplitNode? = nil,
             splitGroups: [SplitNode]?,
-            inspectorLayouts: [String: InspectorLayout]?
+            inspectorLayouts: [String: InspectorLayout]?,
+            workspaceSelections: [String: Session.ID]? = nil
         ) {
             self.workspaces = workspaces
             self.currentWorkspaceID = currentWorkspaceID
@@ -48,11 +53,12 @@ struct StateFile {
             self.splitRoot = splitRoot
             self.splitGroups = splitGroups
             self.inspectorLayouts = inspectorLayouts
+            self.workspaceSelections = workspaceSelections
         }
 
         private enum CodingKeys: String, CodingKey {
             case workspaces, currentWorkspaceID, projects, selectedSessionID, splitRoot,
-                 splitGroups, inspectorLayouts
+                 splitGroups, inspectorLayouts, workspaceSelections
         }
 
         /// `projects` is decoded twice on an upgrade — once as the live shape, once
@@ -72,6 +78,8 @@ struct StateFile {
             splitGroups = try c.decodeIfPresent([SplitNode].self, forKey: .splitGroups)
             inspectorLayouts = try c.decodeIfPresent(
                 [String: InspectorLayout].self, forKey: .inspectorLayouts)
+            workspaceSelections = try c.decodeIfPresent(
+                [String: UUID].self, forKey: .workspaceSelections)
         }
 
         /// `legacyProjects` never round-trips: it is the same `projects` array read
@@ -84,6 +92,7 @@ struct StateFile {
             try c.encodeIfPresent(selectedSessionID, forKey: .selectedSessionID)
             try c.encodeIfPresent(splitGroups, forKey: .splitGroups)
             try c.encodeIfPresent(inspectorLayouts, forKey: .inspectorLayouts)
+            try c.encodeIfPresent(workspaceSelections, forKey: .workspaceSelections)
         }
     }
 

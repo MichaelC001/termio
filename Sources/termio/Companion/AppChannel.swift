@@ -65,10 +65,31 @@ enum AppChannel {
             || identifier == releaseBundleIdentifier + ".dev"
     }()
 
+    /// True when this process is a test binary rather than either termio.
+    ///
+    /// `swift test` has no bundle id ending in `.dev` and no `TERMIO_CHANNEL`, so
+    /// without this it lands on the **release** channel — and `TermioStore`
+    /// persists on every `projects` mutation, so a test that builds a store over
+    /// fixture projects overwrites the installed app's session tree. That is not a
+    /// hypothetical: it has replaced a real user's projects with `/code/termio`.
+    /// The channel suffix is deliberately left alone; only the directories that
+    /// get written move, since the ports and URL scheme are never claimed here.
+    static let isRunningTests: Bool = NSClassFromString("XCTestCase") != nil
+
+    /// A scratch home for a test run, thrown away with the rest of the temp
+    /// directory. Keyed by pid so two concurrent runs can't read each other's
+    /// writes.
+    private static let testDirectory: URL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(
+            "termio-tests-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+
     /// Internal state — control/status sockets, `state.json`, custom themes, and
     /// downloaded tunnel binaries: `~/Library/Application Support/termio[-dev]`.
     /// Falls back to a home dotfolder if Application Support can't be resolved.
     static var supportDirectory: URL {
+        if isRunningTests {
+            return testDirectory.appendingPathComponent("support", isDirectory: true)
+        }
         let name = "termio" + suffix
         if let base = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
@@ -81,7 +102,10 @@ enum AppChannel {
     /// User-facing config the user drops files into (agent definitions, worktrees):
     /// `~/.termio[-dev]`.
     static var homeConfigDirectory: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        if isRunningTests {
+            return testDirectory.appendingPathComponent("home", isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".termio" + suffix, isDirectory: true)
     }
 

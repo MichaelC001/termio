@@ -30,6 +30,11 @@ extension TermioStore {
         return session.id
     }
 
+    /// Which gap a dragged row lands in, relative to the row it was released over.
+    enum RowInsertion {
+        case above, below
+    }
+
     /// Whether `moved` may be drag-reordered next to `target`: both must sit in the
     /// same roster — one project, or one workspace's Terminals or Chats — and the
     /// same worktree bucket. Drives which rows light their background as a legal
@@ -43,24 +48,25 @@ extension TermioStore {
             == sessionBucketKey(self[targetSlot], at: targetSlot)
     }
 
-    /// Moves `moved` next to `target` within their shared roster, committed on drop
-    /// (a cross-roster move is a no-op via `canReorder`). The insert side follows the
-    /// drag direction: dropping onto a row *below* lands `moved` just under the target,
-    /// onto one *above* lands it just over — so the gesture reads as "move toward the
-    /// row you let go on". Persistence rides the tree's `didSet` like every roster edit.
-    func reorderSession(_ moved: Session.ID, relativeTo target: Session.ID) {
+    /// Moves `moved` to the `side` of `target` within their shared roster, committed
+    /// on drop (a cross-roster move is a no-op via `canReorder`). Persistence rides
+    /// the tree's `didSet` like every roster edit.
+    ///
+    /// The side is the caller's, not inferred from which row started higher: the
+    /// sidebar draws an insertion line at the edge the pointer is nearest, and a
+    /// line that showed one gap while the row landed in another would be a lie.
+    func reorderSession(_ moved: Session.ID, relativeTo target: Session.ID,
+                        insert side: RowInsertion) {
         guard canReorder(moved, relativeTo: target),
-              let movedSlot = locate(moved), let targetSlot = locate(target)
+              let movedSlot = locate(moved)
         else { return }
 
         var sessions = roster(at: movedSlot)
-        let movedIndex = movedSlot.sessionIndex
-        let targetIndex = targetSlot.sessionIndex
-        let row = sessions.remove(at: movedIndex)
+        let row = sessions.remove(at: movedSlot.sessionIndex)
         // Re-find the target after the removal so its index stays valid regardless of
-        // which row came first; insert on the side `moved` was dragged from.
+        // which row came first.
         let newTarget = sessions.firstIndex(where: { $0.id == target }) ?? sessions.count - 1
-        sessions.insert(row, at: movedIndex < targetIndex ? newTarget + 1 : newTarget)
+        sessions.insert(row, at: side == .above ? newTarget : newTarget + 1)
         setRoster(sessions, at: movedSlot)
         // A drop that lands between a group's rows would split its bracket in two;
         // rows only join or leave a group through "Group with" / "Ungroup", so the
@@ -417,6 +423,11 @@ extension TermioStore {
         // machine. The distinction matters beside the numbered rows: an "SSH Shell"
         // dies with the connection, while a durable termiod session survives a detach.
         var session = Session(title: "SSH Shell", agent: .terminal)
+        // A name, not a placeholder: it is what makes an `ssh` shell legible next to
+        // the durable rows, and nothing better is waiting behind it — the cwd a
+        // loose terminal falls back to reports a directory on the far box, which is
+        // how this row would end up called `ubuntu`.
+        session.givenTitle = session.title
         session.sshHost = host
 
         let workspaceID = deviceWorkspace(for: host)
@@ -793,7 +804,17 @@ extension TermioStore {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        updateSession(id) { $0.title = name }
+        // Typing one of Termio's own conventions back into the field is how a row is
+        // handed to automatic naming again: the agent's plain name returns an agent
+        // session to its live terminal title, `Terminal N` returns a shell to its
+        // numbering. Anything else is a name, and names are kept verbatim.
+        //
+        // `title` is deliberately not written: it is the app's own placeholder, and
+        // leaving it alone is what lets a row that is later un-named fall back to a
+        // sensible label instead of to whatever it was once called.
+        let composed = name == effectiveAgent(for: session).displayName
+            || Self.isAutoTerminalName(name)
+        updateSession(id) { $0.givenTitle = composed ? nil : name }
     }
 
     /// The user-facing "Close Session": the same teardown as `closeSession`, but it

@@ -579,9 +579,100 @@ enum SplitLinkMark {
 /// tick pointing at this row's icon. Drawn (not the ┌ text glyph VS Code uses)
 /// so consecutive rows meet the row boundary exactly and the spine reads as one
 /// continuous bracket.
+/// A session dragged over a sidebar row, answering by where on the row it is:
+/// the top or bottom third reorders into that gap, the middle third groups the two
+/// together (独立 → 联合). One gesture, two outcomes, told apart by a line versus a
+/// filled row — the same distinction a file tree draws between "between these" and
+/// "into this".
+///
+/// Thirds rather than the file tree's usual quarters because a session row is
+/// short: at the row heights the interface padding produces, a quarter band is a
+/// few points tall and the reorder you were aiming for turns into a regroup.
+///
+/// A `DropDelegate` rather than a `dropDestination`, for the reason the panes' one
+/// is: only `dropUpdated` carries the pointer, and `isTargeted:` is a Bool.
+private struct SessionRowDropDelegate: DropDelegate {
+    let session: Session.ID
+    let height: CGFloat
+    let store: TermioStore
+
+    /// Refuse outright when neither outcome is available — a row from another
+    /// project or worktree shows the no-drop cursor rather than a dead target.
+    func validateDrop(info: DropInfo) -> Bool { outcome(info) != nil }
+
+    func dropEntered(info: DropInfo) { track(info) }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        track(info)
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) { store.sessionRowDrop = nil }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let landing = outcome(info)
+        store.sessionRowDrop = nil
+        store.draggingSessionID = nil
+        guard let moved = draggedSession, let landing else { return false }
+        if let side = landing.insert {
+            store.reorderSession(moved, relativeTo: session, insert: side)
+        } else {
+            store.groupSession(moved, with: session)
+        }
+        return true
+    }
+
+    private func track(_ info: DropInfo) {
+        store.sessionRowDrop = outcome(info)
+    }
+
+    /// What a release here would do, or `nil` when it would do nothing. The zone
+    /// decides which outcome is *wanted*; the store decides whether it is *legal*,
+    /// and an illegal one is refused rather than quietly turned into the other —
+    /// a drop that lands somewhere you did not aim is worse than one that declines.
+    private func outcome(_ info: DropInfo) -> TermioStore.SessionRowDrop? {
+        guard let moved = draggedSession, height > 0 else { return nil }
+        let third = height / 3
+        if info.location.y < third {
+            return store.canReorder(moved, relativeTo: session)
+                ? .init(row: session, insert: .above) : nil
+        }
+        if info.location.y > height - third {
+            return store.canReorder(moved, relativeTo: session)
+                ? .init(row: session, insert: .below) : nil
+        }
+        return store.canGroup(moved, with: session) ? .init(row: session, insert: nil) : nil
+    }
+
+    /// The dragged session, read off the drag pasteboard — `DropInfo`'s providers
+    /// cannot answer synchronously, and `dropUpdated` has to (see `PaneDropDelegate`).
+    private var draggedSession: Session.ID? {
+        guard let link = NSPasteboard(name: .drag).string(forType: .string) else { return nil }
+        return TermioStore.sessionID(fromLink: link.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+}
+
+/// The gap a dragged row would land in: a hairline across the row's edge, the
+/// file-tree convention for "between these two" as opposed to the filled
+/// highlight that means "into this one". Takes the sidebar's own foreground
+/// rather than an accent, so the two cues differ in shape, not in palette.
+private struct RowInsertionLine: View {
+    let chrome: ChromeTheme?
+
+    var body: some View {
+        Rectangle()
+            .fill(chrome.map { AnyShapeStyle($0.foreground.opacity(0.8)) }
+                ?? AnyShapeStyle(.primary.opacity(0.8)))
+            .frame(height: 2)
+            .allowsHitTesting(false)
+    }
+}
+
 private struct SplitLinkGlyph: View {
     let mark: SplitLinkMark
     let chrome: ChromeTheme?
+    /// Brightened while a member of this group is being dragged.
+    var isMarked: Bool = false
 
     var body: some View {
         GeometryReader { geo in
@@ -600,8 +691,9 @@ private struct SplitLinkGlyph: View {
                 path.addLine(to: CGPoint(x: x + 5, y: midY))
             }
             .stroke(lineWidth: 1)
-            .foregroundStyle(chrome.map { AnyShapeStyle($0.foreground.opacity(0.35)) }
-                ?? AnyShapeStyle(.tertiary))
+            .foregroundStyle(chrome.map { AnyShapeStyle($0.foreground.opacity(isMarked ? 0.9 : 0.35)) }
+                ?? AnyShapeStyle(isMarked ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary)))
+            .animation(.easeInOut(duration: 0.12), value: isMarked)
         }
     }
 }
@@ -1150,10 +1242,29 @@ private struct SessionRow: View {
     /// per row scanned the workspaces once per row.
     var marksDevice: Bool = true
     @State private var isHovering = false
-    /// A same-bucket session is being dragged over this row: light its whole-row
-    /// background (the hover lift) as the reorder drop target. Only set when the
-    /// in-flight session could legally land here (`store.canReorder`).
-    @State private var isDropTarget = false
+    /// Measured, not assumed: the drop zones are fractions of the row, and row
+    /// height follows the interface row padding.
+    @State private var rowHeight: CGFloat = 0
+
+    /// What a release over this row would do, or `nil` when the drag is elsewhere
+    /// or could not land here.
+    private var dropCue: TermioStore.SessionRowDrop? {
+        store.sessionRowDrop.flatMap { $0.row == session.id ? $0 : nil }
+    }
+
+    /// Grouping this row is the drop that lands *on* it, so it reuses the hover
+    /// lift — the same frosted-grey fill, no second background shape.
+    private var isDropTarget: Bool { dropCue?.insert == nil && dropCue != nil }
+
+    /// A group the in-flight session belongs to reads brighter for the length of
+    /// the drag, so the group a release would pull it out of is visible before you
+    /// let go. Without it the only trace is the bracket moving afterwards.
+    private var marksSourceGroup: Bool {
+        guard let dragged = store.draggingSessionID,
+              let group = store.splitGroups.first(where: { $0.contains(dragged) })
+        else { return false }
+        return group.contains(session.id)
+    }
 
     private var isSelected: Bool { store.selectedSessionID == session.id }
 
@@ -1320,10 +1431,18 @@ private struct SessionRow: View {
         // own column while preserving the existing primary-session geometry.
         .overlay(alignment: .leading) {
             if let splitLink {
-                SplitLinkGlyph(mark: splitLink, chrome: chrome)
+                SplitLinkGlyph(mark: splitLink, chrome: chrome, isMarked: marksSourceGroup)
                     .frame(width: 16)
                     .padding(.leading, max(0, leadingIndent - 16))
             }
+        }
+        // The gap the row would land in. Drawn at the row edge rather than as a
+        // background, because "between two rows" has no row to fill.
+        .overlay(alignment: .top) {
+            RowInsertionLine(chrome: chrome).opacity(dropCue?.insert == .above ? 1 : 0)
+        }
+        .overlay(alignment: .bottom) {
+            RowInsertionLine(chrome: chrome).opacity(dropCue?.insert == .below ? 1 : 0)
         }
         .contentShape(Rectangle())
         // Drag the whole row to reorder it within its bucket (no handle). Uses
@@ -1340,6 +1459,10 @@ private struct SessionRow: View {
             // an editor, a text field — will accept it. Shipping the link means a
             // stray drop pastes something that works (`termio://session/<uuid>`,
             // what `termio sessions` takes) instead of leaking an internal id.
+            // A pane recognises one of these rows by parsing that link back off the
+            // drag pasteboard (see `PaneDropDelegate`), so plain text is the whole
+            // payload: SwiftUI rebuilds the item provider on the receiving side, and
+            // a private type registered here would not survive the trip.
             return NSItemProvider(object: store.sessionLink(for: session) as NSString)
         } preview: {
             // The drag preview is just the row's identity (icon + title), so the
@@ -1363,25 +1486,21 @@ private struct SessionRow: View {
                     .fill(.regularMaterial)
             )
         }
-        // Reorder on drop: only a payload that parses as a session link counts, so
-        // arbitrary dropped text is still rejected — a self-drop is ignored, and a
-        // cross-bucket drop is a no-op in the store.
-        .dropDestination(for: String.self) { payloads, _ in
-            store.draggingSessionID = nil
-            // Clear the drop lift the instant we commit so it can't linger on this row
-            // (or ghost onto its new neighbour) as the list settles the move.
-            isDropTarget = false
-            guard let moved = payloads.lazy.compactMap(TermioStore.sessionID(fromLink:)).first,
-                  moved != session.id
-            else { return false }
-            store.reorderSession(moved, relativeTo: session.id)
-            return true
-        } isTargeted: { targeted in
-            // Light the background only when the in-flight session could actually land
-            // here — same project + worktree bucket — so a cross-section hover stays inert.
-            isDropTarget = targeted
-                && (store.draggingSessionID.map { store.canReorder($0, relativeTo: session.id) } ?? false)
-        }
+        // A row answers a dragged session two ways, by where on the row you release:
+        // the gap above or below reorders, the middle groups the two together. That
+        // is the file-tree convention — a line means "between", a highlight means
+        // "into" — and it is what lets one gesture do both without a modifier.
+        //
+        // The height comes off the row itself because the zones are fractions of it;
+        // rows grow with the interface row padding, so a fixed band would drift.
+        .background(
+            GeometryReader { proxy in
+                Color.clear.onAppear { rowHeight = proxy.size.height }
+                    .onChange(of: proxy.size.height) { _, new in rowHeight = new }
+            }
+        )
+        .onDrop(of: [.text], delegate: SessionRowDropDelegate(
+            session: session.id, height: rowHeight, store: store))
         .onHover { isHovering = $0 }
         // Click-to-select rides a *simultaneous* tap, not `.onTapGesture`: an
         // exclusive tap gesture preempts the row drag (it never starts), while a

@@ -3,7 +3,7 @@ title: One path — local sessions run through termiod too
 status: in-review
 type: rfc
 created: 2026-08-17
-updated: 2026-08-17
+updated: 2026-08-24
 related:
   - one-path-local-through-termiod.review-claude.md
   - 20260805-termiod-device-architecture.md
@@ -84,7 +84,7 @@ in §2 that this whole RFC is for.
 | --- | --- | --- |
 | Own the PTY, spawn with `login_tty` | `PTYProcess.swift:144-231` (`forkpty`) | **Has it** — `pty.rs:67-167`, same shape, deliberately |
 | Non-blocking writes, write backlog | `PTYProcess.swift:478-624` | **Has it** — `pty.rs:208-226` + per-client budget `session.rs:25` |
-| Resize / `TIOCSWINSZ`, host-vs-companion ownership | `PTYProcess.swift:626-742` | **Different policy, not missing** — resize yes (`pty.rs:183`); the daemon arbitrates by newest interactive attach with a `writer_changed` fan-out (smoke checks 42–44), where the companion arbitrates by explicit claim. Reconciling the two is Stage 4's design work |
+| Resize / `TIOCSWINSZ`, host-vs-companion ownership | `PTYProcess.swift:626-742` | **Reconciled** — resize yes (`pty.rs:183`); the daemon used to arbitrate by newest interactive attach with a `writer_changed` fan-out (smoke checks 42–44) where the companion arbitrated by explicit claim. Both now arbitrate by explicit claim: an attach takes the token only when nobody holds it, and `claim_writer` moves it after that |
 | Reap the child, report exit code + true runtime | `PTYProcess.swift:211-224` | **Has it** — `session_exited`, but the daemon reports no runtime; the client substitutes elapsed-since-attach and says so (`TermiodClient.swift:1150-1152`) |
 | **Timestamp of the last input from any device** | `PTYProcess.swift:522` (`lastInputAt`), read at `TermioStore+TerminalSurface.swift:344` | **Missing** — the link never timestamps writes. This is the choke that keeps agent promotion quiet after a keystroke from the Mac, the phone, or `sessions send`; the comment at `:337-343` says it taps the PTY precisely so *every* device counts |
 | **Foreground process argv** (agent identity) | `PTYProcess.swift:866-874` — `tcgetpgrp` + `KERN_PROCARGS2` | **Missing** — no `tcgetpgrp` anywhere in `termiod/src` |

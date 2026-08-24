@@ -467,8 +467,9 @@ final class CompanionServer {
             }
         case .resize(let cols, let rows):
             // The phone reports its grid on attach, foreground, and layout —
-            // each report claims the size (tmux's newest-client rule; one PTY
-            // has one winsize, per-client grids don't exist at this layer).
+            // each report claims the write token and with it the size (tmux's
+            // newest-client rule; one PTY has one winsize, per-client grids
+            // don't exist at this layer).
             bridges[id]?.applyClientResize(cols: cols, rows: rows)
         case .listFiles(let projectID, let path):
             handleListFiles(projectID: projectID, path: path, on: connection)
@@ -1038,10 +1039,20 @@ final class SessionBridge: @unchecked Sendable {
         onInput?()
     }
 
-    /// A resize control from this client. Sizing is the writer's to set, and
-    /// the phone becomes the writer by attaching or by typing — so this is the
-    /// grid the daemon adopts, and it answers with a keyframe rendered for it.
+    /// A resize control from this client. Sizing is the writer's to set, and on
+    /// this path the grid report *is* the claim: the phone sends one when it
+    /// opens a session, comes back to that screen, or rotates — every one of
+    /// them the user arriving at this session on this device. Attaching used to
+    /// take the token by itself, which read the same for a phone opening one
+    /// session and for a Mac window quietly holding fifteen, and let the phone
+    /// pull the shared PTY down to its width behind the Mac's back.
+    ///
+    /// The claim lands first and the grid follows it: `resize` records the size
+    /// whether or not this attachment can send it yet, and the grant re-asserts
+    /// it. So the daemon adopts this grid and answers with a keyframe rendered
+    /// for it — but only once the user has actually shown up here.
     func applyClientResize(cols: Int, rows: Int) {
+        link.claimWriter()
         link.resize(rows: rows, cols: cols)
     }
 

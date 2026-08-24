@@ -929,6 +929,20 @@ enum Termiod {
         /// a line of hex. In order of how much it tells a person: the reported
         /// title, the agent, the program actually running, and — only when the
         /// command says nothing — the name itself.
+        /// The rungs of `displayLabel` that are a *name* rather than a guess at one:
+        /// a title typed on the box, the daemon's own session name, the program the
+        /// session is running. A viewer keeps these — they are the only thing naming
+        /// the row over there.
+        ///
+        /// `nil` when the label is only the agent's id, which the client's own
+        /// promotion improves on: that row becomes `Claude Code`, and then whatever
+        /// the agent's live title says it is working on.
+        var givenName: String? {
+            if let title, !title.isEmpty { return title }
+            if let agentID, !agentID.isEmpty { return nil }
+            return displayLabel
+        }
+
         var displayLabel: String {
             if let title, !title.isEmpty { return title }
             if let agentID, !agentID.isEmpty { return agentID }
@@ -1725,10 +1739,10 @@ final class TermiodSessionLink: @unchecked Sendable {
                 // Typing is what claims the token, the same rule
                 // `PTYProcess.claimHostOwnership` follows on the in-process
                 // path: the size and the write follow the device whose user is
-                // actually at the keyboard. Without this a second attachment —
-                // a phone looking at the same session — would silently mute
-                // this one for as long as it stayed attached, because the
-                // daemon hands the token to whoever attached last.
+                // actually at the keyboard. Typing is the *only* thing that
+                // moves the token — attaching does not, or a phone merely
+                // looking at this session would mute this window and pull the
+                // PTY down to its own width.
                 //
                 // Ordering is safe: frames on one connection are processed in
                 // order, so the claim is resolved before the input behind it is
@@ -1738,6 +1752,32 @@ final class TermiodSessionLink: @unchecked Sendable {
             } catch {
                 Log.termiod.error("""
                 input write to \(self.sessionName, privacy: .public) failed: \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            }
+        }
+    }
+
+    /// Takes the write token for this attachment because its user is now here.
+    ///
+    /// Typing claims it implicitly (`send`), which covers the Mac: a window is
+    /// attached to every session it has a pane for, so nothing short of the
+    /// keyboard distinguishes the session being *used* from the fifteen sitting
+    /// behind it. A phone is the other shape — it attaches to the one session
+    /// its user just opened — and needs to say so out loud, because until it
+    /// holds the token its screen is painted for somebody else's grid.
+    ///
+    /// The grant arrives as `writer_changed`, and `applyWriter` re-asserts this
+    /// client's grid on the way through; there is nothing to send here beyond
+    /// the claim itself.
+    func claimWriter() {
+        workQueue.async { [self] in
+            guard !closed, attached, !isWriter else { return }
+            do {
+                try claimWriterLocked()
+            } catch {
+                Log.termiod.error("""
+                claiming the write token on \(self.sessionName, privacy: .public) failed: \
                 \(error.localizedDescription, privacy: .public)
                 """)
             }
@@ -2182,8 +2222,16 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// size the PTY already has never costs a barrier repaint, and the check
     /// below — the PTY only diverges from what this client asked for when
     /// another client owns the token, and that is the §C.5 case where this
-    /// window is wrapping bytes at the wrong width. Letterboxing the viewport
-    /// against it is the client-side step this foundation leaves open.
+    /// window is wrapping bytes at the wrong width.
+    ///
+    /// A writer answers that divergence instead of only noting it. It has to:
+    /// the surface reports a grid only when it *changes*
+    /// (`InMemoryTerminalSession.dispatchResize` drops an unchanged viewport),
+    /// so a PTY moved out from under a still window has no second chance to be
+    /// noticed — the screen stays formatted for someone else's grid until the
+    /// user drags the window edge. Letterboxing an *observer's* viewport, which
+    /// cannot resize anything, is the client-side step this foundation still
+    /// leaves open.
     private func applyAuthoritativeGrid(_ grid: TerminalGrid) {
         workQueue.async { [self] in
             guard authoritativeGrid != grid else { return }
@@ -2195,6 +2243,15 @@ final class TermiodSessionLink: @unchecked Sendable {
             this client renders \
             \(self.desiredGrid.rows, privacy: .public)x\(self.desiredGrid.cols, privacy: .public)
             """)
+            guard isWriter else { return }
+            do {
+                try sendResizeLocked(desiredGrid)
+            } catch {
+                Log.termiod.error("""
+                restoring the grid on \(self.sessionName, privacy: .public) failed: \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            }
         }
     }
 

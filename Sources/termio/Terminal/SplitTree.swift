@@ -47,10 +47,21 @@ enum PaneDropZone: Equatable {
         let relY = point.y / size.height
         let half = centerFraction / 2
         if abs(relX - 0.5) <= half, abs(relY - 0.5) <= half { return .center }
+        return edge(at: point, in: size)
+    }
+
+    /// The nearest edge, with no center box — the zoning a session dragged out of
+    /// the sidebar uses. That drag has exactly one meaning, "group in on this
+    /// side", so every part of the pane has to answer it: a middle that did
+    /// something else would be a dead zone you can only discover by missing.
+    static func edge(at point: CGPoint, in size: CGSize) -> PaneDropZone {
+        guard size.width > 0, size.height > 0 else { return .left }
+        let relX = point.x / size.width
+        let relY = point.y / size.height
         let edges: [(PaneDropZone, CGFloat)] = [
             (.left, relX), (.right, 1 - relX), (.top, relY), (.bottom, 1 - relY),
         ]
-        return edges.min { $0.1 < $1.1 }!.0
+        return edges.min { $0.1 < $1.1 }?.0 ?? .left
     }
 
     /// The part of the target pane to highlight while this zone is hovered:
@@ -97,6 +108,11 @@ struct SplitBranch: Codable, Hashable {
     var id = UUID()
     var direction: SplitDirection
     var ratio: Double
+    /// Whether this divider's ratio was set deliberately — a user drag, or a
+    /// spawn that asked for a specific share. `equalized()` leaves pinned
+    /// dividers alone, so stated intent survives later inserts and removals;
+    /// everything unpinned is app-chosen and free to redistribute.
+    var pinned: Bool
     var first: SplitNode
     var second: SplitNode
 
@@ -104,6 +120,47 @@ struct SplitBranch: Codable, Hashable {
     /// panes need to stay readable; applied on every ratio write so a persisted
     /// tree can never restore into a degenerate layout either.
     static let ratioRange: ClosedRange<Double> = 0.15...0.85
+
+    static func clampedRatio(_ ratio: Double) -> Double {
+        min(max(ratio, ratioRange.lowerBound), ratioRange.upperBound)
+    }
+
+    init(direction: SplitDirection, ratio: Double, pinned: Bool = false,
+         first: SplitNode, second: SplitNode) {
+        self.direction = direction
+        self.ratio = ratio
+        self.pinned = pinned
+        self.first = first
+        self.second = second
+    }
+
+    /// The branch an insert produces: `newPane` takes `slot`, with `share` of
+    /// the span when the caller stated one (a spawn's `--ratio`) — a stated
+    /// share pins the divider so `equalized()` keeps it. No share splits at
+    /// half, unpinned, free to redistribute. Keeping this arithmetic in one
+    /// place is what guarantees every insert path pins on exactly the same
+    /// condition.
+    init(direction: SplitDirection, adding newPane: SplitNode, at slot: SplitSlot,
+         share: Double?, to existing: SplitNode) {
+        let clamped = share.map(Self.clampedRatio)
+        self.init(direction: direction,
+                  ratio: clamped.map { slot == .first ? $0 : 1 - $0 } ?? 0.5,
+                  pinned: clamped != nil,
+                  first: slot == .first ? newPane : existing,
+                  second: slot == .first ? existing : newPane)
+    }
+
+    /// `pinned` arrived after trees were already persisted, so it decodes as
+    /// absent-means-false rather than failing on an older state file.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        direction = try container.decode(SplitDirection.self, forKey: .direction)
+        ratio = try container.decode(Double.self, forKey: .ratio)
+        pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+        first = try container.decode(SplitNode.self, forKey: .first)
+        second = try container.decode(SplitNode.self, forKey: .second)
+    }
 }
 
 /// The split layout of the terminal area: a binary tree whose leaves are
@@ -154,21 +211,23 @@ indirect enum SplitNode: Codable, Hashable {
     /// Replaces the `target` leaf with a split of it and `newLeaf`. The default
     /// slot puts the new pane second/trailing, matching "Split Right"/"Split
     /// Down"; a drag-drop passes `.first` to land it on the leading side.
-    /// A miss returns the tree unchanged.
+    /// `newShare` is the fraction the *new* pane takes; naming one pins the
+    /// divider (see `SplitBranch.pinned`), leaving it unnamed splits at half
+    /// and lets `equalized()` redistribute. A miss returns the tree unchanged.
     func splitting(leaf target: Session.ID, direction: SplitDirection,
-                   adding newLeaf: Session.ID, slot: SplitSlot = .second) -> SplitNode {
+                   adding newLeaf: Session.ID, slot: SplitSlot = .second,
+                   newShare: Double? = nil) -> SplitNode {
         switch self {
         case .leaf(let id) where id == target:
-            return .split(SplitBranch(direction: direction, ratio: 0.5,
-                                      first: slot == .first ? .leaf(newLeaf) : .leaf(id),
-                                      second: slot == .first ? .leaf(id) : .leaf(newLeaf)))
+            return .split(SplitBranch(direction: direction, adding: .leaf(newLeaf), at: slot,
+                                      share: newShare, to: .leaf(id)))
         case .leaf:
             return self
         case .split(var branch):
             branch.first = branch.first.splitting(leaf: target, direction: direction,
-                                                  adding: newLeaf, slot: slot)
+                                                  adding: newLeaf, slot: slot, newShare: newShare)
             branch.second = branch.second.splitting(leaf: target, direction: direction,
-                                                    adding: newLeaf, slot: slot)
+                                                    adding: newLeaf, slot: slot, newShare: newShare)
             return .split(branch)
         }
     }
@@ -179,21 +238,24 @@ indirect enum SplitNode: Codable, Hashable {
     /// spawn placement rule — an agent that keeps spawning companions stays
     /// full-height while the companions stack up opposite it. A miss returns
     /// the tree unchanged.
-    func splitting(oppositeLeaf target: Session.ID, adding newLeaf: Session.ID) -> SplitNode {
+    func splitting(oppositeLeaf target: Session.ID, adding newLeaf: Session.ID,
+                   newShare: Double? = nil) -> SplitNode {
         switch self {
         case .leaf:
             return self
         case .split(var branch):
             let cross: SplitDirection = branch.direction == .horizontal ? .vertical : .horizontal
             if branch.first == .leaf(target) {
-                branch.second = .split(SplitBranch(direction: cross, ratio: 0.5,
-                                                   first: branch.second, second: .leaf(newLeaf)))
+                branch.second = .split(SplitBranch(direction: cross, adding: .leaf(newLeaf),
+                                                   at: .second, share: newShare, to: branch.second))
             } else if branch.second == .leaf(target) {
-                branch.first = .split(SplitBranch(direction: cross, ratio: 0.5,
-                                                  first: branch.first, second: .leaf(newLeaf)))
+                branch.first = .split(SplitBranch(direction: cross, adding: .leaf(newLeaf),
+                                                  at: .second, share: newShare, to: branch.first))
             } else {
-                branch.first = branch.first.splitting(oppositeLeaf: target, adding: newLeaf)
-                branch.second = branch.second.splitting(oppositeLeaf: target, adding: newLeaf)
+                branch.first = branch.first.splitting(oppositeLeaf: target, adding: newLeaf,
+                                                      newShare: newShare)
+                branch.second = branch.second.splitting(oppositeLeaf: target, adding: newLeaf,
+                                                        newShare: newShare)
             }
             return .split(branch)
         }
@@ -244,19 +306,59 @@ indirect enum SplitNode: Codable, Hashable {
     }
 
     /// Writes a divider's ratio (clamped), leaving the rest of the tree intact.
+    /// A dragged divider is pinned: the user chose this ratio, so `equalized()`
+    /// must not overwrite it when the group's shape next changes.
     func updatingRatio(branchID: UUID, to ratio: Double) -> SplitNode {
         switch self {
         case .leaf:
             return self
         case .split(var branch):
             if branch.id == branchID {
-                branch.ratio = min(max(ratio, SplitBranch.ratioRange.lowerBound),
-                                   SplitBranch.ratioRange.upperBound)
+                branch.ratio = SplitBranch.clampedRatio(ratio)
+                branch.pinned = true
             } else {
                 branch.first = branch.first.updatingRatio(branchID: branchID, to: ratio)
                 branch.second = branch.second.updatingRatio(branchID: branchID, to: ratio)
             }
             return .split(branch)
+        }
+    }
+
+    /// Redistributes every *unpinned* divider so the panes of a same-direction
+    /// run share its span evenly — split right twice gives thirds, not
+    /// 1/2 + 1/4 + 1/4, and a spawn stack of three companions reads as three
+    /// equal rows. A divider's weight is how many chain segments each side
+    /// holds (a cross-axis subtree counts as one segment, so a lone divider
+    /// stays at half). Pinned dividers keep their ratio; their subtrees still
+    /// equalize within whatever space the pin allots them. Idempotent — the
+    /// store can call it after every structural mutation.
+    func equalized() -> SplitNode {
+        switch self {
+        case .leaf:
+            return self
+        case .split(var branch):
+            if !branch.pinned {
+                let first = branch.first.segmentCount(along: branch.direction)
+                let second = branch.second.segmentCount(along: branch.direction)
+                branch.ratio = SplitBranch.clampedRatio(Double(first) / Double(first + second))
+            }
+            branch.first = branch.first.equalized()
+            branch.second = branch.second.equalized()
+            return .split(branch)
+        }
+    }
+
+    /// How many side-by-side segments this subtree contributes to a run along
+    /// `direction`: same-direction branches flatten into their children's
+    /// counts, anything else — a leaf or a cross-axis split — is one segment.
+    private func segmentCount(along direction: SplitDirection) -> Int {
+        switch self {
+        case .leaf:
+            return 1
+        case .split(let branch):
+            guard branch.direction == direction else { return 1 }
+            return branch.first.segmentCount(along: direction)
+                + branch.second.segmentCount(along: direction)
         }
     }
 

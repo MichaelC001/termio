@@ -3,7 +3,7 @@ title: Hot path, attach join point, and client classes
 status: draft
 type: design
 created: 2026-08-05
-updated: 2026-08-16
+updated: 2026-08-24
 related:
   - 20260730-termiod-session-protocol.md
   - 20260805-termiod-device-architecture.md
@@ -139,7 +139,14 @@ the current rule does not have:
 **Rejected as a default policy. Accepted as an explicit, stateless modifier**
 (D5): `attach {mode:"interact", claim:"polite"}` fails with `busy` when a live
 writer exists, instead of silently demoting them. No lease, no TTL, no clock —
-the caller decides, and the default stays newest-claim-wins.
+the caller decides.
+
+*Superseded in implementation.* Attaching no longer demotes anyone at all — it
+takes the token only when nobody holds it — so `polite` is now the behaviour of
+every attach and the modifier has nothing left to modify. Newest-claim-wins
+survives only for `claim_writer`, the verb a client sends when its user shows
+up. See the [session protocol](20260730-termiod-session-protocol.md) writer
+policy.
 
 ### C.4 Compat sink in v1 (part of Grok #2)
 
@@ -363,7 +370,7 @@ tag degrades to `Default` rather than failing the frame.
 | **D2** | §C.6 | The `S` payload **includes its own prologue** and must be state-independent on apply. Clients MUST NOT prepend their own reset. Frame order after `attached` is fixed: `S` → `ready` → `H`* interleavable with `D` | **Landed 2026-08-13** (prologue in `format_vt`; the reference client and the Mac client apply raw) |
 | **D3** | §C.6 | Replace the stage table's "who parses VT" column with the **client-class profiles** of §D.3. Stages describe the host's capability; classes describe what a client negotiates | Doc restructure |
 | **D4** | §F #10 | Mark risk #10 **closed** (4 MiB `CLIENT_BACKLOG_CAP`, shipped) and both residuals closed too: (a) the degrade is **forced resync** — `S` + `ready` + `E{ev:"resynced", reason}`, dropping only on a second strike; (b) the sidecar command queue carries a 16 MiB budget whose only legal degrade is `E{ev:"vt_stale", reason}` (refuse snapshots, fall back to ring replay), never dropping bytes to the VT and never dropping a byte owed to a client | **Landed 2026-08-16** |
-| **D5** | §C.4, §C.5 | `attach` gains `claim:"newest"|"polite"` (default `newest`, i.e. today's behaviour). `polite` returns `error{code:"busy"}` when a live writer exists. Supersedes the sticky-writer idea | Additive control field |
+| **D5** | §C.4, §C.5 | `attach` gains `claim:"newest"|"polite"`. `polite` returns `error{code:"busy"}` when a live writer exists. Supersedes the sticky-writer idea | **Overtaken 2026-08-24** — attach takes the token only when nobody holds it, so every attach is `polite` and the field was never added; newest-claim-wins survives on `claim_writer` |
 | **D6** | §C.6 | Normative: `grid_diff` MUST NOT be selected by transport class; legal selection signals enumerated (§D.4). Lead with the capability argument, cite the 8.6× second | Wording, normative |
 | **D7** | §C.10 + §C.6 | State the shared mechanism once — *durable object + monotonic cursor + bounded ring + explicit gap signal* — and keep the two words distinct: **`gap`** = your baseline is unusable, resync; **tombstone** = this session is dead and here is why (`tombstone.rs`). The terminal plane adopts `gap`, not the word "tombstone" | Vocabulary |
 | **D8** | §C.5 | Delete the stale "POC gap: `Attached` omits `rows`/`cols`" note; move the requirement into a **client conformance list** (parse at authoritative dims; honour `Resized`; honour `WriterChanged`) | Doc correction |

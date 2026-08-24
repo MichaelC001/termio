@@ -17,6 +17,38 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.41.4",
+    date: "2026-08-24",
+    title: "The terminal keeps the width of the window you're using",
+    changes: {
+      fixed: [
+        "A terminal no longer draws at the wrong width — a narrow column of text in a wide, half-empty pane — after another device looked at the same session. Opening a session on your phone took the terminal's size with it, and the Mac had no way to take it back, so the pane stayed wrong until you dragged the window edge. The size now follows the device you're actually typing on, not the one that opened the session most recently.",
+      ],
+    },
+  },
+  {
+    version: "0.41.3",
+    date: "2026-08-23",
+    title: "A session on another machine says what it's working on",
+    changes: {
+      fixed: [
+        "A session running on another machine now follows what its agent is doing, the way a local one does — the row becomes the agent's name, then the topic it's working on. It used to sit on a fixed \"project · host\" label forever: the name termio composed for the row was kept in the same place a name you type goes, so nothing was ever allowed to replace it.",
+        "Maximizing a file no longer flashes the file tree on the way there.",
+      ],
+    },
+  },
+  {
+    version: "0.41.2",
+    date: "2026-08-23",
+    title: "A session that can't start says why",
+    changes: {
+      fixed: [
+        "A session whose folder has been deleted, moved, or left on an unmounted drive now names the folder. It used to report that your shell didn't exist — the same error code covers both, and termio picked the wrong one to blame.",
+        "Running the test suite from a checkout no longer overwrites the installed app's projects and sessions. This one only ever reached people who build termio themselves.",
+      ],
+    },
+  },
+  {
     version: "0.41.1",
     date: "2026-08-23",
     title: "The workspace name holds still",

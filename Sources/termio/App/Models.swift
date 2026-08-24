@@ -432,6 +432,27 @@ enum SessionStatus: Hashable {
 struct Session: Identifiable, Hashable, Codable {
     var id = UUID()
     var title: String
+
+    /// The name this session was *given* — by the user renaming it, by a person on
+    /// the far box (`termiod new -n build`), or by Termio naming the row for what it
+    /// is with nothing better behind it (`SSH Shell`). It wins over every label the
+    /// app can derive, and `nil` (the common case) means nobody has named this row.
+    ///
+    /// It is a field of its own rather than a flag beside `title` because the two
+    /// have different owners. `title` is the placeholder the app composes and freely
+    /// rewrites — `Terminal 3`, `Claude Code`, a migration renumbering an old state
+    /// file — while this is set only by the act of naming. Keeping them apart is
+    /// what makes them impossible to contradict: a flag has to be updated at every
+    /// site that touches `title`, and the sites that forget leave a row insisting on
+    /// a name nobody gave it.
+    ///
+    /// The distinction used to be recovered by pattern-matching `title` — anything
+    /// that wasn't `Terminal N` or the agent's own name was read as the user's. That
+    /// is why a remote row stayed frozen at `boxlit · ukvps` while its local twin
+    /// followed the agent's topic: the label Termio composed for it was
+    /// indistinguishable from one the user typed.
+    var givenTitle: String?
+
     /// Which agent (or plain shell) this session runs.
     var agent: AgentPreset
     var createdAt: Date
@@ -577,7 +598,30 @@ struct Session: Identifiable, Hashable, Codable {
     private enum CodingKeys: String, CodingKey {
         case id, title, agent, createdAt, worktreePath, resumeID, launched, launchedAt,
              liveTitle, promptTitle, lastWorkingDirectory, spawnDirectory, sshHost, pinned,
-             termiodRemoteHost, termiodRemoteCwd, deviceID, termiodSessionName
+             termiodRemoteHost, termiodRemoteCwd, deviceID, termiodSessionName,
+             givenTitle
+    }
+
+    /// The name to recover from a state file written before `givenTitle` existed,
+    /// back when `title` held both kinds of label. The old code told them apart by
+    /// pattern-matching, so this has to as well: anything that wasn't one of the
+    /// labels Termio composed was, by the only definition that existed then, a name
+    /// someone gave.
+    ///
+    /// `<name> · <host>` and a bare host are named here because they are the
+    /// composed labels that test got wrong — `addRemoteTerminal` wrote them into
+    /// `title`, and every gate downstream then read them as chosen. A session the
+    /// user really did rename to something ending in its own host's alias reads as
+    /// composed and starts following its agent; renaming it again settles it.
+    static func recoveredGivenTitle(
+        _ title: String, agent: AgentPreset, remoteHost: String?
+    ) -> String? {
+        if TermioStore.isAutoTerminalName(title) { return nil }
+        if title == agent.displayName { return nil }
+        if let remoteHost, title == remoteHost || title.hasSuffix(" · \(remoteHost)") {
+            return nil
+        }
+        return title
     }
 
     /// Custom decoding so state files written before the resume fields existed still
@@ -605,6 +649,8 @@ struct Session: Identifiable, Hashable, Codable {
         deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
         termiodSessionName = try container.decodeIfPresent(
             String.self, forKey: .termiodSessionName)
+        givenTitle = try container.decodeIfPresent(String.self, forKey: .givenTitle)
+            ?? Self.recoveredGivenTitle(title, agent: agent, remoteHost: termiodRemoteHost)
     }
 }
 

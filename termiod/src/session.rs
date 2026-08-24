@@ -1512,7 +1512,15 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             // Enabling precedes this client's in-band Snapshot request, so
             // later Writes can only produce G results after its S boundary.
             session.sync_grid_diff_interest();
-            if interactive {
+            // Attaching is a viewer arriving, not a device taking over. Taking
+            // the token here meant a phone merely *looking* at a session pulled
+            // the one shared PTY down to phone width through `run_attach`'s
+            // resize, and the Mac had no answer: its own resizes are gated on
+            // holding the token, so the window sat there rendering a screen
+            // formatted for a grid it does not have. The token travels by
+            // typing — both ends claim on input — so the only attach that takes
+            // it is the one that finds nobody holding it.
+            if interactive && session.writer.is_none() {
                 session.grant_writer(&id);
             }
             let is_writer = session.writer.as_ref() == Some(&id);
@@ -1869,7 +1877,7 @@ mod tests {
     /// Attaching is what took the token before this verb existed, so the phone
     /// permanently muted the Mac the moment it looked at a session, and the Mac
     /// could only answer by tearing its attachment down and rebuilding it. The
-    /// token has to be able to travel without that.
+    /// token travels by typing instead.
     #[tokio::test]
     async fn the_write_token_follows_the_device_being_used() {
         let Sidecar {
@@ -1883,16 +1891,49 @@ mod tests {
         let _mac = attach_interactive_client(&mut session, "mac");
         assert_eq!(writer(&session), Some("mac"), "first in, writer");
 
-        // Attaching still takes the token: that is what makes a fresh client
-        // usable without a round trip.
+        // Looking is not taking: the phone arrives as a reader, and the Mac —
+        // whose window is the one sized for this PTY — keeps writing.
         let _phone = attach_interactive_client(&mut session, "phone");
+        assert_eq!(writer(&session), Some("mac"));
+
+        assert!(claim_writer(&mut session, "phone"), "the phone's user typed");
         assert_eq!(writer(&session), Some("phone"));
 
         assert!(claim_writer(&mut session, "mac"), "the Mac's user typed");
         assert_eq!(writer(&session), Some("mac"));
 
-        assert!(claim_writer(&mut session, "phone"), "the phone's user typed");
-        assert_eq!(writer(&session), Some("phone"));
+        session.vt.shut_down();
+        let _ = thread.join();
+    }
+
+    /// The other half of that rule. A session nobody is holding hands the token
+    /// to whoever attaches next, because that attach is the reattach path: the
+    /// window coming back to a detached session is what resizes the PTY to fit
+    /// it, and refusing the token here would strand the session at the size the
+    /// last viewer happened to leave.
+    #[tokio::test]
+    async fn a_session_nobody_holds_gives_the_token_to_the_next_attach() {
+        let Sidecar {
+            commands,
+            results: _results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+
+        let _mac = attach_interactive_client(&mut session, "mac");
+        assert_eq!(writer(&session), Some("mac"));
+
+        handle_msg(
+            &mut session,
+            SessionMsg::RemoveClient {
+                id: ClientId::new("mac"),
+            },
+        );
+        assert_eq!(writer(&session), None, "nobody is left to write");
+
+        let _reattached = attach_interactive_client(&mut session, "mac-again");
+        assert_eq!(writer(&session), Some("mac-again"));
 
         session.vt.shut_down();
         let _ = thread.join();
