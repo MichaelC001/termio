@@ -6,8 +6,37 @@ import Foundation
 /// human line for the row and the raw detail in a tooltip.
 enum SSHProbeResult: Equatable {
     case reachable
+    /// The server offered password (or keyboard-interactive) authentication and
+    /// we declined to ask. Told apart from `authFailed` because it is the one
+    /// failure with a one-click fix: install a key and the host works everywhere,
+    /// including the paths that can never type a password (see
+    /// `Termiod.sshArguments`, where `BatchMode=yes` is unconditional).
+    case wantsPassword(String)
     case authFailed(String)
     case unreachable(String)
+}
+
+/// A `User` + `IdentityFile` pair already in use somewhere in `~/.ssh/config`.
+///
+/// Termius calls this an *identity* and keeps it in a synced credential vault;
+/// this is the half of that idea which needs no store at all — the pairs are
+/// derived from the config on every read, so picking one in Add Host is a
+/// shortcut for typing what the user's other hosts already say. Nothing is
+/// remembered that `ssh` itself doesn't already resolve.
+struct SSHIdentity: Hashable, Identifiable {
+    /// Empty when no block sets `User` — ssh falls back to the local username.
+    let user: String
+    /// `~`-relative and verbatim, as the config writes it; nil pins no key.
+    let identityFile: String?
+
+    var id: String { "\(user)\u{0}\(identityFile ?? "")" }
+
+    /// The key's filename alone (`id_ed25519`), for a row that has no room for a
+    /// path. Empty when the identity pins no key.
+    var keyName: String {
+        guard let identityFile else { return "" }
+        return (identityFile as NSString).lastPathComponent
+    }
 }
 
 /// One connectable `Host` block parsed from the user's OpenSSH client config —
@@ -390,6 +419,10 @@ enum SSHConfigFile {
         if lower.contains("permission denied")
             || lower.contains("too many authentication failures")
             || lower.contains("no supported authentication methods") {
+            let methods = offeredMethods(stderr)
+            if methods.contains("password") || methods.contains("keyboard-interactive") {
+                return .wantsPassword(lastLine)
+            }
             return .authFailed(lastLine)
         }
         if lower.contains("could not resolve") || lower.contains("name or service not known") {
@@ -399,5 +432,104 @@ enum SSHConfigFile {
         if lower.contains("no route to host") { return .unreachable(localized("No route to host")) }
         if lower.contains("timed out") { return .unreachable(localized("Timed out")) }
         return .unreachable(lastLine)
+    }
+
+    /// The authentication methods the *server* offered, read out of ssh's
+    /// `Permission denied (publickey,password)` line. The parenthesised list is
+    /// the far side's own answer to what it would have accepted, which is the
+    /// only trustworthy way to tell "this box wants a password we refused to
+    /// send" from "this box doesn't know our key". Lowercased; empty when the
+    /// line carries no list (some servers and older ssh versions omit it).
+    static func offeredMethods(_ stderr: String) -> [String] {
+        guard let opening = stderr.range(of: "permission denied (", options: .caseInsensitive),
+              let closing = stderr[opening.upperBound...].firstIndex(of: ")")
+        else { return [] }
+        return stderr[opening.upperBound..<closing]
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+    }
+
+    /// A destination as people write it — `[user@]host[:port]` — split into the
+    /// three fields a `Host` block keeps apart. One Address field can then absorb
+    /// a pasted `root@10.0.0.4:2222` instead of asking for it in pieces.
+    ///
+    /// Only an all-digit trailing `:port` is taken as a port, and a bracketed
+    /// address is left alone entirely, so an IPv6 literal keeps its colons.
+    static func parseDestination(_ text: String) -> (user: String, host: String, port: String) {
+        var rest = text.trimmingCharacters(in: .whitespaces)
+        var user = ""
+        // Last `@`, not the first: a username may legally contain one.
+        if let at = rest.lastIndex(of: "@") {
+            user = String(rest[rest.startIndex..<at])
+            rest = String(rest[rest.index(after: at)...])
+        }
+        var port = ""
+        if let colon = rest.lastIndex(of: ":"), !rest.contains("[") {
+            let candidate = String(rest[rest.index(after: colon)...])
+            if !candidate.isEmpty, candidate.allSatisfy(\.isNumber) {
+                port = candidate
+                rest = String(rest[rest.startIndex..<colon])
+            }
+        }
+        return (user, rest, port)
+    }
+
+    /// The name to give a host at `hostName`: its first label, since that is what
+    /// people call the box (`build.example.com` is "build"), kept unique against
+    /// the names already taken the way the Finder keeps a duplicate unique.
+    ///
+    /// An address that is all digits and dots is an IP, whose first label names
+    /// nothing — the whole address is the only sensible name for it.
+    static func suggestedAlias(forHost hostName: String, avoiding taken: Set<String>) -> String {
+        guard let first = hostName.split(separator: ".").first.map(String.init), !first.isEmpty
+        else { return "" }
+        let base = hostName.allSatisfy { $0.isNumber || $0 == "." } ? hostName : first
+        guard taken.contains(base) else { return base }
+        for suffix in 2...99 where !taken.contains("\(base)-\(suffix)") {
+            return "\(base)-\(suffix)"
+        }
+        return base
+    }
+
+    /// The `User`/`IdentityFile` pairs already in use, most-used first (ties broken
+    /// by config order). Offered by Add Host so the common case — every box signed
+    /// into as the same user with the same key — is pre-filled rather than retyped.
+    /// A pair that sets neither is dropped: it says nothing the defaults don't.
+    static func suggestedIdentities(in hosts: [SSHConfigHost]) -> [SSHIdentity] {
+        var counts: [SSHIdentity: Int] = [:]
+        var order: [SSHIdentity: Int] = [:]
+        for (index, host) in hosts.enumerated() {
+            let identity = SSHIdentity(user: host.user, identityFile: host.identityFile)
+            if identity.user.isEmpty && identity.identityFile == nil { continue }
+            counts[identity, default: 0] += 1
+            if order[identity] == nil { order[identity] = index }
+        }
+        let ranked: [(identity: SSHIdentity, count: Int, order: Int)] = counts.map {
+            (identity: $0.key, count: $0.value, order: order[$0.key] ?? 0)
+        }
+        return ranked
+            .sorted { $0.count == $1.count ? $0.order < $1.order : $0.count > $1.count }
+            .map(\.identity)
+    }
+
+    /// The public key `ssh-copy-id` should install on `host`.
+    ///
+    /// A block that pins an `IdentityFile` gets that key's `.pub` sibling and
+    /// nothing else: ssh will offer exactly the pinned key, so installing a
+    /// different one would leave the host failing for the same reason with a new
+    /// key on it. When the block pins nothing, the strongest key in `~/.ssh` wins.
+    /// nil means there is nothing safe to install and the caller should say so
+    /// rather than guess.
+    static func publicKeyToInstall(for host: SSHConfigHost, keys: [SSHPublicKey]) -> SSHPublicKey? {
+        if let identityFile = host.identityFile {
+            let expanded = (identityFile as NSString).expandingTildeInPath
+            let publicPath = expanded.hasSuffix(".pub") ? expanded : expanded + ".pub"
+            return keys.first { $0.url.standardizedFileURL.path == publicPath }
+        }
+        let strength = ["ED25519-SK", "ED25519", "ECDSA-SK", "ECDSA", "RSA"]
+        return keys.min {
+            (strength.firstIndex(of: $0.algorithm) ?? strength.count)
+                < (strength.firstIndex(of: $1.algorithm) ?? strength.count)
+        }
     }
 }

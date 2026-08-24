@@ -6154,6 +6154,116 @@
           }
         }
       }
+    },
+    "Set Up Key…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置密钥…"
+          }
+        }
+      }
+    },
+    "Set Up Key": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置密钥"
+          }
+        }
+      }
+    },
+    "Wants a password": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要密码"
+          }
+        }
+      }
+    },
+    "This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台主机接受密码登录。Termio 用密钥登录，设置一次之后，会话、文件树和远程终端都能连上它。"
+          }
+        }
+      }
+    },
+    "This host takes a password. Termio signs in with keys, and there is no key in ~/.ssh yet — create one with ssh-keygen, then set it up here.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台主机接受密码登录。Termio 用密钥登录，而 ~/.ssh 里还没有密钥——先用 ssh-keygen 生成一个，再回到这里设置。"
+          }
+        }
+      }
+    },
+    "Sign in as": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "登录身份"
+          }
+        }
+      }
+    },
+    "Other…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "其他…"
+          }
+        }
+      }
+    },
+    "Advanced": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "高级"
+          }
+        }
+      }
+    },
+    "A name can’t contain spaces — it’s what you type after `ssh`.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名称不能包含空格——它就是你在 `ssh` 后面输入的内容。"
+          }
+        }
+      }
+    },
+    "A port is a number from 1 to 65535.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "端口是 1 到 65535 之间的数字。"
+          }
+        }
+      }
+    },
+    "A double quote can’t be written to ssh config.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ssh 配置无法写入双引号。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

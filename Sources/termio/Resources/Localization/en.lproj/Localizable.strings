@@ -66,6 +66,12 @@
 	<string>1 result</string>
 	<key>A different `%@` already exists at %@. Remove it first — Termio won’t overwrite a file it didn’t create.</key>
 	<string>A different `%@` already exists at %@. Remove it first — Termio won’t overwrite a file it didn’t create.</string>
+	<key>A double quote can’t be written to ssh config.</key>
+	<string>A double quote can’t be written to ssh config.</string>
+	<key>A name can’t contain spaces — it’s what you type after `ssh`.</key>
+	<string>A name can’t contain spaces — it’s what you type after `ssh`.</string>
+	<key>A port is a number from 1 to 65535.</key>
+	<string>A port is a number from 1 to 65535.</string>
 	<key>A workspace scopes the sidebar to the projects and sessions filed under it, on the machine it belongs to.</key>
 	<string>A workspace scopes the sidebar to the projects and sessions filed under it, on the machine it belongs to.</string>
 	<key>Activity</key>
@@ -86,6 +92,8 @@
 	<string>Add to Chat</string>
 	<key>Address</key>
 	<string>Address</string>
+	<key>Advanced</key>
+	<string>Advanced</string>
 	<key>Agent</key>
 	<string>Agent</string>
 	<key>Agent skill</key>
@@ -754,6 +762,8 @@
 	<string>Open the invite on your iPhone to install it with TestFlight.</string>
 	<key>Opened outside Termio on this device</key>
 	<string>Opened outside Termio on this device</string>
+	<key>Other…</key>
+	<string>Other…</string>
 	<key>Padding: %lld pt</key>
 	<string>Padding: %lld pt</string>
 	<key>Pair your iPhone and remote access</key>
@@ -934,6 +944,10 @@
 	<string>Session control</string>
 	<key>Sessions</key>
 	<string>Sessions</string>
+	<key>Set Up Key</key>
+	<string>Set Up Key</string>
+	<key>Set Up Key…</key>
+	<string>Set Up Key…</string>
 	<key>Settings</key>
 	<string>Settings</string>
 	<key>Settings…</key>
@@ -950,6 +964,8 @@
 	<string>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio’s hooks into each agent’s config.</string>
 	<key>Sidebar</key>
 	<string>Sidebar</string>
+	<key>Sign in as</key>
+	<string>Sign in as</string>
 	<key>Size: %lld pt</key>
 	<string>Size: %lld pt</string>
 	<key>Skill reinstalled</key>
@@ -1090,6 +1106,10 @@
 	<string>This file is binary — open it on GitHub to view.</string>
 	<key>This folder has no git “origin” remote to clone.</key>
 	<string>This folder has no git “origin” remote to clone.</string>
+	<key>This host takes a password. Termio signs in with keys, and there is no key in ~/.ssh yet — create one with ssh-keygen, then set it up here.</key>
+	<string>This host takes a password. Termio signs in with keys, and there is no key in ~/.ssh yet — create one with ssh-keygen, then set it up here.</string>
+	<key>This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it.</key>
+	<string>This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it.</string>
 	<key>This machine’s termiod is too old to list folders.</key>
 	<string>This machine’s termiod is too old to list folders.</string>
 	<key>This month</key>
@@ -1154,6 +1174,8 @@
 	<string>View on %@</string>
 	<key>Waiting for the agent’s first status report.</key>
 	<string>Waiting for the agent’s first status report.</string>
+	<key>Wants a password</key>
+	<string>Wants a password</string>
 	<key>WeChat</key>
 	<string>WeChat</string>
 	<key>WeChat group</key>

@@ -491,6 +491,17 @@ struct Session: Identifiable, Hashable, Codable {
     /// filesystem, so an SSH terminal is a terminal, not a remote project.
     var sshHost: String?
 
+    /// The public key this session is installing on `sshHost` with `ssh-copy-id`,
+    /// set only by Settings ▸ Devices' Set Up Key action. It rides in the PTY
+    /// precisely because the far side will ask for a password: the user types it
+    /// once, into a real terminal, and termio neither sees nor stores it.
+    ///
+    /// Deliberately outside `CodingKeys`, so it never survives a relaunch. The
+    /// command is a one-shot; restoring it would re-run an install the user
+    /// already completed and ask for that password again. A restored session
+    /// opens the plain `ssh` shell its `sshHost` describes.
+    var sshKeyToInstall: String?
+
     var isSSH: Bool { sshHost != nil }
 
     /// When set, this session runs **inside a `termiod` daemon on an SSH host**
