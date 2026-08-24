@@ -17,6 +17,16 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.41.4",
+    date: "2026-08-24",
+    title: "The terminal keeps the width of the window you're using",
+    changes: {
+      fixed: [
+        "A terminal no longer draws at the wrong width — a narrow column of text in a wide, half-empty pane — after another device looked at the same session. Opening a session on your phone took the terminal's size with it, and the Mac had no way to take it back, so the pane stayed wrong until you dragged the window edge. The size now follows the device you're actually typing on, not the one that opened the session most recently.",
+      ],
+    },
+  },
+  {
     version: "0.41.3",
     date: "2026-08-23",
     title: "A session on another machine says what it's working on",
