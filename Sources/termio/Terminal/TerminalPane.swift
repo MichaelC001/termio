@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import GhosttyTerminal
 
 extension Notification.Name {
@@ -44,10 +45,6 @@ struct TerminalPane: View {
     @EnvironmentObject var settings: AppSettings
     @State private var focusDriver = TerminalFocusDriver()
     @State private var activated: [Session.ID] = []
-    /// The pane the pointer is currently over during a drag. With splits, the drop
-    /// resolves to one pane, not the whole terminal group: the wash and the insert
-    /// both follow the pane under the pointer.
-    @State private var dropTargetPane: Session.ID?
 
     var body: some View {
         GeometryReader { geo in
@@ -170,19 +167,16 @@ struct TerminalPane: View {
                 // This must sit above `.position`, which grows the modified view to fill the
                 // whole terminal group: a drop destination applied after it would accept the
                 // drag anywhere, and the topmost pane in the stack would swallow every drop.
-                .dropDestination(for: URL.self) { urls, _ in
-                    guard isVisible else { return false }
-                    return sendPaths(urls, to: id)
-                } isTargeted: { targeted in
-                    guard isVisible else { return }
-                    // Moving between panes can report the new pane's `true` before the old
-                    // pane's `false`; only the pane that still owns the highlight clears it.
-                    if targeted {
-                        dropTargetPane = id
-                    } else if dropTargetPane == id {
-                        dropTargetPane = nil
-                    }
-                }
+                // One destination per pane, for every kind of drop. Two destinations over
+                // the same pane cannot be made to agree: whichever one loses the drop is
+                // never told the drag left, and its highlight stays on screen forever.
+                .onDrop(of: [.url, .fileURL, .text], delegate: PaneDropDelegate(
+                    pane: id,
+                    size: rect.size,
+                    isVisible: isVisible,
+                    store: store,
+                    send: { sendPaths($0, to: id) }
+                ))
                 .position(x: rect.midX, y: rect.midY)
                 .opacity(isVisible ? 1 : 0)
                 .allowsHitTesting(isVisible)
@@ -208,17 +202,48 @@ struct TerminalPane: View {
             if let drag = store.paneDrag, let layout, !zoomed {
                 PaneDragOverlay(drag: drag, layout: layout, preview: store.paneDragPreview)
             }
-            // Dragging a file or an issue in reads the same as dragging a pane around:
-            // the identical wash over the one pane the release would land in, sliding
-            // from pane to pane rather than blinking.
-            PaneDropWash(rect: dropTargetPane.map { id in
-                zoomed && store.selectedSessionID == id ? bounds : (paneFrames[id] ?? bounds)
-            } ?? .zero)
+            // Under the wash, so the pane you are carrying can still show a target
+            // on it — the two say different things and have to be able to coexist.
+            SessionDragLift(rect: draggedPaneRect(bounds: bounds, paneFrames: paneFrames, zoomed: zoomed))
+            // Dragging a file, an issue or a session in reads the same as dragging a
+            // pane around: the identical wash over what the release would land in,
+            // sliding as the pointer moves rather than blinking. A whole pane means
+            // the payload is typed at its prompt; a half means the layout changes.
+            PaneDropWash(rect: dropWashRect(bounds: bounds, paneFrames: paneFrames, zoomed: zoomed))
         }
         // Ghostty's own timing (`SurfaceDragSource`): the handle fades in and
         // brightens rather than blinking. The drag overlay animates its own
         // pieces — the highlight slides, the preview must not.
         .animation(.easeInOut(duration: 0.15), value: store.paneHandleHover)
+    }
+
+    /// What the in-flight drop would land on. A `.center` target highlights the
+    /// whole pane (the payload is typed at its prompt), an edge the half the layout
+    /// would give up — one piece of state for both cues, so they cannot disagree.
+    ///
+    /// The mouse-button test is what keeps the cue from being stranded. SwiftUI
+    /// gives a `DropDelegate` no "the session ended" callback, so a drag that ends
+    /// where neither `dropExited` nor `performDrop` fires would leave its highlight
+    /// on screen for good. A drag cannot exist with the button up.
+    private func dropWashRect(bounds: CGRect, paneFrames: [Session.ID: CGRect],
+                              zoomed: Bool) -> CGRect {
+        guard let target = store.sessionDropTarget, NSEvent.pressedMouseButtons & 1 != 0
+        else { return .zero }
+        let frame = zoomed && store.selectedSessionID == target.pane
+            ? bounds : (paneFrames[target.pane] ?? bounds)
+        return target.zone.highlightRect(in: frame)
+    }
+
+    /// The on-screen pane of the session being dragged out of the sidebar, or
+    /// `.zero` when it has none — the usual case, since you drag a session
+    /// precisely because it is not the one you are looking at. Guarded on the mouse
+    /// button for the same reason as the wash.
+    private func draggedPaneRect(bounds: CGRect, paneFrames: [Session.ID: CGRect],
+                                 zoomed: Bool) -> CGRect {
+        guard let dragged = store.draggingSessionID, NSEvent.pressedMouseButtons & 1 != 0,
+              store.visiblePaneIDs.contains(dragged) else { return .zero }
+        return zoomed && store.selectedSessionID == dragged
+            ? bounds : (paneFrames[dragged] ?? bounds)
     }
 
     /// A surface becoming first responder is the source of truth for split selection.
@@ -743,6 +768,147 @@ private struct PaneDropWash: View {
             .onChange(of: rect) { _, new in
                 if new != .zero { lastRect = new }
             }
+    }
+}
+
+/// Where a session dragged out of the sidebar would land: the pane under the
+/// pointer and the half it would take. The sidebar-drag twin of `PaneDragState`.
+struct SessionDropTarget: Equatable {
+    var pane: Session.ID
+    var zone: PaneDropZone
+}
+
+/// One drop destination per pane, for every kind of drop.
+///
+/// A file, a folder or an issue link is inserted at that pane's prompt. A session
+/// dragged out of the sidebar means one thing only — group it in beside this pane,
+/// on the side you released over — so every part of the pane is a live edge, and a
+/// pane it cannot join declines the drag instead of doing something else with it.
+///
+/// One destination covering every type, never a second layered over the first:
+/// SwiftUI's `URL` transferable imports from plain text, so both would see a
+/// session drag, only one would perform the drop, and the loser is never told the
+/// drag left — its highlight then stays on screen for good.
+///
+/// A `DropDelegate` rather than a `dropDestination` because only `dropUpdated`
+/// carries the pointer; `isTargeted:` is a Bool, which is all a whole-pane wash
+/// ever needed.
+private struct PaneDropDelegate: DropDelegate {
+    let pane: Session.ID
+    /// The pane's own size — the space `PaneDropZone` reads `info.location` in.
+    let size: CGSize
+    let isVisible: Bool
+    let store: TermioStore
+    let send: ([URL]) -> Bool
+
+    /// A session drag is refused by every pane it cannot join — its own pane,
+    /// another project, another worktree — so the pointer shows the no-drop cursor
+    /// rather than accepting a release that would do nothing. Anything that is not
+    /// one of our rows is a payload for the prompt, and always lands.
+    func validateDrop(info: DropInfo) -> Bool {
+        guard isVisible else { return false }
+        guard let moved = draggedSession else { return true }
+        return store.canGroup(moved, with: pane)
+    }
+
+    func dropEntered(info: DropInfo) { track(info) }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        track(info)
+        return DropProposal(operation: .copy)
+    }
+
+    /// Cleared unconditionally rather than only when the cue is this pane's.
+    /// Moving between panes can report the new pane's entry before the old pane's
+    /// exit, so this can wipe a cue that was just set — but the new pane's next
+    /// `dropUpdated` puts it straight back, a frame later at worst. A cue that
+    /// heals itself while the pointer moves beats one that can be left behind.
+    func dropExited(info: DropInfo) { store.sessionDropTarget = nil }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let moved = draggedSession
+        store.sessionDropTarget = nil
+        store.draggingSessionID = nil
+        guard let moved else { return insert(info) }
+        guard store.canGroup(moved, with: pane) else { return false }
+        store.dropSession(moved, onto: pane, zone: PaneDropZone.edge(at: info.location, in: size))
+        return true
+    }
+
+    /// Lights what the release would commit: the half this pane would give up to a
+    /// session being grouped in, or the whole pane for a payload being typed.
+    private func track(_ info: DropInfo) {
+        guard isVisible else { return }
+        let zone = draggedSession == nil ? .center : PaneDropZone.edge(at: info.location, in: size)
+        store.sessionDropTarget = SessionDropTarget(pane: pane, zone: zone)
+    }
+
+    /// The session a dragged sidebar row is carrying, parsed back out of the drag
+    /// pasteboard.
+    ///
+    /// `DropInfo`'s own item providers cannot answer this. SwiftUI rebuilds them on
+    /// the receiving side into `public.url` plus plain text, so a private type
+    /// registered at the source never survives the trip — and loading the text back
+    /// is async, while `dropUpdated` has to answer with the pointer still moving.
+    /// The drag pasteboard holds the same payload, synchronously.
+    private var draggedSession: Session.ID? {
+        guard let link = NSPasteboard(name: .drag).string(forType: .string) else { return nil }
+        return TermioStore.sessionID(fromLink: link.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Everything that ends up at the prompt: files and folders from the Finder or
+    /// the file tree, an issue's link from the Issues list.
+    private func insert(_ info: DropInfo) -> Bool {
+        let providers = info.itemProviders(for: [.url])
+        guard !providers.isEmpty else { return false }
+        Task { @MainActor in
+            var dropped: [URL] = []
+            for provider in providers {
+                if let url = await provider.droppedURL() { dropped.append(url) }
+            }
+            _ = send(dropped)
+        }
+        return true
+    }
+}
+
+/// Main-actor bound because the providers come off a `DropInfo` and never leave
+/// the drop: only the continuation crosses to whichever queue the load answers on.
+@MainActor
+private extension NSItemProvider {
+    /// The item as a URL, or nil when it carries none.
+    func droppedURL() async -> URL? {
+        await withCheckedContinuation { continuation in
+            _ = loadObject(ofClass: URL.self) { url, _ in
+                continuation.resume(returning: url)
+            }
+        }
+    }
+}
+
+/// The pane whose session is being dragged out of the sidebar, dimmed to say it is
+/// out of play: a session cannot be grouped with itself, so this is the one pane
+/// the release cannot land on. Without it, that refusal is indistinguishable from
+/// the drag being broken.
+///
+/// A neutral scrim rather than `PaneDropWash`'s blue-grey. The tint is what carries
+/// "a drop lands here", so spending it on the one pane that refuses the drop reads
+/// as the opposite of the truth — the pane lights up and the drag looks like it is
+/// offering a single, wrong option. Dimming says "not this one" in the vocabulary
+/// disabled controls already use.
+private struct SessionDragLift: View {
+    /// `.zero` when the dragged session has no pane on screen.
+    let rect: CGRect
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.black.opacity(colorScheme == .dark ? 0.28 : 0.12))
+            .frame(width: rect.width, height: rect.height)
+            .position(x: rect.midX, y: rect.midY)
+            .opacity(rect == .zero ? 0 : 1)
+            .allowsHitTesting(false)
+            .animation(.easeInOut(duration: 0.15), value: rect == .zero)
     }
 }
 

@@ -53,6 +53,7 @@ extension TermioStore {
         if let group = groupIndex(containing: focusedID) {
             splitGroups[group] = splitGroups[group]
                 .splitting(leaf: focusedID, direction: direction, adding: newSession.id, slot: slot)
+                .equalized()
         } else {
             splitGroups.append(.split(SplitBranch(
                 direction: direction, ratio: 0.5,
@@ -87,10 +88,18 @@ extension TermioStore {
     /// With `takeFocus` false the selection stays where the user put it: the new
     /// pane is mounted invisibly instead (see `activateInBackground`), so its
     /// surface still attaches and can take a queued prompt.
+    ///
+    /// `direction` and `ratio` are the caller's placement request (`spawn
+    /// --direction down --ratio 0.25`): a direction splits the anchor's own
+    /// pane on that axis instead of taking the opposite-stack rule, and a
+    /// ratio is the new pane's share of the split — stated, so it pins the
+    /// divider against later equalization. Both absent means the automatic
+    /// placement above, with the group re-equalized after the insert.
     @discardableResult
     func addSplitSession(
         in scope: ControlScope, agent: AgentPreset = .terminal,
-        anchor: Session.ID? = nil, takeFocus: Bool = true
+        anchor: Session.ID? = nil, takeFocus: Bool = true,
+        direction: SplitDirection? = nil, ratio: Double? = nil
     ) -> Session.ID? {
         let inScope = Set(scope.sessions.map(\.id))
         let anchorID = anchor.flatMap { inScope.contains($0) ? $0 : nil }
@@ -124,18 +133,26 @@ extension TermioStore {
         // A lone anchor opens side by side; an anchor that already has a
         // neighbour keeps its full pane, with the newcomer stacked into the
         // opposite side of its divider (see `splitting(oppositeLeaf:adding:)`).
+        // An explicit direction overrides the stack rule — the caller said
+        // where the pane goes relative to itself, so its own leaf splits.
         if let group = groupIndex(containing: anchorID) {
-            if splitGroups[group].branchDirection(childLeaf: anchorID) != nil {
+            if let direction {
                 splitGroups[group] = splitGroups[group]
-                    .splitting(oppositeLeaf: anchorID, adding: newSession.id)
+                    .splitting(leaf: anchorID, direction: direction, adding: newSession.id,
+                               newShare: ratio)
+            } else if splitGroups[group].branchDirection(childLeaf: anchorID) != nil {
+                splitGroups[group] = splitGroups[group]
+                    .splitting(oppositeLeaf: anchorID, adding: newSession.id, newShare: ratio)
             } else {
                 splitGroups[group] = splitGroups[group]
-                    .splitting(leaf: anchorID, direction: .horizontal, adding: newSession.id)
+                    .splitting(leaf: anchorID, direction: .horizontal, adding: newSession.id,
+                               newShare: ratio)
             }
+            splitGroups[group] = splitGroups[group].equalized()
         } else {
-            splitGroups.append(.split(SplitBranch(direction: .horizontal, ratio: 0.5,
-                                                  first: .leaf(anchorID),
-                                                  second: .leaf(newSession.id))))
+            splitGroups.append(.split(SplitBranch(direction: direction ?? .horizontal,
+                                                  adding: .leaf(newSession.id), at: .second,
+                                                  share: ratio, to: .leaf(anchorID))))
         }
         if takeFocus {
             selectedSessionID = newSession.id
@@ -195,14 +212,51 @@ extension TermioStore {
     /// reordered so the group reads as an adjacent run, which is what lets
     /// `splitLinkMarks` draw its bracket over them.
     func groupSession(_ moved: Session.ID, with anchor: Session.ID) {
-        guard moved != anchor,
-              let anchorHome = locate(anchor), let movedHome = locate(moved),
-              anchorHome.sharesRoster(with: movedHome)
-        else { return }
+        guard canGroup(moved, with: anchor) else { return }
         // Already sharing the anchor's group — nothing to switch.
         if let anchorGroup = groupIndex(containing: anchor),
            groupIndex(containing: moved) == anchorGroup { return }
+        // No zone: the menu has no pointer to read a side off, so the axis
+        // alternates across the anchor's current one.
+        splice(moved, beside: anchor, direction: nil, slot: .second)
+    }
 
+    /// Whether `moved` may be grouped in beside `anchor`: same roster, and the
+    /// same working bucket (project root vs a given worktree). The bucket match
+    /// is what keeps a group's sidebar rows one adjacent run, so its ┌/└ bracket
+    /// draws — the same rule `groupableTargets` filters the menu with, exposed so
+    /// a drag can light its drop cue only where a release would actually land.
+    func canGroup(_ moved: Session.ID, with anchor: Session.ID) -> Bool {
+        guard moved != anchor,
+              let anchorHome = locate(anchor), let movedHome = locate(moved),
+              anchorHome.sharesRoster(with: movedHome)
+        else { return false }
+        return session(moved)?.worktreePath == session(anchor)?.worktreePath
+    }
+
+    /// Lands a session dragged out of the sidebar on the `zone` half of a visible
+    /// pane: the drag counterpart of "Group with", and the reason the pane area
+    /// accepts a row at all. A session already grouped with the target is only
+    /// being rearranged, so it takes `dropPane`'s path — one gesture, whichever
+    /// side of that line the dragged row happens to be on.
+    ///
+    /// Edge zones only: the pointer resolves a side through `PaneDropZone.edge`,
+    /// which has no center. `.center` still reaches here from a pane-rearrange
+    /// drag, where it means swap, so it is refused rather than guessed at.
+    func dropSession(_ moved: Session.ID, onto target: Session.ID, zone: PaneDropZone) {
+        guard let direction = zone.splitDirection, canGroup(moved, with: target) else { return }
+        let movedGroup = groupIndex(containing: moved)
+        if movedGroup != nil, movedGroup == groupIndex(containing: target) {
+            return dropPane(moved, onto: target, zone: zone)
+        }
+        splice(moved, beside: target, direction: direction, slot: zone.slot)
+    }
+
+    /// Moves `moved` in beside `anchor` as a new branch. `direction` nil
+    /// alternates the axis across the anchor's current one; a lone anchor (no
+    /// branch yet) opens side by side either way.
+    private func splice(_ moved: Session.ID, beside anchor: Session.ID,
+                        direction: SplitDirection?, slot: SplitSlot) {
         // 1. Detach `moved` from any prior group, keeping the "one leaf, one tree"
         //    invariant. This may dissolve that group and shift `splitGroups`
         //    indices, so the anchor's group is (re)resolved only afterwards.
@@ -210,39 +264,47 @@ extension TermioStore {
             setGroup(at: previous, to: splitGroups[previous].removing(leaf: moved))
         }
 
-        // 2. Splice beside the anchor, alternating the split axis across its
-        //    current one; a lone anchor (no branch yet) opens side by side.
+        // 2. Splice beside the anchor.
         let anchorGroup = groupIndex(containing: anchor)
-        let direction: SplitDirection
-        if let group = anchorGroup, let current = splitGroups[group].branchDirection(childLeaf: anchor) {
-            direction = current == .horizontal ? .vertical : .horizontal
+        let axis: SplitDirection
+        if let direction {
+            axis = direction
+        } else if let group = anchorGroup,
+                  let current = splitGroups[group].branchDirection(childLeaf: anchor) {
+            axis = current == .horizontal ? .vertical : .horizontal
         } else {
-            direction = .horizontal
+            axis = .horizontal
         }
         if let group = anchorGroup {
             splitGroups[group] = splitGroups[group]
-                .splitting(leaf: anchor, direction: direction, adding: moved)
+                .splitting(leaf: anchor, direction: axis, adding: moved, slot: slot)
+                .equalized()
         } else {
-            splitGroups.append(.split(SplitBranch(direction: direction, ratio: 0.5,
-                                                  first: .leaf(anchor), second: .leaf(moved))))
+            splitGroups.append(.split(SplitBranch(
+                direction: axis, ratio: 0.5,
+                first: .leaf(slot == .first ? moved : anchor),
+                second: .leaf(slot == .first ? anchor : moved))))
         }
 
-        // 3. Sit `moved`'s row right after the anchor's so the sidebar reads the
-        //    group as a contiguous run (see `splitLinkMarks`).
-        moveSessionRow(moved, besideAnchor: anchor)
+        // 3. Sit `moved`'s row beside the anchor's so the sidebar reads the group
+        //    as a contiguous run (see `splitLinkMarks`), on the side the pane
+        //    itself landed — the row order follows the layout.
+        moveSessionRow(moved, besideAnchor: anchor, slot: slot)
         selectedSessionID = moved
         isPaneZoomed = false
     }
 
-    /// Moves `moved`'s row to immediately follow the anchor's within their shared
-    /// roster, keeping a split group's sidebar rows adjacent. The anchor index is
-    /// read *after* the removal so it stays valid regardless of which row came first.
-    private func moveSessionRow(_ moved: Session.ID, besideAnchor anchor: Session.ID) {
+    /// Moves `moved`'s row next to the anchor's within their shared roster,
+    /// keeping a split group's sidebar rows adjacent — above the anchor for a
+    /// leading pane, below it otherwise. The anchor index is read *after* the
+    /// removal so it stays valid regardless of which row came first.
+    private func moveSessionRow(_ moved: Session.ID, besideAnchor anchor: Session.ID,
+                                slot: SplitSlot) {
         guard let home = locate(moved) else { return }
         var sessions = roster(at: home)
         let row = sessions.remove(at: home.sessionIndex)
         let anchorIndex = sessions.firstIndex { $0.id == anchor } ?? sessions.count - 1
-        sessions.insert(row, at: anchorIndex + 1)
+        sessions.insert(row, at: slot == .first ? anchorIndex : anchorIndex + 1)
         setRoster(sessions, at: home)
     }
 
@@ -285,6 +347,7 @@ extension TermioStore {
             guard let vacated = splitGroups[group].removing(leaf: source) else { return }
             splitGroups[group] = vacated.splitting(leaf: target, direction: direction,
                                                    adding: source, slot: zone.slot)
+                                        .equalized()
         } else {
             splitGroups[group] = splitGroups[group].swapping(source, and: target)
         }
@@ -337,7 +400,7 @@ extension TermioStore {
             for id in removed { pruned = pruned?.removing(leaf: id) }
             // A group needs two panes to mean anything; a lone survivor is just
             // an ungrouped session again.
-            if let pruned, case .split = pruned { return pruned }
+            if let pruned, case .split = pruned { return pruned.equalized() }
             return nil
         }
         if let preferred { selectedSessionID = preferred }
@@ -370,10 +433,11 @@ extension TermioStore {
     }
 
     /// Installs a mutated group, dissolving it when fewer than two panes remain
-    /// (absence of a group *is* the single-pane state).
+    /// (absence of a group *is* the single-pane state). Surviving groups come
+    /// back equalized: a pane leaving a run hands its share back to the run.
     private func setGroup(at index: Int, to tree: SplitNode?) {
         if let tree, case .split = tree {
-            splitGroups[index] = tree
+            splitGroups[index] = tree.equalized()
         } else {
             splitGroups.remove(at: index)
         }

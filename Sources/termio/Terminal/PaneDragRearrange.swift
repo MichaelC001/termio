@@ -105,6 +105,7 @@ final class PaneDragRearrange {
         // interfere with a TUI's own mouse reporting.
         monitor(.mouseMoved) { [weak self] in
             self?.hovered($0)
+            self?.clearStrandedDropCue()
             return false
         }
         // A pointer that leaves for another app sends no further mouse-moved
@@ -127,6 +128,24 @@ final class PaneDragRearrange {
         else { return setHover(nil) }
         setHover(PaneHandleHover(pane: hit.id,
                                  overHandle: Self.handleRect(in: hit.size).contains(hit.point)))
+    }
+
+    /// Takes down a sidebar-drag cue that outlived its drag.
+    ///
+    /// The panes' drop delegate clears the cue on exit and on drop, but SwiftUI
+    /// gives a `DropDelegate` no "the session ended" hook, so a drag ending where
+    /// neither fires would strand the highlight. Mouse-moved events resume the
+    /// moment a drag session lets go of the pointer, and a drag cannot be in flight
+    /// with the button up — making this the first thing to run after any drag,
+    /// however it ended, for the cost of a comparison the rest of the time.
+    private func clearStrandedDropCue() {
+        guard let store, NSEvent.pressedMouseButtons & 1 == 0,
+              store.sessionDropTarget != nil || store.sessionRowDrop != nil
+                  || store.draggingSessionID != nil
+        else { return }
+        store.sessionDropTarget = nil
+        store.sessionRowDrop = nil
+        store.draggingSessionID = nil
     }
 
     /// Republishing on every mouse-moved event would redraw the pane tree at

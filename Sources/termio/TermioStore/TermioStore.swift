@@ -85,6 +85,12 @@ final class TermioStore: ObservableObject {
                 // a window showing one scope while the terminal belongs to another
                 // is the same confusion the device context exists to prevent.
                 enterWorkspace(of: id)
+                // Every selection is also the answer to "where was I in this
+                // scope", so the workspace it belongs to remembers it (see
+                // `workspaceSelections`). Filed under the session's *own*
+                // workspace rather than the current one, so a deep link that
+                // jumps scopes records the arrival where it landed.
+                if let owner = workspace(for: id)?.id { workspaceSelections[owner] = id }
                 // Looking at a session is being on its machine. Every path that
                 // moves the selection — a deep link, the palette, a notification,
                 // a split, a freshly opened remote terminal — lands here, so this
@@ -183,12 +189,36 @@ final class TermioStore: ObservableObject {
         backgroundActivationIDs.append(id)
     }
 
-    /// The session currently being drag-reordered in the sidebar, recorded when a row
+    /// The session currently being dragged out of the sidebar, recorded when the row
     /// drag begins so a hovered row can ask `canReorder` whether it's a legal drop
     /// target (same project + worktree bucket) and light its background only then.
-    /// Transient drag bookkeeping — deliberately *not* `@Published`, since it's read
-    /// on drop-hover events, never rendered.
-    var draggingSessionID: Session.ID?
+    ///
+    /// `@Published` because the terminal area draws from it too: the pane you are
+    /// carrying is washed for the length of the drag, which is the only thing that
+    /// distinguishes "this pane is the session in your hand" from a drop that
+    /// silently did nothing.
+    @Published var draggingSessionID: Session.ID?
+
+    /// Where a sidebar row dragged over the terminal area would land: the pane
+    /// under the pointer and the half it would take. Written by the panes' drop
+    /// delegate, drawn by `TerminalPane` — the sidebar-drag twin of `paneDrag`,
+    /// and `@Published` for the same reason: the highlight is on screen, so it
+    /// has to redraw as the pointer crosses zones.
+    @Published var sessionDropTarget: SessionDropTarget?
+
+    /// What a release over a sidebar row would do: land in the gap above or below
+    /// it, or group the dragged session with it. Held here rather than in each
+    /// row's `@State` so one writer owns it — a per-row flag can only be cleared by
+    /// the row that set it, and a drag that ends without SwiftUI calling that row
+    /// back leaves the cue on screen (see `PaneDragRearrange.clearStrandedDropCue`).
+    @Published var sessionRowDrop: SessionRowDrop?
+
+    /// A pending drop on a sidebar row: which row, and which gap it would land in —
+    /// `nil` meaning the middle of the row, which groups the two sessions instead.
+    struct SessionRowDrop: Equatable {
+        var row: Session.ID
+        var insert: RowInsertion?
+    }
 
     /// When each project was last active — the moment one of its agents last reported
     /// work, or the user last switched to one of its sessions. Drives the sidebar's
@@ -305,7 +335,20 @@ final class TermioStore: ObservableObject {
     /// hosts the detail beside the terminal by default; the detail's maximize button flips this
     /// to cover everything (see the app delegate's full-window host), and it resets to `false`
     /// automatically whenever the last detail closes.
-    @Published var inspectorMaximized = false
+    @Published var inspectorMaximized = false {
+        didSet {
+            guard inspectorMaximized != oldValue else { return }
+            inspectorMaximizedDidChange.send(inspectorMaximized)
+        }
+    }
+
+    /// Fires once `inspectorMaximized` has actually landed, which `objectWillChange` cannot do.
+    /// The two halves of the maximize handoff live in different frameworks — SwiftUI drops the
+    /// docked detail, the app delegate mounts the full-window host — and a delegate driven off
+    /// `objectWillChange` has to defer a runloop to read the settled value, by which time SwiftUI
+    /// has already uncovered the inspector's file tree. Publishing from `didSet` lets the host go
+    /// up in the same turn the flag flips, so the swap never shows what is underneath.
+    let inspectorMaximizedDidChange = PassthroughSubject<Bool, Never>()
 
     /// Whether the list column is collapsed so the detail fills the whole inspector (terminal still
     /// visible), one step short of `inspectorMaximized`. Flipped by the detail chrome's list toggle;
@@ -572,6 +615,17 @@ final class TermioStore: ObservableObject {
     /// pruned alongside its runtime in `syncRuntimes`.
     var inspectorStates: [Session.ID: InspectorState] = [:]
 
+    /// The session each workspace was last left on, so switching back lands where the
+    /// user was rather than on whichever row sorts first. Written on every selection
+    /// change and read by `finishArriving`.
+    ///
+    /// Held here rather than on `Workspace` for the same reason `inspectorStates` is:
+    /// this is written on every row click, and `workspaces` is `@Published` — a write
+    /// there would rebuild the sidebar to record something the sidebar already shows.
+    /// Persisted, so the scope you return to after a relaunch is the scope you left.
+    /// Entries for closed sessions are pruned alongside their runtimes in `syncRuntimes`.
+    var workspaceSelections: [Workspace.ID: Session.ID] = [:]
+
     /// True only while `restored()` seeds the saved layouts and hand-applies the selected
     /// one — it suppresses the capture/restore in `selectedSessionID`'s didSet so a
     /// programmatic selection during launch can't overwrite a just-seeded layout.
@@ -696,8 +750,12 @@ final class TermioStore: ObservableObject {
         let live = Set(sessionSlots.sessionIDs)
         for id in live where runtimes[id] == nil { runtimes[id] = SessionRuntime() }
         for id in runtimes.keys where !live.contains(id) { runtimes.removeValue(forKey: id) }
-        // A closed session's saved inspector layout goes with it.
+        // A closed session's saved inspector layout goes with it, and so does its
+        // claim on being the row a workspace comes back to.
         for id in inspectorStates.keys where !live.contains(id) { inspectorStates.removeValue(forKey: id) }
+        for (workspace, id) in workspaceSelections where !live.contains(id) {
+            workspaceSelections.removeValue(forKey: workspace)
+        }
     }
 
     /// Sets a session's status, no-op-guarded so a redundant same-value write (the hook
@@ -1321,6 +1379,16 @@ final class TermioStore: ObservableObject {
                 store.inspectorStates[id] = state
             }
         }
+        // Seed where each workspace was left. Validated against the live tree, since a
+        // session recorded before the quit may not have come back — a workspace whose
+        // row is gone falls back to its first session the way it always did.
+        if let selections = snapshot.workspaceSelections {
+            let live = Set(store.allSessions.map(\.id))
+            for (key, id) in selections {
+                guard let workspace = UUID(uuidString: key), live.contains(id) else { continue }
+                store.workspaceSelections[workspace] = id
+            }
+        }
         // Guard the selection change so its didSet neither captures the (still-default)
         // live inspector over a just-seeded layout nor schedules a startup save.
         store.isRestoringInspector = true
@@ -1367,13 +1435,16 @@ final class TermioStore: ObservableObject {
                 fileReadOnly: state.openFileReadOnly
             )
         }
+        var selections: [String: Session.ID] = [:]
+        for (workspace, id) in workspaceSelections { selections[workspace.uuidString] = id }
         stateFile.save(.init(
             workspaces: workspaces,
             currentWorkspaceID: currentWorkspaceID,
             projects: projects,
             selectedSessionID: selectedSessionID,
             splitGroups: splitGroups,
-            inspectorLayouts: layouts.isEmpty ? nil : layouts
+            inspectorLayouts: layouts.isEmpty ? nil : layouts,
+            workspaceSelections: selections.isEmpty ? nil : selections
         ))
     }
 
@@ -1479,25 +1550,26 @@ final class TermioStore: ObservableObject {
     /// once it reports something meaningful — that is how a `Claude Code` row
     /// becomes `Explore e2b.dev infra`, keeping two sessions of the same agent
     /// distinguishable. Agents whose OSC title names only the project can instead
-    /// fall back to a compact first-prompt title supplied by their hook. A name the
-    /// user set themselves wins, followed by a meaningful native title, then the
-    /// prompt-derived fallback.
+    /// fall back to a compact first-prompt title supplied by their hook. A
+    /// `givenTitle` wins over both, then a meaningful native title, then the
+    /// prompt-derived fallback, then the composed placeholder.
     ///
     /// Plain terminals never adopt a live title (their shell would just report
-    /// `user@host`/cwd noise); instead the auto-named ones (`Terminal N`) all show
-    /// a bare `Terminal` label. The stored title is left untouched (it seeds the
-    /// worktree branch slug, which must stay stable and unique); only the displayed
+    /// `user@host`/cwd noise); instead the ones Termio named itself all show a bare
+    /// `Terminal` label. `title` is left untouched throughout — only the displayed
     /// value is derived here.
+    ///
+    /// The name a row was given is a field (`Session.givenTitle`), never a string
+    /// test over `title`: a session running on another machine is born with a label
+    /// Termio composed for it, and reading that label as chosen is what used to
+    /// freeze a remote row at `<project> · <host>` for the rest of its life.
     func displayTitle(for session: Session) -> String {
+        if let given = session.givenTitle { return given }
         if session.agent != .terminal {
-            return AgentSessionTitle.resolved(
-                stored: session.title,
-                agentName: session.agent.displayName,
+            return AgentSessionTitle.automatic(
                 native: runtimes[session.id]?.liveTitle ?? session.liveTitle,
-                promptFallback: session.promptTitle)
-        }
-        guard Self.isAutoTerminalName(session.title) else {
-            return session.title
+                promptFallback: session.promptTitle,
+                placeholder: session.title)
         }
         // A loose terminal is labeled by its live cwd's basename (`~` at home):
         // the session owns its path, so `cd ~/code/foo` renames the row to `foo`
@@ -1526,7 +1598,9 @@ final class TermioStore: ObservableObject {
 
     /// Whether `title` is an auto-generated `Terminal N` label (as opposed to a
     /// name the user chose), which is what makes it eligible for live re-indexing.
-    static func isAutoTerminalName(_ title: String) -> Bool {
+    /// A pure test over the string, so `Session` can reach it while decoding off
+    /// the main actor.
+    nonisolated static func isAutoTerminalName(_ title: String) -> Bool {
         let suffix = title.dropFirst("Terminal ".count)
         return title.hasPrefix("Terminal ") && !suffix.isEmpty
             && suffix.allSatisfy(\.isNumber)
@@ -1651,12 +1725,12 @@ final class TermioStore: ObservableObject {
 /// The order the sidebar names an agent session in, kept out of `TermioStore` so a
 /// test can pin the precedence without standing up a window.
 enum AgentSessionTitle {
-    /// A name the user set wins outright. Otherwise the agent's own native title
-    /// speaks, and only when it says nothing does the first prompt stand in.
-    static func resolved(
-        stored: String, agentName: String, native: String?, promptFallback: String?
+    /// What an agent row calls itself when nobody has named it: the agent's own
+    /// native title speaks first, the first prompt stands in when it says nothing,
+    /// and the composed placeholder shows only when neither has anything to say.
+    static func automatic(
+        native: String?, promptFallback: String?, placeholder: String
     ) -> String {
-        guard stored == agentName else { return stored }
-        return native ?? promptFallback ?? stored
+        native ?? promptFallback ?? placeholder
     }
 }

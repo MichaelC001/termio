@@ -3,7 +3,7 @@ title: Session guests — three deltas, not a sharing subsystem
 status: draft
 type: design
 created: 2026-08-18
-updated: 2026-08-18
+updated: 2026-08-24
 related:
   - 20260818-termiod-web-client-ghostty-wasm.md
   - 20260730-termiod-session-protocol.md
@@ -130,7 +130,7 @@ Two gates, and the first one is the deliberate act. `may_type` is off at mint, i
 
 That yields three properties worth stating, because they are what makes typing safe enough to consider at all:
 
-- **The owner is never locked out.** Taking input back is another `interact` attach; newest wins, so the owner's click always beats the guest's earlier claim.
+- **The owner is never locked out.** Taking input back is a `claim_writer` from the owner's pane — typing sends one — and the newest claim wins, so the owner always beats the guest's earlier claim. (Attaching is not a claim: a guest merely *opening* the session cannot take the token, or the owner's window would go read-only at a stranger's grid without anyone typing.)
 - **Handover is visible to everyone.** `writer_changed` is a fan-out event, so the guest's page and the owner's pane header show the same fact from both sides.
 - **Nothing new is invented.** Take input / Release is already specified in the web-client RFC as "close the observe socket, open an interact one."
 

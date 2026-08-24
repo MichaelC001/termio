@@ -311,13 +311,31 @@ extension TermioStore {
                 "No coding agent is enabled — pass --agent <name>.")
         }
 
+        // Placement requests are validated before anything is created, so a
+        // typo'd flag fails the call instead of spawning a session it then
+        // places wrong.
+        let direction: SplitDirection?
+        switch request.direction {
+        case nil: direction = nil
+        case "right": direction = .horizontal
+        case "down": direction = .vertical
+        case let other?:
+            return controlError(request, "bad_direction",
+                "Unknown direction '\(other)'. Use right or down.")
+        }
+        if let ratio = request.ratio, !(0 < ratio && ratio < 1) {
+            return controlError(request, "bad_ratio",
+                "--ratio is the new pane's fraction of the split — a number between 0 and 1.")
+        }
+
         // Beside the caller's pane as a split, not a full-screen swap — the whole
         // reason to spawn a sibling is to see them side by side. Anchoring and
         // focus policy are documented on `addSplitSession`; the selection only
         // moves when the caller is the pane the user is already watching.
         let freshID = addSplitSession(
             in: scope, agent: preset, anchor: caller?.id,
-            takeFocus: caller == nil || caller?.id == selectedSessionID)
+            takeFocus: caller == nil || caller?.id == selectedSessionID,
+            direction: direction, ratio: request.ratio)
         guard let freshID, let fresh = session(freshID) else {
             return controlError(request, "start_failed", "Couldn’t start the session.")
         }

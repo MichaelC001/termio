@@ -42,6 +42,9 @@ usage:
 options:
   --json           machine-readable output (any `sessions` command)
   --agent <id>     agent for `spawn` (e.g. claudeCode, codex, grok, pi; default: caller's kind)
+  --direction <d>  for `spawn`/`run`: where the new pane lands relative to yours — right or down
+  --ratio <0..1>   for `spawn`/`run`: the new pane's share of the split (e.g. 0.25);
+                   a stated ratio holds against later spawns
   --wait           for `spawn`/`run`/`send`: block until the turn settles; the reply carries
                    the final status and the transcript line range to read
                    (exit 0 settled, 1 error — including a stalled/vanished session, 3 timed out)
@@ -102,12 +105,18 @@ closes from the app side (termio quit or died).
 EOF
             ;;
         spawn) cat <<'EOF'
-usage: termio sessions spawn "<prompt>" [--agent <id>] [--wait [--timeout <ms>]] [--json]
+usage: termio sessions spawn "<prompt>" [--agent <id>] [--direction right|down]
+                                        [--ratio <0..1>] [--wait [--timeout <ms>]] [--json]
 
 Start a NEW agent session on the prompt. Replies immediately with the new
 session's termio://session link; the prompt is
 typed in once the agent finishes booting. --agent picks the agent (e.g. claudeCode, codex, grok,
 pi); the default is the calling agent's own kind.
+
+--direction places the new pane relative to yours (right or down) instead of
+the automatic stack; --ratio is the new pane's share of the split (e.g. 0.25
+for a short strip) and holds against later spawns. Panes without a stated
+ratio share their run evenly.
 
 Readiness is judged from the screen, so an agent sitting on a startup gate —
 a trust prompt, a usage notice, a first-run dialog — looks ready while it is
@@ -131,13 +140,18 @@ exit codes: 0 settled, 1 error (including stalled/vanished), 3 timed out.
 EOF
             ;;
         run) cat <<'EOF'
-usage: termio sessions run "<command>" [--wait [--timeout <ms>]] [--json]
+usage: termio sessions run "<command>" [--direction right|down] [--ratio <0..1>]
+                                       [--wait [--timeout <ms>]] [--json]
 
 Start a NEW plain terminal session and type the shell command into it — a
 dev server, a test run, a build — visible in a split pane, no LLM involved.
 Replies immediately with the session's address; drive it further with
 `send`, read its output with `read` (a plain command has no
 transcript; its screen is the result), close it with `close`.
+
+--direction places the pane relative to yours (right or down); --ratio is its
+share of the split — `--direction down --ratio 0.25` is a log strip under
+your pane, not a column beside it.
 
 --wait settles when the screen goes still after the command's output (or
 returns needs-you / times out, exactly as with send).
@@ -367,6 +381,8 @@ sessions() {
 
     format=text
     agent=""
+    direction=""
+    ratio=""
     targets=""
     text=""
     states=""
@@ -399,6 +415,26 @@ sessions() {
             --agent)
                 [ $# -ge 2 ] || { echo "termio: --agent needs a value" >&2; exit 1; }
                 agent="$2"; shift ;;
+            --direction)
+                [ $# -ge 2 ] || { echo "termio: --direction needs right or down" >&2; exit 1; }
+                case "$2" in
+                    right|down) ;;
+                    *) echo "termio: --direction is right or down" >&2; exit 1 ;;
+                esac
+                direction="$2"; shift ;;
+            --ratio)
+                [ $# -ge 2 ] || { echo "termio: --ratio needs a number between 0 and 1 (e.g. 0.25)" >&2; exit 1; }
+                # Strictly `0.<digits>` — anything else (".5", "0.", "50%") would
+                # land on the wire as invalid JSON or a share the app rejects.
+                case "$2" in
+                    0.*)
+                        fraction="${2#0.}"
+                        case "$fraction" in
+                            ''|*[!0-9]*) echo "termio: --ratio needs a number between 0 and 1 (e.g. 0.25)" >&2; exit 1 ;;
+                        esac ;;
+                    *) echo "termio: --ratio needs a number between 0 and 1 (e.g. 0.25)" >&2; exit 1 ;;
+                esac
+                ratio="$2"; shift ;;
             --state)
                 [ $# -ge 2 ] || { echo "termio: --state needs a value" >&2; exit 1; }
                 states="$2"; shift ;;
@@ -485,6 +521,16 @@ sessions() {
         if [ -z "${TERMIO_CLI_TIMEOUT:-}" ]; then
             CLIENT_TIMEOUT=$(( ${timeout_ms:-300000} / 1000 + 30 ))
         fi
+    fi
+
+    # Placement flags only mean something on a verb that creates a pane.
+    if [ -n "$direction" ] || [ -n "$ratio" ]; then
+        case "$op" in
+            spawn|run) ;;
+            *) echo "termio: --direction/--ratio apply to spawn and run only" >&2; exit 1 ;;
+        esac
+        [ -n "$direction" ] && extra_json="${extra_json:+$extra_json,}\"direction\":\"$direction\""
+        [ -n "$ratio" ] && extra_json="${extra_json:+$extra_json,}\"ratio\":$ratio"
     fi
 
     # --no-enter only reads on a send to an existing session: a spawn's prompt has
