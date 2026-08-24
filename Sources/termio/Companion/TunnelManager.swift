@@ -295,7 +295,7 @@ final class TunnelManager: ObservableObject {
         // Say so plainly instead of failing deep in binary discovery on an
         // empty command.
         if provider == .custom, provider.spec == nil {
-            status = .failed("set a command and URL pattern for the custom relay")
+            status = .failed(localized("set a command and URL pattern for the custom relay"))
             return
         }
         // Reap any tunnel a prior run left behind. `stopProcess`'s SIGTERM (and
@@ -328,7 +328,8 @@ final class TunnelManager: ObservableObject {
                     binary = try await Self.install(target)
                 } catch {
                     if self.generation == epoch, self.provider == target {
-                        status = .failed("couldn’t install \(target.binaryName): \(error.localizedDescription)")
+                        status = .failed(localized(
+                            "couldn’t install \(target.binaryName): \(error.localizedDescription)"))
                     }
                     return
                 }
@@ -445,8 +446,8 @@ final class TunnelManager: ObservableObject {
                 // cap this replaced at least told the user it had given up; an
                 // indefinite "Starting tunnel…" would be the worse of the two.
                 if delay >= Self.quietRetryDelay {
-                    self.status = .failed(
-                        "\(provider.binaryName) keeps exiting — retrying every \(Int(delay))s")
+                    self.status = .failed(localized(
+                        "\(provider.binaryName) keeps exiting — retrying every \(Int(delay))s"))
                 } else {
                     self.status = .starting
                 }
@@ -486,7 +487,8 @@ final class TunnelManager: ObservableObject {
                 Self.rememberCustomTunnel(pid: process.processIdentifier, binary: binary.path)
             }
         } catch {
-            status = .failed("couldn’t launch \(provider.binaryName): \(error.localizedDescription)")
+            status = .failed(localized(
+                "couldn’t launch \(provider.binaryName): \(error.localizedDescription)"))
             return
         }
         self.process = process
@@ -497,7 +499,8 @@ final class TunnelManager: ObservableObject {
             Task { @MainActor in
                 guard let self, self.process === process, self.status == .starting else { return }
                 self.stopProcess()
-                self.status = .failed("\(provider.binaryName) didn’t come up — check the network and retry")
+                self.status = .failed(localized(
+                    "\(provider.binaryName) didn’t come up — check the network and retry"))
             }
         }
     }

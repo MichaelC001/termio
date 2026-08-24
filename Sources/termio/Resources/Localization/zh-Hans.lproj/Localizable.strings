@@ -10,6 +10,8 @@
 	<string>费用按 API 价格估算。</string>
 	<key>%@ and %@</key>
 	<string>%1$@ 和 %2$@</string>
+	<key>%@ didn’t come up — check the network and retry</key>
+	<string>%@ 未能启动——请检查网络后重试</string>
 	<key>%@ is a dark theme in the %@ slot.</key>
 	<string>“%@”是深色主题，与“%@”插槽不匹配。</string>
 	<key>%@ is a light theme in the %@ slot.</key>
@@ -20,6 +22,8 @@
 	<string>%@ 暂不支持这台设备。</string>
 	<key>%@ isn’t on your PATH</key>
 	<string>%@ 不在 PATH 中</string>
+	<key>%@ keeps exiting — retrying every %llds</key>
+	<string>%1$@ 反复退出——每 %2$lld 秒重试一次</string>
 	<key>%@ opened %@</key>
 	<string>%1$@ 创建于 %2$@</string>
 	<key>%@ tokens</key>
@@ -1190,6 +1194,10 @@
 	<string>个 Agent</string>
 	<key>binary</key>
 	<string>二进制</string>
+	<key>couldn’t install %@: %@</key>
+	<string>无法安装 %1$@：%2$@</string>
+	<key>couldn’t launch %@: %@</key>
+	<string>无法启动 %1$@：%2$@</string>
 	<key>current</key>
 	<string>当前</string>
 	<key>e.g. JetBrains Mono</key>
@@ -1210,6 +1218,8 @@
 	<string>可选</string>
 	<key>optional — ~/.ssh/id_ed25519</key>
 	<string>可选 — ~/.ssh/id_ed25519</string>
+	<key>set a command and URL pattern for the custom relay</key>
+	<string>为自定义中继设置命令和 URL 模式</string>
 	<key>ssh unavailable</key>
 	<string>ssh 不可用</string>
 	<key>termio can teach the agents you run (Claude Code, Codex, …) a `termio sessions` command so they can see, drive, and read each other's sessions in a project.

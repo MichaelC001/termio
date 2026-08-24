@@ -6104,6 +6104,56 @@
           }
         }
       }
+    },
+    "set a command and URL pattern for the custom relay": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为自定义中继设置命令和 URL 模式"
+          }
+        }
+      }
+    },
+    "couldn’t install %@: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法安装 %1$@：%2$@"
+          }
+        }
+      }
+    },
+    "couldn’t launch %@: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法启动 %1$@：%2$@"
+          }
+        }
+      }
+    },
+    "%@ didn’t come up — check the network and retry": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 未能启动——请检查网络后重试"
+          }
+        }
+      }
+    },
+    "%@ keeps exiting — retrying every %llds": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 反复退出——每 %2$lld 秒重试一次"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

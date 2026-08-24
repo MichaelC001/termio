@@ -10,6 +10,8 @@
 	<string> Cost is estimated at API rates.</string>
 	<key>%@ and %@</key>
 	<string>%@ and %@</string>
+	<key>%@ didn’t come up — check the network and retry</key>
+	<string>%@ didn’t come up — check the network and retry</string>
 	<key>%@ is a dark theme in the %@ slot.</key>
 	<string>%@ is a dark theme in the %@ slot.</string>
 	<key>%@ is a light theme in the %@ slot.</key>
@@ -20,6 +22,8 @@
 	<string>%@ isn’t available on this device yet.</string>
 	<key>%@ isn’t on your PATH</key>
 	<string>%@ isn’t on your PATH</string>
+	<key>%@ keeps exiting — retrying every %llds</key>
+	<string>%@ keeps exiting — retrying every %llds</string>
 	<key>%@ opened %@</key>
 	<string>%@ opened %@</string>
 	<key>%@ tokens</key>
@@ -1190,6 +1194,10 @@
 	<string>agents</string>
 	<key>binary</key>
 	<string>binary</string>
+	<key>couldn’t install %@: %@</key>
+	<string>couldn’t install %@: %@</string>
+	<key>couldn’t launch %@: %@</key>
+	<string>couldn’t launch %@: %@</string>
 	<key>current</key>
 	<string>current</string>
 	<key>e.g. JetBrains Mono</key>
@@ -1210,6 +1218,8 @@
 	<string>optional</string>
 	<key>optional — ~/.ssh/id_ed25519</key>
 	<string>optional — ~/.ssh/id_ed25519</string>
+	<key>set a command and URL pattern for the custom relay</key>
+	<string>set a command and URL pattern for the custom relay</string>
 	<key>ssh unavailable</key>
 	<string>ssh unavailable</string>
 	<key>termio can teach the agents you run (Claude Code, Codex, …) a `termio sessions` command so they can see, drive, and read each other's sessions in a project.
