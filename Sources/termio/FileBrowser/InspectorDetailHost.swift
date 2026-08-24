@@ -82,7 +82,11 @@ struct InspectorRoot: View {
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .coordinateSpace(.named(Self.dragSpace))
-            .animation(.easeOut(duration: 0.12), value: showDetail)
+            // Keyed to the *presentation*, not to `showDetail`: opening and closing a detail
+            // should cross-fade over the list, but maximizing only hands the same detail off to
+            // the full-window host. Fading there would spend 120ms dissolving the docked copy —
+            // uncovering the file tree it sits on — for a swap the user must not see at all.
+            .animation(.easeOut(duration: 0.12), value: store.isDetailPresented)
             .animation(.easeOut(duration: 0.12), value: twoColumn)
         }
     }

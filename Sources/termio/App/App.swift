@@ -95,6 +95,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // Manages the maximize host as a detail opens/closes (see the `store.objectWillChange`
     // sink in `applicationDidFinishLaunching`).
     private var overlayObserver: AnyCancellable?
+    // Drives the same host straight off the maximize flag, synchronously (see
+    // `store.inspectorMaximizedDidChange`), so the handoff to and from the full-window
+    // host lands in the frame the docked detail leaves in.
+    private var maximizeObserver: AnyCancellable?
     // Un-collapses the inspector when the user opens a detail (see `store.detailDidOpen`).
     private var detailOpenObserver: AnyCancellable?
     // Previous maximize state, so the observer re-binds the tracking separator on the restore
@@ -286,33 +290,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
             }
 
+        // The maximize button itself: applied synchronously, in the same turn the flag flips, so
+        // the full-window host is already up when SwiftUI drops the inspector's docked copy. Going
+        // through `objectWillChange` below instead would land a runloop late, and the inspector's
+        // always-mounted file tree — normally covered by the detail — showed through the gap.
+        maximizeObserver = store.inspectorMaximizedDidChange
+            .sink { [weak self] maximized in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.applyDetailMaximized(maximized && self.store.isDetailPresented)
+                }
+            }
+
         // A detail (file editor, diff, PR/issue) opens in the right inspector, beside the
         // terminal. Its own window controls (hide list / maximize / close) live *in* the detail's
         // header now (see `InspectorDetailChromeButtons`), not the toolbar — so this observer only
-        // mounts and tears down the full-window maximize host.
+        // mounts and tears down the full-window maximize host. It catches the presentation half of
+        // the state (a detail closing out from under a maximized host); the flag's own half is the
+        // synchronous observer above.
         // `objectWillChange` fires before the value lands, so read the settled state next runloop.
         overlayObserver = store.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    let presented = self.store.isDetailPresented
-                    let maximized = self.store.inspectorMaximized && presented
-                    let restored = self.detailWasMaximized && !maximized
-                    self.detailWasMaximized = maximized
-                    // Blow the detail up into a full-window host when maximized; tear it down otherwise.
-                    self.setDetailMaximized(maximized)
-                    // The pane switch (Files/Search/Changes/Issues/Info) re-aims the inspector's list
-                    // column, which the full-window detail now covers — so while maximized the tabs
-                    // would act on something off-screen. Pull them from the toolbar for the duration
-                    // and restore them on the way back down (the inspector is still open behind the host).
-                    self.syncInspectorTabsVisibility()
-                    // Tearing down the maximize host relayouts around divider 1, which can leave the
-                    // tracking separator inert (the centered-tabs / missing-divider glitch). Re-bind
-                    // once layout settles.
-                    if restored {
-                        DispatchQueue.main.async { [weak self] in self?.reassertInspectorSeparator() }
-                    }
+                    self.applyDetailMaximized(self.store.inspectorMaximized && self.store.isDetailPresented)
                 }
             }
 
@@ -1054,9 +1056,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// would act on something off-screen — pull them while maximized, restore them on the way back
     /// down. Idempotent (`setInspectorSwitchVisible` no-ops when already in the target state), so the
     /// overlay observer can call it on every store change.
-    func syncInspectorTabsVisibility() {
+    func syncInspectorTabsVisibility(maximized: Bool) {
         guard let item = filesInspectorItem else { return }
-        let maximized = store.inspectorMaximized && store.isDetailPresented
         setInspectorSwitchVisible(!item.isCollapsed && !maximized)
     }
 
@@ -1139,14 +1140,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// when the sidebar is collapsed — matching Finder/Xcode, which drop their sidebar buttons with
     /// the sidebar, and freeing the horizontal room that otherwise forces NSToolbar's `»` overflow.
     /// The paired flexible space (which right-aligns the two against the sidebar divider) is inserted
-    /// and removed *with* them. When open the region reads `toggleNavigator, workspaceSwitcher, flex,
-    /// sortProjects, newTerminal | sidebarTrackingSeparator`. Mirrors `setInspectorSwitchVisible`.
+    /// and removed *with* them. When open the region reads `toggleNavigator, flex, sortProjects,
+    /// newTerminal | sidebarTrackingSeparator`. Mirrors `setInspectorSwitchVisible`.
     ///
-    /// The workspace switcher leaves with the sidebar it labels. It used to move across the tracking
-    /// separator instead, on the argument that a bare terminal looks the same in every scope and the
-    /// switcher is the only thing naming the current one. In practice it reads as a stray word beside
-    /// the window title — the sidebar's region empties with the sidebar, the way Finder's and Xcode's
-    /// do, and the workspace is still one click away through the sidebar or the Workspace menu.
+    /// The workspace name leaves with the sidebar it labels, but it is not managed here — it rides
+    /// inside the `toggleNavigator` item and hides itself on `store.sidebarVisible` (see
+    /// `NavigatorToggleToolbarView`). It used to move across the tracking separator instead, on the
+    /// argument that a bare terminal looks the same in every scope and the switcher is the only thing
+    /// naming the current one. In practice it reads as a stray word beside the window title — the
+    /// sidebar's region empties with the sidebar, the way Finder's and Xcode's do, and the workspace
+    /// is still one click away through the sidebar or the Workspace menu.
     private func setNavigatorItemsVisible(_ visible: Bool) {
         guard let toolbar = window?.toolbar else { return }
         func index(of id: NSToolbarItem.Identifier) -> Int? {
@@ -1159,23 +1162,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         defer { NSAnimationContext.endGrouping() }
         if visible {
             guard index(of: .sortProjects) == nil else { return }
-            // Drop any stray copy before re-inserting, so the item is never added twice and the
-            // separator's index — the anchor every insert below uses — stays valid.
-            if let existing = index(of: .workspaceSwitcher) { toolbar.removeItem(at: existing) }
             guard let sep = index(of: .sidebarTrackingSeparator) else { return }
-            // Insert in reverse at that one index so the final order is workspaceSwitcher, flex,
-            // sortProjects, newTerminal. Re-reading the separator's index between inserts would walk
-            // it past the items just added and land the switcher against the `+` instead.
+            // Insert in reverse at that one index so the final order is flex, sortProjects,
+            // newTerminal. Re-reading the separator's index between inserts would walk it past the
+            // items just added and land the space against the `+` instead.
             toolbar.insertItem(withItemIdentifier: .newTerminal, at: sep)
             toolbar.insertItem(withItemIdentifier: .sortProjects, at: sep)
             toolbar.insertItem(withItemIdentifier: .flexibleSpace, at: sep)
-            toolbar.insertItem(withItemIdentifier: .workspaceSwitcher, at: sep)
         } else {
-            // The switcher goes with the sidebar. Removed before the guard below, because at launch
-            // with the sidebar already collapsed there are no sidebar buttons to clean up and the
-            // switcher still has to leave. Idempotent, so the repeated collapse callbacks the KVO
-            // observer sends cost nothing.
-            if let existing = index(of: .workspaceSwitcher) { toolbar.removeItem(at: existing) }
             // Only clean up when the buttons are actually present (nothing to remove at launch with
             // the sidebar already collapsed). Re-find each id after every removal — indices shift.
             guard let sortIdx = index(of: .sortProjects) else { return }
@@ -1210,6 +1204,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if item.isCollapsed {
             item.isCollapsed = false
             setInspectorSwitchVisible(true)
+        }
+    }
+
+    /// Brings the window into or out of the maximized-detail mode. Idempotent, and reached from two
+    /// clocks: synchronously as the maximize flag flips (so the host swaps with the docked detail in
+    /// one frame) and from the deferred store observer (which catches the detail closing out from
+    /// under a host that is already up).
+    private func applyDetailMaximized(_ maximized: Bool) {
+        let restored = detailWasMaximized && !maximized
+        detailWasMaximized = maximized
+        setDetailMaximized(maximized)
+        // The pane switch (Files/Search/Changes/Issues/Info) re-aims the inspector's list column,
+        // which the full-window detail now covers — so while maximized the tabs would act on
+        // something off-screen. Pull them from the toolbar for the duration and restore them on the
+        // way back down (the inspector is still open behind the host).
+        syncInspectorTabsVisibility(maximized: maximized)
+        // Tearing down the maximize host relayouts around divider 1, which can leave the tracking
+        // separator inert (the centered-tabs / missing-divider glitch). Re-bind once layout settles.
+        if restored {
+            DispatchQueue.main.async { [weak self] in self?.reassertInspectorSeparator() }
         }
     }
 
@@ -2257,7 +2271,7 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         defaultIdentifiers + [
-            .workspaceSwitcher, .sortProjects, .newTerminal, .inspectorTrackingSeparator, .inspectorTabs,
+            .sortProjects, .newTerminal, .inspectorTrackingSeparator, .inspectorTabs,
         ]
     }
 
@@ -2275,7 +2289,9 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             let item = NSToolbarItem(itemIdentifier: .toggleNavigator)
             item.label = localized("Navigator")
             item.toolTip = localized("Hide or show the navigator")
-            let host = NSHostingView(rootView: NavigatorToggleToolbarView())
+            let host = NSHostingView(rootView: NavigatorToggleToolbarView()
+                .environmentObject(store)
+                .environmentObject(settings))
             host.sizingOptions = [.intrinsicContentSize]
             item.view = host
             item.isBordered = false
@@ -2283,24 +2299,6 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
             // item's row in the `»` overflow menu and to validate it. A view-based item with
             // neither an action nor a `menuFormRepresentation` overflows into a dead row.
             item.action = #selector(NSSplitViewController.toggleSidebar(_:))
-            return item
-        case .workspaceSwitcher:
-            // The workspace the sidebar is scoped to, at the head of the sidebar's own toolbar
-            // region — the band above the column it scopes. Borderless SwiftUI rather than an
-            // `NSMenuToolbarItem` so the control can name the workspace: this toolbar is
-            // `.iconOnly`, which drops item titles. Its menu is still AppKit, built from the same
-            // `WorkspaceMenu.rows` this file's `fillWorkspaceMenu` uses, so the two can't drift.
-            // It draws nothing while there is only one workspace, which is also when the sidebar
-            // region has the least room to spare.
-            let item = NSToolbarItem(itemIdentifier: .workspaceSwitcher)
-            item.label = localized("Workspace")
-            item.toolTip = localized("Choose which workspace the sidebar shows")
-            let host = NSHostingView(rootView: WorkspaceSwitcherToolbarView()
-                .environmentObject(store)
-                .environmentObject(settings))
-            host.sizingOptions = [.intrinsicContentSize]
-            item.view = host
-            item.isBordered = false
             return item
         case .sortProjects:
             // A pull-down that sets how the sidebar orders projects (Recent Activity /
@@ -2414,7 +2412,6 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
 
 private extension NSToolbarItem.Identifier {
     static let toggleNavigator = NSToolbarItem.Identifier("TermioToggleNavigator")
-    static let workspaceSwitcher = NSToolbarItem.Identifier("TermioWorkspaceSwitcher")
     static let sortProjects = NSToolbarItem.Identifier("TermioSortProjects")
     static let newTerminal = NSToolbarItem.Identifier("TermioNewTerminal")
     static let inspectorTabs = NSToolbarItem.Identifier("TermioInspectorTabs")
@@ -2643,6 +2640,10 @@ private struct BranchPickerToolbarView: View {
 private struct PaneToggleToolbarView: View {
     let symbol: String
     let showsCapsule: Bool
+    /// Outer width. Defaults to the shared control height, which makes a capsuled button a circle.
+    /// A button that never draws a capsule has nothing to fill that square with, and the slack
+    /// only pushes whatever follows it further away — so the navigator toggle asks for less.
+    var width: CGFloat = InspectorTabsToolbar.controlHeight
     let help: String
     let label: String
     let toggle: () -> Void
@@ -2659,8 +2660,7 @@ private struct PaneToggleToolbarView: View {
                 .font(.system(size: 17))
                 .foregroundStyle(controlActive == .inactive
                                  ? Color(nsColor: .disabledControlTextColor) : .primary)
-                .frame(width: InspectorTabsToolbar.controlHeight,
-                       height: InspectorTabsToolbar.controlHeight)
+                .frame(width: width, height: InspectorTabsToolbar.controlHeight)
                 .background { if showsCapsule { capsuleBackground } }
                 .contentShape(.capsule)
         }
@@ -2680,8 +2680,35 @@ private struct PaneToggleToolbarView: View {
     }
 }
 
+/// The navigator toggle and, while the navigator is open, the name of the workspace the column
+/// below is scoped to.
+///
+/// One toolbar item carrying both, rather than the two adjacent items this used to be: NSToolbar
+/// spaces neighbouring items on its own terms, and between a button and the word naming the column
+/// under it that spacing read as a gap neither control asked for — the name looked detached from
+/// the button it sits beside. Hosted together, the distance is this view's to set.
+///
+/// The name draws only while the sidebar is open (it labels a column that has to be on screen) and
+/// only while there is more than one workspace to be in — `WorkspaceSwitcherToolbarView` owns that
+/// second rule, along with the menu the name pops.
 private struct NavigatorToggleToolbarView: View {
+    @EnvironmentObject var store: TermioStore
+
+    /// Close enough to read as one control band with the button, still clear of the glyph. The
+    /// toggle's own frame contributes a little more (it is wider than the symbol it draws), so the
+    /// gap on screen is a few points past this.
+    private static let nameSpacing: CGFloat = 6
+
     var body: some View {
+        HStack(spacing: Self.nameSpacing) {
+            toggle
+            if store.sidebarVisible {
+                WorkspaceSwitcherToolbarView()
+            }
+        }
+    }
+
+    private var toggle: some View {
         PaneToggleToolbarView(
             // Never capsuled, open or collapsed. This button lives in the sidebar's own toolbar
             // region, over the vibrant `.sidebar` material and beside the traffic lights — a
@@ -2690,6 +2717,10 @@ private struct NavigatorToggleToolbarView: View {
             // own image size and tint and would stop matching the trailing button's glyph.
             symbol: "sidebar.leading",
             showsCapsule: false,
+            // Tight to the glyph (19.5pt at this weight) rather than the capsuled button's square.
+            // With the navigator collapsed the title lands right after this item, and the square's
+            // trailing half was reading as a hole between the button and the name it belongs to.
+            width: 26,
             help: localized("Hide or show the navigator"),
             label: localized("Navigator")
         ) {

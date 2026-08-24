@@ -8,7 +8,7 @@ use crate::protocol::{
 };
 use anyhow::{bail, Context, Result};
 use std::os::fd::AsRawFd;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -511,9 +511,13 @@ pub async fn attach(
     )
     .await?;
 
+    // Attaching no longer takes the token off whoever holds it, so this
+    // attachment types its way in like any other device (`Control::ClaimWriter`).
+    let holds_token = Arc::new(AtomicBool::new(false));
     let id = match read_frame(&mut rd).await? {
-        Some(Frame::Control(Control::Attached { id, name, .. })) => {
+        Some(Frame::Control(Control::Attached { id, name, writer, .. })) => {
             eprintln!("[attached to {name} ({id}) — detach with Ctrl-\\ ]\r");
+            holds_token.store(writer, Ordering::Relaxed);
             id
         }
         Some(Frame::Control(Control::Error { message, .. })) => bail!(message),
@@ -528,6 +532,14 @@ pub async fn attach(
     let (resize_claim_tx, mut resize_claim_rx) = tokio::sync::mpsc::unbounded_channel();
     let scrollback_rows = Arc::new(AtomicUsize::new(0));
     let reader_scrollback_rows = scrollback_rows.clone();
+    let reader_holds_token = holds_token.clone();
+    let reader_client_id = negotiated_client_id.clone();
+    // Shared with the input loop rather than kept local to it, so the answer to
+    // a claim clears the latch from wherever it arrives — including a refusal,
+    // which carries no `writer_changed` and would otherwise leave this
+    // attachment silently unable to ever ask again.
+    let claiming = Arc::new(AtomicBool::new(false));
+    let reader_claiming = claiming.clone();
     let reader = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
         let mut status = None;
@@ -566,6 +578,14 @@ pub async fn attach(
                     ..
                 }))) if negotiated_client_id.as_deref() == Some(writer.as_str()) => {
                     let _ = resize_claim_tx.send(());
+                }
+                Ok(Some(Frame::Event(Event::WriterChanged { writer, .. }))) => {
+                    let mine = matches!((&writer, &reader_client_id), (Some(w), Some(id)) if w == id);
+                    reader_holds_token.store(mine, Ordering::Relaxed);
+                    reader_claiming.store(false, Ordering::Relaxed);
+                }
+                Ok(Some(Frame::Control(Control::Error { .. }))) => {
+                    reader_claiming.store(false, Ordering::Relaxed);
                 }
                 Ok(Some(Frame::Control(Control::Exited { status: s, .. }))) => {
                     status = Some(s);
@@ -607,6 +627,30 @@ pub async fn attach(
                             }
                             detached = true;
                             break;
+                        }
+                        // Typing is what takes the token; attaching no longer
+                        // does. Sent at most once per lost token — the answer
+                        // clears the latch — so a burst of keystrokes on a muted
+                        // attachment is not a burst of claims. Latched only on a
+                        // claim that actually reached the wire: a write that
+                        // failed draws no answer at all, and latching it anyway
+                        // would mute this attachment for good.
+                        if !holds_token.load(Ordering::Relaxed)
+                            && !claiming.load(Ordering::Relaxed)
+                        {
+                            // Latched *before* the write is awaited. The answer
+                            // can land during that await, and a latch written
+                            // afterwards would overwrite the reader's clear —
+                            // leaving this attachment unable to claim again the
+                            // next time it loses the token. Only a write that
+                            // never reached the wire unlatches, because nothing
+                            // is coming back to do it.
+                            claiming.store(true, Ordering::Relaxed);
+                            if write_control(
+                                &mut wr, &Control::ClaimWriter { seq: None }).await.is_err()
+                            {
+                                claiming.store(false, Ordering::Relaxed);
+                            }
                         }
                         if write_data(&mut wr, &buf[..n]).await.is_err() {
                             break;

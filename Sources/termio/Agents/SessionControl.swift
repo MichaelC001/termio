@@ -160,9 +160,17 @@ struct ControlRequest: Decodable {
     /// produce them, and hand-writing them into `text` is right by luck at best.
     /// See `SessionKeyPress`.
     let keys: [String]?
+    /// `spawn`/`run` placement: where the new pane lands relative to the
+    /// caller's — `right` or `down` (herdr's split vocabulary). Absent means
+    /// the automatic opposite-stack rule.
+    let direction: String?
+    /// `spawn`/`run` placement: the new pane's fraction of the split. Stating
+    /// one pins the divider so later spawns don't redistribute it away.
+    let ratio: Double?
 
     private enum CodingKeys: String, CodingKey {
         case op, format, target, text, lines, agent, snapshot, wait, title, enter, keys
+        case direction, ratio
         case callerSession = "caller_session"
         case callerCwd = "caller_cwd"
         case timeoutMs = "timeout_ms"

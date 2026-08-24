@@ -32,12 +32,19 @@ id-prefix works too).
   detectable. Exits 0 on your Ctrl-C, 2 if Termio itself went away.
 - `termio sessions spawn "<prompt>"` — start a NEW agent session on the
   prompt (`--agent codex` picks the agent; default: your own kind). Replies
-  immediately with the new session's link — use it for every follow-up;
-  the prompt itself is typed in once the agent finishes booting.
+  immediately with the new session's link (`target` in `--json`) — use it
+  for every follow-up; the prompt itself is typed in once the agent
+  finishes booting.
 - `termio sessions run "<command>"` — start a NEW plain terminal session
   typing that shell command (a dev server, a test run) into a visible pane —
   no LLM. Use it instead of your own background shell when the user should
   be able to see and take over the process.
+- `--direction right|down` and `--ratio <0..1>` on `spawn`/`run` — place the
+  new pane beside or below YOUR pane (every spawn anchors to the caller),
+  and give it that share of the split: `--direction down --ratio 0.25` is a
+  log strip under you. Omit both for the default placement. Panes without a
+  stated ratio share their run evenly, and a stated one holds against later
+  spawns — so only state a ratio when the content needs it.
 - `termio sessions send <link> "<text>"` — type text into that existing
   sibling and submit it with a real Return keypress. Send a prompt to drive
   it, or a menu choice (`"1"`, `"yes"`) to answer a permission prompt. A

@@ -17,6 +17,75 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.41.4",
+    date: "2026-08-24",
+    title: "The terminal keeps the width of the window you're using",
+    changes: {
+      fixed: [
+        "A terminal no longer draws at the wrong width — a narrow column of text in a wide, half-empty pane — after another device looked at the same session. Opening a session on your phone took the terminal's size with it, and the Mac had no way to take it back, so the pane stayed wrong until you dragged the window edge. The size now follows the device you're actually typing on, not the one that opened the session most recently.",
+      ],
+    },
+  },
+  {
+    version: "0.41.3",
+    date: "2026-08-23",
+    title: "A session on another machine says what it's working on",
+    changes: {
+      fixed: [
+        "A session running on another machine now follows what its agent is doing, the way a local one does — the row becomes the agent's name, then the topic it's working on. It used to sit on a fixed \"project · host\" label forever: the name termio composed for the row was kept in the same place a name you type goes, so nothing was ever allowed to replace it.",
+        "Maximizing a file no longer flashes the file tree on the way there.",
+      ],
+    },
+  },
+  {
+    version: "0.41.2",
+    date: "2026-08-23",
+    title: "A session that can't start says why",
+    changes: {
+      fixed: [
+        "A session whose folder has been deleted, moved, or left on an unmounted drive now names the folder. It used to report that your shell didn't exist — the same error code covers both, and termio picked the wrong one to blame.",
+        "Running the test suite from a checkout no longer overwrites the installed app's projects and sessions. This one only ever reached people who build termio themselves.",
+      ],
+    },
+  },
+  {
+    version: "0.41.1",
+    date: "2026-08-23",
+    title: "The workspace name holds still",
+    changes: {
+      fixed: [
+        "Switching workspaces no longer makes the name in the toolbar flick and shift. It was drawn at the width of whatever name it held, so every switch resized it and the toolbar re-flowed around it.",
+      ],
+    },
+  },
+  {
+    version: "0.41.0",
+    date: "2026-08-23",
+    title: "Put a workspace on another machine",
+    changes: {
+      new: [
+        "A workspace can live on a box you own — a VPS, or the Mac mini on the same desk — and termio sets up the session host there for you. It copies one binary into ~/.local/bin over SSH — no root, no package manager. A machine already running one is upgraded in place.",
+        "Settings ▸ Workspaces: every workspace on one screen, with renaming and removing beside the one they act on. The switcher menu could only ever offer those for the workspace you were already in, which is why they read as \"Rename Workspace\" with no name in them.",
+        "The phone groups projects by workspace, and each section names the machine that workspace is on. The roster used to arrive as one flat list, so a checkout on a VPS and one on this Mac looked the same.",
+      ],
+      improved: [
+        "Settings ▸ Machines is now Settings ▸ Devices, the word the rest of the app already used.",
+        "The dot on a remote row says whether the machine is answering: filled when it is, hollow while it is being reached, orange and struck through when it refused, with the machine's own words in the tooltip. It used to carry a colour that repeated down the whole column.",
+        "Open Project opens on the machine the workspace belongs to, through a picker over that machine's own directories. ⌘O inside a workspace on a box used to file the folder under this Mac and throw you out of the scope you were in.",
+        "Typing into a session takes back the right to write to it, instead of leaving the keystrokes refused until you reattach.",
+        "Every session now runs through the same host, local or remote, so the two behave alike.",
+      ],
+      fixed: [
+        "Reaching a machine no longer hangs when its key needs a passphrase and no agent is loaded. It fails and says so.",
+        "Sessions on a VPS get a locale that machine actually has, so a TUI's box characters no longer arrive as mojibake.",
+        "Pasting an image into a session running on another machine reaches that session instead of failing to find it.",
+        "Removing a project ends the agents filed under it. They kept running with no row left that could reach them.",
+        "A maximized file, diff or issue fills the window, rather than sitting under a toolbar with nothing left in it.",
+        "The workspace name in the toolbar sits beside the sidebar button instead of adrift from it.",
+      ],
+    },
+  },
+  {
     version: "0.40.3",
     date: "2026-08-22",
     title: "A dev build no longer shares the session host",
