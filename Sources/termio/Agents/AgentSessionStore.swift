@@ -162,3 +162,39 @@ enum AgentSessionStore {
         return text.split(separator: "\n", maxSplits: 1).first.map(String.init)
     }
 }
+
+/// The XDG base directories as *this* machine has them.
+///
+/// `~/.config` and `~/.local/share` are the spec's default *values*, not directory
+/// names, and every agent termio files under them — OpenCode, Amp, Crush — reads
+/// the variable. Writing to the literal default on a machine whose owner moved
+/// their config puts a skill where the agent never looks.
+///
+/// The install-time spelling of this rule now lives on the box, in termiod's
+/// `agent::machine::expand`. What is left here is the *read* side: finding the
+/// agent's own session records to resume a conversation, which is this Mac's
+/// job and stays here.
+enum XDGBaseDirectories {
+    private static let bases = [
+        (prefix: ".config", variable: "XDG_CONFIG_HOME"),
+        (prefix: ".local/share", variable: "XDG_DATA_HOME"),
+    ]
+
+    /// Expands a manifest path against this machine, honouring the XDG variables.
+    /// Identical to `expandingTildeInPath` whenever they are unset, which is every
+    /// default macOS account.
+    static func expand(_ path: String) -> String {
+        guard path.hasPrefix("~/") else { return (path as NSString).expandingTildeInPath }
+        let rest = String(path.dropFirst(2))
+        for base in bases {
+            guard rest == base.prefix || rest.hasPrefix(base.prefix + "/"),
+                  // The login shell, not this process: a Finder-launched app
+                  // inherits none of the user's shell environment.
+                  let root = AgentAvailability.loginShellEnvironment(base.variable)
+            else { continue }
+            let tail = rest.dropFirst(base.prefix.count)
+            return root + tail
+        }
+        return (path as NSString).expandingTildeInPath
+    }
+}

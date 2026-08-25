@@ -120,18 +120,14 @@ struct AgentSettingsTab: View {
                     // toggle. As a labelled row it reads as its own action, which
                     // is what it is — both switches at once, on one machine.
                     InstallButtonRow(title: localized("Install on \(device.name)")) {
-                        // Read the preferences here, on the main actor, and do the
-                        // writing off it — see `InstallButtonRow`.
-                        let hooksWanted = settings.agentHooksEnabled
-                        let controlWanted = settings.sessionControlEnabled
-                        let target = device.integrationTarget
-                        return await Task.detached {
-                            .summarizing(
-                                AgentStatusHooks.sync(enabled: hooksWanted, target: target)
-                                    .merged(with: SessionSkillInstaller.sync(
-                                        enabled: controlWanted, target: target)),
-                                headline: localized("Installed"), unit: localized("agents"))
-                        }.value
+                        // One message for both switches: the daemon on that
+                        // machine writes the hooks and the skill in one pass.
+                        .summarizing(
+                            await AgentIntegrationInstaller.sync(
+                                hooks: settings.agentHooksEnabled ? .install : .remove,
+                                skills: settings.sessionControlEnabled ? .install : .remove,
+                                target: device.integrationTarget),
+                            headline: localized("Installed"), unit: localized("agents"))
                     }
                 } header: {
                     SectionHeaderLabel(title: localized("Integration"))

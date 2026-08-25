@@ -734,16 +734,16 @@ pub enum Control {
     /// user's own `~/.termio/config/agents` — so the write surface is fixed by
     /// the box rather than chosen by the caller.
     InstallAgents {
-        /// `false` removes every integration termio has ever installed.
-        #[serde(default = "default_true")]
-        enabled: bool,
         /// The agent ids the user has enabled, or absent for the whole catalog.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agents: Option<Vec<String>>,
-        #[serde(default = "default_true")]
-        hooks: bool,
-        #[serde(default = "default_true")]
-        skills: bool,
+        /// What to do with each half: install, remove, or leave alone. Stated
+        /// per half because the two Integration switches are independent, and
+        /// one message has to stay one message when they disagree.
+        #[serde(default)]
+        hooks: crate::agent::install::HalfAction,
+        #[serde(default)]
+        skills: crate::agent::install::HalfAction,
         /// What an installed hook runs to report status. Only the client knows
         /// whether an app is listening, and where its CLI copy is.
         reporter: crate::agent::install::Reporter,
@@ -751,6 +751,15 @@ pub enum Control {
         /// upgrade rewrites the hooks. Absent means this daemon's own version.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hook_version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+
+    /// Which of these agents' CLIs are present on this box (capability
+    /// `agents`). Read-only, and one round trip for the whole roster.
+    ProbeAgents {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agents: Option<Vec<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
@@ -931,6 +940,12 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },
+    /// Reply to `probe_agents`.
+    AgentsProbed {
+        agents: Vec<crate::agent::install::AgentPresence>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
     /// Reply to `install_agents`, one row per agent per kind. Every agent the
     /// request selected appears, including the ones that were refused and the
     /// ones whose dialect this daemon does not write yet: a silent no-op is what
@@ -1000,7 +1015,8 @@ impl Control {
             | Control::UploadAbort { seq, .. }
             | Control::Wait { seq, .. }
             | Control::SetStatus { seq, .. }
-            | Control::InstallAgents { seq, .. } => *seq,
+            | Control::InstallAgents { seq, .. }
+            | Control::ProbeAgents { seq, .. } => *seq,
             _ => None,
         }
     }

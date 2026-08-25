@@ -1260,7 +1260,7 @@ final class TermioStore: ObservableObject {
                 // shared hooks file while termio is backgrounded, wiping ours. Re-installing
                 // restores them (and drops the conflicting entries); skipped when the file
                 // is already byte-identical.
-                if self.settings.agentHooksEnabled { AgentStatusHooks.sync(enabled: true) }
+                if self.settings.agentHooksEnabled { self.syncAgentIntegration() }
             }
         reconcileWorktrees()
 

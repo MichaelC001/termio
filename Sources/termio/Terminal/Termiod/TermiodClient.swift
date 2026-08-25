@@ -12,7 +12,7 @@ import TermioShared
 /// This is the Mac's half: where a daemon lives, how to reach it, and what to
 /// do with what it says. The framing, the payload types and the encode/decode
 /// tables are the protocol itself and live in `TermioShared`
-/// (`TermiodProtocol.swift`), so the phone attaches over the same codec instead
+/// (`Termiod.swift`), so the phone attaches over the same codec instead
 /// of a second copy of it.
 extension Termiod {
     /// The client banner this app puts in every `hello`.
@@ -621,6 +621,88 @@ extension Termiod {
         let transport = try Transport.open(route)
         defer { transport.close() }
         return try performHello(transport, role: "control").device
+    }
+
+    /// The capability the agent plane rides on. A daemon that predates it
+    /// cannot install, and says so at the handshake rather than at the write —
+    /// which is what turns version skew into a sentence instead of a no-op.
+    static let agentCapability = "agents"
+
+    /// Whether the daemon on this route can install agent integration.
+    ///
+    /// Asked with the handshake the caller was going to run anyway, so it costs
+    /// nothing. Used by the device pane's foundation rung: a box whose termiod
+    /// is too old is *redeployed*, so the answer to skew is the rung the user
+    /// was already pressing, not an error they have to act on.
+    static func supportsAgentInstall(route: TermiodRoute) throws -> Bool {
+        let transport = try Transport.open(route)
+        defer { transport.close() }
+        let handshake = try performHello(
+            transport, role: "control", caps: [agentCapability])
+        return handshake.capabilities.contains(agentCapability)
+    }
+
+    /// Install (or remove) termio's agent integration on the machine this route
+    /// reaches. One round trip for the whole roster.
+    static func installAgents(
+        route: TermiodRoute,
+        agents: [String]?,
+        hooks: Termiod.AgentHalfAction,
+        skills: Termiod.AgentHalfAction,
+        reporter: Termiod.AgentHookReporter,
+        hookVersion: String
+    ) throws -> [Termiod.AgentInstallResult] {
+        try withControlChannel(route: route, caps: [agentCapability]) { transport, handshake in
+            guard handshake.capabilities.contains(agentCapability) else {
+                throw TermiodClientError.requestFailed(
+                    localized("termiod on this machine is too old to install agent integration."))
+            }
+            try writeFrame(
+                transport.writeDescriptor, kind: .control,
+                payload: installAgentsPayload(
+                    agents: agents, hooks: hooks, skills: skills,
+                    reporter: reporter, hookVersion: hookVersion))
+            while true {
+                let frame = try readFrame(transport.readDescriptor)
+                guard frame.kind == .control else { continue }
+                switch try decodeControl(frame.payload) {
+                case .agentsInstalled(let payload):
+                    return payload.results
+                case .error(let payload):
+                    throw TermiodClientError.requestFailed(payload.message)
+                default:
+                    continue
+                }
+            }
+        }
+    }
+
+    /// Which of these agents' CLIs are on that machine. One round trip for the
+    /// whole roster, where the SSH arm paid one per agent.
+    static func probeAgents(
+        route: TermiodRoute, agents: [String]?
+    ) throws -> [Termiod.AgentPresence] {
+        try withControlChannel(route: route, caps: [agentCapability]) { transport, handshake in
+            guard handshake.capabilities.contains(agentCapability) else {
+                throw TermiodClientError.requestFailed(
+                    localized("termiod on this machine is too old to report its agents."))
+            }
+            try writeFrame(
+                transport.writeDescriptor, kind: .control,
+                payload: probeAgentsPayload(agents: agents))
+            while true {
+                let frame = try readFrame(transport.readDescriptor)
+                guard frame.kind == .control else { continue }
+                switch try decodeControl(frame.payload) {
+                case .agentsProbed(let payload):
+                    return payload.agents
+                case .error(let payload):
+                    throw TermiodClientError.requestFailed(payload.message)
+                default:
+                    continue
+                }
+            }
+        }
     }
 
     /// The daemon's answer to "what is running?" — which, to be honest, has to

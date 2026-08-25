@@ -464,6 +464,35 @@ enum AgentHookType: String, Hashable {
     case scripts
 }
 
+/// The on-disk shape of a JSON hook file. Agents that configure hooks via a JSON
+/// file still disagree on structure, so the installer branches on this.
+enum HookDialect: Hashable {
+    /// Claude Code / Codex: `{ "hooks": { "<Event>": [ { "matcher"?, "hooks": [ {type,command} ] } ] } }`,
+    /// and the agent ignores the hook's stdout.
+    case claudeNested
+    /// Cursor: `{ "version": 1, "hooks": { "<Event>": [ { "command" } ] } }` — a
+    /// required top-level `version`, flat one-key entries, and the hook's stdout is
+    /// read back as its JSON reply (so the report prints a clean empty object).
+    case cursorFlat
+    /// Copilot CLI: Cursor's flat shape plus a `type` on each entry —
+    /// `{ "version": 1, "hooks": { "<Event>": [ { "type": "command", "command" } ] } }`.
+    /// Its config lives in a file termio owns under `~/.copilot/hooks/`, and it reads
+    /// hook stdout as free text (its own examples print banners), so the report stays
+    /// on the silent form. PascalCase event names select the payload whose fields are
+    /// snake_case — the same `session_id` / `tool_name` the other agents supply.
+    case copilotFlat
+    /// Kimi's marker-delimited TOML array-of-tables block.
+    case kimiTOML
+    /// Shipped plugin templates. Each names a closed host API; manifests provide
+    /// only the destination directory and event→state data.
+    case openCodePlugin
+    case piPlugin
+    case ampPlugin
+    /// Cline: a directory of executables named after the lifecycle event
+    /// (`~/.cline/hooks/TaskStart`), with no host config to merge.
+    case clineScripts
+}
+
 struct AgentHookEvent: Hashable {
     let name: String
     let state: String

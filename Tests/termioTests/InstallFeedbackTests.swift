@@ -1,3 +1,4 @@
+import TermioShared
 import XCTest
 @testable import termio
 
@@ -67,32 +68,55 @@ final class InstallFeedbackTests: XCTestCase {
     }
 }
 
-/// Hooks and the skill are two installs the user asked for with one click, so
-/// they are reported as one line. What that line may not do is round a mixed
-/// result up: an agent that took its hook and refused the skill is not installed.
-final class InstallOutcomeMergeTests: XCTestCase {
-    private func outcome(succeeded: [String], failed: [String] = []) -> InstallOutcome {
-        var result = InstallOutcome()
-        for name in succeeded { result.record(name, installed: true) }
-        for name in failed { result.record(name, installed: false) }
-        return result
+
+/// Hooks and the skill are two rows of one reply, and they are reported as one
+/// line per agent. What that line may not do is round a mixed result up: an
+/// agent that took its hook and refused its skill is not installed.
+final class InstallOutcomeFromReplyTests: XCTestCase {
+    private func row(
+        _ name: String, _ kind: String, _ status: String
+    ) -> Termiod.AgentInstallResult {
+        Termiod.AgentInstallResult(
+            id: name.lowercased(), name: name, kind: kind,
+            path: "/home/u/.\(name.lowercased())", status: status, detail: nil)
     }
 
     func testAnAgentThatTookBothIsNamedOnce() {
-        let merged = outcome(succeeded: ["Claude Code", "Codex"])
-            .merged(with: outcome(succeeded: ["Claude Code", "Codex"]))
-        XCTAssertEqual(merged.succeeded, ["Claude Code", "Codex"])
-        XCTAssertTrue(merged.failed.isEmpty)
+        let outcome = InstallOutcome([
+            row("Claude Code", "hooks", "installed"),
+            row("Claude Code", "skill", "installed"),
+            row("Codex", "hooks", "installed"),
+        ])
+        XCTAssertEqual(outcome.succeeded, ["Claude Code", "Codex"])
+        XCTAssertTrue(outcome.failed.isEmpty)
     }
 
     func testRefusingEitherHalfCountsAsRefused() {
-        let merged = outcome(succeeded: ["Claude Code", "Codex"])
-            .merged(with: outcome(succeeded: ["Codex"], failed: ["Claude Code"]))
-        XCTAssertEqual(merged.succeeded, ["Codex"])
-        XCTAssertEqual(merged.failed, ["Claude Code"])
+        let outcome = InstallOutcome([
+            row("Claude Code", "hooks", "installed"),
+            row("Claude Code", "skill", "failed"),
+            row("Codex", "hooks", "installed"),
+        ])
+        XCTAssertEqual(outcome.succeeded, ["Codex"])
+        XCTAssertEqual(outcome.failed, ["Claude Code"])
+    }
+
+    /// A dialect the daemon does not write is neither a success to claim nor a
+    /// failure to blame anyone for, so it stays out of the sentence entirely.
+    func testASkippedDialectIsNotReportedEitherWay() {
+        let outcome = InstallOutcome([row("Kimi", "hooks", "skipped")])
+        XCTAssertTrue(outcome.isEmpty)
     }
 
     func testNothingToInstallStaysEmpty() {
-        XCTAssertTrue(InstallOutcome().merged(with: InstallOutcome()).isEmpty)
+        XCTAssertTrue(InstallOutcome([]).isEmpty)
+    }
+
+    /// The install never reached the machine. A row that says so beats an empty
+    /// success, which is what a swallowed error would look like.
+    func testAnUnreachableMachineIsNamedAsAFailure() {
+        let outcome = InstallOutcome(failure: "termiod on vps is too old.")
+        XCTAssertEqual(outcome.failed, ["termiod on vps is too old."])
+        XCTAssertTrue(outcome.succeeded.isEmpty)
     }
 }
