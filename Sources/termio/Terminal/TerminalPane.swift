@@ -431,6 +431,14 @@ private struct ManagedTerminalSurface: View {
             .onChange(of: surfaceFocus) { _, focused in
                 if focused { onFocused() }
             }
+            // Mounted is not the same as on screen, and only this view knows the
+            // difference. The representable's NSView is not in the hierarchy yet on
+            // the first pass, so the mount-time answer is repeated a runloop turn
+            // later — the same shape, and the same reason, as the focus probe above.
+            .onChange(of: isVisible, initial: true) { _, visible in
+                applySurfaceVisibility(visible, for: context)
+                DispatchQueue.main.async { applySurfaceVisibility(visible, for: context) }
+            }
             // A relaunched session gets a fresh TerminalViewState (see
             // `relaunchSession`); keying the mounted view on the state's identity
             // remounts the NSView for the new surface. Without this the
@@ -438,6 +446,50 @@ private struct ManagedTerminalSurface: View {
             // keeps the first-mounted delegate, which is the old, dead state.
             .id(ObjectIdentifier(context))
     }
+}
+
+/// Tells ghostty whether a mounted surface is actually on screen.
+///
+/// A pane that is not showing stays mounted on purpose — that is this file's whole
+/// premise — so it keeps its frame and is drawn at zero opacity. AppKit is happy to
+/// lay that out, and ghostty, told nothing, is happy to keep rendering it: every
+/// byte a background agent writes costs a frame nobody sees, on a renderer thread
+/// nobody is watching.
+///
+/// The switch for that lives on the *view*, not the surface. `setSurfaceVisible`
+/// composes with the app-active state the surface coordinator already tracks, stops
+/// the display link, gates the PTY-output wakeups that would otherwise tick a hidden
+/// pane, and asks for an immediate frame on the way back in. Setting ghostty's
+/// occlusion flag directly does none of those, and is overwritten the next time the
+/// coordinator re-asserts its own answer.
+@MainActor
+private func applySurfaceVisibility(_ visible: Bool, for state: TerminalViewState) {
+    guard let root = AppDelegate.mainWindow?.contentView,
+          let view = terminalView(matching: state, under: root)
+    else { return }
+    view.setSurfaceVisible(visible)
+}
+
+/// The AppKit terminal view a `TerminalViewState` is mounted in. SwiftUI hands the
+/// representable's NSView to nobody, so both callers that need it — focus, which
+/// must reach the first responder, and visibility, which must reach the surface
+/// coordinator — find it by matching the delegate the state installed.
+@MainActor
+private func terminalView(
+    matching state: TerminalViewState,
+    under root: NSView
+) -> TerminalView? {
+    if let terminal = root as? TerminalView,
+       let delegate = terminal.delegate as AnyObject?,
+       delegate === state {
+        return terminal
+    }
+    for child in root.subviews {
+        if let match = terminalView(matching: state, under: child) {
+            return match
+        }
+    }
+    return nil
 }
 
 private struct TerminalFocusRepairProbe: NSViewRepresentable {
@@ -677,23 +729,6 @@ private final class TerminalFocusDriver {
 
     private func mainWindow() -> NSWindow? {
         AppDelegate.mainWindow
-    }
-
-    private func terminalView(
-        matching state: TerminalViewState,
-        under root: NSView
-    ) -> TerminalView? {
-        if let terminal = root as? TerminalView,
-           let delegate = terminal.delegate as AnyObject?,
-           delegate === state {
-            return terminal
-        }
-        for child in root.subviews {
-            if let match = terminalView(matching: state, under: child) {
-                return match
-            }
-        }
-        return nil
     }
 
     private func resignPreviousSurface(current: NSResponder?, target: TerminalView) {
