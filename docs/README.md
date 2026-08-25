@@ -106,6 +106,7 @@ from the real front matter).
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/20260630-sandbox-seatbelt.md) |
 | draft | rfc | [A project carries its machine — delete the host container](design/20260818-one-workspace-source.md) |
 | draft | rfc | [Adversarial review — Retire "remote", every machine is a device](design/20260814-remote-to-device.review-claude.md) |
+| draft | rfc | [Agent integration moves into termiod](design/20260825-agent-integration-moves-to-termiod.md) |
 | draft | rfc | [Automation — scheduled agent runs](design/20260702-automation-scheduled-agent-runs.md) |
 | draft | rfc | [Companion Wire Protocol](design/20260810-companion-wire-protocol.md) |
 | draft | rfc | [Device RFC blocking decisions](design/20260814-remote-to-device.decisions.md) |

@@ -3,8 +3,9 @@ title: Installing termio's agent integration on a device
 status: draft
 type: rfc
 created: 2026-08-24
-updated: 2026-08-24
+updated: 2026-08-25
 related:
+  - 20260825-agent-integration-moves-to-termiod.md
   - 20260824-ios-as-device-client.md
   - 20260814-remote-to-device.md
   - 20260805-termiod-device-architecture.md
@@ -221,6 +222,15 @@ conflict fingerprints, and the refusal rules to exist in Rust *as well as*
 Swift, and the catalog they read is user-extensible.
 
 ### D5 — Policy stays in the client; the daemon owns only path safety
+
+> **Reversed 2026-08-25** by
+> [`20260825-agent-integration-moves-to-termiod.md`](20260825-agent-integration-moves-to-termiod.md).
+> The duplication argument below is still the true cost, and that RFC pays it. What
+> it prices that this one did not is the shape D5 forces: policy in Swift and files
+> on another machine puts the plan and the filesystem on opposite ends of a network,
+> so a twelve-agent install is 40–60 sequential `ssh` round trips. It also leaves
+> the phone and the browser unable to install at all, since neither has the Swift
+> that holds the policy. Read D5 for the argument, not for the decision.
 
 The daemon never learns what an agent is, where `.claude` lives, or which agents
 are enabled. It answers "write these bytes under `$HOME`, safely" and nothing
