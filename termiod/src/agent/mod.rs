@@ -17,6 +17,9 @@
 //!   to this one rewrites nothing.
 //! - [`machine`] is what the daemon knows about its own box that a remote writer
 //!   had to ask for: `$HOME`, the XDG bases, the login-shell `PATH`.
+//! - [`plugin`] is the three generated plugin sources — the one dialect whose
+//!   hook is source rather than a command, and the one with traps that fail
+//!   silently.
 //! - [`install`] is the installers themselves.
 
 pub mod apple_json;
@@ -25,3 +28,4 @@ mod fixture;
 pub mod install;
 pub mod machine;
 pub mod manifest;
+pub mod plugin;

