@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import TermioShared
 
 /// The files an agent integration is written into, on whichever machine the
 /// agent will run on.

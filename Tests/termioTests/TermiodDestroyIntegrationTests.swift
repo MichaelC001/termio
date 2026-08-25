@@ -1,5 +1,6 @@
 import Network
 import XCTest
+import TermioShared
 @testable import termio
 
 /// The line between detaching and destroying, against a real daemon.

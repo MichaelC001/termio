@@ -1,0 +1,966 @@
+import Darwin
+import Foundation
+
+/// The termiod Session Protocol codec (v0.1, see termiod/src/protocol.rs) —
+/// framing, control payloads, and the encode/decode tables, with nothing that
+/// knows how the bytes get to a daemon.
+///
+/// It lives beside `WireProtocol.swift` for the same reason that one does: the
+/// Mac reaches a daemon over a Unix socket or an `ssh … termiod stdio` pipe, the
+/// phone will reach one over a WebSocket, and a second Swift copy of this format
+/// would drift from the first without anything failing to build. Everything a
+/// route needs — sockets, `ssh -G`, spawning the daemon — stays in the app's
+/// `TermiodClient.swift`, which extends this same namespace.
+///
+/// Framing is `[kind: u8][length: u32 big-endian][payload]`. Control payloads
+/// are JSON; `D` (data) is raw PTY bytes and `R` (resize) is rows/cols as two
+/// big-endian u16.
+public enum Termiod {
+    /// What this client offers on an **attach** channel, and — the part that
+    /// matters — who consumes each. A capability is a promise to handle the
+    /// frames it unlocks: offering one with nothing behind it is worse than not
+    /// offering it, because the daemon then spends bandwidth on frames that are
+    /// dropped on the floor. The daemon's full set is `HOST_CAPABILITIES` in
+    /// termiod/src/protocol.rs; the stance on every one of them:
+    ///
+    /// | Capability   | Offered | Consumer |
+    /// | ------------ | ------- | -------- |
+    /// | `snapshot`   | yes     | `S` → `TermiodSnapshot.render` → the surface's repaint |
+    /// | `events`     | yes     | `E` → `TermiodSessionLink.onStatus` (agent status), `applyWriter` (write gating), `applyAuthoritativeGrid` (§C.5 dimensions) |
+    /// | `scrollback` | no      | `H` carries packed cells to inject *above* the viewport; a byte-stream surface has nowhere to put them |
+    /// | `grid_diff`  | no      | `G` would make the host resolve every cell's colour, which overrides the viewer's theme — the §A/§H regression this client exists not to repeat |
+    /// | `send_wait`  | no      | `send`/`wait` are control-channel verbs; the app injects through its own attach channel |
+    /// | `resources`  | no      | `subscribe_resource` — live tree and git updates, which need a channel that outlives one request |
+    /// | `fs_watch`   | no      | ditto |
+    /// | `files`      | no      | `fs.list`/`fs.read` — the Files pane's consumer, on its own control channel (`TermiodFiles.swift`), never an attachment |
+    /// | `upload`     | no      | remote paste; rides a control channel, not an attachment |
+    /// | `git`        | no      | ditto |
+    ///
+    /// A later plane opens its own channel and passes its own `caps` to
+    /// `withControlChannel` — capabilities are per-connection, so nothing here
+    /// has to grow for the file tree or git to land.
+    public static let attachCapabilities = ["snapshot", "events"]
+
+    /// What a plain control channel (`list`, `kill`) offers: nothing. Both verbs
+    /// are unconditional, and tombstones ride the `sessions` reply un-gated.
+    public static let controlCapabilities: [String] = []
+
+    public static let protocolVersion: UInt32 = 1
+
+    // MARK: - Framing
+
+    public enum FrameKind: UInt8, Sendable {
+        case control = 0x43 // 'C'
+        case data = 0x44 // 'D'
+        case resize = 0x52 // 'R'
+        case event = 0x45 // 'E'
+        case snapshot = 0x53 // 'S'
+        case history = 0x48 // 'H'
+        case grid = 0x47 // 'G'
+        case file = 0x46 // 'F'
+        case upload = 0x55 // 'U'
+    }
+
+    public static let maximumFrameSize = 16 * 1024 * 1024
+    /// The daemon chunks its own data frames at this size; mirror it upstream
+    /// so a huge paste can't produce an oversized frame.
+    public static let maximumDataFrameSize = 64 * 1024
+
+    public static func writeFully(_ descriptor: Int32, _ data: Data) throws {
+        var offset = 0
+        try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let base = raw.baseAddress else { return }
+            while offset < raw.count {
+                let written = write(descriptor, base + offset, raw.count - offset)
+                if written > 0 {
+                    offset += written
+                } else if written < 0, errno == EINTR {
+                    continue
+                } else {
+                    throw TermiodClientError.connectionClosed
+                }
+            }
+        }
+    }
+
+    public static func writeFrame(_ descriptor: Int32, kind: FrameKind, payload: Data) throws {
+        var frame = Data(capacity: 5 + payload.count)
+        frame.append(kind.rawValue)
+        var length = UInt32(payload.count).bigEndian
+        withUnsafeBytes(of: &length) { frame.append(contentsOf: $0) }
+        frame.append(payload)
+        try writeFully(descriptor, frame)
+    }
+
+    private static func readExactly(_ descriptor: Int32, count: Int) throws -> Data {
+        var buffer = Data(count: count)
+        var offset = 0
+        try buffer.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
+            guard let base = raw.baseAddress else {
+                throw TermiodClientError.connectionClosed
+            }
+            while offset < count {
+                let readCount = read(descriptor, base + offset, count - offset)
+                if readCount > 0 {
+                    offset += readCount
+                } else if readCount < 0, errno == EINTR {
+                    continue
+                } else {
+                    throw TermiodClientError.connectionClosed
+                }
+            }
+        }
+        return buffer
+    }
+
+    /// Blocking read of one whole frame. Unknown kinds are a protocol error —
+    /// the kind byte is the one non-additive part of the framing.
+    public static func readFrame(_ descriptor: Int32) throws -> (kind: FrameKind, payload: Data) {
+        let header = try readExactly(descriptor, count: 5)
+        let length = header.subdata(in: 1 ..< 5).withUnsafeBytes { raw in
+            UInt32(bigEndian: raw.loadUnaligned(as: UInt32.self))
+        }
+        guard let kind = FrameKind(rawValue: header[0]), Int(length) <= maximumFrameSize else {
+            throw TermiodClientError.malformedFrame
+        }
+        let payload = length == 0 ? Data() : try readExactly(descriptor, count: Int(length))
+        return (kind, payload)
+    }
+
+    /// `R` payload: rows then cols, each a big-endian u16.
+    public static func resizePayload(_ rows: UInt16, _ cols: UInt16) -> Data {
+        var payload = Data(capacity: 4)
+        var bigEndianRows = rows.bigEndian
+        var bigEndianCols = cols.bigEndian
+        withUnsafeBytes(of: &bigEndianRows) { payload.append(contentsOf: $0) }
+        withUnsafeBytes(of: &bigEndianCols) { payload.append(contentsOf: $0) }
+        return payload
+    }
+
+    /// `F` payload: re u64be, offset u64be, last u8, then the bytes —
+    /// termiod/src/protocol.rs `encode_file_chunk`. Public so a test can hold
+    /// it to that layout; there is no partial credit on a wire format.
+    public static func decodeFileChunk(
+        _ payload: Data
+    ) throws -> (offset: UInt64, last: Bool, data: Data) {
+        let headerSize = 17
+        guard payload.count >= headerSize else { throw TermiodClientError.malformedFrame }
+        let bytes = [UInt8](payload)
+        var offset: UInt64 = 0
+        for index in 8 ..< 16 { offset = offset << 8 | UInt64(bytes[index]) }
+        let last: Bool
+        switch bytes[16] {
+        case 0: last = false
+        case 1: last = true
+        default: throw TermiodClientError.malformedFrame
+        }
+        return (offset, last, payload.dropFirst(headerSize))
+    }
+
+    /// `U` payload: id_len u8, upload id, offset u64 big-endian, then bytes —
+    /// termiod/src/protocol.rs `decode_upload_chunk`. Public so a test can
+    /// hold it to that layout: the daemon rejects the whole frame on a byte of
+    /// drift, and there is no partial credit on a wire format.
+    public static func uploadChunkPayload(
+        uploadID: String, offset: UInt64, data: Data
+    ) -> Data {
+        let id = Data(uploadID.utf8)
+        var payload = Data(capacity: 1 + id.count + 8 + data.count)
+        payload.append(UInt8(clamping: id.count))
+        payload.append(id)
+        var bigEndianOffset = offset.bigEndian
+        withUnsafeBytes(of: &bigEndianOffset) { payload.append(contentsOf: $0) }
+        payload.append(data)
+        return payload
+    }
+
+    // MARK: - Control payloads
+
+    /// Spawn parameters for `attach` with `create_if_missing`. The daemon
+    /// fills `name` from the attach target, so it is not repeated here.
+    public struct CreateSpecification: Encodable, Sendable {
+        public let cwd: String
+        public let argv: [String]
+        /// Wire shape of Rust's `Vec<(String, String)>` — an array of pairs.
+        public let env: [[String]]
+        public let rows: UInt16
+        public let cols: UInt16
+
+        public init(cwd: String, argv: [String], env: [[String]], rows: UInt16, cols: UInt16) {
+            self.cwd = cwd
+            self.argv = argv
+            self.env = env
+            self.rows = rows
+            self.cols = cols
+        }
+    }
+
+    private struct HelloOperation: Encodable {
+        let op = "hello"
+        let proto: UInt32
+        let minProto: UInt32
+        let role: String
+        let caps: [String]
+        let client: String
+    }
+
+    private struct AttachOperation: Encodable {
+        let op = "attach"
+        let target: String
+        let createIfMissing: CreateSpecification?
+        let rows: UInt16
+        let cols: UInt16
+        let mode = "interact"
+        let seq: UInt64
+    }
+
+    private struct ListOperation: Encodable {
+        let op = "list"
+        let seq: UInt64
+    }
+
+    private struct KillOperation: Encodable {
+        let op = "kill"
+        let id: String
+        let seq: UInt64
+    }
+
+    private struct DetachOperation: Encodable {
+        let op = "detach"
+    }
+
+    private struct ClaimWriterOperation: Encodable {
+        let op = "claim_writer"
+    }
+
+    private struct RequestSnapshotOperation: Encodable {
+        let op = "request_snapshot"
+    }
+
+    /// Opens a transfer into a session's scratch directory on the device
+    /// (§C.12 `temp:` dest). `session` is the termiod session name — the app's
+    /// session UUID — and the daemon reaps whatever lands there when that
+    /// session dies, so a pasted screenshot never outlives the conversation it
+    /// belonged to.
+    public struct UploadOpenOperation: Encodable, Sendable {
+        public let op = "upload_open"
+        public let dest: String
+        public let session: String
+        public let size: UInt64
+        public let sha256: String
+        public let seq: UInt64
+
+        public init(dest: String, session: String, size: UInt64, sha256: String, seq: UInt64) {
+            self.dest = dest
+            self.session = session
+            self.size = size
+            self.sha256 = sha256
+            self.seq = seq
+        }
+    }
+
+    public struct UploadCommitOperation: Encodable, Sendable {
+        public let op = "upload_commit"
+        public let uploadId: String
+        public let seq: UInt64
+
+        public init(uploadId: String, seq: UInt64) {
+            self.uploadId = uploadId
+            self.seq = seq
+        }
+    }
+
+    public struct UploadAbortOperation: Encodable, Sendable {
+        public let op = "upload_abort"
+        public let uploadId: String
+        public let seq: UInt64
+
+        public init(uploadId: String, seq: UInt64) {
+            self.uploadId = uploadId
+            self.seq = seq
+        }
+    }
+
+    public struct FsListOperation: Encodable, Sendable {
+        public let op = "fs_list"
+        public let root: String
+        public let paths: [String]
+        public let seq: UInt64
+
+        public init(root: String, paths: [String], seq: UInt64) {
+            self.root = root
+            self.paths = paths
+            self.seq = seq
+        }
+    }
+
+    /// No `offset`/`length`: an unranged read is what makes `size` and
+    /// `truncated` mean "the whole file" rather than "the window you asked for".
+    public struct FsReadOperation: Encodable, Sendable {
+        public let op = "fs_read"
+        public let path: String
+        public let seq: UInt64
+
+        public init(path: String, seq: UInt64) {
+            self.path = path
+            self.seq = seq
+        }
+    }
+
+    /// Only the `op` tag — the second decode pass picks the payload shape.
+    private struct ControlTag: Decodable {
+        let op: String
+    }
+
+    /// The daemon's answer to `hello`, and the only place a device's identity
+    /// comes from: `hostId` is the machine, `host` is the daemon's version and
+    /// platform banner (`termiod/0.1.0 macos-aarch64` — not a hostname), and
+    /// `clientId` names this connection (per-connection, never load-bearing).
+    public struct HelloOkPayload: Decodable, Sendable {
+        public let hostId: String
+        public let host: String
+        public let clientId: String
+        /// Capabilities the daemon accepted. Absent on an older daemon, so it
+        /// defaults rather than failing the handshake — negotiate, never lockstep.
+        public let caps: [String]
+        /// The account's home directory over there, for the pickers that have to
+        /// name a path on that machine. Empty on a daemon too old to send it, and
+        /// on one that could not read `HOME`; read it through `homeDirectory`.
+        public let home: String
+
+        /// `home`, or `/` when the daemon did not answer with an absolute path.
+        /// Never empty, so a picker always has somewhere to start — and one rule,
+        /// so a second client cannot pick a different fallback.
+        public var homeDirectory: String { home.hasPrefix("/") ? home : "/" }
+
+        private enum CodingKeys: String, CodingKey {
+            case hostId, host, clientId, caps, home
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            hostId = try container.decode(String.self, forKey: .hostId)
+            host = try container.decode(String.self, forKey: .host)
+            clientId = try container.decode(String.self, forKey: .clientId)
+            caps = try container.decodeIfPresent([String].self, forKey: .caps) ?? []
+            home = try container.decodeIfPresent(String.self, forKey: .home) ?? ""
+        }
+    }
+
+    /// One row of an `fs_listed` page (§C.12). `kind` is left as the daemon's
+    /// own word rather than an enum: a kind this build has never heard of must
+    /// decode and sort as "not a directory", not fail the whole listing.
+    public struct DirEntryPayload: Decodable, Sendable {
+        public let name: String
+        public let kind: String
+
+        /// Whether this entry can be descended into. `unloaded_dir` counts —
+        /// it is a directory the host declines to *walk* (VCS internals), not
+        /// one it refuses to list when asked directly. Compared against the
+        /// daemon's snake_case wire value: `convertFromSnakeCase` rewrites
+        /// keys, never values.
+        public var isDirectory: Bool { kind == "dir" || kind == "unloaded_dir" }
+    }
+
+    /// One requested path's listing. A path that vanished or escaped the root
+    /// carries `error` and fails alone, so a batch never sinks whole.
+    public struct PathListingPayload: Decodable, Sendable {
+        public let path: String
+        public let entries: [DirEntryPayload]
+        public let error: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case path, entries, error
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            path = try container.decode(String.self, forKey: .path)
+            entries = try container.decodeIfPresent([DirEntryPayload].self, forKey: .entries) ?? []
+            error = try container.decodeIfPresent(String.self, forKey: .error)
+        }
+    }
+
+    public struct FsListedPayload: Decodable, Sendable {
+        public let listings: [PathListingPayload]
+    }
+
+    /// The reply header for `fs_read`: `length` bytes from `offset` follow as
+    /// `F` chunks, and `truncated` means the window stopped short of what was
+    /// asked.
+    public struct FsFilePayload: Decodable, Sendable {
+        public let size: UInt64
+        public let offset: UInt64
+        public let length: UInt64
+        public let truncated: Bool
+
+        private enum CodingKeys: String, CodingKey {
+            case size, offset, length, truncated
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            size = try container.decode(UInt64.self, forKey: .size)
+            offset = try container.decode(UInt64.self, forKey: .offset)
+            length = try container.decode(UInt64.self, forKey: .length)
+            truncated = try container.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
+        }
+    }
+
+    public struct AttachedPayload: Decodable, Sendable {
+        public let sessionId: String
+        public let writer: Bool
+        public let rows: UInt16
+        public let cols: UInt16
+    }
+
+    public struct ExitedPayload: Decodable, Sendable {
+        public let id: String
+        public let status: Int32
+    }
+
+    public struct ErrorPayload: Decodable, Sendable {
+        public let code: String?
+        public let message: String
+    }
+
+    public struct SessionsPayload: Decodable, Sendable {
+        public let sessions: [SessionInformation]
+        /// Sessions that have died, newest first. Absent on a daemon too old to
+        /// bury them, which is why it decodes to an empty list rather than
+        /// failing the reply.
+        public let tombstones: [SessionTombstone]
+
+        private enum CodingKeys: String, CodingKey {
+            case sessions, tombstones
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            sessions = try container.decode([SessionInformation].self, forKey: .sessions)
+            tombstones = try container.decodeIfPresent(
+                [SessionTombstone].self, forKey: .tombstones) ?? []
+        }
+    }
+
+    /// One row of `termiod list` — a session as the **device** describes it.
+    ///
+    /// This carries enough to draw a row without consulting anything on the
+    /// viewer, which is the point: a session the app never opened (started from
+    /// the CLI, or by another client) still has a name, a directory, a command,
+    /// and an agent status, and all four come from the machine it runs on.
+    /// Unknown fields are ignored and every field the daemon added after v0
+    /// decodes optionally, so an older host degrades to blanks instead of a
+    /// decode error.
+    public struct SessionInformation: Decodable, Sendable, Hashable {
+        public let id: String
+        public let name: String
+        public let pid: Int32
+        public let alive: Bool
+        /// The directory the process runs in, **on the device**. Never a path on
+        /// the viewer's machine, which is why it is only ever shown, never opened.
+        public let cwd: String
+        public let command: String
+        /// The workstream status the session last reported — `working · idle ·
+        /// needs_you · done · failed · unknown` (§4). The host names the state;
+        /// which dot it becomes is the client's call.
+        public let status: String
+        public let agentID: String?
+        /// The title the agent reported, when it reported one.
+        public let title: String?
+        public let createdUnix: UInt64
+        /// How many clients are attached right now. A non-zero count on a session
+        /// this app has no row for means someone else is watching it.
+        public let attachedClients: Int
+
+        /// The process the **device** picked to answer for the group holding the
+        /// tty's foreground — a pid, never the group id. Which member answers is
+        /// the host's call: it skips a leader already reaped, as in `foo | bar`
+        /// once `foo` exits and only `bar` still holds the terminal.
+        ///
+        /// `nil` on a daemon too old to sample, and on one that found nobody.
+        public let foregroundPid: Int32?
+        /// That process's argv. The host reports it; the **client** decides which
+        /// agent it is, because the mapping needs the user's own manifests, which
+        /// live on the client — so a box that never heard of a user-defined agent
+        /// still reports enough for it to be recognised.
+        ///
+        /// `nil` means *not answered*, never "nothing is running": an old daemon
+        /// and an unreadable process look the same from here, and neither may
+        /// demote the row.
+        public let foregroundArgv: [String]?
+        /// Whether something other than the session's own child holds the
+        /// foreground — a command is running rather than a shell idling at its
+        /// prompt.
+        ///
+        /// Omitted when false, so `nil` conflates "idle" with "never sampled".
+        /// Harmless: both must read as today's no-confirm behaviour, never as
+        /// "unknown, so confirm" (`20260814-remote-to-device.decisions.md` §2).
+        public let foregroundJob: Bool?
+        /// The child's *current* directory — what `cd` moves, as opposed to `cwd`,
+        /// which is where the session was created. A path on the **device**.
+        public let childCwd: String?
+        /// The binary the child is running, as the device's kernel resolved it.
+        public let childExecutable: String?
+        /// Whether that binary has been replaced on disk since the session pinned
+        /// it — an agent that updated itself and quit, told apart from one that
+        /// just quit. Omitted when false, so `nil` reads as "not replaced".
+        public let childExecutableReplaced: Bool?
+
+        private enum CodingKeys: String, CodingKey {
+            case id, name, pid, alive, cwd, command, status, title, createdUnix
+            case agentID = "agentId"
+            case attachedClients
+            case foregroundPid, foregroundArgv, foregroundJob
+            case childCwd, childExecutable, childExecutableReplaced
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            name = try container.decode(String.self, forKey: .name)
+            pid = try container.decodeIfPresent(Int32.self, forKey: .pid) ?? 0
+            alive = try container.decodeIfPresent(Bool.self, forKey: .alive) ?? true
+            cwd = try container.decodeIfPresent(String.self, forKey: .cwd) ?? ""
+            command = try container.decodeIfPresent(String.self, forKey: .command) ?? ""
+            status = try container.decodeIfPresent(String.self, forKey: .status) ?? "unknown"
+            agentID = try container.decodeIfPresent(String.self, forKey: .agentID)
+            title = try container.decodeIfPresent(String.self, forKey: .title)
+            createdUnix = try container.decodeIfPresent(UInt64.self, forKey: .createdUnix) ?? 0
+            attachedClients = try container.decodeIfPresent(Int.self, forKey: .attachedClients) ?? 0
+            // Every one of these stays optional rather than defaulting: a default
+            // would erase the difference between "the device says no" and "the
+            // device did not say", and each consumer below stands down on the
+            // second. This is the skew rule the whole additive contract rests on.
+            foregroundPid = try container.decodeIfPresent(Int32.self, forKey: .foregroundPid)
+            foregroundArgv = try container.decodeIfPresent([String].self, forKey: .foregroundArgv)
+            foregroundJob = try container.decodeIfPresent(Bool.self, forKey: .foregroundJob)
+            childCwd = try container.decodeIfPresent(String.self, forKey: .childCwd)
+            childExecutable = try container.decodeIfPresent(String.self, forKey: .childExecutable)
+            childExecutableReplaced = try container.decodeIfPresent(
+                Bool.self, forKey: .childExecutableReplaced)
+        }
+
+        /// What to call this session on screen. The name is the daemon's handle,
+        /// not a label: a session Termio created is named with the app's session
+        /// uuid, so a roster row for one this app has no record of would read as
+        /// a line of hex. In order of how much it tells a person: the reported
+        /// title, the agent, the program actually running, and — only when the
+        /// command says nothing — the name itself.
+        /// The rungs of `displayLabel` that are a *name* rather than a guess at one:
+        /// a title typed on the box, the daemon's own session name, the program the
+        /// session is running. A viewer keeps these — they are the only thing naming
+        /// the row over there.
+        ///
+        /// `nil` when the label is only the agent's id, which the client's own
+        /// promotion improves on: that row becomes `Claude Code`, and then whatever
+        /// the agent's live title says it is working on.
+        public var givenName: String? {
+            if let title, !title.isEmpty { return title }
+            if let agentID, !agentID.isEmpty { return nil }
+            return displayLabel
+        }
+
+        public var displayLabel: String {
+            if let title, !title.isEmpty { return title }
+            if let agentID, !agentID.isEmpty { return agentID }
+            // What the device's kernel says is actually running, before the
+            // string rules that guess at it. A roster-only row — a session this
+            // app has never attached to — has no surface to read a title off,
+            // so this is the only place its label can come from that is not a
+            // guess. `nil` means the daemon did not answer, which is why the
+            // guess stays as the fallback rather than being replaced.
+            if let program = Self.programName(inArgv: foregroundArgv) { return program }
+            return Self.programName(in: command) ?? name
+        }
+
+        /// The foreground program the device reported, named the way a person
+        /// would name it: the last path component of `argv[0]`, minus the login
+        /// marker.
+        ///
+        /// That marker is not an edge case — it is the *idle* row. A login shell
+        /// is spawned with `argv[0] = "-zsh"` (`termiod/src/pty.rs`, and every
+        /// terminal before it), and a session sitting at its prompt reports its
+        /// own shell as the foreground, so passing the dash through would label
+        /// the most common roster row `-zsh`.
+        private static func programName(inArgv argv: [String]?) -> String? {
+            guard let argv, let executable = argv.first, !executable.isEmpty else { return nil }
+            let name = URL(fileURLWithPath: executable).lastPathComponent
+            let program = name.hasPrefix("-") ? String(name.dropFirst()) : name
+            return program.isEmpty ? nil : program
+        }
+
+        /// The program behind the login-shell wrapper Termio spawns through
+        /// (`/bin/zsh -ilc exec claude …`): the shell, its flags and `exec` are
+        /// scaffolding, and the first word after them is the thing running. A
+        /// bare `/bin/zsh -il` has nothing behind the scaffolding because the
+        /// shell *is* the session, so it names itself.
+        private static func programName(in command: String) -> String? {
+            var words = command.split(whereSeparator: \.isWhitespace).map(String.init)
+            guard let executable = words.first, !executable.isEmpty else { return nil }
+            let shell = URL(fileURLWithPath: executable).lastPathComponent
+            guard shell.hasSuffix("sh") else { return shell }
+            words.removeFirst()
+            while let flag = words.first, flag.hasPrefix("-") { words.removeFirst() }
+            if words.first == "exec" { words.removeFirst() }
+            guard let program = words.first, !program.isEmpty else { return shell }
+            return URL(fileURLWithPath: program).lastPathComponent
+        }
+    }
+
+    /// A dead session, as the daemon buried it (termiod/src/tombstone.rs). This
+    /// is the only answer to "where did my session go?": a daemon that died
+    /// takes every PTY with it, and without a tombstone the roster just comes
+    /// back empty, which reads as "nothing was running".
+    ///
+    /// `reason` stays a string, not an enum, so a later daemon can bury a
+    /// session for a reason this build has never heard of without the reply
+    /// failing to decode. The host names the cause; the words shown to a person
+    /// are the client's to choose (see `TermioStore.termiodEndReason(for:)`).
+    public struct SessionTombstone: Decodable, Sendable, Hashable {
+        public let id: String
+        /// The termiod session name — which, for sessions this app created, is
+        /// the app `Session.ID` uuid string. That is what ties a tombstone back
+        /// to a row in the sidebar.
+        public let name: String
+        public let cwd: String
+        public let command: String
+        /// `exited` · `killed` · `daemon_lost`, or whatever a newer daemon adds.
+        public let reason: String
+        /// The process's exit code. Absent for `daemon_lost` — the daemon that
+        /// would have reaped the child died first, so there is no honest answer.
+        public let exitStatus: Int32?
+        public let createdUnix: UInt64
+        public let endedUnix: UInt64
+        public let agentID: String?
+        public let title: String?
+        /// The workstream status the session last reported. A session that died
+        /// while `needs_you` is a different story from one that died `idle`.
+        public let status: String
+        /// Whether the session's binary was replaced on disk while it ran — an
+        /// agent that updated itself and quit, told apart from one that just
+        /// quit. The exit *event* carries this too, but only to clients that
+        /// were attached when it happened; for anyone who reconnects afterwards
+        /// the tombstone is the only route.
+        ///
+        /// Absent on a `daemon_lost` grave and on a daemon too old to record
+        /// it — in both cases nobody measured, which is not the same as
+        /// measuring "not replaced", so it must never be shown as a self-update.
+        public let childExecutableReplaced: Bool
+
+        private enum CodingKeys: String, CodingKey {
+            case id, name, cwd, command, reason, exitStatus, createdUnix, endedUnix
+            case agentID = "agentId"
+            case title, status, childExecutableReplaced
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            name = try container.decode(String.self, forKey: .name)
+            cwd = try container.decodeIfPresent(String.self, forKey: .cwd) ?? ""
+            command = try container.decodeIfPresent(String.self, forKey: .command) ?? ""
+            reason = try container.decodeIfPresent(String.self, forKey: .reason) ?? "unknown"
+            exitStatus = try container.decodeIfPresent(Int32.self, forKey: .exitStatus)
+            createdUnix = try container.decodeIfPresent(UInt64.self, forKey: .createdUnix) ?? 0
+            endedUnix = try container.decodeIfPresent(UInt64.self, forKey: .endedUnix) ?? 0
+            agentID = try container.decodeIfPresent(String.self, forKey: .agentID)
+            title = try container.decodeIfPresent(String.self, forKey: .title)
+            status = try container.decodeIfPresent(String.self, forKey: .status) ?? "unknown"
+            childExecutableReplaced = try container.decodeIfPresent(
+                Bool.self, forKey: .childExecutableReplaced) ?? false
+        }
+    }
+
+    /// Who owns the write token now. `writer` is a daemon-scoped client id, so
+    /// the only client that can tell whether it is the writer is the one that
+    /// remembers its own `client_id` from `hello_ok`.
+    public struct WriterChangedPayload: Decodable, Sendable {
+        public let session: String
+        public let writer: String?
+    }
+
+    /// The authoritative PTY grid after a resize. Every client is required to
+    /// parse at these dimensions (§C.5) — an observer whose window is a
+    /// different size wraps the same bytes differently and diverges.
+    public struct ResizedPayload: Decodable, Sendable {
+        public let session: String
+        public let rows: UInt16
+        public let cols: UInt16
+    }
+
+    /// A workstream status delta — `working · idle · needs_you · done · failed ·
+    /// unknown` (§4). The host reports the *state*; which dot, which words, and
+    /// whether it fires a notification are entirely the client's call.
+    public struct StatusPayload: Decodable, Sendable {
+        public let session: String
+        public let status: String
+        public let title: String?
+
+        public init(session: String, status: String, title: String?) {
+            self.session = session
+            self.status = status
+            self.title = title
+        }
+    }
+
+    /// The device revising what it knows about a session — pushed on change, on
+    /// its own slow timer, never from the byte path (§A). `action` stays a string
+    /// so a newer one does not fail the decode; `info` is the whole row, so a
+    /// client never merges deltas, and is absent on a delta that only announces
+    /// an arrival or departure.
+    public struct RosterPayload: Decodable, Sendable {
+        public let session: String
+        public let action: String
+        public let info: SessionInformation?
+    }
+
+    /// A session's process is gone. `info` is the device's final word on it, and
+    /// the reason the exit carries a row at all: `childExecutableReplaced` is
+    /// computed on the exit path, so a binary swapped in the seconds before the
+    /// agent quit — the self-update case — is answered here and nowhere else.
+    /// Absent on a daemon that predates it.
+    public struct SessionExitedPayload: Decodable, Sendable {
+        public let session: String
+        public let status: Int32
+        public let info: SessionInformation?
+    }
+
+    /// Decoded `E` frames. Unknown events become `.unknown` and are ignored,
+    /// matching the protocol's additive-evolution rule.
+    public enum IncomingEvent: Sendable {
+        case ready(String)
+        case status(StatusPayload)
+        case writerChanged(WriterChangedPayload)
+        case resized(ResizedPayload)
+        case roster(RosterPayload)
+        case sessionExited(SessionExitedPayload)
+        case unknown(String)
+    }
+
+    private struct EventTag: Decodable {
+        let ev: String
+    }
+
+    /// Every event names its session and nothing else is required — enough to
+    /// decode `ready`, and the shape any future session-scoped event shares.
+    private struct SessionScopedPayload: Decodable {
+        let session: String
+    }
+
+    /// Reply to `upload_open`. `offset` is where the next chunk starts: 0 for a
+    /// fresh transfer, and the bytes the daemon already holds when this open
+    /// resumed one a dropped connection left behind. Absent on a daemon that
+    /// predates resume, which reads as "start over" — the same thing it does.
+    public struct UploadOpenedPayload: Decodable, Sendable {
+        public let uploadId: String
+        public let offset: UInt64
+
+        private enum CodingKeys: String, CodingKey {
+            case uploadId, offset
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            uploadId = try container.decode(String.self, forKey: .uploadId)
+            offset = try container.decodeIfPresent(UInt64.self, forKey: .offset) ?? 0
+        }
+    }
+
+    /// The credit-of-one grant: `offset` is the total the daemon has received,
+    /// which is where the next chunk goes. Holding the next chunk until this
+    /// arrives is what bounds a keystroke's wait on a shared pipe to one chunk.
+    public struct UploadAckPayload: Decodable, Sendable {
+        public let uploadId: String
+        public let offset: UInt64
+    }
+
+    /// Where the verified bytes landed on the device — an absolute path on
+    /// *that* machine, which is the whole point of the transfer.
+    public struct UploadCommittedPayload: Decodable, Sendable {
+        public let path: String
+    }
+
+    /// Decoded control frames the client reacts to. Anything else — unknown
+    /// ops, responses this slice doesn't consume — becomes `.unknown` and is
+    /// ignored, matching the protocol's additive-evolution rule.
+    public enum IncomingControl: Sendable {
+        case helloOk(HelloOkPayload)
+        case helloError(String)
+        case attached(AttachedPayload)
+        case exited(ExitedPayload)
+        case sessions(SessionsPayload)
+        case uploadOpened(UploadOpenedPayload)
+        case uploadAck(UploadAckPayload)
+        case uploadCommitted(UploadCommittedPayload)
+        case fsListed(FsListedPayload)
+        /// The read half of the files plane (`TermiodFiles.swift`). `fs_listed`
+        /// above answers both the path picker and the tree; this one only the
+        /// tree. It rides the same decode table as everything else, so an
+        /// unexpected reply on any channel is ignored rather than fatal.
+        case fsFile(FsFilePayload)
+        /// The addressed half of `writer_changed`: sent to one client to tell it
+        /// who owns size now (§C.5). Same payload shape, so it feeds the same
+        /// handler — a client that only listened to the broadcast would still be
+        /// correct, and one that only listened to this would not.
+        case resizeClaim(WriterChangedPayload)
+        case error(ErrorPayload)
+        case unknown(String)
+    }
+
+    public static func encodeControl(_ operation: some Encodable) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        return try encoder.encode(operation)
+    }
+
+    public static func decodeControl(_ payload: Data) throws -> IncomingControl {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let tag = try decoder.decode(ControlTag.self, from: payload)
+        switch tag.op {
+        case "hello_ok":
+            return .helloOk(try decoder.decode(HelloOkPayload.self, from: payload))
+        case "hello_err":
+            return .helloError("protocol negotiation failed")
+        case "attached":
+            return .attached(try decoder.decode(AttachedPayload.self, from: payload))
+        case "exited":
+            return .exited(try decoder.decode(ExitedPayload.self, from: payload))
+        case "sessions":
+            return .sessions(try decoder.decode(SessionsPayload.self, from: payload))
+        case "upload_opened":
+            return .uploadOpened(try decoder.decode(UploadOpenedPayload.self, from: payload))
+        case "upload_ack":
+            return .uploadAck(try decoder.decode(UploadAckPayload.self, from: payload))
+        case "upload_committed":
+            return .uploadCommitted(try decoder.decode(UploadCommittedPayload.self, from: payload))
+        case "fs_listed":
+            return .fsListed(try decoder.decode(FsListedPayload.self, from: payload))
+        case "fs_file":
+            return .fsFile(try decoder.decode(FsFilePayload.self, from: payload))
+        case "resize_claim":
+            return .resizeClaim(try decoder.decode(WriterChangedPayload.self, from: payload))
+        case "error":
+            return .error(try decoder.decode(ErrorPayload.self, from: payload))
+        default:
+            return .unknown(tag.op)
+        }
+    }
+
+    /// Decodes an `E` frame. Same additive contract as `decodeControl`: an event
+    /// this build has never heard of is `.unknown`, never a decode failure.
+    public static func decodeEvent(_ payload: Data) throws -> IncomingEvent {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let tag = try decoder.decode(EventTag.self, from: payload)
+        switch tag.ev {
+        case "ready":
+            return .ready(try decoder.decode(SessionScopedPayload.self, from: payload).session)
+        case "status":
+            return .status(try decoder.decode(StatusPayload.self, from: payload))
+        case "writer_changed":
+            return .writerChanged(try decoder.decode(WriterChangedPayload.self, from: payload))
+        case "resized":
+            return .resized(try decoder.decode(ResizedPayload.self, from: payload))
+        case "roster":
+            return .roster(try decoder.decode(RosterPayload.self, from: payload))
+        case "session_exited":
+            return .sessionExited(try decoder.decode(SessionExitedPayload.self, from: payload))
+        default:
+            return .unknown(tag.ev)
+        }
+    }
+
+    // MARK: - Request payloads
+
+    /// The `hello` a channel opens with. `client` is the caller's own banner —
+    /// `termio-mac/dev`, and whatever the phone calls itself — because the one
+    /// thing a shared codec must not do is claim to be a particular client.
+    public static func helloPayload(role: String, caps: [String], client: String) throws -> Data {
+        try encodeControl(HelloOperation(
+            proto: protocolVersion,
+            minProto: protocolVersion,
+            role: role,
+            caps: caps,
+            client: client
+        ))
+    }
+
+    public static func attachPayload(
+        target: String,
+        specification: CreateSpecification?,
+        rows: UInt16,
+        cols: UInt16
+    ) throws -> Data {
+        try encodeControl(AttachOperation(
+            target: target,
+            createIfMissing: specification,
+            rows: rows,
+            cols: cols,
+            seq: 1
+        ))
+    }
+
+    public static func listPayload(seq: UInt64 = 1) throws -> Data {
+        try encodeControl(ListOperation(seq: seq))
+    }
+
+    public static func killPayload(target: String, seq: UInt64 = 1) throws -> Data {
+        try encodeControl(KillOperation(id: target, seq: seq))
+    }
+
+    public static func detachPayload() throws -> Data {
+        try encodeControl(DetachOperation())
+    }
+
+    public static func claimWriterPayload() throws -> Data {
+        try encodeControl(ClaimWriterOperation())
+    }
+
+    public static func requestSnapshotPayload() throws -> Data {
+        try encodeControl(RequestSnapshotOperation())
+    }
+}
+
+public enum TermiodClientError: LocalizedError {
+    case daemonUnreachable(String)
+    case daemonBinaryMissing(String)
+    case daemonSpawnFailed(Int32)
+    case connectionClosed
+    case malformedFrame
+    case handshakeRejected(String)
+    case requestFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .daemonUnreachable(let socket):
+            return "could not reach termiod at \(socket)"
+        case .daemonBinaryMissing(let binary):
+            return "termiod binary not found at \(binary)"
+        case .daemonSpawnFailed(let status):
+            return "posix_spawn of termiod failed with status \(status)"
+        case .connectionClosed:
+            return "the termiod connection closed"
+        case .malformedFrame:
+            return "malformed termiod frame"
+        case .handshakeRejected(let message):
+            return "termiod hello rejected: \(message)"
+        case .requestFailed(let message):
+            return message
+        }
+    }
+}
+
+/// A terminal grid. A named pair rather than a tuple so "is the PTY already
+/// this size?" is one comparison the compiler checks, on a path where getting
+/// it wrong costs every viewer a repaint.
+public struct TerminalGrid: Equatable, Sendable {
+    public let rows: UInt16
+    public let cols: UInt16
+
+    public init(rows: UInt16, cols: UInt16) {
+        self.rows = rows
+        self.cols = cols
+    }
+}

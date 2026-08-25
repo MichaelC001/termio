@@ -1,4 +1,5 @@
 import XCTest
+import TermioShared
 @testable import termio
 
 /// What happens when the transport dies under a live session.

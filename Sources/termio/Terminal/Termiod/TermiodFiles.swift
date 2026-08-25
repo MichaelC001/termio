@@ -1,4 +1,5 @@
 import Foundation
+import TermioShared
 
 /// The files plane: reading a device's directories and files through `fs.*`.
 ///
@@ -128,61 +129,6 @@ extension Termiod {
             if case .error(let failure) = control {
                 throw TermiodClientError.requestFailed(failure.message)
             }
-        }
-    }
-
-    /// `F` payload: re u64be, offset u64be, last u8, then the bytes —
-    /// termiod/src/protocol.rs `encode_file_chunk`. Internal so a test can hold
-    /// it to that layout; there is no partial credit on a wire format.
-    static func decodeFileChunk(_ payload: Data) throws -> (offset: UInt64, last: Bool, data: Data) {
-        let headerSize = 17
-        guard payload.count >= headerSize else { throw TermiodClientError.malformedFrame }
-        let bytes = [UInt8](payload)
-        var offset: UInt64 = 0
-        for index in 8 ..< 16 { offset = offset << 8 | UInt64(bytes[index]) }
-        let last: Bool
-        switch bytes[16] {
-        case 0: last = false
-        case 1: last = true
-        default: throw TermiodClientError.malformedFrame
-        }
-        return (offset, last, payload.dropFirst(headerSize))
-    }
-
-    struct FsListOperation: Encodable {
-        let op = "fs_list"
-        let root: String
-        let paths: [String]
-        let seq: UInt64
-    }
-
-    /// No `offset`/`length`: an unranged read is what makes `size` and
-    /// `truncated` mean "the whole file" rather than "the window you asked for".
-    struct FsReadOperation: Encodable {
-        let op = "fs_read"
-        let path: String
-        let seq: UInt64
-    }
-
-    /// The reply header for `fs_read`: `length` bytes from `offset` follow as
-    /// `F` chunks, and `truncated` means the window stopped short of what was
-    /// asked.
-    struct FsFilePayload: Decodable {
-        let size: UInt64
-        let offset: UInt64
-        let length: UInt64
-        let truncated: Bool
-
-        private enum CodingKeys: String, CodingKey {
-            case size, offset, length, truncated
-        }
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            size = try container.decode(UInt64.self, forKey: .size)
-            offset = try container.decode(UInt64.self, forKey: .offset)
-            length = try container.decode(UInt64.self, forKey: .length)
-            truncated = try container.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
         }
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import TermioShared
 
 /// A machine Termio can work on, as the interface names it. This Mac is one, and
 /// so is every box the user has already reached — the word "remote" describes the

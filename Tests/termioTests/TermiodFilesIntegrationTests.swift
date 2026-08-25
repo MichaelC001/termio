@@ -1,4 +1,5 @@
 import XCTest
+import TermioShared
 @testable import termio
 
 /// The files client against a real daemon, end to end.

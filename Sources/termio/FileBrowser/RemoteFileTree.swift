@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import SwiftUI
+import TermioShared
 
 /// Owns one staged remote preview. Each lease has an atomic, private 0700
 /// directory and removes only that directory when released, so concurrent
