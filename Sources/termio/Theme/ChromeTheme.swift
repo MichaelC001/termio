@@ -96,7 +96,7 @@ struct ChromeTheme {
 /// those pages match the app. Resolved from the chosen chrome theme, or termio's
 /// built-in light/dark defaults when no Ghostty theme is selected (mirrors
 /// `ChromeTheme.terminalBackgroundColor`'s fallbacks).
-struct DocumentTheme {
+struct DocumentTheme: Equatable {
     let background: String
     let panel: String
     let foreground: String

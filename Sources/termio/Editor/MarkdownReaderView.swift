@@ -21,42 +21,85 @@ struct MarkdownReaderView: View {
     /// argument is the reader's selected text, `nil` when nothing is selected.
     var addToChat: ((String?) -> Void)? = nil
     var canAddToChat: (() -> Bool)? = nil
+    /// Whether Preview is the face on screen. The reader stays mounted while Edit shows, so
+    /// anything that costs something — claiming focus, drawing diagrams — keys off this rather
+    /// than off being alive.
+    var isActive: Bool = true
 
     /// Rendered mermaid diagrams, filled in by the task below. Drawing one needs a DOM and
     /// is therefore asynchronous, so the document renders immediately with its diagrams as
     /// source and re-renders once they arrive — the reader already restores scroll across
     /// a re-render, so the swap is where you were looking.
     @State private var diagrams: [String: String] = [:]
+    /// Memo for the render below: now that the reader outlives its own visibility, this body runs
+    /// on every keystroke in the editor beside it, and building the page is not cheap.
+    @State private var cache = RenderCache()
 
     var body: some View {
         let theme = DocumentTheme.resolveReader(settings: settings, colorScheme: colorScheme)
         let mermaidTheme = MermaidRenderer.Theme(theme)
-        let document = MarkdownReaderRenderer.document(
-            source, theme: theme, fontFamily: settings.fontFamily)
-        let sources = MermaidRenderer.sources(in: document)
         // Anything already drawn goes into the first pass, so reopening a file or flipping
         // the theme back shows its diagrams without a flash of source.
         let drawn = diagrams.merging(
-            MermaidRenderer.shared.cachedDiagrams(for: sources, theme: mermaidTheme)) { _, new in new }
+            MermaidRenderer.shared.cachedDiagrams(for: cache.sources, theme: mermaidTheme)) { _, new in new }
+        let key = RenderCache.Key(source: source, theme: theme, fontFamily: settings.fontFamily,
+                                  drawn: Set(drawn.keys))
+        let html = cache.refresh(key: key, drawn: drawn)
         // Relative image paths (`![](./shot.png)`) resolve against the file's own folder.
         MarkdownReaderWebView(
-            html: MermaidRenderer.applying(drawn, to: document),
+            html: html,
             baseURL: fileURL.deletingLastPathComponent(),
             fileURL: fileURL,
             addToChat: addToChat,
-            canAddToChat: canAddToChat
+            canAddToChat: canAddToChat,
+            isActive: isActive
         )
-        .task(id: DiagramRequest(sources: sources, theme: mermaidTheme)) {
-            guard !sources.isEmpty else { return }
-            diagrams = await MermaidRenderer.shared.diagrams(for: sources, theme: mermaidTheme)
+        .task(id: DiagramRequest(sources: cache.sources, theme: mermaidTheme, active: isActive)) {
+            guard isActive, !cache.sources.isEmpty else { return }
+            diagrams = await MermaidRenderer.shared.diagrams(for: cache.sources, theme: mermaidTheme)
         }
     }
 
-    /// What a render depends on: change either the diagrams or the colors and the task
-    /// runs again; type anything else in the editor and it doesn't.
+    /// What a render depends on: change the diagrams or the colors and the task runs again. It
+    /// carries `active` so a document hidden mid-draw finishes drawing on the flip back.
     private struct DiagramRequest: Equatable {
         let sources: [String]
         let theme: MermaidRenderer.Theme
+        let active: Bool
+    }
+
+    /// The rendered page, held across body evaluations so Markdown → HTML, the mermaid scan and
+    /// the diagram substitution are redone only for inputs that moved. A class so `body` can fill
+    /// it without invalidating the view it is already rendering; nothing here is observed.
+    @MainActor
+    private final class RenderCache {
+        struct Key: Equatable {
+            let source: String
+            let theme: DocumentTheme
+            let fontFamily: String
+            /// Which diagrams are drawn, not their SVG bodies — a source renders to the same
+            /// picture unless the theme changes, and the theme is already in this key.
+            let drawn: Set<String>
+        }
+
+        private(set) var sources: [String] = []
+        private var html = ""
+        private var key: Key?
+        /// The page before diagram substitution, so arriving diagrams don't re-parse the Markdown.
+        private var document = ""
+
+        /// The page for these inputs, rebuilt only for the stages whose inputs actually moved.
+        func refresh(key new: Key, drawn: [String: String]) -> String {
+            guard key != new else { return html }
+            if key?.source != new.source || key?.theme != new.theme || key?.fontFamily != new.fontFamily {
+                document = MarkdownReaderRenderer.document(
+                    new.source, theme: new.theme, fontFamily: new.fontFamily)
+                sources = MermaidRenderer.sources(in: document)
+            }
+            key = new
+            html = MermaidRenderer.applying(drawn, to: document)
+            return html
+        }
     }
 }
 
@@ -70,6 +113,9 @@ private struct MarkdownReaderWebView: NSViewRepresentable {
     let fileURL: URL
     var addToChat: ((String?) -> Void)?
     var canAddToChat: (() -> Bool)?
+    /// Whether this is the face on screen. A dormant reader is hidden rather than unmounted, and
+    /// must never take focus (see `claimFocus`).
+    var isActive: Bool
 
     /// `loadHTMLString` pages get no filesystem access in the WebContent process, so a
     /// `file://` image would silently 404 (same reason the reader fonts are embedded as
@@ -99,17 +145,30 @@ private struct MarkdownReaderWebView: NSViewRepresentable {
         view.canAddToChat = canAddToChat
         view.setValue(false, forKey: "drawsBackground")
         view.navigationDelegate = context.coordinator
+        view.isHidden = !isActive
+        context.coordinator.wasActive = isActive
         view.loadHTMLString(html, baseURL: schemeBaseURL)
-        // Take first responder off the terminal surface beneath the overlay so ⌘C copies the
-        // reader's selection (the Edit menu's Copy routes to whoever holds focus).
-        DispatchQueue.main.async { [weak view] in
-            guard let view, let window = view.window else { return }
-            window.makeFirstResponder(view)
-        }
+        if isActive { claimFocus(view) }
         return view
     }
 
+    /// Takes first responder off the terminal surface beneath the overlay so ⌘C copies the
+    /// reader's selection (the Edit menu's Copy routes to whoever holds focus). Deferred because a
+    /// view being made is not yet in a window, and re-checked on arrival: by then the mode may have
+    /// flipped back, and a hidden view must not hold focus.
+    private func claimFocus(_ view: WKWebView) {
+        DispatchQueue.main.async { [weak view] in
+            guard let view, !view.isHidden, let window = view.window else { return }
+            window.makeFirstResponder(view)
+        }
+    }
+
     func updateNSView(_ view: WKWebView, context: Context) {
+        if view.isHidden == isActive { view.isHidden = !isActive }
+        // Focus follows the flip, not the mount: the reader claims it each time Preview becomes
+        // the visible face, and never while it is the dormant one.
+        if isActive, !context.coordinator.wasActive { claimFocus(view) }
+        context.coordinator.wasActive = isActive
         guard context.coordinator.lastHTML != html else { return }
         context.coordinator.lastHTML = html
         // Restore the reader's scroll offset after the new content lays out, so re-rendering
@@ -127,6 +186,9 @@ private struct MarkdownReaderWebView: NSViewRepresentable {
         var lastHTML: String
         var savedScrollY: CGFloat = 0
         var restoreScroll = false
+        /// Previous `isActive`, so focus is claimed on the transition into Preview rather than on
+        /// every update pass — re-asserting it would fight the find bar and the terminal.
+        var wasActive = false
         init(lastHTML: String) { self.lastHTML = lastHTML }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
