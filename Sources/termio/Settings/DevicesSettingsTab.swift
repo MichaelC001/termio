@@ -18,10 +18,13 @@ import SwiftUI
 /// and the public keys in `~/.ssh`. Those are about the user's own credentials,
 /// not about any one box.
 ///
-/// A `List`, not a `Form`, and the roster is the reason: `onMove` is inert inside
-/// a `Form` on macOS, and while nothing reorders machines *today*, this is the
-/// container that would silently stop working if it ever did — the same trap
-/// `AgentSettingsTab` documents.
+/// A grouped `Form`, like every other pane in this window and like System
+/// Settings itself. It was a `List` to keep `onMove` live in case the roster ever
+/// became reorderable — a container chosen for a feature that does not exist and
+/// cannot: the order here is `~/.ssh/config`'s own, and reordering would mean
+/// rewriting the user's file. The cost was real and visible: this was the only
+/// tab in the app without the grouped cards, so its rows sat flat on the window
+/// with full-bleed separators and the first one clipped under the toolbar.
 struct DevicesSettingsTab: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var store: TermioStore
@@ -40,7 +43,7 @@ struct DevicesSettingsTab: View {
     @State private var copiedKeyID: String?
 
     var body: some View {
-        List {
+        Form {
             // No section header: the tab is called Devices and this is the
             // only list of them in it. The add row is the last row of the
             // list it adds to rather than a bar pinned to the window bottom,
@@ -101,7 +104,7 @@ struct DevicesSettingsTab: View {
                 }
             }
         }
-        .listStyle(.inset)
+        .formStyle(.grouped)
         .navigationDestination(for: DeviceRoute.self) { route in
             if let machine = machines.first(where: { $0.settingsKey == route.key }) {
                 DevicePane(
@@ -223,33 +226,27 @@ private struct DeviceListRow: View {
     }
 }
 
-/// The roster's add action, as the last row of the roster. Matches the Agents
-/// tab's, so the two drill-down tabs read as the same kind of surface.
+/// The roster's add action, as the last row of the roster.
+///
+/// Styled as a row of the group rather than a bar with its own inset background:
+/// inside a grouped `Form` the card already draws the surface, and a second
+/// rounded rect on top of it is what made this read as bolted on.
 private struct AddDeviceRow: View {
     let onAdd: () -> Void
-    @State private var hovering = false
 
     var body: some View {
         Button(action: onAdd) {
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 22)
+                    .frame(width: 22, height: 22)
                 Text(localized("Add Device"))
                 Spacer(minLength: 4)
             }
-            .padding(.horizontal, 8)
-            .frame(maxWidth: .infinity, minHeight: 28)
             .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.primary.opacity(hovering ? 0.07 : 0))
-            )
         }
         .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 7)
     }
 }
+
