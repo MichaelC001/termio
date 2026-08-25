@@ -1186,8 +1186,6 @@
 	<string>Termio 正在运行的设备</string>
 	<key>The machine answered with no listing for that folder.</key>
 	<string>这台机器没有返回该文件夹的内容。</string>
-	<key>The machine you’re on</key>
-	<string>你正在使用的设备</string>
 	<key>The project and session list. Kept separate from the terminal font, and need not be monospaced.</key>
 	<string>项目与会话列表。与终端字体分开设置，无需等宽字体。</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>

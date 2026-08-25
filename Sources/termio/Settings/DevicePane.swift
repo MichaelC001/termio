@@ -66,7 +66,9 @@ struct DevicePane: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            IconBadge(.symbol(machine.isLocal ? "laptopcomputer" : "server.rack"))
+            SettingsSymbolBadge(
+                symbol: machine.isLocal ? "laptopcomputer" : "server.rack",
+                tint: machine.isLocal ? .secondary : .blue)
                 .scaleEffect(1.4)
                 .frame(width: 30, height: 30)
             VStack(alignment: .leading, spacing: 2) {

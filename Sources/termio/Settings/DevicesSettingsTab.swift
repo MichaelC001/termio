@@ -198,30 +198,35 @@ private struct DeviceListRow: View {
     let machine: KnownDevice
     let host: SSHConfigHost?
 
+    /// Empty for a Mac whose name cannot be read, so the row is one line rather
+    /// than one line and a gap.
     private var detail: String {
-        guard machine.alias != nil else { return localized("The machine you’re on") }
+        // The host name, not "the machine you're on" — a subtitle restating the
+        // title is a line that costs a row's height and answers nothing. Apple's
+        // rows put the *fact* there ("65 apps", "Off"); here the fact is which
+        // Mac this is.
+        guard machine.alias != nil else { return Host.current().localizedName ?? "" }
         guard let host else { return localized("From your session history") }
         guard let identityFile = host.identityFile else { return host.destinationLabel }
         return "\(host.destinationLabel) · \((identityFile as NSString).lastPathComponent)"
     }
 
     var body: some View {
-        HStack(spacing: 10) {
-            IconBadge(.symbol(machine.isLocal ? "laptopcomputer" : "server.rack"))
+        HStack(spacing: 12) {
+            SettingsSymbolBadge(
+                symbol: machine.isLocal ? "laptopcomputer" : "server.rack",
+                tint: machine.isLocal ? .secondary : .blue)
             VStack(alignment: .leading, spacing: 2) {
                 Text(machine.name)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                if !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
             Spacer(minLength: 4)
-            // `NavigationLink` draws no chevron in an inset list on macOS, so the
-            // only thing saying these rows open was a sentence in the footer.
-            Image(systemName: "chevron.right")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.tertiary)
         }
     }
 }
@@ -236,11 +241,13 @@ private struct AddDeviceRow: View {
 
     var body: some View {
         Button(action: onAdd) {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
+                // No badge — an action is not a device — but it takes the same
+                // leading width so its label starts on the roster's text column.
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 22, height: 22)
+                    .frame(width: settingsRowIconWidth, height: 26)
                 Text(localized("Add Device"))
                 Spacer(minLength: 4)
             }

@@ -1186,8 +1186,6 @@
 	<string>The machine Termio is running on</string>
 	<key>The machine answered with no listing for that folder.</key>
 	<string>The machine answered with no listing for that folder.</string>
-	<key>The machine you’re on</key>
-	<string>The machine you’re on</string>
 	<key>The project and session list. Kept separate from the terminal font, and need not be monospaced.</key>
 	<string>The project and session list. Kept separate from the terminal font, and need not be monospaced.</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>

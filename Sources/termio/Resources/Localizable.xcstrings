@@ -5898,16 +5898,6 @@
         }
       }
     },
-    "The machine you’re on": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "你正在使用的设备"
-          }
-        }
-      }
-    },
     "The project and session list. Kept separate from the terminal font, and need not be monospaced.": {
       "localizations": {
         "zh-Hans": {
