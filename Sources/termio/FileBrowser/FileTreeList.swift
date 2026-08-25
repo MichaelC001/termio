@@ -206,7 +206,10 @@ private struct FileRow: View {
             .padding(.leading, -6)
             .animation(.easeInOut(duration: 0.12), value: isSelected)
             .animation(.easeInOut(duration: 0.12), value: isTargeted)
-            .animation(.easeInOut(duration: 0.12), value: isHovering)
+            // No animation on hover: a fade is latency on a cue whose job is to track
+            // the cursor. At 120ms over a 0.10-alpha wash the highlight only landed
+            // once the pointer had already left the row.
+            .animation(nil, value: isHovering)
         )
         // Right-click menu via an AppKit `NSMenu`, NOT SwiftUI's `.contextMenu` —
         // the latter paints an accent highlight ring around the targeted row that
